@@ -3,7 +3,9 @@
 //!
 //! [`merge_op`] is the one entry point. It folds one op into the entity's
 //! field state (migration 0033's `merge_*` tables) and then writes the merged
-//! entity back to its row through the same row writers the command paths use.
+//! entity back to its row. The row writers are private to this module
+//! (`rows`): a row is only ever the fold's output, for a local command's op
+//! as for a received one (ADR-0065 §5).
 //!
 //! # The four field types
 //!
@@ -53,19 +55,27 @@
 //! it (`state::prune_below_floor`). A set written only by full-state ops so
 //! holds one add per element, not one per element per op.
 //!
-//! # Seeding, and local full-state writes
+//! # Local writes, and seeding from a row
 //!
-//! An entity a vault held before migration 0033 has a row and no field state.
-//! The first time an op touches it, [`sync_from_row`] reads the row back as the
-//! legacy op that wrote it, at the row's stamp. By the rule above that is
-//! exactly what replaying every earlier op would have produced, up to what the
-//! row cannot represent, and the row then projects identically.
+//! A command appends its op to the log and folds it here, through the call a
+//! received op takes (`Engine::append_and_fold`), so a writer and its peers
+//! derive the row from one function of the same ops.
 //!
-//! The command paths still write rows directly and log a full-state op. Each
-//! such write leaves the row with a stamp the merge did not write, which
-//! [`sync_from_row`] notices the next time an op touches the entity, and folds
-//! in the same way. The local op always holds the greatest stamp this replica
-//! has seen, so folding the row is folding that op.
+//! Two kinds of row were written another way, and [`sync_from_row`] folds
+//! them in the first time an op touches the entity:
+//!
+//! - an entity a vault held before migration 0033 has a row and no field
+//!   state;
+//! - a build before ADR-0065 PR 3 wrote a command's row directly and left
+//!   folding it to the next op, so a vault it wrote can hold a row with a
+//!   stamp the merge did not write.
+//!
+//! Either row is read back as the legacy op that wrote it, at the row's
+//! stamp. By the rule above that is exactly what replaying every earlier op
+//! would have produced, up to what the row cannot represent, and the row then
+//! projects identically. A row this build wrote is always the merge's, so
+//! the check finds nothing to fold. ADR-0065 PR 4 retires the seed, by
+//! rebuilding such a vault from its log once.
 //!
 //! # Visibility, delete, and derived fields
 //!
@@ -81,10 +91,13 @@
 
 mod patch;
 mod project;
+mod rows;
 mod snapshot;
 mod state;
 
 pub(super) use patch::{check_patch, PatchProblem};
+#[cfg(test)]
+pub(super) use rows::legacy_rows;
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, fold_rows, join_stream_state};
 
 use super::ids::blob16;
@@ -334,7 +347,7 @@ fn fold_patch(
 
 /// Fold the row in as a legacy op when it was written by something other
 /// than this merge: by a vault older than migration 0033, or by a local
-/// full-state command. See the module docs.
+/// command of a build before ADR-0065 PR 3. See the module docs.
 fn sync_from_row(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
@@ -377,8 +390,8 @@ fn sync_from_row(
 /// Fold each task's row into its field state, before a context is purged
 /// from the tasks' membership rows.
 ///
-/// A task with no field state yet, or with a local write the merge has not
-/// folded, is seeded from its row (see [`sync_from_row`]). Once a tombstoned
+/// A task with no field state yet, or with an older build's local write the
+/// merge has not folded, is seeded from its row (see [`sync_from_row`]). Once a tombstoned
 /// context has been purged from `task_contexts`, the row no longer says the
 /// task's set holds it, and a seed taken then would lose the add a restore
 /// needs. So the row is folded while it still does.

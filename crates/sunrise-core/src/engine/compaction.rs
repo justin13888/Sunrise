@@ -59,6 +59,12 @@ use sunrise_storage::Db;
 /// and is superseded by the next one: compactable once acknowledged.
 const DIGEST_KIND: &str = "stream.digest";
 
+/// Op-log kinds a local command once wrote that are not the registry's
+/// kind for the op they logged. A defer is a full-state `TaskUpdate`, and
+/// until every command logged its op's own kind (ADR-0065 PR 3) a local
+/// defer was logged as `task.defer`, so a vault keeps such rows from then.
+const LEGACY_LOCAL_KINDS: &[&str] = &["task.defer"];
+
 /// The op-log kinds whose whole effect is in the merge state (ADR-0044), and
 /// so the only kinds compaction deletes: every op, legacy full-state or
 /// `Patch`, of an entity the registry merges field by field and projects to a
@@ -68,8 +74,11 @@ const DIGEST_KIND: &str = "stream.digest";
 ///
 /// Read off the registry rather than listed, so an entity added to it is
 /// compacted, or not, by the rule rather than by somebody remembering to.
+/// The one exception is [`LEGACY_LOCAL_KINDS`], kinds no op is logged as
+/// any more, which would otherwise keep a defer from ever being compacted.
 pub(super) fn compactable_kinds() -> Vec<String> {
     let mut kinds = vec![DIGEST_KIND.to_owned()];
+    kinds.extend(LEGACY_LOCAL_KINDS.iter().map(|k| (*k).to_owned()));
     for spec in &sunrise_id::registry::ENTITIES {
         if spec.merge != Merge::Lww || spec.storage().is_none() {
             continue;
@@ -516,10 +525,11 @@ impl Engine {
             );
 
             // Fold every entity row the deleted ops wrote into its field
-            // state first: a local command writes its row and logs its op,
-            // and the merge folds that row the next time an op touches the
-            // entity, reading the op's stream and kind back from the log.
-            // Once the op is gone it could not.
+            // state first, where the merge has not: an older build's local
+            // command wrote its row and logged its op, and the merge folds
+            // that row the next time an op touches the entity, reading the
+            // op's stream and kind back from the log. Once the op is gone it
+            // could not. A row this build wrote is already folded.
             let predicate = format!(
                 "stream_id = ?1 AND device_id = ?2 AND seq <= ?3
                  AND applied_at IS NOT NULL

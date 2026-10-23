@@ -1,4 +1,4 @@
-//! The Routine command path, materialization, and the `routines` table.
+//! The Routine command path, materialization, and reads of the `routines` table.
 //!
 //! Routine ops route to the vault-meta log: a Routine is not owned by any one
 //! Stream, and its occurrences are minted locally from the rule rather than
@@ -8,24 +8,19 @@
 //! whole body is routine bookkeeping — it is the only consumer of
 //! `StreakStateProj` — so leaving it beside `complete_task` would drag
 //! `routines`, `streak_state` and `materialized_until` into that module for one
-//! function. `insert_task_row_or_ignore` is here on the same reasoning running
-//! the other way: it writes `tasks`, but only routine materialization calls it,
-//! and the `OR IGNORE` is a materialization concern — a regenerated occurrence
-//! that already exists is not an error.
+//! function.
+//!
+//! Materialization writes no row either: each occurrence it generates is a
+//! `task.create` appended and folded like any command's
+//! (`Engine::append_and_fold`), and an occurrence this replica already holds
+//! is skipped, which is what keeps a regenerated one from being an error.
 
-use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, extra_over_opaque, ms_to_ts, require_kind,
-    require_writable_stream, task_state_str, time_to_parts, ExtraTable,
-};
-use super::lww::LwwStamp;
-use super::stream::ensure_stream_row;
-use super::task::{
-    decode_constraints, encode_constraints, ftsr_delete_task, ftsr_upsert_task,
-    insert_task_contexts, read_task, update_task_row,
-};
+use super::ids::{decode_unknowns, ms_to_ts, require_kind, require_writable_stream};
+use super::task::{decode_constraints, read_task};
+use super::write::Appended;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::QueryResult;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
@@ -34,14 +29,14 @@ use sunrise_domain::{
     materialization_horizon_days, occurrence_key_at, occurrence_task_id, Routine,
     RoutineCatchupPolicy, RoutineDraft, RoutinePatch, StreakOutcome, Task, TaskState, TaskTemplate,
 };
-use sunrise_id::{EntityKind, EntityRef, Ulid};
+use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
 impl Engine {
     /// Advance the owning Routine's streak for a task that just went `done`.
     ///
-    /// Returns the mutated Routine plus its encoded `RoutineUpdate` inner op,
-    /// or `None` when there is nothing to emit: the task is not
+    /// Returns the `RoutineUpdate` op that carries the advanced Routine, or
+    /// `None` when there is nothing to emit: the task is not
     /// routine-generated, its routine is gone, it carries no occurrence
     /// instant, or the occurrence was already counted (the idempotency key set
     /// makes a `done -> todo -> done` round trip a no-op).
@@ -50,7 +45,7 @@ impl Engine {
         db: &Db,
         task: &Task,
         now_ms: u64,
-    ) -> Result<Option<(Routine, Vec<u8>)>, EngineError> {
+    ) -> Result<Option<InnerOp>, EngineError> {
         let (Some(rid), Some(occurrence_at)) = (task.routine_id, task.routine_occurrence) else {
             return Ok(None);
         };
@@ -66,8 +61,7 @@ impl Engine {
             return Ok(None);
         }
         routine.updated_at = ms_to_ts(now_ms as i64);
-        let inner = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        Ok(Some((routine, inner)))
+        Ok(Some(InnerOp::RoutineUpdate(Box::new(routine))))
     }
 
     pub(super) fn create_routine(
@@ -108,36 +102,10 @@ impl Engine {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        let stream = routine.template.stream_id;
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::RoutineCreate(Box::new(routine.clone())))?;
         // Routine ops route to the vault-meta log.
-        let routine_clone = routine.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            ensure_stream_row(tx, &stream, now_ms)?;
-            insert_routine_row(tx, &routine_clone, now_ms, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "routine.create",
-                "routine",
-                Some(routine_id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::RoutineCreate(Box::new(routine.clone()));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         // Materialize the near-horizon occurrences for the freshly-created
         // routine (first run: `materialized_until` is 0, so the window opens at
@@ -210,35 +178,9 @@ impl Engine {
         }
         routine.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        let stream = routine.template.stream_id;
-        let routine_clone = routine.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            ensure_stream_row(tx, &stream, now_ms)?;
-            update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "routine.update",
-                "routine",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::RoutineUpdate(Box::new(routine.clone()));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         if structural {
             self.regenerate_future_tasks(db, &routine, now_ms)?;
@@ -259,33 +201,9 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
         routine.deleted = true;
         routine.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::RoutineDelete(Box::new(routine.clone())))?;
-        let routine_clone = routine.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "routine.delete",
-                "routine",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::RoutineDelete(Box::new(routine));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -319,61 +237,20 @@ impl Engine {
             })
             .cloned();
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        let routine_clone = routine.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "routine.update",
-                "routine",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
+        let op = InnerOp::RoutineUpdate(Box::new(routine));
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let done = self.append_and_fold(tx, &op, &META_STREAM, now_ms)?;
+            // Its own op under its own stream, folded with its own stamp: see
+            // the note on `Engine::lww_stamp`.
             if let Some(mut t) = drop_task {
                 t.deleted = true;
                 t.updated_at = ms_to_ts(now_ms as i64);
-                let task_seq = self.next_seq_tx(tx, t.stream_id.bytes())?;
-                let task_lww = self.lww_stamp(task_seq);
-                let del_op = encode_inner_op(&InnerOp::TaskDelete(t.clone()))
-                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                // Stamped with the TASK op's own stamp, not the routine op's:
-                // see the note on `Engine::lww_stamp`.
-                update_task_row(tx, &t, &task_lww)?;
-                ftsr_delete_task(tx, &t.id)?;
-                let del_op_id = self.fresh_op_id(now_ms);
-                self.ops_insert(
-                    tx,
-                    &del_op_id,
-                    t.stream_id.bytes(),
-                    task_seq,
-                    task_lww.hlc,
-                    &del_op,
-                    "task.delete",
-                    "task",
-                    Some(t.id.bytes()),
-                    Some(now_ms),
-                    None,
-                    now_ms,
-                    &[],
-                )?;
+                let stream = *t.stream_id.bytes();
+                self.append_and_fold(tx, &InnerOp::TaskDelete(t), &stream, now_ms)?;
             }
-            Ok(seq)
+            Ok(done)
         })?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(id, None, op_id, seq))
     }
@@ -397,7 +274,7 @@ impl Engine {
     }
 
     /// Expand a routine over `[max(starts_at, materialized_until), now+horizon)`
-    /// and INSERT-OR-IGNORE the resulting tasks, applying the catchup policy to
+    /// and generate each resulting task this replica does not hold, applying the catchup policy to
     /// occurrences at or before `now`. Runs in one transaction per routine:
     /// the inserts and the `materialized_until` advance commit together, so a
     /// crash never leaves the watermark ahead of the tasks it represents.
@@ -457,43 +334,18 @@ impl Engine {
         }
 
         let routine = routine.clone();
-        let clock = self.clock.clone();
-        let rng = self.rng.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &routine.template.stream_id, now_ms)?;
             for (key, at, title_override) in &jobs {
                 let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
-                // Each materialized occurrence is its OWN op, so it gets its own
-                // seq and its own HLC tick. Minting both before the insert keeps
-                // the row's stamp and the op's envelope in agreement.
-                let seq = self.next_seq_tx(tx, task.stream_id.bytes())?;
-                let lww = self.lww_stamp(seq);
-                let inserted = insert_task_row_or_ignore(tx, &task, &lww)?;
-                if !inserted {
+                // An occurrence is generated once: its id is a function of the
+                // routine and the key, so one this replica already holds,
+                // whoever generated it, is not generated again. Each one it
+                // does generate is its OWN op, with its own seq and stamp.
+                if occurrence_exists(tx, task.id.bytes())? {
                     continue;
                 }
-                insert_task_contexts(tx, &task)?;
-                ftsr_upsert_task(tx, &task)?;
-                let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))
-                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                let mut rand = [0u8; 10];
-                rng.fill_bytes(&mut rand);
-                let op_id = *Ulid::from_timestamp_and_random(clock.now_ms(), rand).as_bytes();
-                self.ops_insert(
-                    tx,
-                    &op_id,
-                    task.stream_id.bytes(),
-                    seq,
-                    lww.hlc,
-                    &inner_op,
-                    "task.create",
-                    "task",
-                    Some(task.id.bytes()),
-                    Some(now_ms),
-                    None,
-                    now_ms,
-                    &[],
-                )?;
+                let stream = *task.stream_id.bytes();
+                self.append_and_fold(tx, &InnerOp::TaskCreate(task), &stream, now_ms)?;
             }
             set_materialized_until(tx, routine.id.bytes(), window_end_ms)?;
             Ok(())
@@ -550,31 +402,9 @@ impl Engine {
             };
             t.deleted = true;
             t.updated_at = ms_to_ts(now_ms as i64);
-            let op_id = self.fresh_op_id(now_ms);
-            let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.clone()))?;
-            let seq = self.next_seq(db, t.stream_id.bytes())?;
-            let lww = self.lww_stamp(seq);
-            let t_clone = t.clone();
-            db.with_tx(|tx| -> rusqlite::Result<()> {
-                update_task_row(tx, &t_clone, &lww)?;
-                ftsr_delete_task(tx, &t_clone.id)?;
-                self.ops_insert(
-                    tx,
-                    &op_id,
-                    t_clone.stream_id.bytes(),
-                    seq,
-                    lww.hlc,
-                    &inner_op,
-                    "task.delete",
-                    "task",
-                    Some(t_clone.id.bytes()),
-                    Some(now_ms),
-                    None,
-                    now_ms,
-                    &[],
-                )?;
-                Ok(())
-            })?;
+            let stream = *t.stream_id.bytes();
+            let op = InnerOp::TaskDelete(t);
+            db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
         }
         Ok(())
     }
@@ -586,68 +416,17 @@ impl Engine {
 
 // ---- table operations ----
 
-/// INSERT OR IGNORE a task row (materialization dedup by deterministic id).
-/// Returns `true` when a new row was actually inserted.
-fn insert_task_row_or_ignore(
-    tx: &Transaction<'_>,
-    t: &Task,
-    lww: &LwwStamp,
-) -> rusqlite::Result<bool> {
-    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
-    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
-    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
-    let extra_blob = encode_unknowns(&t.unknown)?;
-    let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
-    let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
-    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
-    let changed = tx.execute(
-        "INSERT OR IGNORE INTO tasks
-         (id, stream_id, title, state, priority, energy, estimated_min,
-          scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
-          due_at_ms, due_at_kind, due_at_tz,
-          completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
-          routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
-          scheduling_constraints, extra, head_root,
-          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?)",
-        params![
-            id_blob,
-            stream_blob,
-            t.title,
-            task_state_str(&t.state),
-            t.priority.map(i64::from),
-            t.energy.as_ref().map(energy_str),
-            t.estimated_duration_s
-                .and_then(|s| i64::try_from(s / 60).ok()),
-            sched_ms,
-            sched_kind,
-            sched_tz,
-            due_ms,
-            due_kind,
-            due_tz,
-            done_ms,
-            done_kind,
-            done_tz,
-            t.deferred_count,
-            t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
-            t.routine_occurrence.map(|d| d.as_millisecond()),
-            t.reminder_lead_s,
-            t.archived as i64,
-            t.deleted as i64,
-            body_blob,
-            constraints_blob,
-            extra_blob,
-            t.created_at.as_millisecond(),
-            t.updated_at.as_millisecond(),
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(changed > 0)
+/// Whether the occurrence task `id` is already on this replica: projected to
+/// a row, or created in the merge state and waiting for a field it lacks. A
+/// replica that holds only a later edit of it (a `Patch` that overtook its
+/// create) still generates the create.
+fn occurrence_exists(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1)
+             OR EXISTS (SELECT 1 FROM merge_entities WHERE entity_id = ?1 AND created = 1)",
+        params![&id[..]],
+        |r| r.get(0),
+    )
 }
 
 /// Build a materialized routine task for `(key, at)`. `title_override` carries
@@ -691,7 +470,7 @@ fn build_routine_task(
 }
 
 /// The stored spelling of a catch-up policy; an unknown one's raw string.
-fn catchup_policy_str(p: &RoutineCatchupPolicy) -> &str {
+pub(super) fn catchup_policy_str(p: &RoutineCatchupPolicy) -> &str {
     p.as_str()
 }
 
@@ -703,7 +482,7 @@ fn parse_catchup_policy(s: &str) -> RoutineCatchupPolicy {
 
 /// Encode a CBOR blob for a non-empty serializable value, or `None` when empty
 /// (mirrors `encode_constraints`, keeping empty lists as SQL NULL).
-fn encode_blob_opt<T: serde::Serialize>(
+pub(super) fn encode_blob_opt<T: serde::Serialize>(
     value: &T,
     is_empty: bool,
 ) -> rusqlite::Result<Option<Vec<u8>>> {
@@ -764,129 +543,10 @@ impl StreakStateProj {
 }
 
 /// Encode the streak projection, storing `NULL` for the all-default state.
-fn encode_streak_state(r: &Routine) -> rusqlite::Result<Option<Vec<u8>>> {
+pub(super) fn encode_streak_state(r: &Routine) -> rusqlite::Result<Option<Vec<u8>>> {
     let proj = StreakStateProj::from_routine(r);
     let empty = proj.is_default();
     encode_blob_opt(&proj, empty)
-}
-
-pub(super) fn insert_routine_row(
-    tx: &Transaction<'_>,
-    r: &Routine,
-    now_ms: u64,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = r.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
-    let rrule_text = r.rrule.to_rfc5545();
-    let rrule_blob = encode_rrule(&r.rrule)?;
-    let template_blob = sunrise_cbor::encode_canonical(&r.template)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
-    let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
-    let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
-    let streak_blob = encode_streak_state(r)?;
-    let extra_blob = encode_unknowns(&r.unknown)?;
-    tx.execute(
-        "INSERT INTO routines
-         (id, stream_id, rrule_text, rrule_cbor, timezone, starts_at_ms, ends_at_ms,
-          streak_counter, paused, archived, deleted, scheduling_constraints,
-          template, skip_dates, skipped_keys, catchup_policy,
-          last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
-          streak_state, extra, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            id_blob,
-            stream_blob,
-            rrule_text,
-            rrule_blob,
-            r.timezone,
-            r.starts_at.as_millisecond(),
-            r.ends_at.map(|d| d.as_millisecond()),
-            r.streak_counter,
-            r.paused as i64,
-            r.archived as i64,
-            r.deleted as i64,
-            constraints_blob,
-            template_blob,
-            skip_dates_blob,
-            skipped_keys_blob,
-            catchup_policy_str(&r.catchup_policy),
-            r.last_completed_at.map(|d| d.as_millisecond()),
-            r.paused_until.map(|d| d.as_millisecond()),
-            now_ms,
-            now_ms,
-            streak_blob,
-            extra_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-pub(super) fn update_routine_row(
-    tx: &Transaction<'_>,
-    r: &Routine,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = r.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
-    let rrule_text = r.rrule.to_rfc5545();
-    let rrule_blob = encode_rrule(&r.rrule)?;
-    let template_blob = sunrise_cbor::encode_canonical(&r.template)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
-    let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
-    let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
-    let streak_blob = encode_streak_state(r)?;
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Routines,
-        &id_blob,
-        encode_unknowns(&r.unknown)?,
-    )?;
-    tx.execute(
-        "UPDATE routines SET
-            stream_id = ?, rrule_text = ?, rrule_cbor = ?, timezone = ?,
-            starts_at_ms = ?, ends_at_ms = ?, streak_counter = ?, paused = ?,
-            archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
-            skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
-            last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?,
-            streak_state = ?, extra = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            stream_blob,
-            rrule_text,
-            rrule_blob,
-            r.timezone,
-            r.starts_at.as_millisecond(),
-            r.ends_at.map(|d| d.as_millisecond()),
-            r.streak_counter,
-            r.paused as i64,
-            r.archived as i64,
-            r.deleted as i64,
-            constraints_blob,
-            template_blob,
-            skip_dates_blob,
-            skipped_keys_blob,
-            catchup_policy_str(&r.catchup_policy),
-            r.last_completed_at.map(|d| d.as_millisecond()),
-            r.paused_until.map(|d| d.as_millisecond()),
-            r.updated_at.as_millisecond(),
-            streak_blob,
-            extra_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            id_blob,
-        ],
-    )?;
-    Ok(())
 }
 
 fn read_materialized_until(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<u64, EngineError> {
@@ -916,7 +576,7 @@ fn set_materialized_until(tx: &Transaction<'_>, id: &[u8; 16], ms: u64) -> rusql
 /// The RFC 5545 text beside it cannot hold a raw `FREQ`/`BYDAY`/`WKST` value
 /// that contains `;`, `,` or `=`, and those values are now kept verbatim
 /// (ADR-0045 §6); the blob holds any string.
-fn encode_rrule(rule: &sunrise_domain::RRule) -> rusqlite::Result<Vec<u8>> {
+pub(super) fn encode_rrule(rule: &sunrise_domain::RRule) -> rusqlite::Result<Vec<u8>> {
     sunrise_cbor::encode_canonical(rule)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }

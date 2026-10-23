@@ -127,22 +127,56 @@ that converges.
 stream)`: the stream breaks a tie between two ops one device made in two
 streams with an equal clock and `seq`, so the register that holds the
 greatest stamp is never read as below `L`. When `L` rises, what it makes
-unreadable is deleted: the adds below it, the removes that named them, and the
-counter deltas at or below it. An add or delta that arrives below `L` is not
-stored. So a set written only by legacy ops holds one add per element, not one
-per element per op.
+unreadable is deleted: the adds below it and the counter deltas at or below
+it. An add or delta that arrives below `L` is not stored. So a set written only
+by legacy ops holds one add per element, not one per element per op.
 
-### Seeding and local writes
+The removes that named a pruned add are kept, inert. Deleting them with their
+add would make the stored set depend on arrival order: a remove folded before
+`L` rose would go with its add, and the same remove folded after would be
+stored, because nothing tells an add `L` pruned from one that has not arrived.
+Only a `Patch` writes a remove, so the set grows with field ops and not with
+full-state ones. Bounding it is compaction's
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8).
 
-An entity a vault held before migration 0033 has a row and no field state. The
-first op to touch it seeds the state from the row, read as the legacy op that
-wrote it, at the row's stamp. Under the rule above only `L` matters, so this is
-what replaying every earlier op would give, up to what the row cannot hold, and
-the row projects identically. A local command still writes its row directly.
-The merge sees a row stamp it did not write and folds the row in the same way
-before the next op, with the origin the logged op that wrote the row reads
-as, so a routine's occurrence create is `generated` on the replica that made
-it as on every peer.
+A field this build does not register can be written both ways: key by key by
+a newer build's map `Patch`, and whole, as one unknown value, by a full-state
+op that carried it. The whole write is the field's value as of its stamp, as
+`L` is the entity's: a map entry stamped before it is superseded, one stamped
+after it applies on top, and where the whole value is not a map the newer
+entries replace it. So a map an unknown field held survives a full-state op
+from a build that cannot read it, as a registered map does.
+
+### Local writes, and seeding from a row
+
+A local command builds its op, appends it to the op log, and folds it through
+the call a received op takes (`Engine::append_and_fold`, then
+`materialize_remote`), in one transaction
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §5). No command
+writes an entity row: the row writers are private to the merge module, so a
+command that tried would not compile. The writer and every peer derive a row
+from one function of the same ops, and a rebuild of the writer's own log lands
+on the rows its commands left. Each local op is logged under the
+`inner_kind` and `target_kind` the receive path reads off it, so one op has
+one kind on every replica. A defer had been logged locally as `task.defer`
+and is now the `task.update` it is; compaction still recognises the older
+kind.
+
+Routine materialization is a local write like any other: each occurrence is a
+`task.create` appended and folded, with `generated` origin, and an occurrence
+the replica already holds, as a row or as a created entity waiting for a
+field, is not generated again.
+
+Two kinds of row were written another way. An entity a vault held before
+migration 0033 has a row and no field state, and a build before ADR-0065's
+third pull request wrote each command's row directly and left the merge to
+fold it before the next op. The first op to touch such an entity seeds the
+state from the row, read as the legacy op that wrote it, at the row's stamp,
+with the origin the logged op that wrote it reads as. Under the rule above
+only `L` matters, so this is what replaying every earlier op would give, up to
+what the row cannot hold, and the row projects identically. A row this build
+wrote is the merge's own, so the seed finds nothing to fold. The rebuild on
+open that ADR-0065's fourth pull request adds retires the seed.
 
 ### Visibility, timestamps and validation
 

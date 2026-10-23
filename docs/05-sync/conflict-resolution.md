@@ -16,7 +16,9 @@ status: accepted
 > emits a `Patch` until the vault can require `core.field_ops` (ADR-0044 §9,
 > [#324](https://github.com/justin13888/Sunrise/issues/324)). Every local edit
 > is still a full-state op, which merges as a write to every field it carries
-> at its own stamp. Between two devices on this build, the later edit's whole
+> at its own stamp, on the device that wrote it as on every peer: a command
+> folds its own op through the merge a received op takes
+> ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §5). Between two devices on this build, the later edit's whole
 > state therefore still wins, as entity-level LWW did
 > ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A `Patch`
 > from a build that emits one merges per field.

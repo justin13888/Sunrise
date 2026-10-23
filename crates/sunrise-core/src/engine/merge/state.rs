@@ -2,8 +2,8 @@
 //! field write at a time.
 //!
 //! Every write here is idempotent, because the same op can be folded twice:
-//! once from its envelope and once more when its row is read back
-//! (`sync_from_row`). A register keeps the greater stamp and rewrites itself
+//! from its envelope, by a redelivery or a rebuild, and once more when a row
+//! an older build wrote is read back (`sync_from_row`). A register keeps the greater stamp and rewrites itself
 //! at an equal one; an OR-set add or remove and a counter delta are keyed by
 //! the op that made them.
 
@@ -454,8 +454,7 @@ pub(super) fn add_delta(
 }
 
 /// Delete the state the legacy floor `floor` has made unreadable: every OR-set
-/// add stamped below it, the removes that named one of those adds, and every
-/// counter delta at or below it.
+/// add stamped below it, and every counter delta at or below it.
 ///
 /// Each legacy op re-adds every element it carries under its own tag, so
 /// without this a long-lived set (`Routine.streak_keys`) written by full-state
@@ -463,6 +462,15 @@ pub(super) fn add_delta(
 /// read them all. Nothing deleted here can be read again: the floor only
 /// rises, and [`add_element`] and [`add_delta`] refuse a redelivered write
 /// below it.
+///
+/// The removes that named a pruned add are kept. One is inert, since its add
+/// never comes back, but deleting it here would make the remove set depend on
+/// arrival order: a remove folded before the floor rose would be pruned with
+/// its add, and the same remove folded after would be stored, because nothing
+/// can tell an add the floor pruned from one that has not arrived yet. Kept,
+/// every replica, and every rebuild of one, holds the same removes. Only a
+/// `Patch` writes a remove, so the set grows with field ops rather than with
+/// full-state ones; bounding it is compaction's (ADR-0065 §8).
 pub(super) fn prune_below_floor(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -476,17 +484,6 @@ pub(super) fn prune_below_floor(
         floor.seq,
         &floor.stream[..],
     ];
-    tx.execute(
-        "DELETE FROM merge_orset_removes AS r
-         WHERE r.entity_id = ?1 AND EXISTS (
-            SELECT 1 FROM merge_orset_adds a
-            WHERE a.entity_id = r.entity_id AND a.field = r.field
-              AND a.element = r.element AND a.tag_stream = r.tag_stream
-              AND a.tag_device = r.tag_device AND a.tag_seq = r.tag_seq
-              AND (a.hlc_ms, a.hlc_logical, a.tag_device, a.tag_seq, a.tag_stream)
-                  < (?2, ?3, ?4, ?5, ?6))",
-        floor_params,
-    )?;
     tx.execute(
         "DELETE FROM merge_orset_adds
          WHERE entity_id = ?1

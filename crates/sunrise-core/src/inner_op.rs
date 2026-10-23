@@ -68,13 +68,12 @@ use thiserror::Error;
 /// than an entity, are written here. An entity op therefore cannot be added without
 /// every routing table below learning it.
 ///
-/// The derived `inner_kind` and `target_kind` reach the op log only on the
-/// paths that read them from the op: a remote op
-/// ([`crate::engine::Engine::apply_remote`]) and a control op
-/// (`emit_control_op`). A local entity write passes its two op-log strings to
-/// `ops_insert` by hand, and nothing checks them against the op it seals. One
-/// differs on purpose: a local defer is logged as `task.defer`, while the
-/// same `TaskUpdate` is logged as `task.update` when a peer receives it.
+/// The derived `inner_kind` and `target_kind` are what every path writes to
+/// the op log: a remote op ([`crate::engine::Engine::apply_remote`]), a
+/// control op (`emit_control_op`), and a local entity write, which reads
+/// them off the op it seals (`Engine::append_and_fold`). A vault written
+/// before that may still hold local defers logged as `task.defer`, the same
+/// `TaskUpdate` a peer logged as `task.update`.
 macro_rules! define_inner_op {
     (
         $(

@@ -6,20 +6,16 @@
 //! Metadata is **write-once**: created, then only ever tombstoned. Every field
 //! but `deleted` describes one specific run of ciphertext identified by
 //! `content_hash`, so there is no update op — re-attaching an edited file is a
-//! new attachment. Which is why this module has an upsert and a read and no
-//! update-row at all.
+//! new attachment. Which is why its row writer is an upsert and there is no
+//! update-row at all (`merge::rows`).
 
-use super::ids::{
-    blob16, blob32, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind,
-    ExtraTable,
-};
-use super::lww::LwwStamp;
+use super::ids::{blob16, blob32, decode_unknowns, ms_to_ts, require_kind};
 use super::task::read_task;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::QueryResult;
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{inbox_stream_ref, Attachment, AttachmentDraft};
 use sunrise_id::{EntityKind, EntityRef};
@@ -94,31 +90,11 @@ impl Engine {
         if keep_preview {
             att.set_preview(d.width, d.height, d.thumbnail.as_ref());
         }
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::AttachmentCreate(Box::new(att.clone())))?;
-        let seq = self.next_seq(db, parent.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let stream_bytes = *parent.stream_id.bytes();
         let id = att.id;
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            upsert_attachment_row(tx, &att, &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "attachment.create",
-                "attachment",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let stream = *parent.stream_id.bytes();
+        let op = InnerOp::AttachmentCreate(Box::new(att));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -143,30 +119,9 @@ impl Engine {
         // flipping one column on top of whatever that replica held.
         att.deleted = true;
         att.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::AttachmentDelete(Box::new(att.clone())))?;
-        let seq = self.next_seq(db, stream.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let stream_bytes = *stream.bytes();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            upsert_attachment_row(tx, &att, &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "attachment.delete",
-                "attachment",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let op = InnerOp::AttachmentDelete(Box::new(att));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, stream.bytes(), now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -197,86 +152,6 @@ impl Engine {
 }
 
 // ---- table operations ----
-
-/// INSERT-or-REPLACE an attachment row, stamping the LWW columns.
-pub(super) fn upsert_attachment_row(
-    tx: &Transaction<'_>,
-    a: &Attachment,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Attachments,
-        &a.id.bytes()[..],
-        encode_unknowns(&a.unknown)?,
-    )?;
-    tx.execute(
-        "INSERT INTO attachments
-         (id, parent_kind, parent_id, filename, mime_type, size_bytes,
-          blob_key, blob_id, chunk_count, content_hash, ciphertext_hash,
-          deleted, extra,
-          created_at_ms, updated_at_ms,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
-          width, height, thumbnail_blob_id, thumbnail_blob_key, thumbnail_mime,
-          thumbnail_size_bytes, thumbnail_content_hash, thumbnail_ciphertext_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                 ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-            width = excluded.width,
-            height = excluded.height,
-            thumbnail_blob_id = excluded.thumbnail_blob_id,
-            thumbnail_blob_key = excluded.thumbnail_blob_key,
-            thumbnail_mime = excluded.thumbnail_mime,
-            thumbnail_size_bytes = excluded.thumbnail_size_bytes,
-            thumbnail_content_hash = excluded.thumbnail_content_hash,
-            thumbnail_ciphertext_hash = excluded.thumbnail_ciphertext_hash,
-            filename = excluded.filename,
-            mime_type = excluded.mime_type,
-            size_bytes = excluded.size_bytes,
-            blob_key = excluded.blob_key,
-            blob_id = excluded.blob_id,
-            chunk_count = excluded.chunk_count,
-            content_hash = excluded.content_hash,
-            ciphertext_hash = excluded.ciphertext_hash,
-            deleted = excluded.deleted,
-            extra = excluded.extra,
-            updated_at_ms = excluded.updated_at_ms,
-            lww_hlc_ms = excluded.lww_hlc_ms,
-            lww_hlc_logical = excluded.lww_hlc_logical,
-            lww_seq = excluded.lww_seq,
-            lww_device = excluded.lww_device",
-        params![
-            &a.id.bytes()[..],
-            attachment_parent_kind(a.parent),
-            &a.parent.bytes()[..],
-            a.filename,
-            a.mime_type,
-            a.size_bytes as i64,
-            &a.blob_key[..],
-            &a.blob_id[..],
-            a.chunk_count,
-            &a.content_hash[..],
-            &a.ciphertext_hash[..],
-            a.deleted as i64,
-            extra_blob,
-            a.created_at.as_millisecond(),
-            a.updated_at.as_millisecond(),
-            lww.hlc.physical_ms as i64,
-            lww.hlc.logical,
-            lww.seq as i64,
-            &lww.device[..],
-            a.width,
-            a.height,
-            a.thumbnail_blob_id.as_ref().map(|b| &b[..]),
-            a.thumbnail_blob_key.as_ref().map(|b| &b[..]),
-            a.thumbnail_mime,
-            a.thumbnail_size_bytes,
-            a.thumbnail_content_hash.as_ref().map(|b| &b[..]),
-            a.thumbnail_ciphertext_hash.as_ref().map(|b| &b[..]),
-        ],
-    )?;
-    Ok(())
-}
 
 /// The eight `attachment.thumbnail` columns of one row, as stored.
 type PreviewColumns = (
@@ -334,7 +209,7 @@ fn read_preview(a: &mut Attachment, cols: PreviewColumns) {
 /// The `parent_kind` discriminator. The core validates Task-only parents on the
 /// command path; a remote op from a build that widened it still stores its own
 /// kind rather than being coerced to `task`.
-fn attachment_parent_kind(parent: EntityRef) -> &'static str {
+pub(super) fn attachment_parent_kind(parent: EntityRef) -> &'static str {
     match parent.kind() {
         EntityKind::Stream => "stream",
         EntityKind::Note => "note",

@@ -15,7 +15,7 @@ use super::stream::{paused_streams, stream_member_tasks};
 use super::task::{actionable_scan, read_task};
 use super::{Engine, EngineError, MAX_TREND_WEEKS, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
+use crate::inner_op::{decode_inner_op, InnerOp};
 use crate::queries::QueryResult;
 use rusqlite::{params, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,34 +53,11 @@ impl Engine {
             note: d.note,
             unknown: Unknowns::new(),
         };
-        let inner = encode_inner_op(&InnerOp::ReviewSnapshotCreate(Box::new(snapshot.clone())))?;
-        let op_id = self.fresh_op_id(now_ms);
         // A review spans the whole vault, so it routes to the meta log the way
         // Stream and Routine lifecycle ops do.
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            insert_review_snapshot_row(tx, &snapshot, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner,
-                "review.snapshot",
-                "review_snapshot",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::ReviewSnapshotCreate(Box::new(snapshot));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -173,10 +150,11 @@ impl Engine {
         let keys = self.device_signing_keys(db.conn())?;
         let since = i64::try_from(since_ms).unwrap_or(i64::MAX);
         let mut stmt = db.conn().prepare(
-            // Filtered on `target_kind`, not on `inner_kind`: a defer is
-            // logged locally as `task.defer` but arrives from a peer as
-            // `task.update` (both are a full-state `TaskUpdate`), so an
-            // inner-kind list would quietly lose one device's defers.
+            // Filtered on `target_kind`, not on `inner_kind`: a vault's own
+            // defers from before ADR-0065 PR 3 are logged as `task.defer`,
+            // though each arrived at a peer as `task.update` (both are a
+            // full-state `TaskUpdate`), so an inner-kind list would quietly
+            // lose one device's defers.
             //
             // Ordered by `(ts_ms, device_id, seq)`, **not** by `(ts_ms,
             // op_id)`. `fold_activity` is a state machine over successive

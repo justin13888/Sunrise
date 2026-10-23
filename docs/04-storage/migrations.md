@@ -274,15 +274,14 @@ written by every command family on two replicas and compares every projection
 table byte for byte. The convergence tests, `convergence_under_random_interleaving`
 and `any_delivery_order_converges_and_loses_no_concurrent_write` among them,
 also rebuild each replica they converge and compare
-(`Engine::assert_rebuild_identity`). That check leaves three things in the
-merge state out, none of which is projected. Two differ for a local write
-until every local write goes through the fold (ADR-0065's third pull
-request): an entity's create stamp, and the `Task.blocks` register. The third
-is an OR-set remove whose add the legacy floor pruned, which a replica keeps
-or not depending on whether it arrived before the floor rose. The writers in
-`any_delivery_order_converges_and_loses_no_concurrent_write` are checked only
-when they wrote no full-state op: a full-state command writes its own row from
-the row it read, and over an unknown map field that row and its peers' differ.
+(`Engine::assert_rebuild_identity`), writers and receivers alike. Every engine
+test also runs the check after each command and each delivery: an engine the
+tests build turns it on for its thread, and a test that writes rows no op wrote,
+as a vault older than the merge holds them, turns it off. The check compares
+every projection table whole, the merge state included, since every local
+write goes through the fold ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+§5) and the merge keeps an OR-set remove whatever order its add's pruning
+arrived in.
 
 Account recovery is exposed over UniFFI as `SunriseCore::recover_account` and
 reached from the CLI and the Apple onboarding. It recovers an account from the

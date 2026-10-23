@@ -75,13 +75,15 @@ fn merged_spec(kind: EntityKind) -> Option<&'static EntitySpec> {
     (spec.merge == Merge::Lww && spec.storage().is_some()).then_some(spec)
 }
 
-/// Fold each of `targets`' rows into its field state, where a local command
-/// wrote the row and the merge has not folded it yet.
+/// Fold each of `targets`' rows into its field state, where the merge has not
+/// folded the row yet: a row from before migration 0033, or one an older
+/// build's local command wrote directly.
 ///
 /// `targets` are `(target_kind, target_id)` pairs as the op log stores them;
 /// one whose kind does not merge into a row is skipped. The fold is the one
 /// the merge makes before any op touches an entity: see the merge module's
-/// docs on seeding and local full-state writes.
+/// docs on local writes and seeding from a row. A row this build wrote is
+/// already folded, and is left as it is.
 pub(in crate::engine) fn fold_rows(
     tx: &Transaction<'_>,
     targets: &[(String, Vec<u8>)],
@@ -310,8 +312,8 @@ impl Scope<'_> {
 /// `doc_state` for `stream`: every entity a row of the stream's ops wrote, in
 /// id order, with only the rows those ops wrote. See the module docs.
 ///
-/// The caller folds pending local rows first ([`fold_rows`]), so that a
-/// command's write the merge has not seen yet is in the state dumped.
+/// The caller folds pending rows first ([`fold_rows`]), so that a row an
+/// older build wrote and the merge has not seen yet is in the state dumped.
 pub(in crate::engine) fn dump_stream_state(
     tx: &Transaction<'_>,
     stream: &[u8; 16],
@@ -653,8 +655,8 @@ fn projection_rank(kind: EntityKind) -> u8 {
 /// Join `doc_state` into this replica's merge state and re-project every
 /// entity it names. Returns those entities, in the order they were projected.
 ///
-/// Each entity's pending local row is folded first, so the join is with
-/// everything this replica holds. The whole document is read before anything
+/// Each entity's pending row (one an older build wrote) is folded first, so
+/// the join is with everything this replica holds. The whole document is read before anything
 /// is written, so a malformed one writes nothing.
 ///
 /// # Errors

@@ -187,7 +187,7 @@ pub(super) fn time_from_parts(
 ///
 /// Every command that takes a `stream_id` from outside runs this, and it is
 /// one function rather than a check per command for the same reason
-/// `Engine::meta_slot` is one function: the second hand-written copy of a rule
+/// `Engine::log_slot` is one function: the second hand-written copy of a rule
 /// is where the rule starts drifting. `delete_stream` established the shape —
 /// it refused the vault-meta id before anything else did — and this
 /// generalises it from "you may not delete it" to "you may not name it".

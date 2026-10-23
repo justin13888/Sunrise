@@ -29,6 +29,7 @@ use super::identity::{
 };
 use super::ids::*;
 use super::lww::*;
+use super::merge::legacy_rows::*;
 use super::oplog::*;
 use super::routine::*;
 use super::stream::*;
@@ -85,6 +86,7 @@ mod testutil {
 
     pub(super) fn engine() -> Engine {
         let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+        crate::engine::rebuild::check::enable();
         Engine::from_clock(
             Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
             Arc::new(SystemRng),
@@ -432,6 +434,9 @@ mod testutil {
             VaultRootKey::from_bytes(root),
             seed,
         ));
+        // Every command and delivery on this test's thread then checks that
+        // a rebuild of the log lands on the rows it left (ADR-0065 PR 3).
+        crate::engine::rebuild::check::enable();
         Engine::from_clock(clock, Arc::new(SystemRng), kc)
     }
 
@@ -722,6 +727,8 @@ mod testutil {
         };
         db.with_tx(|tx| insert_stream_row(tx, &stream, &seeded_stamp()))
             .unwrap();
+        // A row no op wrote: no rebuild of the log reproduces it.
+        crate::engine::rebuild::check::disable();
         id
     }
 
@@ -740,6 +747,8 @@ mod testutil {
         };
         db.with_tx(|tx| insert_context_row(tx, &ctx, &seeded_stamp()))
             .unwrap();
+        // A row no op wrote: no rebuild of the log reproduces it.
+        crate::engine::rebuild::check::disable();
         id
     }
 
@@ -787,6 +796,8 @@ mod testutil {
             insert_routine_row(tx, &routine, T0, &seeded_stamp())
         })
         .unwrap();
+        // A row no op wrote: no rebuild of the log reproduces it.
+        crate::engine::rebuild::check::disable();
         id
     }
 
@@ -1906,12 +1917,12 @@ fn create_stream_round_trips() {
 /// That is why this covers exactly the commands routed to vault-meta and not
 /// the ones routed to a Task's own Stream. A `CreateTask` into the Inbox reads
 /// the *Inbox's* `seq`, and the envelopes its mint emits land in vault-meta —
-/// a different stream, a different counter, no collision. Those paths read
-/// `next_seq` outside their transaction too and are correct in doing so.
+/// a different stream, a different counter, no collision. Every command now
+/// takes its `seq` inside its transaction, through `Engine::log_slot`.
 ///
 /// `60ee61d` fixed this for `emit_control_op` and `#214` for `create_stream`;
-/// the other ten are fixed together with them, and `Engine::meta_slot` is now
-/// the only way to obtain a vault-meta sequence number, so the order cannot be
+/// the other ten are fixed together with them, and `Engine::log_slot` is now
+/// the only way a command obtains a sequence number, so the order cannot be
 /// got wrong again.
 ///
 /// Every case runs on its own engine that has never seen `ensure_base_epochs`,
@@ -2065,7 +2076,7 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
 ///
 /// What it would have bought a caller: a Task routed into vault-meta reads the
 /// sequence number the control ops are themselves counting, which is `#214`
-/// from the other end — the half `Engine::meta_slot` cannot close, because the
+/// from the other end — the half `Engine::log_slot` cannot close, because the
 /// op is not a vault-meta *command* and has no business being there at all.
 ///
 /// One command is deliberately **absent** from this table and must stay
@@ -13906,6 +13917,9 @@ fn unknown_entity_fields_survive_the_materialized_row() {
 fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
+    // The blob is written to the row by hand, as an older binary left it, and
+    // is in no op: a rebuild of the log does not reproduce it.
+    crate::engine::rebuild::check::disable();
     let mut db = db_root(ROOT);
     let task = new_task(&e, &mut db, "holds bytes this build cannot read");
     // A float: canonical CBOR a newer build could write, and a value
@@ -14917,6 +14931,8 @@ fn deterministic_routine_task_converges() {
     trust(&ea, &mut dba, &eb);
 
     let r = fixed_routine();
+    // Each replica holds the routine as a row no op wrote.
+    crate::engine::rebuild::check::disable();
     for (e, d) in [(&ea, &mut dba), (&eb, &mut dbb)] {
         d.with_tx(|tx| {
             ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
@@ -19288,3 +19304,6 @@ mod nesting_bound;
 
 /// Rebuilding the projection from the op log (issue #441, ADR-0065 PR 2).
 mod rebuild;
+
+/// One merge path for every local write (ADR-0065 PR 3).
+mod local_write;

@@ -468,7 +468,7 @@ fn emit_values(e: &Engine, db: &mut Db, entries: Vec<(&str, Value)>) {
     let bytes = encode_inner_op(&op).unwrap();
     let now = T0 + 5_000;
     db.with_tx(|tx| {
-        let slot = e.meta_slot(tx, now)?;
+        let slot = e.log_slot(tx, &META_STREAM, now)?;
         let op_id = e.fresh_op_id(now);
         e.ops_insert_at(
             tx,

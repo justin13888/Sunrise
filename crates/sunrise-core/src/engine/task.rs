@@ -1,26 +1,24 @@
-//! The Task command path and the `tasks` table.
+//! The Task command path and reads of the `tasks` table.
 //!
 //! Task ops route under their owning Stream's id rather than the meta stream,
 //! so a Task's `seq` advances with the Stream it lives in.
 //!
-//! The table half spans more than one table on purpose: a Task's contexts, its
+//! The read spans more than one table on purpose: a Task's contexts, its
 //! blockers and its search-index rows are written and re-read together with the
 //! row itself, so they are one unit of work rather than five. `read_task` is
-//! that unit's shared read, and is reached from five other modules.
+//! that unit's shared read, and is reached from five other modules. The write
+//! half is the merge's (`merge::rows`): a command appends its op and folds it.
 
 use super::block::read_task_blocks;
 use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, energy_str, extra_over_opaque, ms_to_ts,
-    parse_energy, parse_task_state, require_kind, require_writable_stream, task_state_str,
-    time_from_parts, time_to_parts, ExtraTable,
+    blob16, decode_unknowns, ms_to_ts, parse_energy, parse_task_state, require_kind,
+    require_writable_stream, time_from_parts,
 };
-use super::lww::LwwStamp;
-use super::routine::update_routine_row;
-use super::stream::ensure_stream_row;
+use super::write::Appended;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
-use rusqlite::{params, OptionalExtension, Transaction};
+use crate::inner_op::InnerOp;
+use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
@@ -41,7 +39,6 @@ impl Engine {
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
         let stream = d.stream_id.unwrap_or_else(inbox_stream_ref);
         require_writable_stream(stream)?;
-        let op_id = self.fresh_op_id(now_ms);
         let task = Task {
             reminder_lead_s: d.reminder_lead_s,
             id: task_id,
@@ -74,33 +71,9 @@ impl Engine {
         // rejects the create outright; `soft` ones ride back on the result.
         let soft_violations = self.check_schedule_constraints(&task)?;
 
-        let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))?;
-        let seq = self.next_seq(db, stream.bytes())?;
-        let lww = self.lww_stamp(seq);
-
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms)?;
-            insert_task_row(tx, &task, &lww)?;
-            insert_task_contexts(tx, &task)?;
-            replace_task_blockers(tx, &task)?;
-            ftsr_upsert_task(tx, &task)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                stream.bytes(),
-                seq,
-                lww.hlc,
-                &inner_op,
-                "task.create",
-                "task",
-                Some(task_id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let op = InnerOp::TaskCreate(task);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, stream.bytes(), now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(
             CommandResult::new(task_id, Some(TaskState::Todo), op_id, seq)
@@ -223,65 +196,24 @@ impl Engine {
             None
         };
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
-        let seq = self.next_seq(db, task.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-
-        let task_for_persist = task.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &task_for_persist.stream_id, now_ms)?;
-            update_task_row(tx, &task_for_persist, &lww)?;
-            replace_task_contexts(tx, &task_for_persist)?;
-            replace_task_blockers(tx, &task_for_persist)?;
-            ftsr_upsert_task(tx, &task_for_persist)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                task_for_persist.stream_id.bytes(),
-                seq,
-                lww.hlc,
-                &inner_op,
-                "task.update",
-                "task",
-                Some(task_for_persist.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
+        let state = task.state.clone();
+        let stream = *task.stream_id.bytes();
+        let op = InnerOp::TaskUpdate(task);
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
             // The streak advance is a routine.update op in the SAME
             // transaction, so the counter can never diverge from the
             // completion that caused it, and it converges on every other
-            // replica through the ordinary full-state routine LWW path.
-            if let Some((routine, routine_inner)) = &streak_op {
-                let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
-                let routine_lww = self.lww_stamp(routine_seq);
-                let routine_op_id = self.fresh_op_id(now_ms);
-                // Stamped with the ROUTINE op's own stamp, which is what every
-                // remote replica will stamp this row with when the op merges.
-                update_routine_row(tx, routine, &routine_lww)?;
-                self.ops_insert(
-                    tx,
-                    &routine_op_id,
-                    &META_STREAM,
-                    routine_seq,
-                    routine_lww.hlc,
-                    routine_inner,
-                    "routine.update",
-                    "routine",
-                    Some(routine.id.bytes()),
-                    Some(now_ms),
-                    None,
-                    now_ms,
-                    &[],
-                )?;
+            // replica through the ordinary full-state routine merge. Each op
+            // is folded with its own stamp, the one every peer folds it with.
+            if let Some(routine) = streak_op {
+                self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
             }
-            Ok(())
+            Ok(done)
         })?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
-        Ok(CommandResult::new(id, Some(task.state), op_id, seq)
-            .with_soft_violations(soft_violations))
+        Ok(CommandResult::new(id, Some(state), op_id, seq).with_soft_violations(soft_violations))
     }
 
     /// Evaluate a Task's `scheduled_at` against its scheduling constraints.
@@ -355,32 +287,12 @@ impl Engine {
         let soft_violations = self.check_schedule_constraints(&task)?;
         task.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
-        let seq = self.next_seq(db, task.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let task_clone = task.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone, &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                task_clone.stream_id.bytes(),
-                seq,
-                lww.hlc,
-                &inner_op,
-                "task.defer",
-                "task",
-                Some(task_clone.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
-
-        Ok(CommandResult::new(id, Some(task.state), op_id, seq)
+        // Logged as the `task.update` it is, the kind a peer logs it under,
+        // so compaction and the history readers see one kind on every replica.
+        let (state, stream) = (task.state.clone(), *task.stream_id.bytes());
+        let op = InnerOp::TaskUpdate(task);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        Ok(CommandResult::new(id, Some(state), done.op_id, done.seq)
             .with_soft_violations(soft_violations))
     }
 
@@ -396,33 +308,10 @@ impl Engine {
         task.deleted = true;
         task.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.clone()))?;
-        let seq = self.next_seq(db, task.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let task_clone = task.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone, &lww)?;
-            ftsr_delete_task(tx, &task_clone.id)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                task_clone.stream_id.bytes(),
-                seq,
-                lww.hlc,
-                &inner_op,
-                "task.delete",
-                "task",
-                Some(task_clone.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
-
-        Ok(CommandResult::new(id, Some(task.state), op_id, seq))
+        let (state, stream) = (task.state.clone(), *task.stream_id.bytes());
+        let op = InnerOp::TaskDelete(task);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        Ok(CommandResult::new(id, Some(state), done.op_id, done.seq))
     }
 
     pub(super) fn promote_task(
@@ -514,135 +403,6 @@ pub(super) fn ref_of(kind: EntityKind, raw: &[u8]) -> EntityRef {
     EntityRef::new(kind, blob16(raw))
 }
 
-pub(super) fn insert_task_row(
-    tx: &Transaction<'_>,
-    t: &Task,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
-    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
-    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
-    let extra_blob = encode_unknowns(&t.unknown)?;
-
-    let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
-    let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
-    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
-    tx.execute(
-        "INSERT INTO tasks
-         (id, stream_id, title, state, priority, energy, estimated_min,
-          scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
-          due_at_ms, due_at_kind, due_at_tz,
-          completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
-          routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
-          scheduling_constraints, extra, head_root,
-          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?)",
-        params![
-            id_blob,
-            stream_blob,
-            t.title,
-            task_state_str(&t.state),
-            t.priority.map(i64::from),
-            t.energy.as_ref().map(energy_str),
-            t.estimated_duration_s.and_then(|s| {
-                let m = s / 60;
-                i64::try_from(m).ok()
-            }),
-            sched_ms,
-            sched_kind,
-            sched_tz,
-            due_ms,
-            due_kind,
-            due_tz,
-            done_ms,
-            done_kind,
-            done_tz,
-            t.deferred_count,
-            t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
-            t.routine_occurrence.map(|d| d.as_millisecond()),
-            t.reminder_lead_s,
-            t.archived as i64,
-            t.deleted as i64,
-            body_blob,
-            constraints_blob,
-            extra_blob,
-            t.created_at.as_millisecond(),
-            t.updated_at.as_millisecond(),
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-pub(super) fn update_task_row(
-    tx: &Transaction<'_>,
-    t: &Task,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
-    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
-    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
-    let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Tasks,
-        &id_blob,
-        encode_unknowns(&t.unknown)?,
-    )?;
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
-    let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
-    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
-    tx.execute(
-        "UPDATE tasks SET
-            stream_id = ?, title = ?, state = ?, priority = ?,
-            energy = ?, estimated_min = ?,
-            scheduled_at_ms = ?, scheduled_at_kind = ?, scheduled_at_tz = ?,
-            due_at_ms = ?, due_at_kind = ?, due_at_tz = ?,
-            completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
-            deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
-            body = ?, scheduling_constraints = ?, extra = ?,
-            updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            stream_blob,
-            t.title,
-            task_state_str(&t.state),
-            t.priority.map(i64::from),
-            t.energy.as_ref().map(energy_str),
-            t.estimated_duration_s
-                .and_then(|s| i64::try_from(s / 60).ok()),
-            sched_ms,
-            sched_kind,
-            sched_tz,
-            due_ms,
-            due_kind,
-            due_tz,
-            done_ms,
-            done_kind,
-            done_tz,
-            t.deferred_count,
-            t.reminder_lead_s,
-            t.archived as i64,
-            t.deleted as i64,
-            body_blob,
-            constraints_blob,
-            extra_blob,
-            t.updated_at.as_millisecond(),
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            id_blob,
-        ],
-    )?;
-    Ok(())
-}
-
 /// Encode a scheduling-constraint list to a canonical-CBOR blob for the
 /// `scheduling_constraints` column. An empty list stores `NULL`.
 pub(super) fn encode_constraints(list: &[ScheduleConstraint]) -> rusqlite::Result<Option<Vec<u8>>> {
@@ -665,38 +425,6 @@ pub(super) fn decode_constraints(
             sunrise_cbor::decode_canonical(&bytes).map_err(|e| EngineError::Cbor(e.to_string()))
         }
     }
-}
-
-pub(super) fn insert_task_contexts(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
-    for c in &t.contexts {
-        tx.execute(
-            "INSERT OR IGNORE INTO task_contexts (task_id, context_id) VALUES (?, ?)",
-            params![t.id.bytes().to_vec(), c.bytes().to_vec()],
-        )?;
-    }
-    Ok(())
-}
-
-/// Replace a task's rows in the dependency index with its current
-/// `blocked_by` set.
-///
-/// The index is what makes both derived directions cheap — `blocked` (forward,
-/// covered by the primary key) and `blocks_others` (reverse, covered by
-/// `task_blockers_by_blocker`). Edges naming a blocker this replica has not
-/// materialized yet are written unchanged: see `0008_task_blockers.sql` for why
-/// the table carries no foreign keys.
-pub(super) fn replace_task_blockers(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
-    tx.execute(
-        "DELETE FROM task_blockers WHERE task_id = ?",
-        params![t.id.bytes().to_vec()],
-    )?;
-    for b in &t.blocked_by {
-        tx.execute(
-            "INSERT OR IGNORE INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
-            params![t.id.bytes().to_vec(), b.bytes().to_vec()],
-        )?;
-    }
-    Ok(())
 }
 
 /// A task's `blocked_by` set, read back out of the dependency index.
@@ -738,52 +466,6 @@ fn task_ref(raw: &[u8]) -> EntityRef {
     let take = raw.len().min(16);
     a[..take].copy_from_slice(&raw[..take]);
     EntityRef::new(EntityKind::Task, a)
-}
-
-pub(super) fn replace_task_contexts(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
-    tx.execute(
-        "DELETE FROM task_contexts WHERE task_id = ?",
-        params![t.id.bytes().to_vec()],
-    )?;
-    insert_task_contexts(tx, t)
-}
-
-pub(super) fn ftsr_upsert_task(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    tx.execute(
-        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
-        params![id_blob.clone()],
-    )?;
-    if t.deleted {
-        return Ok(());
-    }
-    let body_text = t
-        .body
-        .as_ref()
-        .map(|b| String::from_utf8_lossy(&b.0).to_string())
-        .unwrap_or_default();
-    let contexts_text = t
-        .contexts
-        .iter()
-        .map(EntityRef::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
-    tx.execute(
-        "INSERT INTO search_idx (kind, id, stream_id, title, body, contexts)
-         VALUES ('task', ?, ?, ?, ?, ?)",
-        params![id_blob, stream_blob, t.title, body_text, contexts_text],
-    )?;
-    Ok(())
-}
-
-pub(super) fn ftsr_delete_task(tx: &Transaction<'_>, id: &EntityRef) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = id.bytes().to_vec();
-    tx.execute(
-        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
-        params![id_blob],
-    )?;
-    Ok(())
 }
 
 pub(super) fn read_task(

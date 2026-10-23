@@ -15,23 +15,23 @@ use std::collections::BTreeMap;
 
 // ---- building patches ----
 
-fn text(s: &str) -> Value {
+pub(super) fn text(s: &str) -> Value {
     Value::Text(s.into())
 }
 
-fn op(kind: &str, v: Value) -> Value {
+pub(super) fn op(kind: &str, v: Value) -> Value {
     Value::Map(vec![(text(kind), v)])
 }
 
-fn set(v: Value) -> Value {
+pub(super) fn set(v: Value) -> Value {
     op("set", v)
 }
 
-fn add(elements: Vec<Value>) -> Value {
+pub(super) fn add(elements: Vec<Value>) -> Value {
     op("add", Value::Array(elements))
 }
 
-fn remove(element: Value, tags: &[OpRef]) -> Value {
+pub(super) fn remove(element: Value, tags: &[OpRef]) -> Value {
     op(
         "remove",
         Value::Array(vec![Value::Array(vec![
@@ -45,11 +45,11 @@ fn inc(n: i64) -> Value {
     op("inc", Value::Integer(n.into()))
 }
 
-fn eref(r: EntityRef) -> Value {
+pub(super) fn eref(r: EntityRef) -> Value {
     Value::serialized(&r).unwrap()
 }
 
-fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp {
+pub(super) fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp {
     InnerOp::Patch(Box::new(crate::inner_op::PatchPayload {
         target,
         create,
@@ -66,7 +66,12 @@ fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp
 
 /// Seal `op` into `sender`'s log under `stream`, fold it into `sender`'s own
 /// state as the receive path would, and return its envelope and op-ref.
-fn emit_patch(sender: &Engine, db: &mut Db, stream: &[u8; 16], op: &InnerOp) -> (Vec<u8>, OpRef) {
+pub(super) fn emit_patch(
+    sender: &Engine,
+    db: &mut Db,
+    stream: &[u8; 16],
+    op: &InnerOp,
+) -> (Vec<u8>, OpRef) {
     let device = sender.keychain.device_id();
     let bytes = encode_inner_op(op).unwrap();
     let (op_id, seq) = db
@@ -122,16 +127,16 @@ fn last_op_ref(db: &Db, target: &EntityRef) -> OpRef {
 }
 
 /// Two replicas of one vault that trust each other, on clocks of their own.
-struct Pair {
-    ea: Engine,
-    eb: Engine,
-    ca: Arc<FakeClock>,
-    cb: Arc<FakeClock>,
-    dba: Db,
-    dbb: Db,
+pub(super) struct Pair {
+    pub(super) ea: Engine,
+    pub(super) eb: Engine,
+    pub(super) ca: Arc<FakeClock>,
+    pub(super) cb: Arc<FakeClock>,
+    pub(super) dba: Db,
+    pub(super) dbb: Db,
 }
 
-fn pair() -> Pair {
+pub(super) fn pair() -> Pair {
     let ca = Arc::new(FakeClock(PLMutex::new(T0)));
     let cb = Arc::new(FakeClock(PLMutex::new(T0)));
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
@@ -151,7 +156,7 @@ fn pair() -> Pair {
 }
 
 /// A task created on A with a full-state op and delivered to B.
-fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
+pub(super) fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
     let task =
         p.ea.apply(&mut p.dba, Command::CreateTask(draft))
             .unwrap()
@@ -161,19 +166,19 @@ fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
     task
 }
 
-fn task_at(db: &Db, id: EntityRef) -> Task {
+pub(super) fn task_at(db: &Db, id: EntityRef) -> Task {
     read_task(db.conn(), id.bytes())
         .unwrap()
         .expect("projected")
 }
 
-fn inbox() -> [u8; 16] {
+pub(super) fn inbox() -> [u8; 16] {
     sunrise_domain::INBOX_STREAM_BYTES
 }
 
 /// Both replicas hold the same projection of `task`, row stamp included, and
 /// each rebuilds from its own op log to exactly the projection it holds.
-fn assert_converged(p: &Pair, task: EntityRef) -> Task {
+pub(super) fn assert_converged(p: &Pair, task: EntityRef) -> Task {
     let a = assert_same_projection(p, task);
     p.ea.assert_rebuild_identity(&p.dba);
     p.eb.assert_rebuild_identity(&p.dbb);
@@ -1485,15 +1490,11 @@ proptest! {
             e.assert_rebuild_identity(&db);
             (task_at(&db, task), row_stamp(&db, "tasks", "id", &task))
         };
-        // Not the writers: a full-state command still writes its own row
-        // directly, from the row it read rather than from the fold, and over
-        // an unknown map field the two differ (a full-state rename after a
-        // `x_labels` patch keeps the label on the writer's row and on no
-        // peer's). ADR-0065 PR 3 routes every local write through the fold.
-        if !saw_full_state {
-            for (writer, db) in devices.iter().zip(&dbs) {
-                writer.assert_rebuild_identity(db);
-            }
+        // The writers too: a full-state command folds its own op through the
+        // merge a receiver folds it with (ADR-0065 PR 3), so a rebuild of a
+        // writer's log lands on the rows its commands left.
+        for (writer, db) in devices.iter().zip(&dbs) {
+            writer.assert_rebuild_identity(db);
         }
         let forward: Vec<usize> = (0..envelopes.len()).collect();
         let shuffled: Vec<usize> = order.iter().map(|ix| ix.index(envelopes.len())).collect();

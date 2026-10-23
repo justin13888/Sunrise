@@ -1,23 +1,20 @@
-//! The Context command path, Context reads, and the `contexts` table.
+//! The Context command path, Context reads, and reads of the `contexts` table.
 //!
 //! Context lifecycle ops route to the vault-meta log (same as Streams and
 //! routines): a Context is not owned by any one Stream.
 //!
 //! Deleting one is the only entity delete that reaches into another entity's
-//! rows — `purge_context_from_tasks` and the FTS refresh behind it — because a
-//! Task's contexts live in a join table the Task does not own.
+//! rows, because a Task's contexts live in a join table the Task does not own.
+//! The fold does that part (`merge::rows`), on this replica as on every other.
 
-use super::ids::{
-    decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind, ExtraTable,
-};
-use super::lww::LwwStamp;
+use super::ids::{decode_unknowns, ms_to_ts, require_kind};
 use super::query::{sort_by_landing, Unlanded};
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::{ContextRow, QueryResult};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{Context, ContextDraft, ContextPatch};
 use sunrise_id::{EntityKind, EntityRef};
@@ -53,32 +50,9 @@ impl Engine {
             unknown: Unknowns::new(),
         };
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::ContextCreate(ctx.clone()))?;
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            insert_context_row(tx, &ctx, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "context.create",
-                "context",
-                Some(ctx_id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::ContextCreate(ctx);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(ctx_id, None, op_id, seq))
     }
@@ -113,32 +87,9 @@ impl Engine {
         }
         ctx.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::ContextUpdate(ctx.clone()))?;
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_context_row(tx, &ctx, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "context.update",
-                "context",
-                Some(ctx.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::ContextUpdate(ctx);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(id, None, op_id, seq))
     }
@@ -147,9 +98,10 @@ impl Engine {
     ///
     /// Per `docs/02-domain/contexts-and-tags.md` the tombstone and the
     /// membership removal are one transaction: a crash between them would leave
-    /// tasks pointing at a context no picker can show. Remote replicas perform
-    /// the same purge when they apply the `ContextDelete` op, so the two sides
-    /// stay in step without shipping one op per affected Task.
+    /// tasks pointing at a context no picker can show. The fold of the
+    /// `ContextDelete` op does the purge, here and on every replica that
+    /// applies it, so the two sides stay in step without shipping one op per
+    /// affected Task.
     pub(super) fn delete_context(
         &self,
         db: &mut Db,
@@ -162,33 +114,9 @@ impl Engine {
         ctx.deleted = true;
         ctx.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.clone()))?;
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_context_row(tx, &ctx, &lww)?;
-            purge_context_from_tasks(tx, id.bytes())?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "context.delete",
-                "context",
-                Some(ctx.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::ContextDelete(ctx);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(id, None, op_id, seq))
     }
@@ -265,121 +193,6 @@ impl Engine {
 }
 
 // ---- table operations ----
-
-pub(super) fn insert_context_row(
-    tx: &Transaction<'_>,
-    c: &Context,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let extra_blob = encode_unknowns(&c.unknown)?;
-    tx.execute(
-        "INSERT INTO contexts
-         (id, name, description, archived, deleted, created_at_ms, updated_at_ms, extra,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            c.id.bytes().to_vec(),
-            c.name,
-            c.description,
-            c.archived as i64,
-            c.deleted as i64,
-            c.created_at.as_millisecond(),
-            c.updated_at.as_millisecond(),
-            extra_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-pub(super) fn update_context_row(
-    tx: &Transaction<'_>,
-    c: &Context,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Contexts,
-        &c.id.bytes()[..],
-        encode_unknowns(&c.unknown)?,
-    )?;
-    tx.execute(
-        "UPDATE contexts
-         SET name = ?, description = ?, archived = ?, deleted = ?, updated_at_ms = ?,
-             extra = ?,
-             lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            c.name,
-            c.description,
-            c.archived as i64,
-            c.deleted as i64,
-            c.updated_at.as_millisecond(),
-            extra_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            c.id.bytes().to_vec(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// Drop `ctx` from every Task carrying it and refresh those Tasks' FTS rows.
-/// Returns the number of memberships removed. Idempotent.
-pub(super) fn purge_context_from_tasks(
-    tx: &Transaction<'_>,
-    ctx: &[u8; 16],
-) -> rusqlite::Result<usize> {
-    let task_ids: Vec<Vec<u8>> = {
-        let mut stmt = tx.prepare("SELECT task_id FROM task_contexts WHERE context_id = ?")?;
-        let rows = stmt.query_map(params![&ctx[..]], |r| r.get::<_, Vec<u8>>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    // The membership rows are what an unseeded task's field state is seeded
-    // from. Fold them in while they still name the context, so a restore of
-    // it can show it again (ADR-0044 §5).
-    let tasks: Vec<[u8; 16]> = task_ids.iter().map(|raw| super::ids::blob16(raw)).collect();
-    super::merge::seed_tasks_before_purge(tx, &tasks)?;
-    tx.execute(
-        "DELETE FROM task_contexts WHERE context_id = ?",
-        params![&ctx[..]],
-    )?;
-    for tid in &task_ids {
-        refresh_task_contexts_fts(tx, tid)?;
-    }
-    Ok(task_ids.len())
-}
-
-/// Rewrite a task's `search_idx.contexts` column from its surviving
-/// `task_contexts` rows, so a purged context stops matching search.
-fn refresh_task_contexts_fts(tx: &Transaction<'_>, task_id: &[u8]) -> rusqlite::Result<()> {
-    let joined = {
-        let mut stmt = tx.prepare(
-            "SELECT context_id FROM task_contexts WHERE task_id = ? ORDER BY context_id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| r.get::<_, Vec<u8>>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .map(|raw| {
-                let mut a = [0u8; 16];
-                let take = raw.len().min(16);
-                a[..take].copy_from_slice(&raw[..take]);
-                EntityRef::new(EntityKind::Context, a).to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    tx.execute(
-        "UPDATE search_idx SET contexts = ? WHERE kind = 'task' AND id = ?",
-        params![joined, task_id],
-    )?;
-    Ok(())
-}
 
 pub(super) fn read_context(
     conn: &rusqlite::Connection,
