@@ -1544,7 +1544,7 @@ impl std::fmt::Debug for SunriseCore {
 ///
 /// `refresh_token` is `None` when the issuer did not return one — some do not
 /// for public clients — in which case renewal means logging in again.
-#[derive(uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LoginCredentials {
     /// The bearer to hand to [`SunriseCore::set_sync_credential`].
     pub access_token: String,

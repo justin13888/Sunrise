@@ -1,10 +1,16 @@
 //! The client layer's state machines, lowered onto UniFFI: a pairing as a
-//! screen walks it.
+//! screen walks it (this file), the vault session's lifecycle (`vault`), and
+//! the account's OIDC session (`account`).
 //!
 //! Each is an object holding the [`sunrise_client_core`] machine behind a
 //! mutex, and each method is one transition. The machines perform no IO: a
-//! transition returns the seam calls to make (`PairingEffect`) and the client
-//! answers through the next method.
+//! transition returns the seam calls to make (`PairingEffect`, `VaultStep`,
+//! `SignInStep`, `RenewalStep`) and the client answers through the next
+//! method. The account's synchronous store calls are the foreign
+//! `AccountCredentialStore`.
+//!
+//! `CoreLockReason` and `CoreSignOutResidue` carry a `Core` prefix because the
+//! Apple app already declares a `LockReason` and a `SignOutResidue`.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -431,3 +437,9 @@ impl PairingFlow {
         effects(lock(&self.0).dismissed())
     }
 }
+
+mod account;
+mod vault;
+
+pub use account::*;
+pub use vault::*;

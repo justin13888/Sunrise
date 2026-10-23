@@ -50,6 +50,10 @@
 //! * [`share`] — what shared text, a link and images become as an Inbox task.
 //! * [`pairing_flow`] — a pairing as a screen walks it: transport, legs,
 //!   phases and progress, as pure transitions that name the seam calls.
+//! * [`vault_session`] — the vault session's lifecycle: first run, locked,
+//!   unlocked, and the refusals that keep a key from being made over data.
+//! * `account_session` (feature `relay`) — the OIDC session: sign-in, silent
+//!   renewal at `sunrise-auth`'s renewal point, and sign-out.
 //! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
 //!   travel through.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
@@ -76,6 +80,8 @@
 
 #[cfg(feature = "relay")]
 pub mod account;
+#[cfg(feature = "relay")]
+pub mod account_session;
 pub mod brief;
 pub mod calendar;
 pub mod civil;
@@ -103,6 +109,7 @@ pub mod sync_status;
 #[cfg(test)]
 mod test_support;
 pub mod undo;
+pub mod vault_session;
 pub mod views;
 pub mod vocab;
 
