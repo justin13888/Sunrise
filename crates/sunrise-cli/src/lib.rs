@@ -12,6 +12,12 @@
 //! four-step exchange across two machines is worth driving end to end in one
 //! process. [`i18n`] is here because both halves print prose: it is the
 //! generated binding of the string catalog `i18n/en.toml`.
+//!
+//! The rest is the decisions a subcommand makes that are worth a unit test
+//! without a vault: [`when`], which of the client layer's two shapes a typed
+//! date is; [`prefs_text`], a preference value as typed and as printed; and
+//! [`undo_file`], where `sunrise undo` finds the history an earlier process
+//! wrote, sealed under the vault's own key.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -25,9 +31,12 @@ pub mod i18n;
 pub mod livesync;
 pub mod login;
 pub mod pair;
+pub mod prefs_text;
 pub mod private_file;
 pub mod recover;
+pub mod undo_file;
 pub mod vault;
+pub mod when;
 
 /// How this CLI introduces itself to `POST /api/v1/devices`, on every
 /// registration path: `sunrise bootstrap` and `sunrise recover` alike.
