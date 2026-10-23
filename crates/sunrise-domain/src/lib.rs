@@ -145,7 +145,7 @@ pub use streak::{
 };
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
-pub use time::{shift_civil_days, SunriseTime, Unresolvable};
+pub use time::{first_day_of_week, shift_civil_days, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use validation::{
     ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,

@@ -339,7 +339,7 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
         let anchor = ms_to_ts(week_ms as i64).to_zoned(tz).date();
-        let first = week_start_on_or_before(anchor, &self.week_start(db)?);
+        let first = sunrise_domain::first_day_of_week(anchor, &self.week_start(db)?);
         let first_ms = self.civil_day_start_ms(first)?;
         let (from, to) = self.civil_span(first_ms, 7)?;
         self.query_blocks_between(db, from, to)
@@ -458,28 +458,6 @@ impl Engine {
         }
         Ok(QueryResult::Blocks(rows))
     }
-}
-
-/// The first day of the week containing `day`, for a week that begins on
-/// `week_start`. An unknown weekday token starts the week on the
-/// preference's default, Sunday (`docs/02-domain/preferences.md`).
-pub(super) fn week_start_on_or_before(
-    day: jiff::civil::Date,
-    week_start: &sunrise_domain::Weekday,
-) -> jiff::civil::Date {
-    use jiff::civil::Weekday as J;
-    use sunrise_domain::Weekday as W;
-    let first = match week_start {
-        W::Mo => J::Monday,
-        W::Tu => J::Tuesday,
-        W::We => J::Wednesday,
-        W::Th => J::Thursday,
-        W::Fr => J::Friday,
-        W::Sa => J::Saturday,
-        W::Su | W::Unknown(_) => J::Sunday,
-    };
-    let back = i64::from(day.weekday().since(first).rem_euclid(7));
-    day.checked_sub(jiff::Span::new().days(back)).unwrap_or(day)
 }
 
 // ---- table operations ----
