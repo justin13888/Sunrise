@@ -20,31 +20,10 @@ fn main() {
     println!("cargo:rerun-if-changed={spec}");
     println!("cargo:rerun-if-changed=build.rs");
 
-    // The two raw-binary blob operations are omitted, and the reason is a
-    // disagreement between two first-party crates rather than a defect in
-    // either.
-    //
-    // kynos describes a raw binary body as the **empty Schema Object**, and
-    // says why: "raw binary as a whole message body ... is the shape 3.1
-    // describes by *omitting* things", with `contentMediaType` left out because
-    // it would only repeat the key the content sits under. That reading of
-    // OpenAPI 3.1 is defensible. spargen refuses it (`E009`), wanting "a
-    // string-like or binary schema that can be sent as a raw body".
-    //
-    // Nothing is lost today: the bootstrap this crate exists for is accounts
-    // and devices, and no client has ever uploaded a chunk. Omitting is
-    // recorded here, warned by spargen as `W009`, and narrower than making the
-    // server describe its binary bodies in a shape its own framework argues
-    // against. The upstream fix is for the two crates to agree.
-    let spec = spargen::Spec::new(spec)
-        .omit_rule(spargen::OmitRule::operation(
-            spargen::OmitMethod::Put,
-            "/api/v1/blobs/{upload_id}/{chunk_idx}",
-        ))
-        .omit_rule(spargen::OmitRule::operation(
-            spargen::OmitMethod::Get,
-            "/api/v1/blobs/{blob_id}",
-        ));
+    // Every operation is generated, the two raw-binary blob ones included:
+    // kynos describes a raw binary body as the empty Schema Object under
+    // `application/octet-stream`, and spargen lowers that to `bytes::Bytes`.
+    let spec = spargen::Spec::new(spec);
 
     let report = spargen::generate(&spec.build(format!("{out_dir}/api.rs")));
     // `Generated` on a cold build, `Cached` on a warm one; both are success.

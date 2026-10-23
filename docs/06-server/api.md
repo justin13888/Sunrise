@@ -426,13 +426,12 @@ workspace called any of the four, so an attachment was readable only on the
 device that made it.
 
 The client does **not** go through the generated relay client. All four are
-reached with the transport's own hyper client, because two of them — the
-raw-binary chunk `PUT` and the blob `GET` — are absent from the generated
-surface: kynos and spargen disagree about how OpenAPI 3.1 describes a raw
-binary body, and `crates/sunrise-relay-client/build.rs:42`, `:46` record the
-disagreement as two omit rules. Splitting one two-phase commit across two HTTP
-clients to use generated code for half of it would buy nothing and cost a
-second place for the bearer, the base URL and the device binding to live.
+reached with the transport's own hyper client, which already holds the bearer,
+the base URL and the device binding the sync session uses. The generated
+client has carried all four since spargen 0.5 accepted the empty Schema Object
+kynos describes a raw binary body with (until then the chunk `PUT` and the
+blob `GET` were omitted from it); moving the upload onto it would add a second
+place for those three to live and simplify nothing.
 
 **Deletion is a tombstone, not an unlink.**
 `DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
