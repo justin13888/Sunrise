@@ -1,23 +1,21 @@
-//! The Stream command path, Stream reads, and the `streams` table.
+//! The Stream command path and Stream reads. The `streams` row is written by
+//! the fold (`merge::rows`), apart from the placeholder below.
 //!
 //! Stream lifecycle ops route to the vault-meta log rather than to the Stream's
 //! own id: the op that creates a Stream cannot be sequenced under a stream that
 //! does not exist yet, and the op that deletes one has to outlive it.
 //!
-//! `ensure_stream_row` is reached from six other modules — anything that
-//! materializes a remote entity into a Stream has to know the Stream row is
-//! there first — which is why it is `pub(super)` here rather than duplicated.
+//! `ensure_stream_row` is reached from the merge and the focus records, which
+//! fold an entity into a Stream and have to know the Stream row is there
+//! first, which is why it is `pub(super)` here rather than duplicated. It
+//! writes no entity: the placeholder it leaves carries no op's stamp.
 
-use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_writable_stream,
-    ExtraTable,
-};
-use super::lww::LwwStamp;
+use super::ids::{blob16, decode_unknowns, ms_to_ts, require_writable_stream};
 use super::query::{sort_by_landing, Unlanded};
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::{QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
@@ -66,35 +64,10 @@ impl Engine {
             unknown: Unknowns::new(),
         };
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::StreamCreate(stream.clone()))?;
-        let stream_clone = stream.clone();
         // Stream lifecycle ops route to the vault-meta log, not the new Stream.
-        // `meta_slot` is what makes the epoch/seq order safe; see `#214`.
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            insert_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "stream.create",
-                "stream",
-                Some(stream_id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::StreamCreate(stream);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(stream_id, None, op_id, seq))
     }
@@ -157,33 +130,9 @@ impl Engine {
         }
         stream.updated_at = ms_to_ts(now_ms as i64);
 
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
-        let stream_clone = stream.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "stream.update",
-                "stream",
-                Some(stream_clone.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::StreamUpdate(stream);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(id, None, op_id, seq))
     }
@@ -208,33 +157,9 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("stream {id}")))?;
         stream.deleted = true;
         stream.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.clone()))?;
-        let stream_clone = stream.clone();
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "stream.delete",
-                "stream",
-                Some(stream_clone.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::StreamDelete(stream);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -409,101 +334,6 @@ fn last_stream_sort_order(conn: &rusqlite::Connection) -> Result<Option<String>,
     Ok(key)
 }
 
-pub(super) fn insert_stream_row(
-    tx: &Transaction<'_>,
-    s: &Stream,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = s.id.bytes().to_vec();
-    let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
-    let extra_blob = encode_unknowns(&s.unknown)?;
-    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
-    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
-    tx.execute(
-        "INSERT INTO streams
-         (stream_id, head_root, last_op_seq,
-          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
-          paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order, extra,
-          description, default_context,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            id_blob,
-            vec![0u8; 32],
-            parent_blob,
-            s.archived as i64,
-            s.deleted as i64,
-            s.created_at.as_millisecond(),
-            s.updated_at.as_millisecond(),
-            s.name,
-            s.color.as_str(),
-            s.icon,
-            s.paused as i64,
-            s.paused_until.map(|t| t.as_millisecond()),
-            cadence_str(&s.review_cadence),
-            s.reminder_lead_s,
-            s.sort_order,
-            extra_blob,
-            description_blob,
-            default_ctx_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-pub(super) fn update_stream_row(
-    tx: &Transaction<'_>,
-    s: &Stream,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = s.id.bytes().to_vec();
-    let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Streams,
-        &id_blob,
-        encode_unknowns(&s.unknown)?,
-    )?;
-    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
-    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
-    tx.execute(
-        "UPDATE streams
-         SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
-             name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
-             review_cadence = ?, reminder_lead_s = ?, sort_order = ?, extra = ?,
-             description = ?, default_context = ?,
-             lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE stream_id = ?",
-        params![
-            parent_blob,
-            s.archived as i64,
-            s.deleted as i64,
-            s.updated_at.as_millisecond(),
-            s.name,
-            s.color.as_str(),
-            s.icon,
-            s.paused as i64,
-            s.paused_until.map(|t| t.as_millisecond()),
-            cadence_str(&s.review_cadence),
-            s.reminder_lead_s,
-            s.sort_order,
-            extra_blob,
-            description_blob,
-            default_ctx_blob,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            id_blob,
-        ],
-    )?;
-    Ok(())
-}
-
 pub(super) fn read_stream(
     conn: &rusqlite::Connection,
     id: &[u8; 16],
@@ -596,7 +426,7 @@ pub(super) fn read_stream(
 
 /// A Stream's review cadence in its storage string form (matches the serde
 /// representation, so the column and the op agree).
-fn cadence_str(c: &StreamReviewCadence) -> &str {
+pub(super) fn cadence_str(c: &StreamReviewCadence) -> &str {
     c.as_str()
 }
 

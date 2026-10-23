@@ -204,11 +204,14 @@ catalogue per-field merge reads
    crate does not build.
 3. Write the migration that creates its table with the registered key column,
    the four `lww_*` stamp columns for an `Lww` entity, and an `extra` blob.
-4. Write its row writers in `crates/sunrise-core/src/engine/` and its arms in
+4. Write its row writers in `crates/sunrise-core/src/engine/merge/rows/`, its
+   arm in `merge/project.rs#write_projection`, and its arms in
    `materialize_remote`. The match there is exhaustive over `InnerOp`, so each
-   new op variant fails the build until it has an arm. Each local write passes
-   its `inner_kind` and `target_kind` strings to `ops_insert` by hand, and
-   nothing checks them. Copy them from the registry entry.
+   new op variant fails the build until it has an arm. A command builds its op
+   and calls `Engine::append_and_fold`, which logs the op under the
+   `inner_kind` and `target_kind` the registry gives it and folds it; a
+   command cannot write the row itself, because the writers are private to
+   the merge.
 5. Write its `UniFFI` mirror and `From` conversion in
    `crates/sunrise-core-bindings/src/dto.rs`, and add its `Mirrored` impl.
 6. Add the commands, queries and undo rules the feature needs. These are

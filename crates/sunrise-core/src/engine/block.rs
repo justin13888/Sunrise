@@ -13,18 +13,14 @@
 //! query bounds are a *day* and a *week* rather than a timestamp; `notify` is
 //! their one other caller.
 
-use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind,
-    require_writable_stream, ExtraTable,
-};
-use super::lww::LwwStamp;
-use super::stream::ensure_stream_row;
+use super::ids::{blob16, decode_unknowns, ms_to_ts, require_kind, require_writable_stream};
 use super::task::read_task;
+use super::write::Appended;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::{BlockRow, QueryResult};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;
 use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
@@ -46,7 +42,6 @@ impl Engine {
         }
         let now_ms = self.clock.now_ms();
         let block_id = self.fresh_id(EntityKind::Block, now_ms);
-        let op_id = self.fresh_op_id(now_ms);
         let tasks: BTreeSet<EntityRef> = d.tasks.iter().copied().collect();
         // Shadow copy: a Block created around exactly one Task and given no
         // title of its own takes that Task's title AS IT IS NOW. Later renames
@@ -69,15 +64,15 @@ impl Engine {
             unknown: Unknowns::new(),
         };
         block.validate_invariants(&tz)?;
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.create")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.create")?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
     /// Write the Block one external calendar item maps onto, at the id
     /// [`imported_block_id`] derives from `(source, uid)`.
     ///
-    /// Create and update are the same code path because the row write already
-    /// is one (`upsert_block_row`): re-importing an unchanged file rewrites
+    /// Create and update are the same code path because both are a full-state
+    /// Block op folded the same way: re-importing an unchanged file projects
     /// identical column values, which is what makes the whole operation
     /// idempotent without a "have I seen this UID" table to keep in step.
     ///
@@ -105,7 +100,6 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let block_id = imported_block_id(source, uid);
         let existing = read_block(db.conn(), block_id.bytes())?;
-        let op_id = self.fresh_op_id(now_ms);
 
         // Union, not replace: a task the user bound to an imported Block is
         // theirs, and a re-import must not quietly unbind it.
@@ -151,8 +145,8 @@ impl Engine {
         } else {
             "block.create"
         };
-        let seq = self.emit_block(db, &block, now_ms, &op_id, inner_kind)?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, inner_kind)?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
     pub(super) fn update_block(
@@ -187,9 +181,8 @@ impl Engine {
         }
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&self.device_zone())?;
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
 
     /// Tombstone a Block. The op carries the Block's **whole state** with
@@ -207,9 +200,8 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
         block.deleted = true;
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.delete")?;
-        Ok(CommandResult::new(id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.delete")?;
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
 
     /// Bind a Task to a Block. Idempotent on the membership set: re-binding an
@@ -234,9 +226,8 @@ impl Engine {
             block.title = self.shadow_title(db, &block.tasks)?;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
     /// Unbind a Task from a Block. The Block survives with no tasks bound: an
@@ -254,53 +245,26 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
         block.tasks.remove(&task);
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
-    /// Seal a full-state Block op, materialize the row and its bindings, and
-    /// append the op — all in one transaction. Returns the op's `seq`.
+    /// Append a full-state Block op and fold it, which projects the row and
+    /// its bindings, in one transaction.
     fn emit_block(
         &self,
         db: &mut Db,
         block: &Block,
         now_ms: u64,
-        op_id: &[u8; 16],
         inner_kind: &str,
-    ) -> Result<u64, EngineError> {
+    ) -> Result<Appended, EngineError> {
         let inner = match inner_kind {
             "block.create" => InnerOp::BlockCreate(Box::new(block.clone())),
             "block.delete" => InnerOp::BlockDelete(Box::new(block.clone())),
             _ => InnerOp::BlockUpdate(Box::new(block.clone())),
         };
-        let inner_op = encode_inner_op(&inner)?;
-        let seq = self.next_seq(db, block.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let stream_bytes = *block.stream_id.bytes();
-        let block = block.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &block.stream_id, now_ms)?;
-            upsert_block_row(tx, &block, &lww)?;
-            replace_block_tasks(tx, &block)?;
-            self.ops_insert(
-                tx,
-                op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner_op,
-                inner_kind,
-                "block",
-                Some(block.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
-        Ok(seq)
+        let stream = *block.stream_id.bytes();
+        Ok(db.with_tx(|tx| self.append_and_fold(tx, &inner, &stream, now_ms))?)
     }
 
     /// The title a single bound Task lends a Block. `None` when the Block binds
@@ -482,84 +446,6 @@ pub(super) fn block_row(
         title,
         task_titles,
     })
-}
-
-/// INSERT-or-REPLACE a Block row, stamping the LWW columns.
-pub(super) fn upsert_block_row(
-    tx: &Transaction<'_>,
-    b: &Block,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let (start_ms, start_kind, start_tz) = b.starts_at.to_parts();
-    let (end_ms, end_kind, end_tz) = b.ends_at.to_parts();
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Blocks,
-        &b.id.bytes()[..],
-        encode_unknowns(&b.unknown)?,
-    )?;
-    tx.execute(
-        "INSERT INTO blocks
-         (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
-          ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
-          deleted, extra, created_at_ms, updated_at_ms,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-            stream_id = excluded.stream_id,
-            starts_at_ms = excluded.starts_at_ms,
-            starts_at_kind = excluded.starts_at_kind,
-            starts_at_tz = excluded.starts_at_tz,
-            ends_at_ms = excluded.ends_at_ms,
-            ends_at_kind = excluded.ends_at_kind,
-            ends_at_tz = excluded.ends_at_tz,
-            title = excluded.title,
-            title_track_task = excluded.title_track_task,
-            deleted = excluded.deleted,
-            extra = excluded.extra,
-            updated_at_ms = excluded.updated_at_ms,
-            lww_hlc_ms = excluded.lww_hlc_ms,
-            lww_hlc_logical = excluded.lww_hlc_logical,
-            lww_seq = excluded.lww_seq,
-            lww_device = excluded.lww_device",
-        params![
-            &b.id.bytes()[..],
-            &b.stream_id.bytes()[..],
-            start_ms,
-            start_kind,
-            start_tz,
-            end_ms,
-            end_kind,
-            end_tz,
-            b.title.as_deref(),
-            b.title_track_task as i64,
-            b.deleted as i64,
-            extra_blob,
-            b.created_at.as_millisecond(),
-            b.updated_at.as_millisecond(),
-            lww.hlc.physical_ms as i64,
-            lww.hlc.logical,
-            lww.seq as i64,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-/// Replace a Block's bindings with the op's set. Full-state, like every other
-/// entity op: the set on the winning op is the set.
-pub(super) fn replace_block_tasks(tx: &Transaction<'_>, b: &Block) -> rusqlite::Result<()> {
-    tx.execute(
-        "DELETE FROM block_tasks WHERE block_id = ?",
-        params![&b.id.bytes()[..]],
-    )?;
-    for t in &b.tasks {
-        tx.execute(
-            "INSERT OR IGNORE INTO block_tasks (block_id, task_id) VALUES (?, ?)",
-            params![&b.id.bytes()[..], &t.bytes()[..]],
-        )?;
-    }
-    Ok(())
 }
 
 /// Read one Block, with its bindings.

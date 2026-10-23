@@ -6,22 +6,24 @@
 //! the entity as a CBOR map. [`write_projection`] decodes it and writes it.
 
 use super::patch::nested_record;
+use super::rows::{
+    ftsr_delete_task, ftsr_upsert_task, insert_context_row, insert_routine_row, insert_stream_row,
+    insert_task_contexts, insert_task_row, purge_context_from_tasks, replace_block_tasks,
+    replace_task_blockers, replace_task_contexts, update_context_row, update_routine_row,
+    update_stream_row, update_task_row, upsert_attachment_row, upsert_block_row,
+    upsert_preferences_row,
+};
 use super::state::{dec, enc, hlc_of, Meta};
 use super::{refresh, to_sql, OpRef, Stamp};
-use crate::engine::attachment::{read_attachment, upsert_attachment_row};
-use crate::engine::block::{read_block, replace_block_tasks, upsert_block_row};
-use crate::engine::context::{
-    insert_context_row, purge_context_from_tasks, read_context, update_context_row,
-};
+use crate::engine::attachment::read_attachment;
+use crate::engine::block::read_block;
+use crate::engine::context::read_context;
 use crate::engine::ids::{blob16, ms_to_ts};
 use crate::engine::lww::{read_row_lww, LwwStamp, RowLww};
-use crate::engine::preferences::{read_preferences, upsert_preferences_row};
-use crate::engine::routine::{insert_routine_row, read_routine, update_routine_row};
-use crate::engine::stream::{ensure_stream_row, insert_stream_row, read_stream, update_stream_row};
-use crate::engine::task::{
-    ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row, read_task,
-    replace_task_blockers, replace_task_contexts, update_task_row,
-};
+use crate::engine::preferences::read_preferences;
+use crate::engine::routine::read_routine;
+use crate::engine::stream::{ensure_stream_row, read_stream};
+use crate::engine::task::read_task;
 use crate::engine::{EngineError, META_STREAM};
 use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -256,7 +258,7 @@ pub(super) fn project(
     }
 
     // Maps: every key whose register is not a tombstone.
-    let mut maps: BTreeMap<String, Vec<(Value, Value)>> = BTreeMap::new();
+    let mut maps: BTreeMap<String, Vec<(String, Value, Stamp)>> = BTreeMap::new();
     for f in record.map_or(&[][..], |r| r.fields) {
         if f.crdt == Crdt::Map {
             maps.insert(f.name.to_owned(), Vec::new());
@@ -278,15 +280,23 @@ pub(super) fn project(
         for row in rows {
             let (field, key, value, at) = row?;
             let entry = maps.entry(field).or_default();
-            let value = dec(&value);
-            if superseded(at, legacy) || value.is_null() {
+            if superseded(at, legacy) {
                 continue;
             }
-            entry.push((Value::Text(key), value));
+            entry.push((key, dec(&value), at));
         }
     }
     for (field, entries) in maps {
-        top.insert(field, Value::Map(entries));
+        // A field this build does not register as a map can also hold a
+        // register: a full-state op writes every unknown key it carries as one
+        // (ADR-0044 §7), and cannot tell a map from any other value.
+        let whole = registers
+            .get(&field)
+            .filter(|(v, at)| v.is_some() && !superseded(*at, legacy) && crdt_of(&field).is_none())
+            .and_then(|(v, at)| v.clone().map(|v| (v, *at)));
+        if let Some(value) = map_over_whole(whole, entries) {
+            top.insert(field, value);
+        }
     }
 
     // Identity and the two derived timestamps.
@@ -327,6 +337,47 @@ pub(super) fn project(
     Ok(Some(Value::Map(
         top.into_iter().map(|(k, v)| (Value::Text(k), v)).collect(),
     )))
+}
+
+/// A map field's value from its entries, all at or above the legacy floor,
+/// and from `whole`, the register a write of the whole field left, if any.
+///
+/// The whole write is the field's value as of its stamp, the way a legacy op
+/// is the entity's: an entry stamped before it is superseded, and one stamped
+/// after it is applied on top, setting its key or, with `null`, removing it.
+/// So a full-state op that carried an unknown map (the map a newer build's
+/// `Patch` wrote) keeps every key it carried, and a later `Patch` still edits
+/// it. Where the whole write is not a map, the newer entries replace it, and
+/// with none it stands. `None` leaves the register's value where it is.
+pub(in crate::engine) fn map_over_whole(
+    whole: Option<(Value, Stamp)>,
+    entries: Vec<(String, Value, Stamp)>,
+) -> Option<Value> {
+    let Some((value, at)) = whole else {
+        let live = entries
+            .into_iter()
+            .filter(|(_, v, _)| !v.is_null())
+            .map(|(k, v, _)| (Value::Text(k), v))
+            .collect();
+        return Some(Value::Map(live));
+    };
+    let newer: Vec<(String, Value)> = entries
+        .into_iter()
+        .filter(|(_, _, s)| *s > at)
+        .map(|(k, v, _)| (k, v))
+        .collect();
+    let mut base = match value {
+        Value::Map(base) => base,
+        _ if newer.is_empty() => return None,
+        _ => Vec::new(),
+    };
+    for (key, v) in newer {
+        base.retain(|(k, _)| k.as_text() != Some(key.as_str()));
+        if !v.is_null() {
+            base.push((Value::Text(key), v));
+        }
+    }
+    Some(Value::Map(base))
 }
 
 // ---- row I/O ----

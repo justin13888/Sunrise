@@ -92,13 +92,13 @@ the code rather than from the issue:
   (`crates/sunrise-core/src/engine/oplog.rs:315-317#emit_key_envelopes`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:424#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:428#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
-  (`crates/sunrise-core/src/engine/sync.rs:358#apply_remote_all`), routes a
+  (`crates/sunrise-core/src/engine/sync.rs:370#apply_remote_all_unchecked`), routes a
   control op into `apply_control_op`
-  (`crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`), and a
+  (`crates/sunrise-core/src/engine/sync.rs:415#apply_remote_all_unchecked`), and a
   published device cert carries it on into `backfill_key_envelopes`
   (`crates/sunrise-core/src/engine/sync.rs:1312#apply_control_op`). What no
   read of either table decides is whether an op **applies**; it decides which
@@ -106,7 +106,7 @@ the code rather than from the issue:
   sentence. An earlier draft of this bullet said nothing in the apply path
   consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:291-292#apply_remote_all`): *"A
+  (`crates/sunrise-core/src/engine/sync.rs:303-304#apply_remote_all_unchecked`): *"A
   revoked device's row is found here like any other, and its op is applied like
   any other."*
 - `upsert_sync_cursor`'s doc
@@ -464,7 +464,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7769#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7780#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

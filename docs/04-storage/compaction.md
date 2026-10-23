@@ -74,9 +74,16 @@ ops. It never deletes:
 - an op still waiting in the outbox;
 - an op that a missing op's expectation was named by (`chain_expected`).
 
-Before it deletes, it folds any entity row a local command wrote and the merge
-had not folded yet, because that fold reads the op's stream and kind back from
-the log (by the `ops_by_target` index migration 0035 adds).
+Before it deletes, it folds any entity row the merge had not folded yet,
+because that fold reads the op's stream and kind back from the log (by the
+`ops_by_target` index migration 0035 adds). This build folds every local op
+as it writes it, so such a row comes only from a vault older than migration
+0033 or from a build before ADR-0065's third pull request, which wrote a
+command's row directly.
+
+A defer is compacted like any other task edit. It is logged as the
+`task.update` it is, and a `task.defer` row an older build logged for its own
+defers is a compactable kind too.
 
 A run that deleted any row ends with an incremental vacuum, which returns the
 pages the deleted rows held to the filesystem, so the file shrinks

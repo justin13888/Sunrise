@@ -253,6 +253,18 @@ impl Engine {
         db: &mut Db,
         envelope_bytes: &[u8],
     ) -> Result<Vec<DomainEvent>, EngineError> {
+        let events = self.apply_remote_all_unchecked(db, envelope_bytes);
+        #[cfg(test)]
+        self.check_rebuild_after_write(db);
+        events
+    }
+
+    /// [`Self::apply_remote_all`], without the tests' rebuild check.
+    fn apply_remote_all_unchecked(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         // a. Decode.
         let env = decode_envelope(envelope_bytes)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;

@@ -38,6 +38,10 @@ impl Engine {
     /// see [`Self::ensure_stream_epoch`]. That is the whole reason a key can
     /// never be minted silently: an epoch nobody was told about is an epoch
     /// whose ops nobody else can read.
+    ///
+    /// Only tests seal an op this way now, the way a peer's build would: every
+    /// command goes through [`Self::append_and_fold`], which also folds it.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn ops_insert(
         &self,
@@ -542,37 +546,40 @@ impl Engine {
         )
     }
 
-    /// Everything a vault-meta write needs, taken inside `tx` and in the one
-    /// order that is safe.
+    /// Everything a write to `stream`'s log needs, taken inside `tx` and in
+    /// the one order that is safe.
     ///
     /// The order is the whole value of this function, and it is not obvious
     /// enough to be left to eleven call sites to remember. Resolving the epoch
-    /// can **mint** the vault-meta stream's own first key, and minting emits a
-    /// `key_envelope` op per recipient into that same stream — so a sequence
-    /// number taken before the epoch is already spent by the time the caller's
-    /// op reaches the log. `ops` has a `UNIQUE(stream_id, device_id, seq)` and
+    /// can **mint** a key, and minting emits a `key_envelope` op per
+    /// recipient into the vault-meta stream. For a vault-meta write, which
+    /// mints the vault-meta stream's own first key, that is the same stream,
+    /// so a sequence number taken before the epoch is already spent by the
+    /// time the caller's op reaches the log. `ops` has a `UNIQUE(stream_id, device_id, seq)` and
     /// [`OpLog::insert`] is `INSERT OR IGNORE`, so the losing op vanishes
     /// without a word and its outbox row then fails its foreign key.
     ///
     /// That defect was fixed once for `emit_control_op` (`60ee61d`) and once
     /// for `create_stream` (`#214`) before it was clear that the right fix was
-    /// to make it unstatable. There is now no way to obtain a vault-meta `seq`
-    /// outside a transaction that has already resolved the epoch, because this
-    /// is the only thing that hands one out.
+    /// to make it unstatable. There is now no way for a command to obtain a
+    /// `seq` outside a transaction that has already resolved the epoch,
+    /// because this is the only thing that hands one out, through
+    /// [`Engine::append_and_fold`].
     ///
     /// The [`LwwStamp`] comes with it because [`Engine::lww_stamp`] must be
     /// called **once** per emitted op and the `seq` it carries is this one;
     /// handing back a `seq` without its stamp invites a caller to stamp with a
     /// second [`HlcClock::send`](crate::config::HlcClock::send).
-    pub(super) fn meta_slot(
+    pub(super) fn log_slot(
         &self,
         tx: &Transaction<'_>,
+        stream: &[u8; 16],
         now_ms: u64,
-    ) -> rusqlite::Result<MetaSlot> {
-        let (epoch, key) = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
-        let seq = self.next_seq_tx(tx, &META_STREAM)?;
+    ) -> rusqlite::Result<LogSlot> {
+        let (epoch, key) = self.ensure_stream_epoch(tx, stream, now_ms)?;
+        let seq = self.next_seq_tx(tx, stream)?;
         let lww = self.lww_stamp(seq);
-        Ok(MetaSlot {
+        Ok(LogSlot {
             epoch,
             key,
             seq,
@@ -580,32 +587,12 @@ impl Engine {
         })
     }
 
-    /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
+    /// Next `seq` for `(stream_id, this device)`, read inside a transaction so it
+    /// sees uncommitted inserts from earlier in the same transaction.
     ///
     /// Never at or below this device's own compaction floor, whose rows may
     /// be gone (ADR-0059): reusing a seq there would sign a second op at a
     /// position peers already hold.
-    pub(super) fn next_seq(&self, db: &Db, stream_id: &[u8; 16]) -> Result<u64, EngineError> {
-        let stream_blob: Vec<u8> = stream_id.to_vec();
-        let device = self.keychain.device_id();
-        let device_blob: Vec<u8> = device.to_vec();
-        let max: Option<i64> = db
-            .conn()
-            .query_row(
-                "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ? AND device_id = ?",
-                params![stream_blob, device_blob],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let held = max.and_then(|v| u64::try_from(v).ok()).unwrap_or(0);
-        let floor = floor_seq(db.conn(), stream_id, &device)?;
-        Ok(held.max(floor).saturating_add(1))
-    }
-
-    /// Next `seq` for `(stream_id, this device)`, read inside a transaction so it
-    /// sees uncommitted inserts from earlier in the same transaction. Never at
-    /// or below this device's own compaction floor, as [`Self::next_seq`].
     pub(super) fn next_seq_tx(
         &self,
         tx: &Transaction<'_>,
@@ -637,20 +624,20 @@ impl Engine {
     }
 }
 
-/// One vault-meta log slot: the epoch to seal under, the key, the sequence
-/// number, and the LWW stamp that goes on whatever row the op materializes.
+/// One log slot: the epoch to seal under, the key, the sequence number, and
+/// the stamp the op is sealed and folded with.
 ///
-/// Produced only by [`Engine::meta_slot`], which is what makes the order the
+/// Produced only by [`Engine::log_slot`], which is what makes the order the
 /// four are taken in unstatable rather than merely documented.
-pub(super) struct MetaSlot {
-    /// Live epoch of the vault-meta stream, resolved (and possibly minted)
-    /// before `seq` was read.
+pub(super) struct LogSlot {
+    /// Live epoch of the stream, resolved (and possibly minted) before `seq`
+    /// was read.
     pub(super) epoch: u32,
     /// The key for `epoch`.
     pub(super) key: StreamKey,
-    /// Next `seq` for `(vault-meta, this device)`, read after any mint.
+    /// Next `seq` for `(stream, this device)`, read after any mint.
     pub(super) seq: u64,
-    /// The stamp for the row this op writes. Carries `seq`.
+    /// The op's stamp. Carries `seq`.
     pub(super) lww: LwwStamp,
 }
 
@@ -727,7 +714,7 @@ pub(super) fn ops_run_end(
 /// removes it, so the cursor counts the op whatever answer it got. Refusals
 /// above it return before the transaction opens and leave no op row and no
 /// cursor, the half pinned by
-/// `crates/sunrise-core/src/engine/tests.rs:8731#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
+/// `crates/sunrise-core/src/engine/tests.rs:8742#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
 ///
 /// That is a weaker claim than "the apply path does not consult revocation",
 /// and deliberately so, because the apply path does consult it — in three
@@ -756,8 +743,8 @@ pub(super) fn ops_run_end(
 /// # What the apply path consults, and what that read decides
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
-/// dispatched out of `crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`
-/// reaches `crates/sunrise-core/src/engine/oplog.rs:424#backfill_key_envelopes`,
+/// dispatched out of `crates/sunrise-core/src/engine/sync.rs:415#apply_remote_all_unchecked`
+/// reaches `crates/sunrise-core/src/engine/oplog.rs:428#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on
@@ -780,17 +767,17 @@ pub(super) fn ops_run_end(
 /// Whether the number this writes actually moves is a question about the seqs
 /// *below* that op and never about the answer the op got — see the
 /// out-of-order paragraph at the end.
-/// `crates/sunrise-core/src/engine/tests.rs:8202#a_revoked_device_cert_through_apply_remote_seals_no_keys`
+/// `crates/sunrise-core/src/engine/tests.rs:8213#a_revoked_device_cert_through_apply_remote_seals_no_keys`
 /// walks that trace from the envelope down to the early return, and
-/// `crates/sunrise-core/src/engine/tests.rs:8462#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
+/// `crates/sunrise-core/src/engine/tests.rs:8473#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
 /// holds the backfill-error answer: the error is logged, the cert stands, and
 /// this still runs.
 ///
 /// Admission is settled at step b — by the `devices` lookup at
-/// `crates/sunrise-core/src/engine/sync.rs:274#apply_remote_all`, or, for the
+/// `crates/sunrise-core/src/engine/sync.rs:286#apply_remote_all_unchecked`, or, for the
 /// `DeviceCertPublish` family that trace delivers, by
 /// [`Engine::self_authenticating_signer`] at
-/// `crates/sunrise-core/src/engine/sync.rs:279#apply_remote_all`, which checks
+/// `crates/sunrise-core/src/engine/sync.rs:291#apply_remote_all_unchecked`, which checks
 /// the envelope against the cert it carries because that op is what *creates*
 /// the row the lookup reads. In neither case is it settled by the register or
 /// by the bound: a revoked device's row is found there like any other and its
@@ -798,16 +785,16 @@ pub(super) fn ops_run_end(
 /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is where that
 /// was decided — revocation bounds what a device may *read*, not whether what
 /// it writes lands.
-/// `crates/sunrise-core/src/engine/tests.rs:7799#a_revoked_devices_ops_still_apply_at_the_replica`
+/// `crates/sunrise-core/src/engine/tests.rs:7810#a_revoked_devices_ops_still_apply_at_the_replica`
 /// holds the admitting half, and
-/// `crates/sunrise-core/src/engine/tests.rs:8731#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8742#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
 /// the refusing one, which never reaches this function at all.
 ///
 /// # Where this sits relative to the op row
 ///
 /// This function decides nothing and refuses nothing: it writes the end of the
 /// run already in the log, and all three of its call sites reach it having put
-/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:479#apply_remote_all`
+/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:491#apply_remote_all_unchecked`
 /// at its step g, past an idempotence gate that returns early when the insert
 /// changed no row and released no parked op;
 /// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
@@ -824,7 +811,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/oplog.rs:129#ops_insert_at`, and the
 /// `Outbox::enqueue` at
 /// `crates/sunrise-core/src/engine/oplog.rs:152#ops_insert_at` — and
-/// `crates/sunrise-core/src/engine/tests.rs:8598#a_failed_local_emit_leaves_the_cursor_where_it_was`
+/// `crates/sunrise-core/src/engine/tests.rs:8609#a_failed_local_emit_leaves_the_cursor_where_it_was`
 /// walks the second and the third, inside the transaction rather than after
 /// the rollback. The seal is the one it does not walk. Nor could any of them
 /// move the number if it did: the prefix is read out of `ops`, never off the
@@ -850,7 +837,7 @@ pub(super) fn ops_run_end(
 /// still runs afterwards and counts that op toward the prefix like any other.
 /// A reader arrives here expecting the opposite, which is why it is named, and
 /// why
-/// `crates/sunrise-core/src/engine/tests.rs:7888#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7899#a_self_refused_revoke_still_advances_the_cursor`
 /// holds both halves — for a delivery at seq 1, where the contiguous prefix is
 /// that op alone — and observes the log line rather than assuming it.
 ///
@@ -869,7 +856,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` and
 /// tolerates that predicate being per-replica
 /// ([#411](https://github.com/justin13888/Sunrise/issues/411)).
-/// `crates/sunrise-core/src/engine/tests.rs:8059#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
+/// `crates/sunrise-core/src/engine/tests.rs:8070#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
 /// delivers one through `apply_remote_all` — the only route that can see this
 /// half at all — and holds all three: the declined hint row, the op row, and
 /// the cursor.
@@ -880,9 +867,9 @@ pub(super) fn ops_run_end(
 ///
 /// **Refusals outside revocation are a different count, and this paragraph
 /// does not bound them.** At least three live on the apply path above:
-/// `crates/sunrise-core/src/engine/sync.rs:314#apply_remote_all` when no key
+/// `crates/sunrise-core/src/engine/sync.rs:326#apply_remote_all_unchecked` when no key
 /// at this `(stream, epoch)` opens the envelope,
-/// `crates/sunrise-core/src/engine/sync.rs:338#apply_remote_all` when the
+/// `crates/sunrise-core/src/engine/sync.rs:350#apply_remote_all_unchecked` when the
 /// sender's clock is outside the drift window, and
 /// `crates/sunrise-core/src/engine/sync.rs:951#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
@@ -895,9 +882,9 @@ pub(super) fn ops_run_end(
 /// a resent op carries the op log's same primary key, collides on insert, and
 /// [`Engine::apply_remote_all`] returns at its idempotence gate without
 /// re-running materialization or [`Engine::apply_control_op`] at all. That is
-/// `crates/sunrise-core/src/engine/tests.rs:5974#apply_remote_is_idempotent`
+/// `crates/sunrise-core/src/engine/tests.rs:5985#apply_remote_is_idempotent`
 /// for an entity op, and the tail of
-/// `crates/sunrise-core/src/engine/tests.rs:7888#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7899#a_self_refused_revoke_still_advances_the_cursor`
 /// for a control one, which resends *different* payload bytes under the same
 /// `(stream, device, seq)` and observes that the control arm never sees them.
 ///
@@ -915,7 +902,7 @@ pub(super) fn ops_run_end(
 /// no call site triggers is an *extra* run for the devices whose revocations
 /// that fold unwound, and none is needed, because their cursors are facts
 /// about `ops` that the fold did not touch.
-/// `crates/sunrise-core/src/engine/tests.rs:8840#a_refold_that_unwinds_a_revocation_moves_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8851#a_refold_that_unwinds_a_revocation_moves_no_cursor`
 /// pins all of it, including the half that does *not* unwind:
 /// `device_read_bounds` keeps the device it bounded, which is the asymmetry
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` exists
@@ -943,7 +930,7 @@ pub(super) fn ops_run_end(
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
 /// difference to either, which is what
-/// `crates/sunrise-core/src/engine/tests.rs:8343#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
+/// `crates/sunrise-core/src/engine/tests.rs:8354#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
 /// pins.
 ///
 /// # The chain root moves with it

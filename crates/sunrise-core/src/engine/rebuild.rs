@@ -164,8 +164,9 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
 /// table, read off the registry.
 ///
 /// Selected by target and not by `inner_kind`, because the log's
-/// `inner_kind` is not always the registry's: a defer is logged as
-/// `task.defer`, and is a `TaskUpdate` on the wire.
+/// `inner_kind` is not always the registry's: a vault keeps the defers its
+/// own commands logged as `task.defer` before ADR-0065 PR 3, each a
+/// `TaskUpdate` on the wire.
 fn replayable_tags() -> Vec<&'static str> {
     ENTITIES
         .iter()
@@ -442,15 +443,39 @@ fn pending_ops(tx: &Transaction<'_>) -> Result<Vec<Pending>, EngineError> {
 /// The rebuild-identity check every convergence test runs (ADR-0065
 /// §Consequences): a rebuild of the vault leaves every projection table as
 /// it was, byte for byte.
+///
+/// [`Engine::assert_rebuild_identity`] runs it on demand. It also runs after
+/// every [`Engine::apply`] and every [`Engine::apply_remote_all`] on an
+/// engine built by the tests' `engine_seeded`, which turns it on for its
+/// thread ([`enable`]), as does the tests' plain `engine`. A test that builds
+/// rows no op wrote, as a vault older than the merge holds them, turns it off
+/// ([`disable`]).
 #[cfg(test)]
 pub(super) mod check {
     use super::{TableClass, TABLE_CLASSES};
-    use crate::engine::merge::fold_rows;
     use crate::engine::Engine;
     use rusqlite::types::Value;
     use rusqlite::Connection;
+    use std::cell::Cell;
     use sunrise_id::registry::{Merge, ENTITIES};
     use sunrise_storage::Db;
+
+    thread_local! {
+        /// Whether a command or a delivery checks the rebuild after it.
+        static AFTER_EVERY_WRITE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Check the rebuild after every command and delivery on this thread.
+    pub(in crate::engine) fn enable() {
+        AFTER_EVERY_WRITE.with(|c| c.set(true));
+    }
+
+    /// Stop the after-every-write check on this thread for the rest of the
+    /// test: it built rows no op wrote, as a vault older than the merge holds
+    /// them, and no rebuild of the log can reproduce those.
+    pub(in crate::engine) fn disable() {
+        AFTER_EVERY_WRITE.with(|c| c.set(false));
+    }
 
     /// The materialized tables of every entity whose ops a rebuild folds,
     /// read off the registry, which [`TABLE_CLASSES`] must call projections.
@@ -473,23 +498,6 @@ pub(super) mod check {
 
     /// Every row of every projection table, each table's rows sorted.
     pub(in crate::engine) fn dump(conn: &Connection) -> Vec<(&'static str, Vec<String>)> {
-        dump_with(conn, false)
-    }
-
-    /// [`dump`], leaving out, when `seeded`, the three things in the merge
-    /// state that no projection reads and that a replay need not reproduce:
-    /// `merge_entities`' create stamp, the `Task.blocks` register, and an
-    /// OR-set remove whose add is gone. Each is explained where it is left out.
-    ///
-    /// The create stamp is what a row seed cannot know. A local command
-    /// writes its row directly, and the merge first folds that row as the
-    /// legacy op at the row's stamp (`sync_from_row`), so an entity whose
-    /// first fold was a seed records its newest local write as its create.
-    /// A rebuild folds the real create. Nothing projects from it while a
-    /// legacy register holds `created_at`, which every full-state op writes,
-    /// and the projected rows are still compared whole. ADR-0065 PR 3, which
-    /// folds every local write, makes the two agree and retires this.
-    fn dump_with(conn: &Connection, seeded: bool) -> Vec<(&'static str, Vec<String>)> {
         let mut out = Vec::new();
         for (table, class) in TABLE_CLASSES {
             if *class != TableClass::Projection {
@@ -499,39 +507,6 @@ pub(super) mod check {
                 "search_idx" => {
                     "SELECT kind, id, stream_id, title, body, contexts FROM search_idx".to_owned()
                 }
-                "merge_entities" if seeded => {
-                    let mut stmt = conn
-                        .prepare("SELECT name FROM pragma_table_info('merge_entities')")
-                        .expect("prepare columns");
-                    let cols: Vec<String> = stmt
-                        .query_map([], |r| r.get(0))
-                        .expect("query columns")
-                        .collect::<rusqlite::Result<Vec<String>>>()
-                        .expect("read columns")
-                        .into_iter()
-                        .filter(|c| !c.starts_with("create_"))
-                        .collect();
-                    format!("SELECT {} FROM merge_entities", cols.join(", "))
-                }
-                // `Task.blocks` is read off `block_tasks`, so a seed records
-                // the bindings made after the op it stands for. It is never
-                // projected from the register.
-                "merge_registers" if seeded => "SELECT r.* FROM merge_registers r
-                     JOIN merge_entities m ON m.entity_id = r.entity_id
-                     WHERE NOT (m.kind = 'task' AND r.field = 'blocks')"
-                    .to_owned(),
-                // A remove whose add the legacy floor pruned is inert: the add
-                // never comes back. Whether it is still stored depends on
-                // whether it arrived before the floor rose (which prunes it)
-                // or after (which does not), so two replicas, or a replica and
-                // its rebuild, can disagree about it. Only removes that name
-                // a stored add are compared.
-                "merge_orset_removes" if seeded => "SELECT r.* FROM merge_orset_removes r
-                     WHERE EXISTS (SELECT 1 FROM merge_orset_adds a
-                                   WHERE a.entity_id = r.entity_id AND a.field = r.field
-                                     AND a.element = r.element AND a.tag_stream = r.tag_stream
-                                     AND a.tag_device = r.tag_device AND a.tag_seq = r.tag_seq)"
-                    .to_owned(),
                 other => format!("SELECT * FROM {other}"),
             };
             let mut stmt = conn.prepare(&sql).expect("prepare dump");
@@ -554,33 +529,16 @@ pub(super) mod check {
 
     impl Engine {
         /// Rebuild `db`'s projection inside a transaction, assert that every
-        /// projection table reads exactly as it did, and roll back.
-        ///
-        /// Rows a local command wrote that the merge has not folded yet are
-        /// folded first, as compaction and a snapshot fold them: a command
-        /// still writes its row directly (ADR-0065 PR 3 removes that), and
-        /// the merge state it leaves behind is complete only once folded.
+        /// projection table, merge state included, reads exactly as it did,
+        /// and roll back.
         ///
         /// # Panics
         /// When the rebuilt projection differs, naming the first table.
         pub(in crate::engine) fn assert_rebuild_identity(&self, db: &Db) {
             let tx = db.conn().unchecked_transaction().expect("open the check");
-            let targets: Vec<(String, Vec<u8>)> = {
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT DISTINCT target_kind, target_id FROM ops
-                         WHERE target_id IS NOT NULL ORDER BY target_kind, target_id",
-                    )
-                    .expect("prepare targets");
-                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .expect("query targets")
-                    .collect::<rusqlite::Result<_>>()
-                    .expect("read targets")
-            };
-            fold_rows(&tx, &targets).expect("fold pending rows");
-            let before = dump_with(&tx, true);
+            let before = dump(&tx);
             self.rebuild_in(&tx).expect("rebuild");
-            let after = dump_with(&tx, true);
+            let after = dump(&tx);
             tx.rollback().expect("roll the check back");
             for ((table, a), (_, b)) in before.iter().zip(&after) {
                 let lost: Vec<&String> = a.iter().filter(|r| !b.contains(r)).collect();
@@ -590,6 +548,15 @@ pub(super) mod check {
                     "rebuilding the projection changed `{table}`:\n\
                      only live: {lost:#?}\nonly rebuilt: {gained:#?}"
                 );
+            }
+        }
+
+        /// [`Self::assert_rebuild_identity`], when this thread checks after
+        /// every write ([`enable`]) and the write left a transaction-free
+        /// connection to check on.
+        pub(in crate::engine) fn check_rebuild_after_write(&self, db: &Db) {
+            if AFTER_EVERY_WRITE.with(Cell::get) && db.conn().is_autocommit() {
+                self.assert_rebuild_identity(db);
             }
         }
     }

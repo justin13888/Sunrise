@@ -685,6 +685,65 @@ fn compaction_keeps_parked_append_only_and_unsent_ops() {
     assert_eq!(a_removed, 0, "every op of A is still waiting in its outbox");
 }
 
+/// A defer is compacted like any other edit of a task. Bug (d) of ADR-0065
+/// PR 2: compaction selected by `inner_kind`, and a local defer was logged as
+/// `task.defer`, a kind no registry op has, so a defer was never compacted.
+/// It is now logged as the `task.update` it is, and a `task.defer` row an
+/// older build left in the log is compacted too.
+#[test]
+fn a_defer_is_compacted_like_any_other_task_edit() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let a = ea.keychain.device_id();
+    let task = new_task(&ea, &mut dba, "later");
+    for days in [1, 2, 3] {
+        ea.apply(
+            &mut dba,
+            Command::DeferTask {
+                id: task,
+                to_ms: T0 + days * DAY,
+            },
+        )
+        .unwrap();
+    }
+    // The first defer as an older build logged it.
+    dba.conn()
+        .execute(
+            "UPDATE ops SET inner_kind = 'task.defer'
+             WHERE stream_id = ?1 AND device_id = ?2 AND seq = 2",
+            params![&INBOX[..], &a[..]],
+        )
+        .unwrap();
+    sync(&dba, &eb, &mut dbb);
+    ack_outbox(&mut dba);
+    set_clock(&c, T0 + 2 * DAY);
+    let ack = digest_op(&eb, &mut dbb, &INBOX);
+    ea.apply_remote_all(&mut dba, &ack).unwrap();
+    let before = projection(&dba);
+
+    let report = ea.compact_op_log(&mut dba, &policy()).unwrap();
+    assert_eq!(
+        report.ops_removed, 3,
+        "the create and both defers below A's tip, the older build's included"
+    );
+    assert_eq!(
+        floor_of(dba.conn(), &INBOX, &a).unwrap().map(|f| f.seq),
+        Some(3)
+    );
+    assert_eq!(
+        kinds(&dba, &INBOX)
+            .into_iter()
+            .filter(|k| k != "stream.digest")
+            .collect::<Vec<_>>(),
+        ["task.update"],
+        "only A's tip is left of its task ops"
+    );
+    assert_eq!(projection(&dba), before);
+    ea.assert_rebuild_identity(&dba);
+}
+
 fn kinds(db: &Db, stream: &[u8; 16]) -> Vec<String> {
     let mut stmt = db
         .conn()

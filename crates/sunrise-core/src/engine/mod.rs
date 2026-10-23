@@ -7,8 +7,9 @@
 //!    `OpEnvelope` wrapping happens once `sunrise-sync` actually emits
 //!    on the wire — locally we store the plaintext inner-op as the
 //!    envelope blob since SQLCipher already encrypts at rest),
-//! 4. a materialized state mutation (insert/update of `tasks`/`streams`
-//!    rows), and
+//! 4. the fold of that op into the projection, through the merge a received
+//!    op takes (`write::append_and_fold`, ADR-0065 §5): no command writes a
+//!    row itself, and
 //! 5. a side-effect-free `CommandResult` returned to the caller.
 //!
 //! All five happen inside one `BEGIN IMMEDIATE` transaction.
@@ -25,12 +26,14 @@
 //! This module is a directory because one file of it was six impl blocks and
 //! ninety free functions. The split follows what the code *touches*, not what
 //! calls it: `oplog` is everything that writes the log and the outbox, `lww`
-//! the one merge rule and the dispatcher that applies it, `sync` the receive
-//! half, `park` the ops that half keeps unapplied and replays after an
-//! upgrade, `ids` the shared encode/decode primitives, and one module per entity
-//! family — `task`, `stream`, `context`, `routine`, `focus`, `block`,
-//! `attachment` — plus `review`, `notify` and the cross-entity reads in
-//! `query`.
+//! the one merge rule and the dispatcher that applies it, `merge` the per-field
+//! fold and the only writers of an entity row, `write` the local half that
+//! appends a command's op and folds it, `sync` the receive half, `park` the
+//! ops that half keeps unapplied and replays after an upgrade, `ids` the
+//! shared encode/decode primitives, and one module per entity family —
+//! `task`, `stream`, `context`, `routine`, `focus`, `block`, `attachment`
+//! — each a command path and its reads, plus `review`, `notify` and the
+//! cross-entity reads in `query`.
 //!
 //! What stays here is the seam: the error, the type, the caps several modules
 //! read, the constructors, and the two dispatchers — [`Engine::apply`] and
@@ -105,6 +108,7 @@ mod sync;
 mod task;
 #[cfg(test)]
 mod tests;
+mod write;
 
 // `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
 // `keychain/` and `sync_driver.rs` — so the path they name has to keep
@@ -576,8 +580,12 @@ impl Engine {
     /// The refusal is made where each op is sealed, so it covers every op a
     /// command writes, and the transaction it aborts leaves nothing behind.
     pub fn apply(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
-        self.dispatch(db, cmd)
-            .map_err(EngineError::lift_seal_refusal)
+        let result = self
+            .dispatch(db, cmd)
+            .map_err(EngineError::lift_seal_refusal);
+        #[cfg(test)]
+        self.check_rebuild_after_write(db);
+        result
     }
 
     fn dispatch(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
