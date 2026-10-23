@@ -234,19 +234,28 @@ Focus is on:
   itself, so it happens with no window open: it uses the open vault's
   scheduler, or opens the vault the way any intent does, re-plans once and
   closes it again. A reminder is let through when its stream
-  cannot be read, and a time block's always is, because a block belongs to no
-  stream; dropping an alert over a failed read is the worse mistake.
+  cannot be read; dropping an alert over a failed read is the worse mistake.
+  The Apple client also lets every time block through, on the belief that a
+  block belongs to no stream. It does: `Block.stream_id` is required. The
+  client layer's rules file a block under its stream like a task
+  (`crates/sunrise-client-core/src/reminders/schedule.rs#streams_of`), and the
+  Apple client follows once it adopts them.
 
 These rules are normative for any client that adds a Focus filter:
 
 - **The scope is device-local and never synced.** A Focus is a fact about one
-  device at one moment. `FocusFilterStore` keeps it in `UserDefaults`, persisted
-  because iOS runs the filter's intent when the Focus changes, which may launch
-  Sunrise in the background and end it again long before anyone opens it.
+  device at one moment. It is persisted because iOS runs the filter's intent
+  when the Focus changes, which may launch Sunrise in the background and end it
+  again long before anyone opens it. The client layer keeps it in the client
+  settings file beside the bootstrap file
+  (`crates/sunrise-client-core/src/preferences/client.rs`); the Apple client's
+  `FocusFilterStore` still keeps it in `UserDefaults` until it adopts that.
 - **No streams picked means no filter.** A Focus whose filter names nothing
   filters nothing, rather than emptying Today and silencing the phone.
-- **The rules live in one place** (`FocusFilter`, `apps/apple/Sunrise/Focus/`),
-  so Today and the scheduler cannot disagree about what a Focus lets through.
+- **The rules live in one place** (`crates/sunrise-client-core/src/focus.rs`,
+  mirrored in Swift by `FocusFilter` in `apps/apple/Sunrise/Focus/` until the
+  Apple client calls it), so Today and the scheduler cannot disagree about
+  what a Focus lets through.
 
 iOS resolves the picked streams when the Focus changes. If the vault cannot be
 opened then — before the first unlock after a restart — the streams the filter

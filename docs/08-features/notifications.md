@@ -120,13 +120,37 @@ What exists today, read from the tree:
   (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift:31`), not a
   toggle per kind. No request sets an interruption level, and nothing observes a
   time-zone change.
+- **The client layer** turns the core's intents into an OS schedule
+  (`crates/sunrise-client-core/src/reminders/mod.rs`): the 24-hour horizon,
+  the 56-request cap with the earliest kept, the body text, and the reconcile
+  against what the OS holds. A request's identifier is the intent's
+  `identity()` — `sunrise.reminder.<kind>.<entity>`, never its fire time
+  ([ADR-0066](../11-adr/0066-times-survive-travel.md) §5) — and a *revision*
+  stored with the request says whether it still fires at the planned instant
+  with the planned text. A reminder that moved, including a floating one
+  re-planned after a zone change, is **replaced** under its identifier rather
+  than cancelled and added; an unchanged plan touches the OS not at all. Each
+  request fires at an absolute instant, so an OS trigger built from it must
+  keep that instant across a zone change ([#520](https://github.com/justin13888/Sunrise/issues/520)).
+  `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`) does the
+  whole re-plan in one call, Focus filter included, and the seam exports it
+  as `SunriseCore::schedule_reminders`. The Apple scheduler still runs its own
+  Swift planner until it adopts this.
 - **The keys** of §Preference keys are in the core's key table
   (`crates/sunrise-domain/src/preferences/keys.rs#PREFERENCE_KEYS`), stored and
   resolved there and served by `Query::Preferences` ([#337](https://github.com/justin13888/Sunrise/issues/337)).
-  Nothing reads them yet: `ReminderIntents` still takes the per-device
-  `ReminderSettings` the Apple client builds from its own `UserDefaults`, until
-  that client reads through the core ([#489](https://github.com/justin13888/Sunrise/issues/489))
-  and the planner reads the keys itself ([#347](https://github.com/justin13888/Sunrise/issues/347)).
+  The client layer reads the master switch, the task-reminder lead time, the
+  quiet window and policy, the primary-device register and the
+  `task_reminder`, `block_start` and `routine_due` toggles from them
+  (`crates/sunrise-client-core/src/reminders/policy.rs#reminder_policy`), and
+  maps the Apple client's old `UserDefaults` values onto them for a one-time
+  move (`crates/sunrise-client-core/src/preferences/legacy.rs`,
+  [#489](https://github.com/justin13888/Sunrise/issues/489)). An unset
+  primary register reads as primary and asks the client to claim it. The
+  Apple client still builds `ReminderSettings` from `UserDefaults` until it
+  adopts these, and the planner itself does not read the keys yet
+  ([#347](https://github.com/justin13888/Sunrise/issues/347)): the
+  `block_start.lead_s` floor in particular is still the domain's constant.
 - **On iOS**, on-event kinds need a background wake. The scheduler reconciles
   at the end of every background run — each refresh task and silent push
   ([`mobile-ios.md`](../07-clients/mobile-ios.md#background-sync), #367) — so

@@ -23,7 +23,17 @@
 //!   vault root checked for its width.
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
 //! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
-//!   sections, relative days, snoozes, block conflicts, session timers.
+//!   sections, relative days, snoozes, block conflicts, session timers,
+//!   routine occurrence keys.
+//! * [`reminders`] — the core's reminder intents as an OS schedule: the cap,
+//!   the order, the body text, identifiers stable across re-plans, the
+//!   reconcile against what the OS holds, and the notification preferences
+//!   read off the core's `Preferences`.
+//! * [`focus`] — what an OS Focus filter lets through, for Today and for the
+//!   reminder schedule alike.
+//! * [`brief`] — the morning and evening briefs' sections and headlines.
+//! * [`review`] — the daily glance's civil window, the review snapshot, and
+//!   an export's file name.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -48,14 +58,20 @@
 
 #[cfg(feature = "relay")]
 pub mod account;
+pub mod brief;
+pub mod focus;
 pub mod gate;
 pub mod history;
 pub mod host;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
+pub mod reminders;
+pub mod review;
 #[cfg(feature = "relay")]
 pub mod sync;
+#[cfg(test)]
+mod test_support;
 pub mod undo;
 pub mod views;
 pub mod vocab;

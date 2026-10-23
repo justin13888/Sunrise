@@ -178,6 +178,22 @@ pub fn snooze_target_ms(from_ms: u64, span: SnoozeSpan, tz: &str) -> i64 {
     sunrise_domain::snooze_target(instant_at(from_ms), span, &zone_or_utc(tz)).as_millisecond()
 }
 
+/// The key of the routine occurrence at `at`, for a routine in `tz` — what
+/// [`sunrise_core::Command`]'s skip and completion commands name an
+/// occurrence by. See [`sunrise_domain::occurrence_key_at`].
+///
+/// Unlike the rest of this module an unknown zone is an error, not UTC: a key
+/// is an identity every replica must derive alike, and one derived in a
+/// stand-in zone names a different occurrence.
+///
+/// # Errors
+///
+/// [`sunrise_domain::ExpandError::InvalidTimeZone`] for a zone the tzdb does
+/// not know.
+pub fn occurrence_key_at(tz: &str, at: Timestamp) -> Result<String, sunrise_domain::ExpandError> {
+    sunrise_domain::occurrence_key_at(tz, at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +233,18 @@ mod tests {
             snooze_target_ms(SAT_NOON_UTC, SnoozeSpan::OneHour, "America/Toronto") - from,
             3_600_000
         );
+    }
+
+    /// An occurrence's key is its wall clock in the routine's zone, and an
+    /// unknown zone is refused rather than read as UTC.
+    #[test]
+    fn an_occurrence_key_is_read_in_the_routines_zone() {
+        let at = instant_at(SAT_NOON_UTC);
+        let utc = occurrence_key_at("UTC", at).unwrap();
+        let toronto = occurrence_key_at("America/Toronto", at).unwrap();
+        assert_ne!(utc, toronto);
+        assert_eq!(utc, sunrise_domain::occurrence_key_at("UTC", at).unwrap());
+        assert!(occurrence_key_at("Not/AZone", at).is_err());
     }
 
     #[test]

@@ -36,10 +36,12 @@ is immature.
 
 Between the core and a user interface sits `sunrise-client-core`: the client
 logic that is not any one client's. Undo and redo by inverse command, saved
-views, the bootstrap preferences file, the edit gate, the shared vocabulary read
-in the caller's zone, the account bootstrap, the recovery flow
-([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), and
-background sync. Every client links it, and a seam's own code lowers its records
+views, the bootstrap preferences file and the client settings beside it, the
+edit gate, the shared vocabulary read in the caller's zone, the reminder
+schedule and its reconcile against the OS, the Focus filter's rules, the
+daily briefs' sections and the review's civil windows, the account bootstrap,
+the recovery flow ([recovery.md](../03-crypto/recovery.md) §Recovery flow
+steps 3 to 8), and background sync. Every client links it, and a seam's own code lowers its records
 onto these functions and does nothing else:
 
 ```text

@@ -517,6 +517,18 @@ impl Core {
         self.engine.zone_unknown()
     }
 
+    /// The zone every query reads in: the one the clock last reported that
+    /// the tzdb resolves, or UTC while [`Core::zone_unknown`] says so
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3).
+    ///
+    /// For client logic that renders what a query returned — a reminder's
+    /// "due 06:30", the split between yesterday and today — so it reads in
+    /// the zone the query did rather than asking the host a second time.
+    #[must_use]
+    pub fn reader_zone(&self) -> jiff::tz::TimeZone {
+        self.engine.device_zone()
+    }
+
     /// Run a read query.
     pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
         if *self.closed.lock() {
