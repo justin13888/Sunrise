@@ -81,6 +81,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0061 | [An external review audits the key hierarchy, the identity chain and the revocation fold; constant-time comparison is a CI gate; and a pull request that touches the crypto is fuzzed](./0061-crypto-audit-scope.md) | accepted (amends `testing.md` §CI shape; scopes a review of 0022, 0024, 0037 and 0041; built by #365) |
 | 0062 | [The relay scales out behind four storage traits, fans out over Postgres `LISTEN/NOTIFY` with the durable log as the only cursor, and keeps sync sessions in a shared table](./0062-relay-scale-out-storage-seam.md) | accepted (amends the managed storage layout in `relay-and-blob-storage.md`; built by #364) |
 | 0065 | [Entities are copy-on-write version DAGs; rows are a fold, and every conflict is kept and named](./0065-copy-on-write-entity-versions.md) | accepted (amends 0044) |
+| 0066 | [Routines follow the traveller by default, and no stored time is ever re-derived from a zone](./0066-times-survive-travel.md) | accepted (amends `time.md` §1's anchor default) |
 
 ## When to write a new ADR
 
