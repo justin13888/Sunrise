@@ -41,7 +41,9 @@ edit gate, the shared vocabulary read in the caller's zone, the reminder
 schedule and its reconcile against the OS, the Focus filter's rules, the
 daily briefs' sections and the review's civil windows, the editors'
 draft-to-patch functions, the defer and schedule targets, the calendar grid's
-arithmetic, the account bootstrap, the recovery flow
+arithmetic, the command palette's ranking, a list's keyboard selection, the
+note editor's block model, print pagination, the account bootstrap, the
+recovery flow
 ([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), and
 background sync. Every client links it, and a seam's own code lowers its
 records onto these functions and does nothing else:
