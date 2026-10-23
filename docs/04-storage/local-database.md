@@ -201,6 +201,8 @@ sqlcipher_raw_key = BLAKE3.derive_key(
 
 Using a pre-derived key bypasses SQLCipher's internal PBKDF2: we set `PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512` and `PRAGMA kdf_iter = 1`.
 
+**The first key in a process waits for SQLCipher to start.** `sqlite3_initialize` marks SQLite initialised before it runs SQLCipher's own initialisation, so a thread that opens a database in that window has `PRAGMA key` refused with a message about an empty key (issue #521). Before the first key it applies, `Db` keys a throwaway in-memory database until that succeeds, and other first openers wait on it. A process whose SQLCipher never initialises gets `DbError::CipherUnavailable` carrying the real error.
+
 **What `kdf_iter = 1` rests on, precisely.** It rests on the input already being a uniformly random 32-byte key — not on a prior Argon2id gate, because there is no passphrase unlock. `Unlock::Passphrase` exists as a variant (`crates/sunrise-core/src/unlock.rs:11`) and **no caller constructs it**; every `Core::open` in the tree passes `Unlock::DevicePaired`. The root is generated once at random per vault and held by the OS: `SecRandomCopyBytes` into the login Keychain on macOS, or a `0600` key file in the CLI's keystore (`crates/sunrise-cli/src/vault.rs:20-28`). A second device gets it by pairing, not by the user retyping anything. Argon2id does appear in `sunrise-crypto`, but for the **recovery** key derived from the BIP-39 seed (`crates/sunrise-crypto/src/recovery.rs`), which is a different path.
 
 The choice of AES here is a deliberate divergence from XChaCha20-Poly1305 used elsewhere; rationale:
