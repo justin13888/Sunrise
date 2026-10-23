@@ -9,7 +9,7 @@ A first-class deployment topology, not a charity afterthought.
 ## Distribution
 
 - Single binary: `sunrise-server`.
-- OCI image: `ghcr.io/<org>/sunrise-server:<version>`.
+- OCI image: `ghcr.io/<org>/sunrise-server:<version>`, where `<version>` is the core train's, released by a `core-v<version>` tag ([ADR-0064](../11-adr/0064-two-version-trains.md)).
 - One config file: `sunrise.toml`.
 
 ## Minimum viable host

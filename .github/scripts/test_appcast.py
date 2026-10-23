@@ -198,6 +198,44 @@ class AppcastTests(unittest.TestCase):
         titles = [e.find("title").text for e in self.items_of(xml)]
         self.assertEqual(titles, ["1.0.0"])
 
+    # -- which releases are the app's (ADR-0064) ---------------------------
+
+    def test_a_core_release_is_skipped_even_with_a_sidecar(self):
+        # A core release ships the CLI and the server, never a `.dmg`. The
+        # rule is the tag, so a sidecar attached to one by mistake still
+        # cannot put it into the feed every installed copy reads.
+        xml = self.generate([
+            (release("core-v0.2.0", published_at="2026-11-01T00:00:00Z"),
+             item("core-v0.2.0", short="0.2.0")),
+            (release("app-v0.1.0"), item("app-v0.1.0", short="0.1.0")),
+        ])
+        titles = [e.find("title").text for e in self.items_of(xml)]
+        self.assertEqual(titles, ["0.1.0"])
+
+    def test_the_pre_split_tag_is_history_the_feed_keeps(self):
+        # `v0.1.0-rc.1` was cut before the two trains existed and released the
+        # macOS app. Dropping bare `v` tags would drop it from the feed.
+        xml = self.generate([
+            (release("v0.1.0-rc.1", prerelease=True,
+                     published_at="2026-08-01T00:00:00Z"), item("v0.1.0-rc.1")),
+            (release("app-v0.1.0", published_at="2026-11-01T00:00:00Z"),
+             item("app-v0.1.0", short="0.1.0")),
+        ])
+        titles = [e.find("title").text for e in self.items_of(xml)]
+        self.assertEqual(titles, ["0.1.0", "0.1.0-rc.1"])
+
+    def test_a_core_tag_cannot_satisfy_require_tag(self):
+        with self.assertRaises(appcast.AppcastError):
+            self.generate([(release("core-v0.2.0"), item("core-v0.2.0"))],
+                          require_tag="core-v0.2.0")
+
+    def test_is_app_release_reads_the_prefix(self):
+        for tag in ("app-v0.1.0", "app-v1.2.3-rc.1", "v0.1.0-rc.1", "v2.0.0"):
+            self.assertTrue(appcast.is_app_release(tag), tag)
+        # `vnext` is not a version, and `core-v` is the other train.
+        for tag in ("core-v0.2.0", "core-v0.2.0-rc.1", "vnext", "app-", "nightly"):
+            self.assertFalse(appcast.is_app_release(tag), tag)
+
     def test_a_draft_release_is_skipped(self):
         xml = self.generate([
             (release("v2.0.0", draft=True), item("v2.0.0")),

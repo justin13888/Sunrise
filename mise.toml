@@ -1541,6 +1541,9 @@ run = "python3 .github/scripts/test_reverses_gate.py"
 # failure here is a failure there. Note the size of the job: a release build of
 # the workspace's C dependencies (SQLCipher, ring, zstd) inside a fresh
 # container wants ~10 GB of container storage and tens of minutes cold.
+# `VERSION` is the core train's (ADR-0064), read from `[workspace.package]` in
+# Cargo.toml exactly as `release.yml`'s `verify` reads it for a `core-v*` tag:
+# the server image belongs to the core train, never to the app train.
 
 # The two tasks that take arguments, and the one place mise is not a rename of
 # what `just` did. `just` bound named parameters with defaults; mise appends

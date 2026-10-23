@@ -76,6 +76,17 @@ A release with no item file is **skipped with a note**, not an error: releases
 predating this pipeline exist and have no sidecar, and a feed that refuses to
 build because of history nobody can change is a feed that never builds.
 
+Which releases are the app's
+----------------------------
+
+Sunrise releases on two version trains (ADR-0064), and only the app train's
+releases carry a `.dmg`. A release is read for the feed when its tag is
+`app-v…`, or a bare `v<digit>…`: `v0.1.0-rc.1` was cut before the split,
+released the macOS app, and is history the feed keeps. A `core-v…` release —
+the CLI, the server and its image — is **skipped with a note** before its
+sidecar is even looked for, so a stray `appcast-item.json` attached to one by
+hand cannot put a core release into the update feed. See `is_app_release`.
+
 Channels
 --------
 
@@ -97,6 +108,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +136,22 @@ _MONTHS = (
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 )
+
+
+#: The tags whose releases belong to the app train. `app-v` is the train's own
+#: prefix; a bare `v` followed by a digit is the single-version scheme that
+#: preceded ADR-0064, under which `v0.1.0-rc.1` shipped the macOS app.
+_APP_TAG = re.compile(r"^(?:app-v|v)[0-9]")
+
+
+def is_app_release(tag: str) -> bool:
+    """Whether a release with this tag is one the update feed may describe.
+
+    Decided by the tag rather than by the presence of a sidecar: a core release
+    has no `.dmg` to advertise, and the rule should not depend on nobody ever
+    attaching the wrong file to one.
+    """
+    return bool(_APP_TAG.match(tag))
 
 
 class AppcastError(Exception):
@@ -330,6 +358,9 @@ def generate(
         if release.get("draft"):
             continue
         tag = release["tag_name"]
+        if not is_app_release(tag):
+            print(f"note: {tag} is not an app-train release; not in the feed", file=sys.stderr)
+            continue
         item = load_item(items_dir, tag)
         if item is None:
             print(f"note: {tag} has no {ITEM_FILENAME}; not in the feed", file=sys.stderr)

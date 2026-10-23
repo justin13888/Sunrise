@@ -394,7 +394,7 @@ ship; a team-less Release build that is wanted anyway adds
 What is still missing is outside this repository's files: an Apple Developer
 Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile
 that grants the group. The release pipeline installs that profile from the
-`MACOS_PROVISIONING_PROFILE` secret, refuses a tag without it, and checks the
+`MACOS_PROVISIONING_PROFILE` secret, refuses an app tag without it, and checks the
 exported app carries both the group and the embedded profile before
 notarizing ([#389](https://github.com/justin13888/Sunrise/issues/389);
 [`releasing.md`](./releasing.md#macos_provisioning_profile) says how to create

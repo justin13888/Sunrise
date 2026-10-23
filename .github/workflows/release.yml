@@ -1,9 +1,25 @@
 name: Release
 
-# Tag-driven. Pushing an annotated `vX.Y.Z` (or a `-rc.N` / `-beta.N`
-# prerelease) is the whole trigger for a release; nothing here runs on a branch
-# push, so a release cannot happen without a tag object in the repository to
-# point at afterwards.
+# Tag-driven. Pushing an annotated `core-vX.Y.Z` or `app-vX.Y.Z` (or a
+# `-rc.N` / `-beta.N` prerelease of either) is the whole trigger for a release;
+# nothing here runs on a branch push, so a release cannot happen without a tag
+# object in the repository to point at afterwards.
+#
+# Two version trains, and a tag releases exactly one of them (ADR-0064):
+#
+#   * **core** -- the Cargo workspace. Its version is `[workspace.package]` in
+#     Cargo.toml, and it ships `binaries` (the CLI and server tarballs) and
+#     `image` (the server container).
+#   * **app** -- `apps/` and `packages/`. Its version is the root
+#     package.json's, repeated in every app-train manifest and in
+#     `apps/apple/project.yml`'s MARKETING_VERSION (the publish gate in
+#     `ci.yml` keeps the copies equal). It ships `macos-app` and `appcast`,
+#     `ios-release` and `web-pages`.
+#
+# `verify` decides the train from the tag prefix, and its `train` output is
+# what every other job's `if:` reads. A bare `vX.Y.Z` no longer triggers
+# anything; `v0.1.0-rc.1` is the one tag cut before the split, and the appcast
+# and the release notes read it as history (see `appcast.py`).
 #
 # The one manual entry point publishes nothing, and that is what keeps the
 # property above intact: `workflow_dispatch` exists so the `macos-app` job's
@@ -30,16 +46,22 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
+      - "core-v[0-9]+.[0-9]+.[0-9]+"
+      - "core-v[0-9]+.[0-9]+.[0-9]+-*"
+      - "app-v[0-9]+.[0-9]+.[0-9]+"
+      - "app-v[0-9]+.[0-9]+.[0-9]+-*"
+  # No `train` input: the dry run exercises the `macos-app` packaging path and
+  # nothing else, so a dispatch is always an app-train run. A core-train dry
+  # run would build nothing, because nothing in the core train is built
+  # without being published.
   workflow_dispatch:
     inputs:
       unsigned_macos_dmg:
         description: >-
-          Dry run. Build and package an UNSIGNED, un-notarized macOS .dmg so the
-          packaging path can be verified while the signing secrets are absent.
-          Nothing is signed, notarized, released or pushed to any registry.
-          Leave this off and the dispatch does nothing at all.
+          Dry run of the app train. Build and package an UNSIGNED, un-notarized
+          macOS .dmg so the packaging path can be verified while the signing
+          secrets are absent. Nothing is signed, notarized, released or pushed
+          to any registry. Leave this off and the dispatch does nothing at all.
         type: boolean
         default: false
 
@@ -63,8 +85,9 @@ jobs:
   verify:
     name: Verify tag
     runs-on: ubuntu-latest
-    # A shallow checkout, one `sed` over Cargo.toml, a string comparison and
-    # six emptiness checks. Seconds of work, and the only part of it that can
+    # A shallow checkout, a `sed` over Cargo.toml and project.yml, a `jq` over
+    # package.json, a string comparison and eight emptiness checks. Seconds of
+    # work, and the only part of it that can
     # stall is the checkout, so this is `ci.yml`'s floor for a job whose real
     # cost is `actions/checkout` rather than a number derived from what the
     # job computes.
@@ -72,6 +95,11 @@ jobs:
     permissions:
       contents: read
     outputs:
+      # `core` or `app`, from the tag prefix; `app` on a manual dispatch. The
+      # one switch every job below reads to know whether this run is its
+      # train's, so no other job re-parses the tag.
+      train: ${{ steps.check.outputs.train }}
+      # The train's version, without the prefix: `0.2.0` for `core-v0.2.0`.
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
       # `true` on a manual dispatch, `false` under a tag. Every job below that
@@ -87,40 +115,70 @@ jobs:
       ios_configured: ${{ steps.ios.outputs.configured }}
       ios_missing: ${{ steps.ios.outputs.missing }}
     steps:
-      # Shallow: this job reads Cargo.toml and the ref name, nothing else.
+      # Shallow: this job reads Cargo.toml, package.json, project.yml and the
+      # ref name, nothing else.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - name: Tag must match the workspace version
+      - name: Tag must match its train's version
         id: check
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          # `[workspace.package] version` is inherited by every crate, so this
-          # single value is what ends up in `--version` output, in the server's
-          # `server_app_v` handshake field, and in the image tag. A tag that
-          # disagrees with it ships artifacts that misreport themselves, and
-          # the mistake is invisible until someone reads a bug report.
-          manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
-                     | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          # The core train: `[workspace.package] version` is inherited by
+          # every crate, so this single value is what ends up in `--version`
+          # output, in the server's `server_app_v` handshake field, and in the
+          # image tag. A tag that disagrees with it ships artifacts that
+          # misreport themselves, and the mistake is invisible until someone
+          # reads a bug report.
+          core=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+                 | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          # The app train: the root package.json is the source of truth, and
+          # project.yml's MARKETING_VERSION is the copy the Apple bundles are
+          # built from. The publish gate holds every copy equal on every pull
+          # request; this is the same argument made once more at the moment it
+          # matters, against the tag. `sort -u` so a project.yml that sets it
+          # in more than one place yields one line when they agree and two
+          # when they do not.
+          app=$(jq -r '.version // empty' package.json)
+          marketing=$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"# ]*\)"\{0,1\} *\(#.*\)\{0,1\}$/\1/p' \
+                        apps/apple/project.yml | sort -u)
           # A manual dispatch has no tag, so there is nothing to check it
           # against and nothing it could publish. It exists for exactly one
-          # purpose -- a dry run of the `macos-app` packaging path -- so the
-          # version comes straight from the manifest and the run is marked,
-          # which is what makes the three publishing jobs below skip.
+          # purpose -- a dry run of the `macos-app` packaging path -- so it is
+          # an app-train run, the version comes straight from package.json, and
+          # the run is marked, which is what makes the publishing jobs below
+          # skip.
           if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
-            echo "dry run: no tag; version $manifest taken from Cargo.toml; nothing will be published"
+            echo "dry run: no tag; app train, version $app taken from package.json; nothing will be published"
             {
-              echo "version=$manifest"
+              echo "train=app"
+              echo "version=$app"
               echo "prerelease=true"
               echo "dry_run=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "tag=$tag manifest=$manifest"
+          # The trigger patterns admit only these two prefixes. The `*)` arm
+          # is for the day somebody adds a pattern without adding a train.
+          case "$tag" in
+            core-v*) train=core; version="${tag#core-v}"; manifest="$core"; source="Cargo.toml [workspace.package]" ;;
+            app-v*)  train=app;  version="${tag#app-v}";  manifest="$app";  source="package.json" ;;
+            *)
+              echo "::error::tag $tag names no version train; release tags are core-vX.Y.Z or app-vX.Y.Z (ADR-0064)"
+              exit 1
+              ;;
+          esac
+          echo "tag=$tag train=$train manifest=$manifest"
           if [ "${version%%-*}" != "$manifest" ]; then
-            echo "::error::tag $tag implies version ${version%%-*}, but Cargo.toml says $manifest"
+            echo "::error::tag $tag implies $train version ${version%%-*}, but $source says ${manifest:-nothing}"
             exit 1
           fi
+          if [ "$train" = "app" ] && [ "$marketing" != "$manifest" ]; then
+            # Printed with the newline turned into a separator, so two
+            # disagreeing settings read as a list in the annotation.
+            echo "::error::tag $tag implies app version $manifest, but apps/apple/project.yml's MARKETING_VERSION says ${marketing//$'\n'/, }"
+            exit 1
+          fi
+          echo "train=$train" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Anything with a hyphen after the patch number is a prerelease:
           # v1.2.3-rc.1, v1.2.3-beta.2. Semver says so and so does GitHub's UI.
@@ -130,20 +188,24 @@ jobs:
           esac
           echo "dry_run=false" >> "$GITHUB_OUTPUT"
       # Here rather than in `macos-app`, and the placement is the whole point.
-      # `binaries` and `image` do not need `macos-app`, so a preflight inside
-      # that job would fail *after* the image job had already pushed
-      # `sunrise-server:<version>` and `:latest` to GHCR — the half-published
-      # tag this workflow's `concurrency` comment says is worse than a
-      # duplicate run. This job is the one that already exists to "refuse
-      # early, before anything is built or pushed", and every other job needs
-      # it, so a missing release credential belongs here with the version
-      # check.
+      # It was first placed here because `binaries` and `image` did not need
+      # `macos-app`, so a preflight inside that job would fail *after* the
+      # image job had already pushed `sunrise-server:<version>` to GHCR. Since
+      # ADR-0064 the image is the core train's and never shares a run with
+      # the `.dmg`, but the rest of the argument stands: an app tag also
+      # publishes the iOS upload and the web deployment, neither of which
+      # needs `macos-app`, and this job is the one that already exists to
+      # "refuse early, before anything is built or pushed".
+      #
+      # App train only. A core tag builds nothing these secrets sign, and
+      # refusing it for a missing Apple credential would put the server
+      # release behind an account it has nothing to do with.
       #
       # No secret *value* crosses into this job: each `env` entry is the
       # boolean `secrets.X != ''`, evaluated where the secrets live. A job that
       # only has to know whether a private key exists should not be handed one.
       - name: Signing, notarization and update-feed secrets must all be present
-        if: steps.check.outputs.dry_run == 'false'
+        if: steps.check.outputs.dry_run == 'false' && steps.check.outputs.train == 'app'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
@@ -187,7 +249,7 @@ jobs:
           # learn the second.
           fail=0
           if [ -n "$missing" ]; then
-            echo "::error title=macOS release signing is not configured::Missing repository secret(s):${missing}. This release would ship no macOS app, or an unsigned one that Gatekeeper refuses to open, so nothing is built or pushed. Create them as described in docs/07-clients/releasing.md -- only the repository owner can -- then delete and re-push the tag. To exercise the packaging path meanwhile, run this workflow from the Actions tab with the 'unsigned_macos_dmg' input ticked."
+            echo "::error title=macOS release signing is not configured::Missing repository secret(s):${missing}. This app release would ship no macOS app, or an unsigned one that Gatekeeper refuses to open, so nothing is built or pushed. Create them as described in docs/07-clients/releasing.md -- only the repository owner can -- then delete and re-push the tag. A core-v* tag does not need them. To exercise the packaging path meanwhile, run this workflow from the Actions tab with the 'unsigned_macos_dmg' input ticked."
             fail=1
           fi
           if [ -n "$missing_feed" ]; then
@@ -237,13 +299,14 @@ jobs:
           echo "missing=${missing# }" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------
-  # Release binaries: `sunrise-server` and the `sunrise` CLI.
+  # Release binaries: `sunrise-server` and the `sunrise` CLI. Core train.
   # ---------------------------------------------------------------------
   binaries:
     name: Binaries (${{ matrix.target }})
     needs: verify
-    # Nothing here is published on a dry run, so nothing here is built on one.
-    if: needs.verify.outputs.dry_run == 'false'
+    # Nothing here is published on a dry run, so nothing here is built on one,
+    # and an app tag does not rebuild a core it did not change (ADR-0064).
+    if: needs.verify.outputs.dry_run == 'false' && needs.verify.outputs.train == 'core'
     runs-on: ${{ matrix.os }}
     # Per leg, as in `ci.yml`'s `rust` job and for the reason given there:
     # macOS minutes bill at 10x, so the expensive leg gets the tighter cap
@@ -330,7 +393,7 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------
-  # Container image → GHCR.
+  # Container image → GHCR. Core train.
   #
   # No stored registry credentials anywhere in this job. Two ephemeral
   # identities do the work:
@@ -349,8 +412,9 @@ jobs:
   image:
     name: Image (linux/amd64)
     needs: verify
-    # As with `binaries`: a dry run publishes nothing, so it builds nothing.
-    if: needs.verify.outputs.dry_run == 'false'
+    # As with `binaries`: a dry run publishes nothing, so it builds nothing,
+    # and the image is the core train's.
+    if: needs.verify.outputs.dry_run == 'false' && needs.verify.outputs.train == 'core'
     runs-on: ubuntu-24.04
     # The compile inside this image is the same workspace the ubuntu
     # `binaries` leg builds at `--release`, so it starts from that leg's 60.
@@ -375,15 +439,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       # Lowercases the owner for us — GHCR rejects an uppercase path segment
       # and `github.repository_owner` preserves the account's display casing.
+      #
+      # `value=` on every `semver` line. By default the action parses the
+      # pushed tag, and `core-v0.2.0` is not a semver string -- only a bare
+      # `v` prefix is stripped -- so it would produce no version tags at all.
+      # `verify` has already removed the train prefix and checked what is left
+      # against Cargo.toml, so its output is the version to tag.
       - name: Tags and labels
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/sunrise-server
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=semver,pattern={{version}},value=${{ needs.verify.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.prerelease == 'false' }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.prerelease == 'false' }}
       - name: Build and push
         id: build
@@ -417,7 +487,8 @@ jobs:
           push-to-registry: true
 
   # ---------------------------------------------------------------------
-  # The macOS app: a Developer ID-signed, notarized, stapled `.dmg`.
+  # The macOS app: a Developer ID-signed, notarized, stapled `.dmg`. App
+  # train.
   #
   # `docs/11-adr/0031-macos-distribution.md` records why this is a direct
   # download and not the Mac App Store, and
@@ -445,10 +516,11 @@ jobs:
   macos-app:
     name: macOS app (.dmg)
     needs: verify
-    # A tag always builds it. A dispatch builds it only when the operator
-    # ticks the box, so a stray dispatch costs nothing: macOS minutes bill at
-    # 10x and this is the most expensive job in the repository.
-    if: github.event_name == 'push' || inputs.unsigned_macos_dmg
+    # An app tag always builds it, and a core tag never does. A dispatch
+    # builds it only when the operator ticks the box, so a stray dispatch
+    # costs nothing: macOS minutes bill at 10x and this is the most expensive
+    # job in the repository.
+    if: (github.event_name == 'push' && needs.verify.outputs.train == 'app') || inputs.unsigned_macos_dmg
     # Same pin and same reason as `ci.yml`'s `macos-app`: project.yml sets
     # `deploymentTarget.macOS: "26.0"`, which no earlier image can build.
     runs-on: macos-26
@@ -701,12 +773,13 @@ jobs:
           # one, exactly as in `mise run macos-app`.
           xcodegen generate --quiet
 
-          # The bundle's own version numbers come from the tag, not from
-          # project.yml's pinned `MARKETING_VERSION: "0.1.0"`. `verify`
-          # already refuses a tag that disagrees with Cargo.toml, and the same
-          # argument applies one layer out: an app whose About box disagrees
-          # with the file it was downloaded from misreports itself, and the
-          # mistake is invisible until someone reads a bug report.
+          # The bundle's own version numbers come from the tag. `verify` has
+          # already refused an app tag that disagrees with project.yml's
+          # `MARKETING_VERSION`, so for the marketing version this restates the
+          # same number -- and it is passed anyway so the build cannot drift
+          # from the file name it is packaged under: an app whose About box
+          # disagrees with the file it was downloaded from misreports itself,
+          # and the mistake is invisible until someone reads a bug report.
           #
           # `CFBundleShortVersionString` takes at most three dot-separated
           # integers, so a `-rc.1` suffix is trimmed for it and kept in the
@@ -915,12 +988,12 @@ jobs:
       - name: Package the .dmg
         run: |
           set -euo pipefail
-          # The tarballs beside this on the Releases page are
-          # `sunrise-<version>-<rust target triple>.tar.gz`, so this is
-          # `sunrise-<version>-aarch64-apple-darwin.dmg`: same prefix, same
-          # version position, same architecture token, so the two macOS
-          # artifacts sort together and a reader can see at a glance that they
-          # are the same slice.
+          # `sunrise-<app version>-aarch64-apple-darwin.dmg`. The CLI tarballs
+          # are `sunrise-<core version>-<rust target triple>.tar.gz`, the same
+          # shape, and since ADR-0064 they are on a different Release (a core
+          # one), so the two never sit side by side and the version in each
+          # name is that Release's train. The name is unchanged from before the
+          # split, so the runbook's verification commands still name it.
           name="sunrise-${VERSION}-aarch64-apple-darwin"
           if [ "$DRY_RUN" = "true" ]; then
             # Marked in the file name itself, not only in the log. An unsigned
@@ -1086,29 +1159,45 @@ jobs:
   # ---------------------------------------------------------------------
   # The GitHub Release itself, last: it is the thing humans see, so it should
   # not exist until the artifacts it advertises do.
+  #
+  # One job for both trains. A core tag skips `macos-app` and an app tag skips
+  # `binaries` and `image`, so `needs` always contains skipped jobs, and a job
+  # whose `if:` holds no status function is skipped whenever any of its needs
+  # was. Hence `always()`, and then the conditions it would otherwise have
+  # implied, spelled out: `verify` succeeded, and nothing this train ran failed
+  # or was cancelled. A skipped need is the other train's and is not a failure.
   # ---------------------------------------------------------------------
   release:
     name: GitHub Release
     needs: [verify, binaries, image, macos-app]
-    # Unreachable on a dry run anyway -- `binaries` and `image` are skipped and
-    # a skipped dependency skips this too -- but stated rather than inferred,
-    # because this is the one job whose accidental execution would publish.
-    if: needs.verify.outputs.dry_run == 'false'
+    # The dry-run clause is stated rather than inferred, because this is the
+    # one job whose accidental execution would publish: a dispatch leaves
+    # `macos-app` successful and the other two skipped, which every other
+    # clause here accepts.
+    if: >-
+      always()
+      && needs.verify.result == 'success'
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && needs.verify.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
-    # Downloads three artifacts, runs `changelog.sh` over a full-depth clone,
-    # and makes two `gh` calls. Everything it does is I/O, and the two
+    # Downloads at most two artifacts, runs `changelog.sh` over a full-depth
+    # clone, and makes two `gh` calls. Everything it does is I/O, and the two
     # unbounded parts are the `fetch-depth: 0` checkout and the upload of the
     # `.dmg`, which is the largest file this workflow produces. 20 leaves room
     # for both to be slow without leaving a tag half-published for six hours.
     timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      TRAIN: ${{ needs.verify.outputs.train }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0
           fetch-tags: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        if: needs.verify.outputs.train == 'core'
         with:
           path: dist
           pattern: binaries-*
@@ -1116,9 +1205,12 @@ jobs:
       # A second download rather than a wider pattern on the first: the
       # `binaries-*` artifacts are one per Rust target and are merged into one
       # directory, while this is a single artifact from a job with a different
-      # shape. Both land in `dist/`, which is what the checksum block and the
-      # upload below read.
+      # shape. Each is gated on its train, because a download of an artifact
+      # this run never made is an error rather than an empty directory. Either
+      # lands in `dist/`, which is what the checksum block and the upload below
+      # read.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        if: needs.verify.outputs.train == 'app'
         with:
           path: dist
           name: macos-app
@@ -1129,56 +1221,74 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Kept in step with the `macos-app` job's `Package the .dmg`, which
-          # is where this name is constructed.
-          DMG="sunrise-${VERSION}-aarch64-apple-darwin.dmg"
-          # Previous release tag, by tag topology rather than by date: `git
-          # describe` walks the parent chain, so a tag pushed out of order does
-          # not produce a changelog spanning the wrong range.
-          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          # Previous release tag of this train, by tag topology rather than by
+          # date: `git describe` walks the parent chain, so a tag pushed out of
+          # order does not produce a changelog spanning the wrong range. The
+          # bare `v*` pattern is the one tag cut before ADR-0064's split,
+          # `v0.1.0-rc.1`, which released both halves and so is the predecessor
+          # of each train's first release. A tag of the *other* train is never
+          # matched: its changes are not this release's.
+          prev=$(git describe --tags --abbrev=0 \
+                   --match "${TRAIN}-v[0-9]*.[0-9]*.[0-9]*" \
+                   --match 'v[0-9]*.[0-9]*.[0-9]*' \
+                   "${TAG}^" 2>/dev/null || true)
           {
             if [ -n "$prev" ]; then
               echo "Changes since [\`${prev}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${prev})."
             else
-              echo "First tagged release."
+              echo "First tagged ${TRAIN} release."
             fi
             echo
             .github/scripts/changelog.sh "$prev" "$TAG"
             echo '## Artifacts'
             echo
-            echo '### Container image'
-            echo
-            echo '```'
-            echo "docker pull ghcr.io/${OWNER,,}/sunrise-server:${VERSION}"
-            echo '```'
-            echo
-            echo 'Built by this workflow with no stored registry credentials. Verify its provenance:'
-            echo
-            echo '```'
-            echo "gh attestation verify oci://ghcr.io/${OWNER,,}/sunrise-server:${VERSION} --repo ${GITHUB_REPOSITORY}"
-            echo '```'
-            echo
-            echo 'See [docs/06-server/self-hosting.md](https://github.com/'"${GITHUB_REPOSITORY}"'/blob/'"${TAG}"'/docs/06-server/self-hosting.md) for configuration.'
-            echo
-            echo '### macOS app'
-            echo
-            # Double quotes with escaped backticks, not single quotes: a bare
-            # backtick would open a command substitution, and a single-quoted
-            # string cannot interpolate the file name.
-            printf "Download \`%s\`, open it, and drag Sunrise to Applications. It is signed with a Developer ID Application identity, notarized by Apple and stapled, so it opens on a Mac that has never seen it before and keeps opening with no network. Verify a downloaded copy yourself:\n" "$DMG"
-            echo
-            echo '```'
-            echo "spctl -a -vvv -t install ${DMG}"
-            echo "xcrun stapler validate ${DMG}"
-            echo '```'
-            echo
-            echo "The full procedure, including what each field of \`codesign -dv --verbose=4\` should say, is in [docs/07-clients/releasing.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/07-clients/releasing.md)."
-            echo
-            # Double quotes with escaped backticks, for the reason the printf
-            # above gives: a bare backtick inside single quotes is a command
-            # substitution to shellcheck, and to a shell that ever evaluates it.
-            printf "An installed copy finds this release by itself: the app checks a signed \`appcast.xml\` on this Releases page and offers the update on next launch. \`appcast.xml\` and \`appcast-item.json\` are that mechanism rather than files to download by hand — see [ADR-0038](https://github.com/%s/blob/%s/docs/11-adr/0038-macos-update-feed.md).\n" "$GITHUB_REPOSITORY" "$TAG"
-            echo
+            if [ "$TRAIN" = "core" ]; then
+              echo '### CLI and server'
+              echo
+              # Double quotes with escaped backticks, for the reason the printf
+              # in the app branch below gives.
+              printf "\`sunrise-%s-<target>.tar.gz\` holds the \`sunrise\` CLI and \`sunrise-server\` for one Rust target. The macOS app is released separately, as an \`app-v*\` release (ADR-0064).\n" "$VERSION"
+              echo
+              echo '### Container image'
+              echo
+              echo '```'
+              echo "docker pull ghcr.io/${OWNER,,}/sunrise-server:${VERSION}"
+              echo '```'
+              echo
+              echo 'Built by this workflow with no stored registry credentials. Verify its provenance:'
+              echo
+              echo '```'
+              echo "gh attestation verify oci://ghcr.io/${OWNER,,}/sunrise-server:${VERSION} --repo ${GITHUB_REPOSITORY}"
+              echo '```'
+              echo
+              echo 'See [docs/06-server/self-hosting.md](https://github.com/'"${GITHUB_REPOSITORY}"'/blob/'"${TAG}"'/docs/06-server/self-hosting.md) for configuration.'
+              echo
+            else
+              # Kept in step with the `macos-app` job's `Package the .dmg`,
+              # which is where this name is constructed.
+              DMG="sunrise-${VERSION}-aarch64-apple-darwin.dmg"
+              echo '### macOS app'
+              echo
+              # Double quotes with escaped backticks, not single quotes: a bare
+              # backtick would open a command substitution, and a single-quoted
+              # string cannot interpolate the file name.
+              printf "Download \`%s\`, open it, and drag Sunrise to Applications. It is signed with a Developer ID Application identity, notarized by Apple and stapled, so it opens on a Mac that has never seen it before and keeps opening with no network. Verify a downloaded copy yourself:\n" "$DMG"
+              echo
+              echo '```'
+              echo "spctl -a -vvv -t install ${DMG}"
+              echo "xcrun stapler validate ${DMG}"
+              echo '```'
+              echo
+              echo "The full procedure, including what each field of \`codesign -dv --verbose=4\` should say, is in [docs/07-clients/releasing.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/07-clients/releasing.md)."
+              echo
+              # Double quotes with escaped backticks, for the reason the printf
+              # above gives: a bare backtick inside single quotes is a command
+              # substitution to shellcheck, and to a shell that ever evaluates it.
+              printf "An installed copy finds this release by itself: the app checks a signed \`appcast.xml\` on this Releases page and offers the update on next launch. \`appcast.xml\` and \`appcast-item.json\` are that mechanism rather than files to download by hand — see [ADR-0038](https://github.com/%s/blob/%s/docs/11-adr/0038-macos-update-feed.md).\n" "$GITHUB_REPOSITORY" "$TAG"
+              echo
+              printf "The CLI, the server and its container image are released separately, as \`core-v*\` releases (ADR-0064).\n"
+              echo
+            fi
             echo '### Checksums'
             echo
             echo '```'
@@ -1190,32 +1300,53 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
           set -euo pipefail
+          # Named by train, because the Releases page now interleaves two of
+          # them and a bare tag name makes a reader parse the prefix.
+          #
+          # `make_latest` is the load-bearing difference. The Mac app's
+          # `SUFeedURL` is `…/releases/latest/download/appcast.xml`, so
+          # whichever Release GitHub calls `latest` is the one every installed
+          # copy fetches the feed from. A core Release carries no feed, and
+          # one that became `latest` would strand every installation until the
+          # next app release. So a core Release never takes the alias, and an
+          # app Release keeps GitHub's default: `latest` when it is stable,
+          # never when it is a prerelease.
+          case "$TRAIN" in
+            core) name="Sunrise core ${VERSION}"; latest=false ;;
+            app)  name="Sunrise app ${VERSION}";  latest=true ;;
+          esac
+          if [ "$PRERELEASE" = "true" ]; then latest=false; fi
           # `generate_release_notes` appends GitHub's own PR/contributor list
           # underneath the body above, which is where the links this workflow
           # cannot derive from a commit log come from. `.github/release.yml`
           # controls how it groups them.
           gh api "repos/${GITHUB_REPOSITORY}/releases" \
             -f tag_name="$TAG" \
-            -f name="$TAG" \
+            -f name="$name" \
             -f "body=$(cat NOTES.md)" \
             -F generate_release_notes=true \
             -F prerelease="$PRERELEASE" \
+            -f make_latest="$latest" \
             -F draft=false
-          # `dist/*.sha256` covers the `.dmg`'s checksum too -- the macOS job
-          # emits one beside the image, the same way each `binaries` leg does
-          # -- and the `### Checksums` block above `cat`s the same glob, so the
-          # notes and the uploaded files cannot disagree about what shipped.
-          # `appcast-item.json` is not an artifact a human downloads: it is the
-          # `.dmg`'s EdDSA signature and bundle version numbers, produced on
-          # the machine that built and stapled the disk image, and it is how
-          # the `appcast` job below -- and every *later* release's `appcast`
-          # job -- puts this release into the update feed without re-signing a
-          # file it downloaded. See ADR-0038.
-          gh release upload "$TAG" \
-            dist/*.tar.gz dist/*.dmg dist/*.sha256 dist/appcast-item.json --clobber
+          # `dist/*.sha256` covers every artifact of this train -- each
+          # `binaries` leg and the macOS job emit one beside the file they
+          # made -- and the `### Checksums` block above `cat`s the same glob,
+          # so the notes and the uploaded files cannot disagree about what
+          # shipped. `appcast-item.json` is not an artifact a human downloads:
+          # it is the `.dmg`'s EdDSA signature and bundle version numbers,
+          # produced on the machine that built and stapled the disk image, and
+          # it is how the `appcast` job below -- and every *later* app
+          # release's `appcast` job -- puts this release into the update feed
+          # without re-signing a file it downloaded. See ADR-0038.
+          if [ "$TRAIN" = "core" ]; then
+            gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+          else
+            gh release upload "$TAG" dist/*.dmg dist/*.sha256 dist/appcast-item.json --clobber
+          fi
 
   # ---------------------------------------------------------------------
   # The update feed, last of all: it is the file that tells every *already
@@ -1236,11 +1367,22 @@ jobs:
   # skips prereleases — so when this tag is a prerelease, the feed a user's
   # Mac fetches is still the one attached to the newest *stable* release, and
   # it has to be replaced or no beta is ever offered. See ADR-0038 §Hosting.
+  #
+  # App train only. `latest` is always an app release, because `release`
+  # creates every core Release with `make_latest=false` (ADR-0064).
   # ---------------------------------------------------------------------
   appcast:
     name: Update feed (appcast.xml)
     needs: [verify, release]
-    if: needs.verify.outputs.dry_run == 'false'
+    # `always()` for the reason `release` carries one: `release` ran, but two
+    # of *its* needs were the other train's and were skipped, and a job whose
+    # `if:` holds no status function is skipped when any job upstream of it
+    # was. What this job actually depends on is stated instead.
+    if: >-
+      always()
+      && needs.release.result == 'success'
+      && needs.verify.outputs.train == 'app'
+      && needs.verify.outputs.dry_run == 'false'
     # macOS because `sign_update` is a macOS binary and there is no other
     # implementation of Sparkle's signing format worth trusting a release to.
     # It is the cheapest macOS job here by a wide margin -- a checkout, a
@@ -1266,6 +1408,11 @@ jobs:
       # a note, which is the only workable answer for releases that predate
       # this pipeline: they cannot grow a sidecar now, and refusing to build
       # the feed because of them would mean never building it.
+      #
+      # Core releases are collected too and the generator drops them by tag
+      # (`appcast.is_app_release`). Filtering here as well would be a second
+      # copy of that rule in shell, untested; the cost of not doing so is one
+      # `gh release download` per core release that finds nothing.
       - name: Collect every release and its signature sidecar
         run: |
           set -euo pipefail
@@ -1331,12 +1478,22 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG" appcast.xml --clobber
           published="$TAG"
+          # `releases/latest` is the same alias `SUFeedURL` resolves through,
+          # and it excludes prereleases — so asking the API for it is asking
+          # exactly "which release is serving the feed right now?".
+          stable=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+                     --jq '.tag_name' 2>/dev/null || true)
+          # `release` never lets a core Release take the alias, so this is a
+          # Release somebody marked `latest` by hand. Every installed copy is
+          # fetching its feed from a Release that has none, and uploading the
+          # feed there would hide that rather than fix it.
+          case "$stable" in
+            core-v*)
+              echo "::error title=The update feed resolves to a core release::GitHub's 'latest' release is ${stable}, a core release with no appcast.xml, so SUFeedURL finds no feed and no installed copy is offered any update. Mark the newest stable app-v* release as latest (Releases page, Edit, 'Set as the latest release'), then re-run this job. ADR-0064 says why only an app release may hold it."
+              exit 1
+              ;;
+          esac
           if [ "$PRERELEASE" = "true" ]; then
-            # `releases/latest` is the same alias `SUFeedURL` resolves through,
-            # and it excludes prereleases — so asking the API for it is asking
-            # exactly "which release is serving the feed right now?".
-            stable=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
-                       --jq '.tag_name' 2>/dev/null || true)
             if [ -n "$stable" ] && [ "$stable" != "$TAG" ]; then
               gh release upload "$stable" appcast.xml --clobber
               published="$published, $stable"
@@ -1376,15 +1533,17 @@ jobs:
   # `release` deliberately does not depend on this. The GitHub Release carries
   # no iOS artifact — there is nowhere for one to go, which is the whole
   # reason iOS needed its own ADR — so gating the Release on an App Store
-  # Connect upload would make an Apple-side outage withhold the CLI tarballs.
+  # Connect upload would make an Apple-side outage withhold the `.dmg`.
   # ---------------------------------------------------------------------
   ios-release:
     name: iOS ${{ needs.verify.outputs.ios_configured == 'true' && '(App Store Connect)' || '(not configured, no-op)' }}
     needs: verify
-    # Tags only. A dry run exists to exercise the macOS packaging path and has
-    # no iOS half; running this on one would cost a macOS runner to print a
-    # summary nobody asked for.
-    if: needs.verify.outputs.dry_run == 'false'
+    # App tags only. A dry run exists to exercise the macOS packaging path and
+    # has no iOS half; running this on one would cost a macOS runner to print
+    # a summary nobody asked for. A core tag changes nothing an iOS build
+    # would carry beyond the core it links, which reaches iOS on the next app
+    # release (ADR-0064).
+    if: needs.verify.outputs.dry_run == 'false' && needs.verify.outputs.train == 'app'
     # The no-op costs a cheap runner. macOS minutes bill at 10x, and until the
     # secrets exist this job's entire body is one `echo` into the summary.
     runs-on: ${{ needs.verify.outputs.ios_configured == 'true' && 'macos-26' || 'ubuntu-latest' }}
@@ -1530,8 +1689,9 @@ jobs:
           set -euo pipefail
           cd apps/apple
           xcodegen generate --quiet
-          # As on macOS: the bundle's version numbers come from the tag, not
-          # from project.yml's pinned 0.1.0. `CFBundleVersion` is the run
+          # As on macOS: the bundle's version numbers come from the tag, which
+          # `verify` has already held equal to project.yml's MARKETING_VERSION.
+          # `CFBundleVersion` is the run
           # number because App Store Connect refuses a build whose version it
           # has already seen for this marketing version, and a `-rc.2`
           # following a `-rc.1` shares one.
@@ -1648,8 +1808,9 @@ jobs:
   web-pages:
     name: Web (Cloudflare Pages)
     needs: verify
-    # Tags only: a dry run exists for the macOS packaging path.
-    if: needs.verify.outputs.dry_run == 'false'
+    # App tags only: a dry run exists for the macOS packaging path, and the
+    # web client is the app train's (ADR-0064).
+    if: needs.verify.outputs.dry_run == 'false' && needs.verify.outputs.train == 'app'
     runs-on: ubuntu-latest
     # A cold release build of the web core for wasm32 (~3 minutes locally, as
     # `ci.yml`'s `wasm-core` job notes), `wasm-bindgen-cli` compiled from
@@ -1751,7 +1912,7 @@ jobs:
           bunx wrangler@4.140.0 pages deploy \
             --branch "$branch" \
             --commit-hash "$GITHUB_SHA" \
-            --commit-message "v$VERSION"
+            --commit-message "app-v$VERSION"
 
 # ---------------------------------------------------------------------------
 # Publish targets deliberately absent
@@ -1759,14 +1920,16 @@ jobs:
 # Issue #17 names crates.io, npm and Google Play as targets "as they come
 # online". None is online:
 #
-#   crates.io  — every crate sets `publish = false` in [workspace.package].
-#                When that changes, crates.io Trusted Publishing is a real
-#                OIDC exchange (`id-token: write` → short-lived token), so it
-#                should be wired that way and not with a stored API token.
-#   npm        — the root package.json is `private: true` and no workspace
-#                package is published.
+#   crates.io  — every crate's own [package] says `publish = false`. When that
+#                changes, crates.io Trusted Publishing is a real OIDC exchange
+#                (`id-token: write` → short-lived token), so it should be
+#                wired that way and not with a stored API token.
+#   npm        — every package.json, the root's included, is
+#                `"private": true`, and no workspace package is published.
 #   Google Play — there is no Android app.
 #
 # Adding a stub job for any of them would be a job that fails on the first tag,
-# so they are recorded here instead.
+# so they are recorded here instead. Since ADR-0064 this is a decision rather
+# than a default, and `ci.yml`'s publish gate (`.github/scripts/publish-gate.py`)
+# fails a pull request that makes a crate or a package publishable.
 # ---------------------------------------------------------------------------

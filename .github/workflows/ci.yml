@@ -606,8 +606,9 @@ jobs:
   # The matrix is every baseline the invariant binds. A build older than the
   # ADR-0042 floor is outside it: `v0.1.0-rc.1` predates three CRYPTO_SUITE_V
   # bumps that ADR-0042's withdrawn licence allowed, and `HEAD` does not open
-  # a vault it wrote at all. A release cut at or after the floor joins the
-  # matrix, with whatever change to the driver its API needs.
+  # a vault it wrote at all. A core release (`core-v*`, ADR-0064) cut at or
+  # after the floor joins the matrix, with whatever change to the driver its
+  # API needs.
   cross-version:
     name: Cross-version merge (${{ matrix.name }})
     runs-on: ubuntu-latest
