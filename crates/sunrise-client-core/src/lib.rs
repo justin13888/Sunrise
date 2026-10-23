@@ -8,6 +8,8 @@
 //!
 //! * [`undo`] — undo/redo built from **inverse commands**, read out of the
 //!   rows the client is already holding.
+//! * [`history`] — a session's undo and redo stacks, recorded and replayed
+//!   against a live vault.
 //! * [`views`] — named saved views, stored per device as a preference.
 //! * [`config`] — the tiny TOML subset both preference files are written in.
 //! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
@@ -23,6 +25,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod config;
+pub mod history;
 #[cfg(feature = "relay")]
 pub mod recovery;
 pub mod undo;

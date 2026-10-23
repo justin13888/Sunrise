@@ -1,18 +1,15 @@
 //! Client-side logic that is not any one client's, across the seam.
 //!
-//! Two things sit between `sunrise-core` and a user interface without
-//! belonging to either: undo/redo, and saved views. `sunrise-client-core`
-//! holds both — rescued from the deleted TUI so the next client would not
-//! reimplement them — and until this module existed it held them for nobody:
-//! the crate had **zero consumers**. A correct, well-tested library that no
-//! shipping binary can reach is the failure this epic keeps finding, so the
-//! point of this module is reachability, not novelty.
+//! Undo/redo, saved views, the bootstrap preferences and the edit gate are
+//! `sunrise-client-core`'s; this module is their `UniFFI` mirror and nothing
+//! else. Every body here converts a record and delegates, so the CLI and any
+//! later client run the same implementation the Apple clients do.
 //!
 //! # Undo is a new write
 //!
-//! [`sunrise_client_core::undo`] builds *inverse commands*: the command that
-//! restores the fields another command is about to change. That is not a
-//! rollback, and the difference is visible to the user:
+//! [`sunrise_client_core::undo`] builds *inverse commands*, and
+//! [`sunrise_client_core::history`] records and replays them against the
+//! vault. That is not a rollback, and the difference is visible to the user:
 //!
 //! * Undoing a completion is a re-open op. It converges like any other write,
 //!   and a device undoing what another has since changed loses the LWW tie
@@ -29,26 +26,14 @@
 //!   PN-counter; undo restores the date and the count keeps its history. A
 //!   review that said "deferred three times" should not change its mind
 //!   because one of them was undone.
-//!
-//! The rows the inverse is read from come from the **vault**, not from
-//! whatever the client happens to be holding. `EntityLookup` was written as a
-//! lookup precisely so each client could supply its own rows; here the vault
-//! is both the nearest and the most honest source, and it means a row that has
-//! scrolled off screen is still undoable.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sunrise_client_core::undo::{
-    invert, invert_create, EntityLookup, NotUndoable, UndoEntry, MAX_DEPTH,
-};
+use sunrise_client_core::history::UndoLabels;
+use sunrise_client_core::undo::NotUndoable;
 use sunrise_client_core::views;
 use sunrise_client_core::views::View;
-use sunrise_core::queries::{ContextRow, StreamRow};
-use sunrise_core::{Command, Core, Query, QueryResult};
-use sunrise_domain::{RoutineRow, Task};
-use sunrise_id::EntityRef;
 
 use crate::dto::{EditGate, PreferenceItem};
 use crate::{BindingError, SunriseCore};
@@ -120,181 +105,13 @@ pub struct UndoState {
     pub redo_label: Option<String>,
 }
 
-/// The two stacks, and the rule that binds them.
-#[derive(Debug, Default)]
-pub(crate) struct UndoStacks {
-    done: Vec<UndoEntry>,
-    undone: Vec<UndoEntry>,
-}
-
-impl UndoStacks {
-    /// Record a step. Clears the redo stack: once a new write lands, the
-    /// branch that was undone is no longer reachable, and offering to "redo"
-    /// into it would replay a command built against a vault that has moved.
-    pub(crate) fn push(&mut self, entry: UndoEntry) {
-        self.undone.clear();
-        if self.done.len() == MAX_DEPTH {
-            self.done.remove(0);
-        }
-        self.done.push(entry);
-    }
-
-    pub(crate) fn take_undo(&mut self) -> Option<UndoEntry> {
-        self.done.pop()
-    }
-
-    pub(crate) fn take_redo(&mut self) -> Option<UndoEntry> {
-        self.undone.pop()
-    }
-
-    /// A step that was just undone, ready to be replayed. Stored flipped, so
-    /// `redo` submits its `backward` exactly as `undo` does.
-    pub(crate) fn push_undone(&mut self, entry: UndoEntry) {
-        self.undone.push(entry.flipped());
-    }
-
-    /// A step that was just redone, back on the undo stack. Deliberately does
-    /// **not** clear the redo stack — a redo is not a new branch.
-    pub(crate) fn push_redone(&mut self, entry: UndoEntry) {
-        if self.done.len() == MAX_DEPTH {
-            self.done.remove(0);
-        }
-        self.done.push(entry.flipped());
-    }
-
-    pub(crate) fn state(&self) -> UndoState {
-        UndoState {
-            undo_label: self.done.last().map(|e| e.label.clone()),
-            redo_label: self.undone.last().map(|e| e.label.clone()),
+impl From<UndoLabels> for UndoState {
+    fn from(l: UndoLabels) -> Self {
+        Self {
+            undo_label: l.undo,
+            redo_label: l.redo,
         }
     }
-}
-
-/// The rows an inverse command is read from, fetched from the vault.
-///
-/// Only what the batch actually needs: a task edit costs one `EntityById`, and
-/// nothing else is read at all.
-#[derive(Default)]
-pub(crate) struct VaultRows {
-    tasks: BTreeMap<EntityRef, Task>,
-    streams: Vec<StreamRow>,
-    contexts: Vec<ContextRow>,
-    routines: Vec<RoutineRow>,
-}
-
-impl EntityLookup for VaultRows {
-    fn task(&self, id: EntityRef) -> Option<&Task> {
-        self.tasks.get(&id)
-    }
-    fn stream(&self, id: EntityRef) -> Option<&StreamRow> {
-        self.streams.iter().find(|s| s.id == id)
-    }
-    fn context(&self, id: EntityRef) -> Option<&ContextRow> {
-        self.contexts.iter().find(|c| c.id == id)
-    }
-    fn routine(&self, id: EntityRef) -> Option<&RoutineRow> {
-        self.routines.iter().find(|r| r.id == id)
-    }
-}
-
-/// Which reads `cmds` will need before it is applied.
-#[derive(Default)]
-struct Wanted {
-    tasks: Vec<EntityRef>,
-    streams: bool,
-    contexts: bool,
-    routines: bool,
-}
-
-/// Read exactly what [`invert`] will ask for, **before** `cmds` is applied.
-///
-/// Once the write has landed the old values are gone, so the ordering here is
-/// the whole correctness argument.
-pub(crate) async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultRows, BindingError> {
-    let mut wanted = Wanted::default();
-    for cmd in cmds {
-        match cmd {
-            Command::CompleteTask(id)
-            | Command::DeferTask { id, .. }
-            | Command::DeferTaskTo { id, .. }
-            | Command::UpdateTask { id, .. }
-            | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
-            Command::UpdateStream { .. } => wanted.streams = true,
-            Command::UpdateContext { .. } => wanted.contexts = true,
-            Command::UpdateRoutine { .. } => wanted.routines = true,
-            // Everything else is either a tombstone or has no inverse; both
-            // reach `invert` as a refusal and need no rows read for them.
-            _ => {}
-        }
-    }
-
-    let mut rows = VaultRows::default();
-    for id in wanted.tasks {
-        if let QueryResult::Task(t) = core.query(Query::EntityById(id)).await? {
-            rows.tasks.insert(id, *t);
-        }
-    }
-    if wanted.streams {
-        if let QueryResult::Streams(s) = core.query(Query::StreamList).await? {
-            rows.streams = s;
-        }
-    }
-    if wanted.contexts {
-        if let QueryResult::Contexts(c) = core.query(Query::Contexts).await? {
-            rows.contexts = c;
-        }
-    }
-    if wanted.routines {
-        if let QueryResult::Routines(r) = core.query(Query::Routines).await? {
-            // `RoutineRow` is what `EntityLookup` speaks, and the projection
-            // that makes one is the domain's — not a shape invented here.
-            let now =
-                jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap_or(i64::MAX))
-                    .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-            rows.routines = sunrise_domain::routine_rows(&r, now);
-        }
-    }
-    Ok(rows)
-}
-
-/// Build the step that undoes `cmds`, or say why it cannot be built.
-pub(crate) async fn record(
-    core: &Core,
-    label: String,
-    cmds: Vec<Command>,
-) -> Result<UndoEntry, UndoRefusal> {
-    let rows = snapshot_for(core, &cmds)
-        .await
-        // A read that failed is not evidence the command is irreversible, but
-        // it is evidence this step cannot be trusted to reverse — which is the
-        // same answer as far as the user is concerned, and the honest one.
-        .map_err(|_| UndoRefusal::Unsupported)?;
-    let backward = invert(&rows, &cmds).map_err(UndoRefusal::from)?;
-    Ok(UndoEntry {
-        label,
-        forward: cmds,
-        backward,
-    })
-}
-
-/// Build the step that undoes a create, from the id the core just minted.
-///
-/// The mirror image of [`record`], and the ordering is inverted for the same
-/// reason it is fixed there: an edit's inverse reads values the write is about
-/// to overwrite, so it must be built *first*; a create's inverse names an
-/// entity that does not exist until the write lands, so it can only be built
-/// *after*. `created` is the `CommandResult::entity` of that write.
-pub(crate) fn record_create(
-    label: String,
-    cmd: Command,
-    created: EntityRef,
-) -> Result<UndoEntry, UndoRefusal> {
-    let backward = vec![invert_create(&cmd, created).map_err(UndoRefusal::from)?];
-    Ok(UndoEntry {
-        label,
-        forward: vec![cmd],
-        backward,
-    })
 }
 
 // ---------------------------------------------------------------------------
