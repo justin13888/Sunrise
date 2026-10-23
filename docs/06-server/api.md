@@ -536,7 +536,7 @@ Clients poll `receive`; there is no stream.
 |---|---|---|---|---|
 | GET | `/api/v1/meta` | — | `MetaResponse` (below) | implemented |
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
-| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented (no disk-free check) |
+| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented |
 
 `MetaResponse` (`api/meta.rs`) is:
 
@@ -570,19 +570,22 @@ the signed operations' canonical target (`api/signed.rs`) is untouched. A
 | `accepting` | the server is not draining; it fails from the moment `SIGTERM` arrives |
 | `store` | `SELECT 1` against the relay database returns within 2 s |
 | `blob_root` | a probe file is written and removed under the blob root within 5 s |
+| `disk` | the filesystem holding the blob root has more than 5% of its blocks available to the relay (`statvfs`'s `f_bavail / f_blocks`), read within 5 s |
 
 Both answers carry the outcomes, and a `503` names the failures in `failed`:
 
 ```json
-{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true}}
-{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true},"failed":["accepting"]}
+{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true,"disk":true}}
+{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true,"disk":true},"failed":["accepting"]}
 ```
 
-Two checks an earlier draft listed are not here. An object store `HEAD` on
+One check an earlier draft listed is not here. An object store `HEAD` on
 `_health/probe` has nothing to probe: self-host blobs are files, and
-`blob_root` is that store's check. A local disk free ratio above 5% is not
-built, because reading it needs a `statvfs` the crate's `forbid(unsafe_code)`
-leaves no safe dependency for yet.
+`blob_root` is that store's check. `disk` is read through `rustix`'s safe
+`statvfs`, so the crate's `forbid(unsafe_code)` holds; at exactly 5% it fails.
+A filesystem that reports no blocks at all has no ratio and passes, and one
+that cannot be read fails. On a platform without `statvfs` there is no reading
+and `disk` passes.
 
 `oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration. Both are `null` in single-tenant self-host mode, where no issuer is configured.
 

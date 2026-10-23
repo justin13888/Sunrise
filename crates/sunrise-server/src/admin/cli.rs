@@ -191,6 +191,28 @@ fn failure(e: impl std::fmt::Display) -> (u8, String) {
     (EX_FAILURE, e.to_string())
 }
 
+/// `doctor`'s `free_space`: the same reading and threshold as the readiness
+/// probe's `disk`, as a status and its detail. `blobs` is where they are.
+async fn free_space(state: &ServerState, blobs: &str) -> (&'static str, String) {
+    match state.blobs.disk_space().await {
+        Ok(Some(space)) => (
+            if space.has_room() { "ok" } else { "fail" },
+            format!(
+                "{} of {} blocks available on the filesystem holding {blobs}; more than {}% \
+                 is needed",
+                space.available,
+                space.total,
+                crate::blob::DiskSpace::MIN_FREE_PERCENT
+            ),
+        ),
+        Ok(None) => (
+            "skipped",
+            "the blob backend has no local filesystem to read".to_owned(),
+        ),
+        Err(e) => ("fail", format!("{blobs}: {e}")),
+    }
+}
+
 /// `self-hosting.md` §Testing the install, the checks that apply to a
 /// single-binary SQLite relay behind a TLS-terminating proxy.
 async fn doctor(state: &ServerState) -> Value {
@@ -250,13 +272,8 @@ async fn doctor(state: &ServerState) -> Value {
         Ok(()) => check("blob_root", "ok", format!("{blobs} is writable")),
         Err(e) => check("blob_root", "fail", format!("{blobs}: {e}")),
     }
-    check(
-        "free_space",
-        "skipped",
-        "the free-space ratio needs statvfs, which this binary cannot call without unsafe code; \
-         read it with df"
-            .to_owned(),
-    );
+    let (status, detail) = free_space(state, &blobs).await;
+    check("free_space", status, detail);
     match &cfg.push.apns {
         // `ServerState::try_new` already built the provider, which refuses a
         // key it cannot sign with, so reaching here means it loaded.

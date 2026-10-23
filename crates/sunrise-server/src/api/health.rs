@@ -40,6 +40,9 @@ pub struct HealthResponse {
 }
 
 /// What `?deep=1` checked, one member per check, `true` where it passed.
+// One `bool` per check is the wire shape `api.md` documents and probes read,
+// so the lint's suggestion of an enum or a bit set does not apply.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 pub struct ReadinessChecks {
     /// The server is not draining. `false` from the moment shutdown begins.
@@ -48,6 +51,9 @@ pub struct ReadinessChecks {
     pub store: bool,
     /// The blob root took a probe write and its removal within 5 s.
     pub blob_root: bool,
+    /// The filesystem holding the blob root has more than 5% of its blocks
+    /// available to the relay, read within 5 s.
+    pub disk: bool,
 }
 
 impl ReadinessChecks {
@@ -56,6 +62,7 @@ impl ReadinessChecks {
             ("accepting", self.accepting),
             ("store", self.store),
             ("blob_root", self.blob_root),
+            ("disk", self.disk),
         ]
         .into_iter()
         .filter(|(_, ok)| !ok)
@@ -97,8 +104,9 @@ pub enum HealthReply {
 /// disk would restart a process that restarting cannot fix.
 ///
 /// With `?deep=1` it answers `200` only when the server is not draining, the
-/// store answers within 2 s, and the blob root is writable within 5 s, and
-/// otherwise `503` naming the failed checks.
+/// store answers within 2 s, the blob root is writable within 5 s, and its
+/// filesystem has more than 5% free, and otherwise `503` naming the failed
+/// checks.
 #[kynos::get("/api/v1/health", operation_id = "health")]
 pub async fn health(
     Inject(state): Inject<ServerState>,
@@ -111,14 +119,16 @@ pub async fn health(
             failed: Vec::new(),
         });
     }
-    let (store, blob_root) = tokio::join!(
+    let (store, blob_root, disk) = tokio::join!(
         probe_store(Arc::clone(&state.store)),
         probe_blob_root(Arc::clone(&state.blobs)),
+        probe_disk(Arc::clone(&state.blobs)),
     );
     let checks = ReadinessChecks {
         accepting: !state.drain.is_draining(),
         store,
         blob_root,
+        disk,
     };
     let failed = checks.failed();
     if failed.is_empty() {
@@ -130,7 +140,7 @@ pub async fn health(
     }
     // A drain is expected and probed every few seconds; logging it would bury
     // the line that matters, which is a dependency failing while serving.
-    if !(checks.store && checks.blob_root) {
+    if !(checks.store && checks.blob_root && checks.disk) {
         tracing::warn!(
             ev = "srv.health.unready",
             result = "failed",
@@ -171,6 +181,20 @@ async fn probe_blob_root(blobs: Arc<dyn BlobBackend>) -> bool {
         tokio::time::timeout(BLOB_DEADLINE, probe).await,
         Ok(Ok(true))
     )
+}
+
+/// Whether the blob root's filesystem has room, within [`BLOB_DEADLINE`], on
+/// a blocking thread for the same reason as [`probe_store`]: `statvfs` on a
+/// hung network mount does not return. A backend with no filesystem to read
+/// passes; one whose reading fails does not, since a disk the relay cannot
+/// stat is not one it can be sure of writing to.
+async fn probe_disk(blobs: Arc<dyn BlobBackend>) -> bool {
+    let runtime = tokio::runtime::Handle::current();
+    let probe = tokio::task::spawn_blocking(move || runtime.block_on(blobs.disk_space()));
+    match tokio::time::timeout(BLOB_DEADLINE, probe).await {
+        Ok(Ok(Ok(space))) => space.is_none_or(crate::blob::DiskSpace::has_room),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -232,7 +256,7 @@ mod tests {
             res.json(),
             serde_json::json!({
                 "status": "ok",
-                "checks": {"accepting": true, "store": true, "blob_root": true},
+                "checks": {"accepting": true, "store": true, "blob_root": true, "disk": true},
             })
         );
         // The probe cleans up after itself.
@@ -341,7 +365,7 @@ mod tests {
         res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             res.json()["failed"],
-            serde_json::json!(["store", "blob_root"])
+            serde_json::json!(["store", "blob_root", "disk"])
         );
     }
 
@@ -368,5 +392,106 @@ mod tests {
         // A draining process is still alive.
         let res = client.send(Method::GET, "/api/v1/health", None).await;
         res.assert_status(StatusCode::OK);
+    }
+
+    /// A state over a writable blob root whose filesystem reports `read`.
+    fn with_disk(
+        dir: &tempfile::TempDir,
+        read: fn(&std::path::Path) -> std::io::Result<Option<crate::blob::DiskSpace>>,
+    ) -> Client {
+        let blobs = crate::blob::FsBlobs::new(dir.path().join("blobs")).with_disk_space(read);
+        Client::from_state(ready_state(dir).with_blob_backend(Arc::new(blobs)))
+    }
+
+    /// 4% free, and exactly 5%, fail readiness and name only the disk;
+    /// liveness does not look.
+    #[tokio::test]
+    async fn deep_answers_503_when_the_disk_has_5_percent_or_less_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let reads: [fn(&std::path::Path) -> _; 2] = [
+            |_| {
+                Ok(Some(crate::blob::DiskSpace {
+                    available: 4,
+                    total: 100,
+                }))
+            },
+            |_| {
+                Ok(Some(crate::blob::DiskSpace {
+                    available: 5,
+                    total: 100,
+                }))
+            },
+        ];
+        for read in reads {
+            let client = with_disk(&dir, read);
+            let res = client
+                .send(Method::GET, "/api/v1/health?deep=1", None)
+                .await;
+            res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(res.json()["failed"], serde_json::json!(["disk"]));
+            assert_eq!(res.json()["checks"]["blob_root"], serde_json::json!(true));
+
+            // Liveness stays unconditional: a restart frees no disk.
+            let res = client.send(Method::GET, "/api/v1/health", None).await;
+            res.assert_status(StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn deep_answers_ok_when_the_disk_has_more_than_5_percent_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = with_disk(&dir, |_| {
+            Ok(Some(crate::blob::DiskSpace {
+                available: 6,
+                total: 100,
+            }))
+        });
+        let res = client
+            .send(Method::GET, "/api/v1/health?deep=1", None)
+            .await;
+        res.assert_status(StatusCode::OK);
+        assert_eq!(res.json()["checks"]["disk"], serde_json::json!(true));
+    }
+
+    /// A filesystem the relay cannot stat is not one it can count on.
+    #[tokio::test]
+    async fn deep_answers_503_when_the_disk_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = with_disk(&dir, |_| Err(std::io::Error::other("stale handle")));
+        let res = client
+            .send(Method::GET, "/api/v1/health?deep=1", None)
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.json()["failed"], serde_json::json!(["disk"]));
+    }
+
+    #[test]
+    fn room_is_strictly_more_than_5_percent() {
+        let space = |available, total| crate::blob::DiskSpace { available, total };
+        assert!(!space(0, 100).has_room());
+        assert!(!space(5, 100).has_room());
+        assert!(space(51, 1000).has_room());
+        assert!(space(100, 100).has_room());
+        // No blocks reported is no ratio to fail on.
+        assert!(space(0, 0).has_room());
+        // Wide enough not to overflow.
+        assert!(space(u64::MAX, u64::MAX).has_room());
+        assert!(!space(u64::MAX / 20, u64::MAX).has_room());
+    }
+
+    /// The real reading, against the filesystem the test runs on: a root that
+    /// does not exist yet is read at its nearest ancestor.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_filesystem_backend_reads_its_disk_before_the_root_exists() {
+        use crate::blob::BlobBackend as _;
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = crate::blob::FsBlobs::new(dir.path().join("not/yet/blobs"));
+        let space = blobs
+            .disk_space()
+            .await
+            .unwrap()
+            .expect("a reading on unix");
+        assert!(space.available <= space.total, "{space:?}");
     }
 }

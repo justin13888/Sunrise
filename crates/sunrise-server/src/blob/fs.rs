@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sunrise_storage::BlobStore;
 
 use super::{
-    AccountKey, AccountTree, Area, BackupTotals, BlobBackend, BlobError, BlobUsage, Manifest,
-    StaleUpload,
+    AccountKey, AccountTree, Area, BackupTotals, BlobBackend, BlobError, BlobUsage, DiskSpace,
+    Manifest, StaleUpload,
 };
 
 /// Where uploads wait between `init` and `finalize`.
@@ -29,17 +29,34 @@ const PENDING: &str = "pending";
 /// Where finalized blobs live.
 const COMMITTED: &str = "committed";
 
+/// How [`FsBlobs::disk_space`](BlobBackend::disk_space) reads the filesystem
+/// under a path.
+type ReadDiskSpace = fn(&Path) -> std::io::Result<Option<DiskSpace>>;
+
 /// The blob tree rooted at one directory.
 #[derive(Debug, Clone)]
 pub struct FsBlobs {
     root: PathBuf,
+    /// [`statvfs_of`] outside tests; a test reports a fixed reading instead
+    /// of filling a disk.
+    read_disk_space: ReadDiskSpace,
 }
 
 impl FsBlobs {
     /// The tree under `root`, which is created on first write.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            read_disk_space: statvfs_of,
+        }
+    }
+
+    /// The same tree, its free space read by `read` rather than `statvfs`.
+    #[cfg(test)]
+    pub(crate) fn with_disk_space(mut self, read: ReadDiskSpace) -> Self {
+        self.read_disk_space = read;
+        self
     }
 
     /// The root directory.
@@ -343,6 +360,16 @@ impl BlobBackend for FsBlobs {
         Ok(())
     }
 
+    /// Read at the root, or at its nearest existing ancestor before the
+    /// first write has created it: the filesystem it will be created on is
+    /// the one it will fill.
+    async fn disk_space(&self) -> Result<Option<DiskSpace>, BlobError> {
+        let Some(existing) = self.root.ancestors().find(|p| p.exists()) else {
+            return Ok(None);
+        };
+        Ok((self.read_disk_space)(existing)?)
+    }
+
     /// The tree's files, then its manifests.
     ///
     /// 1. The manifests present are listed first. A manifest is written only
@@ -379,6 +406,22 @@ impl BlobBackend for FsBlobs {
     fn location(&self) -> String {
         self.root.display().to_string()
     }
+}
+
+/// The filesystem holding `path`, through `statvfs`.
+#[cfg(unix)]
+fn statvfs_of(path: &Path) -> std::io::Result<Option<DiskSpace>> {
+    let vfs = rustix::fs::statvfs(path)?;
+    Ok(Some(DiskSpace {
+        available: vfs.f_bavail,
+        total: vfs.f_blocks,
+    }))
+}
+
+/// No `statvfs` to call: no reading, so the readiness check passes.
+#[cfg(not(unix))]
+fn statvfs_of(_: &Path) -> std::io::Result<Option<DiskSpace>> {
+    Ok(None)
 }
 
 /// Write `data` to `path`, fsync, read it back and compare.

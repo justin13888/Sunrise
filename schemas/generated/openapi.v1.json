@@ -8,7 +8,7 @@
     "/api/v1/health": {
       "get": {
         "summary": "Liveness probe, and readiness probe with `?deep=1`.",
-        "description": "Unauthenticated on purpose: a load balancer has no token.\n\nWithout `deep` it reads no state and always answers `200 {\"status\":\"ok\"}`:\nit answers \"is the process up\", and a liveness probe that failed on a full\ndisk would restart a process that restarting cannot fix.\n\nWith `?deep=1` it answers `200` only when the server is not draining, the\nstore answers within 2 s, and the blob root is writable within 5 s, and\notherwise `503` naming the failed checks.",
+        "description": "Unauthenticated on purpose: a load balancer has no token.\n\nWithout `deep` it reads no state and always answers `200 {\"status\":\"ok\"}`:\nit answers \"is the process up\", and a liveness probe that failed on a full\ndisk would restart a process that restarting cannot fix.\n\nWith `?deep=1` it answers `200` only when the server is not draining, the\nstore answers within 2 s, the blob root is writable within 5 s, and its\nfilesystem has more than 5% free, and otherwise `503` naming the failed\nchecks.",
         "operationId": "health",
         "parameters": [
           {
@@ -8486,13 +8486,18 @@
           "blob_root": {
             "type": "boolean",
             "description": "The blob root took a probe write and its removal within 5 s."
+          },
+          "disk": {
+            "type": "boolean",
+            "description": "The filesystem holding the blob root has more than 5% of its blocks\navailable to the relay, read within 5 s."
           }
         },
         "type": "object",
         "required": [
           "accepting",
           "store",
-          "blob_root"
+          "blob_root",
+          "disk"
         ],
         "description": "What `?deep=1` checked, one member per check, `true` where it passed."
       },

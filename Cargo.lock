@@ -3530,6 +3530,7 @@ dependencies = [
  "kynos",
  "parking_lot",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sunrise-cbor",

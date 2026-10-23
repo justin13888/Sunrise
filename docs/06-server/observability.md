@@ -14,8 +14,7 @@ Operate the server without violating the E2EE guarantee.
 > exposed at `/metrics` (`metrics.rs`), and redacted OpenTelemetry tracing with
 > a capped sampler behind an off-by-default `[observability]` table
 > (`crates/sunrise-telemetry`, §Tracing). **Not built:** labelled metrics of any
-> kind, histograms, the deep health check's
-> disk-free-ratio probe, alerting, and the per-account audit log. Each section says which it is.
+> kind, histograms, alerting, and the per-account audit log. Each section says which it is.
 
 ## What we log
 
@@ -512,11 +511,12 @@ any `crates/*/src/logging` module.
   handler reads no state, so it is liveness only. It stays 200 while the server
   drains, because a draining process is alive.
 - `GET /api/v1/health?deep=1` is the readiness probe. It answers 200 only when
-  the server is not draining, the store answers `SELECT 1` within 2 s, and the
-  blob root takes a probe write within 5 s; otherwise 503 with `failed` naming
-  the checks. A failed dependency check logs `srv.health.unready`; a drain does
-  not, since it is expected. The disk-free-ratio check `api.md` lists is not
-  built. See [`api.md`](./api.md) §Health / meta for the body.
+  the server is not draining, the store answers `SELECT 1` within 2 s, the
+  blob root takes a probe write within 5 s, and the blob root's filesystem has
+  more than 5% of its blocks free; otherwise 503 with `failed` naming the
+  checks. A failed dependency check logs `srv.health.unready`; a drain does
+  not, since it is expected. See [`api.md`](./api.md) §Health / meta for the
+  body.
 - On `SIGTERM` or `SIGINT` the server logs `srv.stop.draining`, flips readiness
   to 503, ends every open SSE stream with a retryable `closed` event, and gives
   in-flight requests `[server] shutdown_grace_secs` (default 25) to finish

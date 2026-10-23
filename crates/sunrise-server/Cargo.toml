@@ -73,6 +73,11 @@ sunrise-wire-protocol = { workspace = true }
 # The relay database key is wiped when its holder drops (ADR-0060).
 zeroize = { workspace = true }
 
+# `statvfs` for the readiness probe's free-space check (`blob/fs.rs`). Unix
+# only: elsewhere the backend reports no reading and the check passes.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 ciborium = { workspace = true }
 futures-util = { workspace = true }
