@@ -102,11 +102,19 @@ def stamp_file(directory: pathlib.Path, revision) -> None:
     (directory / "revision.json").write_text(json.dumps(revision))
 
 
+# What cargo-mutants writes into `end_time` once a run returns, and the null
+# it leaves there until then. Every fixture is a finished run unless it asks
+# not to be, because an outcomes file with no `end_time` is a shard that was
+# stopped part-way and the gate refuses to score it.
+FINISHED = "2026-09-15T05:43:21.123456Z"
+OMIT = object()
+
+
 def document_file(path: pathlib.Path, outcomes: list,
-                  revision=MEASURED_AT) -> pathlib.Path:
+                  revision=MEASURED_AT, end_time=FINISHED) -> pathlib.Path:
     """Write an outcomes.json holding exactly these outcomes."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"outcomes": outcomes}))
+    path.write_text(json.dumps({"outcomes": outcomes, "end_time": end_time}))
     stamp_file(path.parent, revision)
     return path
 
@@ -119,9 +127,15 @@ def outcomes_file(
     timeout: int = 0,
     unviable: int = 0,
     revision=MEASURED_AT,
+    end_time=FINISHED,
 ) -> pathlib.Path:
-    """Write an outcomes.json holding exactly the tally asked for."""
+    """Write an outcomes.json holding exactly the tally asked for.
+
+    `end_time=None` writes the file a run cancelled part-way leaves behind;
+    `end_time=OMIT` leaves the key out altogether.
+    """
     document = {
+        "start_time": "2026-09-15T03:43:21.123456Z",
         "outcomes": [
             # The unmutated baseline scenario, which the gate must skip:
             # counted as a mutant it would shift every rate in the suite.
@@ -132,6 +146,8 @@ def outcomes_file(
             *(mutant(crate, UNVIABLE) for _ in range(unviable)),
         ]
     }
+    if end_time is not OMIT:
+        document["end_time"] = end_time
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document))
     stamp_file(path.parent, revision)
@@ -495,6 +511,144 @@ class GateContract(unittest.TestCase):
         )
         # Not the other cause, whose remedy is to re-run the dead shards.
         self.assertNotIn("shards missing", result.stderr)
+
+    def test_shards_cancelled_at_their_timeout_are_1(self):
+        # Nightly 38044938836, reduced: every shard of a four-shard crate
+        # was cancelled at `timeout-minutes`, each uploaded the outcomes it
+        # had reached with `"end_time": null`, and the gate printed "4/4
+        # shards" and "ok" over 31% of the crate's mutants.
+        runs = [
+            outcomes_file(
+                self.tmp / f"core-{n}" / "outcomes.json", "sunrise-core",
+                caught=3, missed=1, end_time=None, revision=None)
+            for n in range(4)
+        ]
+        base = baseline_file(self.tmp / "base.json", {"sunrise-core": 67.07})
+        result = self.run_gate(
+            *(str(r) for r in runs), "--baseline", str(base),
+            "--expect-shards", "sunrise-core=4",
+        )
+        self.assert_code(
+            result, 1,
+            "sunrise-core: 0/4 shards finished, 4 stopped part-way, "
+            "16 mutants — shards unfinished",
+            "with no end_time",
+            "Either way these crates were not scored.",
+        )
+        self.assertNotIn("— ok", result.stdout)
+        self.assertNotIn("4/4 shards", result.stdout + result.stderr)
+        # Not the missing-shard paragraph: every file arrived.
+        self.assertNotIn("A shard whose runner died", result.stderr)
+
+    def test_an_unfinished_shard_is_1_without_expect_shards(self):
+        # With no counts given there is no count to come out wrong, so the
+        # file's own end_time is the only thing that can catch this.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, end_time=None)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(str(run), "--baseline", str(base))
+        self.assert_code(
+            result, 1,
+            "sunrise-sync: 0/1 shards finished, 1 stopped part-way",
+            "shards unfinished",
+        )
+        self.assertNotIn("— ok", result.stdout)
+
+    def test_an_outcomes_file_with_no_end_time_is_unfinished(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, end_time=OMIT)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(run), "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(result, 1, "shards unfinished")
+
+    def test_one_unfinished_shard_breaks_the_crate(self):
+        done = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=4)
+        cut = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1,
+            end_time=None)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(done), str(cut), "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=2",
+        )
+        self.assert_code(
+            result, 1,
+            "sunrise-sync: 1/2 shards finished, 1 stopped part-way",
+            f"unfinished: {os.path.realpath(cut)}",
+        )
+        self.assertNotIn(os.path.realpath(done), result.stderr)
+
+    def test_an_unfinished_shard_with_update_is_1(self):
+        run = outcomes_file(
+            self.tmp / "a" / "outcomes.json", "sunrise-sync", caught=1,
+            end_time=None)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1, "refusing to record a floor from a mismatched run",
+        )
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_an_unfinished_shard_with_allow_partial_is_still_refused(self):
+        # `--allow-partial` waives the shard count, not the question of
+        # whether a shard finished: a floor banked from a cancelled run is
+        # a rate over whichever mutants happened to come first.
+        run = outcomes_file(
+            self.tmp / "a" / "outcomes.json", "sunrise-sync", caught=1,
+            end_time=None)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--allow-partial", "--baseline", str(base),
+        )
+        self.assert_code(
+            result, 1, "refusing to record a floor from a mismatched run",
+        )
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_an_unfinished_shard_with_no_mutants_yet_is_1(self):
+        # Stopped before its first mutant: the file names no crate, so no
+        # crate can be marked broken, and the run must still not pass.
+        empty = document_file(
+            self.tmp / "e" / "outcomes.json",
+            [{"scenario": "Baseline", "summary": "Success"}], end_time=None)
+        other = outcomes_file(
+            self.tmp / "s" / "outcomes.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(empty), str(other), "--baseline", str(base),
+        )
+        self.assert_code(
+            result, 1,
+            f"unfinished, no mutants yet: {os.path.realpath(empty)}",
+            "sunrise-sync: 100.0% vs floor 50.0% — ok",
+        )
+
+    def test_an_unfinished_crate_does_not_stop_the_others_being_scored(self):
+        cut = outcomes_file(
+            self.tmp / "c" / "outcomes.json", "sunrise-core", caught=1,
+            end_time=None)
+        low = outcomes_file(
+            self.tmp / "s" / "outcomes.json", "sunrise-sync",
+            caught=1, missed=3)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-core": 50.0,
+                                     "sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(cut), str(low), "--baseline", str(base),
+            "--expect-shards", "sunrise-core=1,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1, "shards unfinished",
+            "sunrise-sync: 25.0% vs floor 50.0% — REGRESSED",
+        )
+        self.assertNotIn("sunrise-core: 100.0%", result.stdout)
 
     def test_unscorable_with_update_is_1(self):
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", unviable=3)

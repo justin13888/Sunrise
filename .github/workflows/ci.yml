@@ -1220,6 +1220,10 @@ jobs:
           esac
           mv out/mutants/revision.json out/mutants/mutants.out/revision.json
       - name: Upload outcomes
+        # `always()`, so a shard cancelled at `timeout-minutes` still
+        # uploads the outcomes it reached. The gate reads their null
+        # `end_time` and reports the crate as unfinished rather than
+        # scoring it, which says more than a shard that is merely missing.
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
