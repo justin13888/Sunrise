@@ -24,6 +24,8 @@
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
 //! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
 //!   sections, relative days, snoozes, block conflicts, session timers.
+//! * [`focus`] — what an OS Focus filter lets through, for Today and for the
+//!   reminder schedule alike.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -48,6 +50,7 @@
 
 #[cfg(feature = "relay")]
 pub mod account;
+pub mod focus;
 pub mod gate;
 pub mod history;
 pub mod host;
