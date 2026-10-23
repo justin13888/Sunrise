@@ -92,6 +92,7 @@ describe("resolveServerUrl", () => {
             source: "none",
             store: null,
             refused: null,
+            offered: null,
         });
         expect(resolveServerUrl({ ...none, buildDefault: "" }).source).toBe(
             "none",
@@ -106,6 +107,7 @@ describe("resolveServerUrl", () => {
             source: "build",
             store: null,
             refused: null,
+            offered: null,
         });
     });
 
@@ -121,6 +123,7 @@ describe("resolveServerUrl", () => {
             source: "link",
             store: "https://relay.example",
             refused: null,
+            offered: null,
         });
     });
 
@@ -134,6 +137,7 @@ describe("resolveServerUrl", () => {
         expect(resolution.source).toBe("stored");
         expect(resolution.store).toBeNull();
         expect(resolution.refused).toContain("https://mine.example");
+        expect(resolution.offered).toBe("https://theirs.example");
     });
 
     it("does not call a link to the stored server refused", () => {
@@ -155,6 +159,7 @@ describe("resolveServerUrl", () => {
         expect(resolution.url).toBe("https://ops.example");
         expect(resolution.store).toBeNull();
         expect(resolution.refused).toContain("http://relay.example");
+        expect(resolution.offered).toBeNull();
     });
 
     it("treats a stored value that no longer parses as nothing stored", () => {
