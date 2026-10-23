@@ -13,10 +13,14 @@ use super::{
 };
 
 /// Print a task list, one `[x] id  title` row each.
-pub(super) fn list(r: QueryResult) {
+pub(super) fn list(ctx: &Ctx<'_>, r: QueryResult) {
     let (QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = r else {
         return;
     };
+    if ctx.json {
+        sunrise_cli::json::print(&sunrise_cli::json::tasks(&tasks, &ctx.reader()));
+        return;
+    }
     for t in tasks {
         let mark = if t.state == sunrise_domain::TaskState::Done {
             "x"
@@ -66,7 +70,7 @@ pub(super) async fn today(ctx: &Ctx<'_>) -> CmdResult {
         now_ms: ctx.core.now_ms(),
         contexts: vec![],
     };
-    list(ctx.core.query(q).await?);
+    list(ctx, ctx.core.query(q).await?);
     Ok(())
 }
 
@@ -76,7 +80,10 @@ pub(super) async fn search(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     if text.trim().is_empty() {
         return Err(strings::search::needs_query().into());
     }
-    list(ctx.core.query(Query::Search { text, limit: 100 }).await?);
+    list(
+        ctx,
+        ctx.core.query(Query::Search { text, limit: 100 }).await?,
+    );
     Ok(())
 }
 
@@ -90,6 +97,10 @@ pub(super) async fn show(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     };
     let t = read_task(ctx.core, task_id(raw)?).await?;
     let reader = ctx.reader();
+    if ctx.json {
+        sunrise_cli::json::print(&sunrise_cli::json::task(&t, &reader));
+        return Ok(());
+    }
     let streams = stream_names(ctx.core, Archived::Include).await?;
     let contexts = context_names(ctx.core, Archived::Include).await?;
     let name_of = |rows: &[(EntityRef, String)], id: EntityRef| {
@@ -500,9 +511,10 @@ pub(super) async fn note(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 /// The ranking is the core's (`Query::FocusPlan`), not a re-sort here:
 /// "what should I do next" must give the same answer here and in the app,
 /// or one of them is lying.
-pub(super) async fn next(core: &Core, start: bool) -> CmdResult {
+pub(super) async fn next(ctx: &Ctx<'_>, start: bool) -> CmdResult {
     /// Enough to choose from without becoming a list.
     const PICKS: u32 = 5;
+    let core = ctx.core;
     let q = Query::FocusPlan {
         stream: None,
         energy: None,
@@ -512,6 +524,21 @@ pub(super) async fn next(core: &Core, start: bool) -> CmdResult {
     let QueryResult::FocusPlan(rows) = core.query(q).await? else {
         return Err(strings::general::unexpected_result().into());
     };
+    if ctx.json && !start {
+        let reader = ctx.reader();
+        sunrise_cli::json::print(
+            &rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "task": sunrise_cli::json::task(&r.task, &reader),
+                        "unblocks": r.unblocks,
+                    })
+                })
+                .collect(),
+        );
+        return Ok(());
+    }
     if rows.is_empty() {
         println!("{}", strings::focus::nothing_actionable());
         return Ok(());
@@ -545,9 +572,10 @@ pub(super) async fn next(core: &Core, start: bool) -> CmdResult {
 /// thing `focus <id>` accepts), so a bare word here is unambiguously a mode
 /// and never a mistyped target. A focus session is append-only and has no
 /// inverse, so none of these is recorded for undo.
-pub(super) async fn focus(core: &Core, rest: &[String]) -> CmdResult {
+pub(super) async fn focus(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
+    let core = ctx.core;
     match rest.first().map(String::as_str) {
-        Some("next") | None => next(core, true).await,
+        Some("next") | None => next(ctx, true).await,
         Some("end") => end_focus(core, &rest[1..]).await,
         Some(raw) => {
             let id = task_id(raw)?;

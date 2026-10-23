@@ -47,6 +47,10 @@ pub(crate) struct Ctx<'a> {
     /// Whether anything was recorded, so a read-only command never writes
     /// the history file.
     pub(crate) dirty: Cell<bool>,
+    /// `--json`: a query prints one JSON document instead of its table.
+    pub(crate) json: bool,
+    /// Where the reader's zone came from, for `sunrise tz`.
+    pub(crate) zone_source: Cell<sunrise_cli::zone::ZoneSource>,
 }
 
 impl Ctx<'_> {
@@ -80,14 +84,14 @@ impl Ctx<'_> {
 pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdResult {
     match sub {
         "login" | "logout" | "whoami" | "bootstrap" => account::run(ctx, sub, rest).await,
-        "devices" => devices::list(ctx.core).await,
+        "devices" => devices::list(ctx).await,
         "device" => devices::device(ctx.core, rest).await,
-        "identity" => devices::identity(ctx.core, rest).await,
+        "identity" => devices::identity(ctx, rest).await,
 
         "capture" => tasks::capture(ctx, rest).await,
         "today" => tasks::today(ctx).await,
         "inbox" => {
-            tasks::list(ctx.core.query(Query::Inbox).await?);
+            tasks::list(ctx, ctx.core.query(Query::Inbox).await?);
             Ok(())
         }
         "search" => tasks::search(ctx, rest).await,
@@ -99,8 +103,8 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "schedule" => tasks::schedule(ctx, rest).await,
         "drop" => tasks::drop_tasks(ctx, rest).await,
         "note" => tasks::note(ctx, rest).await,
-        "next" => tasks::next(ctx.core, false).await,
-        "focus" => tasks::focus(ctx.core, rest).await,
+        "next" => tasks::next(ctx, false).await,
+        "focus" => tasks::focus(ctx, rest).await,
 
         "streams" => organize::streams(ctx, rest).await,
         "stream" => organize::stream_tasks(ctx, rest).await,
@@ -111,7 +115,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "blocks" => blocks::list(ctx, rest).await,
         "block" => blocks::block(ctx, rest).await,
 
-        "attachments" => files::attachments(ctx.core, rest).await,
+        "attachments" => files::attachments(ctx, rest).await,
         "attachment" => files::attachment(ctx, rest).await,
 
         "review" => reports::review(ctx, rest).await,
@@ -124,8 +128,9 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "redo" => settings::redo(ctx, rest).await,
         "views" => settings::views(ctx, rest).await,
         "prefs" => settings::prefs(ctx, rest).await,
+        "tz" => settings::tz(ctx, rest),
 
-        "sync" => plumbing::sync(ctx.core, rest).await,
+        "sync" => plumbing::sync(ctx, rest).await,
         "rebuild" => plumbing::rebuild(ctx.core, rest),
         other => Err(strings::general::unknown_subcommand(&format!("{other:?}")).into()),
     }

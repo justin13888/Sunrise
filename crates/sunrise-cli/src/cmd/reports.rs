@@ -17,7 +17,7 @@ use super::{CmdResult, Ctx};
 /// `review [daily|save [note...]]`.
 pub(super) async fn review(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     match rest.first().map(String::as_str) {
-        None => weekly(ctx.core).await,
+        None => weekly(ctx).await,
         Some("daily") => daily(ctx).await,
         Some("save") => save(ctx, &rest[1..]).await,
         Some(other) => Err(strings::review::unknown_mode(other).into()),
@@ -36,8 +36,30 @@ async fn weekly_review(core: &Core) -> CmdResult<sunrise_domain::WeeklyReview> {
 }
 
 /// `review` — this week's counts, the same fold the Review view renders.
-async fn weekly(core: &Core) -> CmdResult {
-    let w = weekly_review(core).await?;
+async fn weekly(ctx: &Ctx<'_>) -> CmdResult {
+    let w = weekly_review(ctx.core).await?;
+    if ctx.json {
+        let reader = ctx.reader();
+        sunrise_cli::json::print(&serde_json::json!({
+            "window": {"start_ms": w.window.start_ms, "end_ms": w.window.end_ms},
+            "totals": {
+                "completed": w.totals.completed,
+                "deferred": w.totals.deferred,
+                "dropped": w.totals.dropped,
+                "created": w.totals.created,
+                "reopened": w.totals.reopened,
+            },
+            "streams": w.streams.iter().map(|s| serde_json::json!({
+                "id": s.stream.to_str(),
+                "name": s.name,
+                "completed": s.completed.len(),
+                "deferred": s.deferred.len(),
+                "untouched": s.created_untouched.len(),
+            })).collect::<Vec<_>>(),
+            "slipped": sunrise_cli::json::tasks(&w.slipped, &reader),
+        }));
+        return Ok(());
+    }
     println!(
         "completed {}  deferred {}  dropped {}  created {}  reopened {}",
         w.totals.completed,
@@ -88,6 +110,16 @@ async fn daily(ctx: &Ctx<'_>) -> CmdResult {
     else {
         return Err(strings::general::unexpected_result().into());
     };
+    if ctx.json {
+        let reader = ctx.reader();
+        sunrise_cli::json::print(&serde_json::json!({
+            "since_ms": since_ms,
+            "inbox": sunrise_cli::json::tasks(&d.inbox, &reader),
+            "today": sunrise_cli::json::tasks(&d.today, &reader),
+            "blocked": sunrise_cli::json::tasks(&d.blocked, &reader),
+        }));
+        return Ok(());
+    }
     section(
         &strings::review::daily_inbox(),
         &strings::review::daily_inbox_empty(),
@@ -123,7 +155,7 @@ async fn save(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 pub(super) async fn brief(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     use sunrise_client_core::brief;
     let now_ms = ctx.core.now_ms();
-    let (headline, sections) = match rest.first().map(String::as_str) {
+    let (which, headline, sections) = match rest.first().map(String::as_str) {
         Some("morning") | None => {
             let QueryResult::MorningSummary(s) =
                 ctx.core.query(Query::MorningSummary { now_ms }).await?
@@ -131,6 +163,7 @@ pub(super) async fn brief(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 return Err(strings::general::unexpected_result().into());
             };
             (
+                "morning",
                 brief::morning_headline(Some(&s)),
                 brief::morning_sections(&s, &ctx.reader()),
             )
@@ -142,12 +175,26 @@ pub(super) async fn brief(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 return Err(strings::general::unexpected_result().into());
             };
             (
+                "evening",
                 brief::evening_headline(Some(&p)),
                 brief::evening_sections(&p),
             )
         }
         Some(other) => return Err(strings::brief::usage(other).into()),
     };
+    if ctx.json {
+        let reader = ctx.reader();
+        sunrise_cli::json::print(&serde_json::json!({
+            "brief": which,
+            "headline": headline,
+            "sections": sections.iter().map(|s| serde_json::json!({
+                "id": s.id.as_str(),
+                "title": s.title,
+                "tasks": sunrise_cli::json::tasks(&s.tasks, &reader),
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
     println!("{headline}");
     for s in sections {
         println!();
@@ -202,6 +249,26 @@ pub(super) async fn reminders(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     }
     let s = plan(ctx).await?;
     let reader = ctx.reader();
+    if ctx.json {
+        sunrise_cli::json::print(&serde_json::json!({
+            "enabled": s.policy.enabled,
+            "zone_unknown": s.zone_unknown,
+            "planned": s.desired.iter().map(|n| serde_json::json!({
+                "identifier": n.identifier,
+                "fire_at_ms": n.fire_at_ms,
+                "kind": kind_name(n.kind),
+                "entity": n.entity.to_str(),
+                "title": n.title,
+                "body": n.body,
+            })).collect::<Vec<_>>(),
+            "unscheduled": s.unscheduled.iter().map(|u| serde_json::json!({
+                "entity": u.entity.to_str(),
+                "kind": kind_name(u.kind),
+                "reason": u.reason.to_string(),
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
     if !s.policy.enabled {
         eprintln!(
             "{}",

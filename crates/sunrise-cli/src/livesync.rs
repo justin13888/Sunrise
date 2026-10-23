@@ -66,6 +66,32 @@ pub const ENV_SYNC_TOKEN: &str = "SUNRISE_SYNC_TOKEN";
 /// somewhere else.
 pub const ENV_SYNC_DEVICE_ID: &str = "SUNRISE_SYNC_DEVICE_ID";
 
+/// `raw` as the relay origin every command dials, or why it is not one.
+///
+/// The rule is the client layer's
+/// ([`sunrise_client_core::relay_url::parse_relay_url`]): `https://`, or
+/// `http://` to this machine, with no path; the words are this CLI's.
+///
+/// # Errors
+/// The catalog sentence for the issue, naming the variable it came from.
+pub fn relay_origin(raw: &str) -> Result<String, String> {
+    use sunrise_client_core::relay_url::{parse_relay_url, RelayUrlIssue as I};
+    parse_relay_url(raw)
+        .map(sunrise_client_core::relay_url::RelayOrigin::into_string)
+        .map_err(|issue| {
+            let why = match issue {
+                I::Empty => strings::relay_url::empty(),
+                I::TooLong => strings::relay_url::too_long(),
+                I::NotAUrl => strings::relay_url::not_a_url(),
+                I::WebSocket => strings::relay_url::web_socket(),
+                I::UnsupportedScheme => strings::relay_url::unsupported_scheme(),
+                I::InsecureRemote => strings::relay_url::insecure_remote(),
+                I::NotAnOrigin => strings::relay_url::not_an_origin(),
+            };
+            strings::relay_url::bad(ENV_SYNC_URL, &why)
+        })
+}
+
 /// Filename, inside the vault directory, of the relay's id for this device.
 ///
 /// A plain file rather than a mode-0600 one: the relay minted this id, sends

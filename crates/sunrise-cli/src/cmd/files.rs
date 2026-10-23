@@ -19,12 +19,27 @@ use super::{flag_value, id_of, positionals, task_id, CmdResult, Ctx};
 const DOWNLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// `attachments <task-id>` — one task's attachments and where their bytes are.
-pub(super) async fn attachments(core: &Core, rest: &[String]) -> CmdResult {
+pub(super) async fn attachments(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
+    let core = ctx.core;
     let raw = rest.first().ok_or_else(strings::attachments::list_usage)?;
     let task = task_id(raw)?;
     let QueryResult::Attachments(rows) = core.query(Query::TaskAttachments(task)).await? else {
         return Err(strings::general::unexpected_result().into());
     };
+    if ctx.json {
+        let mut out = Vec::with_capacity(rows.len());
+        for att in &rows {
+            out.push(serde_json::json!({
+                "id": att.id.to_str(),
+                "filename": att.filename,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "state": state_code(core, att)?,
+            }));
+        }
+        sunrise_cli::json::print(&serde_json::Value::Array(out));
+        return Ok(());
+    }
     for att in rows {
         println!(
             "{}  {:<32} {:>10}  {}",
@@ -57,6 +72,20 @@ pub(super) fn where_the_bytes_are(
         // relay and no amount of asking will produce it. Said plainly rather
         // than offered as a button that cannot work.
         AttachmentFetchState::Idle => strings::attachments::never_uploaded(),
+    })
+}
+
+/// The state column as a stable code for `--json`: `here`, `downloading`,
+/// `partial`, `fetchable` or `never_uploaded`.
+fn state_code(core: &Core, att: &sunrise_domain::Attachment) -> CmdResult<&'static str> {
+    if core.attachment_is_local(att)? {
+        return Ok("here");
+    }
+    Ok(match core.attachment_fetch_state(att.id)? {
+        AttachmentFetchState::Requested => "downloading",
+        AttachmentFetchState::Partial => "partial",
+        AttachmentFetchState::Idle if att.is_fetchable() => "fetchable",
+        AttachmentFetchState::Idle => "never_uploaded",
     })
 }
 

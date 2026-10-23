@@ -1754,6 +1754,13 @@ USAGE:
     sunrise focus end [--done]   close every running session; --done also
                                  completes the task it was opened on
     sunrise sync --once          drain the outbox and exit (cron / CI)
+    sunrise sync --watch [--rounds <n>]
+                                 keep draining until Ctrl-C, backing off while
+                                 the relay is unreachable
+    sunrise sync status          this vault's sync badge and outbox depth
+    sunrise tz [set <IANA>|clear]
+                                 the zone times are read in, and where it
+                                 came from
     sunrise rebuild              rebuild every task, stream and other row
                                  from this vault's own op log, in one
                                  transaction; nothing is sent
@@ -1795,6 +1802,12 @@ ENVIRONMENT:
     SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
     SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
     SUNRISE_LOG_FILE          override the NDJSON log destination
+    SUNRISE_TZ                the zone times are read in (IANA name); wins
+                              over `sunrise tz set`, loses to --tz
+
+GLOBAL FLAGS (anywhere on the line; `--` ends them):
+    --json                    print a query's result as one JSON document
+    --tz <IANA>               read times in this zone for this command
 
   Joining an account is `sunrise pair`, not a variable. The two that used to do
   it carried the account's signing key in one file; see `sunrise pair`.
@@ -2048,6 +2061,20 @@ bind = "bind tasks to block {name}"
 move_block = "move block {name}"
 
 [cli.tz]
+usage = "usage: tz [show] | tz set <IANA> | tz clear"
+# `sunrise tz`. {zone} is an IANA name; {source} is flag, env, set or system,
+# which are typed words and stay as they are.
+show = "{zone} ({source})"
+show_unknown = "{zone} ({source}; this device reports no zone, so times are read in UTC)"
+# {zone} and {previous} are IANA names; {count} open tasks now fall on
+# another day or time for this reader.
+set = "reading times in {zone} (was {previous}); {count, plural, =0 {no open task moves} one {# open task now falls at another time} other {# open tasks now fall at another time}}"
+cleared = "the zone set with `sunrise tz set` is cleared; the OS zone is used"
+# stderr, after `tz set`, when the environment variable {var} is set.
+env_overrides = "{var} is set, and it still takes precedence over this for every command"
+# A zone the tzdb does not know. {source} is flag, env or set.
+unknown = "unknown time zone `{zone}` (from {source}); times are never read in UTC as a fallback. Use an IANA name such as Europe/Berlin"
+flag_needs_zone = "--tz needs an IANA zone name, e.g. --tz Asia/Kolkata"
 # stderr, as a note, when no zone is known and times read in UTC.
 unknown_note = "this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz"
 
@@ -2088,7 +2115,17 @@ cancelled = "download cancelled; marked partial"
 live = "sync: live, outbox empty"
 # {count} changes wait to upload; {state} is the sync state's name.
 pending = "sync: {count, plural, one {# pending} other {# pending}} ({state})"
-usage = "usage: sync --once"
+usage = "usage: sync [--once] | sync --watch [--rounds <n>] | sync status"
+# `sunrise sync status`, and a failed `sync --watch` round. {badge} is a code
+# (synced, sending, catching_up, offline, changes_missing, stopped), typed as
+# written; {count} changes wait to upload.
+status = "sync: {badge}, {count, plural, one {# change waiting} other {# changes waiting}}"
+not_live = "{badge} with {count, plural, one {# change waiting} other {# changes waiting}}"
+# stderr, from `sync --watch`. {reason} says why the round failed; {seconds}
+# is when the next one runs.
+retrying = "sync: {reason}; retrying in {seconds, plural, one {#s} other {#s}}"
+# stderr, when `sync --watch` is stopped with Ctrl-C.
+stopped = "sync: stopped"
 needs_url = "sync needs SUNRISE_SYNC_URL"
 # {seconds} is how long `sync --once` waited.
 timed_out = "sync: outbox did not drain within {seconds, plural, one {#s} other {#s}}"
@@ -2099,6 +2136,17 @@ not_device_bound = "sync is not device-bound (no relay device id); run `sunrise 
 start_failed = "start_sync failed: {error}"
 # {var} is the environment variable that turns sync on.
 off = "sync off (set {var} to enable)"
+
+[cli.relay_url]
+# {var} is the variable the URL came from; {reason} one of the phrases below.
+bad = "{var} is not a relay origin: {reason}"
+empty = "it is empty"
+too_long = "it is longer than 256 bytes"
+not_a_url = "it is not an absolute URL"
+web_socket = "it is a WebSocket URL; sync is reached over https://"
+unsupported_scheme = "it is not https://"
+insecure_remote = "it is plain http:// to another machine; use https://"
+not_an_origin = "it has a path, query or credentials; give only scheme, host and port"
 
 [cli.rebuild]
 usage = "usage: rebuild"

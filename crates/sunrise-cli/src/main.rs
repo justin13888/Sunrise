@@ -43,7 +43,7 @@ mod cmd;
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::i18n::strings;
-use sunrise_cli::{livesync, login, pair, undo_file, vault};
+use sunrise_cli::{livesync, login, pair, undo_file, vault, zone};
 use sunrise_core::SystemRng;
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
@@ -72,7 +72,19 @@ async fn main() -> std::process::ExitCode {
         crypto_v = u64::from(proto.crypto),
         "sunrise-cli starting"
     );
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    // `--json` and `--tz` are recognised anywhere on the line
+    // (`sunrise_cli::args`), so they come off before the subcommand is read.
+    let (global, args) = match sunrise_cli::args::split(&raw) {
+        Ok(split) => split,
+        Err(e) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("{}", strings::general::error(&e));
+            }
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let Some(sub) = args.first() else {
         #[allow(clippy::print_stdout)]
         {
@@ -80,7 +92,7 @@ async fn main() -> std::process::ExitCode {
         }
         return std::process::ExitCode::SUCCESS;
     };
-    match run(sub, &args[1..]).await {
+    match run(&global, sub, &args[1..]).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             // stderr, because stdout is the contract a script reads.
@@ -135,7 +147,11 @@ fn vaults() {
 
 /// Dispatch a subcommand. Returns `Ok` on success; the process exit code
 /// is non-zero only on a real failure, so scripts can branch on it.
-async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    global: &sunrise_cli::args::Global,
+    sub: &str,
+    rest: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     // A CLI's whole job is writing to stdout; the workspace-wide ban on
     // print_stdout exists to keep it out of *library* code.
     #![allow(clippy::print_stdout)]
@@ -187,6 +203,15 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     let dir = vault_dir();
     std::fs::create_dir_all(&dir).ok();
     let dir_for_store = dir.clone();
+    // The reader's zone, if someone named one (`sunrise_cli::zone`). Checked
+    // before anything is opened, so an unknown name is refused with nothing
+    // touched rather than read as UTC.
+    let env_zone = std::env::var(zone::ENV_TZ).ok();
+    let chosen = zone::choose(
+        global.tz.as_deref(),
+        env_zone.as_deref(),
+        zone::stored(&dir).as_deref(),
+    )?;
     // This vault's own root — see `sunrise_cli::vault`. Minted on the first
     // open of a directory and kept in the keystore from then on, so two
     // `SUNRISE_VAULT` values are two accounts and not two folders sharing one
@@ -241,6 +266,20 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         eprintln!("{line}");
     }
 
+    // Reported the one way a client reports a zone (ADR-0066 §5), so every
+    // query, the capture parser and the client layer read in it.
+    let zone_source = match &chosen {
+        Some(c) => {
+            core.on_time_zone_changed(&c.name)
+                .map_err(|_| zone::ZoneError::Unknown {
+                    name: c.name.clone(),
+                    from: c.source,
+                })?;
+            c.source
+        }
+        None => zone::ZoneSource::System,
+    };
+
     // The undo history this vault's earlier commands left (`sunrise undo`).
     let loaded = undo_file::load(&dir_for_store, &root);
     #[allow(clippy::print_stderr)]
@@ -252,6 +291,8 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         vault_dir: &dir_for_store,
         history: loaded.history,
         dirty: std::cell::Cell::new(false),
+        json: global.json,
+        zone_source: std::cell::Cell::new(zone_source),
     };
     let result = cmd::dispatch(&ctx, sub, rest).await;
     // Written back only when something was recorded, so a read never writes

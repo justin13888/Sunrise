@@ -60,6 +60,7 @@ async fn bootstrap(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         .ok_or_else(strings::bootstrap::not_signed_in)?;
     let url = std::env::var(livesync::ENV_SYNC_URL)
         .map_err(|_| strings::bootstrap::needs_relay(livesync::ENV_SYNC_URL))?;
+    let url = livesync::relay_origin(&url)?;
 
     // The email is a fallback the relay reads only when the identity
     // provider emits no `email` claim, so the empty string rather than
@@ -128,6 +129,7 @@ pub(crate) async fn recover(dir: &std::path::Path, rest: &[String]) -> CmdResult
 
     let url = std::env::var(livesync::ENV_SYNC_URL)
         .map_err(|_| sunrise_cli::recover::RecoverError::NoRelay)?;
+    let url = livesync::relay_origin(&url)?;
 
     // Read stdin only when there are no arguments, so a terminal session that
     // typed the words does not then block on a pipe nobody is writing to.

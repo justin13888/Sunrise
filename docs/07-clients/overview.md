@@ -105,6 +105,11 @@ plumbing
   sunrise focus end [--done]   close every running session; --done completes
                                the task it was opened on
   sunrise sync --once          drain the outbox and exit (cron / CI)
+  sunrise sync --watch [--rounds <n>]
+                               keep draining until Ctrl-C / SIGTERM, backing
+                               off while the relay is unreachable
+  sunrise tz [set <IANA> | clear]
+                               the zone times are read in, and its source
   sunrise rebuild              rebuild every row from this vault's own op log,
                                in one transaction; nothing is sent
 ```
@@ -127,6 +132,79 @@ The plural owns the verbs that change the set — `streams create`,
 `contexts archive`, `routines skip` — the way `streams move` always has, because
 the singular (`stream <name>`) lists what is *in* one and a verb there would
 collide with a stream called `create`.
+
+Two flags apply to every subcommand and are recognised anywhere on the line
+(`sunrise today --json` and `sunrise --json today` are the same); a `--` ends
+them, so `sunrise capture -- --json is a title` captures that title:
+
+* `--json` — a query prints one JSON document on stdout instead of its table
+  (§JSON output below).
+* `--tz <IANA>` — the reader's zone for this one command (§The reader's zone).
+
+### The reader's zone
+
+The CLI never reads the host's zone itself
+([ADR-0066](../11-adr/0066-times-survive-travel.md) §5): the core's injected
+`Clock` does, and the CLI reports a better answer when it has one through
+`Core::on_time_zone_changed`, the one entry point every client uses. So
+queries, the capture and annotate parsers, `defer`, `schedule` and the client
+layer all read in the same zone. In order of precedence:
+
+1. `--tz <IANA>`, for one command;
+2. `SUNRISE_TZ`, for a shell or a cron job;
+3. `sunrise tz set <IANA>`, kept for this device in the vault directory
+   (`cli-timezone`) and reported at every open; `sunrise tz clear` forgets it;
+4. otherwise the OS's zone, as `SystemClock` reads it.
+
+`sunrise tz` prints the zone in force and which of the four it came from
+(`flag`, `env`, `set`, `system`). A name the tzdb does not know is refused with
+a typed error naming it and its source, before the vault is opened — never
+read as UTC (§3). When the OS names no zone and none is given, times are read
+in UTC and the commands that parse a time say so on stderr. A zone change is
+not an edit: nothing stored is rewritten, so a floating 09:00 is 09:00 in the
+new zone and a zoned one keeps its own (`crates/sunrise-e2e/tests/cli_traveller.rs`
+drives exactly that through the binary).
+
+### JSON output
+
+With `--json`, each query command prints exactly one JSON document followed by
+a newline, and nothing else on stdout; notes still go to stderr. Field names
+are a contract: one may be added, none is renamed or removed. They are built in
+`crates/sunrise-cli/src/json.rs`, not serialised from the domain types, so a
+change of the domain's serde names does not move them.
+
+A **time** is `{kind, value, zone, at_ms}`: `kind` is `instant`, `zoned`,
+`floating`, `all_day` (or a newer build's kind verbatim), `value` the stored
+value's round-trippable rendering, `zone` a zoned value's own zone (else
+`null`), and `at_ms` where it falls for this reader (`null` when it cannot be
+placed). A **task** is `{id, title, state, stream, contexts, priority, energy,
+estimate_s, scheduled_at, due_at, completed_at, deferred_count, blocked_by,
+note, updated_at_ms}`, its times as above and `note` as Markdown text or
+`null`.
+
+| Command | Document |
+|---|---|
+| `today`, `inbox`, `search`, `stream`, `context`, `views apply` (task views) | array of tasks |
+| `show <id>` | one task |
+| `next` | array of `{task, unblocks}` |
+| `streams` | array of `{id, name, color, open_tasks, archived, paused, sort_order}` |
+| `contexts` | array of `{id, name, description, tasks, archived}` |
+| `routines` | array of `{id, title, rule, next_ms, paused, streak}` |
+| `blocks [day\|week]` | array of `{id, title, stream, starts_at, ends_at, tasks}` |
+| `devices` | array of `{id, nickname, platform, this_device, revoked, read_bounded, current, admitted_after_revocation}` |
+| `identity [status]` | `{account, current, rotations, this_device_is_current, holds_recovery_key, can_sponsor}` |
+| `attachments <task>` | array of `{id, filename, mime_type, size_bytes, state}`, `state` one of `here`, `downloading`, `partial`, `fetchable`, `never_uploaded` |
+| `review` | `{window: {start_ms, end_ms}, totals: {completed, deferred, dropped, created, reopened}, streams: [{id, name, completed, deferred, untouched}], slipped: [task]}` |
+| `review daily` | `{since_ms, inbox, today, blocked}`, each an array of tasks |
+| `brief morning\|evening` | `{brief, headline, sections: [{id, title, tasks}]}` |
+| `reminders plan` | `{enabled, zone_unknown, planned: [{identifier, fire_at_ms, kind, entity, title, body}], unscheduled: [{entity, kind, reason}]}` |
+| `views` | array of `{name, spec, query, contexts}` |
+| `prefs`, `prefs get <key>` | array of / one `{key, value, source, scope}`, `value` in the spelling `prefs set` reads |
+| `tz` | `{zone, source, zone_unknown}` |
+| `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |
+
+Write commands, `export` (which has its own `json` format) and the account
+commands print as they always have.
 
 ### Undo across processes
 
@@ -240,7 +318,22 @@ corrupted by NDJSON.
 
 `sync --once` is a **bounded** wait, not a loop: a cron job that hangs forever
 because the relay is down is worse than one that fails, because nothing
-downstream ever runs.
+downstream ever runs. `sync --watch` is the loop, for a terminal left open or a
+service manager: each round is that same bounded wait; a live round is followed
+by a five-second pause, a failed one by a delay that starts at one second,
+doubles to a minute, and resets on the next live round. It prints
+`sync: live, outbox empty` each time it becomes live and a retry line on stderr
+each time a round fails, and Ctrl-C or `SIGTERM` ends it at once with exit 0 —
+the core writes each op in its own transaction, so a round cut short leaves
+nothing half applied. `--rounds <n>` stops it after `n` live rounds. The loop's
+policy is `crates/sunrise-cli/src/watch.rs`, written against an injected round,
+sleep and stop so it is unit-tested without a relay or a signal. A failed round
+names the client layer's sync badge (`offline`, `stopped`, `changes_missing`…),
+because those call for different things: offline retries on its own, the
+other two do not. `sync status` prints that badge and the outbox depth, offline
+or not. `SUNRISE_SYNC_URL` is checked by the client layer's relay-URL rule
+(`relay_url::parse_relay_url`: `https://`, or `http://` to this machine, and
+nothing past the port) before `sync`, `bootstrap` or `recover` dial it.
 
 The CLI is also how the whole stack is proven without any UI —
 `cargo test -p sunrise-cli` drives the real binary against a real vault, and a

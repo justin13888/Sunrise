@@ -26,7 +26,7 @@ jiff = { workspace = true }
 icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_plurals = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
 tracing = { workspace = true }
 # `sunrise recover` has one error arm per thing the user can do about it, and a
 # recovery is run by someone who has already lost every device — "it failed" is
@@ -44,9 +44,10 @@ sunrise-log = { workspace = true }
 sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-relay-client = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
+# The `--json` output (`src/json.rs`).
+serde_json = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
 tempfile = "3"
