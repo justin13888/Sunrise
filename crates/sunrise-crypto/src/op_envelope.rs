@@ -540,8 +540,10 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         return Err(OpEnvelopeError::BadMagic);
     }
     let cbor_bytes = &bytes[MAGIC_LEN..];
-    let value: ciborium::value::Value =
-        ciborium::de::from_reader(cbor_bytes).map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
+    // Nesting is bounded (`sunrise_cbor::MAX_VALUE_DEPTH`): an unknown field
+    // is kept and re-encoded whole, so its depth is this decoder's to limit.
+    let value = sunrise_cbor::decode_value(&mut &cbor_bytes[..])
+        .map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
     let map = match value {
         ciborium::value::Value::Map(m) => m,
         _ => return Err(OpEnvelopeError::Cbor("envelope must be a map".into())),
