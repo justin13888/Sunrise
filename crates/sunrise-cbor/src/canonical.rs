@@ -30,7 +30,13 @@
 //! [`decode_canonical`] asserts canonical form on decode (re-encode →
 //! equality), which is therefore also the check that a preserved unknown field
 //! round-trips byte-exactly.
+//!
+//! Both decoders bound nesting: [`decode_canonical`] and [`decode_lenient`] at
+//! [`MAX_DOC_DEPTH`], the bound for document content, and
+//! [`decode_canonical_within`] at whatever bound a framing decoder names
+//! (`crate::bounded`).
 
+use crate::bounded::{decode_bounded, ValueDecodeError, MAX_DOC_DEPTH};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use thiserror::Error;
@@ -44,6 +50,10 @@ pub enum CanonicalError {
     /// `ciborium` deserialization failure (malformed CBOR).
     #[error("CBOR decode error: {0}")]
     Decode(String),
+    /// The input nests more arrays, maps and tags deep than the decoder's
+    /// bound ([`MAX_DOC_DEPTH`] unless the caller named another).
+    #[error("CBOR nests deeper than its decoder allows")]
+    TooDeep,
     /// Decoded value re-encoded to bytes ≠ input bytes — non-canonical input.
     #[error("non-canonical CBOR: re-encoded length {reencoded} ≠ input {input}")]
     NonCanonical {
@@ -111,13 +121,30 @@ fn canonicalize(value: ciborium::value::Value) -> ciborium::value::Value {
 /// - Indefinite-length items.
 /// - Non-shortest integer encodings.
 ///
-/// Returns [`CanonicalError::NonCanonical`] if the round-trip differs.
+/// Nesting is bounded at [`MAX_DOC_DEPTH`]; a framing decoder that wants the
+/// tighter bound uses [`decode_canonical_within`].
+///
+/// Returns [`CanonicalError::NonCanonical`] if the round-trip differs, and
+/// [`CanonicalError::TooDeep`] past the bound.
 pub fn decode_canonical<T>(bytes: &[u8]) -> Result<T, CanonicalError>
 where
     T: DeserializeOwned + Serialize,
 {
-    let value: T =
-        ciborium::de::from_reader(bytes).map_err(|e| CanonicalError::Decode(e.to_string()))?;
+    decode_canonical_within(bytes, MAX_DOC_DEPTH)
+}
+
+/// [`decode_canonical`] with nesting bounded at `max_depth` arrays, maps and
+/// tags, the outermost one included (`crate::bounded::decode_bounded`).
+///
+/// # Errors
+/// [`CanonicalError::TooDeep`] past the bound, [`CanonicalError::Decode`] for
+/// malformed input, [`CanonicalError::NonCanonical`] if the round trip
+/// differs, trailing bytes included.
+pub fn decode_canonical_within<T>(bytes: &[u8], max_depth: usize) -> Result<T, CanonicalError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let value: T = decode_bounded(&mut &bytes[..], max_depth).map_err(from_bounded)?;
     let re_encoded = encode_canonical(&value)?;
     if re_encoded.as_slice() != bytes {
         return Err(CanonicalError::NonCanonical {
@@ -131,8 +158,21 @@ where
 /// Decode without canonical-form assertion. Used at trust boundaries where
 /// non-canonical input must be tolerated and re-canonicalized on relay
 /// (rare; see protocol-versioning §7 forward-compat).
+///
+/// Nesting is bounded at [`MAX_DOC_DEPTH`], as [`decode_canonical`]'s is.
+///
+/// # Errors
+/// [`CanonicalError::TooDeep`] past the bound, [`CanonicalError::Decode`] for
+/// anything else that does not decode.
 pub fn decode_lenient<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CanonicalError> {
-    ciborium::de::from_reader(bytes).map_err(|e| CanonicalError::Decode(e.to_string()))
+    decode_bounded(&mut &bytes[..], MAX_DOC_DEPTH).map_err(from_bounded)
+}
+
+fn from_bounded(e: ValueDecodeError) -> CanonicalError {
+    match e {
+        ValueDecodeError::TooDeep => CanonicalError::TooDeep,
+        ValueDecodeError::Malformed(m) => CanonicalError::Decode(m),
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +274,39 @@ mod tests {
         let raw = [0x9f, 0x01, 0xff];
         let v: Vec<u32> = decode_lenient(&raw).unwrap();
         assert_eq!(v, vec![1]);
+    }
+
+    /// `depth` one-element arrays around the integer 1: canonical CBOR.
+    fn nested_arrays(depth: usize) -> Vec<u8> {
+        let mut bytes = vec![0x81; depth];
+        bytes.push(0x01);
+        bytes
+    }
+
+    /// Both decoders admit [`MAX_DOC_DEPTH`] levels and refuse one more as
+    /// too deep, not as malformed; `decode_canonical_within` holds its own
+    /// bound instead.
+    #[test]
+    fn decoders_are_bounded_at_the_document_depth_unless_told_otherwise() {
+        use ciborium::value::Value;
+        let at = nested_arrays(MAX_DOC_DEPTH);
+        let over = nested_arrays(MAX_DOC_DEPTH + 1);
+        assert!(decode_canonical::<Value>(&at).is_ok());
+        assert!(decode_lenient::<Value>(&at).is_ok());
+        assert!(matches!(
+            decode_canonical::<Value>(&over),
+            Err(CanonicalError::TooDeep)
+        ));
+        assert!(matches!(
+            decode_lenient::<Value>(&over),
+            Err(CanonicalError::TooDeep)
+        ));
+
+        let framing = crate::MAX_VALUE_DEPTH;
+        assert!(decode_canonical_within::<Value>(&nested_arrays(framing), framing).is_ok());
+        assert!(matches!(
+            decode_canonical_within::<Value>(&nested_arrays(framing + 1), framing),
+            Err(CanonicalError::TooDeep)
+        ));
     }
 }
