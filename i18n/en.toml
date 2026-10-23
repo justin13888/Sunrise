@@ -33,6 +33,67 @@ title = "Sunrise — Web"
 empty = "Nothing on the list."
 # The installable app's description, in its web app manifest.
 description = "Local-first, end-to-end encrypted productivity"
+# The button beside the heading that opens the settings view.
+open_settings = "Settings"
+
+[web.settings]
+# Heading of the settings view.
+title = "Settings"
+# The button that closes the settings view and returns to the list.
+done = "Done"
+# Heading of the section that names the relay this browser syncs with.
+server_heading = "Sync server"
+# The relay this browser chose before. {url} is its address.
+server_stored = "This browser syncs with {url}."
+# The relay the hosted copy of the app was built for; this browser never
+# chose one of its own. {url} is its address.
+server_build = "This browser uses {url}, the server this copy of Sunrise was set up with."
+# No relay at all: the vault exists only in this browser.
+server_none = "No sync server is set. Your vault stays in this browser."
+# Under the current server. The web client does not sync yet, so the setting
+# is recorded for when it does. Must not suggest anything is syncing now.
+not_syncing_yet = "Sync is not running in the web client yet. This is the server it will use."
+# Label of the text field a new relay address is typed into.
+server_field = "Server address"
+# Placeholder inside that field: an example address, not a real relay.
+server_placeholder = "https://relay.example"
+# Button that checks the typed address and uses it.
+use_server = "Use this server"
+# Button that removes this browser's stored relay. Must not suggest the vault
+# is deleted: only the setting is.
+forget_server = "Forget this server"
+# Shown after the stored relay was removed and the build's server applies.
+# {url} is that server.
+forgot_to_build = "Forgotten. This browser now uses {url}, the server this copy of Sunrise was set up with."
+# Shown after the stored relay was removed and no other server applies.
+forgot_to_none = "Forgotten. No sync server is set."
+# Shown after a new relay was stored. {url} is its address.
+saved = "Saved. This browser now syncs with {url}."
+# The typed address is the relay already in use.
+unchanged = "That is already this browser's sync server."
+# The browser would not keep the setting (a private window, blocked storage).
+storage_refused = "This browser would not save the setting, so it lasts only until the page is closed."
+# A confirmation before one stored relay replaces another. {from} is the relay
+# in use, {to} the new one. Must say the vault itself does not move.
+confirm_replace = "Switch from {from} to {to}? Your vault stays in this browser; it will sync with the new server instead."
+# A link opened this page asking to use another relay; it was not followed.
+# {url} is the relay the link names, {current} the one in use.
+link_offer = "A link asked this browser to use {url} instead of {current}."
+# Confirms a pending switch (from typing, or from a link).
+confirm_switch = "Switch"
+# Dismisses a pending switch, keeping the current relay.
+cancel_switch = "Keep the current server"
+
+[web.settings.issue]
+# Why a typed address was refused. Each is a sentence on its own, shown under
+# the field; the typed text is kept so it can be corrected.
+empty = "Type the server's address."
+too_long = "That address is longer than 256 bytes."
+not_a_url = "That is not a full web address. Start it with https://."
+web_socket = "That is a WebSocket address. Sync is reached over https://."
+unsupported_scheme = "The address must start with https://."
+insecure_remote = "Plain http:// is allowed only for a server on this computer. Use https://."
+not_an_origin = "Give only the scheme, host and port, with no path, query or password."
 
 [docs.site]
 # The documentation site's title, beside the logo and in the browser tab.

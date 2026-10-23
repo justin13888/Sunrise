@@ -20,6 +20,34 @@ const catalog: Catalog = {
         "web.app.title": [{ kind: "text", value: "Sunrise — Web" }],
         "web.app.empty": [{ kind: "text", value: "Nothing on the list." }],
         "web.app.description": [{ kind: "text", value: "Local-first, end-to-end encrypted productivity" }],
+        "web.app.open_settings": [{ kind: "text", value: "Settings" }],
+        "web.settings.title": [{ kind: "text", value: "Settings" }],
+        "web.settings.done": [{ kind: "text", value: "Done" }],
+        "web.settings.server_heading": [{ kind: "text", value: "Sync server" }],
+        "web.settings.server_stored": [{ kind: "text", value: "This browser syncs with " }, { kind: "arg", name: "url" }, { kind: "text", value: "." }],
+        "web.settings.server_build": [{ kind: "text", value: "This browser uses " }, { kind: "arg", name: "url" }, { kind: "text", value: ", the server this copy of Sunrise was set up with." }],
+        "web.settings.server_none": [{ kind: "text", value: "No sync server is set. Your vault stays in this browser." }],
+        "web.settings.not_syncing_yet": [{ kind: "text", value: "Sync is not running in the web client yet. This is the server it will use." }],
+        "web.settings.server_field": [{ kind: "text", value: "Server address" }],
+        "web.settings.server_placeholder": [{ kind: "text", value: "https://relay.example" }],
+        "web.settings.use_server": [{ kind: "text", value: "Use this server" }],
+        "web.settings.forget_server": [{ kind: "text", value: "Forget this server" }],
+        "web.settings.forgot_to_build": [{ kind: "text", value: "Forgotten. This browser now uses " }, { kind: "arg", name: "url" }, { kind: "text", value: ", the server this copy of Sunrise was set up with." }],
+        "web.settings.forgot_to_none": [{ kind: "text", value: "Forgotten. No sync server is set." }],
+        "web.settings.saved": [{ kind: "text", value: "Saved. This browser now syncs with " }, { kind: "arg", name: "url" }, { kind: "text", value: "." }],
+        "web.settings.unchanged": [{ kind: "text", value: "That is already this browser's sync server." }],
+        "web.settings.storage_refused": [{ kind: "text", value: "This browser would not save the setting, so it lasts only until the page is closed." }],
+        "web.settings.confirm_replace": [{ kind: "text", value: "Switch from " }, { kind: "arg", name: "from" }, { kind: "text", value: " to " }, { kind: "arg", name: "to" }, { kind: "text", value: "? Your vault stays in this browser; it will sync with the new server instead." }],
+        "web.settings.link_offer": [{ kind: "text", value: "A link asked this browser to use " }, { kind: "arg", name: "url" }, { kind: "text", value: " instead of " }, { kind: "arg", name: "current" }, { kind: "text", value: "." }],
+        "web.settings.confirm_switch": [{ kind: "text", value: "Switch" }],
+        "web.settings.cancel_switch": [{ kind: "text", value: "Keep the current server" }],
+        "web.settings.issue.empty": [{ kind: "text", value: "Type the server's address." }],
+        "web.settings.issue.too_long": [{ kind: "text", value: "That address is longer than 256 bytes." }],
+        "web.settings.issue.not_a_url": [{ kind: "text", value: "That is not a full web address. Start it with https://." }],
+        "web.settings.issue.web_socket": [{ kind: "text", value: "That is a WebSocket address. Sync is reached over https://." }],
+        "web.settings.issue.unsupported_scheme": [{ kind: "text", value: "The address must start with https://." }],
+        "web.settings.issue.insecure_remote": [{ kind: "text", value: "Plain http:// is allowed only for a server on this computer. Use https://." }],
+        "web.settings.issue.not_an_origin": [{ kind: "text", value: "Give only the scheme, host and port, with no path, query or password." }],
         "docs.site.title": [{ kind: "text", value: "Sunrise" }],
         "docs.site.description": [{ kind: "text", value: "Local-first, end-to-end encrypted productivity: the design, the protocol, and the decisions behind them." }],
         "docs.site.nav_adrs": [{ kind: "text", value: "Decisions" }],
@@ -51,6 +79,72 @@ export function createMessages(requested: readonly string[]) {
                 empty: (): string => f("web.app.empty"),
                 /** Local-first, end-to-end encrypted productivity */
                 description: (): string => f("web.app.description"),
+                /** Settings */
+                openSettings: (): string => f("web.app.open_settings"),
+            },
+            settings: {
+                /** Settings */
+                title: (): string => f("web.settings.title"),
+                /** Done */
+                done: (): string => f("web.settings.done"),
+                /** Sync server */
+                serverHeading: (): string => f("web.settings.server_heading"),
+                /** This browser syncs with {url}. */
+                serverStored: (args: { readonly url: string }): string =>
+                    f("web.settings.server_stored", args),
+                /** This browser uses {url}, the server this copy of Sunrise was set up with. */
+                serverBuild: (args: { readonly url: string }): string =>
+                    f("web.settings.server_build", args),
+                /** No sync server is set. Your vault stays in this browser. */
+                serverNone: (): string => f("web.settings.server_none"),
+                /** Sync is not running in the web client yet. This is the server it will use. */
+                notSyncingYet: (): string => f("web.settings.not_syncing_yet"),
+                /** Server address */
+                serverField: (): string => f("web.settings.server_field"),
+                /** https://relay.example */
+                serverPlaceholder: (): string => f("web.settings.server_placeholder"),
+                /** Use this server */
+                useServer: (): string => f("web.settings.use_server"),
+                /** Forget this server */
+                forgetServer: (): string => f("web.settings.forget_server"),
+                /** Forgotten. This browser now uses {url}, the server this copy of Sunrise was set up with. */
+                forgotToBuild: (args: { readonly url: string }): string =>
+                    f("web.settings.forgot_to_build", args),
+                /** Forgotten. No sync server is set. */
+                forgotToNone: (): string => f("web.settings.forgot_to_none"),
+                /** Saved. This browser now syncs with {url}. */
+                saved: (args: { readonly url: string }): string =>
+                    f("web.settings.saved", args),
+                /** That is already this browser's sync server. */
+                unchanged: (): string => f("web.settings.unchanged"),
+                /** This browser would not save the setting, so it lasts only until the page is closed. */
+                storageRefused: (): string => f("web.settings.storage_refused"),
+                /** Switch from {from} to {to}? Your vault stays in this browser; it will sync with the new server instead. */
+                confirmReplace: (args: { readonly from: string; readonly to: string }): string =>
+                    f("web.settings.confirm_replace", args),
+                /** A link asked this browser to use {url} instead of {current}. */
+                linkOffer: (args: { readonly url: string; readonly current: string }): string =>
+                    f("web.settings.link_offer", args),
+                /** Switch */
+                confirmSwitch: (): string => f("web.settings.confirm_switch"),
+                /** Keep the current server */
+                cancelSwitch: (): string => f("web.settings.cancel_switch"),
+                issue: {
+                    /** Type the server's address. */
+                    empty: (): string => f("web.settings.issue.empty"),
+                    /** That address is longer than 256 bytes. */
+                    tooLong: (): string => f("web.settings.issue.too_long"),
+                    /** That is not a full web address. Start it with https://. */
+                    notAUrl: (): string => f("web.settings.issue.not_a_url"),
+                    /** That is a WebSocket address. Sync is reached over https://. */
+                    webSocket: (): string => f("web.settings.issue.web_socket"),
+                    /** The address must start with https://. */
+                    unsupportedScheme: (): string => f("web.settings.issue.unsupported_scheme"),
+                    /** Plain http:// is allowed only for a server on this computer. Use https://. */
+                    insecureRemote: (): string => f("web.settings.issue.insecure_remote"),
+                    /** Give only the scheme, host and port, with no path, query or password. */
+                    notAnOrigin: (): string => f("web.settings.issue.not_an_origin"),
+                },
             },
         },
         docs: {

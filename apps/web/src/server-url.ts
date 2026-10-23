@@ -135,6 +135,12 @@ export interface ServerUrlResolution {
     store: string | null;
     /** Why a link was not followed, when it was not. */
     refused: string | null;
+    /**
+     * The relay a link named when it was refused *only* because a different
+     * one is stored: a well-formed choice the settings view may offer behind
+     * a confirmation (`server-settings.ts`). `null` otherwise.
+     */
+    offered: string | null;
 }
 
 /**
@@ -148,19 +154,21 @@ export function resolveServerUrl(inputs: ServerUrlInputs): ServerUrlResolution {
         inputs.linked === null ? null : parseServerUrl(inputs.linked);
 
     let refused: string | null = null;
+    let offered: string | null = null;
     if (inputs.linked !== null) {
         if (linked === null) {
             refused = `not an https relay origin: ${inputs.linked.slice(0, 80)}`;
         } else if (stored !== null && linked !== stored) {
             refused = `this browser already uses ${stored}`;
+            offered = linked;
         }
     }
 
     if (stored !== null) {
-        return { url: stored, source: "stored", store: null, refused };
+        return { url: stored, source: "stored", store: null, refused, offered };
     }
     if (linked !== null) {
-        return { url: linked, source: "link", store: linked, refused };
+        return { url: linked, source: "link", store: linked, refused, offered };
     }
     const fallback =
         inputs.buildDefault === undefined
@@ -171,6 +179,7 @@ export function resolveServerUrl(inputs: ServerUrlInputs): ServerUrlResolution {
         source: fallback === null ? "none" : "build",
         store: null,
         refused,
+        offered,
     };
 }
 
@@ -230,13 +239,21 @@ export function readServerUrl(env: ServerUrlEnv): ServerUrlResolution {
     return resolution;
 }
 
-let cached: string | null | undefined;
+let cached: ServerUrlResolution | undefined;
 
 /**
  * The configured relay origin, or `null`. Read once per page load; the first
  * call follows a `?server=` link, so `main.tsx` calls it at start-up.
  */
 export function configuredServerUrl(): string | null {
+    return configuredServer().url;
+}
+
+/**
+ * The whole start-up resolution behind `configuredServerUrl`, including a
+ * refused link's `offered` relay, which the settings view reads.
+ */
+export function configuredServer(): ServerUrlResolution {
     if (cached === undefined) {
         cached = readServerUrl({
             href: location.href,
@@ -250,7 +267,15 @@ export function configuredServerUrl(): string | null {
             replaceUrl: (href) => history.replaceState(history.state, "", href),
             buildDefault: import.meta.env.SUNRISE_WEB_DEFAULT_SERVER_URL,
             warn: (message) => console.warn(message),
-        }).url;
+        });
     }
     return cached;
+}
+
+/**
+ * Replace the page's resolution after the settings view wrote a new one, so
+ * whatever reads `configuredServerUrl` next sees the relay the user chose.
+ */
+export function replaceConfiguredServer(next: ServerUrlResolution): void {
+    cached = next;
 }
