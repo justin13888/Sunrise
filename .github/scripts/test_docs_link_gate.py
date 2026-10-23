@@ -397,12 +397,6 @@ class AdrLabelAgreesWithTarget(GateCase):
         self.write("crates/c/src/lib.rs", "fn f() { let _ = a[0](b); }\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
 
-    def test_legacy_is_not_read_for_this_rule_either(self):
-        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
-        self.write("docs/a.md", "Prose.\n")
-        self.write("legacy/app/build.rs", "// [ADR-0038](../../docs/11-adr/0039-ios-distribution.md)\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
-
     def test_the_run_says_how_many_links_it_compared(self):
         result = self.adr(label="ADR-0039", target="../11-adr/0039-ios-distribution.md")
         self.assertIn("link(s) checked for a label that disagrees with its target.", result.stdout)

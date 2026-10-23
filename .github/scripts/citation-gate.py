@@ -267,10 +267,6 @@ in the gate's own output rather than implied by its silence.
 
 Also out, each for a reason:
 
-* **`legacy/`**, its markdown and its Rust. It is the pre-rewrite tree kept
-  verbatim, and its READMEs cite `apps/api/src/server.ts` — a path that *does*
-  resolve against this repository's `apps/` and means something else entirely
-  there. Scanning it would produce confident nonsense.
 * **Directory citations with no extension** (`crates/sunrise-core/src/engine`).
   Rule 2 excludes them, so a renamed directory is not caught.
 * **Fenced code blocks and YAML front matter** in markdown, and fenced blocks
@@ -1245,7 +1241,7 @@ def check(root: str, list_unanchored: bool) -> int:
     files = sorted(
         name
         for name in tracked
-        if (name.endswith(".md") or name.endswith(".rs")) and not name.startswith("legacy/")
+        if name.endswith(".md") or name.endswith(".rs")
     )
     if not files:
         print("::error::citations: git reports no markdown or Rust to scan; the gate could not run.")
@@ -1881,9 +1877,7 @@ def self_test() -> int:
         # `symbol_span`'s `OSError` arm, reached directly because a *scanned*
         # `.rs` file cannot reach it: tracked but absent from the working
         # tree, it stops the gate at exit 2 long before `classify` sees a
-        # citation. A `legacy/` `.rs` target is the exception — resolvable,
-        # because `Tree` holds every tracked file, but never scanned — and
-        # there the arm is reached through the command line.
+        # citation, because every tracked `.rs` file is scanned.
         # `lib.rs` is tracked in this repository and is not written into the
         # scratch tree above, so opening it there raises and the arm returns
         # no spans at all.
