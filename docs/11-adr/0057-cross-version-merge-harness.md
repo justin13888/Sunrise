@@ -118,9 +118,16 @@ A violation is any of these, on either side unless it names one:
 
 The classifier can explain three of these: a refusal as corruption on the
 baseline, a corruption the baseline logs after a `HEAD` write carried a newer
-value it kept or after a `HEAD` core published a `StreamDigest` (an op kind
-of `HEAD`'s own, [ADR-0043](./0043-commit-tree.md) §5, which `HEAD` logs as
-`core.chain.digest_published`), and a lost field. Every other violation has
+value it kept or after a `HEAD` core wrote an op kind of `HEAD`'s own, and a
+lost field. `HEAD` writes two such kinds: a `StreamDigest`
+([ADR-0043](./0043-commit-tree.md) §5, logged as
+`core.chain.digest_published`) on its anti-entropy tick, and a
+`DeviceFeatures` ([ADR-0045](./0045-schema-identity-and-feature-gating.md) §7,
+logged as `core.feature.advertised`) when it opens a vault, so every run has
+the second whether or not it lasts long enough for the first. A baseline that
+predates parking drops both as corruption, which is #320 and nothing more:
+ADR-0045 §7 has every device advertise, and an older build that cannot park
+is what §4 exists to replace, not a reason to withhold the op. Every other violation has
 no gap that can excuse it, so it always fails the property: a refusal the
 sync driver does not count as corruption, a refusal on `HEAD`, a logged warning or error, a failed
 command, a stopped replica, a refused upgrade.
