@@ -77,6 +77,7 @@ pub mod query;
 pub mod recovery;
 pub mod relay_url;
 pub mod reminders;
+pub mod secret_copies;
 pub mod settings;
 pub mod sync_status;
 pub mod types;
