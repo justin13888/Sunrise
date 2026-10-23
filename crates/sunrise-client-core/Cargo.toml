@@ -25,7 +25,7 @@ default = ["relay"]
 relay = [
     "dep:async-trait",
     "dep:sunrise-relay-client",
-    "dep:sunrise-sync",
+    "sunrise-sync/sse",
     "dep:tokio",
     "dep:zeroize",
 ]
@@ -41,6 +41,9 @@ sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+# The connection states the sync badge reads (`sync_status`). The SSE
+# transport is the `relay` feature's; the states are not.
+sunrise-sync = { workspace = true }
 # The one relay URL rule (`relay_url`): a WHATWG parser, so the web client's
 # `URL` and this agree on every input the shared vectors hold.
 url = { workspace = true }
@@ -53,7 +56,6 @@ async-trait = { workspace = true, optional = true }
 # The REST client the account and recovery flows call. It names no engine;
 # this crate is what puts a vault and the relay together.
 sunrise-relay-client = { workspace = true, optional = true }
-sunrise-sync = { workspace = true, features = ["sse"], optional = true }
 tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
 # The recovery seed is drawn, used twice and dropped inside one function.
 zeroize = { workspace = true, optional = true }

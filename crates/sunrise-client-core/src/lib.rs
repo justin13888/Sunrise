@@ -45,6 +45,7 @@
 //!   drags, and the Resolve menu's merge.
 //! * [`relay_url`] — the one rule for what a relay URL is, shared with the
 //!   web client through `vectors/relay-url.json`.
+//! * [`sync_status`] — the sync badge and the sync plan, as codes.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -87,6 +88,7 @@ pub mod review;
 pub mod schedule;
 #[cfg(feature = "relay")]
 pub mod sync;
+pub mod sync_status;
 #[cfg(test)]
 mod test_support;
 pub mod undo;
