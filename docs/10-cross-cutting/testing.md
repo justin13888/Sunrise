@@ -868,10 +868,11 @@ Every seed comes from something the tree already had:
 | `recovery_blob` | `sealed` | `seal_recovery_blob` output for a fixed seed, identity and CSPRNG state; the harness unseals against the same constants. |
 | `identity_transition` | `frozen` | `identity_transition::transition::BODY_CBOR`, `PREV_SIG` and `NEXT_SIG` from `crates/sunrise-crypto-test-vectors`, concatenated in that order — the harness's input encoding. The harness verifies against that crate's `IDENTITY_SIGNING_PUBLIC`, so the seed verifies rather than merely decodes. |
 | `device_cert` | `frozen` | `identity_transition::device_cert::ENCODED`, byte for byte, signed by the same frozen identity the harness verifies against. |
+| `op_envelope`, `device_cert` | `regression_deep_nest` | The out-of-memory reproducers of the third finding (below), as the nightly uploaded them. Not shapes anything emits — each is a deep, unclosed nest of arrays, maps and tags — kept so every run starts at the nesting bound. |
 | `key_envelope` | `hpke_sealed`, `wrapped` | `key_envelope::SEALED` and `at_rest::wrapped_stream_key::WRAPPED`, byte for byte. Each opens under its own path's frozen key and context, and is refused by the other path. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
-seed corpus. That has happened twice.
+seed corpus. That has happened three times.
 
 `fuzz/seeds/ical/regression_negative_year.ics` carries `DTSTART:-202
 0302T100000` (issue #190). `jiff`'s `%Y` implements a superset of RFC 5545's
@@ -894,6 +895,22 @@ The first finding, on the first run:
 `crates/sunrise-domain/src/routine_gen.rs` with a regression test beside the
 golden DST cases. The property test in the same file could not have found it:
 it samples `interval in 1u32..=3`.
+
+The third finding was two out-of-memory reports on the same night, from
+`op_envelope` and `device_cert`, with one cause. Neither input allocates much:
+each reproducer runs alone in under 60 MB. Both decoders read a whole CBOR item
+into a `ciborium` `Value` tree at `ciborium`'s default bound of 256 nested
+arrays, maps and tags, so the fuzzers drifted into deep nests inside fields the
+decoders keep or skip. Address Sanitizer records the call stack of every
+allocation in a depot it never frees, and each different interleaving of
+container levels is a new stack, so RSS rose with the number of distinct nests
+tried. It crossed libFuzzer's 2 GiB limit inside the 30-minute budget with
+under 30 MB of live heap. Twenty thousand distinct depth-200 nests reproduce it
+offline (1.5 GB, against 45 MB for one nest repeated twenty thousand times).
+Fixed in `crates/sunrise-cbor/src/bounded.rs`: `decode_value` holds an item to
+`MAX_VALUE_DEPTH` (8) levels, and the op envelope decoder, the relay's envelope
+header decoder and both device-cert decoders go through it. The regression
+tests are `crates/sunrise-crypto/tests/nesting_bound.rs`.
 
 #### CI shape
 

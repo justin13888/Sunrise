@@ -139,6 +139,13 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   signature. Anyone on the path can lower it, and only a signature input that
   differs between the two containers makes a reader below the new floor refuse
   such an envelope instead of misreading it.
+- **A new field nests at most `MAX_VALUE_DEPTH` (8) levels deep, the envelope
+  map included.** Every decoder of the container, the client's and the
+  relay's, reads it through `sunrise_cbor::decode_value`
+  (`crates/sunrise-cbor/src/bounded.rs`), which refuses a deeper item whole.
+  So a field nested deeper is not kept as unknown by an older build: the
+  envelope carrying it is refused. The deepest field today is field 15, at
+  three levels. The device cert and its body are held to the same bound.
 - **Fields 13–15 need no container bump.** Field 13 is the schema fingerprint
   (ADR-0045 §3), and 14–15 are reserved for the commit tree (§7.1). Every
   build in the field already preserves and signs unknown envelope fields.

@@ -206,8 +206,8 @@ fn body_from_cbor(bytes: &[u8]) -> Result<DeviceCertInner, DeviceCertError> {
     // "these bytes" and "this body" the same thing on both sides of the
     // signature.
     let mut cursor = bytes;
-    let value: Value =
-        ciborium::de::from_reader(&mut cursor).map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
+    let value = sunrise_cbor::decode_value(&mut cursor)
+        .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
     if !cursor.is_empty() {
         return Err(DeviceCertError::Cbor(format!(
             "{} trailing byte(s) after the device cert body",
@@ -403,15 +403,19 @@ impl DeviceCert {
     /// # Errors
     /// CBOR / field-shape failures.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DeviceCertError> {
-        // `ciborium::de::from_reader` reads **one** item and stops, so without
+        // `sunrise_cbor::decode_value` reads **one** item and stops, so without
         // this a cert blob may carry anything at all after it — including
         // further whole certs. `roster_digest` hashes the blob it was handed,
         // so trailing bytes there were a way to present several signed certs as
         // one roster entry and satisfy the signed digest with a subset of the
         // membership. Nothing this workspace emits has a tail; refusing one is
         // free, and it makes "these bytes" and "this cert" the same thing.
+        //
+        // The nesting bound (`sunrise_cbor::MAX_VALUE_DEPTH`) applies to the
+        // whole item, including a field this build skips: an ignored value is
+        // still decoded into a tree before it is ignored.
         let mut cursor = bytes;
-        let value: Value = ciborium::de::from_reader(&mut cursor)
+        let value = sunrise_cbor::decode_value(&mut cursor)
             .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
         if !cursor.is_empty() {
             return Err(DeviceCertError::Cbor(format!(
