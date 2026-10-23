@@ -821,6 +821,19 @@ impl SunriseCore {
         Ok(self.inner.enforce_attachment_cache()?)
     }
 
+    /// Rebuild the vault's projection from its local op log: every entity
+    /// row, the task search index and the merge state are cleared and
+    /// folded again from the ops, in one transaction (issue #441). Nothing
+    /// is reported on `subscribe_changes`; re-read what is on screen.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] if an op in the log cannot be read or the
+    /// vault cannot be written. The projection is then left as it was.
+    pub fn rebuild_projection(&self) -> Result<dto::RebuildReportItem, BindingError> {
+        Ok(self.inner.rebuild_projection()?.into())
+    }
+
     /// One attachment's plaintext, reassembled and verified.
     ///
     /// # Errors

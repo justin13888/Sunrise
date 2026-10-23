@@ -150,6 +150,9 @@ USAGE:
     sunrise focus end [--done]   close every running session; --done also
                                  completes the task it was opened on
     sunrise sync --once          drain the outbox and exit (cron / CI)
+    sunrise rebuild              rebuild every task, stream and other row
+                                 from this vault's own op log, in one
+                                 transaction; nothing is sent
     sunrise help                 show this message
 
 CAPTURE SYNTAX:
@@ -1004,6 +1007,7 @@ async fn dispatch(
         "attachments" => attachments(core, rest).await,
         "attachment" => attachment(core, rest).await,
         "sync" => sync_once(core, rest).await,
+        "rebuild" => rebuild(core, rest),
         other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
     }
 }
@@ -1894,6 +1898,26 @@ async fn ical_export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
             println!("{p}");
         }
         None => print!("{body}"),
+    }
+    Ok(())
+}
+
+/// `rebuild` — rebuild the vault's projection from its local op log
+/// (issue #441).
+///
+/// Offline, like every verb but `sync` and `attachment`: it reads the log
+/// this vault already holds and sends nothing. The whole rebuild is one
+/// transaction, so a failure leaves the vault as it was.
+fn rebuild(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    if !rest.is_empty() {
+        return Err("usage: rebuild".into());
+    }
+    let report = core.rebuild_projection()?;
+    let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+    println!("{}", strings::rebuild::done(count(report.ops_replayed)));
+    if report.ops_skipped > 0 {
+        println!("{}", strings::rebuild::skipped(count(report.ops_skipped)));
     }
     Ok(())
 }

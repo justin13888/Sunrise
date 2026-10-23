@@ -113,6 +113,15 @@ live = "sync: live, outbox empty"
 # {count} changes wait to upload; {state} is the sync state's name.
 pending = "sync: {count, plural, one {# pending} other {# pending}} ({state})"
 
+[cli.rebuild]
+# stdout, after `sunrise rebuild` rebuilt the vault's rows from its own op
+# log. {count} is how many ops were applied again.
+done = "rebuilt the projection from {count, plural, one {# op} other {# ops}}"
+# stdout, under `done`. {count} ops in the log were written by an older build
+# in a shape this build refuses, so they were left out; the log file says
+# which.
+skipped = "{count, plural, one {# op this build would not apply was left out; the log names it} other {# ops this build would not apply were left out; the log names them}}"
+
 [cli.devices]
 # A bullet under a removal's report. {count} earlier removals the account no
 # longer records; their ids are listed after it, one per line.

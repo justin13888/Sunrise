@@ -3114,6 +3114,28 @@ impl From<sunrise_core::CacheUsage> for CacheUsageItem {
     }
 }
 
+/// See [`sunrise_core::RebuildReport`].
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct RebuildReportItem {
+    /// Entity ops folded again from the log.
+    pub ops_replayed: u64,
+    /// Entity ops this build would not apply, left out and logged.
+    pub ops_skipped: u64,
+    /// Entities whose compacted state was carried across from the merge
+    /// state.
+    pub compacted_entities: u64,
+}
+
+impl From<sunrise_core::RebuildReport> for RebuildReportItem {
+    fn from(r: sunrise_core::RebuildReport) -> Self {
+        Self {
+            ops_replayed: r.ops_replayed,
+            ops_skipped: r.ops_skipped,
+            compacted_entities: r.compacted_entities,
+        }
+    }
+}
+
 /// See [`sunrise_domain::AttachmentDraft`]. Every field is a fact about bytes
 /// the client already sealed and uploaded, so the client supplies it; the core
 /// fills only the id and the timestamps.
