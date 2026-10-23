@@ -51,7 +51,6 @@ sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
-sunrise-onboarding = { workspace = true }
 sunrise-pairing = { workspace = true }
 # The Apple clients had no way to reach `POST /api/v1/accounts`, so a vault
 # created there sealed no recovery blob and uploaded none (#181). This is the

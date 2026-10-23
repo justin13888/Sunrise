@@ -10,6 +10,9 @@
 //!   rows the client is already holding.
 //! * [`views`] — named saved views, stored per device as a preference.
 //! * [`config`] — the tiny TOML subset both preference files are written in.
+//! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
+//!   flow steps 3 to 8, from the typed code to a vault that has read its
+//!   history, over the REST client in `sunrise-relay-client`.
 //!
 //! Everything here is pure over its inputs. Nothing reads a clock, opens a
 //! socket, or touches a `Core`; [`views::load`] is the only function that
@@ -20,6 +23,8 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod config;
+#[cfg(feature = "relay")]
+pub mod recovery;
 pub mod undo;
 pub mod views;
 

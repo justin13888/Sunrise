@@ -5,13 +5,22 @@
 //!
 //! ADR-0021 opens with the finding that motivated the whole port: **nothing in
 //! the workspace called the REST API**. Not the CLI, not the macOS app, not
-//! `sunrise-core-bindings`. `sunrise-onboarding` declared `AccountCreateRequest`
-//! and `AccountInfo` and made no HTTP call with them. The account-and-device
+//! `sunrise-core-bindings`. `sunrise-onboarding` (since folded into
+//! `sunrise-client-core`) declared `AccountCreateRequest` and `AccountInfo`
+//! and made no HTTP call with them. The account-and-device
 //! bootstrap the crypto design depends on was specified, served, and never
 //! invoked — and nothing detected that, because a route with no caller fails no
 //! test.
 //!
 //! This is the caller.
+//!
+//! # What it depends on
+//!
+//! The wire and nothing above it: the generated client, `sunrise-http-sig` for
+//! the device binding, `sunrise-id` for the ids it names, `sunrise-error`. It
+//! names no engine. The flows that orchestrate a vault and the relay together
+//! (account bootstrap, recovery) are `sunrise-client-core`'s and call down
+//! into this crate, never the reverse.
 //!
 //! # Generated, not written
 //!
@@ -65,10 +74,15 @@ pub mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));
 }
 
+pub mod account;
 mod bootstrap;
 mod push;
 mod recovery;
 
+pub use account::{
+    decode_public_key, decode_recovery_blob, encode_public_key, encode_recovery_blob,
+    AccountCreateRequest, PublicKeyError,
+};
 pub use bootstrap::{bootstrap, register_device, BootstrapError, BootstrapOutcome, DeviceIdentity};
 pub use push::{register_push_token, PushTokenError, PushTokenRegistration};
-pub use recovery::RelayRecovery;
+pub use recovery::{RelayRecovery, RelayRefusal};

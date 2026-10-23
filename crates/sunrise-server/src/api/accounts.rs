@@ -17,8 +17,8 @@
 //!
 //! # Why the request types live here
 //!
-//! `sunrise-onboarding` declares an `AccountCreateRequest` and an `AccountInfo`
-//! that nothing has ever sent or received — the bootstrap flow was specified,
+//! `sunrise-onboarding` (since folded into `sunrise-client-core`) declared an
+//! `AccountCreateRequest` and an `AccountInfo` that nothing ever sent or received — the bootstrap flow was specified,
 //! served, and never invoked, which is the void ADR-0021 adopted a client
 //! generator to fill. The typed surface is the contract now, so the shapes are
 //! declared where they are described, and carry the two things the old ones
@@ -90,7 +90,7 @@ pub struct AccountInfo {
     /// `"sunrise.recovery_blob.v1" ‖ identity_id`, so a client must know the
     /// vault's `identity_id` *before* it can open the blob — and on a fresh
     /// device there is no vault to read it from.
-    /// `sunrise_onboarding::recover_identity_from_code` says this value "MUST
+    /// `sunrise_client_core::recovery::recover_identity_from_code` says this value "MUST
     /// come from the OIDC account record"; until this field existed the account
     /// record carried the server's id under that name and the real one nowhere,
     /// so the recovery flow's step 5 had no input it could be given.

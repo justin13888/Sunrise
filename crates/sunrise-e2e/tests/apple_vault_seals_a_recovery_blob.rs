@@ -98,7 +98,7 @@ async fn identity_id(base_url: &str) -> [u8; 16] {
         .await
         .expect("the account record")
         .into_inner();
-    let key = sunrise_onboarding::decode_public_key(
+    let key = sunrise_relay_client::decode_public_key(
         account
             .identity_signing_pub
             .as_deref()
@@ -181,11 +181,14 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
     let served = fetch_blob(&base_url)
         .await
         .expect("the relay serves it back");
-    let blob = sunrise_onboarding::decode_recovery_blob(&served).expect("base64url");
+    let blob = sunrise_relay_client::decode_recovery_blob(&served).expect("base64url");
 
-    let restored =
-        sunrise_onboarding::recover_identity_from_code(&blob, &code, &identity_id(&base_url).await)
-            .expect("the code the app displayed opens the blob the app uploaded");
+    let restored = sunrise_client_core::recovery::recover_identity_from_code(
+        &blob,
+        &code,
+        &identity_id(&base_url).await,
+    )
+    .expect("the code the app displayed opens the blob the app uploaded");
 
     // And the key inside is the one the vault's `key_envelope` ops are sealed
     // to, which is the whole point of sealing it: a blob carrying a mismatched

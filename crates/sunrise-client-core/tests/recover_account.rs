@@ -1,3 +1,5 @@
+#![cfg(feature = "relay")]
+
 //! The account-level recovery flow against an injected relay.
 //!
 //! No network: [`FakeRelay`] serves a blob a real founding vault sealed, and
@@ -10,13 +12,13 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{Core, CoreConfig, Unlock};
-use sunrise_crypto::keys::VaultRootKey;
-use sunrise_onboarding::{
+use sunrise_client_core::recovery::{
     check_recovery_code, identity_id_from_account, is_recovery_word, recover_account,
     rejoin_account, restore_identity, DeviceLabel, RecoveringDevice, RecoveryProgress,
     RecoveryRelay, RelayRefusal, RestoreError,
 };
+use sunrise_core::{Core, CoreConfig, Unlock};
+use sunrise_crypto::keys::VaultRootKey;
 
 const FOUNDING_ROOT: [u8; 32] = [0x41; 32];
 const RECOVERED_ROOT: [u8; 32] = [0x42; 32];
@@ -89,8 +91,8 @@ async fn founded() -> (String, String, String, [u8; 16]) {
     core.shutdown().await;
     let code = sunrise_crypto::bip39::encode_recovery_code(&SEED);
     (
-        sunrise_onboarding::encode_public_key(&key),
-        sunrise_onboarding::encode_recovery_blob(&blob),
+        sunrise_relay_client::encode_public_key(&key),
+        sunrise_relay_client::encode_recovery_blob(&blob),
         code.reveal().to_owned(),
         sunrise_crypto::identity_id_from_pub(&key),
     )
@@ -160,7 +162,7 @@ async fn another_accounts_code_is_refused_by_the_aead() {
     assert!(
         matches!(
             err,
-            RestoreError::Code(sunrise_onboarding::RecoveryFlowError::Crypto(_))
+            RestoreError::Code(sunrise_client_core::recovery::RecoveryFlowError::Crypto(_))
         ),
         "{err:?}"
     );
@@ -314,7 +316,7 @@ async fn a_sync_that_will_not_start_is_reported_with_the_device_id() {
 #[test]
 fn the_identity_id_is_derived_from_the_accounts_published_key() {
     let key = [0x11u8; 32];
-    let encoded = sunrise_onboarding::encode_public_key(&key);
+    let encoded = sunrise_relay_client::encode_public_key(&key);
     assert_eq!(
         identity_id_from_account(Some(&encoded)).expect("a key"),
         sunrise_crypto::identity_id_from_pub(&key),
@@ -341,11 +343,11 @@ fn an_account_with_no_usable_identity_key_is_refused_as_such() {
     ));
     // Right alphabet, wrong length: the case a padding length check would turn
     // into a silently wrong AAD.
-    let short = sunrise_onboarding::encode_recovery_blob(&[0u8; 16]);
+    let short = sunrise_relay_client::encode_recovery_blob(&[0u8; 16]);
     assert!(matches!(
         identity_id_from_account(Some(&short)),
         Err(RestoreError::IdentityKey(
-            sunrise_onboarding::PublicKeyError::Length(16)
+            sunrise_relay_client::PublicKeyError::Length(16)
         ))
     ));
 }

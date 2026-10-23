@@ -499,12 +499,12 @@ impl SunriseCore {
         };
 
         let mut code = code;
-        let outcome = sunrise_onboarding::recover_account(
+        let outcome = sunrise_client_core::recovery::recover_account(
             &relay,
             &code,
             cfg,
             VaultRootKey::from_bytes(root),
-            sunrise_onboarding::DeviceLabel {
+            sunrise_client_core::recovery::DeviceLabel {
                 nickname,
                 platform: platform_tag(),
                 app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
@@ -1245,7 +1245,7 @@ impl SunriseCore {
         let outcome = sunrise_relay_client::bootstrap(
             &relay_url,
             &bearer,
-            sunrise_onboarding::AccountCreateRequest {
+            sunrise_relay_client::AccountCreateRequest {
                 email,
                 identity_signing_pub: self.inner.identity_signing_pub(),
                 identity_dh_pub: self.inner.identity_dh_pub(),

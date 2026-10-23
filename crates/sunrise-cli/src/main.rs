@@ -1977,7 +1977,7 @@ fn bootstrap_account(
     rest: &[String],
 ) -> Result<
     (
-        sunrise_onboarding::account::AccountCreateRequest,
+        sunrise_relay_client::AccountCreateRequest,
         Option<sunrise_crypto::bip39::RecoveryCode>,
     ),
     Box<dyn std::error::Error>,
@@ -1996,7 +1996,7 @@ fn bootstrap_account(
     };
 
     Ok((
-        sunrise_onboarding::account::AccountCreateRequest {
+        sunrise_relay_client::AccountCreateRequest {
             email: rest.first().cloned().unwrap_or_default(),
             identity_signing_pub: core.identity_signing_pub(),
             identity_dh_pub: core.identity_dh_pub(),

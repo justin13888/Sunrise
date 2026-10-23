@@ -1,7 +1,11 @@
-//! Account creation request / response shapes, and the recovery blob's
-//! transport encoding.
+//! The account-creation request [`crate::bootstrap()`] sends, and the transport
+//! encoding of the keys and the recovery blob it carries.
 //!
-//! Per `docs/06-server/api.md` §POST /api/v1/accounts.
+//! Per `docs/06-server/api.md` §POST /api/v1/accounts. These lived in
+//! `sunrise-onboarding` until that crate was folded into
+//! `sunrise-client-core`; they are wire shapes, so they sit with the client
+//! that puts them on the wire, and this crate depends on no engine to name
+//! them.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -10,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The three key-shaped fields carry **bytes**, not the base64url strings the
 /// wire does, and [`encode_public_key`] / [`encode_recovery_blob`] are applied
-/// once by `sunrise_relay_client::bootstrap`. That is the same correction
+/// once by [`crate::bootstrap()`]. That is the same correction
 /// `DeviceIdentity::device_pub_s` took: a `String` field accepts any string at
 /// all, and the one caller that filled one by hand registered the hex of a
 /// 16-byte device id as a public key and could not authenticate afterwards. A
@@ -33,21 +37,6 @@ pub struct AccountCreateRequest {
     pub recovery_blob: Option<Vec<u8>>,
     /// Terms acceptance timestamp (ms since epoch).
     pub terms_at_ms: u64,
-}
-
-/// `GET /api/v1/accounts/me` response.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AccountInfo {
-    /// 16-byte identity id, hex.
-    pub identity_id: String,
-    /// User email (normalized).
-    pub email: String,
-    /// Subscription tier.
-    pub tier: String,
-    /// Number of registered devices.
-    pub device_count: u32,
-    /// Account creation time (ms since epoch).
-    pub created_at_ms: u64,
 }
 
 /// The encoding `recovery_blob` travels in: base64url, no padding.
