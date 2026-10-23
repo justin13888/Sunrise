@@ -4,7 +4,8 @@
 //! prefix, its op-log tag, how it merges, which stream owns its ops, the
 //! feature ids scoped to it, the op variants that carry it and the records
 //! those ops write: each record's storage projection and every field's wire
-//! name, Rust type and CRDT type ([ADR-0044] §2–§3).
+//! name, Rust type and CRDT type ([ADR-0044] §2–§3), and each register's
+//! conflict class ([ADR-0065] §3).
 //!
 //! The declaration is an *x-macro*. It holds tokens, not types, and hands them
 //! to a callback macro in whichever crate expands it, so each consumer derives
@@ -48,13 +49,19 @@
 //!     ],                                      // variant(payload) = inner_kind, class, target field
 //!     records: [
 //!         Record @ ("table", "key", Extra | Body | Plain) | none {
-//!             field: Type => Register | Map | OrSet | Counter | Nested | Derived;
-//!             renamed as "wire_name": Type => Register;
+//!             field: Type => Register(Quiet | Tracked | State | Tombstone);
+//!             field: Type => Map | OrSet | Counter | Nested | Derived;
+//!             renamed as "wire_name": Type => Register(Quiet);
 //!             ..unknown                       // the flattened `Unknowns` field, if any
 //!         }
 //!     ],
 //! }
 //! ```
+//!
+//! A register names its conflict class and nothing else does: the other CRDT
+//! types keep every write, so their class is [`Conflict::Merge`]. A register
+//! without a class, a class on anything else, and `Register(Merge)` are build
+//! errors.
 //!
 //! The order of entries is [`EntityKind`]'s declaration order, and the order
 //! of `ops` is `InnerOp`'s variant order. Neither is on the wire — CBOR
@@ -81,6 +88,7 @@
 //! rest of its field.
 //!
 //! [ADR-0044]: ../../../docs/11-adr/0044-per-field-ops.md
+//! [ADR-0065]: ../../../docs/11-adr/0065-copy-on-write-entity-versions.md
 //! [`EntityKind`]: crate::EntityKind
 
 /// The entity registry, handed to `$callback` as tokens.
@@ -118,30 +126,30 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Task @ ("tasks", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        title: String => Register;
-                        body: Option<NoteBody> => Register;
-                        stream_id: EntityRef => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        title: String => Register(Tracked);
+                        body: Option<NoteBody> => Register(Tracked);
+                        stream_id: EntityRef => Register(Tracked);
                         contexts: BTreeSet<EntityRef> => OrSet;
-                        state: TaskState => Register;
-                        priority: Option<u8> => Register;
-                        energy: Option<Energy> => Register;
-                        estimated_duration_s: Option<u64> => Register;
-                        scheduled_at: Option<SunriseTime> => Register;
-                        due_at: Option<SunriseTime> => Register;
-                        scheduling_constraints: Vec<ScheduleConstraint> => Register;
-                        completed_at: Option<SunriseTime> => Register;
+                        state: TaskState => Register(State);
+                        priority: Option<u8> => Register(Quiet);
+                        energy: Option<Energy> => Register(Quiet);
+                        estimated_duration_s: Option<u64> => Register(Quiet);
+                        scheduled_at: Option<SunriseTime> => Register(Tracked);
+                        due_at: Option<SunriseTime> => Register(Tracked);
+                        scheduling_constraints: Vec<ScheduleConstraint> => Register(Tracked);
+                        completed_at: Option<SunriseTime> => Register(Quiet);
                         deferred_count: i64 => Counter;
                         blocks: BTreeSet<EntityRef> => Derived;
                         blocked_by: BTreeSet<EntityRef> => OrSet;
-                        assignee: Option<EntityRef> => Register;
-                        routine_id: Option<EntityRef> => Register;
-                        routine_occurrence: Option<Timestamp> => Register;
-                        reminder_lead_s: Option<u32> => Register;
-                        archived: bool => Register;
-                        deleted: bool => Register;
+                        assignee: Option<EntityRef> => Register(Tracked);
+                        routine_id: Option<EntityRef> => Register(Quiet);
+                        routine_occurrence: Option<Timestamp> => Register(Quiet);
+                        reminder_lead_s: Option<u32> => Register(Quiet);
+                        archived: bool => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                 ],
@@ -164,22 +172,22 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Stream @ ("streams", "stream_id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        name: String => Register;
-                        description: Option<NoteBody> => Register;
-                        color: StreamColor => Register;
-                        icon: Option<String> => Register;
-                        parent_id: Option<EntityRef> => Register;
-                        sort_order: String => Register;
-                        archived: bool => Register;
-                        paused: bool => Register;
-                        paused_until: Option<Timestamp> => Register;
-                        review_cadence: StreamReviewCadence => Register;
-                        default_context: Option<EntityRef> => Register;
-                        reminder_lead_s: Option<u32> => Register;
-                        deleted: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        name: String => Register(Tracked);
+                        description: Option<NoteBody> => Register(Tracked);
+                        color: StreamColor => Register(Quiet);
+                        icon: Option<String> => Register(Quiet);
+                        parent_id: Option<EntityRef> => Register(Tracked);
+                        sort_order: String => Register(Quiet);
+                        archived: bool => Register(Quiet);
+                        paused: bool => Register(Quiet);
+                        paused_until: Option<Timestamp> => Register(Quiet);
+                        review_cadence: StreamReviewCadence => Register(Quiet);
+                        default_context: Option<EntityRef> => Register(Quiet);
+                        reminder_lead_s: Option<u32> => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                 ],
@@ -205,13 +213,13 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Context @ ("contexts", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        name: String => Register;
-                        description: Option<String> => Register;
-                        archived: bool => Register;
-                        deleted: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        name: String => Register(Tracked);
+                        description: Option<String> => Register(Tracked);
+                        archived: bool => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                 ],
@@ -235,39 +243,39 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Routine @ ("routines", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
                         template: TaskTemplate => Nested;
-                        rrule: RRule => Register;
-                        timezone: String => Register;
-                        starts_at: Timestamp => Register;
-                        ends_at: Option<Timestamp> => Register;
-                        scheduling_constraints: Vec<ScheduleConstraint> => Register;
-                        skip_dates: Vec<Timestamp> => Register;
+                        rrule: RRule => Register(Tracked);
+                        timezone: String => Register(Tracked);
+                        starts_at: Timestamp => Register(Tracked);
+                        ends_at: Option<Timestamp> => Register(Tracked);
+                        scheduling_constraints: Vec<ScheduleConstraint> => Register(Tracked);
+                        skip_dates: Vec<Timestamp> => Register(Tracked);
                         skipped_keys: Vec<String> => OrSet;
-                        catchup_policy: RoutineCatchupPolicy => Register;
+                        catchup_policy: RoutineCatchupPolicy => Register(Quiet);
                         streak_counter: i64 => Derived;
                         last_completed_at: Option<Timestamp> => Derived;
-                        grace_window_s: Option<u64> => Register;
-                        forgiveness_enabled: bool => Register;
+                        grace_window_s: Option<u64> => Register(Quiet);
+                        forgiveness_enabled: bool => Register(Quiet);
                         streak_started_at: Option<Timestamp> => Derived;
                         forgivenesses_in_window: u32 => Derived;
                         streak_keys: Vec<String> => OrSet;
-                        paused: bool => Register;
-                        paused_until: Option<Timestamp> => Register;
-                        archived: bool => Register;
-                        deleted: bool => Register;
+                        paused: bool => Register(Quiet);
+                        paused_until: Option<Timestamp> => Register(Quiet);
+                        archived: bool => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                     TaskTemplate @ none {
-                        title: String => Register;
-                        stream_id: EntityRef => Register;
-                        contexts: Vec<EntityRef> => Register;
-                        energy: Option<Energy> => Register;
-                        priority: Option<u8> => Register;
-                        estimated_duration_s: Option<u64> => Register;
-                        body: Option<NoteBody> => Register;
+                        title: String => Register(Tracked);
+                        stream_id: EntityRef => Register(Tracked);
+                        contexts: Vec<EntityRef> => Register(Tracked);
+                        energy: Option<Energy> => Register(Tracked);
+                        priority: Option<u8> => Register(Tracked);
+                        estimated_duration_s: Option<u64> => Register(Tracked);
+                        body: Option<NoteBody> => Register(Tracked);
                         ..unknown
                     }
                 ],
@@ -291,16 +299,16 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Block @ ("blocks", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        stream_id: EntityRef => Register;
-                        starts_at: SunriseTime => Register;
-                        ends_at: SunriseTime => Register;
-                        title: Option<String> => Register;
-                        title_track_task: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        stream_id: EntityRef => Register(Tracked);
+                        starts_at: SunriseTime => Register(Tracked);
+                        ends_at: SunriseTime => Register(Tracked);
+                        title: Option<String> => Register(Tracked);
+                        title_track_task: bool => Register(Quiet);
                         tasks: BTreeSet<EntityRef> => OrSet;
-                        deleted: bool => Register;
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                 ],
@@ -315,12 +323,12 @@ macro_rules! for_each_entity {
                 ops: [],
                 records: [
                     Note @ none {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        parent: EntityRef => Register;
-                        body: NoteBody => Register;
-                        deleted: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        parent: EntityRef => Register(Quiet);
+                        body: NoteBody => Register(Quiet);
+                        deleted: bool => Register(Quiet);
                         ..unknown
                     }
                 ],
@@ -346,27 +354,27 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     Attachment @ ("attachments", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        parent: EntityRef => Register;
-                        filename: String => Register;
-                        mime_type: String => Register;
-                        size_bytes: u64 => Register;
-                        blob_key: [u8; 32] => Register;
-                        blob_id: [u8; 16] => Register;
-                        chunk_count: u32 => Register;
-                        content_hash: [u8; 32] => Register;
-                        ciphertext_hash: [u8; 32] => Register;
-                        width: Option<u32> => Register;
-                        height: Option<u32> => Register;
-                        thumbnail_blob_id: Option<[u8; 16]> => Register;
-                        thumbnail_blob_key: Option<[u8; 32]> => Register;
-                        thumbnail_mime: Option<String> => Register;
-                        thumbnail_size_bytes: Option<u32> => Register;
-                        thumbnail_content_hash: Option<[u8; 32]> => Register;
-                        thumbnail_ciphertext_hash: Option<[u8; 32]> => Register;
-                        deleted: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        parent: EntityRef => Register(Quiet);
+                        filename: String => Register(Quiet);
+                        mime_type: String => Register(Quiet);
+                        size_bytes: u64 => Register(Quiet);
+                        blob_key: [u8; 32] => Register(Quiet);
+                        blob_id: [u8; 16] => Register(Quiet);
+                        chunk_count: u32 => Register(Quiet);
+                        content_hash: [u8; 32] => Register(Quiet);
+                        ciphertext_hash: [u8; 32] => Register(Quiet);
+                        width: Option<u32> => Register(Quiet);
+                        height: Option<u32> => Register(Quiet);
+                        thumbnail_blob_id: Option<[u8; 16]> => Register(Quiet);
+                        thumbnail_blob_key: Option<[u8; 32]> => Register(Quiet);
+                        thumbnail_mime: Option<String> => Register(Quiet);
+                        thumbnail_size_bytes: Option<u32> => Register(Quiet);
+                        thumbnail_content_hash: Option<[u8; 32]> => Register(Quiet);
+                        thumbnail_ciphertext_hash: Option<[u8; 32]> => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
                         ..unknown
                     }
                 ],
@@ -381,12 +389,12 @@ macro_rules! for_each_entity {
                 ops: [],
                 records: [
                     Person @ none {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
-                        display_name: String => Register;
-                        identity_id: Option<EntityRef> => Register;
-                        deleted: bool => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        display_name: String => Register(Quiet);
+                        identity_id: Option<EntityRef> => Register(Quiet);
+                        deleted: bool => Register(Quiet);
                         ..unknown
                     }
                 ],
@@ -430,28 +438,28 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     FocusStart @ ("focus_sessions", "id", Extra) {
-                        id: EntityRef => Register;
-                        task_id: EntityRef => Register;
-                        stream_id: EntityRef => Register;
-                        started_at as "started_at_ms": Timestamp => Register;
-                        planned_ms: Option<u64> => Register;
-                        energy: Option<Energy> => Register;
-                        kind: FocusKind => Register;
-                        chunk: Option<Chunk> => Register;
+                        id: EntityRef => Register(Quiet);
+                        task_id: EntityRef => Register(Quiet);
+                        stream_id: EntityRef => Register(Quiet);
+                        started_at as "started_at_ms": Timestamp => Register(Quiet);
+                        planned_ms: Option<u64> => Register(Quiet);
+                        energy: Option<Energy> => Register(Quiet);
+                        kind: FocusKind => Register(Quiet);
+                        chunk: Option<Chunk> => Register(Quiet);
                         ..unknown
                     }
                     FocusEnd @ ("focus_session_ends", "session_id", Extra) {
-                        session_id: EntityRef => Register;
-                        ended_at as "ended_at_ms": Timestamp => Register;
-                        actual_focused_ms: u64 => Register;
-                        interruptions: Vec<Interruption> => Register;
-                        completed_task: bool => Register;
+                        session_id: EntityRef => Register(Quiet);
+                        ended_at as "ended_at_ms": Timestamp => Register(Quiet);
+                        actual_focused_ms: u64 => Register(Quiet);
+                        interruptions: Vec<Interruption> => Register(Quiet);
+                        completed_task: bool => Register(Quiet);
                         ..unknown
                     }
                     Interruption @ ("focus_interruptions", "session_id", Plain) {
-                        session_id: EntityRef => Register;
-                        at as "at_ms": Timestamp => Register;
-                        reason: InterruptionReason => Register;
+                        session_id: EntityRef => Register(Quiet);
+                        at as "at_ms": Timestamp => Register(Quiet);
+                        reason: InterruptionReason => Register(Quiet);
                     }
                 ],
             }
@@ -473,14 +481,14 @@ macro_rules! for_each_entity {
                 ],
                 records: [
                     ReviewSnapshot @ ("review_snapshots", "id", Body) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        window_start as "window_start_ms": Timestamp => Register;
-                        window_end as "window_end_ms": Timestamp => Register;
-                        totals: ReviewTotals => Register;
-                        streams: Vec<ReviewSnapshotStream> => Register;
-                        streaks: Vec<StreakRow> => Register;
-                        note: Option<String> => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        window_start as "window_start_ms": Timestamp => Register(Quiet);
+                        window_end as "window_end_ms": Timestamp => Register(Quiet);
+                        totals: ReviewTotals => Register(Quiet);
+                        streams: Vec<ReviewSnapshotStream> => Register(Quiet);
+                        streaks: Vec<StreakRow> => Register(Quiet);
+                        note: Option<String> => Register(Quiet);
                         ..unknown
                     }
                 ],
@@ -499,9 +507,9 @@ macro_rules! for_each_entity {
                 ops: [],
                 records: [
                     Preferences @ ("preferences", "id", Extra) {
-                        id: EntityRef => Register;
-                        created_at: Timestamp => Register;
-                        updated_at: Timestamp => Register;
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
                         values: BTreeMap<String, CborValue> => Map;
                         ..unknown
                     }
@@ -571,6 +579,40 @@ pub enum Crdt {
     /// Computed at read time from other fields; not a field of the merge.
     Derived,
 }
+
+/// What a field's concurrent writes come to ([ADR-0065] §3).
+///
+/// Ordered writes are the same for every class: the later one wins. The class
+/// decides only between writes neither of which had seen the other. It is part
+/// of the schema fingerprint, so changing one is a `DOC_SCHEMA_V` bump.
+///
+/// [ADR-0065]: ../../../docs/11-adr/0065-copy-on-write-entity-versions.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conflict {
+    /// Every write survives, so there is no conflict: OR-sets, counters and
+    /// maps, and the nested and derived fields no write names.
+    Merge,
+    /// A register decided by stamp. The loser is kept and not surfaced.
+    Quiet,
+    /// A register decided by stamp. The loser is kept and surfaced as a
+    /// conflict on the entity.
+    Tracked,
+    /// `Task.state`: a state in [`TERMINAL_STATES`] beats any other, and two
+    /// terminal states are decided by stamp. The loser is kept and surfaced.
+    State,
+    /// `deleted`: a delete beats a concurrent restore, and a concurrent write
+    /// to another field never resurrects the entity.
+    Tombstone,
+}
+
+/// The `Task.state` spellings [`Conflict::State`] ranks above every other
+/// state, known or not ([ADR-0065] §3).
+///
+/// It is part of the schema fingerprint: two builds that disagreed about it
+/// would pick different winners from the same versions.
+///
+/// [ADR-0065]: ../../../docs/11-adr/0065-copy-on-write-entity-versions.md
+pub const TERMINAL_STATES: &[&str] = &["done", "cancelled"];
 
 /// Where a record keeps the fields this build does not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -659,6 +701,9 @@ pub struct FieldSpec {
     pub value_type: &'static str,
     /// How it merges.
     pub crdt: Crdt,
+    /// What its concurrent writes come to: declared on a register,
+    /// [`Conflict::Merge`] on anything else.
+    pub conflict: Conflict,
 }
 
 /// One value type: a type a record field or an op payload carries that is not
@@ -781,6 +826,40 @@ macro_rules! __registry_wire_name {
     };
     ($field:ident $wire:literal) => {
         $wire
+    };
+}
+
+/// A field's [`Conflict`], from its CRDT type and the class it declares. Only
+/// a register declares one, and it must: see the module docs §Grammar.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __registry_conflict {
+    ($field:ident; Register) => {
+        ::core::compile_error!(::core::concat!(
+            "register `",
+            ::core::stringify!($field),
+            "` declares no conflict class: write `=> Register(Quiet)` or another class (ADR-0065 §3)"
+        ))
+    };
+    ($field:ident; Register Merge) => {
+        ::core::compile_error!(::core::concat!(
+            "register `",
+            ::core::stringify!($field),
+            "` cannot be Merge: a register keeps one value (ADR-0065 §3)"
+        ))
+    };
+    ($field:ident; Register $class:ident) => {
+        $crate::registry::Conflict::$class
+    };
+    ($field:ident; $crdt:ident) => {
+        $crate::registry::Conflict::Merge
+    };
+    ($field:ident; $crdt:ident $class:ident) => {
+        ::core::compile_error!(::core::concat!(
+            "`",
+            ::core::stringify!($field),
+            "` is not a register and declares no conflict class: every write to it survives (ADR-0065 §3)"
+        ))
     };
 }
 
@@ -1033,7 +1112,7 @@ macro_rules! define_entities {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))?;
                             )*
                             $(..$unknown:ident)?
                         }
@@ -1126,6 +1205,7 @@ macro_rules! define_entities {
                                             rust: ::core::stringify!($field),
                                             value_type: ::core::stringify!($field_ty),
                                             crdt: Crdt::$crdt,
+                                            conflict: $crate::__registry_conflict!($field; $crdt $($conflict)?),
                                         },
                                     )*
                                 ],
@@ -1218,6 +1298,38 @@ mod tests {
                 assert_eq!(e.owner, Owner::Unowned);
             }
         }
+    }
+
+    /// ADR-0065 §3: every register has a class that picks one winner, and
+    /// nothing else has one. The two special classes sit on the one field each
+    /// is defined for: `State` on `Task.state`, `Tombstone` on the `deleted`
+    /// of every entity that syncs by field.
+    #[test]
+    fn every_register_declares_a_conflict_class() {
+        for e in &ENTITIES {
+            for (i, r) in e.records.iter().enumerate() {
+                for f in r.fields {
+                    let at = format!("{}.{}", r.name, f.name);
+                    if f.crdt == Crdt::Register {
+                        assert_ne!(f.conflict, Conflict::Merge, "{at} is a register");
+                    } else {
+                        assert_eq!(f.conflict, Conflict::Merge, "{at} is not a register");
+                    }
+                    assert_eq!(
+                        f.conflict == Conflict::State,
+                        e.kind == EntityKind::Task && f.name == "state",
+                        "{at}: only Task.state is State"
+                    );
+                    let own_tombstone = e.merge == Merge::Lww && i == 0 && f.name == "deleted";
+                    assert_eq!(
+                        f.conflict == Conflict::Tombstone,
+                        own_tombstone,
+                        "{at}: Tombstone is the deleted flag of a field-merged entity"
+                    );
+                }
+            }
+        }
+        assert_eq!(TERMINAL_STATES, ["done", "cancelled"]);
     }
 
     #[test]

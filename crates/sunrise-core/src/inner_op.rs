@@ -95,7 +95,7 @@ macro_rules! define_inner_op {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))?;
                             )*
                             $(..$unknown:ident)?
                         }
