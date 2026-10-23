@@ -560,10 +560,15 @@ jobs:
       # all three slices, so all three have to be on the pinned toolchain.
       - name: Add the iOS slices to the pinned toolchain
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-      - name: Install mise, XcodeGen and SwiftLint
-        run: brew install --quiet mise xcodegen swiftlint
+      - name: Install mise and XcodeGen
+        run: brew install --quiet mise xcodegen
       - name: Trust mise config
         run: mise trust --yes
+      # SwiftLint at the version mise.toml's `[tools]` pins, not whatever brew
+      # has that day: `--strict` fails on warnings, and which warnings exist
+      # depends on the version. `apple-preflight` checks the two agree.
+      - name: Install the pinned SwiftLint
+        run: mise install swiftlint
       - name: Toolchain versions
         run: |
           xcodebuild -version
@@ -1603,12 +1608,18 @@ jobs:
       - name: Add the iOS slices to the pinned toolchain
         if: env.CONFIGURED == 'true'
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-      - name: Install mise, XcodeGen and SwiftLint
+      - name: Install mise and XcodeGen
         if: env.CONFIGURED == 'true'
-        run: brew install --quiet mise xcodegen swiftlint
+        run: brew install --quiet mise xcodegen
       - name: Trust mise config
         if: env.CONFIGURED == 'true'
         run: mise trust --yes
+      # SwiftLint at the version mise.toml's `[tools]` pins, not whatever brew
+      # has that day: `--strict` fails on warnings, and which warnings exist
+      # depends on the version. `apple-preflight` checks the two agree.
+      - name: Install the pinned SwiftLint
+        if: env.CONFIGURED == 'true'
+        run: mise install swiftlint
       # A keychain of its own and an `always()` deletion, exactly as
       # `macos-app` does it and for the same reasons -- see the long note
       # there, including why `set-key-partition-list` is not optional.
