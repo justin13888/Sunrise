@@ -34,6 +34,14 @@
 //! * [`brief`] — the morning and evening briefs' sections and headlines.
 //! * [`review`] — the daily glance's civil window, the review snapshot, and
 //!   an export's file name.
+//! * [`civil`] — a picked moment turned into a time value of the kind the
+//!   user meant, in a zone the caller names, with no silent fallback.
+//! * [`editor`] — the task, block and routine editors' forms, turned into
+//!   patches that carry only what changed and keep every time's kind.
+//! * [`schedule`] — defer, snooze, schedule and the Today capture default,
+//!   in civil days and in the kind the plan already has.
+//! * [`calendar`] — the grid's days and week start, block layout, snapping,
+//!   drags, and the Resolve menu's merge.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -59,6 +67,9 @@
 #[cfg(feature = "relay")]
 pub mod account;
 pub mod brief;
+pub mod calendar;
+pub mod civil;
+pub mod editor;
 pub mod focus;
 pub mod gate;
 pub mod history;
@@ -68,6 +79,7 @@ pub mod preferences;
 pub mod recovery;
 pub mod reminders;
 pub mod review;
+pub mod schedule;
 #[cfg(feature = "relay")]
 pub mod sync;
 #[cfg(test)]

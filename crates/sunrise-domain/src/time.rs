@@ -39,10 +39,12 @@
 mod codec;
 mod resolve;
 mod shift;
+mod week;
 mod zone;
 
 pub use resolve::Unresolvable;
 pub use shift::shift_civil_days;
+pub use week::first_day_of_week;
 pub use zone::same_zone;
 
 use crate::unknown::Unknowns;
