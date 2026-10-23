@@ -155,6 +155,13 @@ pub mod usage {
     ///     sunrise focus end [--done]   close every running session; --done also
     ///                                  completes the task it was opened on
     ///     sunrise sync --once          drain the outbox and exit (cron / CI)
+    ///     sunrise sync --watch [--rounds <n>]
+    ///                                  keep draining until Ctrl-C, backing off while
+    ///                                  the relay is unreachable
+    ///     sunrise sync status          this vault's sync badge and outbox depth
+    ///     sunrise tz [set <IANA>|clear]
+    ///                                  the zone times are read in, and where it
+    ///                                  came from
     ///     sunrise rebuild              rebuild every task, stream and other row
     ///                                  from this vault's own op log, in one
     ///                                  transaction; nothing is sent
@@ -196,6 +203,12 @@ pub mod usage {
     ///     SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
     ///     SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
     ///     SUNRISE_LOG_FILE          override the NDJSON log destination
+    ///     SUNRISE_TZ                the zone times are read in (IANA name); wins
+    ///                               over `sunrise tz set`, loses to --tz
+    ///
+    /// GLOBAL FLAGS (anywhere on the line; `--` ends them):
+    ///     --json                    print a query's result as one JSON document
+    ///     --tz <IANA>               read times in this zone for this command
     ///
     ///   Joining an account is `sunrise pair`, not a variable. The two that used to do
     ///   it carried the account's signing key in one file; see `sunrise pair`.
@@ -204,7 +217,7 @@ pub mod usage {
     #[must_use]
     pub fn text() -> String {
         let mut out = String::new();
-        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search <query>...    full-text search\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
+        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search <query>...    full-text search\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
         out
     }
 }
@@ -1656,6 +1669,101 @@ pub mod undo {
 
 /// `tz` messages.
 pub mod tz {
+    use super::rt;
+
+    /// usage: tz [show] | tz set <IANA> | tz clear
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: tz [show] | tz set <IANA> | tz clear");
+        out
+    }
+
+    /// {zone} ({source})
+    #[must_use]
+    pub fn show(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str(zone);
+        out.push_str(" (");
+        out.push_str(source);
+        out.push(')');
+        out
+    }
+
+    /// {zone} ({source}; this device reports no zone, so times are read in UTC)
+    #[must_use]
+    pub fn show_unknown(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str(zone);
+        out.push_str(" (");
+        out.push_str(source);
+        out.push_str("; this device reports no zone, so times are read in UTC)");
+        out
+    }
+
+    /// reading times in {zone} (was {previous}); {count, plural, =0 {no open task moves} one {# open task now falls at another time} other {# open tasks now fall at another time}}
+    #[must_use]
+    pub fn set(zone: &str, previous: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("reading times in ");
+        out.push_str(zone);
+        out.push_str(" (was ");
+        out.push_str(previous);
+        out.push_str("); ");
+        if count == 0 {
+            out.push_str("no open task moves");
+        } else {
+            match rt::plural("en", count) {
+                rt::Category::One => {
+                    out.push_str(&rt::number("en", count));
+                    out.push_str(" open task now falls at another time");
+                }
+                _ => {
+                    out.push_str(&rt::number("en", count));
+                    out.push_str(" open tasks now fall at another time");
+                }
+            }
+        }
+        out
+    }
+
+    /// the zone set with `sunrise tz set` is cleared; the OS zone is used
+    #[must_use]
+    pub fn cleared() -> String {
+        let mut out = String::new();
+        out.push_str("the zone set with `sunrise tz set` is cleared; the OS zone is used");
+        out
+    }
+
+    /// {var} is set, and it still takes precedence over this for every command
+    #[must_use]
+    pub fn env_overrides(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str(var);
+        out.push_str(" is set, and it still takes precedence over this for every command");
+        out
+    }
+
+    /// unknown time zone `{zone}` (from {source}); times are never read in UTC as a fallback. Use an IANA name such as Europe/Berlin
+    #[must_use]
+    pub fn unknown(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown time zone `");
+        out.push_str(zone);
+        out.push_str("` (from ");
+        out.push_str(source);
+        out.push_str("); times are never read in UTC as a fallback. Use an IANA name such as Europe/Berlin");
+        out
+    }
+
+    /// --tz needs an IANA zone name, e.g. --tz Asia/Kolkata
+    #[must_use]
+    pub fn flag_needs_zone() -> String {
+        let mut out = String::new();
+        out.push_str("--tz needs an IANA zone name, e.g. --tz Asia/Kolkata");
+        out
+    }
+
     /// this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz
     #[must_use]
     pub fn unknown_note() -> String {
@@ -1910,11 +2018,78 @@ pub mod sync {
         out
     }
 
-    /// usage: sync --once
+    /// usage: sync [--once] | sync --watch [--rounds <n>] | sync status
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: sync --once");
+        out.push_str("usage: sync [--once] | sync --watch [--rounds <n>] | sync status");
+        out
+    }
+
+    /// sync: {badge}, {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn status(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(badge);
+        out.push_str(", ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
+    /// {badge} with {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn not_live(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str(badge);
+        out.push_str(" with ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
+    /// sync: {reason}; retrying in {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn retrying(reason: &str, seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(reason);
+        out.push_str("; retrying in ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
+    /// sync: stopped
+    #[must_use]
+    pub fn stopped() -> String {
+        let mut out = String::new();
+        out.push_str("sync: stopped");
         out
     }
 
@@ -1978,6 +2153,75 @@ pub mod sync {
         out.push_str("sync off (set ");
         out.push_str(var);
         out.push_str(" to enable)");
+        out
+    }
+}
+
+/// `relay_url` messages.
+pub mod relay_url {
+    /// {var} is not a relay origin: {reason}
+    #[must_use]
+    pub fn bad(var: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str(var);
+        out.push_str(" is not a relay origin: ");
+        out.push_str(reason);
+        out
+    }
+
+    /// it is empty
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("it is empty");
+        out
+    }
+
+    /// it is longer than 256 bytes
+    #[must_use]
+    pub fn too_long() -> String {
+        let mut out = String::new();
+        out.push_str("it is longer than 256 bytes");
+        out
+    }
+
+    /// it is not an absolute URL
+    #[must_use]
+    pub fn not_a_url() -> String {
+        let mut out = String::new();
+        out.push_str("it is not an absolute URL");
+        out
+    }
+
+    /// it is a WebSocket URL; sync is reached over https://
+    #[must_use]
+    pub fn web_socket() -> String {
+        let mut out = String::new();
+        out.push_str("it is a WebSocket URL; sync is reached over https://");
+        out
+    }
+
+    /// it is not https://
+    #[must_use]
+    pub fn unsupported_scheme() -> String {
+        let mut out = String::new();
+        out.push_str("it is not https://");
+        out
+    }
+
+    /// it is plain http:// to another machine; use https://
+    #[must_use]
+    pub fn insecure_remote() -> String {
+        let mut out = String::new();
+        out.push_str("it is plain http:// to another machine; use https://");
+        out
+    }
+
+    /// it has a path, query or credentials; give only scheme, host and port
+    #[must_use]
+    pub fn not_an_origin() -> String {
+        let mut out = String::new();
+        out.push_str("it has a path, query or credentials; give only scheme, host and port");
         out
     }
 }

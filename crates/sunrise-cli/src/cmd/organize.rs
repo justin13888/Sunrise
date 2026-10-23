@@ -64,6 +64,10 @@ fn refuse_inbox(id: EntityRef) -> CmdResult {
 
 async fn list_streams(ctx: &Ctx<'_>) -> CmdResult {
     if let QueryResult::Streams(rows) = ctx.core.query(Query::StreamList).await? {
+        if ctx.json {
+            sunrise_cli::json::print(&rows.iter().map(sunrise_cli::json::stream).collect());
+            return Ok(());
+        }
         for s in rows {
             let mark = if s.archived { " [archived]" } else { "" };
             println!(
@@ -242,14 +246,14 @@ async fn move_stream(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
 /// `search` already join theirs.
 pub(super) async fn stream_tasks(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     let id = resolve_stream(ctx.core, &rest.join(" "), Archived::Include).await?;
-    super::tasks::list(ctx.core.query(Query::StreamTasks(id)).await?);
+    super::tasks::list(ctx, ctx.core.query(Query::StreamTasks(id)).await?);
     Ok(())
 }
 
 /// `context <id|name>` — the tasks carrying one context.
 pub(super) async fn context_tasks(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     let id = resolve_context(ctx.core, &rest.join(" "), Archived::Include).await?;
-    super::tasks::list(ctx.core.query(Query::ContextTasks(id)).await?);
+    super::tasks::list(ctx, ctx.core.query(Query::ContextTasks(id)).await?);
     Ok(())
 }
 
@@ -259,6 +263,12 @@ pub(super) async fn contexts(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     match rest.first().map(String::as_str) {
         None => {
             if let QueryResult::Contexts(rows) = ctx.core.query(Query::Contexts).await? {
+                if ctx.json {
+                    sunrise_cli::json::print(
+                        &rows.iter().map(sunrise_cli::json::context).collect(),
+                    );
+                    return Ok(());
+                }
                 for c in rows {
                     let mark = if c.archived { " [archived]" } else { "" };
                     println!(
@@ -405,7 +415,12 @@ pub(super) async fn routines(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     match rest.first().map(String::as_str) {
         None => {
             let rs = all_routines(ctx).await?;
-            for r in routine_rows(&rs, ctx.now()) {
+            let rows = routine_rows(&rs, ctx.now());
+            if ctx.json {
+                sunrise_cli::json::print(&rows.iter().map(sunrise_cli::json::routine).collect());
+                return Ok(());
+            }
+            for r in rows {
                 let next = r.next.map_or_else(|| "-".to_string(), |t| t.to_string());
                 let paused = if r.paused { " [paused]" } else { "" };
                 println!(

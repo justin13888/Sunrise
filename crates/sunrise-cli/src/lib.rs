@@ -17,7 +17,9 @@
 //! without a vault: [`when`], which of the client layer's two shapes a typed
 //! date is; [`prefs_text`], a preference value as typed and as printed; and
 //! [`undo_file`], where `sunrise undo` finds the history an earlier process
-//! wrote, sealed under the vault's own key.
+//! wrote, sealed under the vault's own key; [`args`], the flags every
+//! subcommand takes; [`zone`], which zone the reader is in and who said so;
+//! [`json`], the `--json` shapes; and [`watch`], the `sync --watch` loop.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -27,7 +29,9 @@
     clippy::single_match_else
 )]
 
+pub mod args;
 pub mod i18n;
+pub mod json;
 pub mod livesync;
 pub mod login;
 pub mod pair;
@@ -36,7 +40,9 @@ pub mod private_file;
 pub mod recover;
 pub mod undo_file;
 pub mod vault;
+pub mod watch;
 pub mod when;
+pub mod zone;
 
 /// How this CLI introduces itself to `POST /api/v1/devices`, on every
 /// registration path: `sunrise bootstrap` and `sunrise recover` alike.

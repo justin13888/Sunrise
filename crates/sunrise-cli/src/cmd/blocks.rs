@@ -79,6 +79,15 @@ pub(super) async fn list(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         return Err(strings::general::unexpected_result().into());
     };
     let reader = ctx.reader();
+    if ctx.json {
+        sunrise_cli::json::print(
+            &rows
+                .iter()
+                .map(|r| sunrise_cli::json::block(&r.block, r.title.as_deref(), &reader))
+                .collect(),
+        );
+        return Ok(());
+    }
     for r in rows {
         println!(
             "{}  {} -> {}  {}  [{}]",

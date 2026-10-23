@@ -4,7 +4,7 @@ use sunrise_cli::i18n::strings;
 use sunrise_core::{Command, Core, Query, QueryResult, RevokeReason};
 use sunrise_id::{EntityKind, EntityRef};
 
-use super::{flag_value, hex16, CmdResult};
+use super::{flag_value, hex16, CmdResult, Ctx};
 
 /// Report the devices the account has stopped calling revoked while still
 /// giving them no keys.
@@ -76,11 +76,21 @@ async fn resolve_device(core: &Core, prefix: &str) -> CmdResult<[u8; 16]> {
 /// itself back in under a fresh id is `revoked: no, current: no` — the
 /// register has never heard of the new id, and `current` is the only column
 /// that shows it (ADR-0032, #105).
-pub(super) async fn list(core: &Core) -> CmdResult {
+pub(super) async fn list(ctx: &Ctx<'_>) -> CmdResult {
+    let core = ctx.core;
     let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
         return Err(strings::general::expected_device_list().into());
     };
     let me = core.device_id();
+    if ctx.json {
+        sunrise_cli::json::print(
+            &rows
+                .iter()
+                .map(|d| sunrise_cli::json::device(d, &me))
+                .collect(),
+        );
+        return Ok(());
+    }
     for d in rows {
         let mut marks: Vec<String> = Vec::new();
         if d.device_id == me {
@@ -239,13 +249,25 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
 }
 
 /// `identity [status|rotate [--new-recovery-code]]`.
-pub(super) async fn identity(core: &Core, rest: &[String]) -> CmdResult {
+pub(super) async fn identity(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
+    let core = ctx.core;
     let verb = rest.first().map_or("status", String::as_str);
     match verb {
         "status" => {
             let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
                 return Err(strings::general::expected_identity_status().into());
             };
+            if ctx.json {
+                sunrise_cli::json::print(&serde_json::json!({
+                    "account": hex16(&st.genesis_identity_id),
+                    "current": hex16(&st.current_identity_id),
+                    "rotations": st.transitions,
+                    "this_device_is_current": st.this_device_is_current,
+                    "holds_recovery_key": st.holds_recovery_key,
+                    "can_sponsor": st.can_sponsor,
+                }));
+                return Ok(());
+            }
             // The genesis first and labelled "account": it is the value that
             // does not move, and the one two devices compare to decide they
             // belong together. The identity in force is a key, not a name.

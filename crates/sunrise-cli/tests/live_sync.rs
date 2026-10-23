@@ -226,3 +226,56 @@ async fn the_binary_sync_once_actually_reaches_the_relay() {
 
     relay.abort();
 }
+
+/// `sync --watch` keeps the vault level until it is stopped: with
+/// `--rounds` it stops itself after that many live rounds, and Ctrl-C ends
+/// it cleanly — exit 0, nothing half applied — even while it is backing off
+/// from a relay that is not there.
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_watch_runs_rounds_against_the_relay_and_stops_cleanly_on_ctrl_c() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let vault = dir.path().to_path_buf();
+    let keystore = vault.join("keystore");
+    let sunrise = move |url: &str, args: &[&str]| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_sunrise"));
+        c.args(args)
+            .env("SUNRISE_VAULT", &vault)
+            .env("SUNRISE_KEYSTORE", &keystore)
+            .env("SUNRISE_SYNC_URL", url)
+            .env_remove("SUNRISE_VAULT_ROOT");
+        c
+    };
+    let url = format!("http://{addr}");
+    let watched = {
+        let mut c = sunrise(&url, &["sync", "--watch", "--rounds", "2"]);
+        tokio::task::spawn_blocking(move || c.output().expect("run sunrise"))
+            .await
+            .expect("join")
+    };
+    assert!(watched.status.success(), "{watched:?}");
+    assert!(String::from_utf8_lossy(&watched.stdout).contains("sync: live, outbox empty"));
+
+    // Nothing listens on the discard port: every round fails and backs off.
+    #[cfg(unix)]
+    {
+        let mut c = sunrise("http://127.0.0.1:9", &["sync", "--watch"]);
+        c.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = c.spawn().expect("spawn sunrise");
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let pid = child.id().to_string();
+        let killed = std::process::Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .expect("send SIGINT");
+        assert!(killed.success());
+        let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+            .await
+            .expect("join")
+            .expect("wait");
+        assert!(out.status.success(), "Ctrl-C is a clean exit: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("sync: stopped"));
+    }
+    relay.abort();
+}

@@ -287,3 +287,108 @@ fn a_file_is_attached_and_removed() {
     ok(v, &["attachment", "remove", &att]);
     assert!(!ok(v, &["attachments", &task]).contains("lease.txt"));
 }
+
+fn json_of(vault: &Path, args: &[&str]) -> serde_json::Value {
+    let mut with = vec!["--json"];
+    with.extend_from_slice(args);
+    let out = ok(vault, &with);
+    serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {out}"))
+}
+
+#[test]
+fn every_query_command_prints_one_json_document_with_the_documented_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let id = first_id(&ok(v, &["capture", "Call the bank ^tomorrow 9am !2"]));
+    ok(v, &["streams", "create", "Home"]);
+    ok(v, &["contexts", "create", "errands"]);
+
+    let task = json_of(v, &["show", &id]);
+    assert_eq!(task["id"], id.as_str());
+    assert_eq!(task["priority"], 2);
+    assert_eq!(task["scheduled_at"]["kind"], "floating");
+    assert!(task["scheduled_at"]["value"]
+        .as_str()
+        .is_some_and(|s| s.ends_with("T09:00:00")));
+
+    // The flag is recognised anywhere on the line.
+    let inbox: serde_json::Value =
+        serde_json::from_str(ok(v, &["inbox", "--json"]).trim()).unwrap();
+    assert_eq!(inbox[0]["id"], id.as_str());
+
+    for args in [
+        &["today"][..],
+        &["search", "bank"],
+        &["streams"],
+        &["contexts"],
+        &["routines"],
+        &["blocks", "week"],
+        &["devices"],
+        &["identity"],
+        &["attachments", &id],
+        &["next"],
+        &["review"],
+        &["review", "daily"],
+        &["brief", "morning"],
+        &["brief", "evening"],
+        &["reminders", "plan"],
+        &["views"],
+        &["prefs"],
+        &["prefs", "get", "week_start"],
+        &["tz"],
+        &["sync", "status"],
+    ] {
+        let doc = json_of(v, args);
+        assert!(
+            doc.is_array() || doc.is_object(),
+            "`{}` printed {doc}",
+            args.join(" ")
+        );
+    }
+    let streams = json_of(v, &["streams"]);
+    assert!(streams
+        .as_array()
+        .is_some_and(|s| s.iter().any(|s| s["name"] == "Home")));
+    assert_eq!(
+        json_of(v, &["prefs", "get", "week_start"])["source"],
+        "default"
+    );
+    assert_eq!(json_of(v, &["brief", "evening"])["brief"], "evening");
+}
+
+#[test]
+fn the_zone_comes_from_the_flag_the_environment_or_tz_set_and_an_unknown_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let out = ok(v, &["tz", "set", "Asia/Kolkata"]);
+    assert!(out.contains("Asia/Kolkata"), "{out}");
+    let shown = json_of(v, &["tz"]);
+    assert_eq!(shown["zone"], "Asia/Kolkata");
+    assert_eq!(shown["source"], "set");
+    let flag = json_of(v, &["--tz", "Europe/Berlin", "tz"]);
+    assert_eq!(
+        (flag["zone"].as_str(), flag["source"].as_str()),
+        (Some("Europe/Berlin"), Some("flag"))
+    );
+
+    let bad = run_in(v, &["--tz", "Mars/Olympus", "today"]);
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("Mars/Olympus"));
+    assert!(!run_in(v, &["tz", "set", "Not/AZone"]).status.success());
+    assert_eq!(
+        json_of(v, &["tz"])["zone"],
+        "Asia/Kolkata",
+        "a refused set changes nothing"
+    );
+
+    // A capture reads "9am" in the zone in force: 09:00 Kolkata is 03:30Z.
+    let id = first_id(&ok(v, &["capture", "Stand-up ^tomorrow 9am"]));
+    let at = json_of(v, &["show", &id])["scheduled_at"]["at_ms"]
+        .as_i64()
+        .unwrap();
+    let utc = jiff::Timestamp::from_millisecond(at).unwrap();
+    assert_eq!(utc.strftime("%H:%M").to_string(), "03:30");
+
+    ok(v, &["tz", "clear"]);
+    assert_eq!(json_of(v, &["tz"])["source"], "system");
+}
