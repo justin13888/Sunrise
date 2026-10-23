@@ -145,7 +145,25 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   (`crates/sunrise-cbor/src/bounded.rs`), which refuses a deeper item whole.
   So a field nested deeper is not kept as unknown by an older build: the
   envelope carrying it is refused. The deepest field today is field 15, at
-  three levels. The device cert and its body are held to the same bound.
+  three levels. The device cert and its body are held to the same bound, and
+  so is every other decoder of bytes a stranger or a peer frames: the wire
+  payloads (`Subscribe` is the deepest, at five), the relay's `HelloAck`, the
+  pairing messages (the payload's Stream-key map is the deepest, at three), the
+  recovery payload and the snapshot record. A new field in any of them nests no
+  deeper than eight levels, its container included.
+- **The payload inside the envelope gets more room: `MAX_DOC_DEPTH` (32).**
+  An inner op, and the entity blobs and field values the engine stores from
+  one, are read under `sunrise_cbor::MAX_DOC_DEPTH`, which
+  `decode_canonical` and `decode_lenient` also apply by default. The deepest
+  inner op the format defines is eight levels (an OR-set remove in a `Patch`),
+  and the deepest this build writes is seven (a preference `Patch`), so a newer
+  build's fields have twenty-four levels beyond either. An inner op past the
+  bound is **parked**, reason `too_deep`, not refused (§7.2): a build with a
+  larger bound reads it. Parked ops are retried only when a build with another
+  `DOC_SCHEMA_V` opens the vault, so **raising `MAX_DOC_DEPTH` ships with a
+  `DOC_SCHEMA_V` bump**, or the ops it would now admit stay parked. A note body is a byte string inside the op and has its
+  own bound (128) under the note grammar, past which it renders as nothing and
+  is kept read-only rather than refused.
 - **Fields 13–15 need no container bump.** Field 13 is the schema fingerprint
   (ADR-0045 §3), and 14–15 are reserved for the commit tree (§7.1). Every
   build in the field already preserves and signs unknown envelope fields.
@@ -575,7 +593,8 @@ marks the op, `Engine::replay_parked_ops` retries it from `Core::open`, and
 `crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. A
 fingerprint mismatch parks too
 ([#438](https://github.com/justin13888/Sunrise/issues/438)), under reason
-`schema_fp_mismatch`. The others do not exist yet. A field-op kind arrives
+`schema_fp_mismatch`, and so does an inner op nested deeper than
+`MAX_DOC_DEPTH` (§2.1), under reason `too_deep`. The others do not exist yet. A field-op kind arrives
 with ADR-0044, and until then every other inner decode failure is still
 `RemoteOpInvalid` and dropped as corruption.
 
