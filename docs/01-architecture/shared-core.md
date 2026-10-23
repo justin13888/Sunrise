@@ -59,6 +59,12 @@ records onto these functions and does nothing else:
                    sunrise-core --> sunrise-domain, sunrise-sync, ...
 ```
 
+What the Apple app still decides in Swift is moving here file by file.
+`.github/scripts/swift-logic-gate.py` (`mise run swift-logic`) keeps it from
+growing meanwhile: every Swift file under `apps/apple` that holds anything but
+views is on its `ALLOWED` list with the reason, the list only shrinks, and a
+new file with logic in it fails.
+
 The REST client sits below the client layer and names no engine: it is the
 generated client plus the request shapes and encodings it puts on the wire. The
 flows that put a vault and the relay together call down into it, never the

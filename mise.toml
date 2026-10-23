@@ -311,6 +311,14 @@ run = [
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
 
+# The ratchet on Swift that decides things (docs/01-architecture/shared-core.md
+# §The client layer): every file under apps/apple holding logic that is not a
+# view's is on the script's ALLOWED list with its reason, and the list only
+# shrinks. `--list` prints what the heuristic sees, for maintaining it.
+[tasks.swift-logic]
+description = "Reject non-view logic in Swift that is not on the shrinking allowlist (the CI gate, run locally)"
+run = ".github/scripts/swift-logic-gate.py"
+
 [tasks.publish-gate]
 description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
 run = ".github/scripts/publish-gate.py"
@@ -1535,6 +1543,13 @@ description = "Assert the orphan crate gate's exit-code contract (fast, synthesi
 # which reads manifests without resolving or compiling. The gate prints the
 # reachable count that overview.md cites and nothing checked the walk behind it.
 run = "python3 .github/scripts/test_orphan_crate_gate.py"
+
+[tasks.swift-logic-gate-test]
+description = "Assert the Swift logic gate's exit-code contract (fast, synthesised trees)"
+# Milliseconds: small apps/apple trees in a temp directory, driven with --root,
+# so it never reads this repository's Swift. The shipped ALLOWED list is
+# checked against a tree built from its own entries.
+run = "python3 .github/scripts/test_swift_logic_gate.py"
 
 [tasks.publish-gate-test]
 description = "Assert the publish gate's exit-code contract (fast, synthesised repositories)"

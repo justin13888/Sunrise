@@ -1808,6 +1808,36 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_orphan_crate_gate.py
 
+  swift-logic:
+    name: Swift logic gate
+    runs-on: ubuntu-latest
+    # One standard-library Python script reading the Swift under apps/apple
+    # as text. No toolchain, no Xcode: it is the one check on the Apple
+    # sources a Linux runner can make. Seconds of work.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject non-view logic in Swift that is not on the allowlist
+        # The logic the Apple app decides in Swift is moving into
+        # `sunrise-client-core`, where every client links it and Linux tests
+        # it. This keeps new logic from landing in Swift meanwhile: a file
+        # that holds any is on the script's ALLOWED list with its reason, and
+        # an entry whose file no longer holds any fails until it is removed.
+        run: .github/scripts/swift-logic-gate.py
+
+  swift-logic-gate-contract:
+    name: Swift logic gate contract
+    runs-on: ubuntu-latest
+    # Synthesised apps/apple trees in a temp directory; nothing to install.
+    timeout-minutes: 5
+    # Without an `if:`, like the other gate contracts, so it runs on pull
+    # requests: a classifier that stopped seeing a `class` would wave new
+    # logic through with the gate green.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_swift_logic_gate.py
+
   publish-gate:
     name: Publish gate
     runs-on: ubuntu-latest
