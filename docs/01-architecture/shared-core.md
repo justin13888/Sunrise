@@ -63,6 +63,18 @@ flows that put a vault and the relay together call down into it, never the
 reverse. The `relay` feature gates everything in the client layer that links the
 REST client or the SSE transport, so the web core links the pure half.
 
+Beside those, the client layer holds what a screen decides that is not a
+screen's own, as codes and data rather than sentences, so each surface words
+it: the relay URL rule (below), the sync badge and the sync plan
+(`sync_status`), `sunrise://` links (`links`), what a share becomes
+(`share`), and three state machines with their IO injected — a pairing as a
+screen walks it (`pairing_flow`, over the relay rendezvous in `pairing`), the
+vault session's lifecycle (`vault_session`), and the OIDC session's sign-in,
+renewal and sign-out (`account_session`, over `sunrise-auth`'s credential).
+Each transition returns the seam calls to make and takes their answers back,
+which is what lets every client walk the same script and a test walk it
+without one.
+
 The client layer keeps the core's determinism rules below: time is the core's
 injected clock or a zone name the caller passes, randomness an injected `Rng`,
 and a file a path the caller names.
