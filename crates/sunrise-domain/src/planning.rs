@@ -92,8 +92,9 @@ pub fn is_overdue(due_at: &SunriseTime, now_ms: u64, tz: &TimeZone) -> bool {
         return false;
     };
     let today = now.to_zoned(tz.clone()).date();
-    let due = due_at.to_instant(tz).to_zoned(tz.clone()).date();
-    due < today
+    // A deadline with no instant in `tz` is not evidence of lateness either
+    // (`docs/11-adr/0066-times-survive-travel.md` §3).
+    due_at.day_in(tz).is_some_and(|due| due < today)
 }
 
 #[cfg(test)]

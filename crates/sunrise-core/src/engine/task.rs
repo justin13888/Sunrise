@@ -24,8 +24,8 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, violations_by_severity, DependencyGraph, NoteBody, ScheduleConstraint, Task,
-    TaskDraft, TaskPatch, TaskState, ValidationError,
+    inbox_stream_ref, violations_by_severity, DependencyGraph, NoteBody, ScheduleConstraint,
+    SunriseTime, Task, TaskDraft, TaskPatch, TaskState, ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -331,18 +331,26 @@ impl Engine {
         self.update_task(db, id, patch)
     }
 
+    /// Set `scheduled_at` to `to`, of whatever kind the caller meant, and
+    /// count the deferral.
+    ///
+    /// `docs/11-adr/0066-times-survive-travel.md` §4: the target keeps its
+    /// kind (a floating "tomorrow 09:00" stays floating) and the deferral
+    /// passes the same checks as any edit of `scheduled_at`: the cross-field
+    /// invariants in the reader's zone, then the scheduling constraints.
     pub(super) fn defer_task(
         &self,
         db: &mut Db,
         id: EntityRef,
-        to_ms: u64,
+        to: SunriseTime,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Task)?;
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        task.scheduled_at = Some(ms_to_ts(to_ms as i64).into());
+        task.scheduled_at = Some(to);
         task.deferred_count = task.deferred_count.saturating_add(1);
+        task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
         let soft_violations = self.check_schedule_constraints(&task)?;
         task.updated_at = ms_to_ts(now_ms as i64);

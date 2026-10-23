@@ -998,7 +998,9 @@ fn an_unknown_time_kind_round_trips_through_the_mirror_and_reads_as_unknown() {
     assert!(!day.is_past);
     assert_eq!(
         time_value_ms(mirrored, "UTC".into()),
-        stored.to_instant(&jiff::tz::TimeZone::UTC).as_millisecond(),
+        stored
+            .instant_or_last(&jiff::tz::TimeZone::UTC)
+            .as_millisecond(),
         "placed where the core places it"
     );
 }

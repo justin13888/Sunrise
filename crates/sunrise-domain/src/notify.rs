@@ -133,6 +133,20 @@ pub struct ReminderIntent {
     pub deferred_from: Option<Timestamp>,
 }
 
+impl ReminderIntent {
+    /// Which reminder this is: the entity and the rule that produced it
+    /// (one per source today), and never its fire time
+    /// (`docs/11-adr/0066-times-survive-travel.md` §5).
+    ///
+    /// A zone change moves a floating reminder's `fire_at` and leaves this
+    /// alone, so a client keyed on it replaces the pending notification
+    /// rather than keeping one at a stale wall clock beside the new one.
+    #[must_use]
+    pub const fn identity(&self) -> (EntityRef, ReminderKind) {
+        (self.entity, self.kind)
+    }
+}
+
 /// One candidate the engine hands the planner: a thing that happens at a time,
 /// with whatever lead-time overrides apply to it.
 #[derive(Debug, Clone)]
@@ -258,10 +272,49 @@ pub fn plan_reminders(
     tz: &TimeZone,
     settings: &ReminderSettings,
 ) -> Vec<ReminderIntent> {
+    plan_reminders_reported(candidates, now, horizon, tz, settings).intents
+}
+
+/// What [`plan_reminders_reported`] planned, and what it could not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReminderPlan {
+    /// What to schedule, as [`plan_reminders`] returns it.
+    pub intents: Vec<ReminderIntent>,
+    /// Candidates whose time has no instant for this reader, so nothing was
+    /// scheduled for them (`docs/11-adr/0066-times-survive-travel.md` §3).
+    /// A candidate outside the window or silenced by quiet hours is not here:
+    /// those were planned, and the plan was "not now".
+    pub unscheduled: Vec<UnscheduledReminder>,
+}
+
+/// One candidate [`plan_reminders_reported`] scheduled nothing for, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnscheduledReminder {
+    /// What it is about.
+    pub entity: EntityRef,
+    /// Which source it is.
+    pub kind: ReminderKind,
+    /// Why its time has no instant.
+    pub reason: crate::time::Unresolvable,
+}
+
+/// [`plan_reminders`], and the candidates it could not schedule.
+///
+/// A candidate whose time has no instant in `tz` is never given a stand-in
+/// one: the epoch would fire it at once, and a far-future one would drop it
+/// without a word. It is reported in [`ReminderPlan::unscheduled`] instead.
+#[must_use]
+pub fn plan_reminders_reported(
+    candidates: &[ReminderCandidate],
+    now: Timestamp,
+    horizon: Timestamp,
+    tz: &TimeZone,
+    settings: &ReminderSettings,
+) -> ReminderPlan {
+    let mut plan = ReminderPlan::default();
     if !settings.is_primary_device {
-        return Vec::new();
+        return plan;
     }
-    let mut out = Vec::new();
     for c in candidates {
         let global = match c.kind {
             // "Block reminders: 15 min before (default)" — a different floor,
@@ -270,7 +323,17 @@ pub fn plan_reminders(
             ReminderKind::Task | ReminderKind::Routine => settings.default_lead_s,
         };
         let lead = lead_time_s(c.own_lead_s, c.stream_lead_s, global);
-        let happens_at = c.at.to_instant(tz);
+        let happens_at = match c.at.to_instant(tz) {
+            Ok(at) => at,
+            Err(reason) => {
+                plan.unscheduled.push(UnscheduledReminder {
+                    entity: c.entity,
+                    kind: c.kind,
+                    reason,
+                });
+                continue;
+            }
+        };
         let Some(raw) = happens_at.as_second().checked_sub(i64::from(lead)) else {
             continue;
         };
@@ -288,7 +351,7 @@ pub fn plan_reminders(
         else {
             continue;
         };
-        out.push(ReminderIntent {
+        plan.intents.push(ReminderIntent {
             entity: c.entity,
             kind: c.kind,
             fire_at,
@@ -296,12 +359,12 @@ pub fn plan_reminders(
             deferred_from: (fire_at != raw).then_some(raw),
         });
     }
-    out.sort_by(|a, b| {
+    plan.intents.sort_by(|a, b| {
         a.fire_at
             .cmp(&b.fire_at)
             .then_with(|| a.entity.cmp(&b.entity))
     });
-    out
+    plan
 }
 
 /// The morning notification's dedicated view

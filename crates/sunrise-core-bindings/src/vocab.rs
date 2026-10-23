@@ -90,7 +90,14 @@ pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
         };
     }
     let zone = zone_or_utc(&tz);
-    let at = SunriseTime::from(at).to_instant(&zone);
+    // No instant to measure from is unknown too, never the epoch
+    // (`docs/11-adr/0066-times-survive-travel.md` §3).
+    let Ok(at) = SunriseTime::from(at).to_instant(&zone) else {
+        return RelativeDay {
+            text: "unknown".to_string(),
+            is_past: false,
+        };
+    };
     let (text, is_past) = sunrise_domain::relative_day(at, now_ms, &zone);
     RelativeDay { text, is_past }
 }
@@ -211,12 +218,14 @@ pub fn interruption_label(reason: InterruptionReason) -> String {
 /// say) asks for it here rather than reading the enum apart.
 ///
 /// `tz` is the zone a floating or all-day value is read in; an unknown one
-/// falls back to UTC, as everywhere else in this module.
+/// falls back to UTC, as everywhere else in this module. A value with no
+/// instant answers where a sort places it,
+/// [`sunrise_domain::SunriseTime::instant_or_last`], never the epoch.
 #[uniffi::export]
 #[must_use]
 pub fn time_value_ms(value: TimeValue, tz: String) -> i64 {
     SunriseTime::from(value)
-        .to_instant(&zone_or_utc(&tz))
+        .instant_or_last(&zone_or_utc(&tz))
         .as_millisecond()
 }
 

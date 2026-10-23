@@ -16,7 +16,7 @@ from this page is wrong. [#347](https://github.com/justin13888/Sunrise/issues/34
 1. **Scheduling is computed in Rust.** Every kind is produced by the core as a
    `ReminderIntent` — what, when, which category, which actions, which deep
    link — by the pure `sunrise_domain::notify` functions (today
-   `crates/sunrise-domain/src/notify.rs:254#plan_reminders`), so the rules are the
+   `crates/sunrise-domain/src/notify.rs:260#plan_reminders`), so the rules are the
    same on every client and testable without a device. A client only registers
    intents with the OS and routes the responses back as commands. It never
    decides whether or when something fires.

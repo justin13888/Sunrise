@@ -27,6 +27,15 @@ disallowed-methods = [
     # see. Keep both.
     { path = "rand::thread_rng", reason = "use CoreConfig::rng", allow-invalid = true },
     { path = "rand::random", reason = "use CoreConfig::rng", allow-invalid = true },
+    # The host zone enters in exactly one place, `SystemClock` in
+    # crates/sunrise-core/src/config.rs, which carries the one `#[allow]`
+    # (docs/11-adr/0066-times-survive-travel.md §5). Everything else reads the
+    # reader's zone from `Clock::timezone`. `Zoned::now` is the same read
+    # spelled differently: it resolves "now" in the host zone. `allow-invalid`
+    # for the crates that do not depend on jiff, as for `rand` above.
+    { path = "jiff::tz::TimeZone::system", reason = "use Clock::timezone (ADR-0066 §5)", allow-invalid = true },
+    { path = "jiff::tz::TimeZone::try_system", reason = "use Clock::timezone (ADR-0066 §5)", allow-invalid = true },
+    { path = "jiff::Zoned::now", reason = "use Clock::now_ms and Clock::timezone (ADR-0066 §5)", allow-invalid = true },
 ]
 
 disallowed-types = [

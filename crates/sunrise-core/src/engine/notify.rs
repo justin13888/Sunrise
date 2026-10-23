@@ -13,8 +13,8 @@ use super::{Engine, EngineError};
 use crate::queries::QueryResult;
 use std::collections::BTreeMap;
 use sunrise_domain::{
-    build_end_of_day_plan, build_morning_summary, inbox_stream_ref, plan_reminders,
-    ReminderCandidate, ReminderKind, ReminderSettings, TaskState,
+    build_end_of_day_plan, build_morning_summary, inbox_stream_ref, plan_reminders_reported,
+    ReminderCandidate, ReminderKind, ReminderPlan, ReminderSettings, TaskState,
 };
 use sunrise_storage::Db;
 
@@ -72,9 +72,30 @@ impl Engine {
         horizon_ms: u64,
         settings: &ReminderSettings,
     ) -> Result<QueryResult, EngineError> {
+        Ok(QueryResult::Reminders(
+            self.reminder_plan(db, now_ms, horizon_ms, settings)?
+                .intents,
+        ))
+    }
+
+    /// [`Engine::query_reminder_intents`], with the candidates it could not
+    /// schedule because their time has no instant for this reader
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3).
+    ///
+    /// Planned in the reader's zone at the moment of the call, so a zone
+    /// change re-plans every reminder by being read again: a floating one
+    /// moves to its wall-clock time in the new zone, a zoned one keeps its
+    /// instant, and each keeps its [`sunrise_domain::ReminderIntent::identity`].
+    pub(crate) fn reminder_plan(
+        &self,
+        db: &Db,
+        now_ms: u64,
+        horizon_ms: u64,
+        settings: &ReminderSettings,
+    ) -> Result<ReminderPlan, EngineError> {
         // A non-primary device is silent, so do not even read the rows.
         if !settings.is_primary_device {
-            return Ok(QueryResult::Reminders(Vec::new()));
+            return Ok(ReminderPlan::default());
         }
         let mut stream_leads: BTreeMap<[u8; 16], Option<u32>> = BTreeMap::new();
         let mut candidates = Vec::new();
@@ -133,12 +154,12 @@ impl Engine {
             });
         }
 
-        Ok(QueryResult::Reminders(plan_reminders(
+        Ok(plan_reminders_reported(
             &candidates,
             ms_to_ts(now_ms as i64),
             ms_to_ts(horizon_ms as i64),
             &self.device_zone(),
             settings,
-        )))
+        ))
     }
 }

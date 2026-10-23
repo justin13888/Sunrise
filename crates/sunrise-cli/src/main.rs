@@ -584,6 +584,8 @@ async fn dispatch(
                 return Err("capture needs some text; see `sunrise help`".into());
             }
             // System zone, so `^tomorrow 9am` means the user's 9am.
+            // TODO(ADR-0066 §5): CLI reports its zone through the core Clock
+            #[allow(clippy::disallowed_methods)]
             let tz = jiff::tz::TimeZone::system();
             let parsed = core.capture(&text, &tz).await?;
             for u in &parsed.unresolved {
@@ -1433,6 +1435,8 @@ async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
     let contexts = named(&contexts);
     // System zone, so `^tomorrow 9am` means the user's 9am, exactly as in
     // `capture`.
+    // TODO(ADR-0066 §5): CLI reports its zone through the core Clock
+    #[allow(clippy::disallowed_methods)]
     let tz = jiff::tz::TimeZone::system();
     let edit = sunrise_domain::parse_annotate(
         &line,
@@ -1544,6 +1548,8 @@ async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::E
     if phrase.trim().is_empty() {
         return Err("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`".into());
     }
+    // TODO(ADR-0066 §5): CLI reports its zone through the core Clock
+    #[allow(clippy::disallowed_methods)]
     let tz = jiff::tz::TimeZone::system();
     let now = sunrise_domain::epoch_ms::from_u64(core.now_ms());
     let to = sunrise_domain::capture::parse_when(&phrase, now, &tz)

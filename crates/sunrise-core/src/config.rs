@@ -243,7 +243,13 @@ impl Clock for SystemClock {
     fn timezone(&self) -> String {
         // Only the production clock consults the OS zone; tests inject a fake
         // and get a fixed zone, so no test outcome depends on the host's.
-        system_iana_name().unwrap_or_else(|| "UTC".to_string())
+        //
+        // An OS that names no zone answers with no name, not with "UTC":
+        // the engine then keeps reading in the last zone it resolved, or in
+        // UTC flagged `zone_unknown` when it never had one
+        // (`docs/11-adr/0066-times-survive-travel.md` §3). "UTC" here would
+        // pass for a zone the device is really in.
+        system_iana_name().unwrap_or_default()
     }
 }
 
@@ -269,7 +275,13 @@ const LOCALTIME: &str = "/etc/localtime";
 /// of every evening, and the calendar grid quietly returns nothing for blocks
 /// that are plainly on it.
 fn system_iana_name() -> Option<String> {
-    if let Some(name) = jiff::tz::TimeZone::system().iana_name() {
+    // The one place the host zone enters the workspace
+    // (`docs/11-adr/0066-times-survive-travel.md` §5, `clippy.toml`): every
+    // other reader's zone is `Clock::timezone`, which resolves here in
+    // production and to an injected zone in tests.
+    #[allow(clippy::disallowed_methods)]
+    let system = jiff::tz::TimeZone::system();
+    if let Some(name) = system.iana_name() {
         return Some(name.to_string());
     }
     // `read_link` first: it is the shortest spelling, and the one that still

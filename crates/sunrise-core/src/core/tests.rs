@@ -1174,8 +1174,13 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     assert!(events.try_recv().is_err());
     core.on_time_zone_changed("Asia/Kolkata").unwrap();
 
-    // A name the tzdb does not know is refused and changes nothing.
-    assert!(core.on_time_zone_changed("Mars/Olympus").is_err());
+    // A name the tzdb does not know is refused, with a typed error, and
+    // changes nothing: the reader's zone stays Kolkata, never UTC.
+    assert!(matches!(
+        core.on_time_zone_changed("Mars/Olympus"),
+        Err(CoreError::UnknownTimeZone { zone }) if zone == "Mars/Olympus"
+    ));
+    assert!(!core.zone_unknown());
     assert_eq!(
         core.on_time_zone_changed("Asia/Kolkata").unwrap().previous,
         "Asia/Kolkata"

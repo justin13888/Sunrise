@@ -66,6 +66,14 @@ pub enum CoreError {
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
+    /// [`Core::on_time_zone_changed`] was handed a zone name the bundled
+    /// tzdb does not resolve. The reader's zone is left as it was
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3).
+    #[error("time zone: unknown zone {zone:?}")]
+    UnknownTimeZone {
+        /// The name, as reported.
+        zone: String,
+    },
 }
 
 /// Default routine-materialization interval, per
@@ -300,8 +308,10 @@ impl Core {
     ///
     /// # Errors
     ///
-    /// [`EngineError::Invalid`] for a name the tzdb does not know; the reader's
-    /// zone is then left as it was. [`CoreError::Closed`] after close.
+    /// [`CoreError::UnknownTimeZone`] for a name the tzdb does not know; the
+    /// reader's zone is then left as it was, and is never replaced by UTC
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3). [`CoreError::Closed`]
+    /// after close.
     pub fn on_time_zone_changed(
         &self,
         zone: &str,
@@ -310,10 +320,15 @@ impl Core {
             return Err(CoreError::Closed);
         }
         let Ok(to) = jiff::tz::TimeZone::get(zone) else {
-            return Err(EngineError::Invalid(format!("time zone: unknown zone {zone:?}")).into());
+            return Err(CoreError::UnknownTimeZone {
+                zone: zone.to_string(),
+            });
         };
+        // The zone reads were in. When the name the clock last gave does not
+        // resolve, that is the last zone that did, never UTC by default.
+        let reading_in = self.engine.device_zone();
         let previous = self.reader_clock.report(zone);
-        let from = jiff::tz::TimeZone::get(&previous).unwrap_or(jiff::tz::TimeZone::UTC);
+        let from = jiff::tz::TimeZone::get(&previous).unwrap_or(reading_in);
         let now_ms = self.now_ms();
         let around = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
             .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
@@ -469,6 +484,37 @@ impl Core {
         }
         let db = self.db.lock();
         Ok(self.engine.missing_features(&db)?)
+    }
+
+    /// What `Query::ReminderIntents` schedules, and the candidates it could
+    /// not because their time has no instant for this reader, each with the
+    /// reason (`docs/11-adr/0066-times-survive-travel.md` §3).
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Closed`] after close, or the failed read.
+    pub fn reminder_plan(
+        &self,
+        now_ms: u64,
+        horizon_ms: u64,
+        settings: &sunrise_domain::ReminderSettings,
+    ) -> Result<sunrise_domain::ReminderPlan, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self
+            .engine
+            .reminder_plan(&db, now_ms, horizon_ms, settings)?)
+    }
+
+    /// Whether the reader's zone is a stand-in: no zone the tzdb resolves has
+    /// been reported or read since open, so times resolve in UTC
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3). A client that sees
+    /// it reports the OS zone through [`Core::on_time_zone_changed`].
+    #[must_use]
+    pub fn zone_unknown(&self) -> bool {
+        self.engine.zone_unknown()
     }
 
     /// Run a read query.

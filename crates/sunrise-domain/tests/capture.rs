@@ -62,7 +62,7 @@ fn run(input: &str) -> Capture {
 
 /// Local civil time of a [`SunriseTime`] in UTC, as `YYYY-MM-DD HH:MM`.
 fn civil(t: &SunriseTime) -> String {
-    let z = t.to_instant(&utc()).to_zoned(utc());
+    let z = t.to_instant(&utc()).unwrap().to_zoned(utc());
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         z.year(),
@@ -474,7 +474,7 @@ fn a_captured_time_follows_the_reader() {
     let at = c.draft.scheduled_at.expect("scheduled");
     for zone in ["America/New_York", "Asia/Kolkata", "Pacific/Kiritimati"] {
         let tz = TimeZone::get(zone).unwrap();
-        let z = at.to_instant(&tz).to_zoned(tz);
+        let z = at.to_instant(&tz).unwrap().to_zoned(tz);
         assert_eq!((z.hour(), z.minute()), (9, 0), "in {zone}");
     }
     let due = run("File taxes *due:friday*").draft.due_at.expect("due");

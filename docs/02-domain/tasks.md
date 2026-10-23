@@ -276,9 +276,12 @@ shape, and each gap is tracked:
 - `stream_id` is required, and "no stream" is the Inbox sentinel stream
   (`crates/sunrise-domain/src/task.rs#Task`,
   `crates/sunrise-domain/src/inbox.rs`): [#332](https://github.com/justin13888/Sunrise/issues/332).
-- The two times are `scheduled_at` and `due_at`; `DeferTask` takes epoch
-  milliseconds, skips `validate_invariants` and writes an `Instant`
-  (`crates/sunrise-core/src/engine/task.rs#defer_task`); `completed_at` can only
+- The two times are `scheduled_at` and `due_at`. `DeferTaskTo` writes the
+  `SunriseTime` it is given, of any kind, through the same
+  `validate_invariants` as an edit (`crates/sunrise-core/src/engine/task.rs#defer_task`,
+  [ADR-0066](../11-adr/0066-times-survive-travel.md) §4); `DeferTask` is kept
+  beside it for the callers that send epoch milliseconds, the CLI and the
+  UniFFI command, and still writes an `Instant`. `completed_at` can only
   be "now": [#334](https://github.com/justin13888/Sunrise/issues/334), [#335](https://github.com/justin13888/Sunrise/issues/335).
 - The whole Task merges as one full-state LWW unit, so `contexts`, `blocked_by`
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).

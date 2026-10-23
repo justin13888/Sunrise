@@ -399,6 +399,12 @@ pub struct Engine {
     /// The features this build supports: [`crate::feature::FEATURES`], or a
     /// test's stand-in for an older or newer build.
     features: &'static [Feature],
+    /// The last reader's zone the clock named that the tzdb resolved, kept so
+    /// a later unresolvable name reads in it rather than in UTC
+    /// ([`Engine::device_zone`]). Process memory only: a client reports its
+    /// zone on every vault open (`docs/10-cross-cutting/time.md` §7). Shared
+    /// by every clone, which reads the same clock.
+    last_zone: Arc<parking_lot::Mutex<Option<jiff::tz::TimeZone>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -425,6 +431,7 @@ impl Engine {
             rng,
             keychain,
             features: crate::feature::FEATURES,
+            last_zone: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -576,7 +583,11 @@ impl Engine {
             Command::CreateTask(d) => self.create_task(db, d),
             Command::UpdateTask { id, patch } => self.update_task(db, id, patch),
             Command::CompleteTask(id) => self.complete_task(db, id),
-            Command::DeferTask { id, to_ms } => self.defer_task(db, id, to_ms),
+            Command::DeferTask { id, to_ms } => {
+                let to = sunrise_domain::SunriseTime::instant(ids::ms_to_ts(to_ms as i64));
+                self.defer_task(db, id, to)
+            }
+            Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
             Command::PromoteToStream { id, stream } => self.promote_task(db, id, stream),
             Command::CreateStream(d) => self.create_stream(db, d),
