@@ -1,7 +1,8 @@
 //! The checks every [`MetadataStore`] must pass, written once and run against
 //! each implementation: [`Store`] in this module's tests, and a shared backend
-//! in its own. Also [`Unreachable`], the backend that fails every call, for the
-//! tests of what a caller does with a failure.
+//! in its own. Also [`Unreachable`], the backend that fails every call (or
+//! every call but the account lookup), for the tests of what a caller does
+//! with a failure.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -16,8 +17,16 @@ use crate::relay_log::{account_key, Appended, DurableCaps, Replay};
 
 /// A backend that never answers, standing in for a shared one that lost its
 /// connection.
-#[derive(Debug)]
-pub(crate) struct Unreachable;
+///
+/// With `resolves` set it answers exactly one call, `resolve_account`, with
+/// that account and fails the rest: a connection lost after the bearer
+/// resolved, which is the only way a request reaches the store calls behind
+/// the bearer.
+#[derive(Debug, Default)]
+pub(crate) struct Unreachable {
+    /// What `resolve_account` answers with; `None` fails it like the rest.
+    pub(crate) resolves: Option<Account>,
+}
 
 fn down() -> MetadataError {
     MetadataError::Unavailable("connection refused".to_owned())
@@ -31,7 +40,7 @@ impl MetadataStore for Unreachable {
         _: bool,
         _: u64,
     ) -> Result<Account, MetadataError> {
-        Err(down())
+        self.resolves.clone().ok_or_else(down)
     }
     async fn account_exists(&self, _: &Subject) -> Result<bool, MetadataError> {
         Err(down())
@@ -560,7 +569,7 @@ mod tests {
     /// offers its SQLite-only operations.
     #[tokio::test]
     async fn an_unreachable_backend_is_unavailable_and_not_sqlite() {
-        let down = Unreachable;
+        let down = Unreachable::default();
         assert!(matches!(
             down.account("x").await,
             Err(MetadataError::Unavailable(_))

@@ -16,11 +16,16 @@
 //! others, which is the property that stops an authenticated route being
 //! documented as an open one.
 
+use crate::api::error::ApiError;
+use crate::api::signed::SignedRejection;
+use crate::auth::Verified;
 use crate::state::ServerState;
-use crate::store::Account;
+use crate::store::{Account, MetadataError};
 use kynos::error::rejection::AuthRejection;
+use kynos::http::Parts;
+use kynos::security::auth::MaybeAuth;
 use kynos::security::carrier::BearerToken;
-use kynos::security::{Authenticates, Authenticator};
+use kynos::security::{Authenticates, Authenticator, Guard};
 
 /// A caller proven to hold a valid bearer for a resolved account.
 ///
@@ -52,40 +57,37 @@ pub struct Principal {
 }
 
 /// The account bearer token.
+///
+/// Its credential is the verified token, not the account: a token is a fact
+/// about the caller, and turning it into an account row is a store read that
+/// can fail for reasons that have nothing to do with the caller. kynos's
+/// [`AuthRejection`] can say `401` or `403` and nothing else, and carries no
+/// stable code, so a store that did not answer has no truthful way out of an
+/// [`Authenticator`] and a refused sign-up loses its `AUTH_SIGNUP_DISABLED`.
+/// The lookup therefore runs in [`resolve_bearer`], after the authenticator,
+/// where a storage failure can be the retryable `503` it is on every other
+/// path (ADR-0062 §1).
 #[derive(Debug, kynos::SecurityScheme)]
 #[security(bearer(format = "JWT"))]
 #[security(
-    credential = Principal,
+    credential = Verified,
     description = "An OIDC access token for the calling account, verified against the issuer's JWKS."
 )]
 pub struct AccountToken;
 
 impl Authenticator<AccountToken, ServerState> for ServerState {
-    /// Verify the bearer and resolve it to an account row.
+    /// Verify the bearer, without resolving it to an account.
     ///
     /// Every *credential* failure is `unauthenticated`. The server can tell a
     /// bad signature from an expired token from an unknown issuer, and says so
     /// in its own logs; a client is told none of it, because the difference is
     /// only useful to someone probing which tokens exist.
-    ///
-    /// Sign-up being disabled is the one failure that is not a credential
-    /// failure and must not be reported as one. The token is valid and the
-    /// caller is who they say they are; the server is declining to open a new
-    /// account, which is a statement about its own configuration and reveals
-    /// nothing about who exists. Answering 401 tells a legitimate user to go
-    /// and fix a credential that was never wrong.
-    ///
-    /// The stable `AUTH_SIGNUP_DISABLED` code does not ride along on this one
-    /// path: `Authenticator` is required to fail with [`AuthRejection`], whose
-    /// problem document kynos renders itself so that the challenge on the wire
-    /// and the one the operation declares cannot disagree. The status is the
-    /// half of that contract a client acts on, and it is restored here.
     async fn authenticate(
         &self,
         presented: BearerToken,
         _context: &ServerState,
-    ) -> Result<Principal, AuthRejection> {
-        resolve_bearer(self, presented.as_str()).await
+    ) -> Result<Verified, AuthRejection> {
+        verify(self, presented.as_str()).await
     }
 
     /// No scopes are defined on this surface.
@@ -96,7 +98,7 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
     /// to express the same thing.
     async fn authorize(
         &self,
-        _credential: &Principal,
+        _credential: &Verified,
         _scopes: &[kynos::security::Unscoped],
         _context: &ServerState,
     ) -> Result<(), AuthRejection> {
@@ -104,32 +106,40 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
     }
 }
 
-/// Verify `bearer` and resolve it to an account row.
+/// Verify the request's bearer and resolve it to an account row.
 ///
-/// Split out of [`Authenticator::authenticate`] because there are two ways in.
-/// The other is an **absent** `Authorization` header, which
-/// `docs/06-server/auth.md` gives a specific meaning: it verifies the empty
-/// string. `NullVerifier` — self-host, single-tenant — accepts that; every real
-/// verifier rejects it. The property that follows is the one worth preserving:
-/// *enabling authentication is purely a matter of configuring a verifier*, with
-/// no route, extractor or header check to change alongside it.
+/// There are two ways in. The usual one is a presented `Authorization` header,
+/// which kynos's carrier reads and [`Authenticator::authenticate`] verifies.
+/// The other is an **absent** header, which `docs/06-server/auth.md` gives a
+/// specific meaning: it verifies the empty string. `NullVerifier` — self-host,
+/// single-tenant — accepts that; every real verifier rejects it. The property
+/// that follows is the one worth preserving: *enabling authentication is purely
+/// a matter of configuring a verifier*, with no route, extractor or header
+/// check to change alongside it.
 ///
 /// kynos's `Auth<S>` refuses an absent header at the carrier, before any
 /// verifier is consulted, so taking it alone would have quietly made self-host
 /// unusable — the CLI presents no bearer — and made "configure a verifier" no
-/// longer sufficient. [`super::signed`] therefore takes `MaybeAuth` and routes
-/// the absent case here.
+/// longer sufficient. This therefore takes `MaybeAuth` and routes the absent
+/// case to the verifier itself.
 ///
 /// # Errors
-/// [`AuthRejection::Forbidden`] when sign-up is disabled, and `unauthenticated`
-/// for every credential failure.
-pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Principal, AuthRejection> {
+/// [`SignedRejection::Auth`], `401`, for every credential failure.
+/// [`SignedRejection::Binding`] when the account lookup refused or failed:
+/// `403 AUTH_SIGNUP_DISABLED` when sign-up is disabled, and
+/// `503 RELAY_STORAGE_UNAVAILABLE` when the metadata store did not answer, so
+/// the client retries rather than refreshing a bearer that was never the
+/// problem.
+pub async fn resolve_bearer(
+    parts: &Parts,
+    state: &ServerState,
+) -> Result<Principal, SignedRejection> {
     use sunrise_telemetry::FutureExt as _;
 
     // `auth.verify_token`, with the account lookup beneath it. The bearer is
     // never span data: the span carries its name and, on refusal, a status.
     let span = sunrise_telemetry::span("auth.verify_token", []);
-    let resolved = verify_and_resolve(state, bearer)
+    let resolved = verify_and_resolve(parts, state)
         .with_context(span.context())
         .await;
     if resolved.is_err() {
@@ -138,12 +148,20 @@ pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Princip
     resolved
 }
 
-async fn verify_and_resolve(state: &ServerState, bearer: &str) -> Result<Principal, AuthRejection> {
-    let verified = state
-        .token_verifier
-        .verify(bearer)
-        .await
-        .map_err(|_| AuthRejection::unauthenticated())?;
+async fn verify_and_resolve(
+    parts: &Parts,
+    state: &ServerState,
+) -> Result<Principal, SignedRejection> {
+    // Run through `MaybeAuth`'s `Guard` check directly: a guard has a handler
+    // slot of its own rather than being an extractor, and the signed
+    // extractors *are* the signed operations' authentication, so they run the
+    // same check from inside.
+    let MaybeAuth(presented) =
+        <MaybeAuth<AccountToken> as Guard<ServerState>>::guard(parts, state).await?;
+    let verified = match presented {
+        Some(verified) => verified,
+        None => verify(state, "").await?,
+    };
     let account = state
         .store
         .resolve_account(
@@ -153,23 +171,23 @@ async fn verify_and_resolve(state: &ServerState, bearer: &str) -> Result<Princip
         )
         .await
         .map_err(|e| match e {
-            crate::store::MetadataError::SignupDisabled => AuthRejection::forbidden(),
-            // kynos's `AuthRejection` carries a 401 or a 403 and nothing else,
-            // so a store that did not answer cannot be the `503` it is on
-            // every other request path. It is logged as the storage failure
-            // it is, and the 401 it becomes is what it has always been.
-            crate::store::MetadataError::Unavailable(_) => {
-                tracing::error!(
-                    ev = "srv.store.failed",
-                    err_code = %sunrise_error::ErrorCode::RelayStorageUnavailable,
-                    err_kind = "transient",
-                    retryable = true,
-                    cause = %e,
-                    "storage error"
-                );
-                AuthRejection::unauthenticated()
+            // Sign-up being disabled is not a credential failure and must not
+            // be reported as one. The token is valid and the caller is who
+            // they say they are; the server is declining to open a new
+            // account, which is a statement about its own configuration and
+            // reveals nothing about who exists. Answering 401 tells a
+            // legitimate user to go and fix a credential that was never wrong,
+            // so it is `403 AUTH_SIGNUP_DISABLED`.
+            //
+            // A store that did not answer is the server's fault, so it is the
+            // retryable `503 RELAY_STORAGE_UNAVAILABLE` it is on every other
+            // request path, logged as `srv.store.failed` by the conversion.
+            MetadataError::SignupDisabled | MetadataError::Unavailable(_) => {
+                SignedRejection::Binding(ApiError::from(e))
             }
-            _ => AuthRejection::unauthenticated(),
+            MetadataError::NotFound | MetadataError::RecoveryBlobExists => {
+                SignedRejection::Auth(AuthRejection::unauthenticated())
+            }
         })?;
     Ok(Principal {
         subject: verified.subject,
@@ -177,6 +195,15 @@ async fn verify_and_resolve(state: &ServerState, bearer: &str) -> Result<Princip
         step_up: verified.step_up,
         expires_at_ms: verified.expires_at_ms,
     })
+}
+
+/// Verify `bearer` against the configured verifier.
+async fn verify(state: &ServerState, bearer: &str) -> Result<Verified, AuthRejection> {
+    state
+        .token_verifier
+        .verify(bearer)
+        .await
+        .map_err(|_| AuthRejection::unauthenticated())
 }
 
 /// The context owns its own authenticator, because the verification a bearer

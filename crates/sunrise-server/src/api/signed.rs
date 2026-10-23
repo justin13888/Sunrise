@@ -75,8 +75,7 @@ use kynos::router::operation::OperationCx;
 use kynos::schema::registry::Registry;
 use kynos::schema::unchecked::Unchecked;
 use kynos::schema::Schema;
-use kynos::security::auth::{Auth, MaybeAuth};
-use kynos::security::Guard;
+use kynos::security::auth::Auth;
 
 /// The device-binding headers, declared so they appear in the description.
 #[derive(Debug, Clone, kynos::HeaderParams)]
@@ -344,7 +343,8 @@ pub enum SignedRejection {
     /// The body was the wrong media type, unreadable, or did not fit `T`.
     #[error(transparent)]
     Body(#[from] BodyRejection),
-    /// The binding did not check out.
+    /// The binding did not check out, or a store the bearer or the binding
+    /// needed did not answer.
     #[error(transparent)]
     Binding(#[from] ApiError),
 }
@@ -389,16 +389,7 @@ async fn caller_of(
     // `MaybeAuth` rather than `Auth`, so an absent `Authorization` header
     // reaches the verifier as the empty string rather than being refused at the
     // carrier -- see `resolve_bearer` for why that distinction is load-bearing.
-    //
-    // Run through its `Guard` check directly: a guard has a handler slot of its
-    // own rather than being an extractor, and this extractor *is* the signed
-    // operations' authentication, so it runs the same check from inside.
-    let MaybeAuth(presented) =
-        <MaybeAuth<AccountToken> as Guard<ServerState>>::guard(parts, state).await?;
-    let principal = match presented {
-        Some(principal) => principal,
-        None => crate::api::auth::resolve_bearer(state, "").await?,
-    };
+    let principal = crate::api::auth::resolve_bearer(parts, state).await?;
     let Headers(sig) = Headers::<DeviceSig>::from_request_parts(parts, state)
         .await
         .map_err(|_| ApiError::unauthenticated())?;
