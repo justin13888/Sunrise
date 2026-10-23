@@ -51,7 +51,7 @@ default is therefore no longer one value. It depends on the deployment:
   sends the request.
 - **A multi-tenant relay whose operator set `require_device_sig = false`.** The
   override still works. The relay logs `srv.start.device_sig_optional` when it
-  starts (`crates/sunrise-server/src/state.rs:141#assemble`), and a revoked
+  starts (`crates/sunrise-server/src/state.rs:145#assemble`), and a revoked
   device that stops signing keeps uploading.
 
 The second half of the trigger has not happened. Single-tenant self-host still
