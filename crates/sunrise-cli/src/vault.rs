@@ -460,14 +460,14 @@ fn read_hex_line<const N: usize>(path: &Path) -> Result<Option<[u8; N]>, VaultEr
 
 /// Write one newline-terminated line to `path`, owner-only.
 ///
-/// The permission work is [`crate::private_file::write_private`], which the
+/// The permission work is [`sunrise_private_file::write_private`], which the
 /// pairing-payload export shares; this only adds the trailing newline every
 /// vault file here carries and maps the error into [`VaultError`].
 fn write_private(path: &Path, line: &str) -> Result<(), VaultError> {
     let mut body = String::with_capacity(line.len() + 1);
     body.push_str(line);
     body.push('\n');
-    crate::private_file::write_private(path, body.as_bytes()).map_err(|source| VaultError::Io {
+    sunrise_private_file::write_private(path, body.as_bytes()).map_err(|source| VaultError::Io {
         path: path.to_path_buf(),
         source,
     })
@@ -577,18 +577,14 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// Mode `0600` on Unix; a protected DACL allowing the current user alone
+    /// on Windows.
     #[test]
     fn the_key_file_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
         let (vault, keys) = dirs();
         open_or_create(vault.path(), keys.path(), &SystemRng).unwrap();
         let id = read_vault_id(vault.path()).unwrap().unwrap();
-        let mode = std::fs::metadata(key_path(keys.path(), &id))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        sunrise_private_file::verify_owner_only(&key_path(keys.path(), &id)).unwrap();
     }
 
     /// A vault directory that travelled without its keystore is a typed,

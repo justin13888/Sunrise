@@ -87,7 +87,7 @@ pub fn save(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     let sealed = seal(json.as_bytes(), root, rng)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    crate::private_file::write_private(&path(vault_dir), &sealed)?;
+    sunrise_private_file::write_private(&path(vault_dir), &sealed)?;
     Ok(dropped)
 }
 

@@ -179,6 +179,10 @@ futures-core = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 pin-project-lite = { version = "0.2", default-features = false }
 url = { version = "2.5", default-features = false }
+# Windows only, and only in `sunrise-private-file` (ADR-0067): the Win32 calls
+# that make a secret file owner-only there. Each user names the features it
+# calls; none are on here.
+windows-sys = { version = "0.61", default-features = false }
 # `tzdb-bundle-always` embeds a fixed tzdb in the binary so every device
 # resolves IANA zones identically (deterministic routine expansion), independent
 # of the host OS tzdb. `default-features = false` also disables `tzdb-zoneinfo`,
@@ -226,6 +230,7 @@ sunrise-telemetry = { path = "crates/sunrise-telemetry" }
 sunrise-id = { path = "crates/sunrise-id" }
 sunrise-error = { path = "crates/sunrise-error" }
 sunrise-http-sig = { path = "crates/sunrise-http-sig" }
+sunrise-private-file = { path = "crates/sunrise-private-file" }
 sunrise-auth = { path = "crates/sunrise-auth" }
 sunrise-cbor = { path = "crates/sunrise-cbor" }
 sunrise-crypto = { path = "crates/sunrise-crypto" }

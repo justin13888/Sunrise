@@ -4,8 +4,7 @@
 //! What is here is the part an integration test has to drive without a process
 //! boundary: [`livesync`], the env→plan→running-sync-session sequence the
 //! binary performs at startup, [`vault`], which decides what key a vault
-//! directory is opened with, [`private_file`], the one owner-only write all of
-//! them put their secrets on disk with, and the two families that run *before*
+//! directory is opened with, and the two families that run *before*
 //! a vault is open — [`recover`], whose whole job happens before a vault
 //! exists, and [`pair`], which runs before the vault is opened because the
 //! usual path would create one the joiner could never replace, and whose
@@ -36,7 +35,6 @@ pub mod livesync;
 pub mod login;
 pub mod pair;
 pub mod prefs_text;
-pub mod private_file;
 pub mod recover;
 pub mod undo_file;
 pub mod vault;

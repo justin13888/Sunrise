@@ -26,6 +26,8 @@ url = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The owner-only write the credential file goes through, on every platform.
+sunrise-private-file = { workspace = true }
 # The loopback login listener (`login.rs`) is a `TcpListener` on a spawned task.
 tokio = { workspace = true, features = ["rt", "net"] }
 
