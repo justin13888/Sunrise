@@ -127,8 +127,9 @@ jobs:
   # The portable core on Windows (#369): the crates a Windows desktop client
   # would link, built and tested on `windows-latest`. The two jobs above never
   # compile a `cfg(not(unix))` or `cfg(windows)` branch, and that is where the
-  # Windows behaviour lives: the private-file writes in `sunrise-auth` and
-  # `sunrise-cli`, and the device time zone in `sunrise-core`.
+  # Windows behaviour lives: `sunrise-private-file`, whose owner-only write
+  # sets a DACL (ADR-0067) for `sunrise-auth` and `sunrise-cli` and whose
+  # tests read that DACL back, and the device time zone in `sunrise-core`.
   #
   # `sunrise-server` is not on the list and is not tested here: the relay is
   # Linux-only (`docs/01-architecture/dependencies.md` §Windows). It is still
@@ -181,13 +182,13 @@ jobs:
           cargo build --locked
           -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
           -p sunrise-crypto -p sunrise-sync -p sunrise-domain
-          -p sunrise-auth -p sunrise-cli
+          -p sunrise-auth -p sunrise-cli -p sunrise-private-file
       - name: Test the portable core
         run: >-
           cargo test --locked
           -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
           -p sunrise-crypto -p sunrise-sync -p sunrise-domain
-          -p sunrise-auth -p sunrise-cli
+          -p sunrise-auth -p sunrise-cli -p sunrise-private-file
 
   # The UniFFI seam's Kotlin half, on a JVM (#369). The Apple jobs only ever
   # generate Swift, so a seam change Kotlin cannot take passed every check

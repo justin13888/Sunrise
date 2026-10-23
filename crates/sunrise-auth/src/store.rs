@@ -20,7 +20,9 @@
 //! # Threat model for [`FileStore`]
 //!
 //! The file holds a live bearer and a refresh token in plaintext, protected by
-//! nothing but its mode. That is weaker than the vault database, which is
+//! nothing but its permissions: mode `0600` on Unix, and on Windows a
+//! protected DACL that allows the current user alone (`sunrise-private-file`,
+//! ADR-0067). That is weaker than the vault database, which is
 //! SQLCipher-encrypted under the vault root — but the vault root is not
 //! available at the point the CLI needs to *find out whether it is logged in*,
 //! and putting the tokens there would also mean a storage migration and a
@@ -82,48 +84,6 @@ impl FileStore {
     }
 }
 
-/// Create/truncate `path` with owner-only permissions, atomically where the
-/// platform allows it.
-///
-/// The mode is set **at creation** rather than after writing: a `write` then
-/// `set_permissions` leaves a window in which the token is on disk
-/// world-readable, and that window is exactly when a token is most interesting.
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    // Write to a sibling temp file, then rename. A crash mid-write then leaves
-    // the previous credentials intact instead of a truncated file that reads
-    // as "logged out".
-    let tmp = path.with_extension("json.tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
-}
-
-/// The same stage-then-rename, with no mode to set.
-///
-/// Windows has no mode bits, and this does not set a DACL: the file takes the
-/// ACL its directory hands down, which under the per-user profile is the user,
-/// `SYSTEM` and `Administrators`, and elsewhere may be wider.
-/// `docs/07-clients/desktop.md` §Windows records that gap and the issue that
-/// closes it. `a_resave_renames_a_new_file_over_the_old_one` holds the rename
-/// on this branch too.
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
 impl CredentialStore for FileStore {
     fn load(&self) -> Result<Option<Credentials>, LoginError> {
         match std::fs::read(&self.path) {
@@ -144,7 +104,12 @@ impl CredentialStore for FileStore {
                 LoginError::Malformed(format!("cannot create {}: {e}", parent.display()))
             })?;
         }
-        write_private(&self.path, &bytes).map_err(|e| {
+        // Staged, flushed and renamed, and owner-only from creation: mode
+        // `0600` on Unix, a protected one-entry DACL on Windows. Set at
+        // creation, because a write followed by a permission change leaves a
+        // window in which the token is on disk readable by others, and that
+        // window is exactly when a token is most interesting.
+        sunrise_private_file::write_private(&self.path, &bytes).map_err(|e| {
             LoginError::Malformed(format!("cannot write {}: {e}", self.path.display()))
         })
     }
@@ -188,30 +153,27 @@ mod tests {
         s.clear().expect("clearing nothing is not an error");
     }
 
-    /// The file holds a live bearer. Anything but owner-only is a finding.
-    #[cfg(unix)]
+    /// The file holds a live bearer. Anything but owner-only is a finding:
+    /// mode `0600` on Unix, and on Windows a protected DACL with one entry,
+    /// for the current user.
     #[test]
     fn the_file_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let s = FileStore::in_dir(dir.path());
         s.save(&creds()).unwrap();
-        let mode = std::fs::metadata(s.path()).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        sunrise_private_file::verify_owner_only(s.path()).unwrap();
     }
 
     /// And a re-save does not widen it — the second write goes through a fresh
-    /// temp file, so its mode has to be right too, not just the first one's.
-    #[cfg(unix)]
+    /// temp file, so its protection has to be right too, not just the first
+    /// one's.
     #[test]
     fn a_rewrite_stays_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let s = FileStore::in_dir(dir.path());
         s.save(&creds()).unwrap();
         s.save(&creds()).unwrap();
-        let mode = std::fs::metadata(s.path()).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        sunrise_private_file::verify_owner_only(s.path()).unwrap();
     }
 
     /// An unreadable blob means "log in again", which is what `None` already
@@ -240,7 +202,7 @@ mod tests {
     /// A re-save replaces the file by rename on every platform, never by
     /// rewriting it in place: a hard link to the old file keeps the old bytes.
     /// A truncate-then-write would leave a crash mid-save reading as logged
-    /// out, and the Windows branch is the one no other test reaches.
+    /// out.
     #[test]
     fn a_resave_renames_a_new_file_over_the_old_one() {
         let dir = tempfile::tempdir().unwrap();

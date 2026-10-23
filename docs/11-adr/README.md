@@ -84,6 +84,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0064 | [Sunrise releases on two version trains, core and app, and nothing publishes to a registry](./0064-two-version-trains.md) | accepted (amends 0042 §1: the product version becomes the core train version and the app train version; neither carries compatibility meaning) |
 | 0065 | [Entities are copy-on-write version DAGs; rows are a fold, and every conflict is kept and named](./0065-copy-on-write-entity-versions.md) | accepted (amends 0044; clarified 2026-10 by its own D1–D10, of which D10 keeps the version rows through compaction for now) |
 | 0066 | [Routines follow the traveller by default, and no stored time is ever re-derived from a zone](./0066-times-survive-travel.md) | accepted (amends `time.md` §1's anchor default) |
+| 0067 | [Windows secret files get a protected, one-entry DACL, set by the workspace's one `unsafe` module](./0067-windows-owner-only-files.md) | accepted (the one exception to the workspace's `unsafe_code = "forbid"`; built by #486) |
 
 ## When to write a new ADR
 

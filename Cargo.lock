@@ -3136,6 +3136,7 @@ dependencies = [
  "oauth2",
  "serde",
  "serde_json",
+ "sunrise-private-file",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3197,6 +3198,7 @@ dependencies = [
  "sunrise-integrations",
  "sunrise-log",
  "sunrise-pairing",
+ "sunrise-private-file",
  "sunrise-relay-client",
  "sunrise-server",
  "sunrise-sync",
@@ -3488,6 +3490,14 @@ dependencies = [
  "sunrise-error",
  "thiserror 1.0.69",
  "zeroize",
+]
+
+[[package]]
+name = "sunrise-private-file"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1056,22 +1056,12 @@ fn the_four_pair_commands_make_a_second_vault_a_second_device() {
     // The grant is the one file worth stealing — the vault root and every
     // Stream key — and it is the *third*, not the first. Under the old
     // affordance the first file a vault wrote unprompted was the whole account.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&grant).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
-        let pending = std::fs::metadata(joiner.path().join(sunrise_cli::pair::PENDING_FILE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(
-            pending & 0o777,
-            0o600,
-            "the parked D_S_priv is a secret too, mode was {:o}",
-            pending & 0o777
-        );
-    }
+    // Owner-only on every platform: mode `0600`, or a protected DACL allowing
+    // the current user alone.
+    sunrise_private_file::verify_owner_only(&grant).unwrap();
+    // The parked D_S_priv is a secret too.
+    sunrise_private_file::verify_owner_only(&joiner.path().join(sunrise_cli::pair::PENDING_FILE))
+        .unwrap();
 
     // 4. Accept, which is the joiner's first open.
     let out = run(joiner.path(), &["pair", "accept", "--response", g]);

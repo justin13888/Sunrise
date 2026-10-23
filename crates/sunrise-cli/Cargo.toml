@@ -36,6 +36,9 @@ sunrise-auth = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-pairing = { workspace = true }
+# Every secret this binary writes: the vault key, the parked pairing secret,
+# the exported grant and the sealed undo history.
+sunrise-private-file = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }

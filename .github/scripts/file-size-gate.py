@@ -181,6 +181,7 @@ THRESHOLDS: dict[str, int] = {
     "crates/sunrise-integrations": 802,
     "crates/sunrise-log": 448,  # 16 files
     "crates/sunrise-pairing": 835,  # 10 files
+    "crates/sunrise-private-file": 802,
     "crates/sunrise-relay-client": 802,
     "crates/sunrise-storage": 802,
     "crates/sunrise-test-seed": 802,

@@ -82,10 +82,10 @@ use sunrise_core::{Core, SystemRng};
 use sunrise_pairing::{
     decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingJoiner,
 };
+use sunrise_private_file::write_private;
 
 use crate::i18n::strings;
 use crate::livesync;
-use crate::private_file::write_private;
 use crate::vault;
 
 /// The joiner's minted device keys, between `pair request` and `pair accept`.

@@ -66,8 +66,8 @@ listed.
 
 CI's `rust-windows` job builds and tests the portable core on
 `windows-latest`: `sunrise-core`, `sunrise-core-bindings`, `sunrise-storage`,
-`sunrise-crypto`, `sunrise-sync`, `sunrise-domain`, `sunrise-auth` and
-`sunrise-cli` (issue #369). It is not a required check until it has a record of
+`sunrise-crypto`, `sunrise-sync`, `sunrise-domain`, `sunrise-auth`,
+`sunrise-cli` (issue #369) and `sunrise-private-file` (issue #486). It is not a required check until it has a record of
 passing. No Windows client ships, and `release.yml` builds no Windows binary.
 
 - **SQLCipher's OpenSSL is vendored on Windows.** `libsqlite3-sys` builds
@@ -85,12 +85,17 @@ passing. No Windows client ships, and `release.yml` builds no Windows binary.
 - **`sunrise-server` is Linux-only.** The relay ships as a Linux container
   image, and nothing here builds or tests it on Windows. It is compiled there
   only as a dev-dependency of `sunrise-cli`'s live-sync test.
-- **Secret files are not yet owner-only on Windows.** The Unix writes set mode
-  `0600` at creation, and Windows has no such bit. A DACL needs Win32 calls
-  that every Rust binding exposes as `unsafe`, against the workspace's
-  `unsafe_code = "forbid"`. The writes are staged and renamed on Windows as on
-  Unix. [desktop.md](../07-clients/desktop.md) §Windows records the gap, and
-  issue #486 closes it.
+- **Secret files are owner-only on Windows through `windows-sys`.** The Unix
+  writes set mode `0600` at creation. On Windows `sunrise-private-file` creates
+  each file with a protected DACL that allows the current user alone, through
+  `windows-sys` 0.61 (Microsoft's raw Win32 binding, MIT OR Apache-2.0, already
+  in `Cargo.lock` through `tokio` and others). Its calls are `unsafe`, so that
+  crate's `src/windows.rs` is the one exception to the workspace's
+  `unsafe_code = "forbid"`
+  ([ADR-0067](../11-adr/0067-windows-owner-only-files.md)). It is a
+  target-specific dependency, compiled for Windows only.
+  [desktop.md](../07-clients/desktop.md) §Windows says what the DACL does and
+  does not protect.
 
 ## Bun workspace pins
 
