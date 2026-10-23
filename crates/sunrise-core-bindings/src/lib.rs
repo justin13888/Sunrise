@@ -604,7 +604,7 @@ impl SunriseCore {
     /// refusing the capture, because losing what someone typed is the worse
     /// failure.
     pub async fn capture(&self, text: String, tz: String) -> Result<CommandOutcome, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         let parsed = self.inner.capture(&text, &zone).await?;
         let res = self
             .inner
@@ -634,7 +634,7 @@ impl SunriseCore {
         text: String,
         tz: String,
     ) -> Result<CapturePreview, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         Ok(CapturePreview::from(
             &self.inner.capture(&text, &zone).await?,
         ))

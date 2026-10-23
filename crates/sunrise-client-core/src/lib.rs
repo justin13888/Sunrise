@@ -15,6 +15,8 @@
 //! * [`preferences`] — the bootstrap preferences file a device reads before
 //!   it has a vault, written so a crash leaves one whole file or the other.
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
+//! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
+//!   sections, relative days, snoozes, block conflicts, session timers.
 //! * [`config`] — the tiny TOML subset both preference files are written in.
 //! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
 //!   flow steps 3 to 8, from the typed code to a vault that has read its
@@ -36,6 +38,7 @@ pub mod preferences;
 pub mod recovery;
 pub mod undo;
 pub mod views;
+pub mod vocab;
 
 pub use config::parse_pairs;
 pub use undo::{
