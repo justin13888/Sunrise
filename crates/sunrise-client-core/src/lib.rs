@@ -56,6 +56,10 @@
 //!   renewal at `sunrise-auth`'s renewal point, and sign-out.
 //! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
 //!   travel through.
+//! * [`palette`] — a command palette's ranking of a typed query against
+//!   command names, and its clamped highlight.
+//! * [`selection`] — a list's keyboard selection: cursor, ticked rows and the
+//!   anchor a range grows from.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -95,6 +99,7 @@ pub mod links;
 #[cfg(feature = "relay")]
 pub mod pairing;
 pub mod pairing_flow;
+pub mod palette;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
@@ -103,6 +108,7 @@ pub mod reminders;
 pub mod review;
 pub mod schedule;
 pub mod share;
+pub mod selection;
 #[cfg(feature = "relay")]
 pub mod sync;
 pub mod sync_status;

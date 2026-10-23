@@ -67,6 +67,7 @@ pub mod editing;
 pub mod flows;
 pub mod ical;
 pub mod links;
+pub mod keyboard;
 pub mod notes;
 pub mod pairing;
 pub mod pairing_relay;
