@@ -75,7 +75,8 @@ Beside those, the client layer holds what a screen decides that is not a
 screen's own, as codes and data rather than sentences, so each surface words
 it: the relay URL rule (below), the sync badge and the sync plan
 (`sync_status`), `sunrise://` links (`links`), what a share becomes
-(`share`), and three state machines with their IO injected — a pairing as a
+(`share`), which copy of a secret survives a keychain migration
+(`secret_copies`), and three state machines with their IO injected — a pairing as a
 screen walks it (`pairing_flow`, over the relay rendezvous in `pairing`), the
 vault session's lifecycle (`vault_session`), and the OIDC session's sign-in,
 renewal and sign-out (`account_session`, over `sunrise-auth`'s credential).

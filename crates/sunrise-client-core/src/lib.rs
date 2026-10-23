@@ -53,6 +53,8 @@
 //!   phases and progress, as pure transitions that name the seam calls.
 //! * [`vault_session`] — the vault session's lifecycle: first run, locked,
 //!   unlocked, and the refusals that keep a key from being made over data.
+//! * [`secret_copies`] — which copy survives when one secret sits in two
+//!   keychains, and what a migration writes and deletes to get there.
 //! * `account_session` (feature `relay`) — the OIDC session: sign-in, silent
 //!   renewal at `sunrise-auth`'s renewal point, and sign-out.
 //! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
@@ -113,6 +115,7 @@ pub mod relay_url;
 pub mod reminders;
 pub mod review;
 pub mod schedule;
+pub mod secret_copies;
 pub mod selection;
 pub mod share;
 #[cfg(feature = "relay")]
