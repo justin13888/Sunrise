@@ -3,7 +3,7 @@
 //! `docs/07-clients/parity-matrix.md` marks "Saved searches / views" **MUST**
 //! on every client. The vault has no entity for one — a saved view is a
 //! *pointer at* data, not data — so this is a per-device local preference,
-//! written in the [`crate::config`] TOML subset.
+//! written in a flat TOML subset this module reads itself.
 //!
 //! ```toml
 //! # ~/.config/sunrise/views.toml
@@ -155,8 +155,8 @@ pub fn parse_view(name: &str, spec: &str) -> Result<SavedView, String> {
 /// Read the saved views, or an empty list if the file is absent.
 ///
 /// Returns `(views, warnings)`. A malformed line costs that view and nothing
-/// else — the same rule `keys.toml` follows, because a typo in a config file
-/// must never cost the user a working app.
+/// else, because a typo in a preference file must never cost the user a
+/// working app.
 #[must_use]
 pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
     let Some(path) = path else {
@@ -167,7 +167,7 @@ pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
-    let pairs = match crate::config::parse_pairs(&src) {
+    let pairs = match parse_pairs(&src) {
         Ok(p) => p,
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
@@ -186,7 +186,7 @@ pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
 #[must_use]
 pub fn to_file(views: &[SavedView]) -> String {
     let mut out = String::from(
-        "# Sunrise saved views. Written by `:save <name>`; safe to edit.\n\
+        "# Sunrise saved views. Written by Sunrise; safe to edit.\n\
          # <name> = \"view=today;query=…;contexts=a,b\"\n",
     );
     for v in views {
@@ -196,21 +196,151 @@ pub fn to_file(views: &[SavedView]) -> String {
     out
 }
 
-/// `~/.config/sunrise/views.toml`, honouring `XDG_CONFIG_HOME`.
+/// `~/.config/sunrise/views.toml`, honouring `XDG_CONFIG_HOME`, read from
+/// this process's environment. See [`config_path_in`].
 #[must_use]
 pub fn config_path() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir).join("sunrise").join("views.toml"));
-        }
+    config_path_in(
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Where the views file lives, given the two variables that decide it:
+/// `$XDG_CONFIG_HOME/sunrise/views.toml` when that is set and not empty, else
+/// `$HOME/.config/sunrise/views.toml`, else nowhere.
+///
+/// Nowhere is an answer rather than a guess: a store with no path reads as
+/// empty and refuses to save.
+#[must_use]
+pub fn config_path_in(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    if let Some(dir) = xdg_config_home.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join("sunrise").join("views.toml"));
     }
-    let home = std::env::var("HOME").ok()?;
     Some(
-        PathBuf::from(home)
+        PathBuf::from(home?)
             .join(".config")
             .join("sunrise")
             .join("views.toml"),
     )
+}
+
+/// Why the views file was not written.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    /// The store has no path on this device.
+    #[error("no saved-views path on this device")]
+    NoPath,
+    /// The directory or the file could not be written.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// The saved-view file at one path, read and written whole.
+///
+/// The path is state: tests point at a scratch file, and every client points
+/// at [`config_path`] — so a view saved in one is recalled in the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedViewStore {
+    path: Option<PathBuf>,
+}
+
+impl SavedViewStore {
+    /// A store at `path`; `None` reads as empty and refuses to save.
+    #[must_use]
+    pub fn at(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+
+    /// Where this store reads and writes, if anywhere.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Read the file. An absent file is an empty set; see [`load`].
+    #[must_use]
+    pub fn load(&self) -> (Vec<SavedView>, Vec<String>) {
+        load(self.path.as_deref())
+    }
+
+    /// Replace the file with `views`.
+    ///
+    /// Whole-file, because the file is the set: a partial write would leave
+    /// the store disagreeing with what the picker just showed.
+    ///
+    /// # Errors
+    /// [`SaveError::NoPath`] for a store with no path, and
+    /// [`SaveError::Io`] when the directory or the file cannot be written.
+    pub fn save(&self, views: &[SavedView]) -> Result<(), SaveError> {
+        let path = self.path.as_ref().ok_or(SaveError::NoPath)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, to_file(views))?;
+        Ok(())
+    }
+}
+
+/// Parse the file's TOML subset: comments, optional `[table]` headers, and
+/// `name = "value"` pairs.
+///
+/// Hand-rolled on purpose: the file is a flat list of string pairs, and a TOML
+/// dependency would be the largest in the tree for the smallest grammar in it.
+/// Anything outside the subset is an [`Err`] naming the line.
+///
+/// # Errors
+///
+/// Returns a message naming the offending line number.
+fn parse_pairs(src: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for (n, raw) in src.lines().enumerate() {
+        let line = strip_comment(raw).trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            if line.ends_with(']') {
+                // A table header is accepted and ignored, so a hand-edited
+                // file that grew a `[views]` line still reads as the flat
+                // list it is.
+                continue;
+            }
+            return Err(format!("line {}: unterminated table header", n + 1));
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(format!("line {}: expected `name = \"value\"`", n + 1));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!("line {}: missing name", n + 1));
+        }
+        let value = value.trim();
+        let quoted = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+        let Some(key) = quoted else {
+            return Err(format!("line {}: value must be a quoted string", n + 1));
+        };
+        out.push((name.to_string(), key.to_string()));
+    }
+    Ok(out)
+}
+
+/// Drop a trailing `#` comment, ignoring `#` inside a quoted value (so
+/// `tagged = "view=search;query=#urgent"` survives).
+fn strip_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
 }
 
 /// Wire name for a view.
@@ -229,7 +359,8 @@ const fn view_name(v: View) -> &'static str {
     }
 }
 
-/// The inverse of [`view_name`], accepting the `:view` spellings too.
+/// The inverse of [`view_name`], also accepting the older spellings a views
+/// file written before the names settled may still hold.
 fn parse_view_name(s: &str) -> Option<View> {
     Some(match s {
         "today" => View::Today,
@@ -374,5 +505,90 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(back, views);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_store_saves_the_whole_set_and_makes_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("nested").join("views.toml");
+        let store = SavedViewStore::at(Some(path.clone()));
+        assert_eq!(store.path(), Some(path.as_path()));
+        assert_eq!(store.load(), (Vec::new(), Vec::new()));
+
+        let views = vec![saved("deep", View::Today, "", &["deep-work"])];
+        store.save(&views).unwrap();
+        assert_eq!(store.load(), (views, Vec::new()));
+
+        store.save(&[]).unwrap();
+        assert!(store.load().0.is_empty(), "a save replaces, never appends");
+    }
+
+    #[test]
+    fn a_store_with_no_path_reads_empty_and_refuses_to_save() {
+        let store = SavedViewStore::at(None);
+        assert_eq!(store.load(), (Vec::new(), Vec::new()));
+        let err = store.save(&[]).unwrap_err();
+        assert!(matches!(err, SaveError::NoPath));
+        assert_eq!(err.to_string(), "no saved-views path on this device");
+    }
+
+    #[test]
+    fn the_path_follows_xdg_then_home_then_nowhere() {
+        assert_eq!(
+            config_path_in(Some("/x"), Some("/h")),
+            Some(PathBuf::from("/x/sunrise/views.toml"))
+        );
+        assert_eq!(
+            config_path_in(Some(""), Some("/h")),
+            Some(PathBuf::from("/h/.config/sunrise/views.toml")),
+            "an empty XDG_CONFIG_HOME is unset"
+        );
+        assert_eq!(
+            config_path_in(None, Some("/h")),
+            Some(PathBuf::from("/h/.config/sunrise/views.toml"))
+        );
+        assert_eq!(config_path_in(None, None), None);
+    }
+
+    #[test]
+    fn a_flat_list_of_pairs_parses() {
+        let pairs = parse_pairs("a = \"view=inbox\"\nb = 'view=today'\n").expect("parses");
+        assert_eq!(
+            pairs,
+            vec![
+                ("a".to_string(), "view=inbox".to_string()),
+                ("b".to_string(), "view=today".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_and_table_headers_are_ignored() {
+        let src = "# a comment\n[views]\na = \"view=inbox\"  # trailing\n";
+        assert_eq!(
+            parse_pairs(src).expect("parses"),
+            vec![("a".to_string(), "view=inbox".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_hash_inside_a_quoted_value_survives() {
+        assert_eq!(
+            parse_pairs("t = \"view=search;query=#urgent\"").expect("parses"),
+            vec![("t".to_string(), "view=search;query=#urgent".to_string())]
+        );
+    }
+
+    #[test]
+    fn anything_outside_the_subset_names_its_line() {
+        for (src, needle) in [
+            ("a view=inbox\n", "line 1"),
+            ("a = view=inbox\n", "quoted string"),
+            ("[views\n", "unterminated"),
+            (" = \"view=inbox\"\n", "missing name"),
+        ] {
+            let e = parse_pairs(src).unwrap_err();
+            assert!(e.contains(needle), "{src:?} -> {e}");
+        }
     }
 }

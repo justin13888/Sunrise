@@ -21,8 +21,9 @@
 //!
 //! [`recover_account`] is everything after the user has signed in: §Recovery
 //! flow steps 3 to 8, from the 24 words to a vault that has read its history.
-//! It used to live in `sunrise-cli`, where no other client could call it; it
-//! lives here so that `sunrise recover` and the UniFFI seam's
+//! It used to live in `sunrise-cli`, where no other client could call it, and
+//! then in `sunrise-onboarding`, below the relay client; it lives here, in the
+//! client layer, so that `sunrise recover` and the `UniFFI` seam's
 //! `SunriseCore::recover_account` run one implementation.
 //!
 //! ```text
@@ -40,11 +41,12 @@
 //! **from** the restored identity, and success is reported only once the sync
 //! driver has caught up.
 //!
-//! Everything that talks to the relay goes through [`RecoveryRelay`], which a
-//! caller supplies. That is what lets this crate sit below
-//! `sunrise-relay-client` (which implements it) and what lets the flow be
+//! Everything that talks to the relay goes through [`RecoveryRelay`]. This
+//! module implements it over [`sunrise_relay_client::RelayRecovery`], which is
+//! what both shipping callers hand in; the trait is what lets the flow be
 //! tested against a relay that refuses, serves the wrong blob, or never
-//! answers, with no network at all.
+//! answers, with no network at all. The dependency runs one way: this crate
+//! calls the REST client, and the REST client names no engine.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -57,7 +59,10 @@ use sunrise_crypto::{unseal_recovery_blob, RecoveryError};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-use crate::account::{decode_public_key, decode_recovery_blob, PublicKeyError};
+pub use sunrise_relay_client::RelayRefusal;
+use sunrise_relay_client::{
+    decode_public_key, decode_recovery_blob, DeviceIdentity, PublicKeyError, RelayRecovery,
+};
 
 /// Recovery flow errors.
 #[derive(Debug, Error)]
@@ -136,25 +141,6 @@ pub fn check_recovery_code(recovery_code: &str) -> Result<(), Bip39Error> {
     decode_recovery_code(recovery_code).map(|_| ())
 }
 
-/// Why the relay did not give a recovery what it asked for.
-///
-/// Split where the caller does something different. A missing step-up is
-/// fixed by signing in again, a missing blob by nothing on this device, and
-/// everything else is a network or a relay to retry.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum RelayRefusal {
-    /// `403`: the bearer carries no fresh sign-in, and the blob route requires
-    /// one (`docs/06-server/auth.md` §The step-up in front of step 3).
-    #[error("{0}")]
-    StepUpRequired(String),
-    /// `404`: the account has no recovery blob stored.
-    #[error("{0}")]
-    NoBlob(String),
-    /// Any other refusal or transport failure, in the relay client's words.
-    #[error("{0}")]
-    Other(String),
-}
-
 /// What a recovering device tells `POST /api/v1/devices` about itself.
 ///
 /// Read off the vault [`rejoin_account`] has just opened: the keys are the
@@ -180,12 +166,10 @@ pub struct RecoveringDevice {
 
 /// The relay, as a recovery needs it.
 ///
-/// Injected rather than built here so the flow is testable without a network,
-/// and so this crate does not depend on the generated client that depends on
-/// it. `sunrise-relay-client` provides the implementation both shipping
-/// callers use; every method carries the bearer the implementation was built
-/// with, which for [`RecoveryRelay::recovery_blob`] must carry a completed
-/// OIDC step-up.
+/// Injected rather than called directly so the flow is testable without a
+/// network. [`RelayRecovery`] is the implementation both shipping callers use;
+/// every method carries the bearer the implementation was built with, which
+/// for [`RecoveryRelay::recovery_blob`] must carry a completed OIDC step-up.
 pub trait RecoveryRelay: Send + Sync {
     /// The account record's `identity_signing_pub`, or `None` where the
     /// account never published one.
@@ -204,11 +188,42 @@ pub trait RecoveryRelay: Send + Sync {
     ) -> impl Future<Output = Result<String, RelayRefusal>> + Send;
 }
 
+impl RecoveryRelay for RelayRecovery {
+    async fn account_identity_key(&self) -> Result<Option<String>, RelayRefusal> {
+        RelayRecovery::account_identity_key(self).await
+    }
+
+    async fn recovery_blob(&self) -> Result<String, RelayRefusal> {
+        RelayRecovery::recovery_blob(self).await
+    }
+
+    async fn register_device(&self, device: RecoveringDevice) -> Result<String, RelayRefusal> {
+        RelayRecovery::register_device(self, recovering_identity(device)).await
+    }
+}
+
+/// What a recovering device registers as: its keys, the cert the restored
+/// identity signed over them, and the vault id a sibling revokes it by.
+fn recovering_identity(device: RecoveringDevice) -> DeviceIdentity {
+    DeviceIdentity {
+        device_pub_s: device.device_pub_s,
+        device_pub_d: None,
+        // Opaque to the server, and carried in the same alphabet as the blob.
+        device_cert: Some(sunrise_relay_client::encode_recovery_blob(
+            &device.device_cert,
+        )),
+        vault_device_id: Some(sunrise_id::crockford::encode_bytes(&device.vault_device_id)),
+        nickname: device.nickname,
+        platform: device.platform,
+        app_version: device.app_version,
+    }
+}
+
 /// Start the sync driver on a restored vault, bound to the relay device id the
 /// registration returned.
 ///
 /// A callback rather than a [`RecoveryRelay`] method because the transport is
-/// the caller's: the CLI and the UniFFI seam each build their own SSE factory,
+/// the caller's: the CLI and the `UniFFI` seam each build their own SSE factory,
 /// and this crate stays out of transport selection.
 pub type SyncStarter<'a> = &'a (dyn Fn(&Arc<Core>, &str) -> Result<(), String> + Send + Sync);
 
@@ -477,7 +492,7 @@ pub async fn rejoin_account<R: RecoveryRelay>(
 /// The whole of §Recovery flow steps 3 to 8, from the typed code to a vault
 /// that has read its history: [`restore_identity`], then [`rejoin_account`].
 ///
-/// What the UniFFI seam's `recover_account` runs. The CLI runs the two halves
+/// What the `UniFFI` seam's `recover_account` runs. The CLI runs the two halves
 /// itself, because it mints its root only once the code has opened the blob.
 ///
 /// # Errors
@@ -520,20 +535,17 @@ fn relay_error(e: RelayRefusal) -> RestoreError {
 /// Wait for the sync driver to report `Live` with nothing pending, reporting
 /// how many changes the replay has applied as it goes.
 ///
-/// Timed against the core's injected clock rather than `Instant`, which the
-/// workspace lint bans so that time is never read from two sources.
+/// [`crate::sync::wait_until_caught_up`], timed against the core's injected
+/// clock, with the change count drained before each status is judged.
 async fn wait_until_live(
     core: &Core,
     mut changes: broadcast::Receiver<DomainEvent>,
     budget_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<(), String> {
-    /// How often to re-read the status.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
-    let deadline = core.now_ms().saturating_add(budget_ms);
     let mut applied = 0u64;
     let mut reported = 0u64;
-    let last = loop {
+    let waited = crate::sync::wait_until_caught_up(core, budget_ms, &mut |_| {
         loop {
             match changes.try_recv() {
                 Ok(_) => applied += 1,
@@ -545,22 +557,17 @@ async fn wait_until_live(
             reported = applied;
             progress(RecoveryProgress::Replaying { applied });
         }
-        let sunrise_core::QueryResult::SyncStatus(s) = core
-            .query(sunrise_core::Query::SyncStatus)
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("unexpected query result".into());
-        };
-        if s.state == sunrise_sync::SyncState::Live && s.outbox_pending == 0 {
-            return Ok(());
-        }
-        if core.now_ms() >= deadline {
-            break format!("{:?}, {} pending", s.state, s.outbox_pending);
-        }
-        tokio::time::sleep(POLL).await;
-    };
-    Err(format!("still {last} after {}s", budget_ms / 1000))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    waited.map_err(|last| {
+        format!(
+            "still {:?}, {} pending after {}s",
+            last.state,
+            last.outbox_pending,
+            budget_ms / 1000
+        )
+    })
 }
 
 /// Lower-case hex of a 16-byte id.
@@ -579,6 +586,28 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
     use sunrise_crypto::seal_recovery_blob;
+
+    /// The registration a recovery sends names the vault id in Crockford
+    /// base-32 and carries the cert, so a sibling can revoke and inspect it.
+    #[test]
+    fn a_recovering_device_registers_its_vault_id_and_cert() {
+        let id = recovering_identity(RecoveringDevice {
+            device_pub_s: [7u8; 32],
+            device_cert: vec![1, 2, 3],
+            vault_device_id: [0u8; 16],
+            nickname: "n".into(),
+            platform: "linux".into(),
+            app_version: Some("1".into()),
+        });
+        assert_eq!(id.device_pub_s, [7u8; 32]);
+        assert_eq!(id.device_cert.as_deref(), Some("AQID"));
+        assert_eq!(
+            id.vault_device_id.as_deref(),
+            Some("00000000000000000000000000")
+        );
+        assert!(id.device_pub_d.is_none());
+        assert_eq!((id.nickname.as_str(), id.platform.as_str()), ("n", "linux"));
+    }
 
     #[test]
     fn round_trip() {

@@ -31,10 +31,6 @@ workspace = true
 # requires rustc 1.91 and the workspace pinned 1.88. That is no longer a reason;
 # the one above always was, and it stands on its own.
 uniffi = { version = "0.32.0", default-features = false, features = ["tokio"] }
-# `Transport` is an `async_trait`, and `sync_once` wraps the transport the
-# driver dials so it can end a session that was up before the app was
-# suspended (`src/background.rs`).
-async-trait = { workspace = true }
 base64 = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
@@ -45,13 +41,12 @@ sunrise-auth = { workspace = true }
 # raw fields, to the client as opaque canonical CBOR, so a value the client
 # hands back keeps them (#431).
 sunrise-cbor = { workspace = true }
-sunrise-client-core = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
-sunrise-onboarding = { workspace = true }
 sunrise-pairing = { workspace = true }
 # The Apple clients had no way to reach `POST /api/v1/accounts`, so a vault
 # created there sealed no recovery blob and uploaded none (#181). This is the

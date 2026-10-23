@@ -3752,18 +3752,20 @@ pub struct MissingFeatureItem {
 
 impl From<&sunrise_core::MissingFeature> for MissingFeatureItem {
     fn from(m: &sunrise_core::MissingFeature) -> Self {
-        use sunrise_core::FeatureScope;
-        let lock = match &m.scope {
-            FeatureScope::Structural => FeatureLock::Everything,
-            FeatureScope::Entity(kind) => FeatureLock::Entity {
-                tag: kind.tag().to_owned(),
-            },
-            FeatureScope::UnknownEntity(prefix) => FeatureLock::Nothing {
-                entity: prefix.clone(),
-            },
+        Self::from(sunrise_client_core::gate::Missing::from(m))
+    }
+}
+
+impl From<sunrise_client_core::gate::Missing> for MissingFeatureItem {
+    fn from(m: sunrise_client_core::gate::Missing) -> Self {
+        use sunrise_client_core::gate::Lock;
+        let lock = match m.lock {
+            Lock::Everything => FeatureLock::Everything,
+            Lock::Entity { tag } => FeatureLock::Entity { tag },
+            Lock::Nothing { entity } => FeatureLock::Nothing { entity },
         };
         Self {
-            feature: m.id.clone(),
+            feature: m.feature,
             lock,
         }
     }
@@ -3796,28 +3798,12 @@ impl EditGate {
     /// returns it.
     #[must_use]
     pub fn from_missing(missing: &[sunrise_core::MissingFeature]) -> Self {
-        let missing: Vec<MissingFeatureItem> = missing.iter().map(Into::into).collect();
-        let locks_all = missing
-            .iter()
-            .any(|m| matches!(m.lock, FeatureLock::Everything));
-        let mut locked_tags: Vec<String> = if locks_all {
-            Vec::new()
-        } else {
-            missing
-                .iter()
-                .filter_map(|m| match &m.lock {
-                    FeatureLock::Entity { tag } => Some(tag.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        locked_tags.sort_unstable();
-        locked_tags.dedup();
+        let gate = sunrise_client_core::gate::EditGate::from_missing(missing);
         Self {
-            read_only: !missing.is_empty(),
-            locks_all,
-            locked_tags,
-            missing,
+            read_only: gate.read_only,
+            locks_all: gate.locks_all,
+            locked_tags: gate.locked_tags,
+            missing: gate.missing.into_iter().map(Into::into).collect(),
         }
     }
 }

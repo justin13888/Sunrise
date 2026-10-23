@@ -1,12 +1,12 @@
 //! `sunrise recover` — spend a recovery code and come back with a vault.
 //!
 //! `docs/03-crypto/recovery.md` §Recovery flow is eight steps. Steps 2-5 were
-//! already built and reachable (`sunrise_onboarding::recover_identity_from_code`
+//! already built and reachable (`sunrise_client_core::recovery::recover_identity_from_code`
 //! opens the blob and hands back the identity); what had no caller was
 //! everything that turns an opened blob into something a user can use, and an
 //! opened blob is not a vault.
 //!
-//! Steps 3 to 8 are not here. They are `sunrise_onboarding::recovery`, which
+//! Steps 3 to 8 are not here. They are `sunrise_client_core::recovery`, which
 //! the UniFFI seam's `recover_account` runs too, over the same relay adapter
 //! (`sunrise_relay_client::RelayRecovery`). What stays in this module is what
 //! only a command line has: where the words come from, which directory the
@@ -15,9 +15,9 @@
 //!
 //! ```text
 //!  step 1   the user points this at an empty vault directory
-//!  steps 3-5 sunrise_onboarding::restore_identity
+//!  steps 3-5 sunrise_client_core::recovery::restore_identity
 //!  step 6   mint a fresh vault root in the keystore, then
-//!  step 8   sunrise_onboarding::rejoin_account opens the vault from the
+//!  step 8   sunrise_client_core::recovery::rejoin_account opens the vault from the
 //!           restored identity, registers it, and waits for the replay
 //!  step 7   tell the user to revoke the devices they lost and rotate their
 //!           Stream keys — last, because it is advice about a vault that now
@@ -38,10 +38,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use sunrise_client_core::recovery::{RecoveryProgress, RestoreError};
 use sunrise_core::{Core, CoreConfig, SystemRng};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_crypto::recovery::RecoveryPayload;
-use sunrise_onboarding::{RecoveryProgress, RestoreError};
 use sunrise_relay_client::RelayRecovery;
 
 use crate::{livesync, login, vault};
@@ -159,7 +159,7 @@ fn relay(base_url: &str, bearer: &str) -> Result<RelayRecovery, RecoverError> {
 }
 
 /// Fetch the account record and the sealed blob, and open it with `code`:
-/// steps 3 to 5, through [`sunrise_onboarding::restore_identity`].
+/// steps 3 to 5, through [`sunrise_client_core::recovery::restore_identity`].
 ///
 /// `bearer` must carry a completed OIDC step-up: the blob route refuses an
 /// ordinary session with `403 AUTH_STEP_UP_REQUIRED`, which is the whole reason
@@ -175,7 +175,7 @@ pub async fn restore_identity(
     code: &str,
 ) -> Result<RecoveryPayload, RecoverError> {
     let relay = relay(base_url, bearer)?;
-    Ok(sunrise_onboarding::restore_identity(&relay, code, &mut |_| {}).await?)
+    Ok(sunrise_client_core::recovery::restore_identity(&relay, code, &mut |_| {}).await?)
 }
 
 /// What [`rejoin_account`]'s two callbacks share while the flow runs.
@@ -189,7 +189,7 @@ struct Rejoining {
 
 /// Steps 6 and 8: mint the vault root, then build the vault from the restored
 /// identity, register it, and replay the log, through
-/// [`sunrise_onboarding::rejoin_account`].
+/// [`sunrise_client_core::recovery::rejoin_account`].
 ///
 /// Named for what it does to the account rather than `rebuild_vault`, which
 /// is what rebuilding a vault's projection from its own op log is called
@@ -268,16 +268,12 @@ pub async fn rejoin_account(
         }
     };
 
-    let outcome = sunrise_onboarding::rejoin_account(
+    let outcome = sunrise_client_core::recovery::rejoin_account(
         &relay,
         cfg,
         VaultRootKey::from_bytes(root),
         identity,
-        sunrise_onboarding::DeviceLabel {
-            nickname: "sunrise-cli".to_owned(),
-            platform: platform(),
-            app_version: Some(app.to_owned()),
-        },
+        crate::device_label(app),
         &start_sync,
         CATCH_UP_MS,
         &mut |step| {
@@ -344,17 +340,6 @@ pub fn aftercare(identity_id: &str) -> String {
          Your recovery code still works and has not changed. This device now\n\
          holds ID_D_priv, so it can seal a new one if you ever rotate it."
     )
-}
-
-/// This build's platform tag, as `POST /api/v1/devices` names them.
-fn platform() -> String {
-    if cfg!(target_os = "macos") {
-        "macos".to_owned()
-    } else if cfg!(target_os = "windows") {
-        "windows".to_owned()
-    } else {
-        "linux".to_owned()
-    }
 }
 
 /// Obtain a bearer that carries a completed step-up.

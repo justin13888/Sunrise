@@ -79,8 +79,10 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 | POST | `/api/v1/accounts/me/delete/initiate` | — | `202 { confirm_phrase, expires_at_ms }`: a single-use confirmation phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) | implemented, behind an OIDC step-up |
 | DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | `202 { requested_at_ms, erase_after_ms }`; erased by the first maintenance pass after `[storage] account_delete_grace_days` (default 30) | implemented, behind an OIDC step-up |
 
-Both request and response types live in `sunrise-onboarding` (`account.rs`) and
-are shared with the client:
+The request shape the client fills lives in `sunrise-relay-client`
+(`src/account.rs`), with the base64url encodings of its keys and blob; the
+server declares its own types in `api/accounts.rs`, and the description
+generated from them is what the client is generated from:
 
 ```rust
 AccountCreateRequest { email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }

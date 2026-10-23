@@ -34,7 +34,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use sunrise_core::{Clock, Command, Core, CoreConfig, CoreError, Query, SystemRng, Unlock};
+use sunrise_core::{Command, Core, CoreConfig, CoreError, Query, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
 
@@ -181,39 +181,10 @@ pub enum WebCoreError {
     Busy,
 }
 
-/// A wall clock read from the host, with the host's zone fixed at open.
-///
-/// The core never reads an ambient clock (`clippy.toml`'s determinism rules);
-/// this is the seam it is handed instead. `now` is a plain function so the
-/// browser build can pass `Date.now()` and a test can pass a constant.
-#[derive(Debug, Clone)]
-pub struct HostClock {
-    now: fn() -> u64,
-    timezone: String,
-}
-
-impl HostClock {
-    /// A clock reading `now` and reporting `timezone`, an IANA name. A name the
-    /// core's bundled tzdb does not know evaluates as UTC there, the fallback
-    /// every native clock gets too.
-    #[must_use]
-    pub fn new(now: fn() -> u64, timezone: impl Into<String>) -> Self {
-        Self {
-            now,
-            timezone: timezone.into(),
-        }
-    }
-}
-
-impl Clock for HostClock {
-    fn now_ms(&self) -> u64 {
-        (self.now)()
-    }
-
-    fn timezone(&self) -> String {
-        self.timezone.clone()
-    }
-}
+/// A wall clock read from the host, with the host's zone fixed at open: the
+/// browser build passes `Date.now()` and the IANA zone `Intl` reports. It is
+/// the client layer's, shared with every other host.
+pub use sunrise_client_core::host::HostClock;
 
 /// One open vault.
 ///
@@ -239,9 +210,8 @@ impl WebCore {
         app: &str,
         clock: HostClock,
     ) -> Result<Self, WebCoreError> {
-        let bytes: [u8; 32] = root
-            .try_into()
-            .map_err(|_| WebCoreError::BadVaultRoot { len: root.len() })?;
+        let bytes = sunrise_client_core::host::vault_root(root)
+            .map_err(|e| WebCoreError::BadVaultRoot { len: e.len })?;
         let cfg = CoreConfig::with_clock(vault_dir, app, Arc::new(clock), Arc::new(SystemRng));
         let core = Core::open(
             cfg,
@@ -307,6 +277,7 @@ impl WebCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_core::Clock as _;
 
     /// 2026-01-01T00:00:00Z. Fixed so no outcome depends on the host clock.
     fn fixed_now() -> u64 {

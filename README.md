@@ -40,13 +40,16 @@ crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-server          Self-host sync relay (REST + SSE sync, OIDC)
   sunrise-domain          Entities, validation, RRULE, routine generation, the
                           capture/annotate grammars, and the shared phrasing
-  sunrise-client-core     Client-side but UI-free: undo/redo, saved views
+  sunrise-client-core     The client layer every client links: undo/redo, saved
+                          views, the edit gate, account bootstrap, recovery,
+                          background sync
+  sunrise-relay-client    The generated REST client for the relay
   sunrise-cli             The `sunrise` command-line client
   sunrise-core-bindings   UniFFI seam — Swift today, Kotlin later
   sunrise-auth            Client-side OIDC relying party (PKCE, token storage)
   sunrise-pairing         Noise XX device pairing + SAS confirmation
   sunrise-integrations    iCalendar (live) + Google Calendar (not wired; read-only calendar sync is #4)
-  …and supporting crates (cbor, id, error, log, onboarding, bench, e2e)
+  …and supporting crates (cbor, id, error, log, bench, e2e)
 tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/

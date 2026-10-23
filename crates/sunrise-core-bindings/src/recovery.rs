@@ -1,7 +1,7 @@
 //! Restoring an account from its recovery code, across the seam.
 //!
 //! [`crate::SunriseCore::recover_account`] runs
-//! `sunrise_onboarding::recover_account`, the same flow `sunrise recover` runs,
+//! `sunrise_client_core::recovery::recover_account`, the same flow `sunrise recover` runs,
 //! over the same relay adapter. This module holds what the seam adds: the
 //! progress events in a shape Swift can switch on, the listener they are
 //! delivered through, the per-word check a 24-word field runs as the user
@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use sunrise_onboarding::{RecoveryFlowError, RecoveryProgress, RestoreError};
+use sunrise_client_core::recovery::{RecoveryFlowError, RecoveryProgress, RestoreError};
 
 use crate::BindingError;
 
@@ -78,7 +78,7 @@ pub trait RecoveryListener: Send + Sync + 'static {
 #[uniffi::export]
 #[must_use]
 pub fn is_recovery_word(word: String) -> bool {
-    sunrise_onboarding::is_recovery_word(&word)
+    sunrise_client_core::recovery::is_recovery_word(&word)
 }
 
 /// Check a whole typed code without spending it: the count, every word, and
@@ -92,7 +92,7 @@ pub fn is_recovery_word(word: String) -> bool {
 /// word and never the word itself.
 #[uniffi::export]
 pub fn check_recovery_code(code: String) -> Result<(), BindingError> {
-    sunrise_onboarding::check_recovery_code(&code)
+    sunrise_client_core::recovery::check_recovery_code(&code)
         .map_err(|e| BindingError::RecoveryCode(e.to_string()))
 }
 

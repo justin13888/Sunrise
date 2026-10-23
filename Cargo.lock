@@ -3165,13 +3165,13 @@ dependencies = [
  "serde_json",
  "sunrise-auth",
  "sunrise-cbor",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
  "sunrise-integrations",
  "sunrise-log",
- "sunrise-onboarding",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-server",
@@ -3180,17 +3180,26 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zeroize",
 ]
 
 [[package]]
 name = "sunrise-client-core"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "jiff",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "sunrise-core",
+ "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-relay-client",
+ "sunrise-sync",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -3234,7 +3243,6 @@ dependencies = [
 name = "sunrise-core-bindings"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "base64",
  "jiff",
  "sunrise-auth",
@@ -3245,7 +3253,6 @@ dependencies = [
  "sunrise-domain",
  "sunrise-id",
  "sunrise-integrations",
- "sunrise-onboarding",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",
@@ -3267,6 +3274,7 @@ dependencies = [
  "serde_json",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "tempfile",
@@ -3343,13 +3351,13 @@ dependencies = [
  "rand_core 0.6.4",
  "serde_json",
  "sunrise-cbor",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-core-bindings",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-http-sig",
  "sunrise-id",
- "sunrise-onboarding",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-server",
@@ -3430,23 +3438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sunrise-onboarding"
-version = "0.2.0"
-dependencies = [
- "base64",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "serde",
- "sunrise-core",
- "sunrise-crypto",
- "sunrise-error",
- "sunrise-sync",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "sunrise-pairing"
 version = "0.2.0"
 dependencies = [
@@ -3470,6 +3461,7 @@ dependencies = [
 name = "sunrise-relay-client"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "bytes",
  "futures-core",
  "reqwest",
@@ -3479,8 +3471,6 @@ dependencies = [
  "spargen",
  "sunrise-error",
  "sunrise-http-sig",
- "sunrise-id",
- "sunrise-onboarding",
  "thiserror 1.0.69",
  "tokio",
 ]

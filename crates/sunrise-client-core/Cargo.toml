@@ -7,14 +7,52 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Client-side logic shared by every Sunrise client: undo/redo, saved views."
+description = "The platform-agnostic client layer every Sunrise client shares: undo/redo, saved views, the edit gate, the shared vocabulary, account bootstrap, recovery and background sync."
 
 [lints]
 workspace = true
 
+[features]
+# The flows that talk to a relay: account bootstrap, recovery, and the bounded
+# background sync. On by default for this crate's own builds and tests. The
+# workspace entry turns default features off, so each consumer says what it
+# links: the UniFFI seam, the CLI and the e2e suite ask for `relay`, and
+# `sunrise-core-wasm` does not — the web build has no relay flow yet
+# (ADR-0055), and the REST client and the SSE transport are native-only, so
+# the pure half of this crate is what it links. (A member cannot opt out of a
+# workspace dependency's default features itself; cargo ignores the attempt.)
+default = ["relay"]
+relay = [
+    "dep:async-trait",
+    "dep:sunrise-relay-client",
+    "dep:sunrise-sync",
+    "dep:tokio",
+    "dep:zeroize",
+]
+
 [dependencies]
 jiff = { workspace = true }
+thiserror = { workspace = true }
 sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 
+# --- `relay` ---
+# `Transport` is an `async_trait`, and `sync::SyncLink` wraps the transport the
+# driver dials so a bounded sync can end a session that was up before the app
+# was suspended (`src/sync.rs`).
+async-trait = { workspace = true, optional = true }
+# The REST client the account and recovery flows call. It names no engine;
+# this crate is what puts a vault and the relay together.
+sunrise-relay-client = { workspace = true, optional = true }
+sunrise-sync = { workspace = true, features = ["sse"], optional = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
+# The recovery seed is drawn, used twice and dropped inside one function.
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

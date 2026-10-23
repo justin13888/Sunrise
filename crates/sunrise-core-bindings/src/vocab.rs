@@ -1,8 +1,10 @@
 //! The shared vocabulary, exported as functions rather than restated.
 //!
 //! Everything here is a thin lowering of [`sunrise_domain::phrase`] or
-//! [`sunrise_domain::planning`]. None of it computes anything; the point is
-//! that a client **cannot** be tempted to compute it.
+//! [`sunrise_domain::planning`], through [`sunrise_client_core::vocab`] where
+//! the answer is read in the caller's zone or crosses epoch milliseconds. None
+//! of it computes anything; the point is that a client **cannot** be tempted
+//! to compute it.
 //!
 //! The temptation is real and specific. "Overdue", "tomorrow", "1h30" and
 //! "weekdays 09:00–17:00" are each two lines to write in Swift, and each of
@@ -20,6 +22,8 @@ use sunrise_domain::{
     EnergyFit, ExportDataset, ExportFormat, InterruptionReason, RRule, ScheduleConstraint,
     SessionLength, SnoozeSpan, SunriseTime, TodaySection,
 };
+
+use sunrise_client_core::vocab;
 
 use crate::dto::{
     BlockDraftIn, BlockGridRow, Constraint, Recurrence, RoutineItem, SessionRow, TimeValue,
@@ -68,10 +72,9 @@ pub fn today_section(
     now_ms: u64,
     tz: String,
 ) -> TodaySection {
-    let zone = zone_or_utc(&tz);
     let scheduled = scheduled_at.map(SunriseTime::from);
     let due = due_at.map(SunriseTime::from);
-    sunrise_domain::today_section(scheduled.as_ref(), due.as_ref(), now_ms, &zone)
+    vocab::today_section(scheduled.as_ref(), due.as_ref(), now_ms, &tz)
 }
 
 /// `yesterday` / `today` / `tomorrow` / `+3d`, in whole civil days.
@@ -81,24 +84,8 @@ pub fn today_section(
 #[uniffi::export]
 #[must_use]
 pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
-    // A kind this build does not know reads as unknown, not as the day it
-    // happens to be indexed at (ADR-0045 §6).
-    if let TimeValue::Unknown { .. } = at {
-        return RelativeDay {
-            text: "unknown".to_string(),
-            is_past: false,
-        };
-    }
-    let zone = zone_or_utc(&tz);
-    // No instant to measure from is unknown too, never the epoch
-    // (`docs/11-adr/0066-times-survive-travel.md` §3).
-    let Ok(at) = SunriseTime::from(at).to_instant(&zone) else {
-        return RelativeDay {
-            text: "unknown".to_string(),
-            is_past: false,
-        };
-    };
-    let (text, is_past) = sunrise_domain::relative_day(at, now_ms, &zone);
+    let vocab::RelativeDay { text, is_past } =
+        vocab::relative_day(&SunriseTime::from(at), now_ms, &tz);
     RelativeDay { text, is_past }
 }
 
@@ -224,9 +211,7 @@ pub fn interruption_label(reason: InterruptionReason) -> String {
 #[uniffi::export]
 #[must_use]
 pub fn time_value_ms(value: TimeValue, tz: String) -> i64 {
-    SunriseTime::from(value)
-        .instant_or_last(&zone_or_utc(&tz))
-        .as_millisecond()
+    vocab::time_value_ms(&SunriseTime::from(value), &tz)
 }
 
 /// A dataset's lowercase wire name: `trends`, `activity`, `focus`, `streaks`.
@@ -263,11 +248,7 @@ pub fn export_format_name(format: ExportFormat) -> String {
 #[uniffi::export]
 #[must_use]
 pub fn next_occurrence_ms(routine: RoutineItem, now_ms: u64) -> Option<i64> {
-    let now = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).ok()?).ok()?;
-    let rows = sunrise_domain::routine_rows(&[sunrise_domain::Routine::from(routine)], now);
-    rows.first()
-        .and_then(|r| r.next)
-        .map(jiff::Timestamp::as_millisecond)
+    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms)
 }
 
 /// A running session's numbers, as the domain derives them.
@@ -302,15 +283,21 @@ pub struct SessionProgress {
 #[uniffi::export]
 #[must_use]
 pub fn session_progress(session: SessionRow, now_ms: u64) -> SessionProgress {
-    let live = sunrise_domain::FocusSession::from(&session);
-    let remaining_ms = live.remaining_ms(now_ms);
-    SessionProgress {
-        focused_ms: live.focused_ms(now_ms),
-        clock: sunrise_domain::fmt_duration_ms(live.focused_ms(now_ms)),
+    let vocab::SessionProgress {
+        focused_ms,
+        clock,
         remaining_ms,
-        remaining_clock: remaining_ms.map(sunrise_domain::fmt_duration_ms),
-        overran: live.overran(now_ms),
-        running: live.is_running(),
+        remaining_clock,
+        overran,
+        running,
+    } = vocab::session_progress(&sunrise_domain::FocusSession::from(&session), now_ms);
+    SessionProgress {
+        focused_ms,
+        clock,
+        remaining_ms,
+        remaining_clock,
+        overran,
+        running,
     }
 }
 
@@ -349,12 +336,7 @@ pub fn inbox_stream_id() -> sunrise_id::EntityRef {
 #[uniffi::export]
 #[must_use]
 pub fn stream_sort_key_between(after: Option<String>, before: Option<String>) -> Option<String> {
-    sunrise_domain::sort_order::between(after.as_deref(), before.as_deref()).ok()
-}
-
-/// An IANA zone, or UTC when the name is not one.
-fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
-    jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+    vocab::sort_key_between(after.as_deref(), before.as_deref())
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +373,7 @@ pub struct BlockConflict {
 #[must_use]
 pub fn block_conflicts(rows: Vec<BlockGridRow>, tz: String) -> Vec<BlockConflict> {
     let blocks: Vec<sunrise_domain::Block> = rows.iter().map(|r| r.block.to_domain()).collect();
-    sunrise_domain::overlaps(&blocks, &zone_or_utc(&tz))
+    vocab::block_conflicts(&blocks, &tz)
         .into_iter()
         .map(|o| BlockConflict {
             a: o.a,
@@ -429,8 +411,7 @@ pub fn merged_block_draft(
     b: BlockGridRow,
     tz: String,
 ) -> Result<BlockDraftIn, BindingError> {
-    let zone = zone_or_utc(&tz);
-    let draft = sunrise_domain::merge_blocks(&a.block.to_domain(), &b.block.to_domain(), &zone)
+    let draft = vocab::merged_block_draft(&a.block.to_domain(), &b.block.to_domain(), &tz)
         .map_err(|e| BindingError::Core(e.to_string()))?;
     Ok(BlockDraftIn {
         stream_id: draft.stream_id,
@@ -455,7 +436,5 @@ pub fn merged_block_draft(
 #[uniffi::export]
 #[must_use]
 pub fn snooze_target_ms(from_ms: u64, span: SnoozeSpan, tz: String) -> i64 {
-    let from = jiff::Timestamp::from_millisecond(i64::try_from(from_ms).unwrap_or(i64::MAX))
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    sunrise_domain::snooze_target(from, span, &zone_or_utc(&tz)).as_millisecond()
+    vocab::snooze_target_ms(from_ms, span, &tz)
 }

@@ -32,6 +32,37 @@ Swift/Kotlin async APIs from one annotated crate
 dependency. WASM would use `wasm-bindgen` directly because UniFFI's WASM story
 is immature.
 
+## The client layer
+
+Between the core and a user interface sits `sunrise-client-core`: the client
+logic that is not any one client's. Undo and redo by inverse command, saved
+views, the bootstrap preferences file, the edit gate, the shared vocabulary read
+in the caller's zone, the account bootstrap, the recovery flow
+([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), and
+background sync. Every client links it, and a seam's own code lowers its records
+onto these functions and does nothing else:
+
+```text
+ sunrise-core-bindings (UniFFI)  sunrise-cli   sunrise-core-wasm
+            \                       |            /  (no `relay`)
+             +------> sunrise-client-core <-----+
+                        |              |
+                        |   (relay)    v
+                        |      sunrise-relay-client --> wire, http-sig, error
+                        v
+                   sunrise-core --> sunrise-domain, sunrise-sync, ...
+```
+
+The REST client sits below the client layer and names no engine: it is the
+generated client plus the request shapes and encodings it puts on the wire. The
+flows that put a vault and the relay together call down into it, never the
+reverse. The `relay` feature gates everything in the client layer that links the
+REST client or the SSE transport, so the web core links the pure half.
+
+The client layer keeps the core's determinism rules below: time is the core's
+injected clock or a zone name the caller passes, randomness an injected `Rng`,
+and a file a path the caller names.
+
 ## Public surface (sketch)
 
 ```rust

@@ -68,7 +68,7 @@ async fn found_account(dir: &std::path::Path, base_url: &str) -> (String, String
     let outcome = sunrise_relay_client::bootstrap(
         base_url,
         BEARER,
-        sunrise_onboarding::AccountCreateRequest {
+        sunrise_relay_client::AccountCreateRequest {
             email: "alice@example.com".into(),
             identity_signing_pub: core.identity_signing_pub(),
             identity_dh_pub: core.identity_dh_pub(),

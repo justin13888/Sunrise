@@ -274,7 +274,7 @@ Flow:
 1. User logs in via OIDC on a fresh device (the IdP handles email verification, MFA, etc. — none of our problem), asking for a **fresh** authentication: `max_age=0`, or `prompt=login`, or the operator's `acr_values`.
 2. Client registers the device with `POST /api/v1/devices` — the bootstrap exemption, since a device cannot sign before it exists.
 3. Client calls `GET /api/v1/accounts/me/recovery_blob` and receives the ciphertext.
-4. User enters their **recovery code** locally; the client verifies the BIP-39 checksum, runs Argon2id and decrypts the blob (`sunrise_onboarding::recover_identity_from_code`).
+4. User enters their **recovery code** locally; the client verifies the BIP-39 checksum, runs Argon2id and decrypts the blob (`sunrise_client_core::recovery::recover_identity_from_code`).
 
 OIDC alone cannot recover the vault — the recovery code is required to decrypt. This is the double-gate property: even if the IdP is fully compromised, an attacker still cannot read the user's data without the offline recovery code.
 

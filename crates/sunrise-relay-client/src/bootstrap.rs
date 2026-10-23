@@ -15,9 +15,9 @@
 //! recoverable by running it again — which is the property that lets a caller
 //! do this on every start rather than tracking whether it has run.
 
+use crate::account::{encode_public_key, encode_recovery_blob, AccountCreateRequest};
 use crate::api;
 use crate::api::SecretString;
-use sunrise_onboarding::account::AccountCreateRequest;
 
 /// What a device needs to introduce itself.
 #[derive(Debug, Clone)]
@@ -132,10 +132,8 @@ pub async fn bootstrap(
             None,
             &api::types::AccountCreateRequest {
                 email: account.email,
-                identity_signing_pub: sunrise_onboarding::encode_public_key(
-                    &account.identity_signing_pub,
-                ),
-                identity_dh_pub: sunrise_onboarding::encode_public_key(&account.identity_dh_pub),
+                identity_signing_pub: encode_public_key(&account.identity_signing_pub),
+                identity_dh_pub: encode_public_key(&account.identity_dh_pub),
                 // The empty string is how the description says "no blob": the
                 // handler filters it out before the store sees it, so a device
                 // that cannot seal one leaves the column exactly as the
@@ -143,7 +141,7 @@ pub async fn bootstrap(
                 recovery_blob: account
                     .recovery_blob
                     .as_deref()
-                    .map(sunrise_onboarding::encode_recovery_blob)
+                    .map(encode_recovery_blob)
                     .unwrap_or_default(),
                 terms_at_ms: terms_at_ms(account.terms_at_ms)?,
             },

@@ -8,7 +8,7 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "use CoreConfig::clock" },
     { path = "std::process::exit", reason = "return Err(CoreError::Fatal) instead" },
     # These bind only inside the crates that declare `rand` directly (crypto,
-    # core, e2e, bench, onboarding, crypto-test-vectors) — which are the ones
+    # core, e2e, bench, client-core, crypto-test-vectors) — which are the ones
     # that matter. Elsewhere clippy has no `rand` in scope to resolve the path
     # against, and without `allow-invalid` it emits
     #

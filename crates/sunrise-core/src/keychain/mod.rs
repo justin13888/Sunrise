@@ -4228,7 +4228,7 @@ mod tests {
     /// whole of it: the creator seals one, the code that opens it recovers the
     /// identity byte for byte, and a wrong code recovers nothing.
     ///
-    /// `sunrise_onboarding::recover_identity` is the other end and asserts the
+    /// `sunrise_client_core::recovery::recover_identity` is the other end and asserts the
     /// same thing against a hand-built payload; what this adds is that the
     /// bytes come out of a *real vault* rather than out of a fixture, which is
     /// the step nothing exercised before — `seal_recovery_blob` had no caller

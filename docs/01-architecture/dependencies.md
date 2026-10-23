@@ -42,7 +42,7 @@ superseding decision named in the **Governing decision** column.
 | Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md), [ADR-0026](../11-adr/0026-msrv-bump.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. 0.32's only default feature is `cargo-metadata`, which serves the UDL/build-script path; these bindings are generated in `--library` mode from the compiled dylib, so it is dead weight here and turning it off keeps `cargo_metadata` + `cargo-platform` out of the seam crate. The generator lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile — for **feature unification**, not MSRV: as a member it would ask `uniffi` for `cli`, and resolver 2 would unify that onto the seam crate's build, adding 20 third-party packages (`askama`, `goblin`, `uniffi_bindgen`, `uniffi_udl`, …) to every workspace build. It formerly also pinned `cargo-platform` to 0.3.2 against the 1.88 toolchain; ADR-0026 lifted that and the pin is gone. `mise run apple-xcframework` builds it `--locked`. |
 | Snapshot testing | *none (`insta` removed)* | — | [testing.md](../10-cross-cutting/testing.md) | `insta` was declared `1.40` with the `yaml` feature and is **no longer declared at all**. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); it resolved to `1.48.0` while that consumer existed and left `Cargo.lock` when it went. The declaration was kept after that on the reasoning in Reconciliations §e, and issue #36 reversed it: a declaration with no consumer reads as coverage that is already there. Nothing resolves it, so re-adding it costs one line whenever a renderer needs snapshots. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / sync_session benches that feed `bench/baseline.json`. The last was `ws_handshake` until [ADR-0023](../11-adr/0023-sse-sync-transport.md) removed the upgrade it measured. |
-| Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
+| Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-client-core` (dev only, the recovery tests), `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
 | Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
 | OIDC client (PKCE, code + refresh grants) | `oauth2` | 5.0.0 | [auth.md](../06-server/auth.md), issue #7 | `sunrise-auth` only, `default-features = false`. Disabling defaults is load-bearing: the defaults pull `reqwest`, a second HTTP stack beside the `hyper` + `hyper-rustls` one `sunrise-server` already uses for JWKS. With them off, `oauth2` speaks `http::Request`/`Response` and the client is supplied — which is also what makes the whole flow testable against an in-memory issuer. **Costs `chrono` and its timezone-detection stack (10 crates) transitively**, used only by `oauth2`'s RFC 7662 introspection module, which Sunrise never calls; accepted rather than hand-writing PKCE and refresh. MIT OR Apache-2.0; clean under `cargo deny check`. |
 | URL parsing (redirect + query handling) | `url` | 2.5.8 | — (supporting `oauth2`) | Already present transitively; made direct in `sunrise-auth` so the loopback redirect's query parsing does not depend on a transitive. |
@@ -197,15 +197,15 @@ entries. `cargo deny check` passes with the advisory ignore list still empty.
 ### g. `toml` — a new dependency that costs nothing
 
 `sunrise-server` reads `sunrise.toml`. The workspace has a standing preference
-for hand-rolling small grammars — `sunrise-client-core::config::parse_pairs`
-exists precisely because pulling a TOML crate in "to read a flat list of string
+for hand-rolling small grammars — the saved-views parser in
+`sunrise-client-core::views` exists precisely because pulling a TOML crate in "to read a flat list of string
 pairs would be the largest dependency in the tree for the smallest grammar in
 it", and that reasoning was right for that case.
 
 It does not apply here, for two reasons.
 
 1. **The grammar is not small.** The server config is nested tables carrying
-   strings, booleans, integers, and string arrays. `parse_pairs` handles quoted
+   strings, booleans, integers, and string arrays. The views parser handles quoted
    string values in a flat namespace and cannot express `allow_signup = false`
    or `allowed_origins = [...]` without coercion. Extending it would mean
    hand-writing a TOML subset parser for the file that decides whether the

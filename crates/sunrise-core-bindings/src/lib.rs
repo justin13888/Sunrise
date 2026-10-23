@@ -48,9 +48,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{
-    AttachmentFetchState, Command, Core, CoreConfig, CoreError, NetworkClass, Unlock,
-};
+use sunrise_core::{AttachmentFetchState, Core, CoreConfig, CoreError, NetworkClass, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_id::EntityRef;
 use thiserror::Error;
@@ -364,7 +362,7 @@ pub struct SunriseCore {
     /// restored from disk a week later would restore a value nothing on screen
     /// has shown since. It is also **not** synced — undo is this device's
     /// record of what *it* did.
-    undo_stacks: Mutex<client::UndoStacks>,
+    undo: sunrise_client_core::history::UndoHistory,
     /// The kick and dial count every sync transport this vault dials shares,
     /// so [`SunriseCore::sync_once`] can tell a session dialled for it from one
     /// that was up before the app was suspended. See [`background`].
@@ -499,16 +497,12 @@ impl SunriseCore {
         };
 
         let mut code = code;
-        let outcome = sunrise_onboarding::recover_account(
+        let outcome = sunrise_client_core::recovery::recover_account(
             &relay,
             &code,
             cfg,
             VaultRootKey::from_bytes(root),
-            sunrise_onboarding::DeviceLabel {
-                nickname,
-                platform: platform_tag(),
-                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            },
+            device_label(nickname),
             &start_sync,
             catch_up_ms,
             &mut recovery::forward(listener),
@@ -566,32 +560,13 @@ impl SunriseCore {
         cmd: CoreCommand,
         label: String,
     ) -> Result<client::UndoableOutcome, BindingError> {
-        let lowered = cmd.into_core()?;
-        // A create is recorded *after* the write and everything else *before*
-        // it, and neither order is a preference: an edit's inverse reads the
-        // values the write is about to overwrite, and a create's inverse names
-        // the entity the write is about to mint.
-        let (res, recorded) = if sunrise_client_core::undo::is_create(&lowered) {
-            let res = self.inner.submit(lowered.clone()).await?;
-            let recorded = client::record_create(label, lowered, res.entity);
-            (res, recorded)
-        } else {
-            // Read before write. The order is the whole correctness argument.
-            let recorded = client::record(&self.inner, label, vec![lowered.clone()]).await;
-            (self.inner.submit(lowered).await?, recorded)
-        };
-        let not_undoable = match recorded {
-            Ok(entry) => {
-                if let Ok(mut g) = self.undo_stacks.lock() {
-                    g.push(entry);
-                }
-                None
-            }
-            Err(refusal) => Some(refusal),
-        };
+        let (res, not_undoable) = self
+            .undo
+            .submit(&self.inner, cmd.into_core()?, label)
+            .await?;
         Ok(client::UndoableOutcome {
             outcome: CommandOutcome::from(&res),
-            not_undoable,
+            not_undoable: not_undoable.map(client::UndoRefusal::from),
         })
     }
 
@@ -602,36 +577,12 @@ impl SunriseCore {
     /// op, and a device undoing what another has since changed loses the LWW
     /// tie exactly as a manual edit would.
     pub async fn undo(&self) -> Result<Option<String>, BindingError> {
-        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_undo()) else {
-            return Ok(None);
-        };
-        let minted = self.apply(&entry.backward).await?;
-        // If the step being applied contains a create — which is what the redo
-        // of an undone create is — the way back out has to name the entity
-        // this replay minted, not the one the original create did.
-        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
-        let label = entry.label.clone();
-        if let Ok(mut g) = self.undo_stacks.lock() {
-            g.push_undone(entry);
-        }
-        Ok(Some(label))
+        Ok(self.undo.undo(&self.inner).await?)
     }
 
     /// Replay the most recently undone step. Returns its label, or `None`.
     pub async fn redo(&self) -> Result<Option<String>, BindingError> {
-        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_redo()) else {
-            return Ok(None);
-        };
-        let minted = self.apply(&entry.backward).await?;
-        // Replaying a create makes a *different* entity. Bind the undo that
-        // goes back on the stack to that one, or the next undo would delete an
-        // already-tombstoned id and leave this entity live for ever.
-        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
-        let label = entry.label.clone();
-        if let Ok(mut g) = self.undo_stacks.lock() {
-            g.push_redone(entry);
-        }
-        Ok(Some(label))
+        Ok(self.undo.redo(&self.inner).await?)
     }
 
     /// What can be undone or redone right now, for the menu.
@@ -639,10 +590,7 @@ impl SunriseCore {
     /// Sync: it reads two labels off a mutex and touches nothing else.
     #[must_use]
     pub fn undo_state(&self) -> client::UndoState {
-        self.undo_stacks
-            .lock()
-            .map(|g| g.state())
-            .unwrap_or_default()
+        self.undo.labels().into()
     }
 
     /// Parse one capture line (`#stream @context ^when !priority ~duration`)
@@ -652,7 +600,7 @@ impl SunriseCore {
     /// refusing the capture, because losing what someone typed is the worse
     /// failure.
     pub async fn capture(&self, text: String, tz: String) -> Result<CommandOutcome, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         let parsed = self.inner.capture(&text, &zone).await?;
         let res = self
             .inner
@@ -682,7 +630,7 @@ impl SunriseCore {
         text: String,
         tz: String,
     ) -> Result<CapturePreview, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         Ok(CapturePreview::from(
             &self.inner.capture(&text, &zone).await?,
         ))
@@ -1228,42 +1176,32 @@ impl SunriseCore {
         nickname: String,
         terms_accepted_at_ms: u64,
     ) -> Result<dto::AccountBootstrap, BindingError> {
-        use sunrise_core::Rng as _;
-
-        // Exactly `sunrise bootstrap`'s sequence: draw, seal, encode, upload.
-        let (recovery_blob, code) = if self.inner.holds_identity_key() {
-            let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
-            sunrise_core::SystemRng.fill_bytes(&mut seed);
-            let blob = self.inner.seal_recovery_blob(&seed)?;
-            let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-            seed.zeroize();
-            (Some(blob), Some(code))
-        } else {
-            (None, None)
-        };
-
-        let outcome = sunrise_relay_client::bootstrap(
+        // Exactly `sunrise bootstrap`'s sequence — draw, seal, encode, upload —
+        // because it is the same function.
+        let done = sunrise_client_core::account::bootstrap_account(
+            &self.inner,
+            &sunrise_core::SystemRng,
             &relay_url,
             &bearer,
-            sunrise_onboarding::AccountCreateRequest {
-                email,
-                identity_signing_pub: self.inner.identity_signing_pub(),
-                identity_dh_pub: self.inner.identity_dh_pub(),
-                recovery_blob,
-                terms_at_ms: terms_accepted_at_ms,
-            },
-            self.relay_device_identity(nickname),
+            email,
+            terms_accepted_at_ms,
+            device_label(nickname),
         )
         .await
-        .map_err(|e| BindingError::Relay(e.to_string()))?;
+        .map_err(|e| match e {
+            sunrise_client_core::account::AccountError::Seal(e) => BindingError::from(e),
+            sunrise_client_core::account::AccountError::Relay(e) => {
+                BindingError::Relay(e.to_string())
+            }
+        })?;
 
         Ok(dto::AccountBootstrap {
-            identity_id: outcome.identity_id,
-            email: outcome.email,
-            device_id: outcome.device_id,
+            identity_id: done.outcome.identity_id,
+            email: done.outcome.email,
+            device_id: done.outcome.device_id,
             // Read out only after the relay accepted the blob, so a code this
             // ever returns is a code the stored blob opens.
-            recovery_code: code.map(|c| c.reveal().to_owned()),
+            recovery_code: done.recovery_code.map(|c| c.reveal().to_owned()),
         })
     }
 
@@ -1297,10 +1235,11 @@ impl SunriseCore {
         bearer: String,
         nickname: String,
     ) -> Result<String, BindingError> {
-        sunrise_relay_client::register_device(
+        sunrise_client_core::account::register_relay_device(
+            &self.inner,
             &relay_url,
             &bearer,
-            self.relay_device_identity(nickname),
+            device_label(nickname),
         )
         .await
         .map_err(|e| BindingError::Relay(e.to_string()))
@@ -1402,45 +1341,19 @@ impl SunriseCore {
         Arc::new(Self {
             inner: Arc::new(core),
             rt: Handle::current(),
-            undo_stacks: Mutex::new(client::UndoStacks::default()),
+            undo: sunrise_client_core::history::UndoHistory::new(),
             sync_link: background::SyncLink::new(),
         })
     }
+}
 
-    /// Submit a recorded batch, stopping at the first failure.
-    ///
-    /// Not exported: an undo step is a list of commands the seam built, never
-    /// one a client hands in.
-    /// Submit a recorded step, returning the entity each command touched.
-    ///
-    /// The ids matter for exactly one command shape: a create, whose entity is
-    /// minted here and nowhere else. Everything else returns the id it was
-    /// already given, which the caller ignores.
-    async fn apply(&self, cmds: &[Command]) -> Result<Vec<EntityRef>, BindingError> {
-        let mut touched = Vec::with_capacity(cmds.len());
-        for cmd in cmds {
-            touched.push(self.inner.submit(cmd.clone()).await?.entity);
-        }
-        Ok(touched)
-    }
-
-    /// What this device tells `POST /api/v1/devices` about itself.
-    ///
-    /// One builder for both registration paths, so a founding device and a
-    /// paired one cannot come to describe themselves differently.
-    fn relay_device_identity(&self, nickname: String) -> sunrise_relay_client::DeviceIdentity {
-        sunrise_relay_client::DeviceIdentity {
-            device_pub_s: self.inner.device_signing_pub(),
-            device_pub_d: None,
-            device_cert: None,
-            // The only name a sibling can revoke this device by: the relay
-            // mints its own id and never sends it back through the op
-            // stream. A device that omits it cannot be revoked at all.
-            vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
-            nickname,
-            platform: platform_tag(),
-            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        }
+/// How this build describes itself to `POST /api/v1/devices`: the caller's
+/// nickname, this build's platform tag and version.
+fn device_label(nickname: String) -> sunrise_client_core::account::DeviceLabel {
+    sunrise_client_core::account::DeviceLabel {
+        nickname,
+        platform: platform_tag(),
+        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     }
 }
 
@@ -1457,48 +1370,20 @@ fn platform_tag() -> String {
 
 /// A vault root as it crossed the seam, checked for its width.
 fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
-    vault_root
-        .try_into()
-        .map_err(|_| BindingError::BadVaultRoot {
-            len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
-        })
+    sunrise_client_core::host::vault_root(vault_root).map_err(|e| BindingError::BadVaultRoot {
+        len: u32::try_from(e.len).unwrap_or(u32::MAX),
+    })
 }
 
-/// Build the transport factory the sync driver dials with, once per connection
-/// attempt (initial connect and every reconnect).
-///
-/// The factory holds no bearer: the driver reads the core's sync credential on
-/// every attempt and hands the read over, so a reconnect after a renewal
-/// presents the *current* token and the driver knows which version each
-/// attempt carried. `signer` — the ADR-0022 device binding — is cloned per
-/// attempt for the same reason: the route where that matters most is the
-/// revocation `DELETE`, which runs on whatever connection the driver holds at
-/// the time.
-///
-/// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
-/// transport-agnostic and calls this once per connection attempt.
-///
-/// Every transport goes out through `link`, which counts it and lets
-/// [`SunriseCore::sync_once`] end it later — see [`background`].
+/// The transport factory the sync driver dials with: the shared SSE factory,
+/// every transport going out through `link` so [`SunriseCore::sync_once`] can
+/// count and end it — see [`background`].
 fn ws_factory(
     url: &str,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
     link: background::SyncLink,
 ) -> sunrise_core::TransportFactory {
-    let url = url.to_string();
-    Arc::new(move |read: sunrise_core::CredentialRead| {
-        let url = url.clone();
-        let signer = signer.clone();
-        let link = link.clone();
-        Box::pin(async move {
-            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
-            let t = match signer {
-                Some(s) => t.with_device_signer(s),
-                None => t,
-            };
-            Ok(link.wrap(Box::new(t)))
-        }) as sunrise_core::ConnectFuture
-    })
+    sunrise_client_core::sync::sse_factory(url, signer, Some(link))
 }
 
 /// What reporting a zone did. See [`sunrise_core::TimeZoneChange`].

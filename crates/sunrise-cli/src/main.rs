@@ -530,12 +530,20 @@ async fn dispatch(
             let url = std::env::var(livesync::ENV_SYNC_URL)
                 .map_err(|_| format!("set {} to the relay origin", livesync::ENV_SYNC_URL))?;
 
-            let (account, recovery_code) = bootstrap_account(core, rest)?;
-            let outcome = sunrise_relay_client::bootstrap(
+            // The email is a fallback the relay reads only when the identity
+            // provider emits no `email` claim, so the empty string rather than
+            // an invented address when none was given.
+            let sunrise_client_core::account::Bootstrapped {
+                outcome,
+                recovery_code,
+            } = sunrise_client_core::account::bootstrap_account(
+                core,
+                &SystemRng,
                 &url,
                 &creds.access_token,
-                account,
-                bootstrap_device(core),
+                rest.first().cloned().unwrap_or_default(),
+                core.now_ms(),
+                sunrise_cli::device_label(env!("CARGO_PKG_VERSION")),
             )
             .await?;
 
@@ -1899,9 +1907,6 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     #![allow(clippy::print_stdout)]
     /// How long to wait for the outbox to empty before giving up.
     const DEADLINE_MS: u64 = 30_000;
-    /// How often to re-read the outbox depth.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
-
     if !rest.is_empty() && rest[0] != "--once" {
         return Err("usage: sync --once".into());
     }
@@ -1910,26 +1915,25 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     }
     // Timed against the core's injected clock rather than `Instant`, which
     // the workspace lint bans so that time is never read from two sources.
-    let deadline = core.now_ms().saturating_add(DEADLINE_MS);
     let mut last = u32::MAX;
-    while core.now_ms() < deadline {
-        let QueryResult::SyncStatus(s) = core.query(Query::SyncStatus).await? else {
-            return Err("unexpected query result".into());
-        };
-        if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
-            println!("{}", strings::sync::live());
-            return Ok(());
-        }
-        if s.outbox_pending != last {
+    let waited = sunrise_client_core::sync::wait_until_caught_up(core, DEADLINE_MS, &mut |s| {
+        let caught_up = s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live;
+        if !caught_up && s.outbox_pending != last {
             last = s.outbox_pending;
             println!(
                 "{}",
                 strings::sync::pending(i64::from(s.outbox_pending), &format!("{:?}", s.state))
             );
         }
-        tokio::time::sleep(POLL).await;
+    })
+    .await?;
+    match waited {
+        Ok(()) => {
+            println!("{}", strings::sync::live());
+            Ok(())
+        }
+        Err(_) => Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into()),
     }
-    Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into())
 }
 
 fn print_tasks(r: QueryResult) {
@@ -1945,66 +1949,6 @@ fn print_tasks(r: QueryResult) {
         };
         println!("[{mark}] {}  {}", t.id.to_str(), t.title);
     }
-}
-
-/// The account this device is claiming, and the recovery code that goes with
-/// it.
-///
-/// The email is a fallback the server reads only when the IdP emits no `email`
-/// claim, so a CLI that has one passes it and otherwise sends the empty string
-/// rather than inventing an address.
-///
-/// # The identity keys, which used to be empty strings
-///
-/// This function sent `String::new()` for both, and `POST /api/v1/accounts`
-/// answers `400 "identity keys required"` to that — so `sunrise bootstrap`
-/// against a real relay could not create an account at all. They come from the
-/// vault now, which is the only place they exist.
-///
-/// # The recovery code
-///
-/// `Some` on the device that created the account, `None` on one admitted by
-/// pairing. Only the creator holds `ID_D_priv`, so only the creator can seal a
-/// blob that restores an identity able to open the identity-addressed
-/// `key_envelope` ops recovery replays; a paired device that sealed one would
-/// hand its user a code that decrypts to a key opening nothing, which is worse
-/// than having no code because the user believes they are covered.
-///
-/// The seed is drawn here, used twice, and dropped: nothing writes it to disk,
-/// and the returned code is the only copy that leaves this function.
-fn bootstrap_account(
-    core: &Core,
-    rest: &[String],
-) -> Result<
-    (
-        sunrise_onboarding::account::AccountCreateRequest,
-        Option<sunrise_crypto::bip39::RecoveryCode>,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    use sunrise_core::config::Rng as _;
-
-    let (recovery_blob, code) = if core.holds_identity_key() {
-        let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
-        SystemRng.fill_bytes(&mut seed);
-        let blob = core.seal_recovery_blob(&seed)?;
-        let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-        zeroize::Zeroize::zeroize(&mut seed);
-        (Some(blob), Some(code))
-    } else {
-        (None, None)
-    };
-
-    Ok((
-        sunrise_onboarding::account::AccountCreateRequest {
-            email: rest.first().cloned().unwrap_or_default(),
-            identity_signing_pub: core.identity_signing_pub(),
-            identity_dh_pub: core.identity_dh_pub(),
-            recovery_blob,
-            terms_at_ms: core.now_ms(),
-        },
-        code,
-    ))
 }
 
 /// `recover` — `docs/03-crypto/recovery.md` §Recovery flow, end to end.
@@ -2101,33 +2045,4 @@ fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
          \n\
          It is shown once. It is not written to any file and not in any log."
     );
-}
-
-/// How this device introduces itself.
-fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
-    sunrise_relay_client::DeviceIdentity {
-        // `D_S_pub`, the key the relay checks every `X-Sunrise-Device-Sig`
-        // against. This was `login::device_id_hex(core)` — hex of the 16-byte
-        // *device id*, which is what the OIDC `device_id` claim carries and has
-        // nothing to do with a signing key. It base64url-decodes to 24 bytes,
-        // so `POST /api/v1/devices` answered 400 and `sunrise login` against a
-        // real relay could not register a device at all.
-        device_pub_s: core.device_signing_pub(),
-        device_pub_d: None,
-        device_cert: None,
-        // The only name a peer can revoke this device by: the relay mints its
-        // own id and never sends it back through the op stream, so a sibling
-        // device holds this one and nothing else. Omitting it registers a
-        // device that cannot be revoked at the relay at all.
-        vault_device_id: Some(sunrise_id::crockford::encode_bytes(&core.device_id())),
-        nickname: "sunrise-cli".to_owned(),
-        platform: if cfg!(target_os = "macos") {
-            "macos".to_owned()
-        } else if cfg!(target_os = "windows") {
-            "windows".to_owned()
-        } else {
-            "linux".to_owned()
-        },
-        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-    }
 }

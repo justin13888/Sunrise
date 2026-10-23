@@ -46,9 +46,11 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 | Crypto, key handling | Core | Audit surface stays small |
 | Local DB schema | Core | UI doesn't touch SQLite directly |
 | Sync state machine | Core | Reconnect logic is too subtle to duplicate per-platform |
+| Undo/redo, saved views, edit gate, zone-read vocabulary | Client layer (`sunrise-client-core`) | Not domain rules, not rendering, and every client needs the same answer ([shared-core.md §The client layer](shared-core.md#the-client-layer)) |
+| Account bootstrap, recovery flow, bounded `sync_once` | Client layer (`sunrise-client-core`, `relay` feature) | Orchestrates the core and the REST client; one implementation for the CLI and the Apple apps |
 | Notifications scheduling | Per-platform UI | Each OS has its own scheduler |
 | Filesystem / keychain | Per-platform UI | Each OS has its own APIs; core gets injected handles |
-| Background sync | Per-platform UI | iOS BGTasks vs Android WorkManager vs systemd vs browser SW |
+| Background sync scheduling | Per-platform UI | iOS BGTasks vs Android WorkManager vs systemd vs browser SW; what runs inside the budget is the client layer's `sync_once` |
 | Rendering | Per-platform UI | Native look-and-feel per platform |
 
 ## Why a shared core in Rust

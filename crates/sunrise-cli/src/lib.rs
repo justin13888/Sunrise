@@ -29,6 +29,26 @@ pub mod private_file;
 pub mod recover;
 pub mod vault;
 
+/// How this CLI introduces itself to `POST /api/v1/devices`, on every
+/// registration path: `sunrise bootstrap` and `sunrise recover` alike.
+///
+/// The nickname, the platform tag and the build. The keys and the vault id
+/// come from the vault, in [`sunrise_client_core::account::device_identity`].
+#[must_use]
+pub fn device_label(app_version: &str) -> sunrise_client_core::account::DeviceLabel {
+    sunrise_client_core::account::DeviceLabel {
+        nickname: "sunrise-cli".to_owned(),
+        platform: if cfg!(target_os = "macos") {
+            "macos".to_owned()
+        } else if cfg!(target_os = "windows") {
+            "windows".to_owned()
+        } else {
+            "linux".to_owned()
+        },
+        app_version: Some(app_version.to_owned()),
+    }
+}
+
 /// Lowercase hex of a 16-byte id, for the device and identity listings.
 ///
 /// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
