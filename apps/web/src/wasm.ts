@@ -9,7 +9,10 @@
  * still renders.
  *
  * Everything below `loadCore` is pure and is what `wasm.test.ts` drives: the
- * JSON each call sends, and how a reply becomes `Task`s.
+ * call each method makes, and how a reply becomes `Task`s. The calls are the
+ * web core's typed ones (`crates/sunrise-core-wasm/src/calls.rs`), so no
+ * command or query JSON is spelled here: the page names a call and its
+ * argument, and the core builds its own `Command` and `Query`.
  */
 
 export type TaskState = "todo" | "in_progress" | "done" | "cancelled";
@@ -47,11 +50,14 @@ export interface CoreApi {
     completeTask(id: string): Promise<void>;
 }
 
-/** What the page asks the worker for: one core call, JSON in. */
+/** The web core's typed calls, by their JS names. */
+export type CoreCallName = "createTask" | "completeTask" | "today" | "inbox";
+
+/** What the page asks the worker for: one typed core call. */
 export interface CoreRequest {
     id: number;
-    kind: "submit" | "query";
-    json: string;
+    call: CoreCallName;
+    arg: string | number | null;
 }
 
 /** What the worker answers with. */
@@ -61,10 +67,13 @@ export type WorkerMessage =
     | { kind: "reply"; id: number; ok: true; json: string }
     | { kind: "reply"; id: number; ok: false; error: string };
 
-/** One core call: resolves to the result JSON, rejects with the core's error. */
+/**
+ * One core call: resolves to what the call answers (an id, nothing, or rows
+ * as JSON), rejects with the core's error.
+ */
 export type CoreCall = (
-    kind: CoreRequest["kind"],
-    json: string,
+    call: CoreCallName,
+    arg: CoreRequest["arg"],
 ) => Promise<string>;
 
 let cached: Promise<CoreApi> | null = null;
@@ -100,44 +109,16 @@ export function supportsWorkerCore(env: WorkerEnv): boolean {
     );
 }
 
-/** `Command` JSON, in `serde_json`'s externally tagged form. */
-export const commands = {
-    createTask: (title: string) =>
-        JSON.stringify({ CreateTask: { title, contexts: [] } }),
-    completeTask: (id: string) => JSON.stringify({ CompleteTask: id }),
-};
-
-/** `Query` JSON, likewise. */
-export const queries = {
-    today: (nowMs: number) =>
-        JSON.stringify({ Today: { now_ms: nowMs, contexts: [] } }),
-    inbox: () => JSON.stringify("Inbox"),
-};
-
-interface CoreTask {
-    id: string;
-    title: string;
-    state: string;
-    stream_id: string;
-}
-
 /**
- * The tasks in a `QueryResult`: `Tasks` (Today) or `StreamTasks` (Inbox).
- *
- * `scheduled_at` and `due_at` are left off. The core sends them as tagged
- * `SunriseTime` objects, not the strings this `Task` declares, and nothing on
- * screen reads them yet.
+ * The rows `today` and `inbox` answer with, as the core writes them: `id`,
+ * `title`, `state` and `stream_id`, nothing else.
  */
-export function tasksFromQueryResult(json: string): Task[] {
-    const result = JSON.parse(json) as {
-        Tasks?: CoreTask[];
-        StreamTasks?: CoreTask[];
-    };
-    const rows = result.Tasks ?? result.StreamTasks;
-    if (!rows) {
+export function tasksFromRows(json: string): Task[] {
+    const rows = JSON.parse(json) as unknown;
+    if (!Array.isArray(rows)) {
         throw new Error(`expected a task list, got ${json.slice(0, 80)}`);
     }
-    return rows.map(({ id, title, state, stream_id }) => ({
+    return rows.map(({ id, title, state, stream_id }: Task) => ({
         id,
         title,
         state,
@@ -149,21 +130,16 @@ export function tasksFromQueryResult(json: string): Task[] {
 export function makeWorkerCore(call: CoreCall, now: () => number): CoreApi {
     return {
         async queryToday() {
-            return tasksFromQueryResult(
-                await call("query", queries.today(now())),
-            );
+            return tasksFromRows(await call("today", now()));
         },
         async queryInbox() {
-            return tasksFromQueryResult(await call("query", queries.inbox()));
+            return tasksFromRows(await call("inbox", null));
         },
         async createTask(title: string) {
-            const result = JSON.parse(
-                await call("submit", commands.createTask(title)),
-            ) as { entity: string };
-            return { id: result.entity };
+            return { id: await call("createTask", title) };
         },
         async completeTask(id: string) {
-            await call("submit", commands.completeTask(id));
+            await call("completeTask", id);
         },
     };
 }
@@ -224,15 +200,24 @@ async function openWorkerCore(): Promise<CoreApi | null> {
         return null;
     }
     let next = 0;
-    const call: CoreCall = (kind, json) =>
+    const call: CoreCall = (name, arg) =>
         new Promise((resolve, reject) => {
             const id = next++;
             pending.set(id, { resolve, reject });
-            worker.postMessage({ id, kind, json } satisfies CoreRequest);
+            worker.postMessage({ id, call: name, arg } satisfies CoreRequest);
         });
     return makeWorkerCore(call, Date.now);
 }
 
+/**
+ * The stand-in when there is no core: a list in `localStorage`, so capture
+ * still works and the shell renders.
+ *
+ * It has no Today. Which tasks are on Today — scheduled, due or overdue,
+ * read in the reader's zone — is the core's decision, and a stub that
+ * guessed it would show a list the real one disagrees with the moment the
+ * core loads. Today is empty here; the Inbox holds what was captured.
+ */
 function makeStub(): CoreApi {
     const KEY = "sunrise-web-stub-tasks-v1";
     function read(): Task[] {
@@ -248,9 +233,7 @@ function makeStub(): CoreApi {
     }
     return {
         async queryToday() {
-            return read().filter(
-                (t) => t.state !== "done" && t.state !== "cancelled",
-            );
+            return [];
         },
         async queryInbox() {
             return read();

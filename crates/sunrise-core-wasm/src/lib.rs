@@ -17,6 +17,16 @@
 //! comes back is the serialized [`sunrise_core::CommandResult`] or
 //! [`sunrise_core::QueryResult`].
 //!
+//! The web client's own calls are typed ([`calls`]), so it spells none of
+//! that JSON itself:
+//!
+//! | JS (`wasm-bindgen`)                  | Rust                        |
+//! |--------------------------------------|-----------------------------|
+//! | `core.createTask(title)`             | [`WebCore::create_task`]    |
+//! | `core.completeTask(id)`              | [`WebCore::complete_task`]  |
+//! | `core.today(nowMs)`                  | [`WebCore::today`]          |
+//! | `core.inbox()`                       | [`WebCore::inbox`]          |
+//!
 //! # Two builds, one dispatch layer
 //!
 //! Everything outside the `web` module is target-independent and is what the
@@ -41,6 +51,7 @@ use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
 
 pub mod relay;
+pub mod calls;
 
 /// The browser build: OPFS, `Date.now()`, and the `wasm-bindgen` exports.
 ///
@@ -71,7 +82,7 @@ pub mod web {
         }
     }
 
-    fn js_err(e: impl std::fmt::Display) -> JsError {
+    pub(crate) fn js_err(e: impl std::fmt::Display) -> JsError {
         JsError::new(&e.to_string())
     }
 
@@ -79,7 +90,7 @@ pub mod web {
     #[wasm_bindgen]
     #[derive(Debug)]
     pub struct WasmCore {
-        inner: Arc<WebCore>,
+        pub(crate) inner: Arc<WebCore>,
     }
 
     /// Register the OPFS pool VFS as `SQLite`'s default, then open (or create)
@@ -183,6 +194,13 @@ pub enum WebCoreError {
     /// `close` was called while another call still held the vault.
     #[error("vault is busy; close it once in-flight calls have returned")]
     Busy,
+    /// An id that is not an entity id.
+    #[error("not an entity id: {0}")]
+    BadId(String),
+    /// The core answered a call with a result of another shape. Not reachable
+    /// for the calls this crate makes; kept typed rather than unwrapped.
+    #[error("unexpected result: expected {0}")]
+    Unexpected(&'static str),
 }
 
 /// A wall clock read from the host, with the host's zone fixed at open: the
@@ -279,12 +297,12 @@ impl WebCore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use sunrise_core::Clock as _;
 
     /// 2026-01-01T00:00:00Z. Fixed so no outcome depends on the host clock.
-    fn fixed_now() -> u64 {
+    pub(crate) fn fixed_now() -> u64 {
         1_767_225_600_000
     }
 
@@ -292,7 +310,7 @@ mod tests {
         HostClock::new(fixed_now, "America/Toronto")
     }
 
-    async fn open(dir: &std::path::Path) -> WebCore {
+    pub(crate) async fn open(dir: &std::path::Path) -> WebCore {
         WebCore::open(dir.to_path_buf(), &[7; 32], "0.1.0+test", clock())
             .await
             .expect("open")

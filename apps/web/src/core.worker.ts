@@ -35,10 +35,28 @@ const VAULT_DIR = "/sunrise";
 /** `<semver>+<platform>`, as `CoreConfig::app` wants it. */
 const APP = "0.1.0+web";
 
+/** The bundle's typed calls (`crates/sunrise-core-wasm/src/calls.rs`). */
 interface WasmCore {
-    submitJson(json: string): Promise<string>;
-    queryJson(json: string): Promise<string>;
+    createTask(title: string): Promise<string>;
+    completeTask(id: string): Promise<void>;
+    today(nowMs: number): Promise<string>;
+    inbox(): Promise<string>;
     closeVault(): Promise<void>;
+}
+
+/** One request, as the call it names. */
+async function dispatch(core: WasmCore, req: CoreRequest): Promise<string> {
+    switch (req.call) {
+        case "createTask":
+            return core.createTask(String(req.arg));
+        case "completeTask":
+            await core.completeTask(String(req.arg));
+            return "";
+        case "today":
+            return core.today(Number(req.arg));
+        case "inbox":
+            return core.inbox();
+    }
 }
 
 interface Bundle {
@@ -115,13 +133,11 @@ async function open(): Promise<WasmCore> {
 function serve(core: WasmCore) {
     let queue: Promise<void> = Promise.resolve();
     self.addEventListener("message", (event: MessageEvent<CoreRequest>) => {
-        const { id, kind, json } = event.data;
+        const request = event.data;
+        const { id } = request;
         queue = queue.then(async () => {
             try {
-                const out =
-                    kind === "submit"
-                        ? await core.submitJson(json)
-                        : await core.queryJson(json);
+                const out = await dispatch(core, request);
                 post({ kind: "reply", id, ok: true, json: out });
             } catch (e) {
                 post({ kind: "reply", id, ok: false, error: String(e) });

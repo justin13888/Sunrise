@@ -11,11 +11,16 @@ A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capab
 > Pages, and not yet deployed
 > ([#11](https://github.com/justin13888/Sunrise/issues/11)).**
 > `crates/sunrise-core-wasm` compiles `sunrise-core` to `wasm32-unknown-unknown`
-> and exposes it as JSON in, JSON out. `apps/web/src/core.worker.ts` runs it in a
+> and exposes it as JSON in, JSON out, beside the four typed calls the page
+> makes (`createTask`, `completeTask`, `today`, `inbox`;
+> `crates/sunrise-core-wasm/src/calls.rs`), so the page spells no command or
+> query JSON itself. `apps/web/src/core.worker.ts` runs it in a
 > dedicated worker over the OPFS `SyncAccessHandle` pool VFS, and
 > `apps/web/src/wasm.ts`'s `loadCore()` uses it where the browser has workers,
 > OPFS and `navigator.locks`, falling back to the `localStorage` stub elsewhere
-> or when no bundle was built (`mise run web-wasm`). The `web-pages` job in
+> or when no bundle was built (`mise run web-wasm`). The stub keeps captured tasks
+> in an Inbox and has no Today: which tasks are on Today is the core's decision,
+> and a stub that guessed it would disagree with the core the moment it loads. The `web-pages` job in
 > `.github/workflows/release.yml` deploys it on an `app-v*` tag once the Pages project
 > and its secrets exist, and deploys nothing until then (§Self-host vs managed
 > cloud).
