@@ -56,6 +56,18 @@ outcomes should arrive in, and a crate that arrives short is reported as a
 broken run and excluded from the floor comparison rather than scored on a
 partial denominator. CI passes the counts from its own matrix.
 
+A shard that was stopped part of the way through is the same failure with a
+file attached. A job cancelled at its `timeout-minutes` still uploads the
+`outcomes.json` cargo-mutants had written so far, and that file is shaped
+exactly like a finished one except that its `end_time` is null: cargo-mutants
+fills it in only when the run returns. Counted as a shard, it made a crate's
+four files "4/4 shards" over 766 of its 2502 mutants (nightly 38044938836). So
+an outcomes file without an `end_time` is an unfinished shard. The crates it
+carries are reported as broken runs and left unscored, with or without
+`--expect-shards`, and `--update` refuses to bank a floor from them. A missing
+`end_time` counts as unfinished too, because a file that cannot say it finished
+has not shown that it did.
+
 Because the flag and the matrix are two copies of one fact, they can drift. So
 when the flag is supplied it must account for every crate the run produced: a
 crate with outcomes and no expectation is a configuration error, not a silently
@@ -123,7 +135,8 @@ noting it in passing — an unenforced crate that reads as a warning is how most
 of a workspace's mutants end up scored and then ignored.
 
 Exit 0 clean, 1 on a regression, on a crate with no recorded floor, on a crate
-with nothing scorable, on a run whose shards did not arrive as expected, on an
+with nothing scorable, on a run whose shards did not arrive as expected, on a
+shard whose outcomes file says the run did not finish, on an
 outcomes file supplied more than once, or on an `--update` that names neither
 --expect-shards nor --allow-partial, 2 if the gate could not run at all (which
 is a failure, not a pass).
@@ -551,9 +564,24 @@ def parse_expect_shards(spec: str) -> dict[str, int]:
     return expected
 
 
+def finished(document: object) -> bool:
+    """Whether cargo-mutants returned from the run that wrote this file.
+
+    cargo-mutants rewrites `outcomes.json` after every mutant and sets
+    `end_time` only once the whole run is done, so a run killed part of the
+    way through leaves a file with `"end_time": null` and a prefix of its
+    outcomes. A missing key is read the same way: a file that does not say
+    it finished has not shown that it did.
+    """
+    if not isinstance(document, dict):
+        return False
+    end = document.get("end_time")
+    return isinstance(end, str) and bool(end.strip())
+
+
 def tally(
     paths: list[pathlib.Path],
-) -> tuple[dict[str, dict[str, int]], dict[str, set[str]]]:
+) -> tuple[dict[str, dict[str, int]], dict[str, set[str]], list[str]]:
     """Aggregate every outcomes.json into per-crate counts.
 
     Also returns, per crate, the set of input files that carried any of its
@@ -561,9 +589,15 @@ def tally(
     arrived: a shard that never ran leaves no file and no trace in the counts,
     so without counting the files a lost shard is indistinguishable from a
     crate whose tests got worse.
+
+    The third value is the files whose run did not finish (see `finished`),
+    as resolved paths. Their mutants are still counted and their files still
+    appear in `sources`, so the caller can say which crates they belong to
+    and how far they got; whether to score those crates is its decision.
     """
     counts: dict[str, dict[str, int]] = {}
     sources: dict[str, set[str]] = {}
+    unfinished: list[str] = []
     for path in paths:
         if not path.is_file():
             # The common shape of this is a quoted glob that matched nothing
@@ -578,6 +612,8 @@ def tally(
             document = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as error:
             raise CannotRun(f"cannot read {path}: {error}") from error
+        if not finished(document):
+            unfinished.append(os.path.realpath(path))
 
         for outcome in document.get("outcomes", []):
             scenario = outcome.get("scenario")
@@ -604,7 +640,7 @@ def tally(
             summary = outcome.get("summary")
             if summary in bucket:
                 bucket[summary] += 1
-    return counts, sources
+    return counts, sources, unfinished
 
 
 def caught_pct(bucket: dict[str, int]) -> float | None:
@@ -704,7 +740,7 @@ def main() -> int:
             unique.append(path)
 
     try:
-        counts, sources = tally(unique)
+        counts, sources, unfinished = tally(unique)
     except CannotRun as error:
         print(error, file=sys.stderr)
         return 2
@@ -770,12 +806,32 @@ def main() -> int:
     # never ran, and every number computed from it is a lie in the direction of
     # "the tests got worse". Reported, excluded from the comparison, never
     # written to the baseline.
+    #
+    # An unfinished shard is judged first and without `--expect-shards`: its
+    # file is present, so the count can come out right, and with no counts
+    # given there is no count to come out wrong. Either way the crate's
+    # denominator is whatever the shard reached before it was stopped.
+    stopped = {
+        crate: {path for path in files if path in unfinished}
+        for crate, files in sources.items()
+    }
+    stopped = {crate: files for crate, files in stopped.items() if files}
+    # An unfinished file that holds no mutant yet names no crate, so nothing
+    # above can attribute it. It is still a shard that did not finish.
+    attributed = set().union(*sources.values()) if sources else set()
+    stray = sorted(path for path in unfinished if path not in attributed)
+
     mismatched = []
-    for crate, expected in sorted(args.expect_shards.items()):
+    for crate in sorted(set(args.expect_shards) | set(stopped)):
         seen = len(sources.get(crate, ()))
-        if seen != expected:
+        expected = args.expect_shards.get(crate)
+        if crate in stopped:
+            cause = "shards unfinished"
+        elif seen != expected:
             cause = "shards missing" if seen < expected else "duplicate artifacts"
-            mismatched.append((crate, seen, expected, cause))
+        else:
+            continue
+        mismatched.append((crate, seen, expected, cause))
 
     broken = {crate for crate, _, _, _ in mismatched}
 
@@ -790,14 +846,36 @@ def main() -> int:
         if crate not in broken and caught_pct(bucket) is None
     ]
 
-    if mismatched:
+    if mismatched or stray:
         print("\nmutation run does not match the expected shards — an "
               "infrastructure failure,\nnot a test regression:",
               file=sys.stderr)
         for crate, seen, expected, cause in mismatched:
             mutants = sum(counts.get(crate, {}).values())
+            if cause == "shards unfinished":
+                done = seen - len(stopped[crate])
+                print(f"  {crate}: {done}/{expected if expected else seen} "
+                      f"shards finished, {len(stopped[crate])} stopped "
+                      f"part-way, {mutants} mutants — {cause}",
+                      file=sys.stderr)
+                for path in sorted(stopped[crate]):
+                    print(f"    unfinished: {path}", file=sys.stderr)
+                continue
             print(f"  {crate}: {seen}/{expected} shards, {mutants} mutants "
                   f"— {cause}", file=sys.stderr)
+        for path in stray:
+            print(f"  unfinished, no mutants yet: {path}", file=sys.stderr)
+        if stopped or stray:
+            print(
+                "\nAn outcomes file with no end_time is a shard cargo-mutants "
+                "did not finish —\ncancelled at the job's timeout-minutes, or "
+                "interrupted — holding only the\nmutants it reached. Scored, "
+                "it would pass or fail the crate on a fraction of\nits "
+                "population. Re-run the shard; if it hit its timeout, give "
+                "the crate more\nshards in ci.yml's matrix and in "
+                "--expect-shards, together.",
+                file=sys.stderr,
+            )
         if any(cause == "shards missing" for *_, cause in mismatched):
             print(
                 "\nA shard whose runner died contributes no outcomes, so the "
@@ -984,7 +1062,7 @@ def main() -> int:
         print("\nno floor recorded for:", file=sys.stderr)
         for crate, measured in unfloored:
             print(f"  {crate}: measured {measured}%", file=sys.stderr)
-        if mismatched:
+        if mismatched or stray:
             # No command here on purpose. `--update` refuses a mismatched run,
             # so any invocation printed at this point is one the reader would
             # paste and watch fail — and the failure they would then be trying
@@ -1000,6 +1078,8 @@ def main() -> int:
                        if cause == "shards missing"]
             duplicated = [c for c, _, _, cause in mismatched
                           if cause == "duplicate artifacts"]
+            cut_short = [c for c, _, _, cause in mismatched
+                         if cause == "shards unfinished"]
             print("\nNo floor can be recorded from this run: --update refuses "
                   "a mismatched run\nrather than bank a rate measured over "
                   "the wrong population.", file=sys.stderr)
@@ -1016,6 +1096,14 @@ def main() -> int:
                     "every mutant in the\n  repeated file counts twice. "
                     "Narrow the inputs to one file per shard\n  and record "
                     "from that; the run itself is fine.",
+                    file=sys.stderr,
+                )
+            if cut_short or stray:
+                named = ", ".join(cut_short) if cut_short else "a shard"
+                print(
+                    f"\n  {named} did not finish. Re-run the unfinished "
+                    "shards to completion\n  and record the floor from a run "
+                    "in which every shard finished.",
                     file=sys.stderr,
                 )
         else:
@@ -1052,7 +1140,7 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    if failures or unfloored or mismatched or unscorable:
+    if failures or unfloored or mismatched or stray or unscorable:
         return 1
 
     target = baseline.get("target_caught_pct")
