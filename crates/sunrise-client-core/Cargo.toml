@@ -32,6 +32,10 @@ relay = [
 
 [dependencies]
 jiff = { workspace = true }
+# The client settings file (`src/preferences/client.rs`) is JSON, with the
+# fields a newer build wrote kept as they came.
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
