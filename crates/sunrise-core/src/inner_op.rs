@@ -306,9 +306,13 @@ pub(crate) enum OpEffect {
 ///   "ref":     entity-ref,          ; the entity; its kind comes from the id prefix
 ///   ? "create": true,               ; this op creates the entity
 ///   ? "origin": "generated",        ; written by generation; absent = user
+///   ? "parents": [* op-ref],        ; the entity's heads the writer had applied (ADR-0065 §2)
+///   ? "group":   group,             ; an atomic multi-entity commit (ADR-0065 §6)
 ///   "fields":  { + field-name => field-op },
 ///   unknown-fields
 /// }
+/// op-ref = [bstr .size 16, bstr .size 16, uint]   ; [stream_id, device_id, seq]
+/// group  = { "id": bstr .size 16, "size": uint .ge 2, unknown-fields }
 /// ```
 ///
 /// The field ops are kept as CBOR here and read by the merge, which knows
@@ -316,6 +320,12 @@ pub(crate) enum OpEffect {
 /// `{"add": [..], "remove": [[v, [op-ref, ..]], ..]}`, `{"inc": n}` and
 /// `{"map": {k: {"set": v}, ..}}`, so a build can merge a field it has never
 /// heard of (§8).
+///
+/// `parents` and `group` are carried and checked, and nothing reads them yet:
+/// this build orders versions by stamp alone, as ADR-0044 does. No `parents`
+/// key and `"parents": []` are different statements (a version that names no
+/// heads, and one whose writer had applied none), so both survive a round
+/// trip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PatchPayload {
     /// The entity written.
@@ -329,9 +339,39 @@ pub(crate) struct PatchPayload {
     /// user write and is kept as it came.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) origin: Option<String>,
+    /// The entity's heads as the writer had applied them (ADR-0065 §2).
+    /// `None` when the key is absent, as on every op written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) parents: Option<Vec<OpRefWire>>,
+    /// The atomic commit this op is one member of (ADR-0065 §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) group: Option<GroupWire>,
     /// Field name to field op, as CBOR.
     pub(crate) fields: Unknowns,
     /// Top-level keys a newer build added, kept (ADR-0045 §Unknown maps).
+    #[serde(flatten)]
+    pub(crate) unknown: Unknowns,
+}
+
+/// One op-ref on the wire: `[stream_id, device_id, seq]`, the version id of
+/// ADR-0065 §1 and the OR-set tag of ADR-0044 §3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct OpRefWire(
+    #[serde(with = "serde_bytes")] pub(crate) [u8; 16],
+    #[serde(with = "serde_bytes")] pub(crate) [u8; 16],
+    pub(crate) u64,
+);
+
+/// A `Patch`'s group: the commit's id and how many members it has
+/// (ADR-0065 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GroupWire {
+    /// The commit's id, shared by every member.
+    #[serde(with = "serde_bytes")]
+    pub(crate) id: [u8; 16],
+    /// How many members the commit has, at least two.
+    pub(crate) size: u64,
+    /// Keys a newer build added, kept (ADR-0045 §Unknown maps).
     #[serde(flatten)]
     pub(crate) unknown: Unknowns,
 }

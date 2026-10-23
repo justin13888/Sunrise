@@ -81,6 +81,7 @@ pub(in crate::engine) fn check_patch(
             )))
         }
     }
+    check_causal_keys(p).map_err(PatchProblem::Invalid)?;
     if p.fields.is_empty() {
         return Err(PatchProblem::Invalid("a patch writes no field".into()));
     }
@@ -94,6 +95,29 @@ pub(in crate::engine) fn check_patch(
         check_field(spec, p.target.kind(), name, op).map_err(PatchProblem::Invalid)?;
     }
     Ok(out)
+}
+
+/// The causal keys of ADR-0065: every parent is an op-ref that can name an op
+/// (§1), none is named twice (§2), and a group has at least two members (§6).
+/// Nothing reads them yet, so only their shape is checked.
+fn check_causal_keys(p: &PatchPayload) -> Result<(), String> {
+    if let Some(parents) = &p.parents {
+        let mut seen = BTreeSet::new();
+        for parent in parents {
+            // Seq 0 is the chain's empty position, never an op, and the op
+            // log stores seq as an SQLite integer.
+            if parent.2 == 0 || i64::try_from(parent.2).is_err() {
+                return Err("a malformed op-ref: seq is not an op's".into());
+            }
+            if !seen.insert(parent) {
+                return Err("a parent named twice".into());
+            }
+        }
+    }
+    if p.group.as_ref().is_some_and(|g| g.size < 2) {
+        return Err("a group has fewer than two members".into());
+    }
+    Ok(())
 }
 
 /// The `kind` a parked `Patch` is recorded under.

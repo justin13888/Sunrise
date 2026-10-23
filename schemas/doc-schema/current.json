@@ -1,4 +1,9 @@
 {
+    "conflict_rules": {
+        "generated_yields": true,
+        "precedence": ["origin", "class", "stamp"],
+        "terminal_states": ["cancelled", "done"]
+    },
     "entities": [
         {
             "features": ["attachment.thumbnail"],
@@ -25,106 +30,127 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "blob_id",
                             "type": "[u8;16]"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "blob_key",
                             "type": "[u8;32]"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "chunk_count",
                             "type": "u32"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "ciphertext_hash",
                             "type": "[u8;32]"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "content_hash",
                             "type": "[u8;32]"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "filename",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "height",
                             "type": "Option<u32>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "mime_type",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "parent",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "size_bytes",
                             "type": "u64"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_blob_id",
                             "type": "Option<[u8;16]>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_blob_key",
                             "type": "Option<[u8;32]>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_ciphertext_hash",
                             "type": "Option<[u8;32]>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_content_hash",
                             "type": "Option<[u8;32]>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_mime",
                             "type": "Option<String>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "thumbnail_size_bytes",
                             "type": "Option<u32>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "width",
                             "type": "Option<u32>"
@@ -170,51 +196,61 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "ends_at",
                             "type": "SunriseTime"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "starts_at",
                             "type": "SunriseTime"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "stream_id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "or_set",
                             "name": "tasks",
                             "type": "BTreeSet<EntityRef>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "title",
                             "type": "Option<String>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "title_track_task",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -258,36 +294,43 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "archived",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "description",
                             "type": "Option<String>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "name",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -342,26 +385,31 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "actual_focused_ms",
                             "type": "u64"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "completed_task",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "ended_at_ms",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "interruptions",
                             "type": "Vec<Interruption>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "session_id",
                             "type": "EntityRef"
@@ -373,41 +421,49 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "chunk",
                             "type": "Option<Chunk>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "energy",
                             "type": "Option<Energy>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "kind",
                             "type": "FocusKind"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "planned_ms",
                             "type": "Option<u64>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "started_at_ms",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "stream_id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "task_id",
                             "type": "EntityRef"
@@ -419,16 +475,19 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "at_ms",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "reason",
                             "type": "InterruptionReason"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "session_id",
                             "type": "EntityRef"
@@ -459,31 +518,37 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "body",
                             "type": "NoteBody"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "parent",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -505,31 +570,37 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "display_name",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "identity_id",
                             "type": "Option<EntityRef>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -551,21 +622,25 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "map",
                             "name": "values",
                             "type": "BTreeMap<String,CborValue>"
@@ -595,41 +670,49 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "note",
                             "type": "Option<String>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "streaks",
                             "type": "Vec<StreakRow>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "streams",
                             "type": "Vec<ReviewSnapshotStream>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "totals",
                             "type": "ReviewTotals"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "window_end_ms",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "window_start_ms",
                             "type": "Timestamp"
@@ -673,116 +756,139 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "archived",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "catchup_policy",
                             "type": "RoutineCatchupPolicy"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "ends_at",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "forgiveness_enabled",
                             "type": "bool"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "derived",
                             "name": "forgivenesses_in_window",
                             "type": "u32"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "grace_window_s",
                             "type": "Option<u64>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "derived",
                             "name": "last_completed_at",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "paused",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "paused_until",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "rrule",
                             "type": "RRule"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "scheduling_constraints",
                             "type": "Vec<ScheduleConstraint>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "skip_dates",
                             "type": "Vec<Timestamp>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "or_set",
                             "name": "skipped_keys",
                             "type": "Vec<String>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "starts_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "derived",
                             "name": "streak_counter",
                             "type": "i64"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "or_set",
                             "name": "streak_keys",
                             "type": "Vec<String>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "derived",
                             "name": "streak_started_at",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "nested",
                             "name": "template",
                             "type": "TaskTemplate"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "timezone",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -794,36 +900,43 @@
                 {
                     "fields": [
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "body",
                             "type": "Option<NoteBody>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "contexts",
                             "type": "Vec<EntityRef>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "energy",
                             "type": "Option<Energy>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "estimated_duration_s",
                             "type": "Option<u64>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "priority",
                             "type": "Option<u8>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "stream_id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "title",
                             "type": "String"
@@ -867,81 +980,97 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "archived",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "color",
                             "type": "StreamColor"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "default_context",
                             "type": "Option<EntityRef>"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "description",
                             "type": "Option<NoteBody>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "icon",
                             "type": "Option<String>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "name",
                             "type": "String"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "parent_id",
                             "type": "Option<EntityRef>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "paused",
                             "type": "bool"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "paused_until",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "reminder_lead_s",
                             "type": "Option<u32>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "review_cadence",
                             "type": "StreamReviewCadence"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "sort_order",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -987,121 +1116,145 @@
                 {
                     "fields": [
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "archived",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "assignee",
                             "type": "Option<EntityRef>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "or_set",
                             "name": "blocked_by",
                             "type": "BTreeSet<EntityRef>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "derived",
                             "name": "blocks",
                             "type": "BTreeSet<EntityRef>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "body",
                             "type": "Option<NoteBody>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "completed_at",
                             "type": "Option<SunriseTime>"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "or_set",
                             "name": "contexts",
                             "type": "BTreeSet<EntityRef>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "created_at",
                             "type": "Timestamp"
                         },
                         {
+                            "conflict": "merge",
                             "crdt": "counter",
                             "name": "deferred_count",
                             "type": "i64"
                         },
                         {
+                            "conflict": "tombstone",
                             "crdt": "register",
                             "name": "deleted",
                             "type": "bool"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "due_at",
                             "type": "Option<SunriseTime>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "energy",
                             "type": "Option<Energy>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "estimated_duration_s",
                             "type": "Option<u64>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "priority",
                             "type": "Option<u8>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "reminder_lead_s",
                             "type": "Option<u32>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "routine_id",
                             "type": "Option<EntityRef>"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "routine_occurrence",
                             "type": "Option<Timestamp>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "scheduled_at",
                             "type": "Option<SunriseTime>"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "scheduling_constraints",
                             "type": "Vec<ScheduleConstraint>"
                         },
                         {
+                            "conflict": "state",
                             "crdt": "register",
                             "name": "state",
                             "type": "TaskState"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "stream_id",
                             "type": "EntityRef"
                         },
                         {
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "title",
                             "type": "String"
                         },
                         {
+                            "conflict": "quiet",
                             "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
@@ -1337,6 +1490,21 @@
         {
             "fields": [
                 {
+                    "name": "id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "size",
+                    "type": "u64"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "GroupWire",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
                     "name": "device_shares",
                     "type": "Vec<KeyShare>"
                 },
@@ -1425,6 +1593,11 @@
             "type": "Vec<u8>"
         },
         {
+            "items": ["[u8;16]", "[u8;16]", "u64"],
+            "name": "OpRefWire",
+            "shape": "tuple"
+        },
+        {
             "fields": [
                 {
                     "name": "create",
@@ -1435,8 +1608,16 @@
                     "type": "Unknowns"
                 },
                 {
+                    "name": "group",
+                    "type": "Option<GroupWire>"
+                },
+                {
                     "name": "origin",
                     "type": "Option<String>"
+                },
+                {
+                    "name": "parents",
+                    "type": "Option<Vec<OpRefWire>>"
                 },
                 {
                     "name": "ref",

@@ -151,7 +151,16 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// unknowns and writes them back unchanged, and refuses to write attachments
 /// once the vault requires the feature. Every v1..v12 payload shape is
 /// unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 13;
+///
+/// `14` gives every registered field a conflict class and adds the rules the
+/// classes follow to the schema: the terminal task states, the precedence
+/// among concurrent writes, and that a generated write yields (ADR-0065 §3).
+/// It also adds two optional keys to `Patch`, `parents` and `group`
+/// (ADR-0065 §1, §6), which no build writes yet. A `Patch` without them
+/// encodes exactly as before, and a v13 build keeps them as unknown keys.
+/// Every v1..v13 payload shape is unchanged, so the floor still does not
+/// move.
+pub const DOC_SCHEMA_V: u16 = 14;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -208,6 +217,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         13,
         hex32("09ede17ec2962b1bc05b1214681c7fc1f4af325955535c27119d709c35a2cf05"),
+    ),
+    (
+        14,
+        hex32("300fb530ec0d3b3c3e5e24ed878fb9cc866cb4f2a3496bd37388369887f3749b"),
     ),
 ];
 
