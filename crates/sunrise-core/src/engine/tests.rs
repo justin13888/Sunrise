@@ -15059,6 +15059,8 @@ proptest::proptest! {
         }
 
         proptest::prop_assert_eq!(tasks_projection(&dba), tasks_projection(&dbb));
+        ea.assert_rebuild_identity(&dba);
+        eb.assert_rebuild_identity(&dbb);
     }
 }
 
@@ -19283,3 +19285,6 @@ mod time_zones;
 /// An inner op nested past `sunrise_cbor::MAX_DOC_DEPTH` parks; one at it
 /// applies (ADR-0045 §4).
 mod nesting_bound;
+
+/// Rebuilding the projection from the op log (issue #441, ADR-0065 PR 2).
+mod rebuild;

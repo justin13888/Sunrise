@@ -230,23 +230,81 @@ fn indexed(rows: Vec<Item>, index: &BTreeMap<Stamp, u64>) -> Value {
 }
 
 /// Gather `sql`'s rows, each mapped by `row` to `(entity_id, item)`, into
-/// `out` under the list `pick` selects.
+/// `out` under the list `pick` selects. `sql` names the scope's stream as
+/// `?1`, or takes no parameter at all.
 fn gather(
     tx: &Transaction<'_>,
-    stream: &[u8; 16],
+    scope: Scope<'_>,
     sql: &str,
     out: &mut BTreeMap<[u8; 16], Rows>,
     pick: fn(&mut Rows) -> &mut Vec<Item>,
     row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<Item>,
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare(sql)?;
-    let mut rows = stmt.query(params![&stream[..]])?;
+    let mut rows = match scope {
+        Scope::Stream(stream) => stmt.query(params![&stream[..]])?,
+        Scope::Compacted => stmt.query([])?,
+    };
     while let Some(r) = rows.next()? {
         let id = blob16(&r.get::<_, Vec<u8>>(0)?);
         let item = row(r)?;
         pick(out.entry(id).or_default()).push(item);
     }
     Ok(())
+}
+
+/// Which state rows a dump carries.
+#[derive(Debug, Clone, Copy)]
+enum Scope<'a> {
+    /// The rows a stream's ops wrote: a snapshot's `doc_state`.
+    Stream(&'a [u8; 16]),
+    /// The rows written by ops a compaction floor covers, in every stream:
+    /// the base [`dump_compacted_base`] hands a projection rebuild.
+    Compacted,
+}
+
+impl Scope<'_> {
+    /// The `WHERE` predicate over a state table aliased `m` whose rows are
+    /// attributed by the op-ref `(stream, device, seq)` in those columns.
+    fn written_by(self, stream: &str, device: &str, seq: &str) -> String {
+        match self {
+            Scope::Stream(_) => format!("m.{stream} = ?1"),
+            Scope::Compacted => format!(
+                "EXISTS (SELECT 1 FROM compaction_floor f
+                         WHERE f.stream_id = m.{stream} AND f.device_id = m.{device}
+                           AND m.{seq} <= f.seq)"
+            ),
+        }
+    }
+
+    /// The predicate over `merge_orset_removes`. A remove holds no stamp of
+    /// its own, only the tag it removes, so a rebuild's base keeps every one:
+    /// a remove is keyed by what it names, and folding it twice is a no-op.
+    fn removes(self) -> String {
+        match self {
+            Scope::Stream(_) => "m.tag_stream = ?1".to_owned(),
+            Scope::Compacted => "1".to_owned(),
+        }
+    }
+
+    /// The predicate over `merge_entities` naming each entity whose
+    /// bookkeeping the scope carries even when none of its field rows is.
+    fn bookkeeping(self) -> String {
+        match self {
+            Scope::Stream(_) => {
+                "m.create_stream = ?1 OR m.legacy_stream = ?1 OR m.head_stream = ?1".to_owned()
+            }
+            Scope::Compacted => ["create", "legacy", "head"]
+                .map(|s| {
+                    self.written_by(
+                        &format!("{s}_stream"),
+                        &format!("{s}_device"),
+                        &format!("{s}_seq"),
+                    )
+                })
+                .join(" OR "),
+        }
+    }
 }
 
 /// `doc_state` for `stream`: every entity a row of the stream's ops wrote, in
@@ -258,12 +316,36 @@ pub(in crate::engine) fn dump_stream_state(
     tx: &Transaction<'_>,
     stream: &[u8; 16],
 ) -> rusqlite::Result<Value> {
+    dump(tx, Scope::Stream(stream))
+}
+
+/// The state a projection rebuild cannot re-derive from `ops`, as one
+/// `doc_state`: every row an op at or below a `compaction_floor` wrote, in
+/// every stream, every OR-set remove, and the whole bookkeeping of each entity
+/// those rows, or a covered create, legacy or head stamp, belong to.
+///
+/// Compaction deleted those ops after folding them (ADR-0059), and a replica
+/// that joined a snapshot never held them, so this state is the only record
+/// of what they wrote. Joining it into cleared state with
+/// [`join_stream_state`] and then folding every op still in the log is the
+/// full replay: each write here is idempotent and order-independent (see the
+/// module docs), so a row the base carries that an op still in the log also
+/// wrote folds to itself.
+pub(in crate::engine) fn dump_compacted_base(tx: &Transaction<'_>) -> rusqlite::Result<Value> {
+    dump(tx, Scope::Compacted)
+}
+
+/// `doc_state` for the rows `scope` selects.
+fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
     let mut rows: BTreeMap<[u8; 16], Rows> = BTreeMap::new();
     gather(
         tx,
-        stream,
-        "SELECT entity_id, field, value, hlc_ms, hlc_logical, device, seq, stream, origin
-         FROM merge_registers WHERE stream = ?1 ORDER BY entity_id, field",
+        scope,
+        &format!(
+            "SELECT entity_id, field, value, hlc_ms, hlc_logical, device, seq, stream, origin
+             FROM merge_registers m WHERE {} ORDER BY entity_id, field",
+            scope.written_by("stream", "device", "seq")
+        ),
         &mut rows,
         |r| &mut r.registers,
         |r| {
@@ -286,9 +368,13 @@ pub(in crate::engine) fn dump_stream_state(
     )?;
     gather(
         tx,
-        stream,
-        "SELECT entity_id, field, map_key, value, hlc_ms, hlc_logical, device, seq, stream, origin
-         FROM merge_map_entries WHERE stream = ?1 ORDER BY entity_id, field, map_key",
+        scope,
+        &format!(
+            "SELECT entity_id, field, map_key, value, hlc_ms, hlc_logical, device, seq, stream,
+                    origin
+             FROM merge_map_entries m WHERE {} ORDER BY entity_id, field, map_key",
+            scope.written_by("stream", "device", "seq")
+        ),
         &mut rows,
         |r| &mut r.maps,
         |r| {
@@ -311,10 +397,14 @@ pub(in crate::engine) fn dump_stream_state(
     )?;
     gather(
         tx,
-        stream,
-        "SELECT entity_id, field, element, hlc_ms, hlc_logical, tag_device, tag_seq, tag_stream
-         FROM merge_orset_adds WHERE tag_stream = ?1
-         ORDER BY entity_id, field, element, tag_stream, tag_device, tag_seq",
+        scope,
+        &format!(
+            "SELECT entity_id, field, element, hlc_ms, hlc_logical, tag_device, tag_seq,
+                    tag_stream
+             FROM merge_orset_adds m WHERE {}
+             ORDER BY entity_id, field, element, tag_stream, tag_device, tag_seq",
+            scope.written_by("tag_stream", "tag_device", "tag_seq")
+        ),
         &mut rows,
         |r| &mut r.adds,
         |r| {
@@ -332,10 +422,13 @@ pub(in crate::engine) fn dump_stream_state(
     )?;
     gather(
         tx,
-        stream,
-        "SELECT entity_id, field, element, tag_stream, tag_device, tag_seq
-         FROM merge_orset_removes WHERE tag_stream = ?1
-         ORDER BY entity_id, field, element, tag_stream, tag_device, tag_seq",
+        scope,
+        &format!(
+            "SELECT entity_id, field, element, tag_stream, tag_device, tag_seq
+             FROM merge_orset_removes m WHERE {}
+             ORDER BY entity_id, field, element, tag_stream, tag_device, tag_seq",
+            scope.removes()
+        ),
         &mut rows,
         |r| &mut r.removes,
         |r| {
@@ -353,10 +446,13 @@ pub(in crate::engine) fn dump_stream_state(
     )?;
     gather(
         tx,
-        stream,
-        "SELECT entity_id, field, delta, hlc_ms, hlc_logical, op_device, op_seq, op_stream
-         FROM merge_counter_deltas WHERE op_stream = ?1
-         ORDER BY entity_id, field, op_stream, op_device, op_seq",
+        scope,
+        &format!(
+            "SELECT entity_id, field, delta, hlc_ms, hlc_logical, op_device, op_seq, op_stream
+             FROM merge_counter_deltas m WHERE {}
+             ORDER BY entity_id, field, op_stream, op_device, op_seq",
+            scope.written_by("op_stream", "op_device", "op_seq")
+        ),
         &mut rows,
         |r| &mut r.deltas,
         |r| {
@@ -378,13 +474,16 @@ pub(in crate::engine) fn dump_stream_state(
     // An entity whose bookkeeping names the stream but whose every field row
     // came from another one still has its creation in this stream.
     {
-        let mut stmt = tx.prepare(
-            "SELECT entity_id FROM merge_entities
-             WHERE create_stream = ?1 OR legacy_stream = ?1 OR head_stream = ?1",
-        )?;
-        let ids = stmt.query_map(params![&stream[..]], |r| r.get::<_, Vec<u8>>(0))?;
-        for id in ids {
-            rows.entry(blob16(&id?)).or_default();
+        let mut stmt = tx.prepare(&format!(
+            "SELECT entity_id FROM merge_entities m WHERE {}",
+            scope.bookkeeping()
+        ))?;
+        let mut ids = match scope {
+            Scope::Stream(stream) => stmt.query(params![&stream[..]])?,
+            Scope::Compacted => stmt.query([])?,
+        };
+        while let Some(r) = ids.next()? {
+            rows.entry(blob16(&r.get::<_, Vec<u8>>(0)?)).or_default();
         }
     }
 

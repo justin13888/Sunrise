@@ -1343,6 +1343,26 @@ impl Core {
         Ok(self.engine.compact_op_log(&mut db, &policy)?)
     }
 
+    /// Rebuild this vault's projection from its local op log: clear the
+    /// entity rows, their side tables, the task search index and the merge
+    /// state, and fold every applied entity op again, in one transaction
+    /// (issue #441). See [`Engine::rebuild_projection`].
+    ///
+    /// Nothing is broadcast on `changes()`: every row may have been
+    /// rewritten, so a client re-reads what it shows.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; [`EngineError::Invalid`] for an op
+    /// in the log that cannot be read; storage failures. On any error the
+    /// projection is left as it was.
+    pub fn rebuild_projection(&self) -> Result<crate::engine::RebuildReport, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let mut db = self.db.lock();
+        Ok(self.engine.rebuild_projection(&mut db)?)
+    }
+
     /// The latest snapshot record of `stream_id` this vault wrote or applied,
     /// verbatim: what a new device bootstraps that stream from.
     ///

@@ -112,6 +112,46 @@ pub mod sync {
     }
 }
 
+/// `rebuild` messages.
+pub mod rebuild {
+    use super::rt;
+
+    /// rebuilt the projection from {count, plural, one {# op} other {# ops}}
+    #[must_use]
+    pub fn done(count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("rebuilt the projection from ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" op");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" ops");
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {# op this build would not apply was left out; the log names it} other {# ops this build would not apply were left out; the log names them}}
+    #[must_use]
+    pub fn skipped(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" op this build would not apply was left out; the log names it");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" ops this build would not apply were left out; the log names them");
+            }
+        }
+        out
+    }
+}
+
 /// `devices` messages.
 pub mod devices {
     use super::rt;

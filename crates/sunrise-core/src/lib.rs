@@ -83,7 +83,7 @@ pub use control_op::{
 pub use core::{Core, CoreError};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, SnapshotApplied, BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
+    Engine, EngineError, RebuildReport, SnapshotApplied, BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
 };
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,

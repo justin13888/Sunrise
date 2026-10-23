@@ -74,6 +74,8 @@ plumbing
   sunrise focus end [--done]   close every running session; --done completes
                                the task it was opened on
   sunrise sync --once          drain the outbox and exit (cron / CI)
+  sunrise rebuild              rebuild every row from this vault's own op log,
+                               in one transaction; nothing is sent
 ```
 
 ## Multi-account, on the CLI

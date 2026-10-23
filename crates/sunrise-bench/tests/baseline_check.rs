@@ -49,6 +49,7 @@ fn expected_dirs() -> Vec<&'static str> {
         "prime_hlc/indexed_100000",
         "compaction/fold_10000",
         "compaction/snapshot_10000",
+        "rebuild/refold_10000",
     ]
 }
 

@@ -111,8 +111,10 @@ Migrations run in a single transaction; failure rolls back; the app refuses to l
 
 > **Normative, and partly built.** Every rule in this section is a MUST.
 > Rules 2 and 3 ship, and so does rule 1 except its rebuild-equivalence check
-> ([#327](https://github.com/justin13888/Sunrise/issues/327)). Rule 4 is not
-> built ([#441](https://github.com/justin13888/Sunrise/issues/441)). The
+> ([#327](https://github.com/justin13888/Sunrise/issues/327)). Rule 4's
+> rebuild and its table classification ship; running it under a rule-2
+> backup, offering it on a failed open, and rule 1's rebuild-equivalence
+> check do not ([#441](https://github.com/justin13888/Sunrise/issues/441)). The
 > *Today* notes say where the tree falls short. The rules exist because the one invariant every versioned surface
 > serves ([ADR-0042](../11-adr/0042-v0-forever.md)) applies to a device's own
 > vault file as much as to the merge:
@@ -233,12 +235,58 @@ rule-3 failure and on a migration failure. It runs automatically, in the same
 open, after any migration that changes materialization semantics. Adopting
 per-field ops is the first such migration.
 
-*Today:* the rebuild does not exist (§Materialized state rebuild below), and
-no table is classified yet. Account recovery is exposed over UniFFI as
-`SunriseCore::recover_account` and reached from the CLI and the Apple
-onboarding. It recovers an account from the relay into an empty vault. It is
-not a local rebuild. All of
-this rule is [#441](https://github.com/justin13888/Sunrise/issues/441).
+*Today:* the rebuild ships as `Engine::rebuild_projection` and
+`Core::rebuild_projection` (`crates/sunrise-core/src/engine/rebuild.rs`). It
+is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
+`sunrise rebuild`. It differs from the design above in five ways:
+
+- **The classification is a list in code, not a comment beside each
+  `CREATE TABLE`.** `TABLE_CLASSES` in `rebuild.rs` names every table, and
+  `every_table_in_the_schema_is_classified` fails when a migration adds a
+  table it does not name, or when the registry projects an entity to a table
+  it does not call a projection. The migration files are not edited.
+- **Only entity state is a projection.** The rebuild clears the entity rows,
+  their side tables, the task rows of `search_idx` and the per-field merge
+  state, and refolds every applied entity op. The control-op folds
+  (revocations, read bounds, features, key-envelope recipients) are classified
+  as source and kept, because refolding a control op re-absorbs keys and
+  re-emits envelopes.
+- **Compacted ops are carried, not replayed.** An op below a
+  `compaction_floor` has been deleted
+  ([ADR-0059](../11-adr/0059-client-op-log-compaction.md)), so the rebuild
+  first dumps the merge-state rows those ops wrote and joins them back before
+  refolding the log.
+- **Parked ops are not retried by the rebuild.** This build cannot read them,
+  so the live projection never held them; `Engine::replay_parked_ops` retries
+  them on the next open by a different build, as before.
+- **No rule-2 backup is taken.** The rebuild is one transaction, so a failure
+  leaves the vault as it was. A copy taken before it, and the app paths that
+  offer it on a failed open, are still
+  [#441](https://github.com/justin13888/Sunrise/issues/441).
+
+Three things inside the cleared tables are kept, because no op derives them:
+a placeholder `streams` row no op has stamped (the lazily seeded Inbox among
+them), each routine's `materialized_until_ms`, and every `search_idx` row
+whose `kind` is not `task`.
+
+`rebuild_projection_reproduces_every_projection_table` rebuilds a vault
+written by every command family on two replicas and compares every projection
+table byte for byte. The convergence tests, `convergence_under_random_interleaving`
+and `any_delivery_order_converges_and_loses_no_concurrent_write` among them,
+also rebuild each replica they converge and compare
+(`Engine::assert_rebuild_identity`). That check leaves three things in the
+merge state out, none of which is projected. Two differ for a local write
+until every local write goes through the fold (ADR-0065's third pull
+request): an entity's create stamp, and the `Task.blocks` register. The third
+is an OR-set remove whose add the legacy floor pruned, which a replica keeps
+or not depending on whether it arrived before the floor rose. The writers in
+`any_delivery_order_converges_and_loses_no_concurrent_write` are checked only
+when they wrote no full-state op: a full-state command writes its own row from
+the row it read, and over an unknown map field that row and its peers' differ.
+
+Account recovery is exposed over UniFFI as `SunriseCore::recover_account` and
+reached from the CLI and the Apple onboarding. It recovers an account from the
+relay into an empty vault. It is not a local rebuild.
 
 ### 5. Additive and destructive changes
 
@@ -304,14 +352,15 @@ The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-
 
 ## Materialized state rebuild
 
-> **Not implemented, at any layer.** There is no rebuild path in the workspace:
-> no command, no seam function, no CLI verb, and no internal helper — `rebuild`
-> appears nowhere in `crates/`. The op log genuinely does hold everything needed
-> (every op is full-state under
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), and `ops.envelope` keeps
-> the sealed bytes), so the capability is buildable; nothing has built it. Today
-> the recovery answer for a corrupt projection is §Failure recovery's option 3,
-> "reset and resync".
+> **Built, and not yet run automatically.** `Engine::rebuild_projection` clears
+> the entity projection and the merge state and refolds the op log in one
+> transaction, as §Migration rigor rule 4's *Today* note describes. A user or
+> a script runs it with `sunrise rebuild`, and an app through
+> `SunriseCore::rebuild_projection`. Nothing runs it on first launch after an
+> upgrade yet, and no app offers it on a failed open
+> ([#441](https://github.com/justin13888/Sunrise/issues/441)); for a projection
+> the integrity check refuses to open, the answer is still §Failure recovery's
+> option 3, "reset and resync".
 
 The design of record for the rebuild is §Migration rigor rule 4, which
 supersedes the outline below where they differ (canonical order, parked ops,

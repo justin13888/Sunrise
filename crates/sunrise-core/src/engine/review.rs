@@ -92,15 +92,16 @@ impl Engine {
     /// history. Nothing filters on revocation anywhere on this path — not here
     /// and not in [`Self::lookup_device_cert`], whose own doc explains why
     /// membership is not a fact about which key verifies a signature.
-    fn device_signing_keys(&self, db: &Db) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
+    pub(super) fn device_signing_keys(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
         let mut keys = BTreeMap::new();
         keys.insert(
             self.keychain.device_id(),
             self.keychain.device_signing_pub(),
         );
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT device_id, cert_blob FROM devices")?;
+        let mut stmt = conn.prepare("SELECT device_id, cert_blob FROM devices")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -169,7 +170,7 @@ impl Engine {
     /// only cares about tasks something happened to inside the window. So the
     /// window picks the tasks and the outer query takes their whole history.
     fn task_history_ops(&self, db: &Db, since_ms: u64) -> Result<Vec<OpRecord>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let since = i64::try_from(since_ms).unwrap_or(i64::MAX);
         let mut stmt = db.conn().prepare(
             // Filtered on `target_kind`, not on `inner_kind`: a defer is
@@ -213,7 +214,7 @@ impl Engine {
         db: &Db,
         entity: EntityRef,
     ) -> Result<Vec<OpRecord>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let id: Vec<u8> = entity.bytes().to_vec();
         let sql = match entity.kind() {
             EntityKind::Task => {
@@ -386,7 +387,7 @@ impl Engine {
         db: &Db,
         window: ReviewWindow,
     ) -> Result<Vec<ActivityEvent>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let since = i64::try_from(window.start_ms).unwrap_or(i64::MAX);
         let until = i64::try_from(window.end_ms).unwrap_or(i64::MAX);
         let mut stmt = db.conn().prepare(

@@ -171,8 +171,18 @@ fn inbox() -> [u8; 16] {
     sunrise_domain::INBOX_STREAM_BYTES
 }
 
-/// Both replicas hold the same projection of `task`, row stamp included.
+/// Both replicas hold the same projection of `task`, row stamp included, and
+/// each rebuilds from its own op log to exactly the projection it holds.
 fn assert_converged(p: &Pair, task: EntityRef) -> Task {
+    let a = assert_same_projection(p, task);
+    p.ea.assert_rebuild_identity(&p.dba);
+    p.eb.assert_rebuild_identity(&p.dbb);
+    a
+}
+
+/// [`assert_converged`] without the rebuild, for a test that folds ops
+/// straight into the merge without logging them, so no log could rebuild it.
+fn assert_same_projection(p: &Pair, task: EntityRef) -> Task {
     let a = task_at(&p.dba, task);
     let b = task_at(&p.dbb, task);
     assert_eq!(a, b, "the two replicas project the same task");
@@ -621,7 +631,7 @@ fn an_equal_clock_in_two_streams_is_decided_by_the_stream() {
         })
         .unwrap();
     }
-    let merged = assert_converged(&p, task);
+    let merged = assert_same_projection(&p, task);
     assert_eq!(merged.title, "greater stream");
 }
 
@@ -1470,8 +1480,21 @@ proptest! {
             for env in &envelopes {
                 e.apply_remote(&mut db, env).unwrap();
             }
+            // Whatever order the ops came in, a rebuild from the log in
+            // stamp order lands on the same projection (ADR-0065 PR 2).
+            e.assert_rebuild_identity(&db);
             (task_at(&db, task), row_stamp(&db, "tasks", "id", &task))
         };
+        // Not the writers: a full-state command still writes its own row
+        // directly, from the row it read rather than from the fold, and over
+        // an unknown map field the two differ (a full-state rename after a
+        // `x_labels` patch keeps the label on the writer's row and on no
+        // peer's). ADR-0065 PR 3 routes every local write through the fold.
+        if !saw_full_state {
+            for (writer, db) in devices.iter().zip(&dbs) {
+                writer.assert_rebuild_identity(db);
+            }
+        }
         let forward: Vec<usize> = (0..envelopes.len()).collect();
         let shuffled: Vec<usize> = order.iter().map(|ix| ix.index(envelopes.len())).collect();
         let reversed: Vec<usize> = (0..envelopes.len()).rev().collect();
