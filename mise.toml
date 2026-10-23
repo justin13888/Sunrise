@@ -189,6 +189,17 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
 description = "Run the Rust test suite"
 run = "cargo test --workspace --all-targets"
 
+# The CLI end to end (`docs/10-cross-cutting/testing.md` §The CLI end to end):
+# a real relay and two vaults driven by the real `sunrise` binary. The binary is
+# built first so the scenarios never run a stale one; `--include-ignored` so
+# this task runs every scenario these files hold, whatever a later one marks.
+[tasks.e2e-cli]
+description = "Two CLI vaults against a real relay, through the real sunrise binary"
+run = [
+  "cargo build -p sunrise-cli --bin sunrise",
+  "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller -- --include-ignored",
+]
+
 # The log-event and log-field gate, on its own, with the build it reads from in
 # front of it (#153).
 #
