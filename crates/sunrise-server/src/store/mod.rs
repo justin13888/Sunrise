@@ -193,6 +193,14 @@ pub enum StoreError {
         /// The database.
         path: PathBuf,
     },
+    /// SQLCipher never finished initialising in this process, so no
+    /// database can be keyed.
+    ///
+    /// Raised before a key is applied, instead of the `PRAGMA key` failure
+    /// SQLCipher would report, whose message blames an empty key (issue
+    /// #521). Terminal for the process.
+    #[error("{0}")]
+    CipherUnavailable(#[source] sunrise_storage::DbError),
     /// The database is not encrypted, so there is no key to rotate.
     #[error("the database is not encrypted: set [storage] encrypt = true and start once first")]
     NotEncrypted,

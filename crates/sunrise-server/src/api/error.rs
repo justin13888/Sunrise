@@ -415,6 +415,7 @@ impl From<crate::store::StoreError> for ApiError {
             | crate::store::StoreError::WrongKey { .. }
             | crate::store::StoreError::InUse { .. }
             | crate::store::StoreError::NotEncrypted
+            | crate::store::StoreError::CipherUnavailable(_)
             | crate::store::StoreError::Io { .. } => {
                 tracing::error!(
                     ev = "srv.store.failed",
