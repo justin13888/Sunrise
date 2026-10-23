@@ -1077,14 +1077,19 @@ work="$target_dir/kotlin-smoke"
 tools="$work/tools"
 mkdir -p "$tools"
 
+# `shasum` ships with macOS and Ubuntu's Perl; a Linux host without it (Fedora's
+# minimal Perl, say) has coreutils' `sha256sum`, which reads the same format.
+sha256_check() {
+  if command -v sha256sum >/dev/null; then sha256sum -c --status; else shasum -a 256 -c --status; fi
+}
 # A file already present is reused only if it still matches its pin.
 fetch() {
   local url="$1" sum="$2" dest="$3"
-  if [ -f "$dest" ] && echo "$sum  $dest" | shasum -a 256 -c --status; then
+  if [ -f "$dest" ] && echo "$sum  $dest" | sha256_check; then
     return
   fi
   curl -fsSL --retry 3 -o "$dest.part" "$url"
-  if ! echo "$sum  $dest.part" | shasum -a 256 -c --status; then
+  if ! echo "$sum  $dest.part" | sha256_check; then
     rm -f "$dest.part"
     echo "kotlin-smoke: $url does not match its pinned SHA-256" >&2
     exit 1
