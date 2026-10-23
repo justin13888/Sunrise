@@ -25,12 +25,12 @@ struct CommandPaletteView: View {
         HStack(spacing: 8) {
             Image(systemName: "command")
                 .foregroundStyle(.secondary)
-            TextField("Command", text: $model.query, prompt: Text("Run a command"))
+            TextField(L10n.Palette.field, text: $model.query, prompt: Text(L10n.Palette.prompt))
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($focused)
                 .accessibilityIdentifier("palette.field")
-                .accessibilityLabel("Run a command")
+                .accessibilityLabel(L10n.Palette.prompt)
                 .onSubmit(commit)
                 // Arrow keys belong to the result list even while the field has
                 // the keyboard — which it always does, because the field is the
@@ -52,9 +52,9 @@ struct CommandPaletteView: View {
         let results = model.results
         if results.isEmpty {
             ContentUnavailableView(
-                "No command matches",
+                L10n.Palette.emptyTitle,
                 systemImage: "magnifyingglass",
-                description: Text("Try a shorter word.")
+                description: Text(L10n.Palette.emptyMessage)
             )
         } else {
             ScrollViewReader { proxy in
@@ -111,7 +111,7 @@ struct CommandPaletteView: View {
             entry.shortcut.isEmpty ? entry.title : "\(entry.title), \(entry.shortcut)"
         )
         .accessibilityAddTraits(isHighlighted ? [.isSelected] : [])
-        .accessibilityHint(entry.isEnabled ? "" : "Needs a selected task")
+        .accessibilityHint(entry.isEnabled ? "" : L10n.Palette.needsSelection)
     }
 
     private func commit() {
@@ -141,9 +141,9 @@ struct CheatSheetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Keyboard").font(.title3.weight(.semibold))
+                Text(L10n.Keyboard.cheatSheetTitle).font(.title3.weight(.semibold))
                 Spacer()
-                Button("Done", action: dismiss)
+                Button(L10n.Action.done, action: dismiss)
                     .keyboardShortcut(.cancelAction)
             }
             .padding(16)
@@ -172,11 +172,8 @@ struct CheatSheetView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 4) {
-                Toggle("Vim-style motions", isOn: $preferences.vimMode)
-                Text(
-                    "h j k l, gg, G, u, ⌃R, / and : — on this "
-                        + "\(Platform.deviceName) only, never synced."
-                )
+                Toggle(L10n.Keyboard.vimToggle, isOn: $preferences.vimMode)
+                Text(L10n.Keyboard.vimNote(device: Platform.deviceName))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

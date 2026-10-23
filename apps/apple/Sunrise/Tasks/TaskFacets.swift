@@ -88,9 +88,9 @@ extension TodaySection {
 
     var heading: String {
         switch self {
-        case .scheduled: "Scheduled"
-        case .due: "Due today"
-        case .overdue: "Overdue"
+        case .scheduled: L10n.Tasks.sectionScheduled
+        case .due: L10n.Tasks.sectionDue
+        case .overdue: L10n.Tasks.sectionOverdue
         }
     }
 

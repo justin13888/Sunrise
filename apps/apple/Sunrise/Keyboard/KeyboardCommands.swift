@@ -132,7 +132,7 @@ struct KeyCommandMenus: Commands {
         CommandGroup(replacing: .undoRedo) {
             items(CommandMenus.edit)
         }
-        CommandMenu("Go") {
+        CommandMenu(L10n.Keyboard.menuGo) {
             items(CommandMenus.app + CommandMenus.go + CommandMenus.help)
         }
     }

@@ -44,10 +44,10 @@ extension WidgetSnapshot {
         outstanding: 4,
         overdue: 1,
         rows: [
-            Row(id: "sample-1", title: "Send the quarterly report", section: .overdue, link: nil),
-            Row(id: "sample-2", title: "Review Maya's draft", section: .due, link: nil),
-            Row(id: "sample-3", title: "Book flights", section: .scheduled, link: nil),
-            Row(id: "sample-4", title: "Water the plants", section: .scheduled, link: nil)
+            Row(id: "sample-1", title: L10n.Widget.sampleReport, section: .overdue, link: nil),
+            Row(id: "sample-2", title: L10n.Widget.sampleDraft, section: .due, link: nil),
+            Row(id: "sample-3", title: L10n.Widget.sampleFlights, section: .scheduled, link: nil),
+            Row(id: "sample-4", title: L10n.Widget.samplePlants, section: .scheduled, link: nil)
         ]
     )
 }

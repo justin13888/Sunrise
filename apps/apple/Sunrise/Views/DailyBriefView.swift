@@ -85,9 +85,9 @@ struct DailyBriefBody: View {
             edit: { editing = task }
         )
         .contextMenu {
-            Button("Complete") { Task { await complete(task) } }
+            Button(L10n.Brief.complete) { Task { await complete(task) } }
                 .disabledUnlessEditable(.task)
-            Button("Edit…") { editing = task }
+            Button(L10n.Brief.editEllipsis) { editing = task }
             Divider()
             // The spans are the domain's, not this file's — see `SnoozeSpan`
             // and `snooze_target_ms`. "Tomorrow" is a date, and the two nights
@@ -98,7 +98,7 @@ struct DailyBriefBody: View {
             }
         }
         .swipeActions(edge: .trailing) {
-            Button("Tomorrow") { Task { await snooze(task, .tomorrow) } }
+            Button(L10n.Brief.tomorrow) { Task { await snooze(task, .tomorrow) } }
                 .tint(.orange)
                 .disabledUnlessEditable(.task)
         }
@@ -118,7 +118,7 @@ struct MorningSummaryView: View {
         DailyBriefBody(
             sections: model.sections,
             headline: model.headline,
-            subtitle: "What closed yesterday, and what today is asking for.",
+            subtitle: L10n.Brief.morningSubtitle,
             symbol: "sunrise",
             errorMessage: model.errorMessage,
             bridge: model.bridge,
@@ -130,7 +130,7 @@ struct MorningSummaryView: View {
             apply: { await model.apply($0, to: $1) },
             remove: { await model.delete($0) }
         )
-        .navigationTitle("Morning")
+        .navigationTitle(L10n.Brief.morningTitle)
         .task { await model.refresh() }
         .task { await model.follow() }
     }
@@ -148,7 +148,7 @@ struct EndOfDayPlanView: View {
         DailyBriefBody(
             sections: model.sections,
             headline: model.headline,
-            subtitle: "What today did not finish, the week ahead, and the backlog to plan from.",
+            subtitle: L10n.Brief.eveningSubtitle,
             symbol: "moon.stars",
             errorMessage: model.errorMessage,
             bridge: model.bridge,
@@ -160,10 +160,10 @@ struct EndOfDayPlanView: View {
             apply: { await model.apply($0, to: $1) },
             remove: { await model.delete($0) }
         )
-        .navigationTitle("Evening")
+        .navigationTitle(L10n.Brief.eveningTitle)
         .toolbar {
             ToolbarItem {
-                Button("Move today to tomorrow", systemImage: "arrow.uturn.right") {
+                Button(L10n.Brief.moveToday, systemImage: "arrow.uturn.right") {
                     confirmingMove = true
                 }
                 .disabled(model.plan?.stillOpen.isEmpty ?? true)
@@ -171,21 +171,18 @@ struct EndOfDayPlanView: View {
             }
         }
         .confirmationDialog(
-            "Move \(model.plan?.stillOpen.count ?? 0) open tasks to tomorrow?",
+            L10n.Brief.moveConfirm(count: model.plan?.stillOpen.count ?? 0),
             isPresented: $confirmingMove,
             titleVisibility: .visible
         ) {
-            Button("Move them") {
+            Button(L10n.Brief.moveThem) {
                 Task { await model.moveEverythingToTomorrow() }
             }
         } message: {
             // Each one counts as a deferral, and the row says so from the
             // second time — which is the pattern worth seeing, and the reason
             // this asks first rather than making it a one-click habit.
-            Text(
-                "Each task's deferral count goes up. That is the point: it is how a task "
-                    + "that keeps slipping becomes visible."
-            )
+            Text(L10n.Brief.moveMessage)
         }
         .task { await model.refresh() }
         .task { await model.follow() }

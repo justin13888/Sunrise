@@ -27,21 +27,15 @@ struct OnboardingView: View {
             Image(systemName: "sunrise")
                 .font(.system(size: 48))
                 .foregroundStyle(.orange)
-            Text("Welcome to Sunrise")
+            Text(L10n.Onboarding.welcome)
                 .font(.largeTitle.weight(.semibold))
-            Text(
-                """
-                Your tasks are encrypted on this \(Platform.deviceName) with a key only you hold. \
-                Sunrise stores it in your Keychain — it never leaves the device, \
-                and no server can read your data with or without it.
-                """
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 420)
+            Text(L10n.Onboarding.intro(device: Platform.deviceName))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
 
-            Button("Create my vault") {
+            Button(L10n.Onboarding.create) {
                 isWorking = true
                 Task {
                     await create()
@@ -60,26 +54,21 @@ struct OnboardingView: View {
             Divider().frame(maxWidth: 320)
 
             VStack(spacing: 6) {
-                Text("Already using Sunrise on another device?")
+                Text(L10n.Onboarding.alreadyUsing)
                     .font(.callout)
-                Button("Pair with that device") { pairing = makePairing() }
+                Button(L10n.Onboarding.pair) { pairing = makePairing() }
                     .controlSize(.large)
                     .disabled(isWorking)
                     .accessibilityIdentifier("onboarding.pair")
-                Text(
-                    """
-                    Adopts the vault you already have, instead of starting a \
-                    second one.
-                    """
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-                Button("Restore from recovery code") { session?.beginRestore() }
+                Text(L10n.Onboarding.pairCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+                Button(L10n.Onboarding.restore) { session?.beginRestore() }
                     .disabled(isWorking || session == nil)
                     .accessibilityIdentifier("onboarding.restore")
-                Text("No other device left? Your twenty-four words bring the account back.")
+                Text(L10n.Onboarding.restoreCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

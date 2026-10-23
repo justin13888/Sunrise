@@ -8,15 +8,15 @@ struct ActivityTimelineView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Activity").font(.headline)
+            Text(L10n.Activity.title).font(.headline)
             if let error = model.errorMessage {
                 Text(error).font(.callout).foregroundStyle(.orange)
             }
             if model.rows.isEmpty {
                 ContentUnavailableView(
-                    "Nothing recorded yet",
+                    L10n.Activity.emptyTitle,
                     systemImage: "clock.arrow.circlepath",
-                    description: Text("Completions, deferrals and moves show up here.")
+                    description: Text(L10n.Activity.emptyMessage)
                 )
                 .frame(maxWidth: .infinity, minHeight: 160)
             } else {
@@ -52,8 +52,10 @@ struct ActivityTimelineView: View {
 
     private func caption(for row: ActivityRow) -> String {
         let day = model.day(of: row)
-        let origin = model.isThisDevice(row, deviceID: deviceID) ? "this device" : "another device"
-        return "\(day.text) \(model.clock(of: row)) · \(origin)"
+        let time = model.clock(of: row)
+        return model.isThisDevice(row, deviceID: deviceID)
+            ? L10n.Activity.captionThisDevice(day: day.text, time: time)
+            : L10n.Activity.captionAnotherDevice(day: day.text, time: time)
     }
 
     /// An icon per kind. Decoration over the phrase, never instead of it: the

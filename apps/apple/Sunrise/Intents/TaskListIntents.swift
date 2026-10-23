@@ -47,21 +47,26 @@ enum TaskListReader {
     }
 
     static func message(_ tasks: [TaskEntity], empty: String) -> String {
-        switch tasks.count {
-        case 0: empty
-        case 1: "1 task: \(tasks[0].title)."
-        default: "\(tasks.count) tasks: \(tasks.map(\.title).joined(separator: ", "))."
-        }
+        tasks.isEmpty
+            ? empty
+            : L10n.Intents.TaskList.summary(
+                count: tasks.count,
+                titles: tasks.map(\.title).joined(separator: ", ")
+            )
     }
 }
 
 /// Today: what is scheduled, due, or overdue.
 struct TodayTasksIntent: AppIntent {
-    static let title: LocalizedStringResource = "Get Today's Tasks"
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.task_list.today_title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        "Returns the Sunrise tasks scheduled, due, or overdue today.",
-        categoryName: "Tasks",
+        LocalizedStringResource("apple.intents.task_list.today_description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_tasks", table: "Localizable"),
         searchKeywords: ["today", "agenda", "due", "list"]
     )
 
@@ -78,18 +83,22 @@ struct TodayTasksIntent: AppIntent {
         let tasks = try await IntentVault.withVault { bridge in
             try await TaskListReader.rows(.today, in: bridge)
         }
-        let message = TaskListReader.message(tasks, empty: "Nothing is on for today.")
+        let message = TaskListReader.message(tasks, empty: L10n.Intents.TaskList.todayEmpty)
         return .result(value: tasks, dialog: IntentDialog("\(message)"))
     }
 }
 
 /// The Inbox: everything captured and not yet triaged.
 struct InboxTasksIntent: AppIntent {
-    static let title: LocalizedStringResource = "Get Inbox Tasks"
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.task_list.inbox_title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        "Returns the Sunrise tasks still waiting in the Inbox.",
-        categoryName: "Tasks",
+        LocalizedStringResource("apple.intents.task_list.inbox_description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_tasks", table: "Localizable"),
         searchKeywords: ["inbox", "triage", "unsorted", "list"]
     )
 
@@ -106,7 +115,7 @@ struct InboxTasksIntent: AppIntent {
         let tasks = try await IntentVault.withVault { bridge in
             try await TaskListReader.rows(.inbox, in: bridge)
         }
-        let message = TaskListReader.message(tasks, empty: "The inbox is empty.")
+        let message = TaskListReader.message(tasks, empty: L10n.Intents.TaskList.inboxEmpty)
         return .result(value: tasks, dialog: IntentDialog("\(message)"))
     }
 }

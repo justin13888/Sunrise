@@ -27,7 +27,9 @@ struct TaskRowView: View {
                     .foregroundStyle(facets.isDone ? .green : .secondary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(facets.isDone ? "Completed" : "Complete “\(facets.title)”")
+            .accessibilityLabel(
+                facets.isDone ? L10n.TaskRow.completed : L10n.TaskRow.complete(title: facets.title)
+            )
             .disabled(facets.isDone)
             .disabledUnlessEditable(.task)
 
@@ -44,7 +46,7 @@ struct TaskRowView: View {
                         Text("!\(priority)")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(priority <= 2 ? .orange : .secondary)
-                            .accessibilityLabel("Priority \(priority)")
+                            .accessibilityLabel(L10n.TaskRow.priority(priority: Int(priority)))
                     }
                     Text(facets.title)
                         .strikethrough(facets.isDone)
@@ -52,7 +54,7 @@ struct TaskRowView: View {
                     if facets.isBlocked {
                         Image(systemName: "pause.circle")
                             .foregroundStyle(.secondary)
-                            .help("Waiting on another task")
+                            .help(L10n.TaskRow.waiting)
                     }
                 }
                 facetLine
@@ -66,7 +68,7 @@ struct TaskRowView: View {
         // loud, and a multi-selection made with `Space` has to reach VoiceOver
         // as a selection rather than as an unexplained tick.
         .accessibilityAddTraits(isTicked || isCursor ? [.isSelected] : [])
-        .accessibilityValue(isTicked ? "Selected" : "")
+        .accessibilityValue(isTicked ? L10n.TaskRow.selected : "")
         .onTapGesture(count: 2, perform: edit)
         // Dragged onto the calendar grid, a task becomes a block bound to it.
         // The payload is the id's own text — the same string the CLI accepts —
@@ -100,7 +102,7 @@ struct TaskRowView: View {
         if let stream = facets.streamName { chips.append(Chip(text: "#\(stream)")) }
         chips.append(contentsOf: facets.contextNames.map { Chip(text: "@\($0)") })
         if let due = facets.due {
-            chips.append(Chip(text: "due \(due.text)", isLate: due.isPast))
+            chips.append(Chip(text: L10n.TaskRow.due(when: due.text), isLate: due.isPast))
         }
         if let scheduled = facets.scheduled, facets.due == nil {
             chips.append(Chip(text: scheduled.text, isLate: scheduled.isPast))
@@ -109,7 +111,7 @@ struct TaskRowView: View {
         if let energy = facets.energy { chips.append(Chip(text: energy)) }
         if let constraints = facets.constraints { chips.append(Chip(text: constraints)) }
         if facets.deferrals > 1 {
-            chips.append(Chip(text: "deferred \(facets.deferrals)×"))
+            chips.append(Chip(text: L10n.TaskRow.deferred(count: Int(facets.deferrals))))
         }
         return chips
     }

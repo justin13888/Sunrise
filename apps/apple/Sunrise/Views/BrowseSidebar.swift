@@ -46,13 +46,13 @@ struct BrowseSidebar: View {
                         Task { await model.moveStreams(from: source, to: destination) }
                     }
             } header: {
-                header("Streams")
+                header(L10n.Browse.streamsHeader)
             }
 
             Section {
                 ForEach(model.visibleContexts, id: \.id) { contextRow($0) }
             } header: {
-                header("Contexts")
+                header(L10n.Browse.contextsHeader)
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
@@ -87,10 +87,10 @@ struct BrowseSidebar: View {
         #if os(macOS)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 4) {
-                addButton("New stream", systemImage: "plus",
+                addButton(L10n.Browse.newStream, systemImage: "plus",
                           identifier: "sidebar.stream.new") { newStream = true }
                     .disabledUnlessEditable(.stream)
-                addButton("New context", systemImage: "at",
+                addButton(L10n.Browse.newContext, systemImage: "at",
                           identifier: "sidebar.context.new") { newContext = true }
                     .disabledUnlessEditable(.context)
                 Spacer()
@@ -102,21 +102,21 @@ struct BrowseSidebar: View {
         #else
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu("Add", systemImage: "plus") {
-                    Button("New stream", systemImage: "plus") { newStream = true }
+                Menu(L10n.Action.add, systemImage: "plus") {
+                    Button(L10n.Browse.newStream, systemImage: "plus") { newStream = true }
                         .accessibilityIdentifier("sidebar.stream.new")
                         .disabledUnlessEditable(.stream)
-                    Button("New context", systemImage: "at") { newContext = true }
+                    Button(L10n.Browse.newContext, systemImage: "at") { newContext = true }
                         .accessibilityIdentifier("sidebar.context.new")
                         .disabledUnlessEditable(.context)
                 }
-                .accessibilityLabel("Add")
+                .accessibilityLabel(L10n.Action.add)
                 .accessibilityIdentifier("sidebar.add")
             }
         }
         #endif
         .contextMenu {
-            Toggle("Show archived", isOn: Binding(
+            Toggle(L10n.Browse.showArchived, isOn: Binding(
                 get: { model.showsArchived },
                 set: { model.showsArchived = $0 }
             ))
@@ -148,14 +148,14 @@ struct BrowseSidebar: View {
             }
         }
         .confirmationDialog(
-            "Delete “\(confirmingStreamDelete?.name ?? "")”?",
+            L10n.Browse.deleteStreamTitle(name: confirmingStreamDelete?.name ?? ""),
             isPresented: Binding(
                 get: { confirmingStreamDelete != nil },
                 set: { if !$0 { confirmingStreamDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button(L10n.Action.delete, role: .destructive) {
                 guard let row = confirmingStreamDelete else { return }
                 confirmingStreamDelete = nil
                 Task { await model.deleteStream(row) }
@@ -164,26 +164,23 @@ struct BrowseSidebar: View {
             // Not a formality. `submitUndoable` reports a delete as
             // `UndoRefusal.deleted`, and the confirmation is the only place
             // that fact is useful — after the fact it is just an apology.
-            Text("This cannot be undone. Archive it instead to keep its tasks reachable.")
+            Text(L10n.Browse.deleteStreamMessage)
         }
         .confirmationDialog(
-            "Delete @\(confirmingContextDelete?.name ?? "")?",
+            L10n.Browse.deleteContextTitle(name: confirmingContextDelete?.name ?? ""),
             isPresented: Binding(
                 get: { confirmingContextDelete != nil },
                 set: { if !$0 { confirmingContextDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button(L10n.Action.delete, role: .destructive) {
                 guard let row = confirmingContextDelete else { return }
                 confirmingContextDelete = nil
                 Task { await model.deleteContext(row) }
             }
         } message: {
-            Text(
-                "This removes @\(confirmingContextDelete?.name ?? "") from every task "
-                    + "carrying it, and cannot be undone."
-            )
+            Text(L10n.Browse.deleteContextMessage(name: confirmingContextDelete?.name ?? ""))
         }
     }
 
@@ -273,20 +270,20 @@ struct BrowseSidebar: View {
             if row.id == BrowseModel.inboxID {
                 // The Inbox is synthetic: there is no stream entity behind it,
                 // so every one of these would be rejected by the core.
-                Text("The Inbox cannot be edited")
+                Text(L10n.Browse.inboxNotEditable)
             } else {
                 // Edit… stays open so a locked stream can still be read; its
                 // sheet's Save is gated instead.
-                Button("Edit…") { editingStream = row }
+                Button(L10n.Browse.editEllipsis) { editingStream = row }
                 Group {
-                    Button(row.paused ? "Resume" : "Pause") {
+                    Button(row.paused ? L10n.Browse.resume : L10n.Browse.pause) {
                         Task { await model.setStreamPaused(row, !row.paused) }
                     }
-                    Button(row.archived ? "Unarchive" : "Archive") {
+                    Button(row.archived ? L10n.Browse.unarchive : L10n.Browse.archive) {
                         Task { await model.setStreamArchived(row, !row.archived) }
                     }
                     Divider()
-                    Button("Delete…", role: .destructive) { confirmingStreamDelete = row }
+                    Button(L10n.Browse.deleteEllipsis, role: .destructive) { confirmingStreamDelete = row }
                 }
                 .disabledUnlessEditable(.stream)
             }
@@ -318,13 +315,13 @@ struct BrowseSidebar: View {
         } isTargeted: { isTargeted = $0 ? row.id : (isTargeted == row.id ? nil : isTargeted) }
         .dropHighlight(isActive: isTargeted == row.id)
         .contextMenu {
-            Button("Edit…") { editingContext = row }
+            Button(L10n.Browse.editEllipsis) { editingContext = row }
             Group {
-                Button(row.archived ? "Unarchive" : "Archive") {
+                Button(row.archived ? L10n.Browse.unarchive : L10n.Browse.archive) {
                     Task { await model.setContextArchived(row, !row.archived) }
                 }
                 Divider()
-                Button("Delete…", role: .destructive) { confirmingContextDelete = row }
+                Button(L10n.Browse.deleteEllipsis, role: .destructive) { confirmingContextDelete = row }
             }
             .disabledUnlessEditable(.context)
         }
@@ -346,16 +343,16 @@ extension StreamColor {
     /// What the picker calls it.
     var label: String {
         switch self {
-        case .slate: "Slate"
-        case .rose: "Rose"
-        case .amber: "Amber"
-        case .emerald: "Emerald"
-        case .sky: "Sky"
-        case .indigo: "Indigo"
-        case .violet: "Violet"
-        case .pink: "Pink"
+        case .slate: L10n.Browse.Color.slate
+        case .rose: L10n.Browse.Color.rose
+        case .amber: L10n.Browse.Color.amber
+        case .emerald: L10n.Browse.Color.emerald
+        case .sky: L10n.Browse.Color.sky
+        case .indigo: L10n.Browse.Color.indigo
+        case .violet: L10n.Browse.Color.violet
+        case .pink: L10n.Browse.Color.pink
         // A colour a newer client wrote; it is kept, not renamed.
-        case .unknown: "Unknown"
+        case .unknown: L10n.Browse.Color.unknown
         }
     }
 

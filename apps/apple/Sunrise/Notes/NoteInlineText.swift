@@ -205,11 +205,11 @@ extension NoteMark {
     /// What the button says it does.
     var label: String {
         switch self {
-        case .bold: "Bold"
-        case .italic: "Italic"
-        case .underline: "Underline"
-        case .strike: "Strikethrough"
-        case .code: "Code"
+        case .bold: L10n.Notes.Mark.bold
+        case .italic: L10n.Notes.Mark.italic
+        case .underline: L10n.Notes.Mark.underline
+        case .strike: L10n.Notes.Mark.strike
+        case .code: L10n.Notes.Mark.code
         }
     }
 }

@@ -25,11 +25,11 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .today: "Today"
-        case .calendar: "Calendar"
-        case .browse: "Browse"
-        case .focus: "Focus"
-        case .search: "Search"
+        case .today: L10n.Tabs.today
+        case .calendar: L10n.Tabs.calendar
+        case .browse: L10n.Tabs.browse
+        case .focus: L10n.Tabs.focus
+        case .search: L10n.Tabs.search
         }
     }
 

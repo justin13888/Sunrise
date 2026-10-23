@@ -37,24 +37,17 @@ final class SessionModel {
         var summary: String {
             switch self {
             case let .keychainUnavailable(detail):
-                "Sunrise could not read its key from the Keychain. \(detail)"
+                L10n.Locked.keychainUnavailable(detail: detail)
             case .keyMissingForExistingVault:
-                """
-                There is a vault on this device, but its key is not in this \
-                Keychain. Pair with a device that still has it, or restore \
-                from your recovery code. A new key would not open this data.
-                """
+                L10n.Locked.keyMissing
             case .lockedByUser:
-                """
-                Your vault is closed. Nothing was lost — the key is still in \
-                your Keychain, and unlocking opens it again.
-                """
+                L10n.Locked.lockedByUser
             }
         }
 
         /// What the button that resolves this reason should say.
         var repairTitle: String {
-            self == .lockedByUser ? "Unlock" : "Try again"
+            self == .lockedByUser ? L10n.Locked.unlock : L10n.Action.tryAgain
         }
     }
 

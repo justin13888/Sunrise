@@ -100,7 +100,9 @@ struct PrintDocument: Equatable, Sendable {
                 let take = min(limit - used, remaining.count)
                 current.append(
                     PrintSection(
-                        heading: isContinuation ? "\(section.heading) (continued)" : section.heading,
+                        heading: isContinuation
+                            ? L10n.Print.continued(heading: section.heading)
+                            : section.heading,
                         rows: Array(remaining.prefix(take))
                     )
                 )
@@ -151,12 +153,15 @@ extension PrintDocument {
         let sections: [PrintSection] = model.kind.isToday
             ? model.groups.map { group in
                 PrintSection(
-                    heading: "\(group.section.heading) (\(group.tasks.count))",
+                    heading: L10n.Print.sectionCount(
+                        heading: group.section.heading,
+                        count: group.tasks.count
+                    ),
                     rows: group.tasks.map { row(model.facets(for: $0)) }
                 )
             }
             : [PrintSection(
-                heading: "\(model.tasks.count) task\(model.tasks.count == 1 ? "" : "s")",
+                heading: L10n.Print.taskCount(count: model.tasks.count),
                 rows: model.tasks.map { row(model.facets(for: $0)) }
             )]
         return PrintDocument(
@@ -186,14 +191,14 @@ extension PrintDocument {
                             msSinceEpoch: block.startMs,
                             timeZone: model.timeZone
                         ),
-                        title: block.row.title ?? "Untitled block",
+                        title: block.row.title ?? L10n.Print.untitledBlock,
                         detail: block.row.taskTitles.joined(separator: ", ")
                     )
                 }
             )
         }
         return PrintDocument(
-            title: model.span == .day ? "Calendar — Day" : "Calendar — Week",
+            title: model.span == .day ? L10n.Print.calendarDay : L10n.Print.calendarWeek,
             subtitle: PrintStamp.date(msSinceEpoch: model.nowMs, timeZone: model.timeZone),
             sections: sections.filter { !$0.rows.isEmpty }
         )
@@ -217,19 +222,19 @@ extension PrintDocument {
         case .weekly:
             guard let report = model.weekly else { return nil }
             return PrintDocument(
-                title: "Weekly Review",
+                title: L10n.Print.weeklyReview,
                 subtitle: stamp,
                 sections: weeklySections(report)
             )
         case .daily:
             guard let report = model.daily else { return nil }
             return PrintDocument(
-                title: "Daily Review",
+                title: L10n.Print.dailyReview,
                 subtitle: stamp,
                 sections: [
-                    tasks("Just captured", report.inbox),
-                    tasks("Today", report.today),
-                    tasks("Blocked", report.blocked)
+                    tasks(L10n.Print.justCaptured, report.inbox),
+                    tasks(L10n.Print.today, report.today),
+                    tasks(L10n.Print.blocked, report.blocked)
                 ].filter { !$0.rows.isEmpty }
             )
         case .trends, .history:
@@ -263,17 +268,17 @@ extension PrintDocument {
         case .review:
             switch reviewTab {
             case .weekly, .daily: nil
-            case .trends: "Trends is a chart. Use the CSV or JSON export beside it."
-            case .history: "History is a list of links. Use the CSV or JSON export beside it."
+            case .trends: L10n.Print.refusalTrends
+            case .history: L10n.Print.refusalHistory
             }
         case .focus:
-            "Focus is one task and a timer, not a list."
+            L10n.Print.refusalFocus
         case .routines:
-            "Routines are rules rather than things to do. Print a task list instead."
+            L10n.Print.refusalRoutines
         case .morning, .evening:
-            "The daily brief is a glance, not a document."
+            L10n.Print.refusalBrief
         case .none:
-            "Nothing is selected."
+            L10n.Print.refusalNothingSelected
         }
     }
 
@@ -316,38 +321,43 @@ extension PrintDocument {
 
     private static func weeklySections(_ report: WeeklyReviewReport) -> [PrintSection] {
         var sections: [PrintSection] = [
-            PrintSection(heading: "This week", rows: [
-                PrintRow(id: "completed", title: "Completed", detail: "\(report.totals.completed)"),
-                PrintRow(id: "deferred", title: "Deferred", detail: "\(report.totals.deferred)"),
-                PrintRow(id: "dropped", title: "Dropped", detail: "\(report.totals.dropped)"),
-                PrintRow(id: "created", title: "Created", detail: "\(report.totals.created)"),
-                PrintRow(id: "reopened", title: "Reopened", detail: "\(report.totals.reopened)")
+            PrintSection(heading: L10n.Print.thisWeek, rows: [
+                PrintRow(id: "completed", title: L10n.Print.completed, detail: "\(report.totals.completed)"),
+                PrintRow(id: "deferred", title: L10n.Print.deferred, detail: "\(report.totals.deferred)"),
+                PrintRow(id: "dropped", title: L10n.Print.dropped, detail: "\(report.totals.dropped)"),
+                PrintRow(id: "created", title: L10n.Print.created, detail: "\(report.totals.created)"),
+                PrintRow(id: "reopened", title: L10n.Print.reopened, detail: "\(report.totals.reopened)")
             ])
         ]
-        sections.append(tasks("Inbox to triage", report.inbox))
-        sections.append(tasks("Slipped past its date", report.slipped))
+        sections.append(tasks(L10n.Print.inboxToTriage, report.inbox))
+        sections.append(tasks(L10n.Print.slipped, report.slipped))
         sections.append(
             PrintSection(
-                heading: "By stream",
+                heading: L10n.Print.byStream,
                 rows: report.streams.map { stream in
                     PrintRow(
                         id: stream.stream,
                         title: stream.name,
-                        detail: "\(stream.completed.count) completed, "
-                            + "\(stream.deferred.count) deferred, "
-                            + "\(stream.createdUntouched.count) untouched"
+                        detail: L10n.Print.streamDetail(
+                            completed: stream.completed.count,
+                            deferred: stream.deferred.count,
+                            untouched: stream.createdUntouched.count
+                        )
                     )
                 }
             )
         )
         sections.append(
             PrintSection(
-                heading: "Routines drifting",
+                heading: L10n.Print.routinesDrifting,
                 rows: report.driftingRoutines.map { drift in
                     PrintRow(
                         id: drift.routine,
                         title: drift.title,
-                        detail: "\(drift.missed) of \(drift.expected) missed"
+                        detail: L10n.Print.driftDetail(
+                            missed: Int(drift.missed),
+                            expected: Int(drift.expected)
+                        )
                     )
                 }
             )
@@ -357,7 +367,7 @@ extension PrintDocument {
 
     private static func tasks(_ heading: String, _ items: [TaskItem]) -> PrintSection {
         PrintSection(
-            heading: "\(heading) (\(items.count))",
+            heading: L10n.Print.sectionCount(heading: heading, count: items.count),
             rows: items.map { PrintRow(id: $0.id, leading: "☐", title: $0.title) }
         )
     }
@@ -368,11 +378,11 @@ extension PrintDocument {
         if let priority = facets.priority { chips.append("!\(priority)") }
         if let stream = facets.streamName { chips.append("#\(stream)") }
         chips.append(contentsOf: facets.contextNames.map { "@\($0)" })
-        if let due = facets.due { chips.append("due \(due.text)") }
+        if let due = facets.due { chips.append(L10n.Print.dueChip(date: due.text)) }
         if let scheduled = facets.scheduled, facets.due == nil { chips.append(scheduled.text) }
         if let estimate = facets.estimate { chips.append(estimate) }
         if let energy = facets.energy { chips.append(energy) }
-        if facets.isBlocked { chips.append("waiting") }
+        if facets.isBlocked { chips.append(L10n.Print.waiting) }
         return PrintRow(
             id: facets.id,
             leading: facets.isDone ? "☑" : "☐",
