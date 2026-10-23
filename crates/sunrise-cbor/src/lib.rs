@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bounded;
 pub mod canonical;
 pub mod cbor_value;
 pub mod envelope_header;
@@ -23,6 +24,7 @@ pub mod hlc;
 pub mod magic;
 pub mod version;
 
+pub use bounded::{decode_value, ValueDecodeError, MAX_VALUE_DEPTH};
 pub use canonical::{
     decode_canonical, decode_lenient, encode_canonical, CanonicalEncoding, CanonicalError,
 };

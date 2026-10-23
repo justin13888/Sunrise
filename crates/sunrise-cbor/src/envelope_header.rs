@@ -26,6 +26,7 @@
 //! is deliberately not consulted — the relay does not interpret the payload,
 //! so a payload schema from the future is none of its business.
 
+use crate::bounded::decode_value;
 use crate::magic::{decode_prefix, MagicKind, MAGIC_LEN};
 use crate::version::{ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V};
 use sunrise_error::ErrorCode;
@@ -136,7 +137,9 @@ pub fn decode_envelope_header(bytes: &[u8]) -> Result<EnvelopeHeader, EnvelopeHe
         return Err(EnvelopeHeaderError::BadMagic);
     }
 
-    let value: ciborium::value::Value = ciborium::de::from_reader(&bytes[MAGIC_LEN..])
+    // Held to the client decoder's nesting bound, so the relay and the client
+    // agree about which bytes are an envelope at all.
+    let value = decode_value(&mut &bytes[MAGIC_LEN..])
         .map_err(|e| EnvelopeHeaderError::Cbor(e.to_string()))?;
     let ciborium::value::Value::Map(entries) = value else {
         return Err(EnvelopeHeaderError::Cbor("envelope must be a map".into()));
@@ -434,5 +437,46 @@ mod tests {
         ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
         let h = decode_envelope_header(&out).unwrap();
         assert_eq!(h.seq, 5);
+    }
+
+    /// An unknown field may nest up to the shared bound and still route; one
+    /// level more is refused here exactly as the client decoder refuses it, so
+    /// the relay never stores an envelope no client will open.
+    #[test]
+    fn an_unknown_field_is_held_to_the_shared_nesting_bound() {
+        // The envelope map is one level, so the field itself may use the rest.
+        let nest = |levels: usize| {
+            let mut v = Value::Integer(1.into());
+            for _ in 0..levels {
+                v = Value::Array(vec![v]);
+            }
+            v
+        };
+        let fits = vec![(Value::Integer(20.into()), nest(crate::MAX_VALUE_DEPTH - 1))];
+        let bytes = envelope_at(
+            [1; 16],
+            [2; 16],
+            3,
+            ENVELOPE_FORMAT_FLOOR,
+            ENVELOPE_FORMAT_V,
+            fits,
+        );
+        assert_eq!(decode_envelope_header(&bytes).unwrap().seq, 3);
+
+        let deep = vec![(Value::Integer(20.into()), nest(crate::MAX_VALUE_DEPTH))];
+        let bytes = envelope_at(
+            [1; 16],
+            [2; 16],
+            3,
+            ENVELOPE_FORMAT_FLOOR,
+            ENVELOPE_FORMAT_V,
+            deep,
+        );
+        assert_eq!(
+            decode_envelope_header(&bytes),
+            Err(EnvelopeHeaderError::Cbor(
+                crate::ValueDecodeError::TooDeep.to_string()
+            ))
+        );
     }
 }
