@@ -664,8 +664,9 @@ route added later is a red build until it is given a row. At run time an
 unlisted route is held to `bootstrap`, the tightest authenticated group.
 
 **Which address.** The socket peer, unless it is listed in `[server]
-trusted_proxies`; then the right-most address in `Forwarded` (or, in its
-absence, `X-Forwarded-For`) that is not itself a listed proxy. With the list
+trusted_proxies`; then the right-most address in `X-Forwarded-For` that is
+not itself a listed proxy. RFC 7239 `Forwarded` is never read: a proxy writes
+one field and passes the other through from the client. With the list
 empty — the default — forwarding headers are ignored, because a client can
 write them. IPv6 clients are counted by `/64`, since one subscriber routinely
 holds a whole `/64`; an IPv4-mapped address counts as its IPv4 address.

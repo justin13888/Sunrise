@@ -25,8 +25,8 @@
 //! The client address is kynos's [`Forwarded`] resolution under the router's
 //! trusted-proxy list (`[server] trusted_proxies`). With the list empty — the
 //! default — it is the socket peer and every forwarding header is ignored;
-//! with proxies listed, it is the right-most address the chain gives that is
-//! not one of them.
+//! with proxies listed, it is the right-most address `X-Forwarded-For` gives
+//! that is not one of them. RFC 7239 `Forwarded` is never read.
 
 pub mod bucket;
 pub mod policy;
@@ -319,13 +319,18 @@ impl Interceptor<ServerState> for Admission {
             return Ok(next.run(request).await);
         }
 
-        let route = next.route();
+        // The router's own 404, 405, 308 and 501 are not an operation, so no
+        // route group budgets them; they were never admitted here before
+        // interceptors ran around them either.
+        let Some(route) = next.route() else {
+            return Ok(next.run(request).await);
+        };
         let endpoint = route.path().to_owned();
         let group = route_group(route.method().as_wire_str(), &endpoint).unwrap_or(UNLISTED);
-        let client = request
-            .extensions()
-            .get::<Forwarded>()
-            .and_then(Forwarded::client);
+        // Through `Forwarded::of`, which reads what the router resolved: the
+        // router no longer stores it as an extension of its own, so a lookup
+        // by type would find nothing and put every client in one bucket.
+        let client = Forwarded::of(&request).and_then(Forwarded::client);
         let address = address_key(client);
         let limiter = &state.limiter;
 

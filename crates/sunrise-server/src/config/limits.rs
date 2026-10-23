@@ -7,6 +7,7 @@
 //! default, so a self-hoster who writes no `[limits]` table runs the documented
 //! policy.
 
+use kynos::http::forwarded::Network;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
@@ -118,8 +119,12 @@ impl LimitsConfig {
 /// are not required to be zero, because `10.1.2.3/8` names the same network
 /// as `10.0.0.0/8` and refusing it would be pedantry about a typo with one
 /// meaning.
+///
+/// A `/0` is refused, as kynos's [`Network`] refuses it: trusting every peer
+/// is only right where nothing but a proxy can reach the relay, and is not a
+/// thing to say by writing a prefix length.
 #[must_use]
-pub fn parse_cidr(entry: &str) -> Option<(IpAddr, u8)> {
+pub fn parse_cidr(entry: &str) -> Option<Network> {
     let entry = entry.trim();
     let (addr, prefix) = match entry.split_once('/') {
         Some((addr, prefix)) => (addr, Some(prefix)),
@@ -131,7 +136,7 @@ pub fn parse_cidr(entry: &str) -> Option<(IpAddr, u8)> {
         Some(p) => p.parse::<u8>().ok().filter(|p| *p <= max)?,
         None => max,
     };
-    Some((addr, prefix))
+    Network::new(addr, prefix).ok()
 }
 
 #[cfg(test)]
@@ -154,16 +159,15 @@ mod tests {
 
     #[test]
     fn cidrs_parse_with_and_without_a_prefix() {
+        let parsed = |entry: &str| parse_cidr(entry).map(|n| (n.address(), n.prefix()));
+        assert_eq!(parsed("10.0.0.0/8"), Some(("10.0.0.0".parse().unwrap(), 8)));
+        assert_eq!(parsed("10.1.2.3/8"), Some(("10.0.0.0".parse().unwrap(), 8)));
         assert_eq!(
-            parse_cidr("10.0.0.0/8"),
-            Some(("10.0.0.0".parse().unwrap(), 8))
-        );
-        assert_eq!(
-            parse_cidr("127.0.0.1"),
+            parsed("127.0.0.1"),
             Some(("127.0.0.1".parse().unwrap(), 32))
         );
-        assert_eq!(parse_cidr("fd00::/8"), Some(("fd00::".parse().unwrap(), 8)));
-        assert_eq!(parse_cidr("::1"), Some(("::1".parse().unwrap(), 128)));
+        assert_eq!(parsed("fd00::/8"), Some(("fd00::".parse().unwrap(), 8)));
+        assert_eq!(parsed("::1"), Some(("::1".parse().unwrap(), 128)));
     }
 
     #[test]
@@ -176,6 +180,8 @@ mod tests {
             "proxy.local",
             "10.0.0/8",
             "*",
+            "0.0.0.0/0",
+            "::/0",
         ] {
             assert_eq!(parse_cidr(bad), None, "{bad:?} must not parse");
         }
