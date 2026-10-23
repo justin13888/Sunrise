@@ -38,6 +38,8 @@
 //!   user meant, in a zone the caller names, with no silent fallback.
 //! * [`editor`] — the task, block and routine editors' forms, turned into
 //!   patches that carry only what changed and keep every time's kind.
+//! * [`schedule`] — defer, snooze, schedule and the Today capture default,
+//!   in civil days and in the kind the plan already has.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -74,6 +76,7 @@ pub mod preferences;
 pub mod recovery;
 pub mod reminders;
 pub mod review;
+pub mod schedule;
 #[cfg(feature = "relay")]
 pub mod sync;
 #[cfg(test)]
