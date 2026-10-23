@@ -39,10 +39,12 @@ logic that is not any one client's. Undo and redo by inverse command, saved
 views, the bootstrap preferences file and the client settings beside it, the
 edit gate, the shared vocabulary read in the caller's zone, the reminder
 schedule and its reconcile against the OS, the Focus filter's rules, the
-daily briefs' sections and the review's civil windows, the account bootstrap,
-the recovery flow ([recovery.md](../03-crypto/recovery.md) §Recovery flow
-steps 3 to 8), and background sync. Every client links it, and a seam's own code lowers its records
-onto these functions and does nothing else:
+daily briefs' sections and the review's civil windows, the editors'
+draft-to-patch functions, the defer and schedule targets, the calendar grid's
+arithmetic, the account bootstrap, the recovery flow
+([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), and
+background sync. Every client links it, and a seam's own code lowers its
+records onto these functions and does nothing else:
 
 ```text
  sunrise-core-bindings (UniFFI)  sunrise-cli   sunrise-core-wasm
@@ -64,6 +66,25 @@ REST client or the SSE transport, so the web core links the pure half.
 The client layer keeps the core's determinism rules below: time is the core's
 injected clock or a zone name the caller passes, randomness an injected `Rng`,
 and a file a path the caller names.
+
+What a client writes about time goes through it too, so no client re-derives a
+kind ([ADR-0066](../11-adr/0066-times-survive-travel.md) §4):
+
+- `editor` turns a task, block or routine editor's form into the patch that
+  carries only the fields that changed. A time the user left alone is not
+  sent, and one they moved keeps its kind (an all-day deadline stays a date, a
+  floating plan stays floating, a zoned block keeps its own zone).
+- `schedule` computes defer, snooze, schedule and the Today capture default
+  in civil days in the reader's zone, over
+  `crates/sunrise-domain/src/time/shift.rs#shift_civil_days`, and emits
+  `Command::DeferTaskTo` with the plan's kind rather than an instant.
+- `calendar` holds the grid: its civil days and week start (the rule
+  `Query::WeekBlocks` reads, `crates/sunrise-domain/src/time/week.rs#first_day_of_week`),
+  the kind a drawn, dropped or dragged block is written as, lane layout,
+  snapping and drag clamping, and the Resolve menu's merge.
+- `civil` is what the three share: a picked moment written as a kind, in a
+  zone the caller names. An unknown zone name is an error here, not UTC
+  ([ADR-0066](../11-adr/0066-times-survive-travel.md) §3).
 
 ## Public surface (sketch)
 
