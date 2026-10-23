@@ -9,187 +9,27 @@
 //! before the app was suspended can look live while the socket under it is
 //! long dead. [`SunriseCore::sync_once`] is the bounded shape.
 //!
-//! # One driver, not two
+//! The mechanism — one driver, a fresh session proven by a dial count, and a
+//! cancel that ends the wait — is [`sunrise_client_core::sync`], which this
+//! module mirrors: [`SyncCancel`] wraps its cancel handle so the foreign side
+//! can hold one, and [`SunriseCore::sync_once`] hands it the vault, the link
+//! every transport this vault dials goes through, and a closure that starts
+//! the driver the way [`SunriseCore::start_sync`] does.
 //!
-//! `sync_once` does not run a second sync engine beside the driver. It starts
-//! the driver if nothing has, makes the driver open a **fresh** session, and
-//! waits until that session reports what `sunrise sync --once` waits for:
-//! `Live` with nothing left in the outbox. Two engines would race over the
-//! same outbox and cursors; one driver has one of each.
-//!
-//! "Fresh" is what the crate-private `SyncLink` is for. Every transport the driver dials is
-//! wrapped so that a kick ends the session the wrapper belongs to, and every
-//! dial is counted. `sync_once` reads the count, kicks, and accepts `Live`
-//! only from a session dialled after the read — so a session that was `Live`
-//! before the app was suspended cannot answer for one that has caught up now.
-//!
-//! # Expiry
-//!
-//! When the OS ends the budget, the foreign side calls [`SyncCancel::cancel`]
-//! on the handle it passed in, and `sync_once` returns at once with
-//! `completed == false`. The handle is the only way the cancel reaches Rust:
-//! UniFFI's Swift async glue has no cancellation path, so cancelling the Swift
-//! task alone would leave this future waiting out its whole budget. A Rust
-//! caller that drops the future instead gets the same result.
-//!
-//! Nothing here holds a transaction: the wait only reads
-//! status, and the driver applies each inbound op through
-//! `Core::apply_remote_all`, which commits it whole or not at all while the
-//! database lock is held, never across an await. Dropping the wait therefore
-//! leaves no half-applied batch, and the next run picks up from the cursors
-//! the committed ops advanced — at worst replaying an op the relay sent twice,
-//! which the op log absorbs as a duplicate.
+//! The handle is the only way an expiry reaches Rust: UniFFI's Swift async
+//! glue has no cancellation path, so cancelling the Swift task alone would
+//! leave this future waiting out its whole budget.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use sunrise_core::{BoxTransport, Query, QueryResult, SyncStatus};
-use sunrise_sync::{BlobCommit, RevokeOutcome, SyncState, Transport, TransportError};
-use tokio::sync::broadcast::error::TryRecvError;
-use tokio::sync::watch;
+use sunrise_client_core::sync::{self as shared, SyncStatusError};
+use sunrise_sync::SyncState;
 
 use crate::{BindingError, SunriseCore};
 
-/// How often [`SunriseCore::sync_once`] re-reads the status when no update
-/// arrives. The status broadcast is what normally wakes it; this is the floor
-/// for the one transition the broadcast does not carry — the outbox count,
-/// which `Core::query` reads from the database.
-const STATUS_POLL: Duration = Duration::from_millis(200);
-
-/// The kick and the dial count every transport the driver dials shares.
-///
-/// Built once per open vault and cloned into each transport factory, so a
-/// driver started by [`SunriseCore::start_sync`] on launch and the
-/// [`SunriseCore::sync_once`] a background task runs later see the same
-/// count and answer the same kick.
-#[derive(Clone)]
-pub(crate) struct SyncLink {
-    /// Bumped to end every session dialled before the bump.
-    kick: Arc<watch::Sender<u64>>,
-    /// Transports dialled since the vault opened.
-    dialled: Arc<AtomicU64>,
-}
-
-impl SyncLink {
-    pub(crate) fn new() -> Self {
-        Self {
-            kick: Arc::new(watch::Sender::new(0)),
-            dialled: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// Wrap one freshly dialled transport, and count it.
-    pub(crate) fn wrap(&self, inner: BoxTransport) -> BoxTransport {
-        self.dialled.fetch_add(1, Ordering::SeqCst);
-        let kick = self.kick.subscribe();
-        let born = *kick.borrow();
-        Box::new(KickableTransport { inner, kick, born })
-    }
-
-    fn dialled(&self) -> u64 {
-        self.dialled.load(Ordering::SeqCst)
-    }
-
-    /// End every session dialled before now. The next dial is unaffected.
-    fn kick(&self) {
-        self.kick
-            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-    }
-}
-
-impl std::fmt::Debug for SyncLink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SyncLink")
-            .field("epoch", &*self.kick.borrow())
-            .field("dialled", &self.dialled())
-            .finish()
-    }
-}
-
-/// A transport that reports its stream ended once it is kicked.
-///
-/// "Ended" is `Ok(None)`, the same answer a relay that closed the stream
-/// gives, so the driver reacts the way it reacts to any dropped link:
-/// tear the session down and dial again on its first backoff step. Nothing
-/// about the driver changes for this to work, which is the point — the kick
-/// rides a path every disconnection already exercises.
-struct KickableTransport {
-    inner: BoxTransport,
-    kick: watch::Receiver<u64>,
-    /// The epoch when this transport was dialled. A kick is any epoch past it.
-    born: u64,
-}
-
-#[async_trait::async_trait]
-impl Transport for KickableTransport {
-    async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
-        self.inner.send_frame(frame).await
-    }
-
-    async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        let Self { inner, kick, born } = self;
-        let born = *born;
-        let kicked = async {
-            // A sender that is gone can never kick, so a closed channel waits
-            // forever rather than ending the session.
-            if kick.wait_for(|epoch| *epoch != born).await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        };
-        tokio::select! {
-            biased;
-            () = kicked => Ok(None),
-            frame = inner.recv_frame() => frame,
-        }
-    }
-
-    async fn close(&mut self) -> Result<(), TransportError> {
-        self.inner.close().await
-    }
-
-    async fn revoke_device(
-        &mut self,
-        device_id: [u8; 16],
-    ) -> Result<RevokeOutcome, TransportError> {
-        self.inner.revoke_device(device_id).await
-    }
-
-    async fn blob_init(
-        &mut self,
-        stream_id: &[u8; 16],
-        chunk_count: u32,
-        size_bytes: u64,
-    ) -> Result<String, TransportError> {
-        self.inner
-            .blob_init(stream_id, chunk_count, size_bytes)
-            .await
-    }
-
-    async fn blob_put_chunk(
-        &mut self,
-        upload_id: &str,
-        chunk_idx: u32,
-        bytes: &[u8],
-    ) -> Result<(), TransportError> {
-        self.inner.blob_put_chunk(upload_id, chunk_idx, bytes).await
-    }
-
-    async fn blob_finalize(
-        &mut self,
-        upload_id: &str,
-        ciphertext_hash: &[u8; 32],
-        chunk_hashes: &[[u8; 32]],
-    ) -> Result<BlobCommit, TransportError> {
-        self.inner
-            .blob_finalize(upload_id, ciphertext_hash, chunk_hashes)
-            .await
-    }
-
-    async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
-        self.inner.blob_fetch(blob_id).await
-    }
-}
+/// The kick and the dial count every transport this vault's driver dials
+/// shares. See [`shared::SyncLink`].
+pub(crate) type SyncLink = shared::SyncLink;
 
 /// The foreign side's way to end a [`SunriseCore::sync_once`] early.
 ///
@@ -203,7 +43,7 @@ impl Transport for KickableTransport {
 /// that call return at once, and a cancelled handle stays cancelled.
 #[derive(Debug, uniffi::Object)]
 pub struct SyncCancel {
-    cancelled: watch::Sender<bool>,
+    inner: shared::SyncCancel,
 }
 
 #[uniffi::export]
@@ -213,31 +53,20 @@ impl SyncCancel {
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            cancelled: watch::Sender::new(false),
+            inner: shared::SyncCancel::new(),
         })
     }
 
     /// End the `sync_once` this handle was passed to, or the next one.
     /// Idempotent, and sync so a non-async expiration handler can call it.
     pub fn cancel(&self) {
-        self.cancelled.send_replace(true);
+        self.inner.cancel();
     }
 
     /// Whether [`Self::cancel`] has been called.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.borrow()
-    }
-}
-
-impl SyncCancel {
-    /// Resolves once the handle is cancelled.
-    async fn cancelled(&self) {
-        let mut rx = self.cancelled.subscribe();
-        // The sender lives as long as `self`, so the wait cannot fail; if it
-        // somehow did, treating it as a cancel ends the call rather than
-        // stranding it.
-        let _ = rx.wait_for(|c| *c).await;
+        self.inner.is_cancelled()
     }
 }
 
@@ -257,34 +86,22 @@ pub struct SyncOnceOutcome {
     pub state: SyncState,
 }
 
-/// Whether a status settles a `sync_once`: `Some(true)` caught up,
-/// `Some(false)` will not catch up in this call, `None` keep waiting.
-///
-/// Only a session dialled after the call began may settle it. Before that,
-/// `Live` is the session the app was suspended with, and `Stopped` or
-/// `Degraded` are what an earlier session left behind — the fresh credential
-/// `sync_once` just wrote may already be about to clear them.
-fn settled(status: &SyncStatus, fresh: bool) -> Option<bool> {
-    if !fresh {
-        return None;
-    }
-    match status.state {
-        SyncState::Live if status.outbox_pending == 0 => Some(true),
-        // A terminal refusal parks the driver until the credential changes,
-        // and a cursor gap latches for the life of the session: neither ends
-        // inside this budget, so waiting it out only spends the OS's time.
-        SyncState::Stopped | SyncState::Degraded => Some(false),
-        _ => None,
+impl From<shared::SyncOnceReport> for SyncOnceOutcome {
+    fn from(r: shared::SyncOnceReport) -> Self {
+        Self {
+            completed: r.completed,
+            changes: r.changes,
+            outbox_pending: r.outbox_pending,
+            state: r.state,
+        }
     }
 }
 
-impl SunriseCore {
-    async fn sync_status_now(&self) -> Result<SyncStatus, BindingError> {
-        match self.inner.query(Query::SyncStatus).await? {
-            QueryResult::SyncStatus(status) => Ok(status),
-            other => Err(BindingError::Core(format!(
-                "SyncStatus answered with {other:?}"
-            ))),
+impl From<SyncStatusError> for BindingError {
+    fn from(e: SyncStatusError) -> Self {
+        match e {
+            SyncStatusError::Core(e) => Self::from(e),
+            unexpected @ SyncStatusError::Unexpected(_) => Self::Core(unexpected.to_string()),
         }
     }
 }
@@ -329,68 +146,15 @@ impl SunriseCore {
         budget_ms: u64,
         cancel: Arc<SyncCancel>,
     ) -> Result<SyncOnceOutcome, BindingError> {
-        // Subscribed before anything moves, so nothing the driver does from
-        // here on is missed by either count.
-        let mut changes = self.inner.changes();
-        let mut updates = self.inner.sync_status();
-        let dialled_before = self.sync_link.dialled();
-
-        let completed = if cancel.is_cancelled() {
-            false
-        } else {
-            self.start_sync(url, bearer, relay_device_id)?;
-            // Nothing dialled yet means no session from before this call
-            // exists: the driver this call may just have started is dialling
-            // the fresh one, and kicking it would only cost a reconnect.
-            if dialled_before > 0 {
-                self.sync_link.kick();
-            }
-            // A driver the app was suspended in the middle of a reconnect
-            // delay would otherwise finish that delay — up to thirty seconds,
-            // more than the whole budget — before dialling the fresh session.
-            self.inner.wake_sync();
-
-            let wait = async {
-                loop {
-                    // The dial count before the status, never after: a
-                    // reconnect landing between the two reads would otherwise
-                    // let the kicked session's stale `Live` pass as fresh.
-                    let fresh = self.sync_link.dialled() > dialled_before;
-                    let status = self.sync_status_now().await?;
-                    if let Some(done) = settled(&status, fresh) {
-                        return Ok::<bool, BindingError>(done);
-                    }
-                    tokio::select! {
-                        _ = updates.recv() => {}
-                        () = tokio::time::sleep(STATUS_POLL) => {}
-                    }
-                }
-            };
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => false,
-                done = tokio::time::timeout(Duration::from_millis(budget_ms), wait) => {
-                    done.unwrap_or(Ok(false))?
-                }
-            }
-        };
-
-        let mut changed = 0u64;
-        loop {
-            match changes.try_recv() {
-                Ok(_) => changed = changed.saturating_add(1),
-                // Dropped for falling behind is still a change that happened.
-                Err(TryRecvError::Lagged(skipped)) => changed = changed.saturating_add(skipped),
-                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
-            }
-        }
-        let status = self.sync_status_now().await?;
-        Ok(SyncOnceOutcome {
-            completed,
-            changes: changed,
-            outbox_pending: status.outbox_pending,
-            state: status.state,
-        })
+        shared::sync_once(
+            &self.inner,
+            &self.sync_link,
+            budget_ms,
+            &cancel.inner,
+            || self.start_sync(url, bearer, relay_device_id),
+        )
+        .await
+        .map(SyncOnceOutcome::from)
     }
 
     /// File this device's APNs token with the relay at `relay_url`, so the
@@ -436,121 +200,15 @@ impl SunriseCore {
 
 #[cfg(test)]
 mod tests {
-    use super::{settled, SyncCancel, SyncLink};
-    use sunrise_core::SyncStatus;
-    use sunrise_sync::{SyncState, Transport, TransportError};
+    use super::*;
 
-    fn status(state: SyncState, outbox_pending: u32) -> SyncStatus {
-        SyncStatus {
-            state,
-            outbox_pending,
-            peer_devices: 0,
-            last_sync_ms: None,
-        }
-    }
-
-    /// Nothing settles before a fresh session exists: `Live` there is the
-    /// session the app was suspended with.
+    /// The mirror is the shared handle: cancelling it is what the shared
+    /// wait sees.
     #[test]
-    fn only_a_fresh_session_settles_the_wait() {
-        for state in [
-            SyncState::Live,
-            SyncState::Stopped,
-            SyncState::Degraded,
-            SyncState::Disconnected,
-            SyncState::CatchingUp,
-        ] {
-            assert_eq!(settled(&status(state, 0), false), None, "{state:?}");
-        }
-    }
-
-    #[test]
-    fn live_with_an_empty_outbox_is_caught_up() {
-        assert_eq!(settled(&status(SyncState::Live, 0), true), Some(true));
-        assert_eq!(
-            settled(&status(SyncState::Live, 3), true),
-            None,
-            "an op still unacked keeps the wait open"
-        );
-        assert_eq!(settled(&status(SyncState::CatchingUp, 0), true), None);
-        assert_eq!(settled(&status(SyncState::Disconnected, 0), true), None);
-    }
-
-    #[test]
-    fn a_refusal_or_a_gap_ends_the_wait_without_completing() {
-        assert_eq!(settled(&status(SyncState::Stopped, 0), true), Some(false));
-        assert_eq!(settled(&status(SyncState::Degraded, 0), true), Some(false));
-    }
-
-    /// The cancel is sticky: a wait that starts after it resolves at once,
-    /// and one already waiting is woken.
-    #[tokio::test]
-    async fn a_cancel_ends_a_wait_before_or_after_it_starts() {
-        let early = SyncCancel::new();
-        early.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), early.cancelled())
-            .await
-            .expect("a handle cancelled first resolves at once");
-
-        let late = SyncCancel::new();
-        assert!(!late.is_cancelled());
-        let waiter = {
-            let late = std::sync::Arc::clone(&late);
-            tokio::spawn(async move { late.cancelled().await })
-        };
-        late.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
-            .await
-            .expect("a waiting handle is woken")
-            .expect("the waiter ran");
-        assert!(late.is_cancelled());
-    }
-
-    /// A transport whose stream never yields: what a socket that died while
-    /// the app was suspended looks like from here.
-    struct Silent;
-
-    #[async_trait::async_trait]
-    impl Transport for Silent {
-        async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
-            Ok(())
-        }
-        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-            std::future::pending().await
-        }
-        async fn close(&mut self) -> Result<(), TransportError> {
-            Ok(())
-        }
-    }
-
-    /// The kick is what rescues a session stuck on a dead stream: the wrapped
-    /// transport reports the stream ended, which the driver answers by
-    /// dialling again.
-    #[tokio::test]
-    async fn a_kick_ends_a_session_dialled_before_it() {
-        let link = SyncLink::new();
-        let mut stale = link.wrap(Box::new(Silent));
-        assert_eq!(link.dialled(), 1);
-        link.kick();
-        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), stale.recv_frame())
-            .await
-            .expect("a kicked transport answers at once");
-        assert!(matches!(ended, Ok(None)), "{ended:?}");
-    }
-
-    /// A transport dialled after the kick is the fresh session the kick asked
-    /// for, and must not be ended by it.
-    #[tokio::test]
-    async fn a_kick_spares_a_session_dialled_after_it() {
-        let link = SyncLink::new();
-        link.kick();
-        let mut fresh = link.wrap(Box::new(Silent));
-        assert_eq!(link.dialled(), 1);
-        let waited =
-            tokio::time::timeout(std::time::Duration::from_millis(100), fresh.recv_frame()).await;
-        assert!(
-            waited.is_err(),
-            "the fresh session keeps waiting on its stream"
-        );
+    fn the_foreign_cancel_is_the_shared_one() {
+        let cancel = SyncCancel::new();
+        assert!(!cancel.is_cancelled() && !cancel.inner.is_cancelled());
+        cancel.cancel();
+        assert!(cancel.is_cancelled() && cancel.inner.is_cancelled());
     }
 }

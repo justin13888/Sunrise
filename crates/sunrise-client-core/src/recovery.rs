@@ -535,20 +535,17 @@ fn relay_error(e: RelayRefusal) -> RestoreError {
 /// Wait for the sync driver to report `Live` with nothing pending, reporting
 /// how many changes the replay has applied as it goes.
 ///
-/// Timed against the core's injected clock rather than `Instant`, which the
-/// workspace lint bans so that time is never read from two sources.
+/// [`crate::sync::wait_until_caught_up`], timed against the core's injected
+/// clock, with the change count drained before each status is judged.
 async fn wait_until_live(
     core: &Core,
     mut changes: broadcast::Receiver<DomainEvent>,
     budget_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<(), String> {
-    /// How often to re-read the status.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
-    let deadline = core.now_ms().saturating_add(budget_ms);
     let mut applied = 0u64;
     let mut reported = 0u64;
-    let last = loop {
+    let waited = crate::sync::wait_until_caught_up(core, budget_ms, &mut |_| {
         loop {
             match changes.try_recv() {
                 Ok(_) => applied += 1,
@@ -560,22 +557,17 @@ async fn wait_until_live(
             reported = applied;
             progress(RecoveryProgress::Replaying { applied });
         }
-        let sunrise_core::QueryResult::SyncStatus(s) = core
-            .query(sunrise_core::Query::SyncStatus)
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("unexpected query result".into());
-        };
-        if s.state == sunrise_sync::SyncState::Live && s.outbox_pending == 0 {
-            return Ok(());
-        }
-        if core.now_ms() >= deadline {
-            break format!("{:?}, {} pending", s.state, s.outbox_pending);
-        }
-        tokio::time::sleep(POLL).await;
-    };
-    Err(format!("still {last} after {}s", budget_ms / 1000))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    waited.map_err(|last| {
+        format!(
+            "still {:?}, {} pending after {}s",
+            last.state,
+            last.outbox_pending,
+            budget_ms / 1000
+        )
+    })
 }
 
 /// Lower-case hex of a 16-byte id.

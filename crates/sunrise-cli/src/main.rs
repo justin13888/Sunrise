@@ -1907,9 +1907,6 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     #![allow(clippy::print_stdout)]
     /// How long to wait for the outbox to empty before giving up.
     const DEADLINE_MS: u64 = 30_000;
-    /// How often to re-read the outbox depth.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
-
     if !rest.is_empty() && rest[0] != "--once" {
         return Err("usage: sync --once".into());
     }
@@ -1918,26 +1915,25 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     }
     // Timed against the core's injected clock rather than `Instant`, which
     // the workspace lint bans so that time is never read from two sources.
-    let deadline = core.now_ms().saturating_add(DEADLINE_MS);
     let mut last = u32::MAX;
-    while core.now_ms() < deadline {
-        let QueryResult::SyncStatus(s) = core.query(Query::SyncStatus).await? else {
-            return Err("unexpected query result".into());
-        };
-        if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
-            println!("{}", strings::sync::live());
-            return Ok(());
-        }
-        if s.outbox_pending != last {
+    let waited = sunrise_client_core::sync::wait_until_caught_up(core, DEADLINE_MS, &mut |s| {
+        let caught_up = s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live;
+        if !caught_up && s.outbox_pending != last {
             last = s.outbox_pending;
             println!(
                 "{}",
                 strings::sync::pending(i64::from(s.outbox_pending), &format!("{:?}", s.state))
             );
         }
-        tokio::time::sleep(POLL).await;
+    })
+    .await?;
+    match waited {
+        Ok(()) => {
+            println!("{}", strings::sync::live());
+            Ok(())
+        }
+        Err(_) => Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into()),
     }
-    Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into())
 }
 
 fn print_tasks(r: QueryResult) {

@@ -20,6 +20,9 @@
 //! * [`config`] — the tiny TOML subset both preference files are written in.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
+//! * `sync` (feature `relay`) — the SSE transport factory every client dials
+//!   with, the bounded background `sync_once`, and the wait for an outbox or
+//!   a replay to catch up.
 //! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
 //!   flow steps 3 to 8, from the typed code to a vault that has read its
 //!   history, over the REST client in `sunrise-relay-client`.
@@ -40,6 +43,8 @@ pub mod history;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
+#[cfg(feature = "relay")]
+pub mod sync;
 pub mod undo;
 pub mod views;
 pub mod vocab;

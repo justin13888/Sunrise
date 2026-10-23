@@ -34,11 +34,10 @@ use std::sync::Arc;
 use sunrise_auth::CredentialStore;
 
 use sunrise_core::{
-    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, CredentialRead, SyncConfig,
-    TokenSource, TransportFactory, Unlock,
+    Core, CoreConfig, CoreError, SyncConfig, TokenSource, TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_sync::{DeviceSigner, SseTransport};
+use sunrise_sync::DeviceSigner;
 
 /// Env var: relay **origin** for the `/api/v1/sync` surface. Unset ⇒ sync
 /// stays off.
@@ -206,7 +205,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     }
 }
 
-/// Build a [`TransportFactory`] that reaches `url` with the real [`SseTransport`]
+/// Build a [`TransportFactory`] that reaches `url` with the real [`sunrise_sync::SseTransport`]
 /// on every connect attempt (initial connect + every reconnect), presenting
 /// the bearer the driver read for **that attempt**.
 ///
@@ -215,8 +214,9 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// reconnect after a renewal presents the new token, and the driver knows
 /// which version each attempt carried.
 ///
-/// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
-/// transport-agnostic and calls it once per connection attempt.
+/// The factory itself is [`sunrise_client_core::sync::sse_factory`], the one
+/// the Apple clients dial with too; the driver is transport-agnostic and calls
+/// it once per connection attempt.
 ///
 /// `signer` is the ADR-0022 device binding. It is cloned per attempt rather
 /// than captured into one transport for the same reason the bearer is read per
@@ -225,19 +225,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// runs on whatever connection the driver has at the time.
 #[must_use]
 pub fn ws_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
-    let url = url.to_string();
-    Arc::new(move |read: CredentialRead| {
-        let url = url.clone();
-        let signer = signer.clone();
-        Box::pin(async move {
-            let t = SseTransport::connect_with_bearer(&url, read.bearer());
-            let t = match signer {
-                Some(s) => t.with_device_signer(s),
-                None => t,
-            };
-            Ok(Box::new(t) as BoxTransport)
-        }) as ConnectFuture
-    })
+    sunrise_client_core::sync::sse_factory(url, signer, None)
 }
 
 /// Execute `plan` against an already-opened `core`: start the sync driver.

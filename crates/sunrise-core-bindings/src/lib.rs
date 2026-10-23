@@ -1377,41 +1377,15 @@ fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
         })
 }
 
-/// Build the transport factory the sync driver dials with, once per connection
-/// attempt (initial connect and every reconnect).
-///
-/// The factory holds no bearer: the driver reads the core's sync credential on
-/// every attempt and hands the read over, so a reconnect after a renewal
-/// presents the *current* token and the driver knows which version each
-/// attempt carried. `signer` — the ADR-0022 device binding — is cloned per
-/// attempt for the same reason: the route where that matters most is the
-/// revocation `DELETE`, which runs on whatever connection the driver holds at
-/// the time.
-///
-/// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
-/// transport-agnostic and calls this once per connection attempt.
-///
-/// Every transport goes out through `link`, which counts it and lets
-/// [`SunriseCore::sync_once`] end it later — see [`background`].
+/// The transport factory the sync driver dials with: the shared SSE factory,
+/// every transport going out through `link` so [`SunriseCore::sync_once`] can
+/// count and end it — see [`background`].
 fn ws_factory(
     url: &str,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
     link: background::SyncLink,
 ) -> sunrise_core::TransportFactory {
-    let url = url.to_string();
-    Arc::new(move |read: sunrise_core::CredentialRead| {
-        let url = url.clone();
-        let signer = signer.clone();
-        let link = link.clone();
-        Box::pin(async move {
-            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
-            let t = match signer {
-                Some(s) => t.with_device_signer(s),
-                None => t,
-            };
-            Ok(link.wrap(Box::new(t)))
-        }) as sunrise_core::ConnectFuture
-    })
+    sunrise_client_core::sync::sse_factory(url, signer, Some(link))
 }
 
 /// What reporting a zone did. See [`sunrise_core::TimeZoneChange`].
