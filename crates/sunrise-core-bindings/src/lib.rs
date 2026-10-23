@@ -62,6 +62,7 @@ pub mod build_info;
 pub mod client;
 pub mod command;
 pub mod dto;
+pub mod editing;
 pub mod ical;
 pub mod notes;
 pub mod pairing;
