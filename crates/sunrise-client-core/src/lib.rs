@@ -36,6 +36,8 @@
 //!   an export's file name.
 //! * [`civil`] — a picked moment turned into a time value of the kind the
 //!   user meant, in a zone the caller names, with no silent fallback.
+//! * [`editor`] — the task, block and routine editors' forms, turned into
+//!   patches that carry only what changed and keep every time's kind.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -62,6 +64,7 @@
 pub mod account;
 pub mod brief;
 pub mod civil;
+pub mod editor;
 pub mod focus;
 pub mod gate;
 pub mod history;
