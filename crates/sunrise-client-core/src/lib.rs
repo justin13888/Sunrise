@@ -46,6 +46,8 @@
 //! * [`relay_url`] — the one rule for what a relay URL is, shared with the
 //!   web client through `vectors/relay-url.json`.
 //! * [`sync_status`] — the sync badge and the sync plan, as codes.
+//! * [`links`] — `sunrise://` deep links, parsed and built.
+//! * [`share`] — what shared text, a link and images become as an Inbox task.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -79,6 +81,7 @@ pub mod gate;
 pub mod history;
 pub mod host;
 pub mod ids;
+pub mod links;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
@@ -86,6 +89,7 @@ pub mod relay_url;
 pub mod reminders;
 pub mod review;
 pub mod schedule;
+pub mod share;
 #[cfg(feature = "relay")]
 pub mod sync;
 pub mod sync_status;

@@ -65,6 +65,7 @@ pub mod command;
 pub mod dto;
 pub mod editing;
 pub mod ical;
+pub mod links;
 pub mod notes;
 pub mod pairing;
 pub mod pairing_relay;
