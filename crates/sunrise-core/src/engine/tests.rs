@@ -19278,3 +19278,7 @@ mod attachment_thumbnail;
 /// Today, the calendar windows and validation in the reader's zone
 /// (`docs/10-cross-cutting/time.md`, issue #336).
 mod time_zones;
+
+/// An inner op nested past `sunrise_cbor::MAX_DOC_DEPTH` parks; one at it
+/// applies (ADR-0045 §4).
+mod nesting_bound;

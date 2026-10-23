@@ -43,8 +43,14 @@ pub(super) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
 
+/// A stored field value, read under `sunrise_cbor::MAX_DOC_DEPTH`.
+///
+/// A value an applied op wrote is shallower than the op by the levels the op
+/// wraps it in, so the bound refuses none of them. It does hold a value a
+/// joined snapshot carried to the same bound an op is held to.
 pub(super) fn dec(bytes: &[u8]) -> Value {
-    ciborium::de::from_reader(bytes).unwrap_or(Value::Null)
+    sunrise_cbor::decode_bounded(&mut &bytes[..], sunrise_cbor::MAX_DOC_DEPTH)
+        .unwrap_or(Value::Null)
 }
 
 // ---- state I/O ----

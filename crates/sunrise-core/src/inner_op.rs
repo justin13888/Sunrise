@@ -456,6 +456,16 @@ pub enum InnerOpError {
     /// it (ADR-0045 §4).
     #[error("inner-op kind `{0}` is not one this build knows")]
     UnknownKind(String),
+    /// The blob nests more than [`sunrise_cbor::MAX_DOC_DEPTH`] arrays, maps
+    /// and tags deep, so this build did not read past the bound.
+    ///
+    /// Carries the variant name the blob is tagged with, empty when it is not
+    /// an externally tagged op, for the parked row's diagnostics. Nothing this
+    /// build writes comes near the bound, but a newer build's fields may, so
+    /// the receive path parks the op rather than refusing it (ADR-0045 §4):
+    /// it verified and opened, and a build with a larger bound can read it.
+    #[error("inner op nests deeper than this build reads")]
+    TooDeep(String),
 }
 
 /// Encode an [`InnerOp`] to its canonical CBOR blob (the envelope payload).
@@ -467,11 +477,18 @@ pub(crate) fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, InnerOpError> {
 
 /// Decode an inner-op CBOR blob back into an [`InnerOp`].
 ///
+/// Nesting is bounded at [`sunrise_cbor::MAX_DOC_DEPTH`], whose docs give the
+/// deepest shape the format defines (eight levels) and why the bound leaves
+/// a newer build's fields room past it.
+///
 /// # Errors
 /// [`InnerOpError::UnknownKind`] if the bytes are an externally tagged op —
 /// a single-entry map keyed by a text variant name, or a bare text name — and
 /// that name is not one [`InnerOp`] declares. The payload under an unknown
 /// name is not inspected: this build has no shape to check it against.
+///
+/// [`InnerOpError::TooDeep`] if the blob nests past the bound and its name is
+/// one this build knows, or it has none.
 ///
 /// [`InnerOpError::Cbor`] for anything else that does not decode: bytes that
 /// are not CBOR, a shape that is not an externally tagged op, or a known
@@ -479,11 +496,17 @@ pub(crate) fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, InnerOpError> {
 /// never `UnknownKind`, so a damaged op of a family this build reads is still
 /// reported as damage.
 pub(crate) fn decode_inner_op(bytes: &[u8]) -> Result<InnerOp, InnerOpError> {
-    ciborium::de::from_reader(bytes).map_err(|e| {
-        unknown_kind(bytes).map_or_else(
-            || InnerOpError::Cbor(e.to_string()),
-            InnerOpError::UnknownKind,
-        )
+    use sunrise_cbor::{decode_bounded, ValueDecodeError, MAX_DOC_DEPTH};
+    decode_bounded(&mut &bytes[..], MAX_DOC_DEPTH).map_err(|e| {
+        if let Some(name) = unknown_kind(bytes) {
+            return InnerOpError::UnknownKind(name);
+        }
+        match e {
+            ValueDecodeError::TooDeep => {
+                InnerOpError::TooDeep(tagged_name(bytes).unwrap_or_default())
+            }
+            ValueDecodeError::Malformed(m) => InnerOpError::Cbor(m),
+        }
     })
 }
 
@@ -491,19 +514,68 @@ pub(crate) fn decode_inner_op(bytes: &[u8]) -> Result<InnerOp, InnerOpError> {
 /// not declare, or `None` when the bytes are not that shape or the name is
 /// known.
 fn unknown_kind(bytes: &[u8]) -> Option<String> {
+    tagged_name(bytes).filter(|name| !known_kinds().contains(&name.as_str()))
+}
+
+/// The variant name an inner op's bytes are tagged with, known to this build
+/// or not, or `None` when the bytes are not an externally tagged op: a
+/// one-entry map with a text key, `{"Name": payload}`, which every variant
+/// this build declares is, or bare text, `"Name"`, serde's tagging of a unit
+/// variant, which a later family is free to be.
+///
+/// The whole item is read under [`sunrise_cbor::MAX_DOC_DEPTH`], so bytes that
+/// are not CBOR have no name. An item nested past the bound is not read in
+/// full: its name is the first key of its outer map, read without descending
+/// into the payload.
+pub(crate) fn tagged_name(bytes: &[u8]) -> Option<String> {
     use ciborium::value::Value;
-    let name = match ciborium::de::from_reader::<Value, _>(bytes).ok()? {
-        // `{"Name": payload}`: every variant this build declares.
-        Value::Map(mut entries) if entries.len() == 1 => match entries.pop()?.0 {
-            Value::Text(name) => name,
-            _ => return None,
+    use sunrise_cbor::{decode_bounded, ValueDecodeError, MAX_DOC_DEPTH};
+    match decode_bounded::<Value>(&mut &bytes[..], MAX_DOC_DEPTH) {
+        Ok(Value::Map(mut entries)) if entries.len() == 1 => match entries.pop()?.0 {
+            Value::Text(name) => Some(name),
+            _ => None,
         },
-        // `"Name"`: serde's external tagging of a unit variant, which a later
-        // family is free to be.
-        Value::Text(name) => name,
-        _ => return None,
-    };
-    (!known_kinds().contains(&name.as_str())).then_some(name)
+        Ok(Value::Text(name)) => Some(name),
+        Ok(_) | Err(ValueDecodeError::Malformed(_)) => None,
+        Err(ValueDecodeError::TooDeep) => head_name(bytes),
+    }
+}
+
+/// The first key of `bytes`' outer map, when it is text and the map has one
+/// entry or an indefinite length, read without reading the payload under it.
+/// Only [`tagged_name`] calls this, for an item too deep to read whole.
+fn head_name(bytes: &[u8]) -> Option<String> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+
+    struct Head(Option<String>);
+    struct HeadVisitor;
+
+    impl<'de> Visitor<'de> for HeadVisitor {
+        type Value = Head;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an externally tagged op")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Head, A::Error> {
+            if map.size_hint().is_some_and(|n| n != 1) {
+                return Ok(Head(None));
+            }
+            // A non-text key is no name; the payload is never read.
+            Ok(Head(map.next_key::<String>().ok().flatten()))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Head {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_map(HeadVisitor)
+        }
+    }
+
+    // One level: the outer map. Its key is text and reads at no depth.
+    sunrise_cbor::decode_bounded::<Head>(&mut &bytes[..], 1)
+        .ok()
+        .and_then(|h| h.0)
 }
 
 /// Every variant name [`InnerOp`]'s derived `Deserialize` accepts.
@@ -795,6 +867,190 @@ mod tests {
                 "{bytes:02x?} must stay damage"
             );
         }
+    }
+
+    /// `n` one-element arrays around the integer 1.
+    fn nest(n: usize) -> ciborium::value::Value {
+        use ciborium::value::Value;
+        let mut v = Value::Integer(1.into());
+        for _ in 0..n {
+            v = Value::Array(vec![v]);
+        }
+        v
+    }
+
+    /// Arrays, maps and tags enclosing one another in `v`, `v` included.
+    fn depth(v: &ciborium::value::Value) -> usize {
+        use ciborium::value::Value;
+        match v {
+            Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+            Value::Map(entries) => {
+                1 + entries
+                    .iter()
+                    .map(|(k, v)| depth(k).max(depth(v)))
+                    .max()
+                    .unwrap_or(0)
+            }
+            Value::Tag(_, inner) => 1 + depth(inner),
+            _ => 0,
+        }
+    }
+
+    /// `{"TaskCreate": task}` for a minimal task carrying one field no build
+    /// knows, `"zz_newer"`, nested `levels` arrays deep.
+    fn task_create_with_unknown(levels: usize) -> ciborium::value::Value {
+        use ciborium::value::Value;
+        let text = |s: &str| Value::Text(s.into());
+        let eref = |kind, b| Value::serialized(&EntityRef::new(kind, [b; 16])).unwrap();
+        let task = Value::Map(vec![
+            (text("id"), eref(EntityKind::Task, 1)),
+            (text("created_at"), text("2026-01-01T00:00:00Z")),
+            (text("updated_at"), text("2026-01-01T00:00:00Z")),
+            (text("stream_id"), eref(EntityKind::Stream, 2)),
+            (text("title"), text("t")),
+            (text("state"), text("todo")),
+            (text("zz_newer"), nest(levels)),
+        ]);
+        Value::Map(vec![(text("TaskCreate"), task)])
+    }
+
+    /// The deepest inner op the format defines is eight levels, an OR-set
+    /// remove in a `Patch`, and the deepest this build writes is seven, a
+    /// preference `Patch` of a `{day, at}` value. Both decode, which pins
+    /// `sunrise_cbor::MAX_DOC_DEPTH`'s stated floor from the format side.
+    #[test]
+    fn the_deepest_shapes_the_format_defines_decode() {
+        use ciborium::value::Value;
+        let text = |s: &str| Value::Text(s.into());
+        let tag = Value::Array(vec![
+            Value::Bytes(vec![1; 16]),
+            Value::Bytes(vec![2; 16]),
+            Value::Integer(3.into()),
+        ]);
+        let remove = Value::Map(vec![(
+            text("Patch"),
+            Value::Map(vec![
+                (
+                    text("ref"),
+                    Value::serialized(&EntityRef::new(EntityKind::Task, [1; 16])).unwrap(),
+                ),
+                (
+                    text("fields"),
+                    Value::Map(vec![(
+                        text("contexts"),
+                        Value::Map(vec![(
+                            text("remove"),
+                            Value::Array(vec![Value::Array(vec![
+                                text("ctx_x"),
+                                Value::Array(vec![tag]),
+                            ])]),
+                        )]),
+                    )]),
+                ),
+            ]),
+        )]);
+        assert_eq!(depth(&remove), 8);
+        assert!(matches!(
+            decode_inner_op(&cbor(&remove)),
+            Ok(InnerOp::Patch(_))
+        ));
+
+        let preference = Value::Map(vec![(
+            text("Patch"),
+            Value::Map(vec![
+                (
+                    text("ref"),
+                    Value::serialized(&EntityRef::new(EntityKind::Preferences, [1; 16])).unwrap(),
+                ),
+                (
+                    text("fields"),
+                    Value::Map(vec![(
+                        text("values"),
+                        Value::Map(vec![(
+                            text("map"),
+                            Value::Map(vec![(
+                                text("review.cadence"),
+                                Value::Map(vec![(
+                                    text("set"),
+                                    Value::Map(vec![
+                                        (text("day"), text("FR")),
+                                        (text("at"), text("16:00:00")),
+                                    ]),
+                                )]),
+                            )]),
+                        )]),
+                    )]),
+                ),
+            ]),
+        )]);
+        assert_eq!(depth(&preference), 7);
+        assert!(matches!(
+            decode_inner_op(&cbor(&preference)),
+            Ok(InnerOp::Patch(_))
+        ));
+    }
+
+    /// A newer build's field may nest until the whole op is
+    /// `MAX_DOC_DEPTH` deep, and is kept. One level more is `TooDeep`, named
+    /// by the op's variant so the parked row says what it was, and never
+    /// `Cbor`: the receive path parks it rather than refusing it.
+    #[test]
+    fn an_op_is_read_to_the_document_depth_and_too_deep_past_it() {
+        use ciborium::value::Value;
+        use sunrise_cbor::MAX_DOC_DEPTH;
+        // The op's map and the task's map are two of the levels.
+        let at = task_create_with_unknown(MAX_DOC_DEPTH - 2);
+        assert_eq!(depth(&at), MAX_DOC_DEPTH);
+        let Ok(InnerOp::TaskCreate(task)) = decode_inner_op(&cbor(&at)) else {
+            panic!("an op at the bound decodes");
+        };
+        assert_eq!(
+            task.unknown.get("zz_newer").map(|v| v.0.clone()),
+            Some(nest(MAX_DOC_DEPTH - 2)),
+            "the deep field is kept, not dropped"
+        );
+
+        let over = cbor(&task_create_with_unknown(MAX_DOC_DEPTH - 1));
+        assert!(matches!(
+            decode_inner_op(&over),
+            Err(InnerOpError::TooDeep(k)) if k == "TaskCreate"
+        ));
+        assert_eq!(tagged_name(&over).as_deref(), Some("TaskCreate"));
+
+        // A family this build does not know is unknown first, however deep.
+        let Value::Map(mut entries) = task_create_with_unknown(MAX_DOC_DEPTH) else {
+            unreachable!()
+        };
+        entries[0].0 = Value::Text("FutureKind".into());
+        assert!(matches!(
+            decode_inner_op(&cbor(&Value::Map(entries))),
+            Err(InnerOpError::UnknownKind(k)) if k == "FutureKind"
+        ));
+
+        // A deep nest that is not an externally tagged op at all is damage,
+        // refused at its first header without descending, however deep it
+        // goes and whether or not the bytes could hold its body.
+        assert!(matches!(
+            decode_inner_op(&cbor(&nest(MAX_DOC_DEPTH + 1))),
+            Err(InnerOpError::Cbor(_))
+        ));
+        assert!(matches!(
+            decode_inner_op(&[0x81; 4096]),
+            Err(InnerOpError::Cbor(_))
+        ));
+        assert_eq!(tagged_name(&[0x81; 4096]), None);
+
+        // A known variant over a deep, truncated nest is too deep, not
+        // truncated: the bound is met before the end of the bytes is.
+        let mut truncated = vec![0xa1, 0x6a];
+        truncated.extend_from_slice(b"TaskCreate");
+        truncated.extend([0xa1, 0x68]);
+        truncated.extend_from_slice(b"zz_newer");
+        truncated.extend([0x81; 4096]);
+        assert!(matches!(
+            decode_inner_op(&truncated),
+            Err(InnerOpError::TooDeep(k)) if k == "TaskCreate"
+        ));
     }
 
     /// The six tables every new variant has to be added to, asserted together

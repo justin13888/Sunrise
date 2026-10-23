@@ -319,6 +319,11 @@ pub enum ParkReason {
     /// apply path refused it. The kind is no longer missing, so the
     /// `unknown_kind` it was parked under would misstate why it is kept.
     ReplayRefused,
+    /// The inner op nests deeper than this build reads
+    /// (`sunrise_cbor::MAX_DOC_DEPTH`). Nothing a build writes today comes
+    /// near the bound; a newer build's fields may, and a build with a larger
+    /// bound reads the op.
+    TooDeep,
 }
 
 impl ParkReason {
@@ -329,6 +334,7 @@ impl ParkReason {
             Self::UnknownKind => "unknown_kind",
             Self::SchemaFpMismatch => "schema_fp_mismatch",
             Self::ReplayRefused => "replay_refused",
+            Self::TooDeep => "too_deep",
         }
     }
 }

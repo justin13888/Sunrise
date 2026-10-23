@@ -344,11 +344,25 @@ impl Engine {
         //    An op of a kind this build does not know verified and opened, so
         //    it is not damage: it is a newer build's family. It is kept and
         //    counted rather than refused (ADR-0045 §4), and replayed once a
-        //    build that knows it opens the vault.
+        //    build that knows it opens the vault. So is one nested deeper
+        //    than this build reads (`sunrise_cbor::MAX_DOC_DEPTH`): a newer
+        //    build's fields may nest that deep, and a build with a larger
+        //    bound reads it.
         let mut inner = match decode_inner_op(&inner_cbor) {
             Ok(inner) => inner,
             Err(InnerOpError::UnknownKind(kind)) => {
                 self.park_op(db, envelope_bytes, &env, &kind, DOC_SCHEMA_V)?;
+                return Ok(Vec::new());
+            }
+            Err(InnerOpError::TooDeep(kind)) => {
+                self.park_op_as(
+                    db,
+                    envelope_bytes,
+                    &env,
+                    ParkReason::TooDeep,
+                    &kind,
+                    DOC_SCHEMA_V,
+                )?;
                 return Ok(Vec::new());
             }
             Err(e) => return Err(EngineError::RemoteOpInvalid(format!("inner op: {e}"))),

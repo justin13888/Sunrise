@@ -53,6 +53,7 @@ final class ParkedOpsModel {
         case "unknown_kind": "From a newer version of Sunrise"
         case "replay_refused": "Refused after an update"
         case "schema_fp_mismatch": "Read differently by this version of Sunrise"
+        case "too_deep": "Nested deeper than this version of Sunrise reads"
         default: reason
         }
     }
