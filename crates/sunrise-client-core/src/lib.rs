@@ -19,6 +19,7 @@
 //!   the [`views::SavedViewStore`] that reads and writes them.
 //! * [`preferences`] — the bootstrap preferences file a device reads before
 //!   it has a vault, written so a crash leaves one whole file or the other.
+//! * [`ids`] — lowercase hex for the ids that have no `EntityRef` prefix.
 //! * [`host`] — what a host hands the core at open: an injected clock, and a
 //!   vault root checked for its width.
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
@@ -74,6 +75,7 @@ pub mod focus;
 pub mod gate;
 pub mod history;
 pub mod host;
+pub mod ids;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;

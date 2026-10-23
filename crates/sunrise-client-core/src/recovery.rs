@@ -432,7 +432,7 @@ pub async fn rejoin_account<R: RecoveryRelay>(
     catch_up_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<Recovered, RestoreError> {
-    let identity_id = hex_16(&identity.identity_id);
+    let identity_id = crate::ids::hex_id(&identity.identity_id);
     let core = Arc::new(
         Core::open(
             cfg,
@@ -567,16 +567,6 @@ async fn wait_until_live(
             last.outbox_pending,
             budget_ms / 1000
         )
-    })
-}
-
-/// Lower-case hex of a 16-byte id.
-fn hex_16(id: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    id.iter().fold(String::with_capacity(32), |mut out, b| {
-        // Infallible: writing to a `String` cannot fail.
-        let _ = write!(out, "{b:02x}");
-        out
     })
 }
 
