@@ -43,6 +43,8 @@
 //!   in civil days and in the kind the plan already has.
 //! * [`calendar`] — the grid's days and week start, block layout, snapping,
 //!   drags, and the Resolve menu's merge.
+//! * [`relay_url`] — the one rule for what a relay URL is, shared with the
+//!   web client through `vectors/relay-url.json`.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -79,6 +81,7 @@ pub mod ids;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
+pub mod relay_url;
 pub mod reminders;
 pub mod review;
 pub mod schedule;

@@ -140,7 +140,7 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 The web client connects to whatever relay its browser has chosen, so one deployment of the static assets serves every self-hosted relay. There is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
 
-*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — resolved in this order:
+*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — by the rule every client shares (`sunrise_client_core::relay_url`; the TypeScript restatement and the Rust rule are both tested against `crates/sunrise-client-core/vectors/relay-url.json`, and the web core exports the Rust one as `checkRelayUrl`). It is resolved in this order:
 
 1. **The stored choice**, in `localStorage`. A relay URL is not sensitive: the relay sees ciphertext only.
 2. **A link**, `?server=https://relay.example` on the app's address — how an operator points a user at their relay. Followed only while nothing is stored, then stored, and taken off the address. A link to a different relay than the stored one is ignored with a console warning: a link must not move a user onto another relay without anything on screen saying so.

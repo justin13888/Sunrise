@@ -70,6 +70,7 @@ pub mod pairing;
 pub mod pairing_relay;
 pub mod query;
 pub mod recovery;
+pub mod relay_url;
 pub mod reminders;
 pub mod settings;
 pub mod types;

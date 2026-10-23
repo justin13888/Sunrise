@@ -31,49 +31,88 @@ export const SERVER_PARAM = "server";
 /** The `localStorage` key the chosen server is stored under. */
 export const STORAGE_KEY = "sunrise-web-server-url";
 
-/** The longest URL accepted: the pairing QR payload's `relay_url` bound. */
+/** The longest URL accepted, in bytes: the pairing QR payload's `relay_url` bound. */
 export const MAX_SERVER_URL_LENGTH = 256;
 
-/** Hosts a browser treats as secure over plain `http:`. */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/**
+ * Why a string is not a relay URL. The names are the ones
+ * `crates/sunrise-client-core/vectors/relay-url.json` uses, which is the file
+ * both this and the Rust rule (`sunrise_client_core::relay_url`) are tested
+ * against.
+ */
+export type RelayUrlIssue =
+    | "empty"
+    | "too_long"
+    | "not_a_url"
+    | "web_socket"
+    | "unsupported_scheme"
+    | "insecure_remote"
+    | "not_an_origin";
+
+/** What `checkRelayUrl` made of a string. */
+export type RelayUrlCheck = { origin: string } | { issue: RelayUrlIssue };
+
+/** `localhost`, `127.0.0.0/8` and `::1`: a relay on this machine. */
+function isLoopback(hostname: string): boolean {
+    return (
+        hostname === "localhost" ||
+        hostname === "[::1]" ||
+        /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    );
+}
 
 /**
- * `input` as a relay origin — `https://relay.example:8443`, no trailing slash —
- * or `null` if it is not one.
+ * `input` as a relay origin — `https://relay.example:8443`, no trailing slash
+ * — or why it is not one: the one rule every client shares
+ * (`sunrise_client_core::relay_url`, which the web core also exports as
+ * `checkRelayUrl`). Restated here because the page reads its relay
+ * synchronously at start-up, on the main thread, where the wasm core is not
+ * loaded and may not have been built; the shared vectors keep the two equal.
  *
- * `https:` only, except on loopback, where `http:` is a local relay under
- * development: a page served over `https:` cannot reach an `http:` relay
- * anywhere else, since the browser blocks it as mixed content. A path, query,
- * fragment or credential is refused rather than dropped: the relay client
- * takes an origin (`sunrise-relay-client`'s `base_url`), and silently
- * discarding part of what a user typed would connect them somewhere they did
- * not say.
+ * `https:` only, except on loopback, where `http:` is a relay on this machine.
+ * A path, query, fragment or credential is refused rather than dropped:
+ * silently discarding part of what a user typed would connect them somewhere
+ * they did not say. Checked in the Rust rule's order, so both name the same
+ * issue.
  */
-export function parseServerUrl(input: string): string | null {
+export function checkRelayUrl(input: string): RelayUrlCheck {
     const trimmed = input.trim();
-    if (trimmed === "" || trimmed.length > MAX_SERVER_URL_LENGTH) {
-        return null;
+    if (trimmed === "") {
+        return { issue: "empty" };
+    }
+    if (new TextEncoder().encode(trimmed).length > MAX_SERVER_URL_LENGTH) {
+        return { issue: "too_long" };
     }
     let url: URL;
     try {
         url = new URL(trimmed);
     } catch {
-        return null;
+        return { issue: "not_a_url" };
     }
-    const secure =
-        url.protocol === "https:" ||
-        (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname));
-    if (
-        !secure ||
-        url.username !== "" ||
-        url.password !== "" ||
-        url.pathname !== "/" ||
-        url.search !== "" ||
-        url.hash !== ""
-    ) {
-        return null;
+    if (url.protocol === "ws:" || url.protocol === "wss:") {
+        return { issue: "web_socket" };
     }
-    return url.origin;
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return { issue: "unsupported_scheme" };
+    }
+    if (url.hostname === "") {
+        return { issue: "not_a_url" };
+    }
+    // Anything past the origin — credentials, a path, even an empty `?` or
+    // `#` — makes the serialisation longer than the origin and its slash.
+    if (url.href !== `${url.origin}/`) {
+        return { issue: "not_an_origin" };
+    }
+    if (url.protocol === "http:" && !isLoopback(url.hostname)) {
+        return { issue: "insecure_remote" };
+    }
+    return { origin: url.origin };
+}
+
+/** `input` as a relay origin, or `null`: `checkRelayUrl` without the reason. */
+export function parseServerUrl(input: string): string | null {
+    const checked = checkRelayUrl(input);
+    return "origin" in checked ? checked.origin : null;
 }
 
 /** Where a resolved server URL came from. */

@@ -1,13 +1,41 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+    checkRelayUrl,
     MAX_SERVER_URL_LENGTH,
     parseServerUrl,
+    type RelayUrlCheck,
     readServerUrl,
     resolveServerUrl,
     type ServerUrlEnv,
     STORAGE_KEY,
     withoutServerParam,
 } from "./server-url";
+
+/**
+ * The cases the Rust rule (`sunrise_client_core::relay_url`) is tested
+ * against. One file, two implementations: a case that one accepts and the
+ * other refuses fails here or there.
+ */
+const vectors = JSON.parse(
+    readFileSync(
+        new URL(
+            "../../../crates/sunrise-client-core/vectors/relay-url.json",
+            import.meta.url,
+        ),
+        "utf8",
+    ),
+) as { cases: ({ input: string } & Partial<RelayUrlCheck>)[] };
+
+describe("checkRelayUrl", () => {
+    it("holds every shared vector", () => {
+        expect(vectors.cases.length).toBeGreaterThanOrEqual(25);
+        for (const { input, ...expected } of vectors.cases) {
+            const expanded = input.replace("{256}", "a".repeat(256));
+            expect(checkRelayUrl(expanded), input).toEqual(expected);
+        }
+    });
+});
 
 describe("parseServerUrl", () => {
     it("reduces an https URL to its origin", () => {

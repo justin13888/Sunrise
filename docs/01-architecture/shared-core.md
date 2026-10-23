@@ -86,6 +86,20 @@ kind ([ADR-0066](../11-adr/0066-times-survive-travel.md) §4):
   zone the caller names. An unknown zone name is an error here, not UTC
   ([ADR-0066](../11-adr/0066-times-survive-travel.md) §3).
 
+### The relay URL rule
+
+A relay URL is where a client sends the account bearer, so there is one rule
+for what counts as one (`crates/sunrise-client-core/src/relay_url.rs`):
+`https://`, or `http://` only to a loopback host (`localhost`, `127.0.0.0/8`,
+`::1`); an origin and nothing after the port, since the relay client appends
+its own paths and the pairing QR names an origin; at most 256 bytes, the QR's
+bound; and never `ws://`/`wss://`, which is refused with its own code because
+sync left the WebSocket (ADR-0023). It replaced three that disagreed: the Apple
+sync plan took any `http(s)://` string, path and all, the pairing seam took a
+path, and the web client took only an origin. The web client restates it in
+TypeScript for its synchronous start-up read, and both are tested against
+`crates/sunrise-client-core/vectors/relay-url.json`.
+
 ## Public surface (sketch)
 
 ```rust

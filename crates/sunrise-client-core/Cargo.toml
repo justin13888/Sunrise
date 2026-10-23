@@ -41,6 +41,9 @@ sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+# The one relay URL rule (`relay_url`): a WHATWG parser, so the web client's
+# `URL` and this agree on every input the shared vectors hold.
+url = { workspace = true }
 
 # --- `relay` ---
 # `Transport` is an `async_trait`, and `sync::SyncLink` wraps the transport the
@@ -58,5 +61,6 @@ zeroize = { workspace = true, optional = true }
 [dev-dependencies]
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
