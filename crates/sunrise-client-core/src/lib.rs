@@ -1,10 +1,15 @@
-//! Client-side logic that is not any one client's.
+//! The client layer: everything between `sunrise-core` and a user interface
+//! that is not any one client's.
 //!
-//! Two things sit between `sunrise-core` and a user interface: they are not
-//! domain rules (the vault has no entity for either), and they are not
-//! rendering (no pixels, no keys, no terminal). Putting them in a client makes
-//! the next client reimplement them, and the two implementations then disagree
-//! about what `u` does or what a saved view means.
+//! None of it is a domain rule (the vault has no entity for an undo step or a
+//! saved view), and none of it is rendering (no pixels, no keys, no terminal).
+//! Put in a client, it gets reimplemented by the next one, and the two then
+//! disagree about what undo does, what a saved view means, or when a recovery
+//! has finished. So every client links this crate — the `UniFFI` seam the
+//! Apple apps call (`sunrise-core-bindings`), the CLI, and the web core
+//! (`sunrise-core-wasm`, without `relay`) — and a seam's own code is the
+//! lowering of its records onto these functions and nothing else
+//! (`docs/01-architecture/shared-core.md` §The client layer).
 //!
 //! * [`undo`] — undo/redo built from **inverse commands**, read out of the
 //!   rows the client is already holding.
@@ -19,7 +24,6 @@
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
 //! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
 //!   sections, relative days, snoozes, block conflicts, session timers.
-//! * [`config`] — the tiny TOML subset both preference files are written in.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -29,9 +33,14 @@
 //!   flow steps 3 to 8, from the typed code to a vault that has read its
 //!   history, over the REST client in `sunrise-relay-client`.
 //!
-//! Everything here is pure over its inputs. Nothing reads a clock, opens a
-//! socket, or touches a `Core`; [`views::load`] is the only function that
-//! touches the filesystem, and it takes the path.
+//! # Determinism
+//!
+//! Nothing here reads the host's clock or zone. Time is the core's injected
+//! clock ([`sunrise_core::Core::now_ms`]) or a zone name the caller passes;
+//! randomness is an injected [`sunrise_core::Rng`]; a file is a path the
+//! caller names. The workspace's `disallowed-methods` rules hold here as they
+//! do in the core (`docs/01-architecture/shared-core.md`), and every module is
+//! unit-tested without a seam.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -39,7 +48,6 @@
 
 #[cfg(feature = "relay")]
 pub mod account;
-pub mod config;
 pub mod gate;
 pub mod history;
 pub mod host;
@@ -52,7 +60,6 @@ pub mod undo;
 pub mod views;
 pub mod vocab;
 
-pub use config::parse_pairs;
 pub use undo::{
     invert, invert_create, is_create, rebind_creates, EntityLookup, NotUndoable, UndoEntry,
     MAX_DEPTH,

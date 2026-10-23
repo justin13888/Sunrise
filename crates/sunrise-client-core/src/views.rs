@@ -3,7 +3,7 @@
 //! `docs/07-clients/parity-matrix.md` marks "Saved searches / views" **MUST**
 //! on every client. The vault has no entity for one — a saved view is a
 //! *pointer at* data, not data — so this is a per-device local preference,
-//! written in the [`crate::config`] TOML subset.
+//! written in a flat TOML subset this module reads itself.
 //!
 //! ```toml
 //! # ~/.config/sunrise/views.toml
@@ -155,8 +155,8 @@ pub fn parse_view(name: &str, spec: &str) -> Result<SavedView, String> {
 /// Read the saved views, or an empty list if the file is absent.
 ///
 /// Returns `(views, warnings)`. A malformed line costs that view and nothing
-/// else — the same rule `keys.toml` follows, because a typo in a config file
-/// must never cost the user a working app.
+/// else, because a typo in a preference file must never cost the user a
+/// working app.
 #[must_use]
 pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
     let Some(path) = path else {
@@ -167,7 +167,7 @@ pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
-    let pairs = match crate::config::parse_pairs(&src) {
+    let pairs = match parse_pairs(&src) {
         Ok(p) => p,
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
@@ -186,7 +186,7 @@ pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
 #[must_use]
 pub fn to_file(views: &[SavedView]) -> String {
     let mut out = String::from(
-        "# Sunrise saved views. Written by `:save <name>`; safe to edit.\n\
+        "# Sunrise saved views. Written by Sunrise; safe to edit.\n\
          # <name> = \"view=today;query=…;contexts=a,b\"\n",
     );
     for v in views {
@@ -282,6 +282,67 @@ impl SavedViewStore {
     }
 }
 
+/// Parse the file's TOML subset: comments, optional `[table]` headers, and
+/// `name = "value"` pairs.
+///
+/// Hand-rolled on purpose: the file is a flat list of string pairs, and a TOML
+/// dependency would be the largest in the tree for the smallest grammar in it.
+/// Anything outside the subset is an [`Err`] naming the line.
+///
+/// # Errors
+///
+/// Returns a message naming the offending line number.
+fn parse_pairs(src: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for (n, raw) in src.lines().enumerate() {
+        let line = strip_comment(raw).trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            if line.ends_with(']') {
+                // A table header is accepted and ignored, so a hand-edited
+                // file that grew a `[views]` line still reads as the flat
+                // list it is.
+                continue;
+            }
+            return Err(format!("line {}: unterminated table header", n + 1));
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(format!("line {}: expected `name = \"value\"`", n + 1));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!("line {}: missing name", n + 1));
+        }
+        let value = value.trim();
+        let quoted = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+        let Some(key) = quoted else {
+            return Err(format!("line {}: value must be a quoted string", n + 1));
+        };
+        out.push((name.to_string(), key.to_string()));
+    }
+    Ok(out)
+}
+
+/// Drop a trailing `#` comment, ignoring `#` inside a quoted value (so
+/// `tagged = "view=search;query=#urgent"` survives).
+fn strip_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
 /// Wire name for a view.
 const fn view_name(v: View) -> &'static str {
     match v {
@@ -298,7 +359,8 @@ const fn view_name(v: View) -> &'static str {
     }
 }
 
-/// The inverse of [`view_name`], accepting the `:view` spellings too.
+/// The inverse of [`view_name`], also accepting the older spellings a views
+/// file written before the names settled may still hold.
 fn parse_view_name(s: &str) -> Option<View> {
     Some(match s {
         "today" => View::Today,
@@ -486,5 +548,47 @@ mod tests {
             Some(PathBuf::from("/h/.config/sunrise/views.toml"))
         );
         assert_eq!(config_path_in(None, None), None);
+    }
+
+    #[test]
+    fn a_flat_list_of_pairs_parses() {
+        let pairs = parse_pairs("a = \"view=inbox\"\nb = 'view=today'\n").expect("parses");
+        assert_eq!(
+            pairs,
+            vec![
+                ("a".to_string(), "view=inbox".to_string()),
+                ("b".to_string(), "view=today".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_and_table_headers_are_ignored() {
+        let src = "# a comment\n[views]\na = \"view=inbox\"  # trailing\n";
+        assert_eq!(
+            parse_pairs(src).expect("parses"),
+            vec![("a".to_string(), "view=inbox".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_hash_inside_a_quoted_value_survives() {
+        assert_eq!(
+            parse_pairs("t = \"view=search;query=#urgent\"").expect("parses"),
+            vec![("t".to_string(), "view=search;query=#urgent".to_string())]
+        );
+    }
+
+    #[test]
+    fn anything_outside_the_subset_names_its_line() {
+        for (src, needle) in [
+            ("a view=inbox\n", "line 1"),
+            ("a = view=inbox\n", "quoted string"),
+            ("[views\n", "unterminated"),
+            (" = \"view=inbox\"\n", "missing name"),
+        ] {
+            let e = parse_pairs(src).unwrap_err();
+            assert!(e.contains(needle), "{src:?} -> {e}");
+        }
     }
 }
