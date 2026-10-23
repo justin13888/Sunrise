@@ -40,6 +40,8 @@
 //!   patches that carry only what changed and keep every time's kind.
 //! * [`schedule`] — defer, snooze, schedule and the Today capture default,
 //!   in civil days and in the kind the plan already has.
+//! * [`calendar`] — the grid's days and week start, block layout, snapping,
+//!   drags, and the Resolve menu's merge.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -65,6 +67,7 @@
 #[cfg(feature = "relay")]
 pub mod account;
 pub mod brief;
+pub mod calendar;
 pub mod civil;
 pub mod editor;
 pub mod focus;
