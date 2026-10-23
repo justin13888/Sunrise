@@ -44,6 +44,11 @@ hex = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = "3"
+# The CLI harness (`src/cli.rs`) drives the real `sunrise` binary. It writes a
+# stored sign-in the way `sunrise login` would, through the CLI's own store,
+# so `sunrise bootstrap` runs against the self-host relay.
+sunrise-auth = { workspace = true }
+sunrise-cli = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }

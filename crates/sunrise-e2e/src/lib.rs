@@ -14,6 +14,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod chaos;
+pub mod cli;
 pub mod cross_version;
 pub mod latency;
 

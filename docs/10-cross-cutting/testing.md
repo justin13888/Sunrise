@@ -84,6 +84,45 @@ replaced with a gate everywhere else.
   - Migration from old schema fixture.
   - Recovery code restore.
 
+#### The CLI end to end
+
+The in-process scenarios above share one address space; these do not.
+`crates/sunrise-e2e/tests/cli_two_vaults.rs` and
+`crates/sunrise-e2e/tests/cli_traveller.rs` boot the real relay and drive two
+vaults with the **real `sunrise` binary**, one process per command, through the
+harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
+a host with no Apple tooling: everything a user at two terminals does, with
+nothing shared between the devices but the relay.
+
+- **Setup.** Device A is published with `sunrise bootstrap` (the harness writes
+  the stored sign-in `sunrise login` would leave; the self-host relay accepts
+  any bearer), and device B joins with `sunrise recover` from the 24 words A
+  printed. Both then `sync --once` until level.
+- **Concurrent edits** to different fields of one task, made while apart:
+  both devices agree. Today they agree on the later write's whole task, so the
+  earlier device's field is lost — this build still emits full-state entity
+  writes, and ADR-0044 §9 holds back field-level `Patch` ops until a vault
+  requires `core.field_ops`. The test pins that and carries a
+  `TODO(ADR-0044 §9)` for the assertion that both survive.
+- **Concurrent defers** converge on one plan, which keeps its floating wall
+  clock and kind.
+- **Delete on one device, edit on the other**: the devices agree, and today
+  the later edit resurrects the task (entity-level last-writer-wins).
+  ADR-0065 makes the delete win and keeps the edit as a conflict; the
+  assertions for that are a `TODO(ADR-0065 PR5)` in the test.
+- **The traveller**: A writes in `America/New_York` (`SUNRISE_TZ`), then reads
+  and edits in `Asia/Kolkata`. A floating 09:00 stays 09:00 at another instant,
+  a zoned block keeps its own zone, a read or a zone change rewrites nothing
+  (`updated_at_ms` does not move), and B reads the same stored values in UTC.
+  The zone precedence (`--tz`, `SUNRISE_TZ`, `sunrise tz set`, the OS) and the
+  refusal of an unknown zone are asserted through the binary too.
+
+Run them with `mise run e2e-cli`, which builds the binary first. The harness
+also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)
+when `SUNRISE_CLI_BIN` does not name one, so `cargo test -p sunrise-e2e` never
+runs a stale binary. They read every result through `--json`, whose field names
+are the documented contract (`docs/07-clients/overview.md` §JSON output).
+
 ### 4. Per-platform UI tests (narrow)
 
 - Critical-path smoke tests on each platform:
