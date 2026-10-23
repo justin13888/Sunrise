@@ -1791,10 +1791,6 @@ fn the_scan_reaches_what_cargo_compiles() {
     // The diagnostic names files, never their contents: `{files:?}` on this map
     // printed the whole codebase — 2.94 MB — which is a gate someone turns off.
     let names: Vec<&String> = files.keys().collect();
-    assert!(
-        !names.iter().any(|f| f.starts_with("legacy/")),
-        "`legacy` is not a workspace member and must not be scanned: {names:?}"
-    );
     // An integration test is a target of its own and is out of scope. A
     // `src/tests/mod.rs` is not one — it is part of the library, and reading
     // `/tests/` anywhere in the path called that an integration test.

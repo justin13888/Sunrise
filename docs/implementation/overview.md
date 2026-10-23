@@ -37,7 +37,7 @@ and a crate can be reachable while a capability inside it is not.
 
 | Crate / Component | Status | Notes |
 |---|---|---|
-| Workspace + CI | ✅ live | Cargo + Bun workspace, 24 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
+| Workspace + CI | ✅ live | Cargo + Bun workspace, 24 crates; the pre-rewrite prototype is deleted (git history keeps it). CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |

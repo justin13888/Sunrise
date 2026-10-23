@@ -2,7 +2,7 @@
 
 This directory is the design source of truth for Sunrise: a local-first, end-to-end encrypted productivity system for people running many parallel streams of work (multiple jobs, household, relationships, travel, side projects, etc.).
 
-The live implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype now lives in `legacy/` and is not load-bearing for this design.
+The live implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype was deleted; git history keeps it, and it is not load-bearing for this design.
 
 This tree fully covers the design from first principles; every design decision is asserted with a brief justification; exact dependency pins live in `01-architecture/dependencies.md` (and the ADRs).
 

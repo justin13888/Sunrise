@@ -3084,7 +3084,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sunrise-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "http",
@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -3128,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-cbor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "serde",
@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "icu_decimal",
  "icu_locale_core",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-client-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jiff",
  "sunrise-core",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3215,7 +3215,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-core-bindings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3242,7 +3242,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-core-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3261,7 +3261,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -3290,11 +3290,11 @@ dependencies = [
 
 [[package]]
 name = "sunrise-crypto-test-vectors"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sunrise-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ciborium",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-error"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -3355,7 +3355,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-http-sig"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-id"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-integrations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "jiff",
@@ -3398,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-log"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jiff",
  "jsonschema 0.18.3",
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-onboarding"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "rand_chacha 0.3.1",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-pairing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
@@ -3451,7 +3451,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-relay-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-core",
@@ -3470,7 +3470,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3512,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "hex",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3552,7 +3552,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3571,14 +3571,14 @@ dependencies = [
 
 [[package]]
 name = "sunrise-test-seed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "sunrise-wire-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "serde",

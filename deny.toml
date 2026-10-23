@@ -22,6 +22,13 @@ ignore = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A workspace-internal path dependency carries no version (Cargo.toml's
+# `[workspace.dependencies]`): every crate is `publish = false`, so a version
+# requirement on a path dependency would be a second copy of the core train
+# number with nothing reading it. This allows exactly that shape -- a path
+# dependency of a private crate -- and still denies a `*` on anything that
+# resolves from a registry.
+allow-wildcard-paths = true
 highlight = "all"
 
 [licenses]

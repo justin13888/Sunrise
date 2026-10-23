@@ -313,6 +313,10 @@ run = [
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
 
+[tasks.publish-gate]
+description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
+run = ".github/scripts/publish-gate.py"
+
 # `spargen` reads the committed file, so it is an input rather than a report:
 # `the_committed_description_is_current` fails until this has been re-run.
 [tasks.openapi]
@@ -1432,6 +1436,14 @@ description = "Assert the orphan crate gate's exit-code contract (fast, synthesi
 # reachable count that overview.md cites and nothing checked the walk behind it.
 run = "python3 .github/scripts/test_orphan_crate_gate.py"
 
+[tasks.publish-gate-test]
+description = "Assert the publish gate's exit-code contract (fast, synthesised repositories)"
+# Under five seconds: it builds repositories of three to six manifests in a
+# temp directory and drives the gate at them with --root, so it never reads
+# this one. Each pass case asserts the counts the gate prints, because a rule
+# that stopped matching shows up as a smaller count, not as a red run.
+run = "python3 .github/scripts/test_publish_gate.py"
+
 [tasks.kynos-waiver-gate-test]
 description = "Assert the kynos waiver gate's exit-code contract (fast, synthesised workspaces)"
 # About a second: it synthesises a workspace with a stand-in `kynos` path
@@ -1529,6 +1541,9 @@ run = "python3 .github/scripts/test_reverses_gate.py"
 # failure here is a failure there. Note the size of the job: a release build of
 # the workspace's C dependencies (SQLCipher, ring, zstd) inside a fresh
 # container wants ~10 GB of container storage and tens of minutes cold.
+# `VERSION` is the core train's (ADR-0064), read from `[workspace.package]` in
+# Cargo.toml exactly as `release.yml`'s `verify` reads it for a `core-v*` tag:
+# the server image belongs to the core train, never to the app train.
 
 # The two tasks that take arguments, and the one place mise is not a rename of
 # what `just` did. `just` bound named parameters with defaults; mise appends

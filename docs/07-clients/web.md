@@ -16,7 +16,7 @@ A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capab
 > `apps/web/src/wasm.ts`'s `loadCore()` uses it where the browser has workers,
 > OPFS and `navigator.locks`, falling back to the `localStorage` stub elsewhere
 > or when no bundle was built (`mise run web-wasm`). The `web-pages` job in
-> `.github/workflows/release.yml` deploys it on a tag once the Pages project
+> `.github/workflows/release.yml` deploys it on an `app-v*` tag once the Pages project
 > and its secrets exist, and deploys nothing until then (§Self-host vs managed
 > cloud).
 >

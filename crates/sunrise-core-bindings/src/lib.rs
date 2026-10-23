@@ -59,6 +59,7 @@ use tokio::sync::broadcast::error::RecvError;
 use zeroize::Zeroize as _;
 
 pub mod background;
+pub mod build_info;
 pub mod client;
 pub mod command;
 pub mod dto;
@@ -72,6 +73,7 @@ pub mod types;
 pub mod vocab;
 
 pub use background::{SyncCancel, SyncOnceOutcome};
+pub use build_info::{core_build_info, CoreBuildInfo};
 pub use client::{
     PrimaryView, SavedView, SavedViewFile, SavedViews, UndoRefusal, UndoState, UndoableOutcome,
 };
