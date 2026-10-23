@@ -57,6 +57,7 @@ use tokio::sync::broadcast::error::RecvError;
 use zeroize::Zeroize as _;
 
 pub mod background;
+pub mod brief;
 pub mod build_info;
 pub mod client;
 pub mod command;
@@ -67,6 +68,8 @@ pub mod pairing;
 pub mod pairing_relay;
 pub mod query;
 pub mod recovery;
+pub mod reminders;
+pub mod settings;
 pub mod types;
 pub mod vocab;
 
