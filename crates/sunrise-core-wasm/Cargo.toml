@@ -19,6 +19,8 @@ workspace = true
 
 [dependencies]
 serde_json = { workspace = true, features = ["std"] }
+# The rows the typed calls answer with (`src/calls.rs`).
+serde = { workspace = true }
 thiserror = { workspace = true }
 # The client layer's pure half: the host clock and the vault-root check every
 # seam makes. `relay` stays off — it links the native REST client and SSE
@@ -26,6 +28,9 @@ thiserror = { workspace = true }
 sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
+# The typed calls build the core's own `TaskDraft` and parse an `EntityRef`.
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
 
 # Everything below exists only in the browser build. On a native target this
 # crate is the JSON dispatch layer and nothing else, which is what lets its

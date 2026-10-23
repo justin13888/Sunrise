@@ -3,51 +3,30 @@ import {
     type CoreApi,
     type CoreCall,
     type CoreRequest,
-    commands,
     effectiveTaskState,
     makeWorkerCore,
-    queries,
     supportsWorkerCore,
-    tasksFromQueryResult,
+    tasksFromRows,
     type WorkerMessage,
 } from "./wasm";
 
 /**
- * The JSON below is what `crates/sunrise-core-wasm`'s own tests send and get
- * back from the real core; these pin the web side of the same wire.
+ * The rows below are what `crates/sunrise-core-wasm/src/calls.rs` answers
+ * `today` and `inbox` with; its own test pins the same shape from the Rust
+ * side.
  */
 describe("the web core bridge", () => {
-    it("spells commands and queries the way serde_json reads them", () => {
-        expect(JSON.parse(commands.createTask("Renew passport"))).toEqual({
-            CreateTask: { title: "Renew passport", contexts: [] },
-        });
-        expect(JSON.parse(commands.completeTask("tsk_x"))).toEqual({
-            CompleteTask: "tsk_x",
-        });
-        expect(JSON.parse(queries.today(42))).toEqual({
-            Today: { now_ms: 42, contexts: [] },
-        });
-        expect(JSON.parse(queries.inbox())).toBe("Inbox");
-    });
-
-    it("reads Today's Tasks and the Inbox's StreamTasks alike", () => {
+    it("reads the rows the typed calls answer with", () => {
         const row = {
             id: "tsk_a",
             title: "A",
             state: "todo",
             stream_id: "str_inbox",
-            created_at: 1,
-            scheduled_at: { kind: "instant", at: 5 },
         };
-        const expected = [
-            { id: "tsk_a", title: "A", state: "todo", stream_id: "str_inbox" },
-        ];
-        expect(tasksFromQueryResult(JSON.stringify({ Tasks: [row] }))).toEqual(
-            expected,
-        );
-        expect(
-            tasksFromQueryResult(JSON.stringify({ StreamTasks: [row] })),
-        ).toEqual(expected);
+        expect(tasksFromRows(JSON.stringify([row]))).toEqual([row]);
+        expect(tasksFromRows(JSON.stringify([{ ...row, extra: 1 }]))).toEqual([
+            row,
+        ]);
     });
 
     it("keeps a newer build's state raw and reads it as todo", () => {
@@ -57,7 +36,7 @@ describe("the web core bridge", () => {
             state: "someday",
             stream_id: "str_inbox",
         };
-        const [task] = tasksFromQueryResult(JSON.stringify({ Tasks: [row] }));
+        const [task] = tasksFromRows(JSON.stringify([row]));
         expect(task?.state).toBe("someday");
         expect(effectiveTaskState("someday")).toBe("todo");
         for (const known of ["todo", "in_progress", "done", "cancelled"]) {
@@ -66,19 +45,19 @@ describe("the web core bridge", () => {
     });
 
     it("refuses a result that is not a task list", () => {
-        expect(() =>
-            tasksFromQueryResult(JSON.stringify("SyncStatus")),
-        ).toThrow(/expected a task list/);
+        expect(() => tasksFromRows(JSON.stringify("SyncStatus"))).toThrow(
+            /expected a task list/,
+        );
     });
 
     it("routes each CoreApi call through one core call", async () => {
         const sent: [string, unknown][] = [];
-        const call: CoreCall = async (kind, json) => {
-            sent.push([kind, JSON.parse(json)]);
-            if (kind === "submit") {
-                return JSON.stringify({ entity: "tsk_new" });
+        const call: CoreCall = async (name, arg) => {
+            sent.push([name, arg]);
+            if (name === "createTask") {
+                return "tsk_new";
             }
-            return JSON.stringify({ StreamTasks: [] });
+            return name === "completeTask" ? "" : "[]";
         };
         const core = makeWorkerCore(call, () => 7);
 
@@ -87,10 +66,10 @@ describe("the web core bridge", () => {
         expect(await core.queryInbox()).toEqual([]);
         expect(await core.queryToday()).toEqual([]);
         expect(sent).toEqual([
-            ["submit", { CreateTask: { title: "T", contexts: [] } }],
-            ["submit", { CompleteTask: "tsk_new" }],
-            ["query", "Inbox"],
-            ["query", { Today: { now_ms: 7, contexts: [] } }],
+            ["createTask", "T"],
+            ["completeTask", "tsk_new"],
+            ["inbox", null],
+            ["today", 7],
         ]);
     });
 
@@ -213,6 +192,8 @@ describe("loadCore", () => {
         expect((await api.queryInbox()).map((t) => t.title)).toEqual([
             "Offline",
         ]);
+        // Today is the core's decision; the stub does not guess it.
+        expect(await api.queryToday()).toEqual([]);
         expect(worker?.posted ?? []).toEqual([]);
     }
 
@@ -254,13 +235,9 @@ describe("loadCore", () => {
         const inbox = api.queryInbox();
         const completed = api.completeTask("tsk_gone");
         expect(worker?.posted).toEqual([
-            {
-                id: 0,
-                kind: "submit",
-                json: commands.createTask("Renew passport"),
-            },
-            { id: 1, kind: "query", json: queries.inbox() },
-            { id: 2, kind: "submit", json: commands.completeTask("tsk_gone") },
+            { id: 0, call: "createTask", arg: "Renew passport" },
+            { id: 1, call: "inbox", arg: null },
+            { id: 2, call: "completeTask", arg: "tsk_gone" },
         ]);
 
         worker?.say({ kind: "reply", id: 2, ok: false, error: "no such task" });
@@ -268,17 +245,15 @@ describe("loadCore", () => {
             kind: "reply",
             id: 1,
             ok: true,
-            json: JSON.stringify({
-                StreamTasks: [
-                    { id: "tsk_a", title: "A", state: "todo", stream_id: "s" },
-                ],
-            }),
+            json: JSON.stringify([
+                { id: "tsk_a", title: "A", state: "todo", stream_id: "s" },
+            ]),
         });
         worker?.say({
             kind: "reply",
             id: 0,
             ok: true,
-            json: JSON.stringify({ entity: "tsk_new" }),
+            json: "tsk_new",
         });
 
         await expect(completed).rejects.toThrow("no such task");
