@@ -88,7 +88,9 @@ and never committed, so it has no drift gate to protect and no formatter reaches
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
 
 Building the Apple clients additionally needs Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen),
-and the Rust target for every slice the xcframework carries:
+SwiftLint at the version `mise.toml`'s `[tools]` pins (`mise install` fetches
+it on macOS, and `apple-preflight` refuses any other version), and the Rust
+target for every slice the xcframework carries:
 
 ```bash
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -101,8 +103,14 @@ with no manifest change.
 ### Getting started
 
 ```bash
+mise install      # the Node (and, on macOS, the SwiftLint) that mise.toml pins
 mise run setup    # install JS dependencies (bun install) and git hooks (lefthook install)
 ```
+
+`mise install` comes first. The hooks run vitest under the pinned Node, the
+same one CI's Bun jobs install. With no Node on `PATH`, vitest falls back to Bun,
+where `navigator.languages` is undefined, and the pre-push hook fails a test
+that CI passes.
 
 Then confirm the toolchain is wired up by running the full automated gate (see [End-to-end QA](#end-to-end-qa) for the complete walkthrough):
 
