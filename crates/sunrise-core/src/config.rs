@@ -275,7 +275,13 @@ const LOCALTIME: &str = "/etc/localtime";
 /// of every evening, and the calendar grid quietly returns nothing for blocks
 /// that are plainly on it.
 fn system_iana_name() -> Option<String> {
-    if let Some(name) = jiff::tz::TimeZone::system().iana_name() {
+    // The one place the host zone enters the workspace
+    // (`docs/11-adr/0066-times-survive-travel.md` §5, `clippy.toml`): every
+    // other reader's zone is `Clock::timezone`, which resolves here in
+    // production and to an injected zone in tests.
+    #[allow(clippy::disallowed_methods)]
+    let system = jiff::tz::TimeZone::system();
+    if let Some(name) = system.iana_name() {
         return Some(name.to_string());
     }
     // `read_link` first: it is the shortest spelling, and the one that still
