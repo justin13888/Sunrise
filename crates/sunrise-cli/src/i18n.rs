@@ -273,6 +273,10 @@ mod tests {
             "replaying history: 1 change applied"
         );
         assert_eq!(
+            strings::recover::replaying_of(12, "3"),
+            "replaying history: 3 of 12 changes applied"
+        );
+        assert_eq!(
             strings::vault::bad_root_hex("V", 64, 32, 3),
             "V must be exactly 64 hex characters (32 bytes); got 3"
         );

@@ -796,6 +796,56 @@ mod tests {
         );
     }
 
+    /// #459: right after a stream's first replayed frame, the relay says how
+    /// many ops the rest of the replay will send, counted from the frames it
+    /// read, so the number follows the cursor. A stream with nothing to
+    /// replay states nothing: zero adds nothing to a total. It never goes
+    /// out ahead of the first frame, and always ahead of the marker.
+    #[tokio::test]
+    async fn the_replay_states_how_many_ops_it_is_about_to_send() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [6u8; 16];
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![envelope(device, seq)], seq).await,
+                StatusCode::OK
+            );
+        }
+
+        for (cursor, stated) in [(None, 2), (Some(1), 1), (Some(2), 0)] {
+            let reader = establish(&client).await;
+            subscribe(
+                &client,
+                &reader,
+                cursor.map(|seq| (hex::encode(device), seq)),
+            )
+            .await;
+            let body = read(&client, &reader, &[]).await;
+            let backlog = format!(
+                r#""kind":"backlog","stream_id":"{}","ops":{stated}"#,
+                stream_hex()
+            );
+            assert_eq!(body.matches(r#""kind":"backlog""#).count(), 1, "{body}");
+            let stated_at = body
+                .find(&backlog)
+                .unwrap_or_else(|| panic!("{backlog} in {body}"));
+            let first_ops = body.find(r#""kind":"ops""#).expect("a replay");
+            assert!(first_ops < stated_at, "{body}");
+            if let Some(second) = body[first_ops + 1..].find(r#""kind":"ops""#) {
+                assert!(stated_at < first_ops + 1 + second, "{body}");
+            }
+            let caught_at = body.find(r#""kind":"caught_up""#).expect("a marker");
+            assert!(stated_at < caught_at, "{body}");
+        }
+
+        let caught_up = establish(&client).await;
+        subscribe(&client, &caught_up, Some((hex::encode(device), 3))).await;
+        let body = read(&client, &caught_up, &[]).await;
+        assert!(!body.contains(r#""kind":"backlog""#), "{body}");
+        assert!(body.contains(r#""kind":"caught_up""#), "{body}");
+    }
+
     /// ADR-0045 §5, issue #329: an envelope one container newer, at a floor
     /// this relay implements, is routed by its header like any other. The
     /// cursor narrows its replay, which it can only do if the relay read the

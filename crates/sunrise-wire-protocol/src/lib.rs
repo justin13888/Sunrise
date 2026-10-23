@@ -36,6 +36,7 @@ pub use frame::{
 pub use messages::MsgKind;
 pub use negotiation::{Hello, HelloAck, NegotiationError};
 pub use payloads::{
-    AckPayload, CaughtUpPayload, ClosePayload, CursorEntry, ErrorPayload, NackPayload,
-    OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
+    AckPayload, BacklogPayload, CaughtUpPayload, ClosePayload, CursorEntry, ErrorPayload,
+    NackPayload, OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry,
+    SubscribePayload,
 };

@@ -51,13 +51,12 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use sunrise_core::{Core, CoreConfig, CoreError, DomainEvent, Unlock};
+use sunrise_core::{Core, CoreConfig, CoreError, SyncStatus, Unlock};
 use sunrise_crypto::bip39::{decode_recovery_code, Bip39Error};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_crypto::recovery::RecoveryPayload;
 use sunrise_crypto::{unseal_recovery_blob, RecoveryError};
 use thiserror::Error;
-use tokio::sync::broadcast;
 
 pub use sunrise_relay_client::RelayRefusal;
 use sunrise_relay_client::{
@@ -241,14 +240,22 @@ pub enum RecoveryProgress {
         /// sends it again, and every later sync request names it.
         relay_device_id: String,
     },
-    /// The replay of §Recovery flow step 8 is running. `applied` counts the
-    /// changes it has applied to this vault so far.
+    /// The replay of §Recovery flow step 8 is running.
     ///
-    /// There is no total beside it: the relay does not say how much history
-    /// an account holds before it has sent it.
+    /// Both numbers count ops (#459): `applied` is how many the replay has
+    /// delivered to this vault, and `total` is `applied` plus what the relay
+    /// has stated it will still send. A relay that predates that statement
+    /// gives no total, and a client shows `applied` alone.
+    ///
+    /// `total` can grow while the replay runs. The ops it delivers name
+    /// streams this new vault did not know it had, and a stream's backlog is
+    /// stated only once the vault has subscribed to it.
     Replaying {
-        /// Changes applied so far.
+        /// Ops delivered so far.
         applied: u64,
+        /// Ops delivered plus the ops the relay still has to send, where the
+        /// relay states its backlog.
+        total: Option<u64>,
     },
     /// The sync driver is live with nothing pending: the history is read.
     CaughtUp,
@@ -469,11 +476,8 @@ pub async fn rejoin_account<R: RecoveryRelay>(
         relay_device_id: relay_device_id.clone(),
     });
 
-    // Subscribed before the driver starts, so not one applied change is
-    // missed from the count.
-    let changes = core.changes();
     let caught_up = match start_sync(&core, &relay_device_id) {
-        Ok(()) => wait_until_live(&core, changes, catch_up_ms, progress).await,
+        Ok(()) => wait_until_live(&core, catch_up_ms, progress).await,
         Err(e) => Err(format!("sync did not start: {e}")),
     };
     core.shutdown().await;
@@ -532,30 +536,37 @@ fn relay_error(e: RelayRefusal) -> RestoreError {
     }
 }
 
+/// How far a replay has got, from one sync snapshot: the ops delivered, and
+/// the total where the relay has stated what is left.
+#[must_use]
+pub fn replay_progress(status: &SyncStatus) -> RecoveryProgress {
+    let applied = status.replay_applied;
+    RecoveryProgress::Replaying {
+        applied,
+        total: status
+            .replay_remaining
+            .map(|left| applied.saturating_add(left)),
+    }
+}
+
 /// Wait for the sync driver to report `Live` with nothing pending, reporting
-/// how many changes the replay has applied as it goes.
+/// how far the replay has got as it goes.
 ///
 /// [`crate::sync::wait_until_caught_up`], timed against the core's injected
-/// clock, with the change count drained before each status is judged.
+/// clock, with each snapshot read through [`replay_progress`] and reported
+/// only when it moved.
 async fn wait_until_live(
     core: &Core,
-    mut changes: broadcast::Receiver<DomainEvent>,
     budget_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<(), String> {
-    let mut applied = 0u64;
-    let mut reported = 0u64;
-    let waited = crate::sync::wait_until_caught_up(core, budget_ms, &mut |_| {
-        loop {
-            match changes.try_recv() {
-                Ok(_) => applied += 1,
-                Err(broadcast::error::TryRecvError::Lagged(n)) => applied += n,
-                Err(_) => break,
-            }
-        }
-        if applied != reported {
-            reported = applied;
-            progress(RecoveryProgress::Replaying { applied });
+    let mut reported: Option<RecoveryProgress> = None;
+    let waited = crate::sync::wait_until_caught_up(core, budget_ms, &mut |status| {
+        let now = replay_progress(status);
+        let started = matches!(now, RecoveryProgress::Replaying { applied, total } if applied > 0 || total.is_some());
+        if started && reported.as_ref() != Some(&now) {
+            progress(now.clone());
+            reported = Some(now);
         }
     })
     .await
@@ -597,6 +608,44 @@ mod tests {
         );
         assert!(id.device_pub_d.is_none());
         assert_eq!((id.nickname.as_str(), id.platform.as_str()), ("n", "linux"));
+    }
+
+    fn status(applied: u64, remaining: Option<u64>) -> SyncStatus {
+        SyncStatus {
+            state: sunrise_sync::SyncState::CatchingUp,
+            outbox_pending: 0,
+            peer_devices: 0,
+            last_sync_ms: None,
+            replay_applied: applied,
+            replay_remaining: remaining,
+        }
+    }
+
+    /// #459: n of N where the relay states what is left, n alone where it
+    /// does not.
+    #[test]
+    fn a_replay_reports_a_total_only_where_the_relay_states_one() {
+        assert_eq!(
+            replay_progress(&status(3, Some(7))),
+            RecoveryProgress::Replaying {
+                applied: 3,
+                total: Some(10)
+            }
+        );
+        assert_eq!(
+            replay_progress(&status(10, Some(0))),
+            RecoveryProgress::Replaying {
+                applied: 10,
+                total: Some(10)
+            }
+        );
+        assert_eq!(
+            replay_progress(&status(3, None)),
+            RecoveryProgress::Replaying {
+                applied: 3,
+                total: None
+            }
+        );
     }
 
     #[test]
