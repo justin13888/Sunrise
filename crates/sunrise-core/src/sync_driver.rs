@@ -2068,8 +2068,14 @@ fn build_hello(app: &str) -> Hello {
     }
 }
 
+/// The relay's `HelloAck`, or `None` for one this build cannot read.
+///
+/// The relay chose these bytes, so they are read under the framing bound
+/// (`sunrise_cbor::MAX_VALUE_DEPTH`): the ack is one map of scalars, and a
+/// field a newer relay adds is held to the same eight levels, the map
+/// included.
 fn decode_hello_ack(payload: &[u8]) -> Option<HelloAck> {
-    ciborium::de::from_reader(payload).ok()
+    sunrise_cbor::decode_bounded(&mut &payload[..], sunrise_cbor::MAX_VALUE_DEPTH).ok()
 }
 
 fn encode_hello(h: &Hello) -> Result<Vec<u8>, ()> {
@@ -2152,6 +2158,42 @@ fn rng_unit(rng: &dyn Rng) -> f64 {
     {
         v as f64 / (1u64 << 53) as f64
     }
+}
+
+/// The relay's ack is read under the framing bound: a field it does not know
+/// is skipped up to the bound, the ack's map counted, and one level more is
+/// no ack at all.
+#[cfg(test)]
+#[test]
+fn a_hello_ack_is_read_under_the_framing_bound() {
+    use ciborium::value::Value;
+    let ack = HelloAck {
+        server_app_v: "relay".into(),
+        wire_proto: u32::from(WIRE_PROTO_V),
+        crypto_suite: u32::from(CRYPTO_SUITE_V),
+        doc_schema_floor: u32::from(DOC_SCHEMA_FLOOR),
+        capabilities: 0,
+        server_time_ms: 1,
+    };
+    let with_unknown = |levels: usize| {
+        let Value::Map(mut map) = Value::serialized(&ack).unwrap() else {
+            panic!("an ack is a map");
+        };
+        let mut nest = Value::Integer(1.into());
+        for _ in 0..levels {
+            nest = Value::Array(vec![nest]);
+        }
+        map.push((Value::Text("zz_newer".into()), nest));
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        out
+    };
+    let bound = sunrise_cbor::MAX_VALUE_DEPTH;
+    assert_eq!(
+        decode_hello_ack(&with_unknown(bound - 1)),
+        Some(ack.clone())
+    );
+    assert_eq!(decode_hello_ack(&with_unknown(bound)), None);
 }
 
 #[cfg(test)]

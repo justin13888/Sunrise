@@ -41,6 +41,7 @@
 #![warn(missing_docs)]
 #![allow(clippy::doc_markdown, clippy::missing_errors_doc)]
 
+mod error;
 pub mod handshake;
 pub mod payload;
 pub mod protocol;

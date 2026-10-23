@@ -113,6 +113,11 @@ pub enum RecoveryError {
     /// Inner CBOR decode failed.
     #[error("recovery payload CBOR error: {0}")]
     Cbor(String),
+    /// The inner payload nests deeper than [`sunrise_cbor::MAX_VALUE_DEPTH`]
+    /// arrays, maps and tags. The payload is one map of scalars; an unknown
+    /// field a newer build adds is held to the same bound, the map included.
+    #[error("recovery payload CBOR nests too deep")]
+    TooDeep,
 }
 
 fn derive_recovery_key(
@@ -163,8 +168,10 @@ fn payload_to_cbor(p: &RecoveryPayload) -> Result<Vec<u8>, RecoveryError> {
 }
 
 fn payload_from_cbor(bytes: &[u8]) -> Result<RecoveryPayload, RecoveryError> {
-    let value: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| RecoveryError::Cbor(e.to_string()))?;
+    let value = sunrise_cbor::decode_value(&mut &bytes[..]).map_err(|e| match e {
+        sunrise_cbor::ValueDecodeError::TooDeep => RecoveryError::TooDeep,
+        sunrise_cbor::ValueDecodeError::Malformed(m) => RecoveryError::Cbor(m),
+    })?;
     let map = match value {
         Value::Map(m) => m,
         _ => return Err(RecoveryError::Cbor("not a map".into())),
@@ -315,6 +322,38 @@ mod tests {
             identity_id: [5u8; 16],
             created_at_ms: 1_700_000_000_000,
         }
+    }
+
+    /// The payload with one more field this build does not know: `levels`
+    /// one-element arrays around an integer.
+    fn payload_with_unknown(levels: usize) -> Vec<u8> {
+        let Value::Map(mut map) =
+            sunrise_cbor::decode_value(&mut payload_to_cbor(&fixture()).unwrap().as_slice())
+                .unwrap()
+        else {
+            panic!("the payload is a map");
+        };
+        let mut nest = Value::Integer(1.into());
+        for _ in 0..levels {
+            nest = Value::Array(vec![nest]);
+        }
+        map.push((Value::Integer(99.into()), nest));
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        out
+    }
+
+    /// An unknown field is skipped up to the framing bound, the payload map
+    /// counted, and one level past it refuses the payload as too deep.
+    #[test]
+    fn the_payload_is_bounded_at_the_framing_depth() {
+        let bound = sunrise_cbor::MAX_VALUE_DEPTH;
+        let fits = payload_with_unknown(bound - 1);
+        assert_eq!(payload_from_cbor(&fits).unwrap(), fixture());
+        assert!(matches!(
+            payload_from_cbor(&payload_with_unknown(bound)),
+            Err(RecoveryError::TooDeep)
+        ));
     }
 
     #[test]
