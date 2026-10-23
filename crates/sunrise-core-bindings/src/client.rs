@@ -216,6 +216,7 @@ pub(crate) async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultR
         match cmd {
             Command::CompleteTask(id)
             | Command::DeferTask { id, .. }
+            | Command::DeferTaskTo { id, .. }
             | Command::UpdateTask { id, .. }
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
             Command::UpdateStream { .. } => wanted.streams = true,

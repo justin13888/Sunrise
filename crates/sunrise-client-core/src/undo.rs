@@ -238,7 +238,7 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
                 },
             })
         }
-        Command::DeferTask { id, .. } => {
+        Command::DeferTask { id, .. } | Command::DeferTaskTo { id, .. } => {
             // The date comes back; `deferred_count` is a PN-counter and keeps
             // its history on purpose.
             let prev = task(state, *id)?.scheduled_at.clone();
@@ -546,6 +546,32 @@ mod tests {
         match &back[..] {
             [Command::UpdateTask { patch, .. }] => {
                 assert_eq!(patch.scheduled_at, Some(None), "the date comes back");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A defer to a time of any kind undoes the same way, restoring the
+    /// previous value with its own kind.
+    #[test]
+    fn a_defer_to_a_floating_time_restores_the_previous_one() {
+        let was = sunrise_domain::SunriseTime::all_day(jiff::civil::date(2026, 6, 1));
+        let mut t = task(1);
+        t.scheduled_at = Some(was.clone());
+        let rows = rows_with(t);
+        let back = invert(
+            &rows,
+            &[Command::DeferTaskTo {
+                id: tid(1),
+                to: sunrise_domain::SunriseTime::floating(
+                    jiff::civil::date(2026, 6, 2).at(9, 0, 0, 0),
+                ),
+            }],
+        )
+        .expect("invertible");
+        match &back[..] {
+            [Command::UpdateTask { patch, .. }] => {
+                assert_eq!(patch.scheduled_at, Some(Some(was)));
             }
             other => panic!("{other:?}"),
         }

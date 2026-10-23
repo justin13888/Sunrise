@@ -243,7 +243,13 @@ impl Clock for SystemClock {
     fn timezone(&self) -> String {
         // Only the production clock consults the OS zone; tests inject a fake
         // and get a fixed zone, so no test outcome depends on the host's.
-        system_iana_name().unwrap_or_else(|| "UTC".to_string())
+        //
+        // An OS that names no zone answers with no name, not with "UTC":
+        // the engine then keeps reading in the last zone it resolved, or in
+        // UTC flagged `zone_unknown` when it never had one
+        // (`docs/11-adr/0066-times-survive-travel.md` §3). "UTC" here would
+        // pass for a zone the device is really in.
+        system_iana_name().unwrap_or_default()
     }
 }
 

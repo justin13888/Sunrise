@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
     InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime, TaskDraft, TaskPatch,
+    TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -24,13 +25,32 @@ pub enum Command {
     },
     /// Set Task state to `Done`.
     CompleteTask(EntityRef),
-    /// Defer a Task by setting a new `scheduled_at` and bumping
-    /// `deferred_count`.
+    /// Defer a Task to an instant: [`Command::DeferTaskTo`] with
+    /// `to = instant(to_ms)`.
+    ///
+    /// Kept so the callers that speak epoch milliseconds (the UniFFI
+    /// `CoreCommand::DeferTask`, the CLI) keep working unchanged. An instant
+    /// does not follow the user, so a client deferring "tomorrow" sends
+    /// [`Command::DeferTaskTo`] with the kind it means
+    /// (`docs/11-adr/0066-times-survive-travel.md` §4).
     DeferTask {
         /// Target task.
         id: EntityRef,
         /// New `scheduled_at`.
         to_ms: u64,
+    },
+    /// Defer a Task: set `scheduled_at` to `to`, keeping the kind it was
+    /// given, and bump `deferred_count`.
+    ///
+    /// Validated as any edit of `scheduled_at` is (the cross-field invariants
+    /// in the reader's zone, then the scheduling constraints).
+    /// [`sunrise_domain::shift_civil_days`] computes a "+N days" target that
+    /// keeps the kind of the time it moves.
+    DeferTaskTo {
+        /// Target task.
+        id: EntityRef,
+        /// New `scheduled_at`.
+        to: SunriseTime,
     },
     /// Soft-delete a Task.
     DeleteTask(EntityRef),

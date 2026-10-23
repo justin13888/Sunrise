@@ -287,3 +287,308 @@ fn stream_and_context_lists_order_in_the_readers_zone() {
         ["unplanned", "pinned", "floats"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Travel (`docs/10-cross-cutting/time.md` §8, ADR-0066): a zone change
+// rewrites nothing stored and recomputes everything derived.
+// ---------------------------------------------------------------------------
+
+/// An engine reading `zone` at `now`, whose reader's zone a test reports as a
+/// client does on a zone change.
+fn traveller(zone: &'static str, now: u64) -> (Engine, Arc<crate::config::ReportedZoneClock>) {
+    let clock = Arc::new(crate::config::ReportedZoneClock::new(Arc::new(ZonedClock(
+        now, zone,
+    ))));
+    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x36; 32])));
+    let e = Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc);
+    (e, clock)
+}
+
+fn ms(at: &str) -> u64 {
+    u64::try_from(at.parse::<jiff::Timestamp>().unwrap().as_millisecond()).unwrap()
+}
+
+fn tz(name: &str) -> jiff::tz::TimeZone {
+    jiff::tz::TimeZone::get(name).unwrap()
+}
+
+/// [`task`], returning the new task's id.
+fn task_id(
+    e: &Engine,
+    db: &mut Db,
+    title: &str,
+    scheduled: Option<SunriseTime>,
+    due: Option<SunriseTime>,
+) -> EntityRef {
+    e.apply(
+        db,
+        Command::CreateTask(TaskDraft {
+            title: title.into(),
+            scheduled_at: scheduled,
+            due_at: due,
+            ..Default::default()
+        }),
+    )
+    .unwrap()
+    .entity
+}
+
+/// New York to Kolkata at 20:00 EDT, which is 05:30 tomorrow in Kolkata. The
+/// floating 09:00 task joins Today at 09:00 IST, the zoned 08:00 New York one
+/// keeps its instant, now on Kolkata's yesterday, an all-day deadline on the
+/// New York date becomes late, and not one stored task changes.
+#[test]
+fn new_york_to_kolkata_recomputes_today_and_lateness_and_rewrites_nothing() {
+    let now = ms("2026-06-02T00:00:00Z");
+    let (e, clock) = traveller("America/New_York", now);
+    let mut db = db();
+    let (d, next) = (date(2026, 6, 1), date(2026, 6, 2));
+    let floating = SunriseTime::floating(next.at(9, 0, 0, 0));
+    let pinned = SunriseTime::zoned(d.at(8, 0, 0, 0), "America/New_York");
+    let ids = [
+        task_id(&e, &mut db, "floating nine", Some(floating.clone()), None),
+        task_id(&e, &mut db, "pinned morning", Some(pinned.clone()), None),
+        task_id(
+            &e,
+            &mut db,
+            "due today",
+            None,
+            Some(SunriseTime::all_day(d)),
+        ),
+    ];
+    let stored = |e: &Engine, db: &Db| ids.map(|id| task_of(e, db, id));
+    let before = stored(&e, &db);
+    assert_eq!(today(&e, &db, now), ["due today", "pinned morning"]);
+
+    clock.report("Asia/Kolkata");
+    // The pinned task stays as a slipped plan from yesterday, Kolkata's
+    // yesterday; the floating one is today's.
+    assert_eq!(
+        today(&e, &db, now),
+        ["due today", "pinned morning", "floating nine"]
+    );
+    assert!(sunrise_domain::is_overdue(
+        &SunriseTime::all_day(d),
+        now,
+        &e.device_zone()
+    ));
+    assert_eq!(stored(&e, &db), before, "a zone change is not an edit");
+    assert_eq!(
+        floating.resolve_in(&e.device_zone()),
+        Some(ms("2026-06-02T03:30:00Z")).map(|m| ms_to_ts(m as i64))
+    );
+    assert_eq!(
+        pinned.resolve_in(&e.device_zone()),
+        pinned.resolve_in(&tz("America/New_York"))
+    );
+    // The floating plan moved and the deadline's day did; the zoned one
+    // moved neither.
+    let (affected, _) = e
+        .time_zone_impact(&db, &tz("America/New_York"), &tz("Asia/Kolkata"), now)
+        .unwrap();
+    assert_eq!(affected, 2);
+}
+
+/// A floating 09:00 reminder moves to 09:00 in the new zone; a zoned 09:00
+/// New York one keeps its instant. Each keeps its identity, so a client
+/// replaces the pending notification instead of keeping a stale one.
+#[test]
+fn a_zone_change_replans_the_floating_reminder_and_keeps_the_zoned_one() {
+    let now = ms("2026-06-01T12:00:00Z");
+    let (e, clock) = traveller("America/New_York", now);
+    let mut db = db();
+    let nine = date(2026, 6, 2).at(9, 0, 0, 0);
+    let floating = task_id(
+        &e,
+        &mut db,
+        "stretch",
+        Some(SunriseTime::floating(nine)),
+        None,
+    );
+    let pinned = task_id(
+        &e,
+        &mut db,
+        "standup",
+        Some(SunriseTime::zoned(nine, "America/New_York")),
+        None,
+    );
+    let horizon = now as i64 + 3 * 86_400_000;
+    let plan = |e: &Engine| reminders(e, &db, now as i64, horizon, ReminderSettings::default());
+    let fire = |plan: &[sunrise_domain::ReminderIntent], id: EntityRef| {
+        plan.iter().find(|i| i.entity == id).unwrap().clone()
+    };
+
+    let in_ny = plan(&e);
+    clock.report("Europe/Berlin");
+    let in_berlin = plan(&e);
+
+    let at =
+        |r: &sunrise_domain::ReminderIntent, zone: &str| r.fire_at.to_zoned(tz(zone)).datetime();
+    assert_eq!(at(&fire(&in_ny, floating), "America/New_York"), nine);
+    assert_eq!(at(&fire(&in_berlin, floating), "Europe/Berlin"), nine);
+    assert_eq!(
+        fire(&in_ny, pinned).fire_at,
+        fire(&in_berlin, pinned).fire_at
+    );
+    assert_eq!(
+        fire(&in_berlin, pinned).fire_at,
+        ms_to_ts(ms("2026-06-02T13:00:00Z") as i64)
+    );
+    for id in [floating, pinned] {
+        assert_eq!(fire(&in_ny, id).identity(), fire(&in_berlin, id).identity());
+    }
+}
+
+/// A reminder whose time has no instant is not scheduled at a stand-in: the
+/// plan reports it, with the reason.
+#[test]
+fn a_reminder_with_no_instant_is_reported_by_the_plan() {
+    let now = ms("2026-06-01T12:00:00Z");
+    let (e, _) = traveller("UTC", now);
+    let mut db = db();
+    // A kind a newer build wrote, with no `at` to place it by.
+    let lunar = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw: Unknowns::new(),
+    };
+    let id = task_id(&e, &mut db, "someday", Some(lunar), None);
+    let plan = e
+        .reminder_plan(&db, now, now + 86_400_000, &ReminderSettings::default())
+        .unwrap();
+    assert!(plan.intents.is_empty());
+    assert_eq!(plan.unscheduled.len(), 1);
+    assert_eq!(plan.unscheduled[0].entity, id);
+    assert!(matches!(
+        plan.unscheduled[0].reason,
+        sunrise_domain::Unresolvable::UnknownKind { .. }
+    ));
+}
+
+/// A name the tzdb cannot resolve is not UTC: an engine that has resolved a
+/// zone keeps reading in it, and only one that never has reads in UTC and
+/// says so (`docs/11-adr/0066-times-survive-travel.md` §3).
+#[test]
+fn an_unresolvable_zone_keeps_the_last_one_that_resolved() {
+    let now = ms("2026-06-01T20:00:00Z");
+    let (e, clock) = traveller("Mars/Olympus_Mons", now);
+    assert_eq!(e.device_zone(), jiff::tz::TimeZone::UTC);
+    assert!(e.zone_unknown());
+
+    clock.report("Asia/Kolkata");
+    assert_eq!(e.device_zone(), tz("Asia/Kolkata"));
+    assert!(!e.zone_unknown());
+
+    clock.report("Mars/Olympus_Mons");
+    assert_eq!(e.device_zone(), tz("Asia/Kolkata"), "not UTC");
+    assert!(!e.zone_unknown());
+    // Today is still Kolkata's: 01:30 on the 2nd there, the 1st in UTC.
+    let mut db = db();
+    task(
+        &e,
+        &mut db,
+        "kolkata today",
+        Some(SunriseTime::all_day(date(2026, 6, 2))),
+        None,
+    );
+    assert_eq!(today(&e, &db, now), ["kolkata today"]);
+}
+
+/// Defer keeps the kind it is given: a floating "tomorrow 09:00" moved a
+/// civil day is "the day after, 09:00", still floating, and on New York's
+/// spring-forward night a floating 02:30 is stored as 02:30 and fires at
+/// 03:30 EDT.
+#[test]
+fn defer_keeps_the_kind_and_the_wall_clock_time() {
+    let ny = "America/New_York";
+    let now = ms("2026-03-06T15:00:00Z");
+    let (e, _) = traveller(ny, now);
+    let mut db = db();
+    let was = SunriseTime::floating(date(2026, 3, 7).at(2, 30, 0, 0));
+    let id = task_id(&e, &mut db, "night shift", Some(was.clone()), None);
+    let to = sunrise_domain::shift_civil_days(&was, 1, &e.device_zone()).unwrap();
+    e.apply(&mut db, Command::DeferTaskTo { id, to: to.clone() })
+        .unwrap();
+    let t = task_of(&e, &db, id);
+    assert_eq!(
+        t.scheduled_at,
+        Some(SunriseTime::floating(date(2026, 3, 8).at(2, 30, 0, 0)))
+    );
+    assert_eq!(t.deferred_count, 1);
+    assert_eq!(
+        to.resolve_in(&tz(ny)).unwrap().to_zoned(tz(ny)).datetime(),
+        date(2026, 3, 8).at(3, 30, 0, 0)
+    );
+
+    // An all-day plan moves its date.
+    let day = SunriseTime::all_day(date(2026, 3, 7));
+    let id = task_id(&e, &mut db, "errand", Some(day.clone()), None);
+    let to = sunrise_domain::shift_civil_days(&day, 2, &e.device_zone()).unwrap();
+    e.apply(&mut db, Command::DeferTaskTo { id, to }).unwrap();
+    assert_eq!(
+        task_of(&e, &db, id).scheduled_at,
+        Some(SunriseTime::all_day(date(2026, 3, 9)))
+    );
+}
+
+/// The epoch-millisecond `DeferTask` still works, writing the instant it
+/// names.
+#[test]
+fn the_millisecond_defer_still_writes_an_instant() {
+    let now = ms("2026-03-06T15:00:00Z");
+    let (e, _) = traveller("UTC", now);
+    let mut db = db();
+    let id = task_id(&e, &mut db, "t", None, None);
+    let to_ms = ms("2026-03-08T09:00:00Z");
+    e.apply(&mut db, Command::DeferTask { id, to_ms }).unwrap();
+    let t = task_of(&e, &db, id);
+    assert_eq!(
+        t.scheduled_at,
+        Some(SunriseTime::instant(ms_to_ts(to_ms as i64)))
+    );
+    assert_eq!(t.deferred_count, 1);
+}
+
+/// Defer passes the same validation as an edit of `scheduled_at`: past an
+/// all-day deadline it is refused, in the reader's zone, and nothing is
+/// written.
+#[test]
+fn defer_past_the_deadline_is_refused_like_an_edit() {
+    let now = ms("2026-06-01T12:00:00Z");
+    let (e, _) = traveller("Asia/Kolkata", now);
+    let mut db = db();
+    let due = SunriseTime::all_day(date(2026, 6, 2));
+    let id = task_id(&e, &mut db, "taxes", None, Some(due));
+    let ops = op_count(&db);
+    let late = SunriseTime::floating(date(2026, 6, 3).at(9, 0, 0, 0));
+    let err = e
+        .apply(
+            &mut db,
+            Command::DeferTaskTo {
+                id,
+                to: late.clone(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            EngineError::Validation(ValidationError::DueBeforeScheduled)
+        ),
+        "{err:?}"
+    );
+    let edit = e
+        .apply(
+            &mut db,
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    scheduled_at: Some(Some(late)),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap_err();
+    assert_eq!(format!("{edit:?}"), format!("{err:?}"));
+    assert_eq!(op_count(&db), ops, "nothing written");
+    assert_eq!(task_of(&e, &db, id).deferred_count, 0);
+}

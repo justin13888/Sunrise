@@ -13,7 +13,7 @@ use sunrise_id::EntityRef;
 use crate::dto::{
     AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, PreferenceTarget,
     PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit,
-    TaskDraftIn, TaskEdit,
+    TaskDraftIn, TaskEdit, TimeValue,
 };
 
 /// A mutating command.
@@ -42,6 +42,16 @@ pub enum CoreCommand {
         id: EntityRef,
         /// New scheduled time (epoch ms).
         to_ms: u64,
+    },
+    /// Push a task's scheduled time out to a time of any kind, keeping that
+    /// kind, and bump its deferral count. See
+    /// [`sunrise_core::Command::DeferTaskTo`]: a floating "tomorrow 09:00"
+    /// stays floating. `DeferTask` is this with an instant.
+    DeferTaskTo {
+        /// Target.
+        id: EntityRef,
+        /// New scheduled time.
+        to: TimeValue,
     },
     /// Tombstone a task.
     DeleteTask {
@@ -266,6 +276,7 @@ impl CoreCommand {
             },
             Self::CompleteTask { id } => Command::CompleteTask(id),
             Self::DeferTask { id, to_ms } => Command::DeferTask { id, to_ms },
+            Self::DeferTaskTo { id, to } => Command::DeferTaskTo { id, to: to.into() },
             Self::DeleteTask { id } => Command::DeleteTask(id),
             Self::PromoteToStream { id, stream } => Command::PromoteToStream { id, stream },
             Self::CreateStream { draft } => Command::CreateStream(draft.into()),
