@@ -228,6 +228,11 @@ fn a_quiet_hours_deferral_is_explained_on_the_notification() {
     queued.deferred_from = Some(Timestamp::from_second(1_699_943_400).unwrap());
     let utc = notification(&queued, &TimeZone::UTC, ClockStyle::H24);
     assert_eq!(utc.body, "Held for quiet hours · due 06:30");
+    assert_eq!(
+        utc.deferred_from_ms,
+        Some(1_699_943_400_000),
+        "the fact a localized body says"
+    );
     let toronto = TimeZone::get("America/Toronto").unwrap();
     assert_eq!(
         body(&queued, &toronto, ClockStyle::H12),

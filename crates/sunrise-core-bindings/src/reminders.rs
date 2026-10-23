@@ -96,6 +96,9 @@ pub struct ReminderNotification {
     /// this instant across a zone change (a calendar trigger whose components
     /// carry their zone); a floating reminder follows the zone by re-planning.
     pub fire_at_ms: i64,
+    /// When quiet hours moved it, the instant it was due, epoch ms — what a
+    /// localized body says beside "held for quiet hours".
+    pub deferred_from_ms: Option<i64>,
 }
 
 impl From<plan::PlannedNotification> for ReminderNotification {
@@ -109,6 +112,7 @@ impl From<plan::PlannedNotification> for ReminderNotification {
             kind,
             entity,
             fire_at_ms,
+            deferred_from_ms,
         } = n;
         Self {
             identifier,
@@ -119,6 +123,7 @@ impl From<plan::PlannedNotification> for ReminderNotification {
             kind,
             entity,
             fire_at_ms,
+            deferred_from_ms,
         }
     }
 }
@@ -134,6 +139,7 @@ impl From<ReminderNotification> for plan::PlannedNotification {
             kind: n.kind,
             entity: n.entity,
             fire_at_ms: n.fire_at_ms,
+            deferred_from_ms: n.deferred_from_ms,
         }
     }
 }

@@ -161,7 +161,10 @@ pub struct PlannedNotification {
     pub revision: String,
     /// The title: the entity's, computed on-device by the core.
     pub title: String,
-    /// The line under the title; empty when the title says everything.
+    /// The line under the title, in English; empty when the title says
+    /// everything. A client rendering its own catalog builds the line from
+    /// [`Self::kind`] and [`Self::deferred_from_ms`] instead, which are the
+    /// only facts it says.
     pub body: String,
     /// Which action buttons it carries.
     pub category: ReminderCategory,
@@ -174,6 +177,8 @@ pub struct PlannedNotification {
     /// when the device's zone changes (#520); a floating reminder follows the
     /// zone by being re-planned, which changes [`Self::revision`].
     pub fire_at_ms: i64,
+    /// When quiet hours moved it, the instant it was due, epoch milliseconds.
+    pub deferred_from_ms: Option<i64>,
 }
 
 /// A request the OS is holding, as the client read it back.
@@ -275,6 +280,7 @@ pub fn notification(
         kind: intent.kind,
         entity: intent.entity,
         fire_at_ms,
+        deferred_from_ms: intent.deferred_from.map(Timestamp::as_millisecond),
     }
 }
 
