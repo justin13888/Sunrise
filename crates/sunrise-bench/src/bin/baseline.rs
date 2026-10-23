@@ -230,11 +230,11 @@ struct Bench {
 /// Every bench the baseline records.
 ///
 /// The sized groups list their *default* sizes only — `vault_open` at 10k and
-/// 100k rows, `compaction` at 10k tasks. A run at another size writes a
+/// 100k rows, `compaction` and `rebuild` at 10k tasks. A run at another size writes a
 /// directory no row names, which `--check` reports as unknown rather than
-/// comparing against a baseline taken at a different size. `compaction` at
-/// 100k is left out because seeding it takes about 24 minutes, longer than the
-/// whole nightly job is allowed; CI sets `SUNRISE_BENCH_COMPACT_TASKS=10000`.
+/// comparing against a baseline taken at a different size. Both at
+/// 100k are left out because seeding takes about 24 minutes, longer than the
+/// whole nightly job is allowed; CI sets both `*_TASKS` variables to 10000.
 const BENCHES: &[Bench] = &[
     Bench {
         dir: "submit",
@@ -294,6 +294,12 @@ const BENCHES: &[Bench] = &[
         dir: "compaction/snapshot_10000",
         p50: None,
         p99: "compaction_snapshot_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "rebuild/refold_10000",
+        p50: None,
+        p99: "rebuild_refold_10k_tasks_p99_ms",
         unit: Unit::Ms,
     },
 ];

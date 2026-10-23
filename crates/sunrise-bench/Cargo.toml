@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "compaction"
 harness = false
+
+[[bench]]
+name = "rebuild"
+harness = false
