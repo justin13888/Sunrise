@@ -22,12 +22,13 @@
 //! no data dir.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
 use super::maintenance;
 use crate::state::ServerState;
+use crate::store::{MetadataError, Store};
 
 /// Usage error.
 const EX_USAGE: u8 = 2;
@@ -46,7 +47,7 @@ type Outcome = Result<Value, (u8, String)>;
 
 /// Run `admin` with `args` (everything after the word `admin`), writing the
 /// result to `out` and a failure's reason to `err`. Returns the exit status.
-pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+pub async fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     let mut config_args = Vec::new();
     let mut words = Vec::new();
     let mut json = false;
@@ -65,7 +66,10 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
         }
     }
 
-    let outcome = open(&config_args).and_then(|state| dispatch(&state, &words));
+    let outcome = match open(&config_args) {
+        Ok(state) => dispatch(&state, &words).await,
+        Err(e) => Err(e),
+    };
     match outcome {
         Ok(value) => {
             let text = if json {
@@ -106,36 +110,36 @@ fn open(config_args: &[String]) -> Result<ServerState, (u8, String)> {
     ServerState::try_new(cfg).map_err(|e| (EX_CONFIG, e.to_string()))
 }
 
-fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
+async fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
     let now_ms = state.clock.now_ms();
     match words {
-        ["doctor"] => Ok(doctor(state)),
-        ["stats"] => stats(state),
+        ["doctor"] => Ok(doctor(state).await),
+        ["stats"] => stats(state).await,
         ["gc", flag] if *flag == "--dry-run" || *flag == "--now" => {
-            let report = maintenance::run(state, now_ms, *flag == "--dry-run").map_err(failure)?;
+            let report = maintenance::run(state, now_ms, *flag == "--dry-run")
+                .await
+                .map_err(failure)?;
             serde_json::to_value(report).map_err(failure)
         }
         ["account", "list"] => {
-            serde_json::to_value(state.store.account_summaries().map_err(failure)?)
+            serde_json::to_value(state.store.account_summaries().await.map_err(failure)?)
                 .map(|accounts| json!({ "accounts": accounts }))
                 .map_err(failure)
         }
         ["account", "show", id] => {
-            let summary = state.store.account_summary(id).map_err(failure)?;
+            let summary = state.store.account_summary(id).await.map_err(failure)?;
             let summary = summary.ok_or_else(|| (EX_FAILURE, format!("no account {id}")))?;
             serde_json::to_value(summary).map_err(failure)
         }
         ["account", "delete", id] => {
-            let requested =
-                state
-                    .store
-                    .request_account_deletion(id, now_ms)
-                    .map_err(|e| match e {
-                        crate::store::StoreError::NotFound => {
-                            (EX_FAILURE, format!("no account {id}"))
-                        }
-                        other => failure(other),
-                    })?;
+            let requested = state
+                .store
+                .request_account_deletion(id, now_ms)
+                .await
+                .map_err(|e| match e {
+                    MetadataError::NotFound => (EX_FAILURE, format!("no account {id}")),
+                    other => failure(other),
+                })?;
             let grace = state.config.retention().account_delete_grace_ms;
             Ok(json!({
                 "account_id": id,
@@ -144,30 +148,40 @@ fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
             }))
         }
         ["account", "delete", id, "--immediately"] => {
-            if state.store.account_summary(id).map_err(failure)?.is_none() {
+            if state
+                .store
+                .account_summary(id)
+                .await
+                .map_err(failure)?
+                .is_none()
+            {
                 return Err((EX_FAILURE, format!("no account {id}")));
             }
-            maintenance::erase_account(state, id).map_err(|e| (EX_FAILURE, e))?;
+            maintenance::erase_account(state, id)
+                .await
+                .map_err(|e| (EX_FAILURE, e))?;
             Ok(json!({ "account_id": id, "erased": true }))
         }
         ["device", "revoke", device_id] => {
             let owner = state
                 .store
                 .device_owner(device_id)
+                .await
                 .map_err(failure)?
                 .ok_or_else(|| (EX_FAILURE, format!("no device {device_id}")))?;
             state
                 .store
                 .revoke_device(&owner, device_id, now_ms)
+                .await
                 .map_err(|e| match e {
-                    crate::store::StoreError::NotFound => {
+                    MetadataError::NotFound => {
                         (EX_FAILURE, format!("device {device_id} is already revoked"))
                     }
                     other => failure(other),
                 })?;
             Ok(json!({ "device_id": device_id, "account_id": owner, "revoked_at_ms": now_ms }))
         }
-        ["backup", dest] => backup(state, Path::new(dest)),
+        ["backup", dest] => backup(state, Path::new(dest)).await,
         ["rekey", new_key_file] => rekey(state, Path::new(new_key_file)),
         _ => Err((EX_USAGE, "unrecognised command".to_owned())),
     }
@@ -179,7 +193,7 @@ fn failure(e: impl std::fmt::Display) -> (u8, String) {
 
 /// `self-hosting.md` §Testing the install, the checks that apply to a
 /// single-binary SQLite relay behind a TLS-terminating proxy.
-fn doctor(state: &ServerState) -> Value {
+async fn doctor(state: &ServerState) -> Value {
     let cfg = &state.config;
     let mut checks = Vec::new();
     let mut check = |name: &str, status: &str, detail: String| {
@@ -192,16 +206,15 @@ fn doctor(state: &ServerState) -> Value {
         Err(e) => check("config", "fail", e.to_string()),
     }
 
-    let quick: Result<String, rusqlite::Error> =
-        state
-            .store
-            .conn
-            .lock()
-            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0));
-    match quick {
-        Ok(r) if r == "ok" => check("database", "ok", "quick_check: ok".to_owned()),
-        Ok(r) => check("database", "fail", format!("quick_check: {r}")),
-        Err(e) => check("database", "fail", e.to_string()),
+    match state.store.as_sqlite().map(Store::quick_check) {
+        Some(Ok(r)) if r == "ok" => check("database", "ok", "quick_check: ok".to_owned()),
+        Some(Ok(r)) => check("database", "fail", format!("quick_check: {r}")),
+        Some(Err(e)) => check("database", "fail", e.to_string()),
+        None => check(
+            "database",
+            "skipped",
+            "the metadata store is not SQLite".to_owned(),
+        ),
     }
 
     let (status, detail) = encryption(state);
@@ -212,8 +225,12 @@ fn doctor(state: &ServerState) -> Value {
         .as_deref()
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new("."));
-    match write_read_back(data_dir, 10 * 1024 * 1024) {
-        Ok(()) => check(
+    match state
+        .store
+        .as_sqlite()
+        .map(|db| db.probe_data_dir(10 * 1024 * 1024))
+    {
+        Some(Ok(())) => check(
             "storage",
             "ok",
             format!(
@@ -221,19 +238,17 @@ fn doctor(state: &ServerState) -> Value {
                 data_dir.display()
             ),
         ),
-        Err(e) => check("storage", "fail", format!("{}: {e}", data_dir.display())),
+        Some(Err(e)) => check("storage", "fail", format!("{}: {e}", data_dir.display())),
+        None => check(
+            "storage",
+            "skipped",
+            "the metadata store is not SQLite".to_owned(),
+        ),
     }
-    match write_read_back(&state.blob_root, 1) {
-        Ok(()) => check(
-            "blob_root",
-            "ok",
-            format!("{} is writable", state.blob_root.display()),
-        ),
-        Err(e) => check(
-            "blob_root",
-            "fail",
-            format!("{}: {e}", state.blob_root.display()),
-        ),
+    let blobs = state.blobs.location();
+    match state.blobs.probe().await {
+        Ok(()) => check("blob_root", "ok", format!("{blobs} is writable")),
+        Err(e) => check("blob_root", "fail", format!("{blobs}: {e}")),
     }
     check(
         "free_space",
@@ -296,7 +311,7 @@ fn encryption(state: &ServerState) -> (&'static str, String) {
                 k.display()
             ),
         ),
-        None if state.store.is_encrypted() => (
+        None if state.store.as_sqlite().is_some_and(Store::is_encrypted) => (
             "ok",
             "the database is SQLCipher-encrypted under [storage] key_file".to_owned(),
         ),
@@ -307,62 +322,14 @@ fn encryption(state: &ServerState) -> (&'static str, String) {
     }
 }
 
-/// Write `len` bytes under `dir`, fsync, read them back, compare, and remove.
-fn write_read_back(dir: &Path, len: usize) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(".sunrise-doctor.tmp");
-    // A pattern rather than zeros, so a filesystem that hands back a zeroed
-    // page for an unwritten extent does not pass.
-    let data: Vec<u8> = (0..=250u8).cycle().take(len).collect();
-    let result = (|| {
-        {
-            let mut f = std::fs::File::create(&path)?;
-            f.write_all(&data)?;
-            f.sync_all()?;
-        }
-        if std::fs::read(&path)? != data {
-            return Err(std::io::Error::other(
-                "read back differs from what was written",
-            ));
-        }
-        Ok(())
-    })();
-    let removed = std::fs::remove_file(&path);
-    result.and(removed)
-}
-
-fn stats(state: &ServerState) -> Outcome {
-    let store = state.store.stats().map_err(failure)?;
-    let (blob_files, blob_bytes) = tree_size(&state.blob_root.join(crate::api::blobs::COMMITTED));
-    let pending_uploads = std::fs::read_dir(state.blob_root.join(crate::api::blobs::PENDING))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|account| std::fs::read_dir(account.path()).ok())
-        .map(|uploads| uploads.filter_map(Result::ok).count() as u64)
-        .sum::<u64>();
+async fn stats(state: &ServerState) -> Outcome {
+    let store = state.store.stats().await.map_err(failure)?;
+    let usage = state.blobs.usage().await.map_err(failure)?;
     let mut value = serde_json::to_value(store).map_err(failure)?;
-    value["blob_files"] = json!(blob_files);
-    value["blob_bytes"] = json!(blob_bytes);
-    value["pending_uploads"] = json!(pending_uploads);
+    value["blob_files"] = json!(usage.blob_files);
+    value["blob_bytes"] = json!(usage.blob_bytes);
+    value["pending_uploads"] = json!(usage.pending_uploads);
     Ok(value)
-}
-
-/// Files and bytes under `root`, recursively. Absent is empty.
-fn tree_size(root: &Path) -> (u64, u64) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return (0, 0);
-    };
-    entries
-        .filter_map(Result::ok)
-        .fold((0, 0), |(files, bytes), e| match e.metadata() {
-            Ok(m) if m.is_dir() => {
-                let (f, b) = tree_size(&e.path());
-                (files + f, bytes + b)
-            }
-            Ok(m) => (files + 1, bytes + m.len()),
-            Err(_) => (files, bytes),
-        })
 }
 
 /// The database through SQLite's online backup API, then the blob tree with
@@ -371,17 +338,12 @@ fn tree_size(root: &Path) -> (u64, u64) {
 /// The database copy is one committed instant, under the live database's own
 /// key, and the relay's writes proceed while it is taken
 /// ([`crate::store::Store::backup_to`]). The blob copy is not one instant, and
-/// is made consistent by order instead:
-///
-/// 1. The manifests present are listed first. A manifest is written only after
-///    every chunk of its blob, and a finalized blob's chunks never change, so
-///    each listed blob is complete at this moment.
-/// 2. Every other file is copied: chunks are renamed into place whole, and
-///    temporaries are skipped.
-/// 3. The listed manifests are copied last, each one only if it still exists.
-///    Every removal takes a manifest before its chunks — blob collection,
-///    account erasure, and the orphan sweep alike — so a blob removed during
-///    step 2 is left without one.
+/// is made consistent by order instead
+/// ([`crate::blob::BlobBackend::backup_to`]): the manifests present are listed
+/// first, every other object is copied, and the listed manifests are copied
+/// last, each only if it still exists. Every removal takes a manifest before
+/// its chunks — blob collection, account erasure, and the orphan sweep alike —
+/// so a blob removed during the copy is left without one.
 ///
 /// A blob with no manifest in the backup reads as never uploaded. The only
 /// such blobs are ones finalized after the database copy was taken, which no
@@ -390,7 +352,8 @@ fn tree_size(root: &Path) -> (u64, u64) {
 /// a restore brings back with those blobs missing. Blobs come after the
 /// database for that reason: a client finalizes a blob before it publishes
 /// the op naming it.
-fn backup(state: &ServerState, dest: &Path) -> Outcome {
+async fn backup(state: &ServerState, dest: &Path) -> Outcome {
+    let db = sqlite(state, "backup")?;
     if dest.exists() {
         return Err((
             EX_FAILURE,
@@ -399,99 +362,32 @@ fn backup(state: &ServerState, dest: &Path) -> Outcome {
     }
     std::fs::create_dir_all(dest).map_err(failure)?;
     let database = dest.join("sunrise.db");
-    state.store.backup_to(&database).map_err(failure)?;
-    let blobs = dest.join("blobs");
-    let manifests = manifests_under(&state.blob_root).map_err(failure)?;
-    let (mut files, mut bytes) = copy_tree(&state.blob_root, &blobs).map_err(failure)?;
-    for manifest in manifests {
-        let Ok(rel) = manifest.strip_prefix(state.blob_root.as_path()) else {
-            continue;
-        };
-        let target = blobs.join(rel);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(failure)?;
-        }
-        match std::fs::copy(&manifest, &target) {
-            Ok(n) => {
-                files += 1;
-                bytes += n;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(failure(e)),
-        }
-    }
+    db.backup_to(&database).map_err(failure)?;
+    let copied = state
+        .blobs
+        .backup_to(&dest.join("blobs"))
+        .await
+        .map_err(failure)?;
     Ok(json!({
         "database": database.display().to_string(),
-        "encrypted": state.store.is_encrypted(),
-        "blob_files": files,
-        "blob_bytes": bytes,
+        "encrypted": db.is_encrypted(),
+        "blob_files": copied.files,
+        "blob_bytes": copied.bytes,
     }))
 }
 
-/// Whether `dir` is a blob manifest directory: `committed/<acct_h>/manifests`.
-fn is_manifest_dir(dir: &Path) -> bool {
-    dir.file_name().is_some_and(|n| n == "manifests")
-}
-
-/// Every file in a manifest directory under `root`.
-fn manifests_under(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        if is_manifest_dir(&path) {
-            for m in std::fs::read_dir(&path)? {
-                let m = m?;
-                if m.file_type()?.is_file() && !m.file_name().to_string_lossy().ends_with(".tmp") {
-                    out.push(m.path());
-                }
-            }
-        } else {
-            out.extend(manifests_under(&path)?);
-        }
-    }
-    Ok(out)
-}
-
-/// Copy `from` to `to`, skipping temporaries and manifest directories, which
-/// [`backup`] copies last.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<(u64, u64)> {
-    std::fs::create_dir_all(to)?;
-    let Ok(entries) = std::fs::read_dir(from) else {
-        return Ok((0, 0));
-    };
-    let (mut files, mut bytes) = (0, 0);
-    for entry in entries {
-        let entry = entry?;
-        let target: PathBuf = to.join(entry.file_name());
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            if is_manifest_dir(&entry.path()) {
-                continue;
-            }
-            let (f, b) = copy_tree(&entry.path(), &target)?;
-            files += f;
-            bytes += b;
-        } else if kind.is_file() && !entry.file_name().to_string_lossy().ends_with(".tmp") {
-            // A file removed between the listing and the copy — a blob
-            // collected, an upload swept — is not part of the backup.
-            match std::fs::copy(entry.path(), &target) {
-                Ok(n) => {
-                    bytes += n;
-                    files += 1;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-        }
-    }
-    Ok((files, bytes))
+/// The SQLite store `command` works on, or the refusal for a metadata store
+/// that is not one: an online file copy and a re-key are things only a
+/// single-file database has.
+fn sqlite<'a>(state: &'a ServerState, command: &str) -> Result<&'a Store, (u8, String)> {
+    state.store.as_sqlite().ok_or_else(|| {
+        (
+            EX_FAILURE,
+            format!(
+                "{command} works on a SQLite database, and this relay's metadata store is not one"
+            ),
+        )
+    })
 }
 
 /// `rekey <new_key_file>`: re-encrypt the database under the key in
@@ -509,7 +405,7 @@ fn rekey(state: &ServerState, new_key_file: &Path) -> Outcome {
         .sqlite_key()
         .map_err(failure)?
         .ok_or_else(|| (EX_FAILURE, "no key was read".to_owned()))?;
-    state.store.rekey(&new).map_err(failure)?;
+    sqlite(state, "rekey")?.rekey(&new).map_err(failure)?;
     Ok(json!({
         "rekeyed": true,
         "key_file": new_key_file.display().to_string(),

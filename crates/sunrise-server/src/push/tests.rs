@@ -106,25 +106,25 @@ fn fixture_with(provider: Arc<dyn PushProvider>, tuning: Tuning) -> Fixture {
     let clock = TestClock::at(T0_MS);
     let state = ServerState::with_clock(ServerConfig::default(), clock.clone())
         .with_push(Dispatcher::with_tuning(provider, tuning));
-    let account = state
+    // Seeded through the SQLite store underneath, so the fixture stays
+    // synchronous for the tests that are.
+    let db = state
         .store
+        .as_sqlite()
+        .expect("the default store is SQLite");
+    let account = db
         .resolve_account(&Subject::new("https://idp.example", "alice"), true, T0_MS)
         .unwrap();
-    let phone = state
-        .store
+    let phone = db
         .register_device(&account.account_id, &device(1), T0_MS)
         .unwrap()
         .device_id;
-    let laptop = state
-        .store
+    let laptop = db
         .register_device(&account.account_id, &device(2), T0_MS)
         .unwrap()
         .device_id;
     for (id, token) in [(&phone, "aa01"), (&laptop, "bb02")] {
-        state
-            .store
-            .upsert_push_token(id, "apns", token, T0_MS)
-            .unwrap();
+        db.upsert_push_token(id, "apns", token, T0_MS).unwrap();
     }
     Fixture {
         state,
@@ -218,11 +218,11 @@ fn presence_lasts_until_the_last_stream_closes() {
 
 // -- the worker over a real store -------------------------------------------
 
-#[test]
-fn an_op_for_an_offline_device_wakes_it_exactly_once() {
+#[tokio::test]
+async fn an_op_for_an_offline_device_wakes_it_exactly_once() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
-    let intents = worker.plan_wake(&f.wake(STREAM_A));
+    let intents = worker.plan_wake(&f.wake(STREAM_A)).await;
     assert_eq!(
         devices(&intents),
         vec![f.laptop.as_str()],
@@ -232,69 +232,69 @@ fn an_op_for_an_offline_device_wakes_it_exactly_once() {
     assert_eq!(intents[0].registration.platform, PushPlatform::Apns);
 }
 
-#[test]
-fn a_device_with_a_stream_open_is_not_woken() {
+#[tokio::test]
+async fn a_device_with_a_stream_open_is_not_woken() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
     let online = f.state.push.presence().hold(&f.laptop);
-    assert!(worker.plan_wake(&f.wake(STREAM_A)).is_empty());
+    assert!(worker.plan_wake(&f.wake(STREAM_A)).await.is_empty());
     drop(online);
     assert_eq!(
-        devices(&worker.plan_wake(&f.wake(STREAM_A))),
+        devices(&worker.plan_wake(&f.wake(STREAM_A)).await),
         vec![f.laptop.as_str()],
         "closing the stream makes it wakeable again, with no window held over"
     );
 }
 
-#[test]
-fn n_ops_inside_the_window_coalesce_to_one_push() {
+#[tokio::test]
+async fn n_ops_inside_the_window_coalesce_to_one_push() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
-    let mut sent = worker.plan_wake(&f.wake(STREAM_A)).len();
+    let mut sent = worker.plan_wake(&f.wake(STREAM_A)).await.len();
     for i in 1..=9 {
         f.clock.set(T0_MS + i * 3_000);
-        sent += worker.plan_wake(&f.wake(STREAM_A)).len();
+        sent += worker.plan_wake(&f.wake(STREAM_A)).await.len();
     }
     assert_eq!(sent, 1, "ten ops in 27 s are one push");
 
     // The ops after the push are owed one trailing push when the window ends,
     // because the device may have synced and slept before they landed.
     f.clock.set(T0_MS + 30_000);
-    assert_eq!(devices(&worker.plan_due()), vec![f.laptop.as_str()]);
+    assert_eq!(devices(&worker.plan_due().await), vec![f.laptop.as_str()]);
     f.clock.set(T0_MS + 60_000);
     assert!(
-        worker.plan_due().is_empty(),
+        worker.plan_due().await.is_empty(),
         "nothing arrived after the trailing push, so nothing more is owed"
     );
 }
 
-#[test]
-fn a_device_online_when_its_window_closes_gets_no_trailing_push() {
+#[tokio::test]
+async fn a_device_online_when_its_window_closes_gets_no_trailing_push() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
-    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).len(), 1);
+    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).await.len(), 1);
     f.clock.set(T0_MS + 1_000);
     assert!(
-        worker.plan_wake(&f.wake(STREAM_A)).is_empty(),
+        worker.plan_wake(&f.wake(STREAM_A)).await.is_empty(),
         "the second op is owed a trailing push"
     );
     let online = f.state.push.presence().hold(&f.laptop);
     f.clock.set(T0_MS + 30_000);
     assert!(
-        worker.plan_due().is_empty(),
+        worker.plan_due().await.is_empty(),
         "the laptop opened a stream before the window closed"
     );
     drop(online);
     f.clock.set(T0_MS + 31_000);
     assert_eq!(
-        devices(&worker.plan_wake(&f.wake(STREAM_A))),
+        devices(&worker.plan_wake(&f.wake(STREAM_A)).await),
         vec![f.laptop.as_str()],
         "the skipped trailing push opened no window, so the next op sends at once"
     );
 }
 
-#[test]
-fn a_push_refused_at_the_cap_opens_no_window() {
+#[tokio::test]
+async fn a_push_refused_at_the_cap_opens_no_window() {
     let f = fixture_with(
         Arc::new(Fake::default()),
         // A window longer than the cap's minute, so a window wrongly opened
@@ -306,50 +306,54 @@ fn a_push_refused_at_the_cap_opens_no_window() {
         },
     );
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
-    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).len(), 1);
+    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).await.len(), 1);
     assert!(
-        worker.plan_wake(&f.wake(STREAM_B)).is_empty(),
+        worker.plan_wake(&f.wake(STREAM_B)).await.is_empty(),
         "the second push inside the minute is refused at the cap"
     );
     assert_eq!(f.rate_limited(), 1);
     f.clock.set(T0_MS + 60_000);
     assert_eq!(
-        devices(&worker.plan_wake(&f.wake(STREAM_B))),
+        devices(&worker.plan_wake(&f.wake(STREAM_B)).await),
         vec![f.laptop.as_str()],
         "the refused push held no window, so the next op on its stream sends at once"
     );
 }
 
-#[test]
-fn the_per_device_cap_holds_across_streams() {
+#[tokio::test]
+async fn the_per_device_cap_holds_across_streams() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
     let mut sent = 0;
     for s in 0..12u8 {
-        sent += worker.plan_wake(&f.wake([s; 16])).len();
+        sent += worker.plan_wake(&f.wake([s; 16])).await.len();
     }
     assert_eq!(sent, 10, "twelve streams in one instant are capped at ten");
     assert_eq!(f.rate_limited(), 2);
     f.clock.set(T0_MS + 60_000);
-    assert_eq!(worker.plan_wake(&f.wake([0xee; 16])).len(), 1);
+    assert_eq!(worker.plan_wake(&f.wake([0xee; 16])).await.len(), 1);
 }
 
-#[test]
-fn a_revoked_device_is_never_woken() {
+#[tokio::test]
+async fn a_revoked_device_is_never_woken() {
     let f = fixture();
     let mut worker = f.state.push.test_worker(&f.state).unwrap();
     // A window with a trailing push owed, then the revocation.
-    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).len(), 1);
+    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).await.len(), 1);
     f.clock.set(T0_MS + 1_000);
-    assert!(worker.plan_wake(&f.wake(STREAM_A)).is_empty());
+    assert!(worker.plan_wake(&f.wake(STREAM_A)).await.is_empty());
     f.state
         .store
         .revoke_device(&f.account_id, &f.laptop, T0_MS + 2_000)
+        .await
         .unwrap();
     f.clock.set(T0_MS + 30_000);
-    assert!(worker.plan_due().is_empty(), "not by the trailing push");
     assert!(
-        worker.plan_wake(&f.wake(STREAM_B)).is_empty(),
+        worker.plan_due().await.is_empty(),
+        "not by the trailing push"
+    );
+    assert!(
+        worker.plan_wake(&f.wake(STREAM_B)).await.is_empty(),
         "and not by a fresh op"
     );
 }
@@ -629,7 +633,7 @@ async fn throttling_that_outlasts_the_retries_is_counted_as_rate_limited() {
     assert_eq!(fake.sent(), 3);
     assert_eq!(count(&f, "rate_limited"), 1);
     assert_eq!(
-        f.state.store.push_tokens(&f.laptop).unwrap().len(),
+        f.state.store.push_tokens(&f.laptop).await.unwrap().len(),
         1,
         "throttling says nothing about the token"
     );
@@ -656,11 +660,17 @@ async fn an_unregistered_token_is_deleted_unless_it_was_replaced() {
     delivery(&f, dead())
         .deliver(&intent(&f.laptop, "0dd0"))
         .await;
-    assert_eq!(f.state.store.push_tokens(&f.laptop).unwrap().len(), 1);
+    assert_eq!(f.state.store.push_tokens(&f.laptop).await.unwrap().len(), 1);
 
     delivery(&f, dead())
         .deliver(&intent(&f.laptop, "bb02"))
         .await;
-    assert!(f.state.store.push_tokens(&f.laptop).unwrap().is_empty());
+    assert!(f
+        .state
+        .store
+        .push_tokens(&f.laptop)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(count(&f, "rejected"), 2);
 }
