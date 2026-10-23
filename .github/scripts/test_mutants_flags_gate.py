@@ -1332,7 +1332,7 @@ class FlagsGateContract(unittest.TestCase):
         # PER FILE and not per line, deliberately. Line numbers move for
         # reasons that have nothing to do with this gate; what must not
         # move unnoticed is WHICH FILES the gate is failing to read, and
-        # how much of each. The three workflow entries are the live half
+        # how much of each. The four workflow entries are the live half
         # of a limit the module docstring states as latent — prose the
         # gate cannot tell from shell — and a reader who believes the
         # old sentence never learns they exist.
@@ -1357,7 +1357,7 @@ class FlagsGateContract(unittest.TestCase):
                 ".github/scripts/grep-gate.sh": 4,
                 ".github/scripts/sparkle-tools.sh": 3,
                 ".github/workflows/ci.yml": 2,
-                ".github/workflows/release.yml": 1,
+                ".github/workflows/release.yml": 2,
             },
             "the unlexable tally's composition moved. Correct the "
             "breakdown in `report_unlexable`'s docstring and in "
@@ -1367,7 +1367,7 @@ class FlagsGateContract(unittest.TestCase):
         # And the two kinds inside `mise.toml`: 50 unbalanced quotations
         # to a shell lexer — 48 fences, plus the opening and closing lines
         # of the single-quoted `python3 -c` program `ios-app` picks its
-        # simulator with — and `:710` and `:1072`, each an unclosed `$(`
+        # simulator with — and `:712` and `:1074`, each an unclosed `$(`
         # continued with `\\` inside a `"""` string. They are counted
         # together by the gate and stated separately by its docstring, so
         # they are asserted separately here.
