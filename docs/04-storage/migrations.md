@@ -227,7 +227,7 @@ side tables deterministic. A test asserts the rebuilt projection is
 byte-identical to the live one for a vault built by random command sequences.
 
 **Where it is exposed.** The rebuild is exposed over UniFFI. Account recovery
-from the relay (`crates/sunrise-onboarding/src/recovery.rs#recover_account`) is
+from the relay (`crates/sunrise-client-core/src/recovery.rs#recover_account`) is
 exposed next to it. The macOS app has a path to each. The rebuild is offered on a
 rule-3 failure and on a migration failure. It runs automatically, in the same
 open, after any migration that changes materialization semantics. Adopting
