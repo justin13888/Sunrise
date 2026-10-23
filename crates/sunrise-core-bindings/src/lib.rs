@@ -59,6 +59,7 @@ use zeroize::Zeroize as _;
 pub mod background;
 pub mod brief;
 pub mod build_info;
+pub mod calendar;
 pub mod client;
 pub mod command;
 pub mod dto;
