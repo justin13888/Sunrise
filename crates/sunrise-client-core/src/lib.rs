@@ -99,10 +99,10 @@ pub mod history;
 pub mod host;
 pub mod ids;
 pub mod links;
+pub mod note_blocks;
 #[cfg(feature = "relay")]
 pub mod pairing;
 pub mod pairing_flow;
-pub mod note_blocks;
 pub mod palette;
 pub mod preferences;
 pub mod print;
@@ -112,8 +112,8 @@ pub mod relay_url;
 pub mod reminders;
 pub mod review;
 pub mod schedule;
-pub mod share;
 pub mod selection;
+pub mod share;
 #[cfg(feature = "relay")]
 pub mod sync;
 pub mod sync_status;

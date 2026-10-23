@@ -50,8 +50,8 @@ use sunrise_core::{Command, Core, CoreConfig, CoreError, Query, SystemRng, Unloc
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
 
-pub mod relay;
 pub mod calls;
+pub mod relay;
 
 /// The browser build: OPFS, `Date.now()`, and the `wasm-bindgen` exports.
 ///
