@@ -14,20 +14,20 @@ use std::sync::Arc;
 
 use sunrise_core_bindings::{BindingError, SunriseCore};
 use sunrise_e2e::spawn_relay_with;
-use sunrise_server::{ServerConfig, StaticVerifier, Store, Subject};
+use sunrise_server::{MetadataStore, ServerConfig, StaticVerifier, Subject};
 
 const ISSUER: &str = "https://idp.example";
 const BEARER: &str = "alice-token";
 
 /// A relay that demands a device binding, and a handle on its store.
-async fn bound_relay() -> (String, tokio::task::JoinHandle<()>, Arc<Store>) {
+async fn bound_relay() -> (String, tokio::task::JoinHandle<()>, Arc<dyn MetadataStore>) {
     let config = ServerConfig {
         oidc_issuer: Some(ISSUER.to_owned()),
         oidc_client_id: Some("sunrise".to_owned()),
         ..ServerConfig::default()
     };
     assert!(config.device_sig_required());
-    let mut captured: Option<Arc<Store>> = None;
+    let mut captured: Option<Arc<dyn MetadataStore>> = None;
     let (addr, handle) = spawn_relay_with(config, |state| {
         captured = Some(state.store.clone());
         state.with_verifier(Arc::new(
@@ -81,7 +81,10 @@ async fn a_device_files_its_push_token_and_a_rotation_replaces_it() {
         .await
         .expect("the relay files the token");
     assert_eq!(
-        store.push_tokens(&relay_device_id).expect("read tokens"),
+        store
+            .push_tokens(&relay_device_id)
+            .await
+            .expect("read tokens"),
         vec![("apns".to_owned(), "a1b2c3d4".to_owned())],
         "one row, under this device and the APNs provider"
     );
@@ -100,7 +103,10 @@ async fn a_device_files_its_push_token_and_a_rotation_replaces_it() {
             .expect("a repeat upload is accepted");
     }
     assert_eq!(
-        store.push_tokens(&relay_device_id).expect("read tokens"),
+        store
+            .push_tokens(&relay_device_id)
+            .await
+            .expect("read tokens"),
         vec![("apns".to_owned(), "e5f60718".to_owned())],
         "the rotated token replaced the old one"
     );
@@ -143,7 +149,11 @@ async fn a_token_signed_by_another_device_is_refused() {
         "{refused:?}"
     );
     assert!(
-        store.push_tokens(&b_id).expect("read tokens").is_empty(),
+        store
+            .push_tokens(&b_id)
+            .await
+            .expect("read tokens")
+            .is_empty(),
         "nothing may have been filed under b"
     );
 

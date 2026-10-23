@@ -239,7 +239,8 @@ fn head(seq: u64) -> Vec<FrameHead> {
 pub(crate) async fn run(store: &dyn MetadataStore) {
     accounts(store).await;
     revocation_is_atomic_and_scoped(store).await;
-    relay_log_is_ordered_and_evicts_oldest_first(store).await;
+    relay_log_is_ordered_and_deduplicated(store).await;
+    the_size_bound_evicts_oldest_first(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))
@@ -348,10 +349,9 @@ async fn revocation_is_atomic_and_scoped(store: &dyn MetadataStore) {
     ));
 }
 
-/// Frames replay in append order, channel by channel; a duplicate batch is
-/// not stored twice; the size bound evicts oldest first and a cursor behind
-/// what it evicted is reported as a gap, and one past it is not.
-async fn relay_log_is_ordered_and_evicts_oldest_first(store: &dyn MetadataStore) {
+/// Frames replay in append order, channel by channel, and a duplicate batch
+/// is not stored twice.
+async fn relay_log_is_ordered_and_deduplicated(store: &dyn MetadataStore) {
     let key: StreamKey = ([0xa1; 16], [0x11; 16]);
     let other: StreamKey = ([0xa1; 16], [0x99; 16]);
     for seq in 1..=3u8 {
@@ -430,7 +430,12 @@ async fn relay_log_is_ordered_and_evicts_oldest_first(store: &dyn MetadataStore)
         "{again:?}"
     );
     assert_eq!(store.relay_len(key).await.unwrap(), 4);
+}
 
+/// The size bound evicts oldest first, a cursor behind what it evicted is
+/// reported as a gap and one past it is not, and an evicted head is still a
+/// head.
+async fn the_size_bound_evicts_oldest_first(store: &dyn MetadataStore) {
     let bounded: StreamKey = ([0xb2; 16], [0x11; 16]);
     let caps = DurableCaps {
         max_bytes: 20,
