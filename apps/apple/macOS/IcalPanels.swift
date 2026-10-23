@@ -17,8 +17,8 @@ extension IcalFiles {
         panel.allowedContentTypes = documentTypes
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a calendar file to import as time blocks."
-        panel.prompt = "Import"
+        panel.message = L10n.Mac.icalImportMessage
+        panel.prompt = L10n.Mac.icalImportPrompt
         return panel.runModal() == .OK ? panel.url : nil
     }
 
@@ -28,8 +28,8 @@ extension IcalFiles {
         let panel = NSSavePanel()
         panel.allowedContentTypes = documentTypes
         panel.nameFieldStringValue = suggestion
-        panel.message = "Choose where to write the calendar."
-        panel.prompt = "Export"
+        panel.message = L10n.Mac.icalExportMessage
+        panel.prompt = L10n.Mac.icalExportPrompt
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

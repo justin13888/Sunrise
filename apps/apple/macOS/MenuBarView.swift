@@ -10,7 +10,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if model.snapshot.isEmpty {
-                Text("Nothing outstanding today.")
+                Text(L10n.Menu.nothingOutstanding)
                     .font(.callout)
             } else {
                 counts
@@ -34,13 +34,13 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quick capture", action: openCapture)
+            Button(L10n.Menu.quickCapture, action: openCapture)
                 .keyboardShortcut(for: .quickCaptureGlobal)
             if !hotkey.isActive {
                 Text(hotkey.explanation).font(.caption2).foregroundStyle(.secondary)
             }
-            Button("Open Sunrise", action: openMain)
-            Button("Quit Sunrise") { NSApplication.shared.terminate(nil) }
+            Button(L10n.Menu.openApp, action: openMain)
+            Button(L10n.Menu.quitApp) { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut(Keymap.quit)
         }
         .padding(12)
@@ -52,12 +52,12 @@ struct MenuBarView: View {
 
     private var counts: some View {
         VStack(alignment: .leading, spacing: 3) {
-            row("Overdue", model.snapshot.overdue, emphasised: model.snapshot.overdue > 0)
-            row("Due today", model.snapshot.due)
-            row("Scheduled", model.snapshot.scheduled)
-            row("Inbox", model.snapshot.inbox)
+            row(L10n.Menu.overdue, model.snapshot.overdue, emphasised: model.snapshot.overdue > 0)
+            row(L10n.Menu.dueToday, model.snapshot.due)
+            row(L10n.Menu.scheduled, model.snapshot.scheduled)
+            row(L10n.Menu.inbox, model.snapshot.inbox)
             if model.snapshot.doneToday > 0 {
-                row("Done today", model.snapshot.doneToday)
+                row(L10n.Menu.doneToday, model.snapshot.doneToday)
             }
         }
     }

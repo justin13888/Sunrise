@@ -18,9 +18,9 @@ struct SearchView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField(
-                    "Search",
+                    L10n.Search.field,
                     text: $model.text,
-                    prompt: Text("Titles and notes")
+                    prompt: Text(L10n.Search.prompt)
                 )
                 .textFieldStyle(.plain)
                 // Search takes the same punctuation capture does — a saved
@@ -41,7 +41,7 @@ struct SearchView: View {
                     return .handled
                 }
                 if !model.text.isEmpty {
-                    Button("Clear", systemImage: "xmark.circle.fill") { model.clear() }
+                    Button(L10n.Search.clear, systemImage: "xmark.circle.fill") { model.clear() }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
@@ -66,7 +66,7 @@ struct SearchView: View {
                 focus: focus
             )
         }
-        .navigationTitle("Search")
+        .navigationTitle(L10n.Search.title)
         .task { focus.wrappedValue = .search }
         .task { await model.results.follow() }
     }
@@ -92,9 +92,8 @@ struct SearchView: View {
     private var matchSummary: String {
         let count = model.results.tasks.count
         let capped = count == Int(TaskListKind.searchLimit)
-        let noun = count == 1 ? "match" : "matches"
         return capped
-            ? "First \(count) \(noun) — narrow it further"
-            : "\(count) \(noun)"
+            ? L10n.Search.matchesCapped(count: count)
+            : L10n.Search.matches(count: count)
     }
 }

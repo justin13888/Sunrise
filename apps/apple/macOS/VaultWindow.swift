@@ -98,13 +98,13 @@ struct VaultWindow: View {
                 SyncStatusView(presentation: sync.presentation)
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("Settings", systemImage: "gearshape") { showingSettings = true }
+                Button(L10n.Mac.settings, systemImage: "gearshape") { showingSettings = true }
             }
         }
         .sheet(isPresented: $savingView) {
             SaveViewSheet(
                 name: $newViewName,
-                summary: selection?.title ?? "Today"
+                summary: selection?.title ?? L10n.Mac.todayFallback
             ) {
                 guard let selection else { return }
                 await savedViews.save(
@@ -133,7 +133,7 @@ struct VaultWindow: View {
                     devices: models.devices,
                     storage: models.storage
                 )
-                Button("Done") { showingSettings = false }
+                Button(L10n.Action.done) { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
                     .padding()
             }
@@ -282,9 +282,9 @@ struct VaultWindow: View {
             EndOfDayPlanView(model: evening)
         case .none:
             ContentUnavailableView(
-                "Sunrise",
+                L10n.Common.productName,
                 systemImage: "sun.max",
-                description: Text("Pick something on the left.")
+                description: Text(L10n.Mac.pickSomething)
             )
         }
     }

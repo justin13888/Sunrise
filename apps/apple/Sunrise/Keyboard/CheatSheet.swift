@@ -57,7 +57,7 @@ enum CheatSheet {
         let prefixed = VimKeymap.prefixed
             .sorted { $0.key < $1.key }
             .map { CheatSheetRow(title: $0.value.title, keys: $0.key) }
-        return CheatSheetSection(title: "Vim mode", rows: single + prefixed)
+        return CheatSheetSection(title: L10n.Keyboard.vimSection, rows: single + prefixed)
     }
 
     /// Group a keymap by section, keeping each section's bindings in the order

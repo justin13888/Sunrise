@@ -10,7 +10,10 @@ import Foundation
 /// app can keep that promise about, and it is the only one the intents act on.
 /// Titles here are for a human to recognise, never to address by.
 struct TaskEntity: AppEntity, Equatable {
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Task")
+    /// A catalog key as a literal; see the note on ``CaptureTaskIntent/title``.
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(
+        name: LocalizedStringResource("apple.intents.task_type", table: "Localizable")
+    )
     static let defaultQuery = TaskEntityQuery()
 
     /// The core's `EntityRef`, which is already a string.

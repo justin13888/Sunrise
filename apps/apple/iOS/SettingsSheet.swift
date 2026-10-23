@@ -33,11 +33,11 @@ extension VaultTabs {
                     devices: models.devices,
                     storage: models.storage
                 )
-                .navigationTitle("Settings")
+                .navigationTitle(L10n.Settings.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { isPresented = false }
+                        Button(L10n.Action.done) { isPresented = false }
                     }
                 }
             }

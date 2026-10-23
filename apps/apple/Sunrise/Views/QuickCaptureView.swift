@@ -26,9 +26,9 @@ struct QuickCaptureView: View {
                 Image(systemName: "sun.max")
                     .foregroundStyle(.orange)
                 TextField(
-                    "Capture",
+                    L10n.Capture.field,
                     text: $model.text,
-                    prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
+                    prompt: Text(L10n.Capture.prompt)
                 )
                 .textFieldStyle(.plain)
                 // The same grammar as the inline bar's field, so the same
@@ -76,10 +76,10 @@ struct QuickCaptureView: View {
             // the software keyboard's Return — an affordance nothing on screen
             // named — and the only way out was a swipe.
             HStack {
-                Button("Cancel", action: dismiss)
+                Button(L10n.Action.cancel, action: dismiss)
                     .accessibilityIdentifier("quick-capture.cancel")
                 Spacer()
-                Button("Add", action: submit)
+                Button(L10n.Action.add, action: submit)
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canCommit)
                     .disabledUnlessEditable(.task)
@@ -144,14 +144,14 @@ struct QuickCaptureView: View {
             do {
                 try await commit(draft)
                 failure = nil
-                confirmation = "Captured “\(title)”"
+                confirmation = L10n.Capture.captured(title: title)
                 focused = true
                 try? await _Concurrency.Task.sleep(for: .seconds(2))
                 if confirmation?.contains(title) == true { confirmation = nil }
             } catch {
                 confirmation = nil
                 model.text = typed
-                failure = "Not saved: \(error.localizedDescription)"
+                failure = L10n.Capture.notSaved(reason: error.localizedDescription)
                 focused = true
             }
         }
@@ -166,7 +166,7 @@ struct QuickCaptureView: View {
         }
         if let energy = preview.draft.energy { parts.append(energyLabel(energy: energy)) }
         let tags = preview.draft.contexts.count + (preview.draft.streamId == nil ? 0 : 1)
-        if tags > 0 { parts.append("\(tags) tags") }
+        if tags > 0 { parts.append(L10n.Capture.tags(count: tags)) }
         return parts.joined(separator: " · ")
     }
 }

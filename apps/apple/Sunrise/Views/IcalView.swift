@@ -27,7 +27,7 @@ struct IcalReportView: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Done", action: dismiss)
+                Button(L10n.Action.done, action: dismiss)
                     .keyboardShortcut(.defaultAction)
             }
             .padding(12)
@@ -71,11 +71,11 @@ struct IcalReportView: View {
     /// twice shows the second run as all-updated and no duplicates.
     private var blockList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Time blocks written")
+            Text(L10n.Ical.blocksWritten)
                 .font(.subheadline.weight(.semibold))
             ForEach(summary.blocks) { block in
                 HStack(spacing: 8) {
-                    Text(block.isNew ? "new" : "updated")
+                    Text(block.isNew ? L10n.Ical.blockNew : L10n.Ical.blockUpdated)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .frame(width: 56, alignment: .leading)
@@ -104,11 +104,11 @@ struct IcalSurfaces: ViewModifier {
                 }
             }
             .alert(
-                "The calendar could not be read",
+                L10n.Ical.readFailedTitle,
                 isPresented: showingError,
                 presenting: model?.errorMessage
             ) { _ in
-                Button("OK") { model?.dismissError() }
+                Button(L10n.Ical.ok) { model?.dismissError() }
             } message: { message in
                 Text(message)
             }

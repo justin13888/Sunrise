@@ -21,14 +21,25 @@ import Foundation
 /// That falls out of using the parser rather than being enforced here: this
 /// surface has no "current stream" to default to in the first place.
 struct CaptureTaskIntent: AppIntent {
-    static let title: LocalizedStringResource = "Capture Task"
+    /// The intents' metadata — titles, descriptions, parameter titles, type and
+    /// case names — is read out of the source at build time by Xcode's
+    /// `appintentsmetadataprocessor`, which accepts only compile-time literals,
+    /// so it cannot go through `L10n`. It names the string catalog's key as a
+    /// literal instead, in the `Localizable` table that
+    /// `packages/sunrise-i18n/generated/Localizable.xcstrings` compiles to,
+    /// and the system resolves it from there in the user's language. The
+    /// English lives only in `i18n/en.toml`; a `defaultValue:` here would be a
+    /// second copy. Such a message must take no arguments and contain no `%`:
+    /// a `LocalizedStringResource` is never passed through
+    /// `String(format:)`. Every intent in this directory follows this note.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.capture_task.title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        """
-        Adds a task to Sunrise, reading the same #stream, @context, ^when, \
-        !priority and ~estimate tags that quick capture reads.
-        """,
-        categoryName: "Capture",
+        LocalizedStringResource("apple.intents.capture_task.description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_capture", table: "Localizable"),
         searchKeywords: ["task", "todo", "capture", "inbox", "add"]
     )
 
@@ -42,9 +53,14 @@ struct CaptureTaskIntent: AppIntent {
     }
 
     @Parameter(
-        title: "Task",
-        description: "A capture line, tags and all.",
-        requestValueDialog: "What would you like to capture?"
+        title: LocalizedStringResource("apple.intents.task_parameter", table: "Localizable"),
+        description: LocalizedStringResource(
+            "apple.intents.capture_task.line_description",
+            table: "Localizable"
+        ),
+        requestValueDialog: IntentDialog(
+            LocalizedStringResource("apple.intents.capture_task.line_prompt", table: "Localizable")
+        )
     )
     var line: String
 
@@ -101,9 +117,11 @@ struct CaptureTaskIntent: AppIntent {
     /// somewhere other than where the user believes they named is precisely
     /// the quiet failure this surface must not have.
     static func message(title: String, issues: [CaptureIssue]) -> String {
-        guard let first = issues.first else { return "Captured “\(title)”." }
+        guard let first = issues.first else { return L10n.Intents.CaptureTask.captured(title: title) }
         let rest = issues.count - 1
-        guard rest > 0 else { return "Captured “\(title)”. \(first.explanation)" }
-        return "Captured “\(title)”. \(first.explanation) And \(rest) more."
+        guard rest > 0 else {
+            return L10n.Intents.CaptureTask.capturedWithIssue(title: title, issue: first.explanation)
+        }
+        return L10n.Intents.CaptureTask.capturedWithIssues(rest: rest, title: title, issue: first.explanation)
     }
 }

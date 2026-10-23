@@ -113,10 +113,12 @@ final class VaultRegistry {
     }
 
     private static var firstVault: VaultDescriptor {
-        VaultDescriptor(id: firstVaultID, name: "My vault")
+        VaultDescriptor(id: firstVaultID, name: L10n.Vaults.defaultFirst)
     }
 
-    private static func defaultName(index: Int) -> String { "Vault \(index)" }
+    private static func defaultName(index: Int) -> String {
+        L10n.Vaults.defaultNumbered(number: String(index))
+    }
 
     private func persist() {
         defaults.set(try? JSONEncoder().encode(vaults), forKey: Key.vaults)

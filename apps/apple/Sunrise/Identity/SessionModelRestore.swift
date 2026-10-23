@@ -26,23 +26,13 @@ extension SessionModel {
         var errorDescription: String? {
             switch self {
             case .notNow:
-                "A vault is already open on this device."
+                L10n.Recovery.Restore.notNow
             case .relayNotConfigured:
-                """
-                Add your relay address in Settings first. The recovery blob \
-                your code opens is stored there.
-                """
+                L10n.Recovery.Restore.relayNotConfigured
             case .signInNotConfigured:
-                """
-                Add your sign-in provider in Settings first. The relay \
-                releases the recovery blob only after you sign in again.
-                """
+                L10n.Recovery.Restore.signInNotConfigured
             case let .originalNotPutBack(path):
-                """
-                The restore did not complete, and your existing vault could \
-                not be moved back into place. Nothing was deleted: it is at \
-                \(path).
-                """
+                L10n.Recovery.Restore.originalNotPutBack(path: path)
             }
         }
     }

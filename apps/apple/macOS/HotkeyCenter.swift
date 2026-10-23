@@ -33,14 +33,13 @@ enum HotkeyStatus: Equatable {
     var explanation: String {
         switch self {
         case .active:
-            "⌘⇧N opens quick capture from anywhere."
+            L10n.Mac.hotkeyActive
         case .taken:
-            "Another app already uses ⌘⇧N. Quick capture is still on the menu bar."
+            L10n.Mac.hotkeyTaken
         case let .unavailable(code):
-            "The system refused the shortcut (error \(code)). "
-                + "Quick capture is still on the menu bar."
+            L10n.Mac.hotkeyUnavailable(code: String(code))
         case .idle:
-            "Not registered."
+            L10n.Mac.hotkeyIdle
         }
     }
 }

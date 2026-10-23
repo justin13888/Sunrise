@@ -219,7 +219,7 @@ struct ChecklistToggleStyle: ToggleStyle {
         }
         .buttonStyle(.plain)
         // The label is hidden at the call site, so the tick carries the name.
-        .accessibilityLabel(configuration.isOn ? "Done" : "Not done")
+        .accessibilityLabel(configuration.isOn ? L10n.Platform.checklistDone : L10n.Platform.checklistNotDone)
     }
 }
 

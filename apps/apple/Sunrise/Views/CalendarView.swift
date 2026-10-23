@@ -86,7 +86,7 @@ struct CalendarView: View {
     }
 
     private var spanPicker: some View {
-        Picker("Span", selection: $model.span) {
+        Picker(L10n.Calendar.span, selection: $model.span) {
             ForEach(CalendarSpan.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.segmented)
@@ -94,19 +94,21 @@ struct CalendarView: View {
     }
 
     private var snapPicker: some View {
-        Picker("Snap", selection: $model.snapMinutes) {
-            ForEach(CalendarModel.snapChoices, id: \.self) { Text("\($0) min").tag($0) }
+        Picker(L10n.Calendar.snap, selection: $model.snapMinutes) {
+            ForEach(CalendarModel.snapChoices, id: \.self) {
+                Text(L10n.Calendar.snapMinutes(minutes: $0)).tag($0)
+            }
         }
     }
 
     @ViewBuilder
     private var stepper: some View {
-        Button("Previous", systemImage: "chevron.left") {
+        Button(L10n.Calendar.previous, systemImage: "chevron.left") {
             Task { await model.step(-1) }
         }
         .labelStyle(.iconOnly)
-        Button("Today") { Task { await model.goToToday() } }
-        Button("Next", systemImage: "chevron.right") {
+        Button(L10n.Calendar.today) { Task { await model.goToToday() } }
+        Button(L10n.Calendar.next, systemImage: "chevron.right") {
             Task { await model.step(1) }
         }
         .labelStyle(.iconOnly)
@@ -392,7 +394,7 @@ private struct DayColumn: View {
                 guard let other = model.row(otherId) else { return nil }
                 return ResolveOption(
                     conflict: conflict,
-                    otherTitle: other.title ?? "Untitled block",
+                    otherTitle: other.title ?? L10n.Calendar.untitledBlock,
                     keepBoth: { model.keepBoth() },
                     merge: { Task { await model.merge(conflict) } },
                     adjust: { adjust(conflict) }
@@ -436,7 +438,7 @@ private struct BlockChip: View {
         let laneWidth = max(24, width / CGFloat(placed.laneCount))
 
         VStack(alignment: .leading, spacing: 2) {
-            Text(placed.row.title ?? "Untitled block")
+            Text(placed.row.title ?? L10n.Calendar.untitledBlock)
                 .font(.caption.weight(.medium))
                 .lineLimit(2)
             if !placed.row.taskTitles.isEmpty {
@@ -467,20 +469,20 @@ private struct BlockChip: View {
         .gesture(moveGesture)
         .accessibilityIdentifier("calendar-block")
         .contextMenu {
-            Button("Edit…", action: open)
+            Button(L10n.Calendar.editEllipsis, action: open)
             if !resolve.isEmpty {
-                Menu("Resolve") {
+                Menu(L10n.Calendar.resolve) {
                     ForEach(resolve) { option in
-                        Section("Overlaps \(option.otherTitle)") {
-                            Button("Keep both", action: option.keepBoth)
-                            Button("Merge", action: option.merge)
-                            Button("Adjust times…", action: option.adjust)
+                        Section(L10n.Calendar.overlaps(title: option.otherTitle)) {
+                            Button(L10n.Calendar.keepBoth, action: option.keepBoth)
+                            Button(L10n.Calendar.merge, action: option.merge)
+                            Button(L10n.Calendar.adjustTimes, action: option.adjust)
                         }
                     }
                 }
             }
             Divider()
-            Button("Delete", role: .destructive, action: delete)
+            Button(L10n.Action.delete, role: .destructive, action: delete)
         }
     }
 

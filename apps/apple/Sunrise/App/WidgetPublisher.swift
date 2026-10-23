@@ -97,7 +97,7 @@ final class WidgetPublisher {
         let now = await bridge.nowMs()
         do {
             guard case let .tasks(today) = try await bridge.query(.today(nowMs: now, contexts: [])) else {
-                errorMessage = "The core answered a task query with something else."
+                errorMessage = L10n.App.widgetQueryMismatch
                 return
             }
             let next = Self.snapshot(
