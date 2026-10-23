@@ -64,14 +64,18 @@ pub mod client;
 pub mod command;
 pub mod dto;
 pub mod editing;
+pub mod flows;
 pub mod ical;
+pub mod links;
 pub mod notes;
 pub mod pairing;
 pub mod pairing_relay;
 pub mod query;
 pub mod recovery;
+pub mod relay_url;
 pub mod reminders;
 pub mod settings;
+pub mod sync_status;
 pub mod types;
 pub mod vocab;
 
@@ -1540,7 +1544,7 @@ impl std::fmt::Debug for SunriseCore {
 ///
 /// `refresh_token` is `None` when the issuer did not return one — some do not
 /// for public clients — in which case renewal means logging in again.
-#[derive(uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LoginCredentials {
     /// The bearer to hand to [`SunriseCore::set_sync_credential`].
     pub access_token: String,

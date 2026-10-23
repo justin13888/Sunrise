@@ -24,8 +24,10 @@ workspace = true
 default = ["relay"]
 relay = [
     "dep:async-trait",
+    "dep:sunrise-auth",
+    "dep:sunrise-pairing",
     "dep:sunrise-relay-client",
-    "dep:sunrise-sync",
+    "sunrise-sync/sse",
     "dep:tokio",
     "dep:zeroize",
 ]
@@ -41,16 +43,27 @@ sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+# The connection states the sync badge reads (`sync_status`). The SSE
+# transport is the `relay` feature's; the states are not.
+sunrise-sync = { workspace = true }
+# The one relay URL rule (`relay_url`): a WHATWG parser, so the web client's
+# `URL` and this agree on every input the shared vectors hold.
+url = { workspace = true }
 
 # --- `relay` ---
 # `Transport` is an `async_trait`, and `sync::SyncLink` wraps the transport the
 # driver dials so a bounded sync can end a session that was up before the app
 # was suspended (`src/sync.rs`).
 async-trait = { workspace = true, optional = true }
+# The OIDC credential and its renewal point (`account_session`): the 75% rule
+# is `sunrise-auth`'s, and the account flow reads it rather than restating it.
+sunrise-auth = { workspace = true, optional = true }
+# The pairing rendezvous (`pairing`) reads the session id out of
+# the scanned QR with the decoder that wrote it.
+sunrise-pairing = { workspace = true, optional = true }
 # The REST client the account and recovery flows call. It names no engine;
 # this crate is what puts a vault and the relay together.
 sunrise-relay-client = { workspace = true, optional = true }
-sunrise-sync = { workspace = true, features = ["sse"], optional = true }
 tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
 # The recovery seed is drawn, used twice and dropped inside one function.
 zeroize = { workspace = true, optional = true }
@@ -58,5 +71,6 @@ zeroize = { workspace = true, optional = true }
 [dev-dependencies]
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

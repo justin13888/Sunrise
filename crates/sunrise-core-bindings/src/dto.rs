@@ -49,25 +49,8 @@ use sunrise_domain::{
 use sunrise_id::{EntityKind, EntityRef};
 
 /// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
-/// hex.
-pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(32);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-/// As [`hex16`], for the 32-byte digests attachment metadata carries.
-fn hex32(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
+/// hex — the client layer's one spelling, so the app and the CLI agree.
+pub(crate) use sunrise_client_core::ids::hex_id as hex16;
 
 /// A nested value's unknown fields, as the opaque blob its mirror carries:
 /// canonical CBOR of the map, or `None` when there are none.
@@ -3003,8 +2986,8 @@ impl From<&Attachment> for AttachmentItem {
             blob_key: blob_key.to_vec(),
             blob_id: hex16(blob_id),
             chunk_count: *chunk_count,
-            content_hash: hex32(content_hash),
-            ciphertext_hash: hex32(ciphertext_hash),
+            content_hash: sunrise_client_core::ids::hex(content_hash),
+            ciphertext_hash: sunrise_client_core::ids::hex(ciphertext_hash),
             deleted: *deleted,
         }
     }

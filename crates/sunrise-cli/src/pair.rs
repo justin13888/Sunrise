@@ -330,7 +330,7 @@ async fn accept(
         Some(Box::new(payload)),
     )
     .await?;
-    let device = crate::hex16_public(&core.device_id());
+    let device = sunrise_client_core::ids::hex_id(&core.device_id());
     core.shutdown().await;
 
     // Only now. The secrets in it have been consumed, and until the vault above

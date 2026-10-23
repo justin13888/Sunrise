@@ -63,6 +63,18 @@ flows that put a vault and the relay together call down into it, never the
 reverse. The `relay` feature gates everything in the client layer that links the
 REST client or the SSE transport, so the web core links the pure half.
 
+Beside those, the client layer holds what a screen decides that is not a
+screen's own, as codes and data rather than sentences, so each surface words
+it: the relay URL rule (below), the sync badge and the sync plan
+(`sync_status`), `sunrise://` links (`links`), what a share becomes
+(`share`), and three state machines with their IO injected — a pairing as a
+screen walks it (`pairing_flow`, over the relay rendezvous in `pairing`), the
+vault session's lifecycle (`vault_session`), and the OIDC session's sign-in,
+renewal and sign-out (`account_session`, over `sunrise-auth`'s credential).
+Each transition returns the seam calls to make and takes their answers back,
+which is what lets every client walk the same script and a test walk it
+without one.
+
 The client layer keeps the core's determinism rules below: time is the core's
 injected clock or a zone name the caller passes, randomness an injected `Rng`,
 and a file a path the caller names.
@@ -85,6 +97,20 @@ kind ([ADR-0066](../11-adr/0066-times-survive-travel.md) §4):
 - `civil` is what the three share: a picked moment written as a kind, in a
   zone the caller names. An unknown zone name is an error here, not UTC
   ([ADR-0066](../11-adr/0066-times-survive-travel.md) §3).
+
+### The relay URL rule
+
+A relay URL is where a client sends the account bearer, so there is one rule
+for what counts as one (`crates/sunrise-client-core/src/relay_url.rs`):
+`https://`, or `http://` only to a loopback host (`localhost`, `127.0.0.0/8`,
+`::1`); an origin and nothing after the port, since the relay client appends
+its own paths and the pairing QR names an origin; at most 256 bytes, the QR's
+bound; and never `ws://`/`wss://`, which is refused with its own code because
+sync left the WebSocket (ADR-0023). It replaced three that disagreed: the Apple
+sync plan took any `http(s)://` string, path and all, the pairing seam took a
+path, and the web client took only an origin. The web client restates it in
+TypeScript for its synchronous start-up read, and both are tested against
+`crates/sunrise-client-core/vectors/relay-url.json`.
 
 ## Public surface (sketch)
 

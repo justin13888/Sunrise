@@ -3216,15 +3216,18 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sunrise-auth",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "url",
  "zeroize",
 ]
 
@@ -3286,7 +3289,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
- "url",
  "zeroize",
 ]
 

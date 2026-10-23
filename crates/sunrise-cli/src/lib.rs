@@ -48,18 +48,3 @@ pub fn device_label(app_version: &str) -> sunrise_client_core::account::DeviceLa
         app_version: Some(app_version.to_owned()),
     }
 }
-
-/// Lowercase hex of a 16-byte id, for the device and identity listings.
-///
-/// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
-/// of `D_S_pub` and an identity id one of `ID_S_pub`, neither of them a ULID —
-/// so hex is the only form they have ever had on screen or in a log.
-#[must_use]
-pub fn hex16_public(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(32);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}

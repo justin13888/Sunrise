@@ -1,6 +1,7 @@
 //! The web client's seam over `sunrise-core` (ADR-0055).
 //!
-//! Four calls, JSON in and JSON out, the shape ADR-0012 named for this crate:
+//! Four vault calls, JSON in and JSON out, the shape ADR-0012 named for this
+//! crate, and the client layer's pure rules beside them:
 //!
 //! | JS (`wasm-bindgen`)                  | Rust                        |
 //! |--------------------------------------|-----------------------------|
@@ -8,6 +9,7 @@
 //! | `core.submitJson(commandJson)`       | [`WebCore::submit_json`]    |
 //! | `core.queryJson(queryJson)`          | [`WebCore::query_json`]     |
 //! | `core.closeVault()`                  | [`WebCore::close`]          |
+//! | `checkRelayUrl(input)`               | [`relay::check_relay_url_json`] |
 //!
 //! A command is [`sunrise_core::Command`] and a query [`sunrise_core::Query`]
 //! in `serde_json`'s externally tagged form — `{"CreateTask":{…}}`, `"Inbox"` —
@@ -37,6 +39,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use sunrise_core::{Command, Core, CoreConfig, CoreError, Query, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
+
+pub mod relay;
 
 /// The browser build: OPFS, `Date.now()`, and the `wasm-bindgen` exports.
 ///

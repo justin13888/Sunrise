@@ -19,6 +19,7 @@
 //!   the [`views::SavedViewStore`] that reads and writes them.
 //! * [`preferences`] — the bootstrap preferences file a device reads before
 //!   it has a vault, written so a crash leaves one whole file or the other.
+//! * [`ids`] — lowercase hex for the ids that have no `EntityRef` prefix.
 //! * [`host`] — what a host hands the core at open: an injected clock, and a
 //!   vault root checked for its width.
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
@@ -42,6 +43,19 @@
 //!   in civil days and in the kind the plan already has.
 //! * [`calendar`] — the grid's days and week start, block layout, snapping,
 //!   drags, and the Resolve menu's merge.
+//! * [`relay_url`] — the one rule for what a relay URL is, shared with the
+//!   web client through `vectors/relay-url.json`.
+//! * [`sync_status`] — the sync badge and the sync plan, as codes.
+//! * [`links`] — `sunrise://` deep links, parsed and built.
+//! * [`share`] — what shared text, a link and images become as an Inbox task.
+//! * [`pairing_flow`] — a pairing as a screen walks it: transport, legs,
+//!   phases and progress, as pure transitions that name the seam calls.
+//! * [`vault_session`] — the vault session's lifecycle: first run, locked,
+//!   unlocked, and the refusals that keep a key from being made over data.
+//! * `account_session` (feature `relay`) — the OIDC session: sign-in, silent
+//!   renewal at `sunrise-auth`'s renewal point, and sign-out.
+//! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
+//!   travel through.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -66,6 +80,8 @@
 
 #[cfg(feature = "relay")]
 pub mod account;
+#[cfg(feature = "relay")]
+pub mod account_session;
 pub mod brief;
 pub mod calendar;
 pub mod civil;
@@ -74,17 +90,26 @@ pub mod focus;
 pub mod gate;
 pub mod history;
 pub mod host;
+pub mod ids;
+pub mod links;
+#[cfg(feature = "relay")]
+pub mod pairing;
+pub mod pairing_flow;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
+pub mod relay_url;
 pub mod reminders;
 pub mod review;
 pub mod schedule;
+pub mod share;
 #[cfg(feature = "relay")]
 pub mod sync;
+pub mod sync_status;
 #[cfg(test)]
 mod test_support;
 pub mod undo;
+pub mod vault_session;
 pub mod views;
 pub mod vocab;
 

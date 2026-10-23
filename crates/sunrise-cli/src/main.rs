@@ -95,20 +95,6 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-/// Lowercase hex of a 16-byte id, for the device and identity listings.
-///
-/// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
-/// of `D_S_pub` and an identity id one of `ID_S_pub`, neither of them a ULID —
-/// so hex is the only form they have ever had on screen or in a log.
-fn hex16(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(32);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
 /// Report the devices the account has stopped calling revoked while still
 /// giving them no keys.
 ///
@@ -164,7 +150,7 @@ async fn resolve_device(core: &Core, prefix: &str) -> Result<[u8; 16], Box<dyn s
     };
     let hits: Vec<[u8; 16]> = rows
         .iter()
-        .filter(|d| hex16(&d.device_id).starts_with(&prefix))
+        .filter(|d| sunrise_client_core::ids::hex_id(&d.device_id).starts_with(&prefix))
         .map(|d| d.device_id)
         .collect();
     match hits.as_slice() {
@@ -534,7 +520,7 @@ async fn dispatch(
                 };
                 println!(
                     "{}  {:<20} {}{suffix}",
-                    hex16(&d.device_id),
+                    sunrise_client_core::ids::hex_id(&d.device_id),
                     d.nickname,
                     d.platform
                 );
@@ -613,7 +599,9 @@ async fn dispatch(
                 println!("{}", strings::devices::gated_title());
                 println!(
                     "  - {}",
-                    strings::devices::gated_still_current(&hex16(&target))
+                    strings::devices::gated_still_current(&sunrise_client_core::ids::hex_id(
+                        &target
+                    ))
                 );
                 println!("  - {}", strings::devices::gated_relay());
                 println!("  - {}", strings::devices::gated_kept());
@@ -621,7 +609,10 @@ async fn dispatch(
                 print_revocation_unwound(&outcome.revocation_unwound);
                 return Ok(());
             }
-            println!("{}", strings::devices::revoked_title(&hex16(&target)));
+            println!(
+                "{}",
+                strings::devices::revoked_title(&sunrise_client_core::ids::hex_id(&target))
+            );
             // Not "every Stream key rotated" unconditionally: that was a claim
             // this command could not always make. A vault row whose stream id
             // is malformed names no stream to rotate, and the revoked device
@@ -662,8 +653,14 @@ async fn dispatch(
                     // value that does not move, and the one two devices
                     // compare to decide they belong together. The identity in
                     // force is a key, not a name.
-                    println!("account   {}", hex16(&st.genesis_identity_id));
-                    println!("current   {}", hex16(&st.current_identity_id));
+                    println!(
+                        "account   {}",
+                        sunrise_client_core::ids::hex_id(&st.genesis_identity_id)
+                    );
+                    println!(
+                        "current   {}",
+                        sunrise_client_core::ids::hex_id(&st.current_identity_id)
+                    );
                     println!("rotations {}", st.transitions);
                     println!(
                         "this device {}",
@@ -712,11 +709,15 @@ async fn dispatch(
                     };
                     println!(
                         "{}",
-                        strings::identity::rotated(&hex16(&st.genesis_identity_id))
+                        strings::identity::rotated(&sunrise_client_core::ids::hex_id(
+                            &st.genesis_identity_id
+                        ))
                     );
                     println!(
                         "  {}",
-                        strings::identity::current_now(&hex16(&st.current_identity_id))
+                        strings::identity::current_now(&sunrise_client_core::ids::hex_id(
+                            &st.current_identity_id
+                        ))
                     );
                     if keep {
                         println!("  {}", strings::identity::code_kept());
