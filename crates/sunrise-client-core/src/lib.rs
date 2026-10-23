@@ -26,6 +26,10 @@
 //!   sections, relative days, snoozes, block conflicts, session timers.
 //! * [`focus`] — what an OS Focus filter lets through, for Today and for the
 //!   reminder schedule alike.
+//! * [`reminders`] — the core's reminder intents as an OS schedule: the cap,
+//!   the order, the body text, identifiers stable across re-plans, the
+//!   reconcile against what the OS holds, and the notification preferences
+//!   read off the core's `Preferences`.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -57,6 +61,7 @@ pub mod host;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;
+pub mod reminders;
 #[cfg(feature = "relay")]
 pub mod sync;
 pub mod undo;
