@@ -38,6 +38,8 @@ impl Harness {
         let state = ServerState::with_clock(
             ServerConfig {
                 blob_root: Some(dir.path().to_path_buf()),
+                // Loopback, so `/metrics` is mounted for the gauge tests.
+                bind: "127.0.0.1:8443".to_owned(),
                 ..ServerConfig::default()
             },
             clock.clone(),
@@ -129,6 +131,18 @@ impl Harness {
             .await;
         put.assert_status(StatusCode::NO_CONTENT);
         upload_id
+    }
+
+    /// One `/metrics` scrape's line for an unlabelled series, value only.
+    async fn scraped(&self, series: &str) -> Option<String> {
+        let res = self
+            .client
+            .send_as(Method::GET, "/metrics", None, None)
+            .await;
+        res.assert_status(StatusCode::OK);
+        let body = String::from_utf8_lossy(&res.bytes).into_owned();
+        body.lines()
+            .find_map(|l| l.strip_prefix(series)?.strip_prefix(' ').map(str::to_owned))
     }
 
     async fn tombstone(&self, blob_id: &str, seq: u64) -> Res {
@@ -298,6 +312,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         "devices",
         "account_delete_tokens",
         "blob_tombstones",
+        "committed_blobs",
     ] {
         assert_eq!(by_id(table, "account_id", &account_id), 0, "{table}");
     }
@@ -384,6 +399,104 @@ async fn a_reupload_lifts_the_tombstone_and_an_unknown_blob_is_not_found() {
 
     let missing = h.tombstone(&format!("blb_{}", "0".repeat(32)), 1).await;
     missing.assert_status(StatusCode::NOT_FOUND);
+}
+
+/// **The bytes at rest follow the blobs a reader can have.** A finalize grows
+/// `sunrise_blob_storage_bytes` by the blob's size, the same bytes finalized
+/// again do not grow it twice, and the blob's collection shrinks it by the
+/// same amount.
+#[tokio::test]
+async fn the_storage_gauge_grows_on_finalize_and_shrinks_on_collection() {
+    let h = Harness::new();
+    let storage = "sunrise_blob_storage_bytes";
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("0"));
+
+    let kept = h.upload(b"twelve bytes").await;
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("12"));
+    let blob = h.upload(b"seven b").await;
+    assert_eq!(h.upload(b"seven b").await, blob);
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("19"));
+
+    h.tombstone(&blob, 1)
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    assert_eq!(
+        h.scraped(storage).await.as_deref(),
+        Some("19"),
+        "a tombstoned blob is still at rest, and still readable"
+    );
+    h.at(T0_MS + 30 * DAY_MS);
+    assert_eq!(h.pass().await.blobs_collected, 1);
+    assert_eq!(h.fetch(&blob).await, StatusCode::NOT_FOUND);
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("12"));
+    assert_eq!(h.fetch(&kept).await, StatusCode::OK);
+}
+
+/// **A blob the ledger does not know is backfilled from its manifest** by the
+/// next pass: a blob committed before the ledger existed, or one whose
+/// finalize stopped between its manifest and its row, both look like this.
+#[tokio::test]
+async fn the_pass_backfills_a_readable_blob_the_ledger_does_not_hold() {
+    let h = Harness::new();
+    let blob = h.upload(b"from before the ledger").await;
+    let key: [u8; 16] = hex::decode(blob.trim_start_matches("blb_"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    h.db().forget_blob(&h.account_id(), &key).unwrap();
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("0")
+    );
+
+    let report = h.pass().await;
+    assert_eq!(report.failures, 0, "{report:?}");
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("22")
+    );
+    h.pass().await;
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("22"),
+        "backfilled once"
+    );
+}
+
+/// **An upload's duration runs from its `init` to its `finalize`**, on the
+/// injected clock: one sample per finalize, of the time between the two.
+#[tokio::test]
+async fn a_finalize_observes_the_time_since_its_init() {
+    let h = Harness::new();
+    let bytes = b"timed";
+    let upload_id = h.start_upload(bytes).await;
+    h.at(T0_MS + 2_500);
+    let hash = hex::encode(blake3::hash(bytes).as_bytes());
+    h.send(
+        Method::POST,
+        "/api/v1/blobs/finalize",
+        Some(serde_json::json!({
+            "upload_id": upload_id,
+            "content_hash": hash,
+            "chunk_hashes": [hash],
+        })),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let name = "sunrise_blob_upload_duration_seconds";
+    assert_eq!(h.state.metrics.histogram_count(name, &[]), 1);
+    assert_eq!(
+        h.scraped(&format!("{name}_sum")).await.as_deref(),
+        Some("2.5")
+    );
+    assert_eq!(
+        h.scraped(&format!("{name}_bucket{{le=\"2.5\"}}"))
+            .await
+            .as_deref(),
+        Some("1"),
+        "2.5 s falls in the 2.5 s transfer bucket"
+    );
 }
 
 /// **An abandoned upload is swept once untouched past its TTL**, and one

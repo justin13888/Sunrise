@@ -293,6 +293,8 @@ fn open_composes_each_tenants_ddl_in_dependency_order() {
             "blob_tombstones",
             "blob_tombstones_by_age",
             "device_cursors",
+            // migration 0005 — the committed-blob ledger
+            "committed_blobs",
         ],
         "the DDL `open` composes, in the order it ran"
     );

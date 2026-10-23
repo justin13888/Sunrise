@@ -170,6 +170,8 @@ sunrise_blob_finalize_total
 sunrise_blob_gc_deleted_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
+sunrise_blob_storage_bytes
+sunrise_blob_upload_duration_seconds
 sunrise_build_info                        {version, commit}
 sunrise_db_busy_total
 sunrise_db_query_duration_seconds         {endpoint}
@@ -210,7 +212,7 @@ sunrise_sync_stream_total
 sunrise_sync_streams_active
 ```
 
-49 metric names, and four that earlier revisions of this file listed and the
+51 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use super::{
-    AccountKey, AccountTree, BackupTotals, BlobBackend, BlobError, BlobUsage, DiskSpace, Manifest,
-    StaleUpload,
+    AccountKey, AccountTree, BackupTotals, BlobBackend, BlobError, BlobUsage, CommittedManifest,
+    DiskSpace, Manifest, StaleUpload,
 };
 
 /// A backend that never answers, standing in for an object store that lost
@@ -21,7 +21,13 @@ fn down() -> BlobError {
 
 #[async_trait::async_trait]
 impl BlobBackend for Unreachable {
-    async fn open_upload(&self, _: AccountKey, _: [u8; 16]) -> Result<(), BlobError> {
+    async fn open_upload(&self, _: AccountKey, _: [u8; 16], _: u64) -> Result<(), BlobError> {
+        Err(down())
+    }
+    async fn upload_opened_at(&self, _: AccountKey, _: [u8; 16]) -> Result<Option<u64>, BlobError> {
+        Err(down())
+    }
+    async fn committed_manifests(&self) -> Result<Vec<CommittedManifest>, BlobError> {
         Err(down())
     }
     async fn put_pending(
@@ -131,8 +137,18 @@ pub(crate) async fn run(backend: &dyn BlobBackend) {
 /// A chunk round-trips through its upload; another upload and another
 /// account see none of it; discarding one upload leaves the other.
 async fn pending_uploads_are_per_upload_and_per_account(backend: &dyn BlobBackend) {
-    backend.open_upload(ALICE, UPLOAD).await.unwrap();
-    backend.open_upload(ALICE, OTHER_UPLOAD).await.unwrap();
+    backend.open_upload(ALICE, UPLOAD, 10).await.unwrap();
+    backend.open_upload(ALICE, OTHER_UPLOAD, 20).await.unwrap();
+    assert_eq!(
+        backend.upload_opened_at(ALICE, UPLOAD).await.unwrap(),
+        Some(10)
+    );
+    assert_eq!(
+        backend.upload_opened_at(ALICE, OTHER_UPLOAD).await.unwrap(),
+        Some(20),
+        "each upload keeps its own open time"
+    );
+    assert_eq!(backend.upload_opened_at(BOB, UPLOAD).await.unwrap(), None);
     backend
         .put_pending(ALICE, UPLOAD, 0, b"first")
         .await
@@ -165,6 +181,11 @@ async fn pending_uploads_are_per_upload_and_per_account(backend: &dyn BlobBacken
     backend.discard_upload(ALICE, UPLOAD).await.unwrap();
     backend.discard_upload(ALICE, UPLOAD).await.unwrap();
     assert_eq!(backend.get_pending(ALICE, UPLOAD, 0).await.unwrap(), None);
+    assert_eq!(
+        backend.upload_opened_at(ALICE, UPLOAD).await.unwrap(),
+        None,
+        "the open time goes with the upload"
+    );
     assert_eq!(
         backend
             .get_pending(ALICE, OTHER_UPLOAD, 0)
@@ -200,14 +221,27 @@ async fn an_interrupted_finalize_leaves_no_readable_blob(backend: &dyn BlobBacke
         chunk_count: 2,
         size_bytes: 8,
     };
+    assert!(
+        backend.committed_manifests().await.unwrap().is_empty(),
+        "chunks alone are not listed"
+    );
     backend.write_manifest(ALICE, BLOB, manifest).await.unwrap();
     assert_eq!(backend.manifest(ALICE, BLOB).await.unwrap(), Some(manifest));
+    assert_eq!(
+        backend.committed_manifests().await.unwrap(),
+        vec![CommittedManifest {
+            account: ALICE,
+            blob: BLOB,
+            manifest,
+        }]
+    );
     assert_eq!(
         backend.manifest(BOB, BLOB).await.unwrap(),
         None,
         "the same content address under another account names nothing"
     );
     backend.delete_committed(ALICE, BLOB).await.unwrap();
+    assert!(backend.committed_manifests().await.unwrap().is_empty());
 }
 
 /// A committed blob reads back chunk by chunk; deleting it removes the
@@ -253,7 +287,7 @@ async fn a_committed_blob_reads_back_and_is_removed_manifest_first(backend: &dyn
 /// Erasing an account removes both its areas and nothing of another's.
 async fn erasure_takes_both_areas_of_one_account(backend: &dyn BlobBackend) {
     for account in [ALICE, BOB] {
-        backend.open_upload(account, UPLOAD).await.unwrap();
+        backend.open_upload(account, UPLOAD, 0).await.unwrap();
         backend.put_pending(account, UPLOAD, 0, b"p").await.unwrap();
         backend.put_committed(account, BLOB, 0, b"c").await.unwrap();
         backend
@@ -307,7 +341,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         let blobs = FsBlobs::new(file.join("blobs"));
         assert!(matches!(
-            blobs.open_upload(ALICE, UPLOAD).await,
+            blobs.open_upload(ALICE, UPLOAD, 0).await,
             Err(BlobError::Unavailable(_))
         ));
         assert!(matches!(

@@ -65,6 +65,17 @@ pub struct AccountTree {
     pub account: AccountKey,
 }
 
+/// One readable blob, as [`BlobBackend::committed_manifests`] lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommittedManifest {
+    /// The account hash it is filed under.
+    pub account: AccountKey,
+    /// Its content key.
+    pub blob: [u8; 16],
+    /// What its manifest says.
+    pub manifest: Manifest,
+}
+
 /// What `admin stats` reports about the blob store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BlobUsage {
@@ -147,8 +158,23 @@ impl From<std::io::Error> for BlobError {
 #[async_trait::async_trait]
 pub trait BlobBackend: Send + Sync + std::fmt::Debug {
     /// Make the upload's pending area, so a chunk `PUT` is a write rather
-    /// than a create racing another chunk's.
-    async fn open_upload(&self, account: AccountKey, upload: [u8; 16]) -> Result<(), BlobError>;
+    /// than a create racing another chunk's, and keep `opened_at_ms` with it
+    /// for [`upload_opened_at`](Self::upload_opened_at).
+    async fn open_upload(
+        &self,
+        account: AccountKey,
+        upload: [u8; 16],
+        opened_at_ms: u64,
+    ) -> Result<(), BlobError>;
+    /// When the upload was opened, as [`open_upload`](Self::open_upload) was
+    /// told: what `sunrise_blob_upload_duration_seconds` measures from.
+    /// `None` for an upload never opened, already discarded, or opened before
+    /// the time was kept.
+    async fn upload_opened_at(
+        &self,
+        account: AccountKey,
+        upload: [u8; 16],
+    ) -> Result<Option<u64>, BlobError>;
     /// Store one pending chunk, replacing any earlier copy whole.
     async fn put_pending(
         &self,
@@ -225,6 +251,11 @@ pub trait BlobBackend: Send + Sync + std::fmt::Debug {
     ) -> Result<Vec<AccountTree>, BlobError>;
     /// Remove one area of one account's tree, manifests first.
     async fn remove_account_tree(&self, tree: AccountTree) -> Result<(), BlobError>;
+
+    /// Every readable blob of every account, for the maintenance pass's
+    /// backfill of the committed-blob ledger. A manifest that does not parse
+    /// is left out: it is not a blob a reader can have.
+    async fn committed_manifests(&self) -> Result<Vec<CommittedManifest>, BlobError>;
 
     /// Counts for `admin stats`.
     async fn usage(&self) -> Result<BlobUsage, BlobError>;

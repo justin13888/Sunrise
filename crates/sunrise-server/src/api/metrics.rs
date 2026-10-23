@@ -92,8 +92,9 @@ async fn sample_gauges(state: &ServerState) {
     }
 }
 
-/// The row counts: accounts, devices by state, and the durable relay log's
-/// bytes, in one read of the store.
+/// The row counts: accounts, devices by state, the durable relay log's bytes,
+/// and the ciphertext bytes at rest from the committed-blob ledger, in one
+/// read of the store.
 ///
 /// A store that does not answer leaves each gauge at its last reading, as the
 /// session gauge above does; the failure is the store's to log.
@@ -116,6 +117,7 @@ async fn sample_counts(state: &ServerState) {
         n(stats.devices_revoked),
     );
     m.set_gauge("sunrise_relay_log_bytes", &[], n(stats.relay_bytes));
+    m.set_gauge("sunrise_blob_storage_bytes", &[], n(stats.blob_bytes));
 }
 
 #[cfg(test)]

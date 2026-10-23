@@ -80,6 +80,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "relay_frames_n_ops",
         apply: relay_frames_n_ops,
     },
+    Migration {
+        id: 5,
+        name: "committed_blobs",
+        apply: committed_blobs,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -158,6 +163,16 @@ fn relay_frames_n_ops(conn: &Connection) -> rusqlite::Result<()> {
         write.execute(rusqlite::params![id, n_ops])?;
     }
     Ok(())
+}
+
+/// 0005: the committed-blob ledger `store::blob_ledger` declares, so the bytes
+/// at rest are a `SUM` rather than a walk of the blob tree.
+///
+/// Created empty: the blobs already committed are on the blob backend, which
+/// a migration cannot reach, so the maintenance pass backfills them from
+/// their manifests.
+fn committed_blobs(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::blob_ledger::SCHEMA)
 }
 
 /// The database's `user_version`.

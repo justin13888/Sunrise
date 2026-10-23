@@ -155,8 +155,8 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_blob_init_total`, `_chunk_total`, `_finalize_total`, `_fetch_total` | counter | — | current | |
 | `sunrise_blob_hash_mismatch_total` | counter | — | current | |
 | `sunrise_blob_bytes_total` | counter | `direction` | current | Ciphertext bytes moved: `upload` as each chunk is stored, `download` as each chunk is read for a fetch, so an abandoned fetch counts what was read for it. |
-| `sunrise_blob_storage_bytes` | gauge | — | target ([#510](https://github.com/justin13888/Sunrise/issues/510)) | Ciphertext bytes at rest. |
-| `sunrise_blob_upload_duration_seconds` | histogram (transfer buckets) | — | target ([#510](https://github.com/justin13888/Sunrise/issues/510)) | From init to finalize. |
+| `sunrise_blob_storage_bytes` | gauge | — | current | Ciphertext bytes at rest: the sum of the committed-blob ledger (`committed_blobs`, one row per readable blob, `crates/sunrise-server/src/store/blob_ledger.rs`), read at scrape time. `finalize` writes the row once the manifest exists, the maintenance pass's collection removes it, and an account's erasure cascades it. A tombstoned blob counts until it is collected. A blob the ledger does not hold (committed before migration 0005, or a finalize interrupted between its manifest and its row) is backfilled from its manifest by the next maintenance pass. |
+| `sunrise_blob_upload_duration_seconds` | histogram (transfer buckets) | — | current | From `init` to a successful `finalize`, on the relay's clock. The open time is kept in the upload's pending area (`opened`), so it does not depend on `[limits]`. An upload whose open time cannot be read is not sampled. |
 | `sunrise_blob_gc_deleted_total` | counter | — | current | Tombstoned blobs reclaimed by the maintenance pass, once `[storage] gc_grace_days` had passed and every active device had acknowledged the tombstone. Blobs removed with an erased account are not counted here. |
 
 ### Push
