@@ -291,7 +291,7 @@ mounted on every listener, loopback or not:
 | Probe | Answers `200` when | Use it for |
 |---|---|---|
 | `/api/v1/health` | the process is serving at all | liveness: restart when it fails |
-| `/api/v1/health?deep=1` | not draining, the store answers within 2 s, the blob root is writable within 5 s | readiness: route traffic only while it passes |
+| `/api/v1/health?deep=1` | not draining, the store answers within 2 s, the blob root is writable within 5 s, its filesystem has more than 5% free | readiness: route traffic only while it passes |
 
 A failing readiness check answers `503` with `failed` naming the checks; see
 [`api.md`](./api.md) §Health / meta. Do not wire `?deep=1` as a liveness
@@ -515,7 +515,7 @@ SQLite relay, reports each as `ok`, `fail` or `skipped` with a reason, and exits
 | `blob_root` | The blob root is writable |
 | `push` | `[push.apns]` is configured, and its key loaded and signs; `skipped` without `[push]` |
 | `protocol` | The wire, document-schema and crypto-suite versions this binary speaks |
-| `free_space` | Always `skipped`: the free-space ratio needs `statvfs`, which this binary cannot call without unsafe code. Read it with `df`. |
+| `free_space` | The filesystem holding the blob root has more than 5% of its blocks available, the same reading as readiness's `disk`; `skipped` where there is no local filesystem to read |
 | `tls` | Always `skipped`: the relay serves plain HTTP behind the reverse proxy |
 
 Two checks earlier drafts listed are not here. Postgres `fsync = on` has no

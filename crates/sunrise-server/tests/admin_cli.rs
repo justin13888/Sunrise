@@ -101,6 +101,7 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
         "encryption",
         "storage",
         "blob_root",
+        "free_space",
         "push",
         "protocol",
     ] {

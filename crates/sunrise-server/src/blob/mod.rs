@@ -76,6 +76,38 @@ pub struct BlobUsage {
     pub pending_uploads: u64,
 }
 
+/// How full the filesystem under a blob backend is, in blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskSpace {
+    /// Blocks an unprivileged writer may still use (`statvfs`'s `f_bavail`).
+    /// The relay is not root, so the blocks reserved for root are not its.
+    pub available: u64,
+    /// Every block of the filesystem (`f_blocks`).
+    pub total: u64,
+}
+
+impl DiskSpace {
+    /// The share of [`total`](Self::total) a readiness probe needs free,
+    /// strictly exceeded, in percent: `docs/06-server/api.md` §Health / meta.
+    pub const MIN_FREE_PERCENT: u64 = 5;
+
+    /// Whether more than [`MIN_FREE_PERCENT`](Self::MIN_FREE_PERCENT) of the
+    /// filesystem is available.
+    ///
+    /// A filesystem that reports no blocks at all — some network and FUSE
+    /// mounts do — has no ratio to read, and passes: a readiness probe that
+    /// failed on it would take the relay out of rotation for good over a
+    /// number the filesystem never meant.
+    #[must_use]
+    pub fn has_room(self) -> bool {
+        // Widened, so a filesystem of more than `u64::MAX / 100` blocks
+        // cannot overflow the comparison.
+        self.total == 0
+            || u128::from(self.available) * 100
+                > u128::from(self.total) * u128::from(Self::MIN_FREE_PERCENT)
+    }
+}
+
 /// What `admin backup` copied.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BackupTotals {
@@ -198,6 +230,10 @@ pub trait BlobBackend: Send + Sync + std::fmt::Debug {
     async fn usage(&self) -> Result<BlobUsage, BlobError>;
     /// Write, read back and remove a probe object: readiness and `doctor`.
     async fn probe(&self) -> Result<(), BlobError>;
+    /// The space left on the filesystem the blobs live on: readiness and
+    /// `doctor`. `None` from a backend with no local filesystem to fill, or
+    /// on a platform that cannot read one.
+    async fn disk_space(&self) -> Result<Option<DiskSpace>, BlobError>;
     /// Copy every committed blob into a filesystem tree at `dest`, the
     /// manifests last, so a blob removed during the copy is left without one.
     async fn backup_to(&self, dest: &Path) -> Result<BackupTotals, BlobError>;

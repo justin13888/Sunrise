@@ -6,7 +6,8 @@
 use std::path::Path;
 
 use super::{
-    AccountKey, AccountTree, BackupTotals, BlobBackend, BlobError, BlobUsage, Manifest, StaleUpload,
+    AccountKey, AccountTree, BackupTotals, BlobBackend, BlobError, BlobUsage, DiskSpace, Manifest,
+    StaleUpload,
 };
 
 /// A backend that never answers, standing in for an object store that lost
@@ -96,6 +97,9 @@ impl BlobBackend for Unreachable {
         Err(down())
     }
     async fn probe(&self) -> Result<(), BlobError> {
+        Err(down())
+    }
+    async fn disk_space(&self) -> Result<Option<DiskSpace>, BlobError> {
         Err(down())
     }
     async fn backup_to(&self, _: &Path) -> Result<BackupTotals, BlobError> {
