@@ -273,11 +273,7 @@ pub async fn rejoin_account(
         cfg,
         VaultRootKey::from_bytes(root),
         identity,
-        sunrise_client_core::recovery::DeviceLabel {
-            nickname: "sunrise-cli".to_owned(),
-            platform: platform(),
-            app_version: Some(app.to_owned()),
-        },
+        crate::device_label(app),
         &start_sync,
         CATCH_UP_MS,
         &mut |step| {
@@ -344,17 +340,6 @@ pub fn aftercare(identity_id: &str) -> String {
          Your recovery code still works and has not changed. This device now\n\
          holds ID_D_priv, so it can seal a new one if you ever rotate it."
     )
-}
-
-/// This build's platform tag, as `POST /api/v1/devices` names them.
-fn platform() -> String {
-    if cfg!(target_os = "macos") {
-        "macos".to_owned()
-    } else if cfg!(target_os = "windows") {
-        "windows".to_owned()
-    } else {
-        "linux".to_owned()
-    }
 }
 
 /// Obtain a bearer that carries a completed step-up.

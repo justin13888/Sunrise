@@ -18,6 +18,8 @@
 //! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
 //!   sections, relative days, snoozes, block conflicts, session timers.
 //! * [`config`] — the tiny TOML subset both preference files are written in.
+//! * `account` (feature `relay`) — publishing a vault to the relay: seal a
+//!   recovery blob, create or adopt the account, register this device.
 //! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
 //!   flow steps 3 to 8, from the typed code to a vault that has read its
 //!   history, over the REST client in `sunrise-relay-client`.
@@ -30,6 +32,8 @@
 #![warn(missing_docs)]
 #![allow(clippy::module_name_repetitions)]
 
+#[cfg(feature = "relay")]
+pub mod account;
 pub mod config;
 pub mod gate;
 pub mod history;

@@ -502,11 +502,7 @@ impl SunriseCore {
             &code,
             cfg,
             VaultRootKey::from_bytes(root),
-            sunrise_client_core::recovery::DeviceLabel {
-                nickname,
-                platform: platform_tag(),
-                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            },
+            device_label(nickname),
             &start_sync,
             catch_up_ms,
             &mut recovery::forward(listener),
@@ -1180,42 +1176,32 @@ impl SunriseCore {
         nickname: String,
         terms_accepted_at_ms: u64,
     ) -> Result<dto::AccountBootstrap, BindingError> {
-        use sunrise_core::Rng as _;
-
-        // Exactly `sunrise bootstrap`'s sequence: draw, seal, encode, upload.
-        let (recovery_blob, code) = if self.inner.holds_identity_key() {
-            let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
-            sunrise_core::SystemRng.fill_bytes(&mut seed);
-            let blob = self.inner.seal_recovery_blob(&seed)?;
-            let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-            seed.zeroize();
-            (Some(blob), Some(code))
-        } else {
-            (None, None)
-        };
-
-        let outcome = sunrise_relay_client::bootstrap(
+        // Exactly `sunrise bootstrap`'s sequence — draw, seal, encode, upload —
+        // because it is the same function.
+        let done = sunrise_client_core::account::bootstrap_account(
+            &self.inner,
+            &sunrise_core::SystemRng,
             &relay_url,
             &bearer,
-            sunrise_relay_client::AccountCreateRequest {
-                email,
-                identity_signing_pub: self.inner.identity_signing_pub(),
-                identity_dh_pub: self.inner.identity_dh_pub(),
-                recovery_blob,
-                terms_at_ms: terms_accepted_at_ms,
-            },
-            self.relay_device_identity(nickname),
+            email,
+            terms_accepted_at_ms,
+            device_label(nickname),
         )
         .await
-        .map_err(|e| BindingError::Relay(e.to_string()))?;
+        .map_err(|e| match e {
+            sunrise_client_core::account::AccountError::Seal(e) => BindingError::from(e),
+            sunrise_client_core::account::AccountError::Relay(e) => {
+                BindingError::Relay(e.to_string())
+            }
+        })?;
 
         Ok(dto::AccountBootstrap {
-            identity_id: outcome.identity_id,
-            email: outcome.email,
-            device_id: outcome.device_id,
+            identity_id: done.outcome.identity_id,
+            email: done.outcome.email,
+            device_id: done.outcome.device_id,
             // Read out only after the relay accepted the blob, so a code this
             // ever returns is a code the stored blob opens.
-            recovery_code: code.map(|c| c.reveal().to_owned()),
+            recovery_code: done.recovery_code.map(|c| c.reveal().to_owned()),
         })
     }
 
@@ -1249,10 +1235,11 @@ impl SunriseCore {
         bearer: String,
         nickname: String,
     ) -> Result<String, BindingError> {
-        sunrise_relay_client::register_device(
+        sunrise_client_core::account::register_relay_device(
+            &self.inner,
             &relay_url,
             &bearer,
-            self.relay_device_identity(nickname),
+            device_label(nickname),
         )
         .await
         .map_err(|e| BindingError::Relay(e.to_string()))
@@ -1358,24 +1345,15 @@ impl SunriseCore {
             sync_link: background::SyncLink::new(),
         })
     }
+}
 
-    /// What this device tells `POST /api/v1/devices` about itself.
-    ///
-    /// One builder for both registration paths, so a founding device and a
-    /// paired one cannot come to describe themselves differently.
-    fn relay_device_identity(&self, nickname: String) -> sunrise_relay_client::DeviceIdentity {
-        sunrise_relay_client::DeviceIdentity {
-            device_pub_s: self.inner.device_signing_pub(),
-            device_pub_d: None,
-            device_cert: None,
-            // The only name a sibling can revoke this device by: the relay
-            // mints its own id and never sends it back through the op
-            // stream. A device that omits it cannot be revoked at all.
-            vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
-            nickname,
-            platform: platform_tag(),
-            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        }
+/// How this build describes itself to `POST /api/v1/devices`: the caller's
+/// nickname, this build's platform tag and version.
+fn device_label(nickname: String) -> sunrise_client_core::account::DeviceLabel {
+    sunrise_client_core::account::DeviceLabel {
+        nickname,
+        platform: platform_tag(),
+        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     }
 }
 
