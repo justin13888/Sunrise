@@ -727,7 +727,14 @@ static CIPHER_READY: OnceLock<Result<(), String>> = OnceLock::new();
 /// failed to start can key nothing, and says so as
 /// [`DbError::CipherUnavailable`] with the real error instead of blaming the
 /// key.
-fn ensure_cipher_ready() -> Result<(), DbError> {
+///
+/// Public for code that keys `SQLCipher` connections without going through
+/// [`Db`], such as the relay's store: call it before the first `PRAGMA key`
+/// or `ATTACH … KEY`. [`Db`]'s own opens already do.
+///
+/// # Errors
+/// Only [`DbError::CipherUnavailable`].
+pub fn ensure_cipher_ready() -> Result<(), DbError> {
     CIPHER_READY
         .get_or_init(|| {
             await_cipher_ready(probe_cipher, CIPHER_READY_ATTEMPTS, || {
