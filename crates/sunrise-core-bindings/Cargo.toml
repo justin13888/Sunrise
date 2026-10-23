@@ -41,7 +41,7 @@ sunrise-auth = { workspace = true }
 # raw fields, to the client as opaque canonical CBOR, so a value the client
 # hands back keeps them (#431).
 sunrise-cbor = { workspace = true }
-sunrise-client-core = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }

@@ -69,11 +69,13 @@ pub fn set_bootstrap_preference(
     // Flushed before the rename: without it a power loss can make the rename
     // durable ahead of the bytes, leaving a truncated file that reads as empty
     // and loses the relay and sign-in settings.
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(&body)?;
-    f.sync_all()?;
-    drop(f);
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, &path)?;
+
     Ok(())
 }
 

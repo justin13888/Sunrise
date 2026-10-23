@@ -14,6 +14,8 @@
 //!   the [`views::SavedViewStore`] that reads and writes them.
 //! * [`preferences`] — the bootstrap preferences file a device reads before
 //!   it has a vault, written so a crash leaves one whole file or the other.
+//! * [`host`] — what a host hands the core at open: an injected clock, and a
+//!   vault root checked for its width.
 //! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
 //! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
 //!   sections, relative days, snoozes, block conflicts, session timers.
@@ -40,6 +42,7 @@ pub mod account;
 pub mod config;
 pub mod gate;
 pub mod history;
+pub mod host;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;

@@ -1370,11 +1370,9 @@ fn platform_tag() -> String {
 
 /// A vault root as it crossed the seam, checked for its width.
 fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
-    vault_root
-        .try_into()
-        .map_err(|_| BindingError::BadVaultRoot {
-            len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
-        })
+    sunrise_client_core::host::vault_root(vault_root).map_err(|e| BindingError::BadVaultRoot {
+        len: u32::try_from(e.len).unwrap_or(u32::MAX),
+    })
 }
 
 /// The transport factory the sync driver dials with: the shared SSE factory,

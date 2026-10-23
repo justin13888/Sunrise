@@ -228,7 +228,7 @@ sunrise-relay-client = { path = "crates/sunrise-relay-client" }
 sunrise-sync = { path = "crates/sunrise-sync" }
 sunrise-pairing = { path = "crates/sunrise-pairing" }
 sunrise-core = { path = "crates/sunrise-core" }
-sunrise-client-core = { path = "crates/sunrise-client-core" }
+sunrise-client-core = { path = "crates/sunrise-client-core", default-features = false }
 sunrise-cli = { path = "crates/sunrise-cli" }
 sunrise-server = { path = "crates/sunrise-server" }
 sunrise-integrations = { path = "crates/sunrise-integrations" }

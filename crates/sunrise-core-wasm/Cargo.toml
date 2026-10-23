@@ -20,6 +20,10 @@ workspace = true
 [dependencies]
 serde_json = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
+# The client layer's pure half: the host clock and the vault-root check every
+# seam makes. `relay` stays off — it links the native REST client and SSE
+# transport, and the web client has no relay flow yet (ADR-0055).
+sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 

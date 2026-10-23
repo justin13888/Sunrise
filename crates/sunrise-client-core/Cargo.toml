@@ -14,10 +14,13 @@ workspace = true
 
 [features]
 # The flows that talk to a relay: account bootstrap, recovery, and the bounded
-# background sync. On by default, because every native client (the UniFFI
-# seam, the CLI) runs them. `sunrise-core-wasm` turns it off: the web build has
-# no relay flow yet (ADR-0055), and the REST client and the SSE transport are
-# native-only, so the pure half of this crate is what it links.
+# background sync. On by default for this crate's own builds and tests. The
+# workspace entry turns default features off, so each consumer says what it
+# links: the UniFFI seam, the CLI and the e2e suite ask for `relay`, and
+# `sunrise-core-wasm` does not — the web build has no relay flow yet
+# (ADR-0055), and the REST client and the SSE transport are native-only, so
+# the pure half of this crate is what it links. (A member cannot opt out of a
+# workspace dependency's default features itself; cargo ignores the attempt.)
 default = ["relay"]
 relay = [
     "dep:async-trait",

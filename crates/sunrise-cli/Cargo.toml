@@ -41,7 +41,7 @@ sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
 sunrise-log = { workspace = true }
-sunrise-client-core = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-relay-client = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 
