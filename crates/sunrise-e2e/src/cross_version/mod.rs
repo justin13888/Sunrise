@@ -843,8 +843,8 @@ impl Run {
         // The `HEAD` cores share this process's log, so a corruption there is
         // attributed to `HEAD` as a whole, which `Who::B` stands for.
         let head = take_head_events();
-        if head.iter().any(LoggedEvent::is_digest_published) {
-            self.model.published_digest();
+        if head.iter().any(LoggedEvent::is_unparkable_kind_published) {
+            self.model.published_unparkable_kind();
         }
         for e in head.into_iter().filter(LoggedEvent::is_corrupt_op) {
             self.violations.push(Violation::LoggedCorruption {

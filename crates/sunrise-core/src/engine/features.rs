@@ -350,6 +350,13 @@ impl Engine {
             let hlc = self.hlc.peek();
             record_device_features(tx, &device, &ids, hlc, now_ms)
         })?;
+        // After the commit, like `core.chain.digest_published`: an op kind a
+        // build older than parking (#320) cannot read, and the cross-version
+        // harness reads this event to attribute that build's corruption log.
+        tracing::debug!(
+            ev = "core.feature.advertised",
+            "advertised the features this build supports"
+        );
         Ok(true)
     }
 

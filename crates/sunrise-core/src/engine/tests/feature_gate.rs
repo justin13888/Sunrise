@@ -448,6 +448,59 @@ fn a_build_advertises_its_features_once_per_change() {
     assert_eq!(p.features, vec!["task.probe".to_owned()]);
 }
 
+/// Every `ev` an event emitted on this thread carried, while `f` runs.
+fn evs_logged(f: impl FnOnce()) -> Vec<String> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct EvLog(Arc<PLMutex<Vec<String>>>);
+    struct Ev<'a>(&'a mut Vec<String>);
+    impl tracing::field::Visit for Ev<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "ev" {
+                self.0.push(value.to_owned());
+            }
+        }
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EvLog {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            event.record(&mut Ev(&mut self.0.lock()));
+        }
+    }
+
+    let log = EvLog::default();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(log.clone()), f);
+    let evs = log.0.lock().clone();
+    evs
+}
+
+/// The advertisement is logged exactly when it is written. A build that
+/// predates parking (#320) logs a `DeviceFeatures` it receives as a corrupt
+/// op, and the cross-version harness attributes that log to #320 only by
+/// this event, so an advertisement that went unlogged would leave the
+/// floor's corruption log unexplained (the nightly `Cross-version merge`
+/// failure whose seed is in `crates/sunrise-e2e/proptest-regressions`).
+#[test]
+fn an_advertisement_is_logged_once_per_op_written() {
+    const EV: &str = "core.feature.advertised";
+    let mut db = db_root(ROOT);
+    let none = engine_seeded(ROOT, [1u8; 32], clock()).with_features(&[]);
+    let evs = evs_logged(|| assert!(!none.advertise_features(&mut db).unwrap()));
+    assert!(!evs.iter().any(|e| e == EV), "nothing written: {evs:?}");
+
+    let newer = engine_seeded(ROOT, [1u8; 32], clock()).with_features(NEWER);
+    let evs = evs_logged(|| assert!(newer.advertise_features(&mut db).unwrap()));
+    assert_eq!(evs.iter().filter(|e| *e == EV).count(), 1, "{evs:?}");
+
+    let evs = evs_logged(|| assert!(!newer.advertise_features(&mut db).unwrap()));
+    assert!(!evs.iter().any(|e| e == EV), "unchanged list: {evs:?}");
+}
+
 /// Creating or editing a routine writes the routine op and then its
 /// occurrences in a second transaction. Under a task lock the command is
 /// refused before either, so no routine op is sealed and queued behind a
