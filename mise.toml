@@ -313,6 +313,10 @@ run = [
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
 
+[tasks.publish-gate]
+description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
+run = ".github/scripts/publish-gate.py"
+
 # `spargen` reads the committed file, so it is an input rather than a report:
 # `the_committed_description_is_current` fails until this has been re-run.
 [tasks.openapi]
@@ -1431,6 +1435,14 @@ description = "Assert the orphan crate gate's exit-code contract (fast, synthesi
 # which reads manifests without resolving or compiling. The gate prints the
 # reachable count that overview.md cites and nothing checked the walk behind it.
 run = "python3 .github/scripts/test_orphan_crate_gate.py"
+
+[tasks.publish-gate-test]
+description = "Assert the publish gate's exit-code contract (fast, synthesised repositories)"
+# Under five seconds: it builds repositories of three to six manifests in a
+# temp directory and drives the gate at them with --root, so it never reads
+# this one. Each pass case asserts the counts the gate prints, because a rule
+# that stopped matching shows up as a smaller count, not as a red run.
+run = "python3 .github/scripts/test_publish_gate.py"
 
 [tasks.kynos-waiver-gate-test]
 description = "Assert the kynos waiver gate's exit-code contract (fast, synthesised workspaces)"

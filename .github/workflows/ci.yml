@@ -1688,6 +1688,45 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_orphan_crate_gate.py
 
+  publish-gate:
+    name: Publish gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over the
+    # tracked Cargo.toml and package.json files and `apps/apple/project.yml`.
+    # No toolchain: the manifests are read with `tomllib` and `json`, which is
+    # why this needs the runner's Python 3.11+ and nothing else. Seconds of
+    # work, so `ci.yml`'s floor for a job whose real cost is the checkout.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject anything publishable, and an app train that disagrees with itself
+        # ADR-0064: nothing in this repository publishes to a registry, and the
+        # app train has one version, the root package.json's. Every crate with
+        # a [package] says `publish = false` itself (inheriting it is refused),
+        # every package.json says `"private": true`, and every app-train copy
+        # of the version -- apps/*/package.json, packages/*/package.json and
+        # project.yml's MARKETING_VERSION -- equals the root one. A new crate
+        # from a template, or a version bumped in one file of four, is the
+        # shape this catches.
+        run: .github/scripts/publish-gate.py
+
+  publish-gate-contract:
+    name: Publish gate contract
+    runs-on: ubuntu-latest
+    # One Python script over git repositories of three to six files,
+    # synthesised in a temp directory. No toolchain and nothing to cache.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. Each rule has a way of passing for the wrong reason
+    # that a green run cannot show -- an inherited `publish` taken for an
+    # explicit one, a `"private": "true"` string taken for the boolean, a
+    # `MARKETING_VERSION` the pattern stopped matching -- so every pass case
+    # asserts the counts the gate prints.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_publish_gate.py
+
 
   proptest-persistence:
     name: Proptest persistence gate
