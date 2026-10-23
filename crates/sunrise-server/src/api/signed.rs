@@ -66,15 +66,17 @@ use kynos::error::rejection::{AuthRejection, BodyRejection};
 use kynos::extract::body::binary::Binary;
 use kynos::extract::body::json::Json;
 use kynos::extract::describe::{Describe, RequestContent};
-use kynos::extract::media::OctetStream;
 use kynos::extract::params::header::Headers;
 use kynos::extract::{FromRequest, FromRequestParts};
+use kynos::http::media::OctetStream;
 use kynos::http::{Parts, Request};
 use kynos::response::{IntoResponse, Responses};
 use kynos::router::operation::OperationCx;
 use kynos::schema::registry::Registry;
+use kynos::schema::unchecked::Unchecked;
 use kynos::schema::Schema;
 use kynos::security::auth::{Auth, MaybeAuth};
+use kynos::security::Guard;
 
 /// The device-binding headers, declared so they appear in the description.
 #[derive(Debug, Clone, kynos::HeaderParams)]
@@ -377,7 +379,12 @@ async fn caller_of(
     // `MaybeAuth` rather than `Auth`, so an absent `Authorization` header
     // reaches the verifier as the empty string rather than being refused at the
     // carrier -- see `resolve_bearer` for why that distinction is load-bearing.
-    let MaybeAuth(presented) = MaybeAuth::<AccountToken>::from_request_parts(parts, state).await?;
+    //
+    // Run through its `Guard` check directly: a guard has a handler slot of its
+    // own rather than being an extractor, and this extractor *is* the signed
+    // operations' authentication, so it runs the same check from inside.
+    let MaybeAuth(presented) =
+        <MaybeAuth<AccountToken> as Guard<ServerState>>::guard(parts, state).await?;
     let principal = match presented {
         Some(principal) => principal,
         None => crate::api::auth::resolve_bearer(state, "").await?,
@@ -423,10 +430,22 @@ where
     // received is the one thing both sides can canonicalize identically. `T` is
     // then built from that same value, so everything the handler acts on is a
     // projection of what was verified. See ADR-0022's 2026-10 amendment.
-    let Json(received) =
-        Json::<serde_json::Value>::from_request(Request::from_parts(parts, body), state).await?;
+    //
+    // `Unchecked` because kynos refuses `serde_json::Value` as a schema on
+    // purpose. Nothing is described from it: `Describe` below declares
+    // `Json<T>`.
+    let Json(Unchecked(received)) =
+        Json::<Unchecked<serde_json::Value>>::from_request(Request::from_parts(parts, body), state)
+            .await?;
     // A value that does not fit `T` is the same 422 `Json<T>` renders, its
     // failure attributed to the root pointer as kynos does.
+    //
+    // `T`'s `#[schema]` bounds are *not* run here (`Schema::check_constraints`,
+    // which `Json<T>` runs). Every bound on a signed body is an id `pattern`,
+    // and each handler already parses that id and refuses a malformed one with
+    // the documented `400 VALIDATION_INVALID` and its `code`
+    // (docs/06-server/api.md). Running kynos's check first would turn that into
+    // a `422` with no `code` for the same request.
     let value =
         <T as serde::Deserialize>::deserialize(&received).map_err(|e| BodyRejection::Schema {
             failures: std::collections::BTreeMap::from([(String::new(), e.to_string())]),

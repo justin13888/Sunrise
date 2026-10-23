@@ -46,8 +46,8 @@ allowed_origins  = ["https://app.example.com"]   # browser origins; must be sche
 max_body_bytes   = 2097152                # default 2 MiB
 shutdown_grace_secs = 25                  # default 25; how long SIGTERM waits for
                                           # in-flight requests; at least 1 (0 is refused)
-trusted_proxies  = ["127.0.0.1"]          # default []; reverse proxies whose X-Forwarded-For /
-                                          # Forwarded is believed; addresses or CIDRs
+trusted_proxies  = ["127.0.0.1"]          # default []; reverse proxies whose X-Forwarded-For
+                                          # is believed; addresses or CIDRs
 
 [auth]
 oidc_issuer        = "https://auth.example.com"  # must be https
@@ -147,7 +147,7 @@ The server exits 78 rather than starting, when:
 | An origin is `*` or not scheme-qualified | Ambiguous CORS |
 | `max_body_bytes = 0` | Rejects every request |
 | A `[limits]` value is `0` (the error names the key) | Refuses everything that limit covers; `enabled = false` is how limits are turned off |
-| A `trusted_proxies` entry is not an address or CIDR network | Hostnames are not resolved; the socket reports an address |
+| A `trusted_proxies` entry is not an address or CIDR network, or is a `/0` | Hostnames are not resolved; the socket reports an address. A `/0` would believe a forwarding header from any client |
 | `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
 | `pending_upload_ttl_hours = 0` or `maintenance_interval_secs = 0` | The first would sweep uploads still in flight; the second would run the maintenance pass in a busy loop. The two grace periods may be `0`. |
 | `encrypt = true` without `key_file`, or `key_file` without `encrypt = true` | Either the database would not be encrypted while the operator believes it is, or there is no key to encrypt it with |
@@ -192,17 +192,22 @@ trusted_proxies = ["127.0.0.1"]   # the address the proxy connects from
 The per-address rate limits key on the client's address. Behind a proxy the
 socket peer is the proxy, so without this line **every user counts against the
 proxy's one bucket**, and the relay's logs see one client. With it, the relay
-reads `X-Forwarded-For` (or RFC 7239 `Forwarded`, which it prefers when both
-are present) from that peer and takes the right-most address that is not a
-listed proxy. A header from any other peer is ignored, so a client talking to
-the relay directly cannot pick its own bucket.
+reads `X-Forwarded-For` from that peer and takes the right-most address that
+is not a listed proxy. A header from any other peer is ignored, so a client
+talking to the relay directly cannot pick its own bucket.
+
+`X-Forwarded-For` is the only field read. RFC 7239 `Forwarded` is ignored
+from every peer, trusted or not: a proxy appends to one field and passes the
+other through from the client, so believing both would let a client name its
+own address through whichever one its proxy does not write. A proxy that only
+writes `Forwarded` therefore cannot be trusted by this relay.
 
 List every hop you operate: a CDN or load balancer in front of the proxy goes
 in too, as CIDRs (`["127.0.0.1", "10.0.0.0/8"]`), and each hop must append to
-`X-Forwarded-For` rather than replace it. A proxy you did not write the config
-for must also drop a client's own `Forwarded` header: both shipped files do,
-because neither Caddy nor nginx touches it by default, and the relay would
-otherwise believe a client naming itself.
+`X-Forwarded-For` rather than replace it. A `/0` is refused, since it would
+believe a forwarding header from any client. Both shipped files also drop a
+client's own `Forwarded` header, which the relay ignores anyway, so nothing
+behind the proxy is handed a field a client wrote.
 
 ### 3. Point the proxy at the relay
 

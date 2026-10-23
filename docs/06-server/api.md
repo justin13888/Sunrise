@@ -426,13 +426,12 @@ workspace called any of the four, so an attachment was readable only on the
 device that made it.
 
 The client does **not** go through the generated relay client. All four are
-reached with the transport's own hyper client, because two of them — the
-raw-binary chunk `PUT` and the blob `GET` — are absent from the generated
-surface: kynos and spargen disagree about how OpenAPI 3.1 describes a raw
-binary body, and `crates/sunrise-relay-client/build.rs:42`, `:46` record the
-disagreement as two omit rules. Splitting one two-phase commit across two HTTP
-clients to use generated code for half of it would buy nothing and cost a
-second place for the bearer, the base URL and the device binding to live.
+reached with the transport's own hyper client, which already holds the bearer,
+the base URL and the device binding the sync session uses. The generated
+client has carried all four since spargen 0.5 accepted the empty Schema Object
+kynos describes a raw binary body with (until then the chunk `PUT` and the
+blob `GET` were omitted from it); moving the upload onto it would add a second
+place for those three to live and simplify nothing.
 
 **Deletion is a tombstone, not an unlink.**
 `DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
@@ -664,8 +663,9 @@ route added later is a red build until it is given a row. At run time an
 unlisted route is held to `bootstrap`, the tightest authenticated group.
 
 **Which address.** The socket peer, unless it is listed in `[server]
-trusted_proxies`; then the right-most address in `Forwarded` (or, in its
-absence, `X-Forwarded-For`) that is not itself a listed proxy. With the list
+trusted_proxies`; then the right-most address in `X-Forwarded-For` that is
+not itself a listed proxy. RFC 7239 `Forwarded` is never read: a proxy writes
+one field and passes the other through from the client. With the list
 empty — the default — forwarding headers are ignored, because a client can
 write them. IPv6 clients are counted by `/64`, since one subscriber routinely
 holds a whole `/64`; an IPv4-mapped address counts as its IPv4 address.

@@ -222,10 +222,13 @@ async fn a_trusted_proxy_chain_resolves_to_the_client() {
     )
     .await
     .assert_status(StatusCode::TOO_MANY_REQUESTS);
-    // RFC 7239's own field resolves the same way.
+    // RFC 7239's own field is not read, even from a trusted proxy: the shipped
+    // proxies write `X-Forwarded-For` and pass `Forwarded` through from the
+    // client. So this is the proxy's own request, whose bucket is untouched,
+    // and not the exhausted `198.51.100.2` it names.
     meta_from(&client, proxy, &[("forwarded", "for=198.51.100.2")])
         .await
-        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+        .assert_status(StatusCode::OK);
 }
 
 /// Past its failed-auth budget an address is refused on authenticated routes

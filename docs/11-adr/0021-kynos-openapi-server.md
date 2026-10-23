@@ -207,3 +207,9 @@ a fix we can make rather than a constraint we work around" — but until the two
 agree, the chunk `PUT` and the blob `GET` are omitted from the generated client
 with the reason recorded at the omission. No client uploads a chunk today, so
 nothing is currently lost.
+
+**Closed, 2026-10 (#374).** spargen 0.5.0 maps an absent or empty schema under
+`application/octet-stream` to raw bytes ("accept the 3.1 spelling of a binary
+body"), so the two crates agree and both omit rules are gone: the generated
+client carries the chunk `PUT` and the blob `GET` with `bytes::Bytes` bodies.
+The served description did not change to get there.

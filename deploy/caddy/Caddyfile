@@ -64,8 +64,8 @@
 
 	reverse_proxy {$SUNRISE_UPSTREAM:127.0.0.1:8443} {
 		# Caddy rewrites X-Forwarded-For but passes RFC 7239's `Forwarded`
-		# through untouched, and the relay prefers `Forwarded` when both are
-		# present. Left in, a client could name its own address.
+		# through untouched. The relay reads only X-Forwarded-For, so this is
+		# defence in depth: nothing behind here is handed a field a client wrote.
 		header_up -Forwarded
 
 		# Write each event to the client the moment the relay sends it.

@@ -97,7 +97,7 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
     async fn authorize(
         &self,
         _credential: &Principal,
-        _scopes: &'static [&'static str],
+        _scopes: &[kynos::security::Unscoped],
         _context: &ServerState,
     ) -> Result<(), AuthRejection> {
         Ok(())

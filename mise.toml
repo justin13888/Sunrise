@@ -272,10 +272,8 @@ git status --short crates/sunrise-core/fixtures/
 [tasks.rust-doctest]
 description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 # `--all-targets` above silently excludes doc tests, so this is the only local
-# command that runs them. One run, matching CI exactly. It was two — an
-# `--exclude sunrise-server` and a `--skip relative_uri` — to contain the 18
-# doctests kynos 0.1.0's route macros generated out of English prose (#58). The
-# kynos pin carries the upstream fix, so nothing is excluded or filtered now.
+# command that runs them. One run, matching CI exactly, with no crate excluded
+# and no test filtered.
 run = "cargo test --workspace --doc"
 
 [tasks.rust-doc]

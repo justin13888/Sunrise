@@ -121,8 +121,8 @@ pub struct ServerConfig {
     /// every stop would report work cut and exit 1.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
-    /// The reverse proxies whose `Forwarded` / `X-Forwarded-For` may be
-    /// believed, as addresses or CIDR networks.
+    /// The reverse proxies whose `X-Forwarded-For` may be believed, as
+    /// addresses or CIDR networks. RFC 7239 `Forwarded` is never read.
     ///
     /// Empty — the default — believes nobody: the socket peer is the client,
     /// and every forwarding header is ignored, because a client can write
@@ -464,7 +464,7 @@ impl ServerConfig {
     /// refuses them before a server starts, so only a config that skipped
     /// validation — a test — can reach this with one.
     #[must_use]
-    pub fn trusted_proxy_networks(&self) -> Vec<(std::net::IpAddr, u8)> {
+    pub fn trusted_proxy_networks(&self) -> Vec<kynos::http::forwarded::Network> {
         self.trusted_proxies
             .iter()
             .filter_map(|entry| super::limits::parse_cidr(entry))

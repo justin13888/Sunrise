@@ -42,8 +42,8 @@ use crate::api::signed::{Caller, Signed, SignedBinary, SignedParts};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
-use kynos::extract::media::OctetStream;
 use kynos::extract::params::path::Path;
+use kynos::http::media::OctetStream;
 use kynos::openapi::Schema as OpenApiSchema;
 use kynos::response::status::NoContent;
 use kynos::response::stream::binary::BinaryStream;
@@ -175,6 +175,9 @@ impl std::fmt::Display for UploadId {
     }
 }
 
+/// Its schema is one string, so one path segment carries it.
+impl kynos::schema::ParamValue for UploadId {}
+
 /// A blob id in a URL path: `blb_` + 32 lowercase hex characters. See
 /// [`UploadId`] for why a path parameter needs a type to carry its pattern.
 #[derive(Debug, Clone, Deserialize)]
@@ -200,6 +203,9 @@ impl std::fmt::Display for BlobId {
         f.write_str(&self.0)
     }
 }
+
+/// Its schema is one string, so one path segment carries it.
+impl kynos::schema::ParamValue for BlobId {}
 
 /// `POST /api/v1/blobs/finalize` response body.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]

@@ -170,7 +170,12 @@ impl Interceptor<ServerState> for TraceRequest {
         next: Next<'_, ServerState>,
     ) -> Result<Continued<()>, std::convert::Infallible> {
         let () = reads;
-        let route = next.route();
+        // No operation matched: the router's own 404, 405, 308 or 501, which
+        // no operation produces. Not traced, as it was not when interceptors
+        // ran only after routing.
+        let Some(route) = next.route() else {
+            return Ok(next.run(request).await);
+        };
         let method = route.method().as_wire_str();
         let endpoint = templated(route.path());
         let root = state
@@ -234,7 +239,12 @@ impl Interceptor<ServerState> for RequestMeter {
         next: Next<'_, ServerState>,
     ) -> Result<Continued<()>, std::convert::Infallible> {
         let () = reads;
-        let endpoint = next.route().path();
+        // The router's own answers touch no store and are not in flight in
+        // the sense the gauge counts: no handler runs.
+        let Some(route) = next.route() else {
+            return Ok(next.run(request).await);
+        };
+        let endpoint = route.path();
         let _in_flight = state.in_flight.enter();
         let (continued, time) = crate::store::metered(next.run(request)).await;
         if let Some(spent) = time.spent() {

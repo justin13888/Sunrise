@@ -257,7 +257,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -327,6 +326,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -516,28 +537,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -595,7 +594,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -665,6 +663,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -845,28 +865,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -932,7 +930,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -1002,6 +999,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -1182,28 +1201,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -1262,7 +1259,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -1332,6 +1328,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -1512,28 +1530,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -1591,7 +1587,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -1661,6 +1656,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -1841,28 +1858,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -1920,7 +1915,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -1990,6 +1984,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -2173,28 +2189,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -2261,7 +2255,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -2331,6 +2324,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -2520,28 +2535,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -2650,7 +2643,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -2702,6 +2694,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2864,28 +2878,6 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/rate-limited"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
                         }
                       }
                     }
@@ -3001,7 +2993,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -3053,6 +3044,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3215,28 +3228,6 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/rate-limited"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
                         }
                       }
                     }
@@ -3311,7 +3302,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -3381,6 +3371,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -3554,28 +3566,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -3643,7 +3633,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -3713,6 +3702,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -3893,28 +3904,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -3983,7 +3972,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -4053,6 +4041,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -4233,28 +4243,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -4383,7 +4371,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -4435,6 +4422,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -4604,28 +4613,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -4735,7 +4722,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -4787,6 +4773,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -4961,28 +4969,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -5100,7 +5086,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -5152,6 +5137,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -5328,28 +5335,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -5418,7 +5403,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -5488,6 +5472,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -5677,28 +5683,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -5820,7 +5804,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -5872,6 +5855,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -6041,28 +6046,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -6184,7 +6167,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -6236,6 +6218,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -6412,28 +6416,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -6555,7 +6537,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -6607,6 +6588,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -6783,28 +6786,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -6923,7 +6904,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -6975,6 +6955,28 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -7173,28 +7175,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -7263,7 +7243,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -7333,6 +7312,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -7513,28 +7514,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -7602,7 +7581,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -7672,6 +7650,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -7852,28 +7852,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
           }
         },
         "security": [
@@ -7942,7 +7920,6 @@
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
-                "required": true,
                 "schema": {
                   "type": "string"
                 },
@@ -8012,6 +7989,28 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
                         }
                       }
                     }
@@ -8178,28 +8177,6 @@
                         "type": {
                           "type": "string",
                           "const": "https://sunrise.app/problems/rate-limited"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "the request body exceeds the configured limit",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Problem"
-                    },
-                    {
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "about:blank"
                         }
                       }
                     }
@@ -8649,6 +8626,7 @@
             "description": "Terms acceptance timestamp, milliseconds since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "email",
@@ -8694,6 +8672,7 @@
             "description": "Account creation time, milliseconds since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "identity_id",
@@ -8711,6 +8690,7 @@
             "description": "The sealed blob, base64url no-pad, exactly as it was uploaded."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "recovery_blob"
@@ -8731,6 +8711,7 @@
             "description": "When the phrase stops being accepted, ms since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "confirm_phrase",
@@ -8745,6 +8726,7 @@
             "description": "The phrase `initiate` returned. Case-insensitive."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "confirm_phrase"
@@ -8766,6 +8748,7 @@
             "description": "The earliest the account's data is erased, ms since the epoch; the\nfirst maintenance pass after it does so."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "requested_at_ms",
@@ -8827,6 +8810,7 @@
             "description": "Revocation time, milliseconds since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "device_id",
@@ -8881,6 +8865,7 @@
             "description": "Reported app version."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "device_pub_s",
@@ -8896,6 +8881,7 @@
             "description": "The server-assigned device id."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "device_id"
@@ -8926,6 +8912,7 @@
             "description": "The provider token. Stored in plaintext today — see\n`docs/01-architecture/threat-model.md`."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "device_id",
@@ -8954,6 +8941,7 @@
             "description": "Total ciphertext size in bytes. Advisory: the server enforces the\nper-attachment ceiling here and the real size at finalize."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "stream_id",
@@ -8977,6 +8965,7 @@
             "description": "Per-chunk upload URLs. Self-host returns relative paths under\n`/api/v1/blobs/<upload_id>/<idx>`, which the PUT operation serves."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "upload_id",
@@ -9005,6 +8994,7 @@
             "description": "Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is\nthe chunk count: `init`'s advisory count is not trusted here."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "upload_id",
@@ -9034,6 +9024,7 @@
             "description": "Committed chunk count."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "blob_id",
@@ -9061,6 +9052,7 @@
             "description": "The op's `seq` from that device."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "stream_id",
@@ -9078,6 +9070,7 @@
             "description": "The earliest the ciphertext may be reclaimed, ms since the epoch. It\nis reclaimed on the first maintenance pass after this at which every\nactive device has acknowledged the op."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "collect_after_ms"
@@ -9482,6 +9475,7 @@
             "description": "One Noise message, base64url without padding; at most 64 KiB decoded."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "pair_id",
@@ -9507,6 +9501,7 @@
             "description": "When the session is dropped whatever happens, ms since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "sent",
@@ -9533,6 +9528,7 @@
             "description": "How many of the other side's messages the caller already holds."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "pair_id",
@@ -9557,6 +9553,7 @@
             "description": "When the session is dropped whatever happens, ms since the epoch."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "messages",
@@ -9576,6 +9573,7 @@
             "description": "The side giving up."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "pair_id",

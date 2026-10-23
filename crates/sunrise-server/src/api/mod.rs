@@ -73,7 +73,7 @@ pub type ApiRouter = kynos::Router<
     kynos::middleware::stack::Cons<
         kynos::middleware::cors::Cors,
         kynos::middleware::stack::Cons<
-            kynos::middleware::limits::BodySize,
+            kynos::middleware::limits::body_size::BodySize,
             kynos::middleware::stack::Cons<
                 ratelimit::Admission,
                 kynos::middleware::stack::Cons<
@@ -143,7 +143,14 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // Who the client is. Empty, nothing a request says about its own
         // origin is believed and the socket peer is the client; the rate
         // limiter below keys on whatever this resolves.
+        //
+        // `X-Forwarded-For` is the one field read, because it is the one both
+        // shipped proxy configurations (`deploy/caddy`, `deploy/nginx`) write.
+        // A proxy appends to one field and passes the other through from the
+        // client, so reading both would let a client choose its own address
+        // through whichever field its proxy does not touch.
         .trusted_proxies(kynos::http::forwarded::TrustedProxies::networks(
+            kynos::http::forwarded::ProxyHeader::XForwarded,
             config.trusted_proxy_networks(),
         ))
         // Outermost of all, so a request the limiter refuses is still one
@@ -162,7 +169,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // Configuring the limit and documenting that a limit exists are one
         // action here: `BodySize` contributes 413 to every operation it covers,
         // so an API cannot quietly reject payloads it claims to accept.
-        .intercept(kynos::middleware::limits::BodySize::new(
+        .intercept(kynos::middleware::limits::body_size::BodySize::new(
             config.max_body_bytes as u64,
         ))
         .intercept(cors(config))
