@@ -696,7 +696,7 @@ impl Engine {
 /// Run `f` in one transaction, rolling it back on any error and carrying an
 /// [`EngineError`] out as itself rather than as the storage error the
 /// transaction closure has to speak.
-fn in_tx<R>(
+pub(super) fn in_tx<R>(
     db: &mut Db,
     f: impl FnOnce(&Transaction<'_>) -> Result<R, EngineError>,
 ) -> Result<R, EngineError> {

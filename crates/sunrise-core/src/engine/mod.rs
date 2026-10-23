@@ -95,6 +95,7 @@ mod oplog;
 mod park;
 mod preferences;
 mod query;
+mod rebuild;
 mod review;
 mod revocation;
 mod routine;
@@ -115,6 +116,7 @@ pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
 pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
+pub use self::rebuild::RebuildReport;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
 pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 
