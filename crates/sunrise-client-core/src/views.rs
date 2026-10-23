@@ -196,21 +196,90 @@ pub fn to_file(views: &[SavedView]) -> String {
     out
 }
 
-/// `~/.config/sunrise/views.toml`, honouring `XDG_CONFIG_HOME`.
+/// `~/.config/sunrise/views.toml`, honouring `XDG_CONFIG_HOME`, read from
+/// this process's environment. See [`config_path_in`].
 #[must_use]
 pub fn config_path() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir).join("sunrise").join("views.toml"));
-        }
+    config_path_in(
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Where the views file lives, given the two variables that decide it:
+/// `$XDG_CONFIG_HOME/sunrise/views.toml` when that is set and not empty, else
+/// `$HOME/.config/sunrise/views.toml`, else nowhere.
+///
+/// Nowhere is an answer rather than a guess: a store with no path reads as
+/// empty and refuses to save.
+#[must_use]
+pub fn config_path_in(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    if let Some(dir) = xdg_config_home.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join("sunrise").join("views.toml"));
     }
-    let home = std::env::var("HOME").ok()?;
     Some(
-        PathBuf::from(home)
+        PathBuf::from(home?)
             .join(".config")
             .join("sunrise")
             .join("views.toml"),
     )
+}
+
+/// Why the views file was not written.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    /// The store has no path on this device.
+    #[error("no saved-views path on this device")]
+    NoPath,
+    /// The directory or the file could not be written.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// The saved-view file at one path, read and written whole.
+///
+/// The path is state: tests point at a scratch file, and every client points
+/// at [`config_path`] — so a view saved in one is recalled in the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedViewStore {
+    path: Option<PathBuf>,
+}
+
+impl SavedViewStore {
+    /// A store at `path`; `None` reads as empty and refuses to save.
+    #[must_use]
+    pub fn at(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+
+    /// Where this store reads and writes, if anywhere.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Read the file. An absent file is an empty set; see [`load`].
+    #[must_use]
+    pub fn load(&self) -> (Vec<SavedView>, Vec<String>) {
+        load(self.path.as_deref())
+    }
+
+    /// Replace the file with `views`.
+    ///
+    /// Whole-file, because the file is the set: a partial write would leave
+    /// the store disagreeing with what the picker just showed.
+    ///
+    /// # Errors
+    /// [`SaveError::NoPath`] for a store with no path, and
+    /// [`SaveError::Io`] when the directory or the file cannot be written.
+    pub fn save(&self, views: &[SavedView]) -> Result<(), SaveError> {
+        let path = self.path.as_ref().ok_or(SaveError::NoPath)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, to_file(views))?;
+        Ok(())
+    }
 }
 
 /// Wire name for a view.
@@ -374,5 +443,48 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(back, views);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_store_saves_the_whole_set_and_makes_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("nested").join("views.toml");
+        let store = SavedViewStore::at(Some(path.clone()));
+        assert_eq!(store.path(), Some(path.as_path()));
+        assert_eq!(store.load(), (Vec::new(), Vec::new()));
+
+        let views = vec![saved("deep", View::Today, "", &["deep-work"])];
+        store.save(&views).unwrap();
+        assert_eq!(store.load(), (views, Vec::new()));
+
+        store.save(&[]).unwrap();
+        assert!(store.load().0.is_empty(), "a save replaces, never appends");
+    }
+
+    #[test]
+    fn a_store_with_no_path_reads_empty_and_refuses_to_save() {
+        let store = SavedViewStore::at(None);
+        assert_eq!(store.load(), (Vec::new(), Vec::new()));
+        let err = store.save(&[]).unwrap_err();
+        assert!(matches!(err, SaveError::NoPath));
+        assert_eq!(err.to_string(), "no saved-views path on this device");
+    }
+
+    #[test]
+    fn the_path_follows_xdg_then_home_then_nowhere() {
+        assert_eq!(
+            config_path_in(Some("/x"), Some("/h")),
+            Some(PathBuf::from("/x/sunrise/views.toml"))
+        );
+        assert_eq!(
+            config_path_in(Some(""), Some("/h")),
+            Some(PathBuf::from("/h/.config/sunrise/views.toml")),
+            "an empty XDG_CONFIG_HOME is unset"
+        );
+        assert_eq!(
+            config_path_in(None, Some("/h")),
+            Some(PathBuf::from("/h/.config/sunrise/views.toml"))
+        );
+        assert_eq!(config_path_in(None, None), None);
     }
 }

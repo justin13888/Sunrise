@@ -258,7 +258,7 @@ pub struct SavedViewFile {
 /// have the seam pretend the work is asynchronous.
 #[derive(Debug, uniffi::Object)]
 pub struct SavedViews {
-    path: Option<PathBuf>,
+    store: views::SavedViewStore,
 }
 
 #[uniffi::export]
@@ -271,7 +271,7 @@ impl SavedViews {
     #[must_use]
     pub fn at_default_path() -> Arc<Self> {
         Arc::new(Self {
-            path: views::config_path(),
+            store: views::SavedViewStore::at(views::config_path()),
         })
     }
 
@@ -280,20 +280,20 @@ impl SavedViews {
     #[must_use]
     pub fn at_path(path: String) -> Arc<Self> {
         Arc::new(Self {
-            path: Some(PathBuf::from(path)),
+            store: views::SavedViewStore::at(Some(PathBuf::from(path))),
         })
     }
 
     /// Where this store reads and writes, if anywhere.
     #[must_use]
     pub fn location(&self) -> Option<String> {
-        self.path.as_ref().map(|p| p.to_string_lossy().into_owned())
+        self.store.path().map(|p| p.to_string_lossy().into_owned())
     }
 
     /// Read the file. An absent file is an empty set, not an error.
     #[must_use]
     pub fn load(&self) -> SavedViewFile {
-        let (views, warnings) = views::load(self.path.as_deref());
+        let (views, warnings) = self.store.load();
         SavedViewFile {
             views: views.iter().map(SavedView::from).collect(),
             warnings,
@@ -305,15 +305,10 @@ impl SavedViews {
     /// Whole-file, because the file is the set: a partial write would leave
     /// the store disagreeing with what the picker just showed.
     pub fn save(&self, views_to_write: Vec<SavedView>) -> Result<(), BindingError> {
-        let path = self
-            .path
-            .as_ref()
-            .ok_or_else(|| BindingError::Core("no saved-views path on this device".into()))?;
         let rows: Vec<views::SavedView> = views_to_write.into_iter().map(Into::into).collect();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| BindingError::Core(e.to_string()))?;
-        }
-        std::fs::write(path, views::to_file(&rows)).map_err(|e| BindingError::Core(e.to_string()))
+        self.store
+            .save(&rows)
+            .map_err(|e| BindingError::Core(e.to_string()))
     }
 }
 
@@ -349,11 +344,13 @@ pub fn parse_saved_view(name: String, spec: String) -> Result<SavedView, Binding
 /// The file exists and cannot be read.
 #[uniffi::export]
 pub fn bootstrap_preferences(dir: String) -> Result<Vec<PreferenceItem>, BindingError> {
-    let file = read_bootstrap_file(std::path::Path::new(&dir))?;
-    Ok(sunrise_core::BootstrapPreferences::resolve(file.as_deref())
-        .into_iter()
-        .map(PreferenceItem::from)
-        .collect())
+    Ok(
+        sunrise_client_core::preferences::bootstrap_preferences(std::path::Path::new(&dir))
+            .map_err(|e| BindingError::Core(e.to_string()))?
+            .into_iter()
+            .map(PreferenceItem::from)
+            .collect(),
+    )
 }
 
 /// Set one bootstrap preference in `dir`, or remove it with `None`. The file
@@ -370,31 +367,12 @@ pub fn set_bootstrap_preference(
     key: String,
     value: Option<String>,
 ) -> Result<(), BindingError> {
-    let dir = std::path::Path::new(&dir);
-    let file = read_bootstrap_file(dir)?;
-    let body = sunrise_core::BootstrapPreferences::set(file.as_deref(), &key, value.as_deref())
-        .map_err(|e| BindingError::Core(e.to_string()))?;
-    let io = |e: std::io::Error| BindingError::Core(format!("bootstrap preferences: {e}"));
-    std::fs::create_dir_all(dir).map_err(io)?;
-    let path = dir.join(sunrise_core::BOOTSTRAP_FILE);
-    let tmp = path.with_extension("json.tmp");
-    // Flushed before the rename: without it a power loss can make the rename
-    // durable ahead of the bytes, leaving a truncated file that reads as empty
-    // and loses the relay and sign-in settings.
-    let mut f = std::fs::File::create(&tmp).map_err(io)?;
-    std::io::Write::write_all(&mut f, &body).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    drop(f);
-    std::fs::rename(&tmp, &path).map_err(io)
-}
-
-/// The bootstrap file's bytes in `dir`, `None` when there is none.
-fn read_bootstrap_file(dir: &std::path::Path) -> Result<Option<Vec<u8>>, BindingError> {
-    match std::fs::read(dir.join(sunrise_core::BOOTSTRAP_FILE)) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(BindingError::Core(format!("bootstrap preferences: {e}"))),
-    }
+    sunrise_client_core::preferences::set_bootstrap_preference(
+        std::path::Path::new(&dir),
+        &key,
+        value.as_deref(),
+    )
+    .map_err(|e| BindingError::Core(e.to_string()))
 }
 
 #[cfg(test)]
@@ -458,7 +436,7 @@ impl SunriseCore {
 #[uniffi::export]
 #[must_use]
 pub fn edit_gate_allows(gate: EditGate, tag: String) -> bool {
-    !(gate.locks_all || gate.locked_tags.contains(&tag))
+    sunrise_client_core::gate::edit_allowed(gate.locks_all, &gate.locked_tags, &tag)
 }
 
 /// The largest attachment this device fetches without being asked,
