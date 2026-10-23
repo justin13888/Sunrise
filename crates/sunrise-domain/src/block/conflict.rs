@@ -155,10 +155,12 @@ fn union_bound(x: &SunriseTime, y: &SunriseTime, zone: &TimeZone, bound: Bound) 
         (_, None, _) => true,
     };
     let winner = if take_x { x } else { y };
-    if same_kind(x, y) {
-        winner.clone()
-    } else {
-        SunriseTime::instant(winner.to_instant(zone))
+    match winner.to_instant(zone) {
+        Ok(at) if !same_kind(x, y) => SunriseTime::instant(at),
+        // Same kind keeps it; and a winner with no instant (neither bound
+        // could be placed) is kept as stored rather than given one it never
+        // had (`docs/11-adr/0066-times-survive-travel.md` §3).
+        _ => winner.clone(),
     }
 }
 
@@ -219,7 +221,7 @@ mod tests {
 
     /// Where a reader in UTC puts `t`, in epoch ms.
     fn ms(t: &SunriseTime) -> i64 {
-        t.to_instant(&utc()).as_millisecond()
+        t.to_instant(&utc()).unwrap().as_millisecond()
     }
 
     /// The overlap rule is the reader's: a floating 09:00–10:00 and a zoned

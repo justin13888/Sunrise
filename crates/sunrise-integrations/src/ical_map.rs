@@ -275,10 +275,12 @@ fn to_sunrise(t: &ICalTime) -> SunriseTime {
 
 /// Domain time → iCalendar time. The exact inverse of [`to_sunrise`] for the
 /// four kinds iCalendar can express. A kind this build does not know exports
-/// as the instant it resolves to: iCalendar has no way to carry it.
+/// at the instant it sorts at ([`SunriseTime::instant_or_last`]): its `at`
+/// anchor, or the far end of the calendar when it has none, never the epoch.
+/// iCalendar has no way to carry the kind itself.
 fn from_sunrise(t: &SunriseTime) -> ICalTime {
     match t {
-        SunriseTime::Unknown { .. } => ICalTime::Utc(t.to_instant(&jiff::tz::TimeZone::UTC)),
+        SunriseTime::Unknown { .. } => ICalTime::Utc(t.instant_or_last(&jiff::tz::TimeZone::UTC)),
         SunriseTime::Instant { at } => ICalTime::Utc(*at),
         SunriseTime::Zoned { civil, tz } => ICalTime::Zoned {
             civil: *civil,

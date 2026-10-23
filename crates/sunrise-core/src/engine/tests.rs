@@ -284,6 +284,7 @@ mod testutil {
     pub(super) fn day_ms() -> u64 {
         SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0))
             .to_instant(&jiff::tz::TimeZone::UTC)
+            .unwrap()
             .as_millisecond() as u64
     }
 

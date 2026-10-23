@@ -99,8 +99,9 @@ pub use note_body::{
 };
 pub use notify::{
     apply_quiet_hours, build_end_of_day_plan, build_morning_summary, lead_time_s, plan_reminders,
-    snooze_target, EndOfDayPlan, MorningSummary, QuietHours, QuietHoursPolicy, ReminderCandidate,
-    ReminderIntent, ReminderKind, ReminderSettings, SnoozeSpan, BLOCK_DEFAULT_LEAD_S,
+    plan_reminders_reported, snooze_target, EndOfDayPlan, MorningSummary, QuietHours,
+    QuietHoursPolicy, ReminderCandidate, ReminderIntent, ReminderKind, ReminderPlan,
+    ReminderSettings, SnoozeSpan, UnscheduledReminder, BLOCK_DEFAULT_LEAD_S,
     QUIET_HOURS_QUEUE_CAP_S,
 };
 pub use person::Person;
@@ -144,7 +145,7 @@ pub use streak::{
 };
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
-pub use time::SunriseTime;
+pub use time::{shift_civil_days, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use validation::{
     ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,

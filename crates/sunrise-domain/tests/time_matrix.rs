@@ -14,7 +14,11 @@ use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use std::collections::BTreeSet;
 use sunrise_domain::time::PREFILTER_SLACK_MS;
-use sunrise_domain::{is_overdue, overlaps, Block, SunriseTime, TaskDraft, ValidationError};
+use sunrise_domain::{
+    is_overdue, overlaps, plan_reminders, plan_reminders_reported, shift_civil_days, Block,
+    ReminderCandidate, ReminderIntent, ReminderKind, ReminderSettings, SunriseTime, TaskDraft,
+    Unresolvable, ValidationError,
+};
 use sunrise_id::{EntityKind, EntityRef};
 
 fn tz(name: &str) -> TimeZone {
@@ -310,4 +314,230 @@ fn blocks_inside_a_fold_overlap_once() {
     let found = overlaps(&blocks, &tz(ny));
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].to_ms - found[0].from_ms, 15 * 60_000);
+}
+
+// ---------------------------------------------------------------------------
+// Defer: whole civil days in the reader's zone, keeping the kind
+// (ADR-0066 §4).
+// ---------------------------------------------------------------------------
+
+/// A floating or zoned value keeps its wall-clock time on the new date, even
+/// one inside that date's gap: the stored value says what was meant, and the
+/// one DST rule places it when it is read.
+#[test]
+fn deferring_a_civil_time_into_a_gap_keeps_it_and_resolves_it_forward() {
+    for (zone, from, want_resolved) in [
+        // 02:30 on spring-forward night is 03:30 EDT.
+        (
+            "America/New_York",
+            date(2026, 3, 7).at(2, 30, 0, 0),
+            date(2026, 3, 8).at(3, 30, 0, 0),
+        ),
+        // A 30-minute gap: 02:10 is 02:40.
+        (
+            "Australia/Lord_Howe",
+            date(2026, 10, 3).at(2, 10, 0, 0),
+            date(2026, 10, 4).at(2, 40, 0, 0),
+        ),
+        // Chatham's +12:45 → +13:45 at 02:45: 03:00 is 04:00.
+        (
+            "Pacific/Chatham",
+            date(2026, 9, 26).at(3, 0, 0, 0),
+            date(2026, 9, 27).at(4, 0, 0, 0),
+        ),
+        // Kathmandu's 1986 move from +05:30 to +05:45 at midnight.
+        (
+            "Asia/Kathmandu",
+            date(1985, 12, 31).at(0, 10, 0, 0),
+            date(1986, 1, 1).at(0, 25, 0, 0),
+        ),
+        // Apia skipped 2011-12-30 whole: 09:00 that day is 09:00 the next.
+        (
+            "Pacific/Apia",
+            date(2011, 12, 29).at(9, 0, 0, 0),
+            date(2011, 12, 31).at(9, 0, 0, 0),
+        ),
+    ] {
+        let reader = tz(zone);
+        let to = from.checked_add(jiff::Span::new().days(1)).unwrap();
+        let floating = shift_civil_days(&SunriseTime::floating(from), 1, &reader).unwrap();
+        assert_eq!(floating, SunriseTime::floating(to), "{zone}");
+        let resolved = floating.resolve_in(&reader).unwrap();
+        assert_eq!(civil_in(resolved, zone), want_resolved, "{zone}");
+
+        let zoned = shift_civil_days(&SunriseTime::zoned(from, zone), 1, &TimeZone::UTC).unwrap();
+        assert_eq!(
+            zoned,
+            SunriseTime::zoned(to, zone),
+            "{zone}: keeps its zone"
+        );
+        assert_eq!(zoned.resolve_in(&TimeZone::UTC), Some(resolved), "{zone}");
+    }
+}
+
+/// An instant has to be resolved now: its wall-clock time in the reader's
+/// zone moves by civil days, so across a DST change a day is 23 hours, or 23
+/// and a half on Lord Howe, never 86,400 seconds.
+#[test]
+fn deferring_an_instant_counts_civil_days_in_the_reader_zone() {
+    for (zone, from, to) in [
+        // 09:00 EST → 09:00 EDT: 23 hours.
+        (
+            "America/New_York",
+            "2026-03-07T14:00:00Z",
+            "2026-03-08T13:00:00Z",
+        ),
+        // 09:00 LHST (+10:30) → 09:00 LHDT (+11): 23.5 hours.
+        (
+            "Australia/Lord_Howe",
+            "2026-10-02T22:30:00Z",
+            "2026-10-03T22:00:00Z",
+        ),
+        // 09:00 CHAST (+12:45) → 09:00 CHADT (+13:45).
+        (
+            "Pacific/Chatham",
+            "2026-09-25T20:15:00Z",
+            "2026-09-26T19:15:00Z",
+        ),
+        // 09:00 +05:30 → 09:00 +05:45, the day Kathmandu moved.
+        (
+            "Asia/Kathmandu",
+            "1985-12-31T03:30:00Z",
+            "1986-01-01T03:15:00Z",
+        ),
+        // 09:00 on the 29th (−10) lands on 09:00 the 31st (+14): the 30th
+        // does not exist, and its 09:00 moves forward by the whole gap.
+        (
+            "Pacific/Apia",
+            "2011-12-29T19:00:00Z",
+            "2011-12-30T19:00:00Z",
+        ),
+        // Into New York's fold: 01:30 takes the earlier pass, EDT.
+        (
+            "America/New_York",
+            "2026-10-31T05:30:00Z",
+            "2026-11-01T05:30:00Z",
+        ),
+    ] {
+        let got = shift_civil_days(&SunriseTime::instant(at(from)), 1, &tz(zone)).unwrap();
+        assert_eq!(got, SunriseTime::instant(at(to)), "{zone} from {from}");
+    }
+}
+
+/// An all-day value moves its date and nothing else, even onto a date the
+/// reader's zone skipped, and a negative count moves it back.
+#[test]
+fn deferring_an_all_day_value_moves_the_date() {
+    let apia = tz("Pacific/Apia");
+    let got = shift_civil_days(&SunriseTime::all_day(date(2011, 12, 29)), 1, &apia).unwrap();
+    assert_eq!(got, SunriseTime::all_day(date(2011, 12, 30)));
+    // It still has a start: the next day that exists.
+    assert_eq!(
+        civil_in(got.resolve_in(&apia).unwrap(), "Pacific/Apia"),
+        date(2011, 12, 31).at(0, 0, 0, 0)
+    );
+    let back = shift_civil_days(&SunriseTime::all_day(date(2026, 3, 1)), -1, &apia).unwrap();
+    assert_eq!(back, SunriseTime::all_day(date(2026, 2, 28)));
+}
+
+/// A kind this build does not know is never rewritten, and a value pushed
+/// off the calendar is an error rather than a wrapped or epoch time.
+#[test]
+fn deferring_what_cannot_be_moved_is_refused() {
+    let unknown = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw: sunrise_domain::Unknowns::new(),
+    };
+    assert!(matches!(
+        shift_civil_days(&unknown, 1, &TimeZone::UTC),
+        Err(Unresolvable::UnknownKind { .. })
+    ));
+    let edge = SunriseTime::floating(date(9999, 12, 31).at(9, 0, 0, 0));
+    assert!(matches!(
+        shift_civil_days(&edge, 1, &TimeZone::UTC),
+        Err(Unresolvable::OutOfRange { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Reminders: re-resolved for the reader, identified by (entity, rule).
+// ---------------------------------------------------------------------------
+
+fn candidate(n: u8, at: SunriseTime) -> ReminderCandidate {
+    ReminderCandidate {
+        entity: EntityRef::new(EntityKind::Task, [n; 16]),
+        kind: ReminderKind::Task,
+        at,
+        title: format!("task {n}"),
+        own_lead_s: None,
+        stream_lead_s: None,
+    }
+}
+
+/// New York to Kolkata: the floating 09:00 reminder fires at 09:00 IST, the
+/// zoned 09:00 New York one at its own instant, and each keeps its identity
+/// while its fire time moves.
+#[test]
+fn travelling_moves_the_floating_reminder_and_not_the_zoned_one() {
+    let nine = date(2026, 6, 2).at(9, 0, 0, 0);
+    let candidates = [
+        candidate(1, SunriseTime::floating(nine)),
+        candidate(2, SunriseTime::zoned(nine, "America/New_York")),
+    ];
+    let (now, horizon) = (at("2026-06-01T00:00:00Z"), at("2026-06-04T00:00:00Z"));
+    let plan = |zone: &str| {
+        plan_reminders(
+            &candidates,
+            now,
+            horizon,
+            &tz(zone),
+            &ReminderSettings::default(),
+        )
+    };
+    let (in_ny, in_kolkata) = (plan("America/New_York"), plan("Asia/Kolkata"));
+    let fire = |plan: &[ReminderIntent], n: u8| {
+        plan.iter()
+            .find(|i| i.entity == EntityRef::new(EntityKind::Task, [n; 16]))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(civil_in(fire(&in_kolkata, 1).fire_at, "Asia/Kolkata"), nine);
+    assert_eq!(civil_in(fire(&in_ny, 1).fire_at, "America/New_York"), nine);
+    assert_ne!(fire(&in_ny, 1).fire_at, fire(&in_kolkata, 1).fire_at);
+    assert_eq!(fire(&in_ny, 2).fire_at, fire(&in_kolkata, 2).fire_at);
+    assert_eq!(fire(&in_ny, 2).fire_at, at("2026-06-02T13:00:00Z"));
+    for n in [1, 2] {
+        assert_eq!(fire(&in_ny, n).identity(), fire(&in_kolkata, n).identity());
+    }
+}
+
+/// A reminder whose time has no instant is not scheduled at a stand-in and
+/// is reported, with its reason.
+#[test]
+fn a_reminder_with_no_instant_is_reported_not_scheduled() {
+    let unknown = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw: sunrise_domain::Unknowns::new(),
+    };
+    let candidates = [
+        candidate(1, unknown),
+        candidate(2, SunriseTime::floating(date(2026, 6, 2).at(9, 0, 0, 0))),
+    ];
+    let plan = plan_reminders_reported(
+        &candidates,
+        at("2026-06-01T00:00:00Z"),
+        at("2026-06-04T00:00:00Z"),
+        &TimeZone::UTC,
+        &ReminderSettings::default(),
+    );
+    assert_eq!(plan.intents.len(), 1);
+    assert_eq!(plan.unscheduled.len(), 1);
+    assert_eq!(
+        plan.unscheduled[0].entity,
+        EntityRef::new(EntityKind::Task, [1; 16])
+    );
+    assert!(matches!(
+        plan.unscheduled[0].reason,
+        Unresolvable::UnknownKind { .. }
+    ));
 }

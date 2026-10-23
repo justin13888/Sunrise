@@ -466,11 +466,17 @@ fn duration_label(secs: u64) -> String {
 }
 
 /// `2026-01-02 09:00` in the user's zone, or `2026-01-02` for a whole day.
+///
+/// A value with no instant to show in `tz` shows its stored text instead
+/// (`docs/11-adr/0066-times-survive-travel.md` §3), never another time.
 fn stamp(t: &SunriseTime, tz: &TimeZone) -> String {
     if let SunriseTime::AllDay { date } = t {
         return format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day());
     }
-    let dt = t.to_instant(tz).to_zoned(tz.clone()).datetime();
+    let Ok(at) = t.to_instant(tz) else {
+        return t.to_string();
+    };
+    let dt = at.to_zoned(tz.clone()).datetime();
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         dt.year(),
