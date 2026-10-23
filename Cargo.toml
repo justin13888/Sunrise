@@ -3,7 +3,11 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+# The core train version (ADR-0064), and its only copy: every crate inherits
+# it, `release.yml` checks a `core-v*` tag against it, and the server image is
+# tagged with it. Like the app train, it carries no compatibility meaning
+# (ADR-0042 §1); the protocol surfaces in `sunrise-cbor` do.
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.91.1"
 license = "AGPL-3.0-only"
@@ -217,30 +221,35 @@ proptest = { version = "1.5", default-features = false, features = ["std"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # --- internal workspace crates ---
-sunrise-log = { path = "crates/sunrise-log", version = "0.1.0" }
-sunrise-telemetry = { path = "crates/sunrise-telemetry", version = "0.1.0" }
-sunrise-id = { path = "crates/sunrise-id", version = "0.1.0" }
-sunrise-error = { path = "crates/sunrise-error", version = "0.1.0" }
-sunrise-http-sig = { path = "crates/sunrise-http-sig", version = "0.1.0" }
-sunrise-auth = { path = "crates/sunrise-auth", version = "0.1.0" }
-sunrise-cbor = { path = "crates/sunrise-cbor", version = "0.1.0" }
-sunrise-crypto = { path = "crates/sunrise-crypto", version = "0.1.0" }
-sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors", version = "0.1.0" }
-sunrise-test-seed = { path = "crates/sunrise-test-seed", version = "0.1.0" }
-sunrise-domain = { path = "crates/sunrise-domain", version = "0.1.0" }
-sunrise-storage = { path = "crates/sunrise-storage", version = "0.1.0" }
-sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol", version = "0.1.0" }
-sunrise-relay-client = { path = "crates/sunrise-relay-client", version = "0.1.0" }
-sunrise-sync = { path = "crates/sunrise-sync", version = "0.1.0" }
-sunrise-pairing = { path = "crates/sunrise-pairing", version = "0.1.0" }
-sunrise-onboarding = { path = "crates/sunrise-onboarding", version = "0.1.0" }
-sunrise-core = { path = "crates/sunrise-core", version = "0.1.0" }
-sunrise-client-core = { path = "crates/sunrise-client-core", version = "0.1.0" }
-sunrise-cli = { path = "crates/sunrise-cli", version = "0.1.0" }
-sunrise-server = { path = "crates/sunrise-server", version = "0.1.0" }
-sunrise-integrations = { path = "crates/sunrise-integrations", version = "0.1.0" }
-sunrise-core-bindings = { path = "crates/sunrise-core-bindings", version = "0.1.0" }
-sunrise-bench = { path = "crates/sunrise-bench", version = "0.1.0" }
+# No `version` on these. Every crate is `publish = false` (the publish gate,
+# `.github/scripts/publish-gate.py`, enforces it), so a version requirement on a
+# path dependency is read by nothing and is one more copy of the core train
+# number to drift. `deny.toml`'s `allow-wildcard-paths` is what lets cargo-deny
+# accept the shape.
+sunrise-log = { path = "crates/sunrise-log" }
+sunrise-telemetry = { path = "crates/sunrise-telemetry" }
+sunrise-id = { path = "crates/sunrise-id" }
+sunrise-error = { path = "crates/sunrise-error" }
+sunrise-http-sig = { path = "crates/sunrise-http-sig" }
+sunrise-auth = { path = "crates/sunrise-auth" }
+sunrise-cbor = { path = "crates/sunrise-cbor" }
+sunrise-crypto = { path = "crates/sunrise-crypto" }
+sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors" }
+sunrise-test-seed = { path = "crates/sunrise-test-seed" }
+sunrise-domain = { path = "crates/sunrise-domain" }
+sunrise-storage = { path = "crates/sunrise-storage" }
+sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol" }
+sunrise-relay-client = { path = "crates/sunrise-relay-client" }
+sunrise-sync = { path = "crates/sunrise-sync" }
+sunrise-pairing = { path = "crates/sunrise-pairing" }
+sunrise-onboarding = { path = "crates/sunrise-onboarding" }
+sunrise-core = { path = "crates/sunrise-core" }
+sunrise-client-core = { path = "crates/sunrise-client-core" }
+sunrise-cli = { path = "crates/sunrise-cli" }
+sunrise-server = { path = "crates/sunrise-server" }
+sunrise-integrations = { path = "crates/sunrise-integrations" }
+sunrise-core-bindings = { path = "crates/sunrise-core-bindings" }
+sunrise-bench = { path = "crates/sunrise-bench" }
 
 [profile.release]
 opt-level = 3

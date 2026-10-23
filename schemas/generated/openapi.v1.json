@@ -2,7 +2,7 @@
   "openapi": "3.2.0",
   "info": {
     "title": "Sunrise relay",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/v1/health": {
