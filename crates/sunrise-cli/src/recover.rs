@@ -284,10 +284,15 @@ pub async fn rejoin_account(
                         }
                     }
                 }
-                RecoveryProgress::Replaying { applied } => {
-                    announce(&strings::recover::replaying(
-                        i64::try_from(applied).unwrap_or(i64::MAX),
-                    ));
+                RecoveryProgress::Replaying { applied, total } => {
+                    let count = i64::try_from(applied).unwrap_or(i64::MAX);
+                    announce(&match total {
+                        Some(total) => strings::recover::replaying_of(
+                            i64::try_from(total).unwrap_or(i64::MAX),
+                            &count.to_string(),
+                        ),
+                        None => strings::recover::replaying(count),
+                    });
                 }
                 _ => {}
             }

@@ -68,6 +68,24 @@ pub enum SyncEvent {
         /// The frame, exactly as the relay stored it.
         frame: String,
     },
+    /// How many ops the replay of a stream's retained backlog will still
+    /// deliver. Sent once per stream per stream open with a replay, right
+    /// after its first `ops`, and counting the replayed frames after that
+    /// one, so a client can show its catch-up as "n of N" (#459). Not sent
+    /// for a stream with nothing to replay, which adds nothing to a total.
+    ///
+    /// After the first frame rather than before it, so a statement never
+    /// delays a frame: a client that reopens its stream faster than one slow
+    /// frame arrives still makes progress on every reopen.
+    ///
+    /// Additive: a client that predates it drops an event kind it does not
+    /// know, and loses nothing but the total.
+    Backlog {
+        /// The stream about to be replayed.
+        stream_id: String,
+        /// The ops in the replayed frames still to come, summed.
+        ops: u64,
+    },
     /// The retained backlog for a stream has been fully replayed.
     ///
     /// Never sent where a gap was reported for that stream without the gap
@@ -309,18 +327,8 @@ fn spawn_stream(
                     return;
                 }
             }
-            for frame in frames {
-                let event = Event::new(SyncEvent::Ops {
-                    stream_id: hex::encode(sid),
-                    frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
-                })
-                .id(frame.id.to_string());
-                if tx.send(event).await.is_err() {
-                    return;
-                }
-                state
-                    .metrics
-                    .add("sunrise_sync_ops_delivered_total", frame.n_ops);
+            if !send_replay(&state, &tx, sid, frames).await {
+                return;
             }
             let caught_up = Event::new(SyncEvent::CaughtUp {
                 stream_id: hex::encode(sid),
@@ -341,6 +349,48 @@ fn spawn_stream(
         rx.recv().await.map(|event| (Ok(event), rx))
     })
     .boxed()
+}
+
+/// Send `sid`'s retained `frames`, with the `backlog` statement after the
+/// first. `false` when the client has gone.
+///
+/// After the first frame, never before it: a stream reopened faster than one
+/// slow frame arrives must still make progress on each reopen, and a
+/// statement is not progress.
+async fn send_replay(
+    state: &ServerState,
+    tx: &tokio::sync::mpsc::Sender<Event<SyncEvent>>,
+    sid: [u8; 16],
+    frames: Vec<crate::relay_log::ReplayFrame>,
+) -> bool {
+    let after_first: u64 = frames.iter().skip(1).map(|f| f.n_ops).sum();
+    for (n, frame) in frames.into_iter().enumerate() {
+        let event = Event::new(SyncEvent::Ops {
+            stream_id: hex::encode(sid),
+            frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
+        })
+        .id(frame.id.to_string());
+        if tx.send(event).await.is_err() {
+            return false;
+        }
+        state
+            .metrics
+            .add("sunrise_sync_ops_delivered_total", frame.n_ops);
+        if n == 0 && tx.send(backlog(sid, after_first)).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// The `backlog` event sent after a replay's first frame. `ops` is counted
+/// from the frames already read, so it is exactly what the replay goes on to
+/// send, not an estimate from the head of the log.
+fn backlog(sid: [u8; 16], ops: u64) -> Event<SyncEvent> {
+    Event::new(SyncEvent::Backlog {
+        stream_id: hex::encode(sid),
+        ops,
+    })
 }
 
 /// The `sync.stream` span: whether the stream resumed, and how many streams

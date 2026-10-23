@@ -89,9 +89,9 @@ use sunrise_sync::{Backoff, RevokeOutcome, SyncState, Transport, TransportError}
 
 pub use sunrise_sync::{CredentialRead, TokenSource, TokenWatch};
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
-    ClosePayload, ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload,
-    RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
+    decode_frame, encode_frame, AckPayload, BacklogPayload, Capability, CapabilityBits,
+    CaughtUpPayload, ClosePayload, ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind,
+    OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
     REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
@@ -226,6 +226,24 @@ struct SharedState {
     last_sync_ms: Option<u64>,
     /// Distinct originating device ids observed in inbound ops this session.
     peers: HashSet<[u8; 16]>,
+    /// How far this session's replay has got, and how far it has to go.
+    replay: ReplayLedger,
+}
+
+/// A session's catch-up, counted in ops (#459).
+///
+/// The relay states, before it replays a stream, how many ops that replay
+/// will deliver (`BacklogPayload`). Each statement replaces the last for its
+/// stream, because a re-`Subscribe` reopens the stream and the relay states
+/// again from the new cursors; each replayed `OpBatch` counts down its
+/// stream's share; `CaughtUp` zeroes it. A relay that predates the statement
+/// leaves `remaining` empty, which is "no total", not "nothing left".
+#[derive(Debug, Default)]
+struct ReplayLedger {
+    /// Ops the relay has said it will still send, per stream it has stated.
+    remaining: HashMap<[u8; 16], u64>,
+    /// Ops received while the session was catching up.
+    applied: u64,
 }
 
 /// Live, shared sync state. Read by `Core::query(SyncStatus)`; written by the
@@ -254,6 +272,7 @@ impl SyncShared {
                 outbox_pending: pending,
                 last_sync_ms: None,
                 peers: HashSet::new(),
+                replay: ReplayLedger::default(),
             }),
             sync_tx,
             submit: Notify::new(),
@@ -270,7 +289,57 @@ impl SyncShared {
             outbox_pending: u32::try_from(s.outbox_pending).unwrap_or(u32::MAX),
             peer_devices: u32::try_from(s.peers.len()).unwrap_or(u32::MAX),
             last_sync_ms: s.last_sync_ms,
+            replay_applied: s.replay.applied,
+            replay_remaining: Self::remaining_of(s),
         }
+    }
+
+    /// What the relay has stated is still to come this session: zero once
+    /// every stated stream has caught up, and `None` before any statement,
+    /// which is all a relay too old to state one ever leaves.
+    ///
+    /// Not cleared at `Live`. A poller can miss the whole catch-up between two
+    /// reads, and the snapshot after it must still say the total was known.
+    fn remaining_of(s: &SharedState) -> Option<u64> {
+        if s.replay.remaining.is_empty() {
+            return None;
+        }
+        Some(s.replay.remaining.values().sum())
+    }
+
+    /// A fresh session: nothing applied, nothing stated.
+    fn reset_replay(&self) {
+        self.inner.lock().replay = ReplayLedger::default();
+    }
+
+    /// The relay stated that `stream`'s replay will deliver `ops`.
+    fn note_backlog(&self, stream: [u8; 16], ops: u64) {
+        self.inner.lock().replay.remaining.insert(stream, ops);
+    }
+
+    /// `ops` arrived on `stream`.
+    fn note_replayed(&self, stream: [u8; 16], ops: u64) {
+        let mut s = self.inner.lock();
+        if s.state == SyncState::CatchingUp {
+            s.replay.applied = s.replay.applied.saturating_add(ops);
+        }
+        if let Some(left) = s.replay.remaining.get_mut(&stream) {
+            *left = left.saturating_sub(ops);
+        }
+    }
+
+    /// `stream`'s replay is complete, whatever was stated for it.
+    fn note_stream_caught_up(&self, stream: [u8; 16]) {
+        if let Some(left) = self.inner.lock().replay.remaining.get_mut(&stream) {
+            *left = 0;
+        }
+    }
+
+    /// `(replay_applied, replay_remaining)`, served to `Core::query(SyncStatus)`
+    /// beside [`Self::status_fields`].
+    pub(crate) fn replay_fields(&self) -> (u64, Option<u64>) {
+        let s = self.inner.lock();
+        (s.replay.applied, Self::remaining_of(&s))
     }
 
     pub(crate) fn set_state(&self, new: SyncState) {
@@ -1186,6 +1255,7 @@ async fn session(
         return SessionEnd::Disconnected;
     };
     let mut subscribed: HashSet<[u8; 16]> = entries.iter().map(|e| e.stream_id).collect();
+    shared.reset_replay();
     let sub = SubscribePayload { streams: entries };
     let Ok(sub_bytes) = sub.encode() else {
         return SessionEnd::Disconnected;
@@ -1583,6 +1653,7 @@ async fn handle_frame(
                 deadlines.note_loss(LossEvidence::UndecodableFrame);
                 return Ok(());
             };
+            shared.note_replayed(batch.stream_id, batch.ops.len() as u64);
             for env in &batch.ops {
                 // Peer accounting (best-effort): decode the envelope header.
                 if let Ok(oe) = sunrise_crypto::decode_envelope(env) {
@@ -1610,8 +1681,14 @@ async fn handle_frame(
             }
         }
         // CaughtUp rides the StreamUpdate kind (see wire-protocol payloads).
+        // So does the backlog statement (#459), which is tried first: its bytes
+        // would also pass for a `CaughtUpPayload`, whose reader ignores the
+        // `ops` key it does not know.
         MsgKind::StreamUpdate => {
-            if let Ok(cu) = CaughtUpPayload::decode(&payload) {
+            if let Ok(backlog) = BacklogPayload::decode(&payload) {
+                shared.note_backlog(backlog.stream_id, backlog.ops);
+            } else if let Ok(cu) = CaughtUpPayload::decode(&payload) {
+                shared.note_stream_caught_up(cu.stream_id);
                 caught_up.insert(cu.stream_id);
             } else {
                 deadlines.note_loss(LossEvidence::UndecodableFrame);
@@ -2194,6 +2271,60 @@ fn a_hello_ack_is_read_under_the_framing_bound() {
         Some(ack.clone())
     );
     assert_eq!(decode_hello_ack(&with_unknown(bound)), None);
+}
+
+#[cfg(test)]
+mod replay_ledger {
+    //! #459: the session's catch-up count, driven by hand.
+
+    use super::*;
+
+    const A: [u8; 16] = [1; 16];
+    const B: [u8; 16] = [2; 16];
+
+    fn catching_up() -> Arc<SyncShared> {
+        let (status_tx, _status_rx) = broadcast::channel(4);
+        let shared = SyncShared::new(status_tx, 0);
+        shared.set_state(SyncState::CatchingUp);
+        shared
+    }
+
+    #[test]
+    fn a_stated_backlog_counts_down_to_zero_and_stays_known() {
+        let shared = catching_up();
+        assert_eq!(shared.replay_fields(), (0, None), "nothing stated yet");
+        shared.note_backlog(A, 5);
+        shared.note_backlog(B, 2);
+        assert_eq!(shared.replay_fields(), (0, Some(7)));
+        shared.note_replayed(A, 3);
+        assert_eq!(shared.replay_fields(), (3, Some(4)));
+        shared.note_stream_caught_up(A);
+        shared.note_replayed(B, 2);
+        shared.note_stream_caught_up(B);
+        assert_eq!(shared.replay_fields(), (5, Some(0)));
+        shared.set_state(SyncState::Live);
+        // Live ops are not catch-up, and a total known stays known.
+        shared.note_replayed(A, 4);
+        assert_eq!(shared.replay_fields(), (5, Some(0)));
+    }
+
+    #[test]
+    fn a_restatement_replaces_and_a_silent_relay_states_nothing() {
+        let shared = catching_up();
+        shared.note_replayed(A, 2);
+        assert_eq!(shared.replay_fields(), (2, None), "a count with no total");
+        shared.note_backlog(A, 9);
+        // A re-subscribe reopens the stream; the relay states from the new
+        // cursors and the old statement is gone.
+        shared.note_backlog(A, 4);
+        assert_eq!(shared.replay_fields(), (2, Some(4)));
+        shared.reset_replay();
+        assert_eq!(
+            shared.replay_fields(),
+            (0, None),
+            "a new session starts over"
+        );
+    }
 }
 
 #[cfg(test)]

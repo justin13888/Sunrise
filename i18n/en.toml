@@ -2265,6 +2265,9 @@ vault_rebuilt = "vault rebuilt from the recovery code"
 rekeyed = "re-keyed as device {device}"
 unrecorded = "registered as {device} but could not record it: {error}"
 replaying = "{count, plural, one {replaying history: # change applied} other {replaying history: # changes applied}}"
+# Progress where the relay stated how much history there is. {count} ops of
+# {total} have arrived; {total} can grow as the replay finds more streams.
+replaying_of = "{total, plural, one {replaying history: {count} of # change applied} other {replaying history: {count} of # changes applied}}"
 using_bearer = "using the bearer in {var}"
 needs_config = "{error}; set {issuer} and {client_id}, or set {var} to a token that carries a fresh sign-in"
 signing_in = "signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob"

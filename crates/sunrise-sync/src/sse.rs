@@ -57,9 +57,9 @@ use hyper_util::rt::TokioExecutor;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, CursorEntry,
-    ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
-    RefreshTokenPayload, SubscribePayload,
+    decode_frame, encode_frame, AckPayload, BacklogPayload, CaughtUpPayload, ClosePayload,
+    CursorEntry, ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload,
+    RefreshTokenAckPayload, RefreshTokenPayload, SubscribePayload,
 };
 
 /// The largest SSE event this client will buffer before giving up.
@@ -721,6 +721,27 @@ impl SseTransport {
             "caught_up" => {
                 let stream_id = parse_id(event.get("stream_id"))?;
                 let payload = CaughtUpPayload { stream_id }
+                    .encode()
+                    .map_err(|e| protocol(&e))?;
+                Ok(Some(
+                    encode_frame(MsgKind::StreamUpdate, FrameFlags::EMPTY, &payload)
+                        .map_err(|e| protocol(&e))?,
+                ))
+            }
+            // How much the replay that follows will deliver (#459). Rides the
+            // same kind as `caught_up`; the driver reads it first because a
+            // `CaughtUpPayload` reader would accept its bytes too. A relay
+            // too old to send it sends nothing, and the driver reports no
+            // total.
+            "backlog" => {
+                let stream_id = parse_id(event.get("stream_id"))?;
+                let ops = event
+                    .get("ops")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        TransportError::Protocol("backlog event has no op count".to_owned())
+                    })?;
+                let payload = BacklogPayload { ops, stream_id }
                     .encode()
                     .map_err(|e| protocol(&e))?;
                 Ok(Some(
@@ -2030,6 +2051,34 @@ mod tests {
     /// A `gap` becomes a coded error frame rather than a disconnection: the
     /// driver answers a cursor gap by resubscribing, which it can only do if it
     /// is told which condition it hit.
+    /// #459: `backlog` becomes a `StreamUpdate` carrying the count, which the
+    /// driver tells apart from a `caught_up` by its shape.
+    #[test]
+    fn a_backlog_event_becomes_a_stream_update_carrying_its_count() {
+        let frame = SseTransport::frame_for(&serde_json::json!({
+            "kind": "backlog",
+            "stream_id": "ab".repeat(16),
+            "ops": 42,
+        }))
+        .expect("a well-formed backlog event")
+        .expect("backlog is a frame");
+        let (head, payload) = super::decode_frame(&frame).expect("a frame");
+        assert_eq!(head.msg_kind, super::MsgKind::StreamUpdate);
+        assert_eq!(
+            super::BacklogPayload::decode(&payload).expect("a BacklogPayload"),
+            super::BacklogPayload {
+                ops: 42,
+                stream_id: [0xab; 16],
+            }
+        );
+        let err = SseTransport::frame_for(&serde_json::json!({
+            "kind": "backlog",
+            "stream_id": "ab".repeat(16),
+        }))
+        .expect_err("a count is the event's whole content");
+        assert!(matches!(err, TransportError::Protocol(_)), "{err:?}");
+    }
+
     #[test]
     fn a_gap_event_becomes_a_coded_error_frame_carrying_its_reason() {
         for (event, reason) in [

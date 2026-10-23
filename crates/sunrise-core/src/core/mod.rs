@@ -543,11 +543,14 @@ impl Core {
                 u32::try_from(n).unwrap_or(u32::MAX)
             };
             let (state, last_sync_ms, peer_devices) = self.sync_shared.status_fields();
+            let (replay_applied, replay_remaining) = self.sync_shared.replay_fields();
             return Ok(QueryResult::SyncStatus(SyncStatus {
                 state,
                 outbox_pending,
                 peer_devices,
                 last_sync_ms,
+                replay_applied,
+                replay_remaining,
             }));
         }
         let db = self.db.lock();

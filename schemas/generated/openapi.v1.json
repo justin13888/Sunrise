@@ -9378,6 +9378,31 @@
             "properties": {
               "kind": {
                 "type": "string",
+                "const": "backlog"
+              },
+              "stream_id": {
+                "type": "string",
+                "description": "The stream about to be replayed."
+              },
+              "ops": {
+                "type": "integer",
+                "minimum": 0.0,
+                "format": "uint64",
+                "description": "The ops in the replayed frames still to come, summed."
+              }
+            },
+            "type": "object",
+            "required": [
+              "kind",
+              "stream_id",
+              "ops"
+            ],
+            "description": "How many ops the replay of a stream's retained backlog will still\ndeliver. Sent once per stream per stream open with a replay, right\nafter its first `ops`, and counting the replayed frames after that\none, so a client can show its catch-up as \"n of N\" (#459). Not sent\nfor a stream with nothing to replay, which adds nothing to a total.\n\nAfter the first frame rather than before it, so a statement never\ndelays a frame: a client that reopens its stream faster than one slow\nframe arrives still makes progress on every reopen.\n\nAdditive: a client that predates it drops an event kind it does not\nknow, and loses nothing but the total."
+          },
+          {
+            "properties": {
+              "kind": {
+                "type": "string",
                 "const": "caught_up"
               },
               "stream_id": {

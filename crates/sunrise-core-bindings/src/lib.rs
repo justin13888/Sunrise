@@ -98,7 +98,10 @@ pub use notes::{
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use pairing_relay::RelayPairing;
 pub use query::{CoreQuery, CoreQueryResult};
-pub use recovery::{check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep};
+pub use recovery::{
+    check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep, ReplayListener,
+    ReplayProgress,
+};
 pub use vocab::RelativeDay;
 
 uniffi::setup_scaffolding!();
@@ -481,63 +484,63 @@ impl SunriseCore {
         listener: Arc<dyn recovery::RecoveryListener>,
         catch_up_ms: u64,
     ) -> Result<Arc<Self>, BindingError> {
-        let root = vault_root_bytes(&vault_root)?;
-        let dir = PathBuf::from(vault_dir);
-        // The identity a vault belongs to is fixed when it is created, so a
-        // recovery into a directory that already holds one would either be
-        // refused by the keychain or keep the old identity.
-        if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
-            return Err(BindingError::RecoveryRefused(format!(
-                "{} already holds a vault; a recovery creates one and cannot merge into another",
-                dir.display()
-            )));
-        }
-        let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
-            .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
-
-        let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
-        cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
-        let bearer = step_up_bearer.clone();
-        let url = relay_url.clone();
-        let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
-            core.sync_credential().set(Some(bearer.clone()));
-            let signer = core.device_signer(relay_device_id);
-            // A link of its own: this core is shut down before the handle the
-            // caller gets is opened, and nothing ever kicks it.
-            core.start_sync(ws_factory(&url, Some(signer), background::SyncLink::new()))
-                .map_err(|e| e.to_string())
-        };
-
-        let mut code = code;
-        let outcome = sunrise_client_core::recovery::recover_account(
-            &relay,
-            &code,
-            cfg,
-            VaultRootKey::from_bytes(root),
-            device_label(nickname),
-            &start_sync,
-            catch_up_ms,
-            &mut recovery::forward(listener),
-        )
-        .await;
-        code.zeroize();
-        outcome?;
-
-        // The flow shut its core down, so the vault lock is free: open it
-        // again the way every later launch will, which is also the proof that
-        // the root opens what the recovery wrote. The vault is written and
-        // the device registered by now, so a failure here is still one whose
-        // root the caller must keep.
-        let core = Core::open(
-            CoreConfig::production(dir, app_version),
-            Unlock::DevicePaired {
-                root: VaultRootKey::from_bytes(root),
-                paired: None,
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
+                nickname,
+                catch_up_ms,
             },
+            recovery::forward(listener, None),
         )
         .await
-        .map_err(recovery::reopen_failed)?;
-        Ok(Self::wrap(core))
+    }
+
+    /// [`Self::recover_account`], with the replay's progress also reported
+    /// to `replay` as n of N where the relay states N (#459).
+    ///
+    /// `listener` hears every step as it does from [`Self::recover_account`],
+    /// [`recovery::RecoveryStep::Replaying`] included. `replay` hears each of
+    /// those replay steps again as a [`recovery::ReplayProgress`], which
+    /// carries the total. A constructor of its own, not a new field or
+    /// listener method, because either of those would change the generated
+    /// Swift the app already compiles against.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::recover_account`].
+    #[uniffi::constructor(default(catch_up_ms = 60000))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_account_with_replay(
+        vault_dir: String,
+        vault_root: Vec<u8>,
+        app_version: String,
+        relay_url: String,
+        step_up_bearer: String,
+        code: String,
+        nickname: String,
+        listener: Arc<dyn recovery::RecoveryListener>,
+        replay: Arc<dyn recovery::ReplayListener>,
+        catch_up_ms: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
+                nickname,
+                catch_up_ms,
+            },
+            recovery::forward(listener, Some(replay)),
+        )
+        .await
     }
 
     /// Submit one mutating command.
@@ -1721,6 +1724,93 @@ impl SunriseLogin {
             .await?
             .into())
     }
+}
+
+/// What [`SunriseCore::recover_account`] and
+/// [`SunriseCore::recover_account_with_replay`] take, less the listeners.
+struct RecoveryRequest {
+    vault_dir: String,
+    vault_root: Vec<u8>,
+    app_version: String,
+    relay_url: String,
+    step_up_bearer: String,
+    code: String,
+    nickname: String,
+    catch_up_ms: u64,
+}
+
+/// The recovery both constructors run, reporting through `progress`.
+async fn recover_account_reporting(
+    request: RecoveryRequest,
+    mut progress: impl FnMut(sunrise_client_core::recovery::RecoveryProgress) + Send,
+) -> Result<Arc<SunriseCore>, BindingError> {
+    let RecoveryRequest {
+        vault_dir,
+        vault_root,
+        app_version,
+        relay_url,
+        step_up_bearer,
+        code,
+        nickname,
+        catch_up_ms,
+    } = request;
+    let root = vault_root_bytes(&vault_root)?;
+    let dir = PathBuf::from(vault_dir);
+    // The identity a vault belongs to is fixed when it is created, so a
+    // recovery into a directory that already holds one would either be
+    // refused by the keychain or keep the old identity.
+    if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
+        return Err(BindingError::RecoveryRefused(format!(
+            "{} already holds a vault; a recovery creates one and cannot merge into another",
+            dir.display()
+        )));
+    }
+    let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+
+    let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
+    cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
+    let bearer = step_up_bearer.clone();
+    let url = relay_url.clone();
+    let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
+        core.sync_credential().set(Some(bearer.clone()));
+        let signer = core.device_signer(relay_device_id);
+        // A link of its own: this core is shut down before the handle the
+        // caller gets is opened, and nothing ever kicks it.
+        core.start_sync(ws_factory(&url, Some(signer), background::SyncLink::new()))
+            .map_err(|e| e.to_string())
+    };
+
+    let mut code = code;
+    let outcome = sunrise_client_core::recovery::recover_account(
+        &relay,
+        &code,
+        cfg,
+        VaultRootKey::from_bytes(root),
+        device_label(nickname),
+        &start_sync,
+        catch_up_ms,
+        &mut progress,
+    )
+    .await;
+    code.zeroize();
+    outcome?;
+
+    // The flow shut its core down, so the vault lock is free: open it
+    // again the way every later launch will, which is also the proof that
+    // the root opens what the recovery wrote. The vault is written and
+    // the device registered by now, so a failure here is still one whose
+    // root the caller must keep.
+    let core = Core::open(
+        CoreConfig::production(dir, app_version),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes(root),
+            paired: None,
+        },
+    )
+    .await
+    .map_err(recovery::reopen_failed)?;
+    Ok(SunriseCore::wrap(core))
 }
 
 #[cfg(test)]

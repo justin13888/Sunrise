@@ -484,6 +484,8 @@ mod tests {
             outbox_pending,
             peer_devices: 0,
             last_sync_ms: None,
+            replay_applied: 0,
+            replay_remaining: None,
         }
     }
 

@@ -2600,6 +2600,12 @@ impl From<&sunrise_core::SyncStatus> for SyncSnapshot {
             outbox_pending,
             peer_devices,
             last_sync_ms,
+            // Not carried: a field on this record would change its generated
+            // initializer, and the seam changes additively only. A restore
+            // reads the replay's progress through `ReplayListener` instead
+            // (`recovery.rs`).
+            replay_applied: _,
+            replay_remaining: _,
         } = s;
         Self {
             state: *state,

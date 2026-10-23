@@ -2906,6 +2906,29 @@ pub mod recover {
         out
     }
 
+    /// {total, plural, one {replaying history: {count} of # change applied} other {replaying history: {count} of # changes applied}}
+    #[must_use]
+    pub fn replaying_of(total: i64, count: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", total) {
+            rt::Category::One => {
+                out.push_str("replaying history: ");
+                out.push_str(count);
+                out.push_str(" of ");
+                out.push_str(&rt::number("en", total));
+                out.push_str(" change applied");
+            }
+            _ => {
+                out.push_str("replaying history: ");
+                out.push_str(count);
+                out.push_str(" of ");
+                out.push_str(&rt::number("en", total));
+                out.push_str(" changes applied");
+            }
+        }
+        out
+    }
+
     /// using the bearer in {var}
     #[must_use]
     pub fn using_bearer(var: &str) -> String {

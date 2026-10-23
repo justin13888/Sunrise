@@ -10,6 +10,7 @@
 //! - [`NackPayload`]     — `MsgKind::Nack`     (`0x05`)
 //! - [`SubscribePayload`]— `MsgKind::Subscribe`(`0x06`)
 //! - [`CaughtUpPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
+//! - [`BacklogPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
 //! - [`ErrorPayload`]    — `MsgKind::Error`    (`0x0E`)
 //! - [`RefreshTokenPayload`] — `MsgKind::RefreshToken` (`0x12`)
 //! - [`RefreshTokenAckPayload`] — `MsgKind::RefreshTokenAck` (`0x13`)
@@ -171,6 +172,29 @@ pub struct CaughtUpPayload {
     pub stream_id: [u8; 16],
 }
 
+/// Backlog marker payload, sent over `MsgKind::StreamUpdate` right after the
+/// first retained frame the server replays for a subscribed stream: how many
+/// ops the rest of that replay will deliver.
+///
+/// What lets a restore say "n of N" rather than only "n so far" (#459). It
+/// shares `StreamUpdate` with [`CaughtUpPayload`] for the reason the module
+/// comment gives, and a reader tells the two apart by shape: this one has an
+/// `ops` key and a `CaughtUpPayload` has none, so a reader decodes this one
+/// first. A `CaughtUpPayload` reader that ignores unknown keys would read this
+/// as a `CaughtUp`, which is why nothing sends it to a peer that has not
+/// asked for it: the SSE transport makes it from the relay's `backlog` event,
+/// which a client too old to know it drops.
+///
+/// Fields are ordered for canonical CBOR: `ops` (3), `stream_id` (9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacklogPayload {
+    /// Ops in the replayed frames still to come, summed.
+    pub ops: u64,
+    /// The stream being replayed.
+    #[serde(with = "serde_bytes")]
+    pub stream_id: [u8; 16],
+}
+
 /// `MsgKind::Error` payload: a coded, recoverable-or-terminal error.
 ///
 /// Fields are ordered for canonical CBOR: `code` (4), `reason` (6).
@@ -309,6 +333,7 @@ canonical_codec!(AckPayload);
 canonical_codec!(NackPayload);
 canonical_codec!(SubscribePayload);
 canonical_codec!(CaughtUpPayload);
+canonical_codec!(BacklogPayload);
 canonical_codec!(ErrorPayload);
 canonical_codec!(ClosePayload);
 canonical_codec!(RefreshTokenPayload);
@@ -376,6 +401,13 @@ mod tests {
         assert_canonical(
             "CaughtUpPayload",
             &CaughtUpPayload {
+                stream_id: [4u8; 16],
+            },
+        );
+        assert_canonical(
+            "BacklogPayload",
+            &BacklogPayload {
+                ops: 300,
                 stream_id: [4u8; 16],
             },
         );
@@ -509,6 +541,23 @@ mod tests {
         };
         let bytes = v.encode().unwrap();
         assert_eq!(CaughtUpPayload::decode(&bytes).unwrap(), v);
+    }
+
+    #[test]
+    fn backlog_round_trip_and_is_not_read_as_a_caught_up() {
+        let v = BacklogPayload {
+            ops: 12,
+            stream_id: [5u8; 16],
+        };
+        let bytes = v.encode().unwrap();
+        assert_eq!(BacklogPayload::decode(&bytes).unwrap(), v);
+        // The order a reader tries them in is what tells them apart.
+        let caught_up = CaughtUpPayload {
+            stream_id: [5u8; 16],
+        }
+        .encode()
+        .unwrap();
+        assert!(BacklogPayload::decode(&caught_up).is_err());
     }
 
     #[test]

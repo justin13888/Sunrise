@@ -37,6 +37,12 @@ pub enum RecoveryStep {
     /// The account's history is being replayed into the vault. `applied`
     /// counts the changes so far; the relay does not say how many there are
     /// before it has sent them, so there is no total.
+    ///
+    /// Since #459 each change counted is an op the replay delivered, and a
+    /// relay that states its backlog does give a total. It is not on this
+    /// variant, because a field here would change the generated Swift and the
+    /// seam changes additively only: it reaches a [`ReplayListener`] given to
+    /// [`crate::SunriseCore::recover_account_with_replay`].
     Replaying {
         /// Changes applied so far.
         applied: u64,
@@ -53,7 +59,7 @@ impl From<RecoveryProgress> for RecoveryStep {
             RecoveryProgress::DeviceRegistered { relay_device_id } => {
                 Self::DeviceRegistered { relay_device_id }
             }
-            RecoveryProgress::Replaying { applied } => Self::Replaying { applied },
+            RecoveryProgress::Replaying { applied, .. } => Self::Replaying { applied },
             RecoveryProgress::CaughtUp => Self::CaughtUp,
         }
     }
@@ -67,6 +73,28 @@ impl From<RecoveryProgress> for RecoveryStep {
 pub trait RecoveryListener: Send + Sync + 'static {
     /// One step happened.
     fn on_step(&self, step: RecoveryStep);
+}
+
+/// How far a recovery's replay has got (#459): n of N where the relay states
+/// N, and n alone where it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ReplayProgress {
+    /// Ops delivered so far.
+    pub applied: u64,
+    /// `applied` plus the ops the relay has stated it will still send.
+    /// `None` against a relay that states no backlog. It can grow while the
+    /// replay runs, as the ops it delivers name streams the new vault then
+    /// subscribes to.
+    pub total: Option<u64>,
+}
+
+/// The foreign side of a replay's progress, beside [`RecoveryListener`].
+///
+/// Called from a runtime worker thread, never the foreign main thread.
+#[uniffi::export(with_foreign)]
+pub trait ReplayListener: Send + Sync + 'static {
+    /// The replay moved.
+    fn on_replay(&self, progress: ReplayProgress);
 }
 
 /// Whether `word` is a word a recovery code can contain.
@@ -96,9 +124,21 @@ pub fn check_recovery_code(code: String) -> Result<(), BindingError> {
         .map_err(|e| BindingError::RecoveryCode(e.to_string()))
 }
 
-/// Deliver the flow's progress to the foreign listener.
-pub(crate) fn forward(listener: Arc<dyn RecoveryListener>) -> impl FnMut(RecoveryProgress) + Send {
-    move |p| listener.on_step(RecoveryStep::from(p))
+/// Deliver the flow's progress to the foreign listeners: every step to
+/// `listener`, and each replay step's count and total to `replay` too.
+pub(crate) fn forward(
+    listener: Arc<dyn RecoveryListener>,
+    replay: Option<Arc<dyn ReplayListener>>,
+) -> impl FnMut(RecoveryProgress) + Send {
+    move |p| {
+        if let (Some(replay), RecoveryProgress::Replaying { applied, total }) = (&replay, &p) {
+            replay.on_replay(ReplayProgress {
+                applied: *applied,
+                total: *total,
+            });
+        }
+        listener.on_step(RecoveryStep::from(p));
+    }
 }
 
 /// Map the flow's errors onto the variants a client branches on.
