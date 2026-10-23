@@ -1067,22 +1067,24 @@ def report_unlexable(unlexable: int) -> None:
     four hundred would mean the gate had stopped reading most of what it
     was pointed at, and nothing would have said so.
 
-    On this repository the tally is 59, and it is **not** all fences
+    On this repository the tally is 63, and it is **not** all fences
     plus one oddity in `mise.toml`, which is what this docstring claimed
     (at 45) from the commit that introduced the sentence until the
-    composition was re-derived rather than asserted. Ten of the 59 are
+    composition was re-derived rather than asserted. Eleven of the 63 are
     not in `mise.toml` at all:
 
-    * **46** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 18
+    * **48** TOML triple-quote fences in `mise.toml` — 30 `\"\"\"` and 18
       `'''`, each an unbalanced quotation to a shell lexer.
     * **2** more unbalanced quotations in `mise.toml`: the first and last
       lines of the single-quoted `python3 -c` program the `ios-app` task
       picks its simulator with. The lines between them lex, and are read.
-    * **1** more in `mise.toml`, at `:710`, which continues a line with
-      `\\\\` inside a `\"\"\"` string — one backslash to the shell, two to
-      this gate, which reads TOML source rather than decoded TOML
-      values. It is the only entry that is an unclosed `$(` rather than
-      an unbalanced quote.
+    * **2** more in `mise.toml`, at `:712` and `:1074`, each of which
+      continues a line with `\\\\` inside a `\"\"\"` string — one
+      backslash to the shell, two to this gate, which reads TOML source
+      rather than decoded TOML values. They are the same
+      `bindgen_target_dir=$(cargo metadata …` line, in the
+      `apple-xcframework` and `kotlin-smoke` tasks, and the only entries
+      that are an unclosed `$(` rather than an unbalanced quote.
     * **3** in `.github/scripts/sparkle-tools.sh` at `:37`, `:42` and
       `:43` — one `awk` program whose single-quoted body spans three
       lines inside a `$( )`, which no trailing backslash joins.
@@ -1091,18 +1093,18 @@ def report_unlexable(unlexable: int) -> None:
       allowlist split are each one `awk` program whose single-quoted
       body spans lines inside a `$( )`, counted at its opening and
       closing line.
-    * **2** in `.github/workflows/ci.yml` at `:1174` and `:1200`, and
-      **1** in `.github/workflows/release.yml` at `:861`. All three are
-      `- name:` prose whose English apostrophe is an unbalanced
-      quotation: "the core's storage seam", "its package's threshold",
-      "a user's Mac".
+    * **2** in `.github/workflows/ci.yml` at `:1369` and `:1395`, and
+      **2** in `.github/workflows/release.yml` at `:121` and `:1046`.
+      All four are `- name:` prose whose English apostrophe is an
+      unbalanced quotation: "the core's storage seam", "its package's
+      threshold", "its train's version", "a user's Mac".
 
-    Those last three are the visible half of the limit the module
+    Those last four are the visible half of the limit the module
     docstring states as latent — that this gate cannot tell an
     executable line from prose that happens to lex. Prose that does
     *not* lex lands here and is skipped, which is the safe direction and
     is why the number has to be broken down rather than summarised: a
-    reader told all 59 are TOML fences never learns the gate is skipping
+    reader told all 63 are TOML fences never learns the gate is skipping
     English apostrophes in two workflows, and would read a fence count
     that had quietly become a prose count as no change at all.
 

@@ -24,5 +24,18 @@ sunrise-crypto = { workspace = true }
 sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
 
+# SQLCipher needs a crypto library. Apple targets take CommonCrypto and Linux
+# links the system `libcrypto`, but Windows has neither, and
+# `libsqlite3-sys`'s build script panics there unless `OPENSSL_DIR` names an
+# install. Vendoring builds OpenSSL from source and links it statically, so a
+# Windows build needs Perl (which Git for Windows and the CI runner carry) and
+# no install of anything else. Here rather than on the workspace declaration
+# because a workspace dependency cannot vary by target, and every native crate
+# that opens a vault reaches `rusqlite` through this one, so feature
+# unification carries it to the rest. `docs/01-architecture/dependencies.md`
+# records the choice.
+[target.'cfg(windows)'.dependencies]
+rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
+
 [dev-dependencies]
 tempfile = "3"

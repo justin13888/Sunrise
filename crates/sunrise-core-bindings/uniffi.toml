@@ -1,0 +1,14 @@
+# Per-language overrides `uniffi-bindgen` reads from beside this crate's
+# manifest, in `--library` mode as in any other.
+#
+# Kotlin only, and only where the generated Kotlin would not compile. Swift's
+# names are untouched by anything here, so neither Apple app sees a change.
+
+[bindings.kotlin.rename]
+# `NoteBlock::List` becomes a nested `data class List` inside the sealed class
+# `NoteBlock`, and the generator spells every sequence field as a bare
+# `List<…>`. Inside `NoteBlock` that name resolves to the variant, not to
+# `kotlin.collections.List`, so five fields fail with "no type arguments
+# expected for 'data class List'". `mise run kotlin-smoke` is what found it.
+# Delete this line once the generator qualifies `kotlin.collections.List`.
+"NoteBlock.List" = "ItemList"

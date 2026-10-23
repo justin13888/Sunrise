@@ -109,10 +109,16 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// The same stage-then-rename, with no mode to set.
+///
+/// Windows has no mode bits, and this does not set a DACL: the file takes the
+/// ACL its directory hands down, which under the per-user profile is the user,
+/// `SYSTEM` and `Administrators`, and elsewhere may be wider.
+/// `docs/07-clients/desktop.md` §Windows records that gap and the issue that
+/// closes it. `a_resave_renames_a_new_file_over_the_old_one` holds the rename
+/// on this branch too.
 #[cfg(not(unix))]
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    // No mode bits to set. The platform clients that matter here (macOS, Linux)
-    // are unix; a Windows client should be using the OS credential store.
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
@@ -229,5 +235,28 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, [CREDENTIALS_FILE]);
+    }
+
+    /// A re-save replaces the file by rename on every platform, never by
+    /// rewriting it in place: a hard link to the old file keeps the old bytes.
+    /// A truncate-then-write would leave a crash mid-save reading as logged
+    /// out, and the Windows branch is the one no other test reaches.
+    #[test]
+    fn a_resave_renames_a_new_file_over_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = FileStore::in_dir(dir.path());
+        s.save(&creds()).unwrap();
+        let link = dir.path().join("old-credentials.json");
+        std::fs::hard_link(s.path(), &link).unwrap();
+
+        let newer = Credentials::new("access-2".into(), None, Some(60), 2_000);
+        s.save(&newer).unwrap();
+
+        assert_eq!(s.load().unwrap().unwrap(), newer);
+        assert_eq!(
+            FileStore::new(&link).load().unwrap().unwrap(),
+            creds(),
+            "the old file was rewritten in place rather than replaced"
+        );
     }
 }
