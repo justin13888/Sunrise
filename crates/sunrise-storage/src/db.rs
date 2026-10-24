@@ -1376,19 +1376,73 @@ mod tests {
         assert!(matches!(err, DbError::StorageVTooNew { .. }));
     }
 
+    /// Both full-text indexes exist, with the tokenizers 0040 names: the
+    /// trigram one finds a substring, which the bundled SQLite must support.
     #[test]
-    fn fts5_table_present() {
+    fn both_fts5_indexes_are_present_and_the_trigram_one_matches_substrings() {
         let db = Db::open_memory(&vault_key()).unwrap();
-        let count: i64 = db
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name = 'search_idx'",
+        for table in ["search_words", "search_tri"] {
+            let count: i64 = db
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name = ?",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "`{table}`");
+        }
+        db.conn()
+            .execute(
+                "INSERT INTO search_tri (rowid, title, body) VALUES (1, 'passport', '')",
                 [],
-                |row| row.get(0),
             )
             .unwrap();
-        // FTS5 creates several backing tables; at least one matches.
-        assert!(count >= 1);
+        let hit: i64 = db
+            .conn()
+            .query_row(
+                "SELECT rowid FROM search_tri WHERE search_tri MATCH '\"sspo\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1);
+    }
+
+    /// Migration 0040 drops the task-only `search_idx` and adds both new
+    /// indexes empty, with no `search_meta` row, which is what makes the next
+    /// open write them from the entity rows.
+    #[test]
+    fn migration_0040_replaces_the_task_index_with_two_empty_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        let db = Db::create_at_storage_v(&path, &vault_key(), 39).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO search_idx (kind, id, stream_id, title, body, contexts)
+                 VALUES ('task', X'01', X'02', 'Renew the passport', '', '')",
+                [],
+            )
+            .unwrap();
+        drop(db);
+
+        let db = Db::open(&path, &vault_key()).unwrap();
+        let gone: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'search_idx'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "`search_idx` is dropped");
+        for table in ["search_docs", "search_words", "search_tri", "search_meta"] {
+            let n: i64 = db
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("`{table}` after 0040: {e}"));
+            assert_eq!(n, 0, "`{table}` starts empty");
+        }
     }
 
     /// Migration 0039 adds the version DAG's tables empty, with no

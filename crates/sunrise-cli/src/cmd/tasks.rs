@@ -74,19 +74,6 @@ pub(super) async fn today(ctx: &Ctx<'_>) -> CmdResult {
     Ok(())
 }
 
-/// `search <query>...` — full-text search.
-pub(super) async fn search(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
-    let text = rest.join(" ");
-    if text.trim().is_empty() {
-        return Err(strings::search::needs_query().into());
-    }
-    list(
-        ctx,
-        ctx.core.query(Query::Search { text, limit: 100 }).await?,
-    );
-    Ok(())
-}
-
 /// `show <id>` — one task, every field a triage pass reads.
 ///
 /// The row labels are what a script greps for, so they are not translated;

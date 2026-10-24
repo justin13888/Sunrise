@@ -19339,3 +19339,7 @@ mod upcoming;
 
 /// The version DAG: parents, frontiers and heads (ADR-0065 PR 4).
 mod versions;
+
+/// Search over every indexed kind, and the indexes' upkeep (issue #345,
+/// ADR-0052).
+mod search;

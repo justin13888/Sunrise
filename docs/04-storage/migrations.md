@@ -246,7 +246,7 @@ is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
   table it does not name, or when the registry projects an entity to a table
   it does not call a projection. The migration files are not edited.
 - **Only entity state is a projection.** The rebuild clears the entity rows,
-  their side tables, the task rows of `search_idx` and the per-field merge
+  their side tables, both full-text indexes and the per-field merge
   state, and refolds every applied entity op. The control-op folds
   (revocations, read bounds, features, key-envelope recipients) are classified
   as source and kept, because refolding a control op re-absorbs keys and
@@ -264,11 +264,10 @@ is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
   offer it on a failed open, are still
   [#441](https://github.com/justin13888/Sunrise/issues/441).
 
-Four things inside the cleared tables are kept, because no op still in the log
+Three things inside the cleared tables are kept, because no op still in the log
 derives them: a placeholder `streams` row no op has stamped (the lazily seeded
-Inbox among them), each routine's `materialized_until_ms`, every `search_idx`
-row whose `kind` is not `task`, and the `entity_versions` rows of compacted
-ops, which compaction keeps
+Inbox among them), each routine's `materialized_until_ms`, and the
+`entity_versions` rows of compacted ops, which compaction keeps
 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D10) and whose
 frontiers and heads the rebuild recomputes.
 

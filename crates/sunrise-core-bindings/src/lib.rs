@@ -78,6 +78,7 @@ pub mod query;
 pub mod recovery;
 pub mod relay_url;
 pub mod reminders;
+pub mod search;
 pub mod secret_copies;
 pub mod settings;
 pub mod sync_status;
@@ -879,6 +880,20 @@ impl SunriseCore {
     /// vault cannot be written. The projection is then left as it was.
     pub fn rebuild_projection(&self) -> Result<dto::RebuildReportItem, BindingError> {
         Ok(self.inner.rebuild_projection()?.into())
+    }
+
+    /// Bring search's word index into line with the vault's content language
+    /// (`search.content_language`), a batch at a time with the vault free
+    /// between batches; search answers from the old index until the new one
+    /// is swapped in. Cheap when nothing needs doing, so call it in the
+    /// background after open and after the language changes.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] when the vault is closed or cannot be written;
+    /// the old index stays, and the next call resumes.
+    pub async fn reindex_search(&self) -> Result<search::SearchReindexItem, BindingError> {
+        Ok(self.inner.reindex_search().await?.into())
     }
 
     /// One attachment's plaintext, reassembled and verified.

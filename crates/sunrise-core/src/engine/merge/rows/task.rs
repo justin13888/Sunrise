@@ -1,12 +1,14 @@
 //! The `tasks` row, its `task_contexts` and `task_blockers` side tables, and
 //! its full-text rows: the Task projection's writers.
 
+use super::search::{index_task, unindex};
 use crate::engine::ids::{
     encode_unknowns, energy_str, extra_over_opaque, task_state_str, time_to_parts, ExtraTable,
 };
 use crate::engine::lww::LwwStamp;
 use crate::engine::task::encode_constraints;
 use rusqlite::{params, Transaction};
+use sunrise_domain::search::SearchKind;
 use sunrise_domain::Task;
 use sunrise_id::EntityRef;
 
@@ -188,46 +190,19 @@ pub(in crate::engine::merge) fn replace_task_contexts(
     insert_task_contexts(tx, t)
 }
 
+/// Write a live task's search rows: its title, its contexts' names, and its
+/// note as plain text ([`super::search::doc_of_task`]).
 pub(in crate::engine::merge) fn ftsr_upsert_task(
     tx: &Transaction<'_>,
     t: &Task,
 ) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    tx.execute(
-        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
-        params![id_blob.clone()],
-    )?;
-    if t.deleted {
-        return Ok(());
-    }
-    let body_text = t
-        .body
-        .as_ref()
-        .map(|b| String::from_utf8_lossy(&b.0).to_string())
-        .unwrap_or_default();
-    let contexts_text = t
-        .contexts
-        .iter()
-        .map(EntityRef::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
-    tx.execute(
-        "INSERT INTO search_idx (kind, id, stream_id, title, body, contexts)
-         VALUES ('task', ?, ?, ?, ?, ?)",
-        params![id_blob, stream_blob, t.title, body_text, contexts_text],
-    )?;
-    Ok(())
+    index_task(tx, t)
 }
 
+/// Remove a tombstoned task's search rows.
 pub(in crate::engine::merge) fn ftsr_delete_task(
     tx: &Transaction<'_>,
     id: &EntityRef,
 ) -> rusqlite::Result<()> {
-    let id_blob: Vec<u8> = id.bytes().to_vec();
-    tx.execute(
-        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
-        params![id_blob],
-    )?;
-    Ok(())
+    unindex(tx, SearchKind::Task, id.bytes())
 }

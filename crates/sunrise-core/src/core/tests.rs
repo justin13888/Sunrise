@@ -551,6 +551,74 @@ async fn open_rebuilds_the_projection_once_per_fold_version() {
     core.close().await.unwrap();
 }
 
+/// `Core::open` writes both search indexes from the rows when the vault has
+/// no record of them, as the first open after migration 0040 finds it, and
+/// `Core::reindex_search` re-tokenizes the word index when the content
+/// language changes (ADR-0052 §6).
+#[tokio::test]
+async fn open_builds_the_search_indexes_and_a_language_change_reindexes_them() {
+    use sunrise_domain::{PrefTarget, PrefValue, TaskDraft};
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    for title in ["running shoes", "東京出張"] {
+        core.submit(Command::CreateTask(TaskDraft {
+            title: title.into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    }
+    core.close().await.unwrap();
+    // What an open after migration 0040 finds: empty indexes, no record.
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM search_meta; DELETE FROM search_docs;
+                 DELETE FROM search_words; DELETE FROM search_tri;",
+            )
+            .unwrap();
+    }
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let found = |core: &Core, q: &str| {
+        let db = core.db.lock();
+        match core
+            .engine
+            .query(
+                &db,
+                Query::Search {
+                    text: q.into(),
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(t) => t.len(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(found(&core, "東京"), 1, "rebuilt from the rows at open");
+    assert_eq!(found(&core, "runs"), 1, "English stems");
+    let step = core.reindex_search().await.unwrap();
+    assert!(step.finished && step.copied == 2, "{step:?}");
+    core.submit(Command::SetPreference {
+        key: "search.content_language".into(),
+        value: PrefValue::Text("ko".into()),
+        target: PrefTarget::Vault,
+    })
+    .await
+    .unwrap();
+    let step = core.reindex_search().await.unwrap();
+    assert!(step.finished, "{step:?}");
+    assert_eq!(found(&core, "runs"), 0, "Korean does not stem");
+    assert_eq!(found(&core, "東京"), 1);
+    core.close().await.unwrap();
+}
+
 /// A rebuild at open that fails does not fail the open: the vault opens on
 /// the projection it had, and the record stays unwritten for the next open.
 #[tokio::test]

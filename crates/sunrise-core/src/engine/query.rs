@@ -1,9 +1,9 @@
 //! Read-only queries that belong to no single entity.
 //!
-//! `query_entity` and `query_search` fan out across every table by
-//! construction — one resolves an `EntityRef` of any kind, the other searches
-//! all of them — so in any entity module they would force it to import every
-//! other. `query_today`, `query_actionable` and `query_unblock_cascade` are
+//! `query_entity` fans out across every table by construction — it resolves
+//! an `EntityRef` of any kind — so in any entity module it would force it to
+//! import every other. Search, which fans out the same way, is
+//! `engine::search`. `query_today`, `query_actionable` and `query_unblock_cascade` are
 //! cross-entity folds for the same reason: what is actionable depends on
 //! streams, contexts, blockers and blocks at once.
 
@@ -400,67 +400,4 @@ impl Engine {
             can_sponsor: self.keychain.can_rotate_identity(),
         })))
     }
-
-    pub(super) fn query_search(
-        &self,
-        db: &Db,
-        text: &str,
-        limit: u32,
-    ) -> Result<QueryResult, EngineError> {
-        let match_expr = sanitize_fts_query(text);
-        // Empty/whitespace-only input yields no results (never touch FTS).
-        if match_expr.is_empty() {
-            return Ok(QueryResult::Tasks(Vec::new()));
-        }
-        let mut stmt = db.conn().prepare(
-            "SELECT id FROM search_idx
-             WHERE search_idx MATCH ? AND kind = 'task'
-             ORDER BY bm25(search_idx)
-             LIMIT ?",
-        )?;
-        let ids = stmt
-            .query_map(params![match_expr, i64::from(limit)], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut tasks = Vec::with_capacity(ids.len());
-        for raw in ids {
-            let mut bytes = [0u8; 16];
-            let take = raw.len().min(16);
-            bytes[..take].copy_from_slice(&raw[..take]);
-            if let Some(t) = read_task(db.conn(), &bytes)? {
-                if !t.deleted {
-                    tasks.push(t);
-                }
-            }
-        }
-        Ok(QueryResult::Tasks(tasks))
-    }
-}
-
-// ---- helpers ----
-
-/// Turn arbitrary user input into a safe FTS5 MATCH expression.
-///
-/// FTS5's query grammar treats characters like `"`, `*`, `:`, `-`, `(`, `)`,
-/// and bare-word operators (`AND`/`OR`/`NOT`/`NEAR`) as syntax; hostile or
-/// accidental input can otherwise produce a MATCH syntax error. We defuse it
-/// completely: split on whitespace, strip embedded double quotes and control
-/// characters (a NUL would truncate the C string SQLite receives) from each
-/// token, wrap each token in double quotes (making it a literal phrase — no
-/// operator or special character survives), and join with spaces (implicit
-/// AND). An empty result means "no query".
-fn sanitize_fts_query(text: &str) -> String {
-    text.split_whitespace()
-        .map(|tok| {
-            let cleaned: String = tok
-                .chars()
-                .filter(|&c| c != '"' && !c.is_control())
-                .collect();
-            cleaned
-        })
-        .filter(|tok| !tok.is_empty())
-        .map(|tok| format!("\"{tok}\""))
-        .collect::<Vec<_>>()
-        .join(" ")
 }

@@ -161,7 +161,7 @@ never be user-authored content. Broad shapes:
 | `stream_h`, `task_h`, `block_h`, `routine_h`, `note_h`, `attachment_h`, `person_h`, `account_h`, `device_h` | first 4 bytes of `BLAKE3(id)`, 8 lowercase hex | Truncated hash of a **high-entropy, machine-minted** id. See §6.1 for why the spec'd salt is omitted. |
 | `epoch`, `seq`, `attempt` | small integer | key-rotation epoch, op sequence, retry count |
 | `op_kind`, `kind`, `result`, `mode`, `tier`, `provider`, `action_kind`, `view`, `aead_alg`, `sig_alg` | enum string | structural, not content |
-| `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped`, `n_total` | counters | |
+| `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_docs`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped`, `n_total` | counters | |
 | `lat_ms`, `delay_ms` | durations | |
 | `status`, `method`, `endpoint` | HTTP | `endpoint` is the **matched route's own template**, spelled `:id` by the private `templated` in `crates/sunrise-server/src/api/observe.rs`. The request's concrete URI is never consulted, so there is no query string to drop and no segment to guess at. `sunrise_log::templatize_path` sanitises a *raw* path and nothing on this route calls it — see `docs/06-server/observability.md`. |
 | `wire_v`, `doc_v`, `crypto_v`, `storage_v`, `from_v`, `to_v`, `app_v` | versions | |

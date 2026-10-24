@@ -7,9 +7,12 @@
 //! their kind, exactly as the table does, so a script can tell a floating
 //! 09:00 from a pinned one (`docs/11-adr/0066-times-survive-travel.md` §4).
 
+use std::collections::BTreeMap;
+
 use jiff::tz::TimeZone;
 use serde_json::{json, Value};
-use sunrise_core::queries::{ContextRow, DeviceRow, StreamRow};
+use sunrise_core::queries::{ContextRow, DeviceRow, SearchResults, StreamRow};
+use sunrise_domain::search::Highlighted;
 use sunrise_domain::{Block, RoutineRow, SunriseTime, Task};
 use sunrise_id::EntityRef;
 
@@ -79,6 +82,44 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
 #[must_use]
 pub fn tasks(ts: &[Task], reader: &TimeZone) -> Value {
     Value::Array(ts.iter().map(|t| task(t, reader)).collect())
+}
+
+/// Highlighted text: `{text, ranges}`, each range `[start, end]` in Unicode
+/// scalars, half-open.
+fn highlighted(h: &Highlighted) -> Value {
+    json!({
+        "text": h.text,
+        "ranges": h.ranges.iter().map(|(s, e)| json!([s, e])).collect::<Vec<_>>(),
+    })
+}
+
+/// What `sunrise search` found: `{canonical, notices, groups}`. Each group is
+/// `{kind, total, hits}` in the core's fixed order, and each hit
+/// `{id, opens, title, snippet, task}`: `title` and `snippet` highlighted,
+/// `snippet` `null` when the body did not match, and `task` the whole task
+/// for a task hit, else `null`. Each notice is `{code, start, end, detail}`.
+#[must_use]
+pub fn search(r: &SearchResults, tasks: &BTreeMap<EntityRef, Task>, reader: &TimeZone) -> Value {
+    json!({
+        "canonical": r.canonical,
+        "notices": r.notices.iter().map(|n| json!({
+            "code": n.kind.code(),
+            "start": n.start,
+            "end": n.end,
+            "detail": n.detail,
+        })).collect::<Vec<_>>(),
+        "groups": r.groups.iter().map(|g| json!({
+            "kind": g.kind.as_str(),
+            "total": g.total,
+            "hits": g.hits.iter().map(|h| json!({
+                "id": h.entity.to_str(),
+                "opens": h.opens.to_str(),
+                "title": highlighted(&h.title),
+                "snippet": h.snippet.as_ref().map_or(Value::Null, highlighted),
+                "task": tasks.get(&h.entity).map_or(Value::Null, |t| task(t, reader)),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// A row of `sunrise streams`.

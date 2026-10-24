@@ -14,6 +14,7 @@ use crate::dto::{
     SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
     WeeklyReviewReport,
 };
+use crate::search::SearchReport;
 use crate::upcoming::UpcomingReport;
 
 /// A read query.
@@ -184,7 +185,8 @@ pub enum CoreQuery {
         /// Any instant inside the week (epoch ms).
         week_ms: u64,
     },
-    /// Full-text search over tasks.
+    /// Search, answered as the tasks it finds, best first. The text is in
+    /// the search grammar, so operators work; only tasks come back.
     Search {
         /// Raw query text.
         text: String,
@@ -208,6 +210,21 @@ pub enum CoreQuery {
         span_days: Option<u32>,
         /// Narrow tasks to these contexts; empty means all.
         contexts: Vec<EntityRef>,
+    },
+    /// Search every kind, grouped by kind in a fixed order, with highlight
+    /// ranges and the notices the query raised. The text is parsed in the
+    /// core; operators (`#stream`, `@context`, `is:late`, `due<fri`, …) are
+    /// ASCII on every locale.
+    SearchGrouped {
+        /// Raw query text.
+        text: String,
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`]; date
+        /// operators resolve against it in the device's zone.
+        now_ms: u64,
+        /// Also match the last word as a prefix: set while the user types.
+        prefix: bool,
+        /// Hits per group; absent is 50 tasks and 10 of every other kind.
+        per_group: Option<u32>,
     },
 }
 
@@ -298,6 +315,17 @@ impl CoreQuery {
                 now_ms,
                 span_days,
                 contexts,
+            },
+            Self::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
+            } => Query::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
             },
         }
     }
@@ -475,6 +503,11 @@ pub enum CoreQueryResult {
         /// The days and the no-date lane.
         upcoming: UpcomingReport,
     },
+    /// What `SearchGrouped` found.
+    Search {
+        /// The groups, notices and canonical query.
+        results: SearchReport,
+    },
 }
 
 impl CoreQueryResult {
@@ -578,6 +611,9 @@ impl CoreQueryResult {
             },
             QueryResult::Upcoming(u) => Self::Upcoming {
                 upcoming: UpcomingReport::from(u.as_ref()),
+            },
+            QueryResult::Search(r) => Self::Search {
+                results: SearchReport::from(r.as_ref()),
             },
         }
     }

@@ -1694,7 +1694,10 @@ USAGE:
                                  the undated tasks of each stream
     sunrise inbox                list inbox tasks
     sunrise next                 the focus planner's top picks
-    sunrise search <query>...    full-text search
+    sunrise search [--kind <k>] [--all] <query>...
+                                 search everything, grouped by kind; the
+                                 query takes #stream, @context, !1, state:,
+                                 kind:, is:, has: and due<fri-style dates
 
   the vault's shape
     sunrise streams              list streams with open counts
@@ -1948,6 +1951,40 @@ unreadable_duration = "could not read the duration \"{text}\""
 
 [cli.search]
 needs_query = "search needs a query"
+usage = "usage: search [--kind <kind>[,<kind>...]] [--all] <query>..."
+# {kind} is what the user typed after --kind.
+unknown_kind = "unknown kind `{kind}`; use task, note, event, block, stream, context, place, attachment, view or person"
+# stderr, when nothing matched. {text} is the query as sent.
+nothing = "nothing matches “{text}”"
+# Each group's heading. # is how many hits the group has in all.
+group_task = "{count, plural, one {Tasks (#)} other {Tasks (#)}}"
+group_note = "{count, plural, one {Notes (#)} other {Notes (#)}}"
+group_event = "{count, plural, one {Calendar events (#)} other {Calendar events (#)}}"
+group_block = "{count, plural, one {Blocks (#)} other {Blocks (#)}}"
+group_stream = "{count, plural, one {Streams (#)} other {Streams (#)}}"
+group_context = "{count, plural, one {Contexts (#)} other {Contexts (#)}}"
+group_place = "{count, plural, one {Places (#)} other {Places (#)}}"
+group_attachment = "{count, plural, one {Attachments (#)} other {Attachments (#)}}"
+group_view = "{count, plural, one {Saved views (#)} other {Saved views (#)}}"
+group_person = "{count, plural, one {People (#)} other {People (#)}}"
+# Under a group that holds more hits than it lists. {kind} is the `--kind`
+# keyword that lists them all, which is not translated.
+more = "{count, plural, one {… # more (--kind {kind} --all)} other {… # more (--kind {kind} --all)}}"
+# Notes on stderr about the query. {text} is the part of it the note is
+# about, as typed.
+notice_unknown_key = "`{text}` is no operator, so it was searched for as text"
+notice_bad_value = "`{text}` is not a value that operator takes, so it was searched for as text"
+notice_unclosed_quote = "a quote was not closed; the phrase runs to the end"
+notice_unclosed_group = "a parenthesis was not closed; it closes at the end"
+notice_stray_paren = "a closing parenthesis with no opening one was ignored"
+notice_empty_phrase = "an empty phrase was ignored"
+notice_literal_or = "OR needs something on both sides, so it was searched for as a word"
+notice_too_long = "the query is longer than search reads; the rest was ignored"
+notice_too_many_clauses = "the query has more parts than search reads; the rest was searched for as one phrase"
+notice_too_deep = "parentheses nest deeper than search reads; the rest was searched for as one phrase"
+notice_unknown_name = "nothing is named “{text}”, so that part matches nothing"
+notice_ambiguous_name = "more than one name starts with “{text}”, so that part matches nothing"
+notice_unsupported = "`{text}` is not available yet, so it matches nothing"
 
 [cli.streams]
 usage = "usage: stream <id|name>; `sunrise streams` lists them"

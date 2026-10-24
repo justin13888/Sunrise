@@ -508,4 +508,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// full rebuild of the projection. Schema-only: every table starts empty, and
 /// the first `Core::open` after it fills them by rebuilding the projection
 /// from the op log, because `projection_rebuild` holds no row.
-pub const STORAGE_V: u16 = 39;
+///
+/// `40` is migration `0040_search_indexes.sql` (issue #345, ADR-0052): the
+/// task-only `search_idx` is dropped for two full-text indexes over every
+/// searchable kind, `search_words` (words, stemmed only for English) and
+/// `search_tri` (trigrams, for CJK and substrings), keyed through
+/// `search_docs`, with `search_meta` recording how they were built. Not
+/// schema-only in effect: no `search_idx` row is carried, and the first
+/// `Core::open` after it rebuilds both indexes from the entity rows, because
+/// `search_meta` holds no row.
+pub const STORAGE_V: u16 = 40;

@@ -136,29 +136,51 @@ signing seed sealed under the vault root. `outbox` tracks ops still to push
 Keyed by `(stream_id, epoch)`, so a rotation adds a row rather than replacing
 one and old epochs stay openable.
 
-### FTS — `search_idx`
+### FTS — `search_docs`, `search_words`, `search_tri`
+
+Two FTS5 indexes over every searchable kind (migration 0040,
+[ADR-0052](../11-adr/0052-search-v2.md),
+[`../08-features/search.md`](../08-features/search.md)), keyed through one
+table:
 
 ```sql
-CREATE VIRTUAL TABLE search_idx USING fts5(
-    kind, id UNINDEXED, stream_id UNINDEXED,
-    title, body, contexts,
-    tokenize = 'porter unicode61 remove_diacritics 2'
+CREATE TABLE search_docs (
+    doc INTEGER PRIMARY KEY, kind TEXT NOT NULL, id BLOB NOT NULL,
+    UNIQUE (kind, id)
+);
+CREATE VIRTUAL TABLE search_words USING fts5 (
+    title, aux, body,
+    tokenize = 'porter unicode61 remove_diacritics 2'  -- `porter` only for English
+);
+CREATE VIRTUAL TABLE search_tri USING fts5 (title, body, tokenize = 'trigram');
+CREATE TABLE search_meta (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    index_v INTEGER NOT NULL, stemmed INTEGER NOT NULL, language TEXT,
+    reindex_stemmed INTEGER, reindex_cursor INTEGER NOT NULL DEFAULT 0
 );
 ```
 
-FTS5 expects chained tokenizers **outer-first**, so `porter` wraps `unicode61`
-and the arguments after `unicode61` configure that base tokenizer. (This
-document previously wrote the pair in the other order, which FTS5 does not
-accept.) The tokenizer applies to both the index and queries:
+An entity's `doc` is the rowid of its row in both indexes, so replacing one
+entity's text is a keyed delete and insert, not a scan of the index.
+`search_words` is the ranked word index; FTS5 expects chained tokenizers
+**outer-first**, so `porter` wraps `unicode61`, and the arguments after
+`unicode61` configure that base tokenizer. It stems only when the vault's
+content language (`search.content_language`) is English or unset, and a change
+of language re-tokenizes it into `search_words_next` in the background before
+swapping it in. `search_tri` holds text the core folded (NFKD, combining marks
+dropped, lowercased) — titles in full and bodies to their first 4 KiB — because
+the bundled SQLite's `trigram` tokenizer has no `remove_diacritics`.
+`search_meta` records how the two were built. The first three tables are
+projections; `search_meta` is source.
 
-| Search input | Index entry | Match? |
-|---|---|---|
-| `cafe` | `café` | yes (diacritic stripped) |
-| `running` | `run` | yes (porter stem) |
-| `runs` | `running` | yes (both stem to `run`) |
-| `日本語` | `日本語` | unicode61 segments per character; CJK match works as substring |
-
-CJK quality is acknowledged as basic; a per-locale CJK tokenizer (capability bit `CLI_FTS5_CJK`) is planned but not built.
+| Search input | Indexed text | Match? | Through |
+|---|---|---|---|
+| `cafe` | `café` | yes | both: diacritics folded |
+| `running` | `run` | yes, in English | the word index's Porter stem |
+| `pass` | `passport` | yes | the trigram index |
+| `東京出張` | `東京出張の準備` | yes | the trigram index; `unicode61` keeps the CJK run as one token |
+| `東京` | `東京出張の準備` | yes, in titles | a bounded `LIKE` scan: two characters are no trigram |
+| `pasport` | `passport` | no | no typo tolerance |
 
 ## Indexes
 

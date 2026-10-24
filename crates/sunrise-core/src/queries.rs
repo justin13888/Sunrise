@@ -1,6 +1,7 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
+use sunrise_domain::search::{Highlighted, NoticeKind, SearchKind};
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
@@ -262,12 +263,36 @@ pub enum Query {
     /// Metadata only — the bytes are fetched separately from the blob store
     /// and opened with the `blob_key` each row carries.
     TaskAttachments(EntityRef),
-    /// Full-text search over tasks.
+    /// Search, answered as the tasks it finds, best match first.
+    ///
+    /// The query language of [`Query::SearchGrouped`]: `text` is parsed by
+    /// [`sunrise_domain::search::parse`], so operators work here too, and
+    /// only the Tasks group is returned. No word is matched as a prefix.
     Search {
-        /// Raw user query text (sanitized before hitting FTS5).
+        /// Raw query text, in the search grammar.
         text: String,
-        /// Maximum number of results to return.
+        /// Maximum number of tasks to return.
         limit: u32,
+    },
+    /// Search every indexed kind, answered grouped by kind with highlights
+    /// (`docs/08-features/search.md` §Results, ADR-0052).
+    ///
+    /// `text` is parsed by [`sunrise_domain::search::parse`], which never
+    /// fails: what it cannot read as an operator is searched for as text, and
+    /// [`SearchResults::notices`] says why. Date operators resolve in the
+    /// device's zone at `now_ms`, with the week starting on `week_start`.
+    SearchGrouped {
+        /// Raw query text, in the search grammar.
+        text: String,
+        /// "Now" (ms since epoch), which date operators resolve against.
+        now_ms: u64,
+        /// Also match the last bare word as a prefix, for a field the user is
+        /// still typing in. Saved searches and the CLI leave it off.
+        prefix: bool,
+        /// Hits per group. `None` is the spec's: 50 tasks and 10 of every
+        /// other kind. A "Show all" re-runs the query with `kind:` set and a
+        /// larger limit.
+        per_group: Option<u32>,
     },
     /// How many ops this replica holds parked, by reason (ADR-0045 §4,
     /// "Visibility").
@@ -358,6 +383,65 @@ pub enum QueryResult {
     ParkedOps(Vec<ParkedOpCount>),
     /// `Preferences` returns every non-bootstrap key, in key-table order.
     Preferences(Vec<ResolvedPref>),
+    /// `SearchGrouped` returns its groups, in the fixed kind order. Boxed to
+    /// keep the enum small.
+    Search(Box<SearchResults>),
+}
+
+/// What [`Query::SearchGrouped`] found (`docs/08-features/search.md`
+/// §Results).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SearchResults {
+    /// One group per kind with a hit, in the fixed order of [`SearchKind`]:
+    /// tasks, notes, calendar events, blocks, streams, contexts, places,
+    /// attachments, saved views, people. Ranking orders hits within a group,
+    /// never the groups.
+    pub groups: Vec<SearchGroup>,
+    /// What the query read as text or matched nothing for, and why.
+    pub notices: Vec<SearchNotice>,
+    /// The query's canonical text, which parses back to the same query: what
+    /// a saved search stores.
+    pub canonical: String,
+}
+
+/// The hits of one kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchGroup {
+    /// The kind.
+    pub kind: SearchKind,
+    /// Up to the group's limit, best first.
+    pub hits: Vec<SearchHit>,
+    /// How many there were before the limit.
+    pub total: u32,
+}
+
+/// One hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchHit {
+    /// What matched.
+    pub entity: EntityRef,
+    /// What activating the hit opens: the entity itself, or for an
+    /// attachment, the entity it is attached to.
+    pub opens: EntityRef,
+    /// The title or name, with the matched ranges.
+    pub title: Highlighted,
+    /// At most 160 scalars of the body around its first match, or `None`
+    /// when the body did not match.
+    pub snippet: Option<Highlighted>,
+}
+
+/// Why part of a query was read as text, left out, or matched nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchNotice {
+    /// The reason; [`NoticeKind::code`] is its stable spelling.
+    pub kind: NoticeKind,
+    /// Where it starts in the query text, in Unicode scalars.
+    pub start: u32,
+    /// Where it ends, half-open.
+    pub end: u32,
+    /// What it is about, when that is a name or an operator: the stream
+    /// name that matched nothing, the operator this build cannot evaluate.
+    pub detail: Option<String>,
 }
 
 /// One row of [`Query::ParkedOpsSummary`].

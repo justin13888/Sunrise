@@ -549,6 +549,12 @@ async fn the_whole_read_surface_answers() {
             text: "something".into(),
             limit: 10,
         },
+        CoreQuery::SearchGrouped {
+            text: "#nowhere \"unclosed".into(),
+            now_ms: now,
+            prefix: true,
+            per_group: None,
+        },
         CoreQuery::ParkedOpsSummary,
     ];
     for q in queries {

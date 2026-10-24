@@ -206,7 +206,8 @@ fn every_table_in_the_schema_is_classified() {
         .conn()
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table'
-             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_idx_%'
+             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_words_%'
+             AND name NOT LIKE 'search_tri_%'
              ORDER BY name",
         )
         .unwrap();
@@ -440,15 +441,6 @@ fn an_unreadable_op_rolls_the_rebuild_back() {
     let err = e.rebuild_projection(&mut db).unwrap_err();
     assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
     assert_eq!(dump(db.conn()), before);
-    let shadows: i64 = db
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM temp.sqlite_master WHERE name = 'search_idx'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(shadows, 0, "the search index is the vault's own again");
 }
 
 /// What a vault holds the first time a build with the version DAG opens it:
