@@ -1023,16 +1023,18 @@ read and the re-registration's cross-domain write is what collapses them.
 
 ## Pairing
 
-A second device is paired over a **six-leg copy/paste handshake**: the QR/text
+A second device is paired over the relay or, as a fallback, a **six-leg copy/paste handshake**: the QR/text
 code, three Noise XX messages, a SAS comparison, and the sealed vault root.
 
-**The app does not use the relay's pairing rendezvous yet, so the user is the
-transport.** The rendezvous exists on the relay, and so does the `RelayPairing`
-seam that drives it from the `relay_url` in the QR
-([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). The app does
-not call either yet ([#464](https://github.com/justin13888/Sunrise/issues/464)).
-Five legs move bytes the user copies between the two Macs; the sixth moves
-none, because it is the SAS.
+**The relay is the default transport; the user is the fallback.** When this
+device has a relay and a signed-in account, `PairingModel` drives the
+`RelayPairing` seam over the relay's rendezvous
+([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous) in three
+phases: show or take the code, compare the SAS, done. With no relay, no
+account, or a relay that does not answer, it falls back to the copy/paste legs
+below and says why. Of those, five move bytes the user copies between the two
+Macs; the sixth moves none, because it is the SAS. There is still no camera
+scanner ([#464](https://github.com/justin13888/Sunrise/issues/464)).
 
 - **Show QR** is a real CoreImage render, with the same payload as copyable text
   beside it — which is what actually gets used, since there is **no camera
