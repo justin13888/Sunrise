@@ -8,7 +8,7 @@
 //! The fold does that part (`merge::rows`), on this replica as on every other.
 
 use super::ids::{decode_unknowns, ms_to_ts, require_kind};
-use super::query::{sort_by_landing, Unlanded};
+use super::query::sort_listing;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
@@ -121,8 +121,9 @@ impl Engine {
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
-    /// Tasks carrying one Context, unscheduled first and then by when each
-    /// lands in the reader's zone ([`sort_by_landing`]).
+    /// Tasks carrying one Context in manual order: the placed ones by their
+    /// key, then the rest unscheduled first and by when each lands in the
+    /// reader's zone ([`sort_listing`]).
     ///
     /// Deleted tasks are excluded but *done* ones are not: a Context listing
     /// is "what is tagged this", and hiding completed work would make the
@@ -150,7 +151,7 @@ impl Engine {
                 tasks.push(t);
             }
         }
-        sort_by_landing(&mut tasks, &self.device_zone(), Unlanded::First);
+        sort_listing(&mut tasks, &self.device_zone());
         Ok(QueryResult::StreamTasks(tasks))
     }
 

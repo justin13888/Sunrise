@@ -193,6 +193,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("routine_id", B(&ROUTINE)),
             ("routine_occurrence", I(7)),
             ("reminder_lead_s", I(300)),
+            // 0042's manual-order key.
+            ("sort_order", T(b"BN")),
             ("archived", I(1)),
             ("deleted", I(0)),
             ("body", B(ALPHA_TASK_BODY)),

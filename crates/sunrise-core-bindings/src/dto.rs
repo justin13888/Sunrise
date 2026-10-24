@@ -419,6 +419,11 @@ pub struct TaskItem {
     pub archived: bool,
     /// Tombstoned.
     pub deleted: bool,
+    /// The task's manual-order key, or none when nobody placed it. Opaque:
+    /// compare two with string order, which is their order, and move a task
+    /// with `CoreCommand::MoveTasks`, never by writing one (#340).
+    #[uniffi(default = None)]
+    pub sort_order: Option<String>,
 }
 
 impl From<&Task> for TaskItem {
@@ -446,6 +451,7 @@ impl From<&Task> for TaskItem {
             routine_id,
             routine_occurrence,
             reminder_lead_s,
+            sort_order,
             archived,
             deleted,
             // Deliberately not exported: see the module docs.
@@ -479,6 +485,7 @@ impl From<&Task> for TaskItem {
             reminder_lead_s: *reminder_lead_s,
             archived: *archived,
             deleted: *deleted,
+            sort_order: sort_order.clone(),
         }
     }
 }
@@ -662,6 +669,8 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
             assignee: patch_field(e.set_assignee, e.clear_assignee),
             reminder_lead_s: patch_field(e.set_reminder_lead_s, e.clear_reminder_lead_s),
             archived: e.archived,
+            // A client never writes a key: `CoreCommand::MoveTasks` does.
+            sort_order: None,
         }
     }
 }

@@ -295,3 +295,100 @@ async fn a_merge_and_a_bulk_completion_reach_the_peer_whole() {
     }
     relay.abort();
 }
+
+/// The Inbox's ids, in the order `device` lists them.
+async fn inbox_order(device: &Device) -> Vec<String> {
+    device
+        .json(&["inbox"])
+        .await
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// A hand-arranged order made on one device is the order on the other
+/// (#340): `move` writes the task's `sort_order`, and it syncs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reorder_on_one_device_appears_on_the_other() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    let second = first_id(&a.ok(&["capture", "Book the ferry"]).await);
+    let third = first_id(&a.ok(&["capture", "Pack"]).await);
+    // Moving every row of an unarranged list to the top changes nothing.
+    a.ok(&["move", &first, &second, &third, "first"]).await;
+    assert!(a.task(&first).await["sort_order"].is_null());
+    a.ok(&["move", &third, "before", &first]).await;
+    let moved = a.json(&["move", &second, "after", &third]).await;
+    let on_a = inbox_order(&a).await;
+    assert_eq!(on_a, vec![third.clone(), second.clone(), first.clone()]);
+    assert_eq!(
+        moved.as_array().map(|ts| ts
+            .iter()
+            .filter_map(|t| t["id"].as_str())
+            .collect::<Vec<_>>()),
+        Some(on_a.iter().map(String::as_str).collect()),
+        "move --json prints the list in its new order"
+    );
+    assert!(moved[0]["sort_order"].as_str().is_some(), "{moved}");
+    settle(&a, &b).await;
+    assert_eq!(inbox_order(&b).await, on_a, "B shows A's arrangement");
+
+    // An undo puts the keys back, and that syncs too.
+    a.ok(&["undo"]).await;
+    settle(&a, &b).await;
+    let undone = vec![third.clone(), first.clone(), second.clone()];
+    assert_eq!(inbox_order(&a).await, undone);
+    assert_eq!(inbox_order(&b).await, undone);
+    relay.abort();
+}
+
+/// Two devices that rearrange one list while apart converge on one order:
+/// each task's key is one register, so the moves of different tasks both
+/// survive, and equal keys break by id the same way on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_reorders_converge() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    a.ok(&["capture", "Book the ferry"]).await;
+    let third = first_id(&a.ok(&["capture", "Pack"]).await);
+    // Place all three: a drop below unplaced rows places them too, in the
+    // order the list shows them, so read that order back.
+    a.ok(&["move", &third, "first"]).await;
+    a.ok(&["move", &first, "last"]).await;
+    let base = inbox_order(&a).await;
+    for t in a.json(&["inbox"]).await.as_array().unwrap() {
+        assert!(t["sort_order"].is_string(), "{t}");
+    }
+    settle(&a, &b).await;
+    assert_eq!(inbox_order(&b).await, base);
+
+    // Apart: A sends the top task to the bottom, B brings the bottom one to
+    // the top. Two tasks, two registers: both moves survive.
+    a.ok(&["move", &base[0], "last"]).await;
+    b.ok(&["move", &base[2], "first"]).await;
+    settle(&a, &b).await;
+    let on_a = inbox_order(&a).await;
+    assert_eq!(on_a, inbox_order(&b).await, "one order on both devices");
+    assert_eq!(
+        on_a,
+        vec![base[2].clone(), base[1].clone(), base[0].clone()]
+    );
+
+    // Apart again, each moving a task into the same gap: one key on both,
+    // and the id decides between the two the same way everywhere.
+    let fourth = first_id(&a.ok(&["capture", "Water the plants"]).await);
+    a.ok(&["move", &fourth, "last"]).await;
+    settle(&a, &b).await;
+    a.ok(&["move", &base[0], "after", &base[2]]).await;
+    b.ok(&["move", &fourth, "after", &base[2]]).await;
+    settle(&a, &b).await;
+    let on_a = inbox_order(&a).await;
+    assert_eq!(on_a, inbox_order(&b).await, "one order on both devices");
+    assert_eq!(on_a[0], base[2]);
+    assert_eq!(on_a[3], base[1], "both landed between the same two tasks");
+    relay.abort();
+}

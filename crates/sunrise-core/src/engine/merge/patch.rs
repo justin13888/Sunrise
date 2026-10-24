@@ -400,6 +400,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             routine_id: None,
             routine_occurrence: None,
             reminder_lead_s: None,
+            sort_order: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),

@@ -45,6 +45,7 @@ fn task(n: u8, title: &str) -> Task {
         routine_id: None,
         routine_occurrence: None,
         reminder_lead_s: None,
+        sort_order: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

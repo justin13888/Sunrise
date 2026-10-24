@@ -19378,3 +19378,6 @@ mod conflicts;
 
 /// Groups: a commit folded whole or not at all (ADR-0065 §6, PR 6).
 mod groups;
+
+/// Manual task order: `MoveTasks` and the listings that honour it (#340).
+mod task_order;

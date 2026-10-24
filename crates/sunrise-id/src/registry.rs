@@ -148,6 +148,7 @@ macro_rules! for_each_entity {
                         routine_id: Option<EntityRef> => Register(Quiet);
                         routine_occurrence: Option<Timestamp> => Register(Quiet);
                         reminder_lead_s: Option<u32> => Register(Quiet);
+                        sort_order: Option<String> => Register(Quiet);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
                         ..unknown

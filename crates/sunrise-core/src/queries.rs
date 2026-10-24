@@ -22,9 +22,12 @@ pub enum Query {
         /// Filter to these contexts (empty means all).
         contexts: Vec<EntityRef>,
     },
-    /// Inbox.
+    /// Inbox, in manual order, as [`Query::StreamTasks`] is.
     Inbox,
-    /// All tasks in a single Stream.
+    /// All tasks in a single Stream, in manual order: every task placed by
+    /// `Command::MoveTasks` first, by `sort_order` and then by id, and then
+    /// the rest, unplanned first and by when each lands
+    /// ([`sunrise_domain::task_order`], #340).
     StreamTasks(EntityRef),
     /// All live tasks carrying one Context.
     ///
@@ -34,6 +37,10 @@ pub enum Query {
     /// `@errands`" is a first-class listing, not a filter over one Stream —
     /// and without it a Context is only ever reachable as a capture token,
     /// never as a place to stand.
+    ///
+    /// In manual order, as [`Query::StreamTasks`] is: the tasks' keys are
+    /// one order per task, so a Context listing interleaves its Streams'
+    /// arrangements by key.
     ContextTasks(EntityRef),
     /// One entity by id.
     EntityById(EntityRef),

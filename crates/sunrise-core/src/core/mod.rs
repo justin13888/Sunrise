@@ -463,6 +463,11 @@ impl Core {
                 .skip(1)
                 .map(|i| DomainEvent::Updated(i.id))
                 .collect(),
+            Command::MoveTasks { ids, .. } => ids
+                .iter()
+                .skip(1)
+                .map(|id| DomainEvent::Updated(*id))
+                .collect(),
             _ => Vec::new(),
         };
         let event = match cmd {

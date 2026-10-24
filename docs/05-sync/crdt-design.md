@@ -80,7 +80,7 @@ where). Sharing, per-stream sync and compaction follow the key domain.
 | `Task.blocks` | Derived from `Block.tasks` on read; not merged |
 | `deferred_count` | PN-counter |
 | Streak count, `streak_started_at`, `last_completed_at` | Derived at read time from `streak_keys` and `skipped_keys`; not stored |
-| Ordering of a stream's children | `sort_order` fractional key, one register per entity |
+| Ordering of a stream's children, and of a stream's tasks | `sort_order` fractional key, one register per entity (`Stream.sort_order`, `Task.sort_order`); equal keys break by id |
 | `updated_at` | Derived: the greatest `hlc.physical_ms` among applied ops that touched the entity |
 
 ### OR-set merge rules
@@ -209,7 +209,7 @@ first, then the class rule, then the stamp (clarification D7):
 
 | Class | Fields | Rank among concurrent writes |
 |---|---|---|
-| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), presentation fields, and every field this build does not know | `(user, stamp)` |
+| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), `Stream.sort_order` and `Task.sort_order` (#340), presentation fields, and every field this build does not know | `(user, stamp)` |
 | tracked | `title`, `body`, `stream_id`, every time field, `scheduling_constraints`, `rrule`, `timezone`, template fields | `(user, stamp)` |
 | state | `Task.state` | `(user, state is done or cancelled, stamp)` |
 | tombstone | `deleted` | `(user, value is true, stamp)` |

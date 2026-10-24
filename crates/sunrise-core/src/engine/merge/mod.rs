@@ -121,8 +121,10 @@ pub(super) use versions::{heads, precedes};
 /// folds registers by their conflict classes (§3) and keeps the losers (§4),
 /// which a vault folded at `1` holds none of. `3` writes every
 /// `SunriseTime`'s civil column and the routine and stream time sidecars
-/// (migration 0041, #506), which no row folded before it holds.
-pub(crate) const FOLD_V: u32 = 3;
+/// (migration 0041, #506), which no row folded before it holds. `4` writes
+/// `Task.sort_order` to its own column (migration 0042, #340), where a build
+/// before it kept a key a newer device wrote in `extra`, as an unknown field.
+pub(crate) const FOLD_V: u32 = 4;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

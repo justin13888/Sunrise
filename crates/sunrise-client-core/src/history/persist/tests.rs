@@ -118,6 +118,38 @@ fn every_patch_family_and_both_stacks_round_trip() {
     same(&stacks, &round_trip(&stacks));
 }
 
+/// A move and its undo, the keys it put back included, survive the trip:
+/// a key put back to "unplaced" stays a clear (#340).
+#[test]
+fn a_move_and_the_keys_its_undo_puts_back_round_trip() {
+    let mut stacks = UndoStacks::default();
+    stacks.push(entry(
+        "move",
+        vec![Command::MoveTasks {
+            ids: vec![task(1), task(2)],
+            after: Some(task(3)),
+            before: None,
+        }],
+        vec![Command::BulkTasks(vec![
+            BulkTaskItem {
+                id: task(1),
+                action: BulkTaskAction::Update(Box::new(TaskPatch {
+                    sort_order: Some(Some("G".into())),
+                    ..TaskPatch::default()
+                })),
+            },
+            BulkTaskItem {
+                id: task(2),
+                action: BulkTaskAction::Update(Box::new(TaskPatch {
+                    sort_order: Some(None),
+                    ..TaskPatch::default()
+                })),
+            },
+        ])],
+    ));
+    same(&stacks, &round_trip(&stacks));
+}
+
 #[test]
 fn a_step_with_a_command_out_of_scope_is_dropped_and_counted() {
     let mut stacks = UndoStacks::default();

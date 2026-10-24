@@ -1640,3 +1640,31 @@ fn a_v40_vaults_routine_and_stream_times_gain_their_kinds_and_empty_civil_column
         assert_eq!(set, 0, "`{table}.{col}` starts NULL");
     }
 }
+
+/// Migration 0042 (#340) over a real v41 vault: every task gains a
+/// `sort_order` that starts NULL, never placed, with no key invented for it,
+/// and the manual-order index exists.
+#[test]
+fn a_v41_vaults_tasks_gain_an_unplaced_sort_order_and_its_index() {
+    let (_dir, db) = open_migrated(&fixture_name(41));
+    let placed: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tasks WHERE sort_order IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(placed, 0, "no task is placed by the migration");
+    assert!(row_count(&db, "tasks") > 0, "the fixture's tasks survive");
+    let index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'tasks_by_stream_sort_order'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}

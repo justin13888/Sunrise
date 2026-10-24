@@ -1,5 +1,5 @@
-//! Fractional indexing for `Stream.sort_order`, per `docs/02-domain/streams.md`
-//! §Sort order.
+//! Fractional indexing for `Stream.sort_order` and `Task.sort_order`, per
+//! `docs/02-domain/streams.md` §Sort order and `docs/02-domain/tasks.md`.
 //!
 //! # What a key is
 //!
@@ -95,11 +95,17 @@ pub fn is_valid(key: &str) -> bool {
 /// Reported as [`ValidationError::Field`] rather than a new variant: the wire
 /// error code for a field-shape violation already exists and this is one.
 pub fn validate(key: &str) -> Result<(), ValidationError> {
+    validate_as(key, FIELD)
+}
+
+/// [`validate`], reporting the failure against `field` (the dotted path of
+/// the entity's own `sort_order`, such as `task.sort_order`).
+pub fn validate_as(key: &str, field: &'static str) -> Result<(), ValidationError> {
     if is_valid(key) {
         Ok(())
     } else {
         Err(ValidationError::Field {
-            field: FIELD,
+            field,
             constraint: "sort_order_key",
         })
     }
@@ -258,6 +264,52 @@ fn finish(out: Vec<u8>) -> String {
     key
 }
 
+/// `n` keys, in increasing order, that all sort strictly between `after` and
+/// `before`: the keys a run of `n` rows dropped into one gap gets, so a
+/// multi-row move keeps its rows in the order they are given.
+///
+/// The keys are placed by bisection, the middle one first and each half
+/// split again, rather than one after another: chaining [`between`] would
+/// halve the room left with every key and lengthen each by up to a digit,
+/// while bisection lengthens them by about `log₂₆ n` digits in all. `n = 1`
+/// is exactly [`between`]. The bounds read as they do there.
+///
+/// # Errors
+///
+/// As [`between`]: malformed bounds, or bounds that are not strictly
+/// increasing.
+pub fn spread(
+    after: Option<&str>,
+    before: Option<&str>,
+    n: usize,
+) -> Result<Vec<String>, SortOrderError> {
+    let mut out = Vec::with_capacity(n);
+    if n == 0 {
+        // Still check the bounds, so a caller learns of bad ones whatever n is.
+        between(after, before)?;
+        return Ok(out);
+    }
+    bisect(after, before, n, &mut out)?;
+    Ok(out)
+}
+
+/// Push `n` keys between `after` and `before` onto `out`, in order.
+fn bisect(
+    after: Option<&str>,
+    before: Option<&str>,
+    n: usize,
+    out: &mut Vec<String>,
+) -> Result<(), SortOrderError> {
+    if n == 0 {
+        return Ok(());
+    }
+    let mid = between(after, before)?;
+    let left = n / 2;
+    bisect(after, Some(&mid), left, out)?;
+    out.push(mid.clone());
+    bisect(Some(&mid), before, n - left - 1, out)
+}
+
 /// The key for a new entry appended to a list whose last key is `last`.
 ///
 /// The default `docs/02-domain/streams.md` specifies for a new Stream:
@@ -290,6 +342,56 @@ mod tests {
             assert!(k.as_str() < b, "{k:?} must sort before {b:?}");
         }
         k
+    }
+
+    #[test]
+    fn a_spread_is_increasing_inside_its_bounds_and_stays_short() {
+        for (lo, hi) in [
+            (None, None),
+            (Some("B"), Some("C")),
+            (None, Some("AB")),
+            (Some("Z"), None),
+        ] {
+            for n in [0usize, 1, 2, 3, 7, 26, 100] {
+                let keys = spread(lo, hi, n).expect("bounds admit keys");
+                assert_eq!(keys.len(), n);
+                assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+                for k in &keys {
+                    assert!(is_valid(k), "{k:?}");
+                    assert!(lo.is_none_or(|lo| k.as_str() > lo), "{k:?} > {lo:?}");
+                    assert!(hi.is_none_or(|hi| k.as_str() < hi), "{k:?} < {hi:?}");
+                }
+                // Bisection, not a chain: a hundred keys in one gap cost a
+                // couple of digits over the bounds, not a hundred.
+                let longest = keys.iter().map(String::len).max().unwrap_or(0);
+                let bound = lo.map_or(0, str::len).max(hi.map_or(0, str::len));
+                assert!(longest <= bound + 4, "{n} keys grew to {longest}");
+            }
+        }
+        assert_eq!(
+            spread(Some("B"), Some("C"), 1).unwrap(),
+            vec![between_ok(Some("B"), Some("C"))]
+        );
+        assert_eq!(
+            spread(Some("C"), Some("B"), 0),
+            Err(SortOrderError::NotIncreasing)
+        );
+        assert_eq!(
+            spread(Some("N"), Some("N"), 2),
+            Err(SortOrderError::NotIncreasing)
+        );
+    }
+
+    #[test]
+    fn a_task_key_is_reported_against_the_task_field() {
+        assert_eq!(
+            validate_as("NA", "task.sort_order"),
+            Err(ValidationError::Field {
+                field: "task.sort_order",
+                constraint: "sort_order_key",
+            })
+        );
+        assert_eq!(validate_as("N", "task.sort_order"), Ok(()));
     }
 
     #[test]

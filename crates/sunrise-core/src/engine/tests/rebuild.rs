@@ -142,6 +142,16 @@ fn legacy_history(e: &Engine, db: &mut Db) {
         },
     )
     .unwrap();
+    // A manual-order key (#340), so `tasks.sort_order` holds one.
+    e.apply(
+        db,
+        Command::MoveTasks {
+            ids: vec![b],
+            after: None,
+            before: None,
+        },
+    )
+    .unwrap();
     e.apply(db, Command::DeleteTask(c)).unwrap();
     e.apply(db, Command::DeleteContext(home)).unwrap();
     e.apply(

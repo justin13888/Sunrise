@@ -162,6 +162,7 @@ fn wanted(cmds: &[Command]) -> Wanted {
             | Command::UpdateTask { id, .. }
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
             Command::BulkTasks(items) => wanted.tasks.extend(items.iter().map(|i| i.id)),
+            Command::MoveTasks { ids, .. } => wanted.tasks.extend(ids.iter().copied()),
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,
             Command::UpdateRoutine { .. } => wanted.routines = true,

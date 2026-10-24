@@ -271,11 +271,12 @@ mod tests {
                 routine_id: None,
                 routine_occurrence: None,
                 reminder_lead_s: None,
+                sort_order: None,
                 archived: false,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &["scheduling_constraints", "reminder_lead_s"],
+            &["scheduling_constraints", "reminder_lead_s", "sort_order"],
         );
         assert_wire_names(
             "Stream",
