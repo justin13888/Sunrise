@@ -228,27 +228,40 @@ impl Engine {
         &self,
         task: &Task,
     ) -> Result<Vec<ScheduleConstraint>, EngineError> {
-        let Some(at) = task.scheduled_at.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let tz = self.device_zone();
-        // Constraints are civil windows, so a zone-less `scheduled_at` must be
-        // resolved in the DEVICE zone before they can be evaluated — which is
-        // exactly what `resolve_in` does, and the reason it takes a zone. A
-        // time kind this build cannot place on the timeline is checked against
-        // nothing: its stand-in instant would invent a violation.
-        let Some(at) = at.resolve_in(&tz) else {
-            return Ok(Vec::new());
-        };
-        if task.scheduling_constraints.is_empty() {
-            return Ok(Vec::new());
-        }
-        let zdt = at.to_zoned(tz);
-        let (hard, soft) = violations_by_severity(&task.scheduling_constraints, &zdt);
+        let (hard, soft) = constraint_violations(task, &self.device_zone());
         if !hard.is_empty() {
             return Err(ValidationError::HardScheduleConstraint.into());
         }
         Ok(soft)
+    }
+
+    /// Every open, planned task whose plan violates a `hard` scheduling
+    /// constraint for a reader in `reader`, by id.
+    ///
+    /// What a zone change re-evaluates (#333, `docs/10-cross-cutting/time.md`
+    /// §7): a floating plan moves with the reader, so a window it kept in one
+    /// zone it can break in another, and a window a DST gap empties breaks
+    /// every plan inside it. A violation is reported, never repaired: nothing
+    /// stored is rewritten.
+    ///
+    /// # Errors
+    /// Storage.
+    pub(crate) fn hard_constraint_violations(
+        &self,
+        db: &Db,
+        reader: &jiff::tz::TimeZone,
+    ) -> Result<Vec<EntityRef>, EngineError> {
+        let mut out: Vec<EntityRef> = super::review::read_live_tasks(db.conn())?
+            .iter()
+            .filter(|t| {
+                !t.archived
+                    && matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress)
+            })
+            .filter(|t| !constraint_violations(t, reader).0.is_empty())
+            .map(|t| t.id)
+            .collect();
+        out.sort_unstable();
+        Ok(out)
     }
 
     pub(super) fn complete_task(
@@ -281,6 +294,12 @@ impl Engine {
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.scheduled_at = Some(to);
+        // TODO(ADR-0065 PR7, #447, #334): a read-increment-write inside a
+        // full-state op, so two concurrent defers fold to one count. The fold
+        // already merges `deferred_count` as a PN-counter (`Crdt::Counter`,
+        // `merge::state::add_delta`); what is missing is the emission: once a
+        // vault requires `core.field_ops`, defer writes a `Patch` carrying
+        // `{"deferred_count": {"inc": 1}}` and both counts survive.
         task.deferred_count = task.deferred_count.saturating_add(1);
         task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
@@ -328,6 +347,45 @@ impl Engine {
         };
         self.update_task(db, id, patch)
     }
+}
+
+/// The zone a task's scheduling constraints are evaluated in
+/// (`docs/10-cross-cutting/time.md` §5): a routine occurrence planned `zoned`
+/// (its routine is pinned) in that zone, everything else in the reader's.
+/// A zone this build does not know is the reader's.
+fn constraint_zone(task: &Task, reader: &jiff::tz::TimeZone) -> jiff::tz::TimeZone {
+    match (&task.scheduled_at, task.routine_id) {
+        (Some(SunriseTime::Zoned { tz, .. }), Some(_)) => {
+            jiff::tz::TimeZone::get(tz).unwrap_or_else(|_| reader.clone())
+        }
+        _ => reader.clone(),
+    }
+}
+
+/// `task`'s violated constraints at its plan, `(hard, soft)`, for a reader in
+/// `reader`.
+///
+/// Constraints are civil windows, so the plan is resolved first (a zone-less
+/// one in the reader's zone) and converted to civil time in the evaluation
+/// zone ([`constraint_zone`]); no window bound is resolved (time.md §3). A
+/// plan this build cannot place on the timeline is checked against nothing:
+/// its stand-in instant would invent a violation.
+fn constraint_violations(
+    task: &Task,
+    reader: &jiff::tz::TimeZone,
+) -> (Vec<ScheduleConstraint>, Vec<ScheduleConstraint>) {
+    if task.scheduling_constraints.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let Some(at) = task
+        .scheduled_at
+        .as_ref()
+        .and_then(|s| s.resolve_in(reader))
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let zdt = at.to_zoned(constraint_zone(task, reader));
+    violations_by_severity(&task.scheduling_constraints, &zdt)
 }
 
 // ---- table operations ----
@@ -481,7 +539,8 @@ pub(super) fn read_task(
                     routine_id, routine_occurrence, created_at_ms, updated_at_ms,
                     scheduled_at_kind, scheduled_at_tz,
                     due_at_kind, due_at_tz,
-                    completed_at_kind, completed_at_tz, extra, reminder_lead_s
+                    completed_at_kind, completed_at_tz, extra, reminder_lead_s,
+                    scheduled_at_civil, due_at_civil, completed_at_civil
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -512,6 +571,9 @@ pub(super) fn read_task(
                     r.get::<_, Option<String>>(23)?,
                     r.get::<_, Option<Vec<u8>>>(24)?,
                     r.get::<_, Option<u32>>(25)?,
+                    r.get::<_, Option<String>>(26)?,
+                    r.get::<_, Option<String>>(27)?,
+                    r.get::<_, Option<String>>(28)?,
                 ))
             },
         )
@@ -550,10 +612,10 @@ pub(super) fn read_task(
             let secs = m.checked_mul(60)?;
             u64::try_from(secs).ok()
         }),
-        scheduled_at: time_from_parts(t.6, t.18.as_deref(), t.19.as_deref()),
-        due_at: time_from_parts(t.7, t.20.as_deref(), t.21.as_deref()),
+        scheduled_at: time_from_parts(t.6, t.18.as_deref(), t.19.as_deref(), t.26.as_deref()),
+        due_at: time_from_parts(t.7, t.20.as_deref(), t.21.as_deref(), t.27.as_deref()),
         scheduling_constraints: decode_constraints(t.13)?,
-        completed_at: time_from_parts(t.8, t.22.as_deref(), t.23.as_deref()),
+        completed_at: time_from_parts(t.8, t.22.as_deref(), t.23.as_deref(), t.28.as_deref()),
         deferred_count: t.9,
         // Derived from `block_tasks`, never stored on the task row: the Block
         // op is the only writer of the binding, so the symmetry

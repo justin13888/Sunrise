@@ -75,12 +75,22 @@ fn interval() -> impl Strategy<Value = u32> {
     ]
 }
 
-/// `UNTIL` is written with jiff's `Display` and read with its `FromStr`.
-/// Sub-second instants are generated deliberately: they print a fractional
-/// part that a whole-second literal never exercises.
-fn until() -> impl Strategy<Value = Timestamp> {
+/// `UNTIL` is written with jiff's `Display` and read with its `FromStr`, in
+/// every kind it can hold. Sub-second values are generated deliberately: they
+/// print a fractional part that a whole-second literal never exercises.
+fn until() -> impl Strategy<Value = sunrise_domain::SunriseTime> {
+    use sunrise_domain::SunriseTime;
     // 1970-01-01 .. 2100-01-01, in milliseconds.
-    (0i64..4_102_444_800_000).prop_map(|ms| Timestamp::from_millisecond(ms).unwrap())
+    (0i64..4_102_444_800_000, 0u8..4).prop_map(|(ms, kind)| {
+        let at = Timestamp::from_millisecond(ms).unwrap();
+        let civil = at.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        match kind {
+            0 => SunriseTime::instant(at),
+            1 => SunriseTime::floating(civil),
+            2 => SunriseTime::all_day(civil.date()),
+            _ => SunriseTime::zoned(civil, "Asia/Kathmandu"),
+        }
+    })
 }
 
 fn rrule_strategy() -> impl Strategy<Value = RRule> {

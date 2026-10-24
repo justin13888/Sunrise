@@ -121,6 +121,85 @@ impl<'de> Deserialize<'de> for SunriseTime {
     }
 }
 
+/// The wire form of a field that was a bare instant before `DOC_SCHEMA_V` 15
+/// and is a [`SunriseTime`] since: `Routine.starts_at`, `ends_at`,
+/// `paused_until` and `last_completed_at`, `RRule.until` and
+/// `Stream.paused_until` (#506). Use with `#[serde(with = "…compat")]`, or
+/// `compat::option` for an `Option`.
+///
+/// An [`SunriseTime::Instant`] is written as the bare timestamp the field
+/// always held, so a value that means what it meant before reads, on a build
+/// that predates the change, exactly as it always did. Every other kind is
+/// written in the tagged form of every `SunriseTime`, which such a build
+/// cannot read: an op carrying one uses the feature `routine.civil_times`
+/// and is written only into a vault that requires it
+/// (`crates/sunrise-core/src/feature.rs`). Reading accepts both forms, as
+/// every `SunriseTime` does.
+///
+/// In the canonical document schema the field's type is `CompatTime`, an
+/// alias of `SunriseTime` (`crate::registry`), so the encoding is part of the
+/// fingerprint.
+pub mod compat {
+    use super::SunriseTime;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Write `t`, an instant as a bare timestamp.
+    ///
+    /// # Errors
+    /// The serializer's.
+    pub fn serialize<S: Serializer>(t: &SunriseTime, s: S) -> Result<S::Ok, S::Error> {
+        match t {
+            SunriseTime::Instant { at } => at.serialize(s),
+            other => other.serialize(s),
+        }
+    }
+
+    /// Read either form.
+    ///
+    /// # Errors
+    /// The deserializer's, or a value that is no `SunriseTime`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SunriseTime, D::Error> {
+        SunriseTime::deserialize(d)
+    }
+
+    /// The same, for an optional field.
+    pub mod option {
+        use super::SunriseTime;
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        struct Compat<'a>(&'a SunriseTime);
+
+        impl Serialize for Compat<'_> {
+            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                super::serialize(self.0, s)
+            }
+        }
+
+        /// Write `t`, an instant as a bare timestamp.
+        ///
+        /// # Errors
+        /// The serializer's.
+        // serde hands a `with` module a reference to the field.
+        #[allow(clippy::ref_option)]
+        pub fn serialize<S: Serializer>(t: &Option<SunriseTime>, s: S) -> Result<S::Ok, S::Error> {
+            match t {
+                Some(t) => s.serialize_some(&Compat(t)),
+                None => s.serialize_none(),
+            }
+        }
+
+        /// Read either form, or null.
+        ///
+        /// # Errors
+        /// The deserializer's, or a value that is no `SunriseTime`.
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            d: D,
+        ) -> Result<Option<SunriseTime>, D::Error> {
+            Option::<SunriseTime>::deserialize(d)
+        }
+    }
+}
+
 /// The `_tz` sidecar of an [`SunriseTime::Unknown`] value: its other fields'
 /// canonical CBOR, hex-encoded after [`RAW_SIDECAR_PREFIX`].
 pub(super) fn encode_raw_sidecar(raw: &Unknowns) -> String {

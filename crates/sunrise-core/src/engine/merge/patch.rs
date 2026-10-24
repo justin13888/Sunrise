@@ -460,7 +460,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
                 unknown: Unknowns::new(),
             },
             timezone: "UTC".into(),
-            starts_at: at,
+            starts_at: at.into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),

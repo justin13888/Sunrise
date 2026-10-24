@@ -8,6 +8,7 @@
 //! This module implements parsing + recognition; full DST-aware expansion
 //! lives in [`crate::routine_gen`].
 
+use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -113,9 +114,15 @@ pub struct RRule {
     /// `COUNT` (optional).
     #[serde(default)]
     pub count: Option<u32>,
-    /// `UNTIL` (optional, UTC).
-    #[serde(default)]
-    pub until: Option<Timestamp>,
+    /// `UNTIL` (optional): the last wall-clock time an occurrence may have.
+    ///
+    /// `floating` or `all_day` (`docs/10-cross-cutting/time.md` §1), compared
+    /// with occurrence keys in civil space (§6). An iCal `UNTIL` in UTC
+    /// parses as an instant; a bare instant from a build before
+    /// `DOC_SCHEMA_V` 15 reads as `zoned` in the routine's zone
+    /// ([`crate::routine::read_legacy_instant`]).
+    #[serde(default, with = "crate::time::compat::option")]
+    pub until: Option<SunriseTime>,
     /// `WKST` (optional; defaults to Monday per RFC 5545).
     #[serde(default)]
     pub wkst: Option<Weekday>,
@@ -214,10 +221,10 @@ impl RRule {
                     );
                 }
                 "UNTIL" => {
-                    let parsed: Timestamp = v
-                        .parse()
-                        .map_err(|_| RRuleParseError::BadValue("UNTIL", v.into()))?;
-                    out.until = Some(parsed);
+                    out.until = Some(
+                        parse_until(v)
+                            .ok_or_else(|| RRuleParseError::BadValue("UNTIL", v.into()))?,
+                    );
                 }
                 "WKST" => {
                     out.wkst = Some(Weekday::from_raw(v));
@@ -269,7 +276,7 @@ impl RRule {
         if let Some(c) = self.count {
             parts.push(format!("COUNT={c}"));
         }
-        if let Some(u) = self.until {
+        if let Some(u) = self.until.as_ref().and_then(until_text) {
             parts.push(format!("UNTIL={u}"));
         }
         if let Some(w) = &self.wkst {
@@ -346,10 +353,36 @@ pub fn rrule_summary(r: &RRule) -> String {
     if let Some(c) = r.count {
         let _ = write!(s, " \u{00d7}{c}");
     }
-    if let Some(u) = r.until {
+    if let Some(u) = &r.until {
         let _ = write!(s, " until {u}");
     }
     s
+}
+
+/// Read an `UNTIL` value: a UTC (or offset) date-time is an instant, a
+/// date-time with no offset is floating, a date is all-day, and
+/// `civil[zone]` (what [`until_text`] writes for a zoned value) is zoned.
+fn parse_until(v: &str) -> Option<SunriseTime> {
+    if let Ok(at) = v.parse::<Timestamp>() {
+        return Some(SunriseTime::instant(at));
+    }
+    if let Some((civil, rest)) = v.split_once('[') {
+        let tz = rest.strip_suffix(']')?;
+        return Some(SunriseTime::zoned(civil.parse().ok()?, tz));
+    }
+    if v.contains('T') {
+        return v.parse().ok().map(SunriseTime::floating);
+    }
+    v.parse().ok().map(SunriseTime::all_day)
+}
+
+/// The RFC 5545 text of an `UNTIL` value, which [`parse_until`] reads back;
+/// `None` for a kind this build does not know, which the CBOR form keeps.
+fn until_text(u: &SunriseTime) -> Option<String> {
+    match u {
+        SunriseTime::Unknown { .. } => None,
+        other => Some(other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -408,13 +441,32 @@ mod tests {
         // for any instant at all.
         assert_eq!(
             r.until,
-            Some("2027-01-01T00:00:00Z".parse::<Timestamp>().unwrap())
+            Some(SunriseTime::instant(
+                "2027-01-01T00:00:00Z".parse::<Timestamp>().unwrap()
+            ))
         );
         assert_eq!(
-            r.until.unwrap().as_millisecond(),
-            1_798_761_600_000,
+            r.until.unwrap().resolve_in(&jiff::tz::TimeZone::UTC),
+            Some(Timestamp::from_millisecond(1_798_761_600_000).unwrap()),
             "2027-01-01T00:00:00Z in epoch milliseconds"
         );
+    }
+
+    #[test]
+    fn until_keeps_its_kind_through_the_text_form() {
+        for text in [
+            "FREQ=DAILY;UNTIL=2027-01-01T00:00:00Z",
+            "FREQ=DAILY;UNTIL=2027-01-01T09:30:00",
+            "FREQ=DAILY;UNTIL=2027-01-01",
+            "FREQ=DAILY;UNTIL=2027-01-01T09:30:00[Asia/Kathmandu]",
+        ] {
+            let r = RRule::parse(text).unwrap();
+            assert_eq!(RRule::parse(&r.to_rfc5545()).unwrap(), r, "{text}");
+        }
+        let floating = RRule::parse("FREQ=DAILY;UNTIL=20270101T093000").unwrap();
+        assert!(matches!(floating.until, Some(SunriseTime::Floating { .. })));
+        let day = RRule::parse("FREQ=DAILY;UNTIL=20270101").unwrap();
+        assert!(matches!(day.until, Some(SunriseTime::AllDay { .. })));
     }
 
     #[test]

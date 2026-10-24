@@ -26,16 +26,19 @@ pub(in crate::engine::merge) fn upsert_block_row(
          (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
           ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
           deleted, extra, created_at_ms, updated_at_ms,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
+          starts_at_civil, ends_at_civil)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
             stream_id = excluded.stream_id,
             starts_at_ms = excluded.starts_at_ms,
             starts_at_kind = excluded.starts_at_kind,
             starts_at_tz = excluded.starts_at_tz,
+            starts_at_civil = excluded.starts_at_civil,
             ends_at_ms = excluded.ends_at_ms,
             ends_at_kind = excluded.ends_at_kind,
             ends_at_tz = excluded.ends_at_tz,
+            ends_at_civil = excluded.ends_at_civil,
             title = excluded.title,
             title_track_task = excluded.title_track_task,
             deleted = excluded.deleted,
@@ -64,6 +67,8 @@ pub(in crate::engine::merge) fn upsert_block_row(
             lww.hlc.logical,
             lww.seq as i64,
             &lww.device[..],
+            b.starts_at.civil_part(),
+            b.ends_at.civil_part(),
         ],
     )?;
     index_block(tx, b)

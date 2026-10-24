@@ -57,6 +57,12 @@ pub struct Feature {
     pub fields: &'static [&'static str],
     /// The field-op kinds it introduces (ADR-0044 §8). None exist yet.
     pub field_op_kinds: &'static [&'static str],
+    /// Fields of existing op variants whose value it writes in a shape an
+    /// older build cannot decode, as `(variant, field path)` with `.` between
+    /// the levels of a path. An op of `variant` uses the feature when the
+    /// field holds a CBOR map: a tagged `SunriseTime` where the older shape
+    /// was a bare instant ([`sunrise_domain::time::compat`]).
+    pub retyped: &'static [(&'static str, &'static str)],
     /// The `DOC_SCHEMA_V` it arrived in.
     pub since: u16,
 }
@@ -71,6 +77,7 @@ pub static FEATURES: &[Feature] = &[
         op_kinds: &[],
         fields: &[],
         field_op_kinds: &[],
+        retyped: &[],
         since: 11,
     },
     // An attachment's source-made thumbnail and the original's dimensions
@@ -90,7 +97,38 @@ pub static FEATURES: &[Feature] = &[
             "thumbnail_ciphertext_hash",
         ],
         field_op_kinds: &[],
+        retyped: &[],
         since: 13,
+    },
+    // A routine's anchor, end, `UNTIL`, pause and last completion as
+    // `SunriseTime`s (issue #506, ADR-0066 §1). An instant is still written
+    // as the bare timestamp a build before `DOC_SCHEMA_V` 15 reads, and a
+    // routine whose times all have one is written so
+    // (`Routine::legacy_wire_form`); only an op carrying a floating, all-day
+    // or gap-zoned time uses this.
+    Feature {
+        id: "routine.civil_times",
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[
+            ("RoutineCreate", "starts_at"),
+            ("RoutineCreate", "ends_at"),
+            ("RoutineCreate", "paused_until"),
+            ("RoutineCreate", "last_completed_at"),
+            ("RoutineCreate", "rrule.until"),
+            ("RoutineUpdate", "starts_at"),
+            ("RoutineUpdate", "ends_at"),
+            ("RoutineUpdate", "paused_until"),
+            ("RoutineUpdate", "last_completed_at"),
+            ("RoutineUpdate", "rrule.until"),
+            ("RoutineDelete", "starts_at"),
+            ("RoutineDelete", "ends_at"),
+            ("RoutineDelete", "paused_until"),
+            ("RoutineDelete", "last_completed_at"),
+            ("RoutineDelete", "rrule.until"),
+        ],
+        since: 15,
     },
 ];
 
@@ -211,6 +249,28 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
             .map(|k| format!("{}.entity", k.tag())),
         _ => None,
     };
+    let retyped_as_map = |path: &str| -> bool {
+        let mut at = &payload;
+        for segment in path.split('.') {
+            let Value::Map(fields) = at else {
+                return false;
+            };
+            let Some((_, v)) = fields.iter().find(|(k, _)| k.as_text() == Some(segment)) else {
+                return false;
+            };
+            at = v;
+        }
+        matches!(at, Value::Map(_))
+    };
+    let uses: Vec<&'static str> = registry
+        .iter()
+        .filter(|f| {
+            f.retyped
+                .iter()
+                .any(|(v, path)| *v == variant && retyped_as_map(path))
+        })
+        .map(|f| f.id)
+        .collect();
     let carried: Vec<String> = match payload {
         Value::Map(fields) => fields
             .into_iter()
@@ -230,6 +290,7 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
                     .iter()
                     .any(|name| carried.iter().any(|c| c == name))
                 || patched_entity.as_deref() == Some(f.id)
+                || uses.contains(&f.id)
         })
         .map(|f| f.id)
         .collect()
@@ -366,6 +427,7 @@ mod tests {
             op_kinds: &[],
             fields: &[],
             field_op_kinds: &[],
+            retyped: &[],
             since: 8,
         }];
         let got = missing(
@@ -399,6 +461,7 @@ mod tests {
                 op_kinds: &["TaskSplit"],
                 fields: &[],
                 field_op_kinds: &[],
+                retyped: &[],
                 since: 8,
             },
             Feature {
@@ -406,6 +469,7 @@ mod tests {
                 op_kinds: &[],
                 fields: &["deadline_v2"],
                 field_op_kinds: &[],
+                retyped: &[],
                 since: 8,
             },
         ];

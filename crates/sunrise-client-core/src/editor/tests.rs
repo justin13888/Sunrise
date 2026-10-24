@@ -341,11 +341,11 @@ fn a_routine_sends_the_rule_zone_and_end_only_when_they_change() {
     let stored = routine();
     let mut form = routine_form(&stored);
     form.rrule = RRule::parse("FREQ=WEEKLY;BYDAY=MO").unwrap();
-    form.ends_at = Some(jiff::Timestamp::from_second(1_800_000_000).unwrap());
+    form.ends_at = Some(SunriseTime::all_day(jiff::civil::date(2027, 1, 15)));
     let patch = routine_patch(&stored, &form).unwrap();
     assert!(patch.template.is_none());
     assert_eq!(patch.rrule, Some(form.rrule.clone()));
-    assert_eq!(patch.ends_at, Some(form.ends_at));
+    assert_eq!(patch.ends_at, Some(form.ends_at.clone()));
     assert!(patch.timezone.is_none() && patch.catchup_policy.is_none());
 
     form.title.clear();

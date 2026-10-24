@@ -415,7 +415,7 @@ pub(super) async fn routines(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     match rest.first().map(String::as_str) {
         None => {
             let rs = all_routines(ctx).await?;
-            let rows = routine_rows(&rs, ctx.now());
+            let rows = routine_rows(&rs, ctx.now(), &ctx.reader());
             if ctx.json {
                 sunrise_cli::json::print(&rows.iter().map(sunrise_cli::json::routine).collect());
                 return Ok(());
@@ -470,9 +470,11 @@ pub(super) async fn routines(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 /// `routines create <title>... --rule <RRULE> [--stream S] [--zone Z]
 /// [--starts <when>] [--catchup skip|merge|queue] [--priority N]`.
 ///
-/// The routine's zone defaults to the reader's: "every day at 07:00" means
-/// 07:00 where its owner is when they set it up, and a routine that follows a
-/// place is the deliberate `--zone`.
+/// With no `--zone` the routine follows the traveller (ADR-0066 §1): "every
+/// day at 07:00" means 07:00 wherever its owner is, a `floating` anchor at
+/// the `--starts` wall clock in the reader's zone. `--zone` pins it there: a
+/// `zoned` anchor that keeps firing at 07:00 in that zone wherever the reader
+/// goes.
 async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     const FLAGS: &[&str] = &[
         "--rule",
@@ -487,10 +489,11 @@ async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         return Err(strings::routines::create_usage().into());
     };
     let reader = ctx.reader();
-    let timezone = match flag_value(args, "--zone") {
+    let pinned = flag_value(args, "--zone");
+    let timezone = match &pinned {
         Some(z) => {
-            sunrise_client_core::civil::reader_zone(&z)?;
-            z
+            sunrise_client_core::civil::reader_zone(z)?;
+            z.clone()
         }
         None => reader
             .iana_name()
@@ -505,6 +508,15 @@ async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         Some(w) => sunrise_domain::capture::parse_when(&w, ctx.now(), &reader)
             .ok_or_else(|| strings::capture::unreadable_date(&w))?,
         None => ctx.now(),
+    };
+    // The wall clock `--starts` names, in the zone the anchor is read in.
+    let civil = starts_at
+        .to_zoned(sunrise_client_core::civil::reader_zone(&timezone)?)
+        .datetime();
+    let starts_at = if pinned.is_some() {
+        sunrise_domain::SunriseTime::zoned(civil, timezone.clone())
+    } else {
+        sunrise_domain::SunriseTime::floating(civil)
     };
     let draft = RoutineDraft {
         template: TaskTemplate {
@@ -542,8 +554,12 @@ async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     Ok(())
 }
 
-/// `routines edit <id|title>... [--title T] [--rule R] [--zone Z] [--stream S]
-/// [--priority N|-] [--catchup p]`.
+/// `routines edit <id|title>... [--title T] [--rule R] [--zone Z] [--floating]
+/// [--stream S] [--priority N|-] [--catchup p]`.
+///
+/// `--zone` moves the routine to another zone keeping its wall-clock time
+/// (ADR-0066 §1); `--floating` unpins it, so it follows the traveller at the
+/// same wall-clock time.
 ///
 /// Through the client layer's routine editor
 /// ([`sunrise_client_core::editor::routine_patch`]): the form starts as the
@@ -558,7 +574,7 @@ async fn edit_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         "--priority",
         "--catchup",
     ];
-    let target = positionals(args, FLAGS, &[]).join(" ");
+    let target = positionals(args, FLAGS, &["--floating"]).join(" ");
     let r = resolve_routine(ctx, &target).await?;
     let stored = RoutineFields::from(&r);
     let mut form = routine_form(&stored);
@@ -581,13 +597,18 @@ async fn edit_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     if let Some(c) = flag_value(args, "--catchup") {
         form.catchup_policy = catchup(&c)?;
     }
-    let patch = routine_patch(&stored, &form)?;
-    // The five fields the routine editor writes; nothing else is set here.
+    let mut patch = routine_patch(&stored, &form)?;
+    if args.iter().any(|a| a == "--floating") && !r.is_floating() {
+        patch.starts_at = r.anchor_civil().map(sunrise_domain::SunriseTime::floating);
+    }
+    // The five fields the routine editor writes, and the anchor `--floating`
+    // unpins; nothing else is set here.
     if patch.template.is_none()
         && patch.rrule.is_none()
         && patch.timezone.is_none()
         && patch.catchup_policy.is_none()
         && patch.ends_at.is_none()
+        && patch.starts_at.is_none()
     {
         return Err(strings::routines::edit_usage().into());
     }
@@ -612,12 +633,28 @@ async fn skip_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     let key = if let Some(k) = flag_value(args, "--at") {
         k
     } else {
-        let at = sunrise_client_core::vocab::next_occurrence_ms(r.clone(), ctx.core.now_ms())
-            .ok_or_else(strings::routines::no_next)?;
-        sunrise_client_core::vocab::occurrence_key_at(
-            &r.timezone,
-            sunrise_client_core::civil::instant(at)?,
-        )?
+        let reader = ctx.reader();
+        let at = sunrise_client_core::vocab::next_occurrence_ms(
+            r.clone(),
+            ctx.core.now_ms(),
+            reader.iana_name().unwrap_or("UTC"),
+        )
+        .ok_or_else(strings::routines::no_next)?;
+        // The next occurrence's intended key, which its task id, its skip and
+        // its streak share (#331), whichever zone it fires in.
+        let at = sunrise_client_core::civil::instant(at)?;
+        r.series_in(
+            (
+                at,
+                at.checked_add(jiff::SignedDuration::from_mins(1))
+                    .unwrap_or(at),
+            ),
+            &reader,
+        )
+        .ok()
+        .and_then(|o| o.into_iter().next())
+        .map(|o| o.key)
+        .ok_or_else(strings::routines::no_next)?
     };
     // Not undoable: a skip has no inverse command, so it is submitted
     // directly rather than recorded as a step that would do nothing.

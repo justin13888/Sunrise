@@ -91,17 +91,19 @@ pub fn time_value_ms(value: &SunriseTime, tz: &str) -> i64 {
     value.instant_or_last(&zone_or_utc(tz)).as_millisecond()
 }
 
-/// When `routine` next fires at or after `now_ms`, or `None` if nothing falls
-/// inside its materialization horizon.
+/// When `routine` next fires at or after `now_ms` for a reader in zone
+/// `reader` (an IANA name; one that does not resolve reads as UTC), or `None`
+/// if nothing falls inside its materialization horizon.
 ///
 /// See [`sunrise_domain::routine_rows`], which is where the horizon lives: it
 /// is per-frequency, so a yearly routine still resolves while a daily one
 /// stays cheap. Skips, pauses and the series end are honoured, because the
-/// whole routine is handed over rather than just its rule.
+/// whole routine is handed over rather than just its rule. A floating
+/// routine fires at its wall-clock time in `reader`; a zoned one in its zone.
 #[must_use]
-pub fn next_occurrence_ms(routine: Routine, now_ms: u64) -> Option<i64> {
+pub fn next_occurrence_ms(routine: Routine, now_ms: u64, reader: &str) -> Option<i64> {
     let now = Timestamp::from_millisecond(i64::try_from(now_ms).ok()?).ok()?;
-    sunrise_domain::routine_rows(&[routine], now)
+    sunrise_domain::routine_rows(&[routine], now, &zone_or_utc(reader))
         .first()
         .and_then(|r| r.next)
         .map(Timestamp::as_millisecond)

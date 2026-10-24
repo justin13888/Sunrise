@@ -86,6 +86,86 @@ async fn floating_times_keep_their_wall_clock_and_nothing_stored_is_rewritten() 
     relay.abort();
 }
 
+/// A routine with no zone follows the traveller; `--zone` pins one (ADR-0066
+/// §1, #506). Read in New York, in Kolkata and on a device in UTC, the habit's
+/// next occurrence is at 09:00 wherever the reader is, and the standup's at
+/// 07:30 New York for everyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_routine_follows_the_traveller_unless_it_is_pinned() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
+    let (ny, kolkata) = (a.in_zone(NEW_YORK), a.in_zone(KOLKATA));
+
+    let habit = first_id(
+        &ny.ok(&[
+            "routines",
+            "create",
+            "Stretch",
+            "--rule",
+            "FREQ=DAILY",
+            "--starts",
+            "tomorrow 9am",
+        ])
+        .await,
+    );
+    let standup = first_id(
+        &ny.ok(&[
+            "routines",
+            "create",
+            "Standup",
+            "--rule",
+            "FREQ=DAILY",
+            "--zone",
+            NEW_YORK,
+            "--starts",
+            "tomorrow 7:30am",
+        ])
+        .await,
+    );
+    let next = |rows: &serde_json::Value, id: &str| -> i64 {
+        rows.as_array()
+            .and_then(|rs| rs.iter().find(|r| r["id"] == id))
+            .and_then(|r| r["next_ms"].as_i64())
+            .unwrap_or_else(|| panic!("{id} has a next occurrence: {rows}"))
+    };
+    let wall = |ms: i64, zone: &str| {
+        jiff::Timestamp::from_millisecond(ms)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::get(zone).unwrap())
+            .time()
+    };
+    let in_ny = ny.json(&["routines"]).await;
+    let in_kolkata = kolkata.json(&["routines"]).await;
+    assert_eq!(
+        wall(next(&in_ny, &habit), NEW_YORK),
+        jiff::civil::time(9, 0, 0, 0)
+    );
+    assert_eq!(
+        wall(next(&in_kolkata, &habit), KOLKATA),
+        jiff::civil::time(9, 0, 0, 0),
+        "the habit is at 09:00 where the reader is"
+    );
+    assert_eq!(
+        next(&in_ny, &standup),
+        next(&in_kolkata, &standup),
+        "the pinned standup does not move"
+    );
+    assert_eq!(
+        wall(next(&in_kolkata, &standup), NEW_YORK),
+        jiff::civil::time(7, 30, 0, 0)
+    );
+
+    settle(&ny, &b).await;
+    let on_b = b.json(&["routines"]).await;
+    assert_eq!(
+        wall(next(&on_b, &habit), "UTC"),
+        jiff::civil::time(9, 0, 0, 0)
+    );
+    assert_eq!(next(&on_b, &standup), next(&in_ny, &standup));
+    relay.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_zone_is_chosen_by_flag_then_env_then_tz_set_and_an_unknown_one_is_refused() {
     let dir = tempfile::tempdir().unwrap();

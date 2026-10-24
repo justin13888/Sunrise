@@ -22,11 +22,11 @@
 // and only in type position.
 #[allow(unused_imports)]
 use crate::{
-    Attachment, Block, CborValue, Chunk, Context, Energy, FocusEnd, FocusKind, FocusStart,
-    Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule, ReviewSnapshot,
-    ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, ScheduleConstraint,
-    StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState,
-    TaskTemplate, Unknowns,
+    Attachment, Block, CborValue, Chunk, CompatTime, Context, Energy, FocusEnd, FocusKind,
+    FocusStart, Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule,
+    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy,
+    ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
+    TaskState, TaskTemplate, Unknowns,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -99,7 +99,7 @@ sunrise_id::describe_value_types! {
             by_month: Vec<u32>;
             by_set_pos: Vec<i32>;
             count: Option<u32>;
-            until: Option<Timestamp>;
+            until: Option<CompatTime>;
             wkst: Option<Weekday>;
             ..unknown
         }
@@ -158,6 +158,13 @@ sunrise_id::describe_value_types! {
     tuples: [],
     variants: [
         SunriseTime "kind" {
+            Instant as "instant" = { at: Timestamp; };
+            Zoned as "zoned" = { civil: DateTime; tz: String; };
+            Floating as "floating" = { civil: DateTime; };
+            AllDay as "all_day" = { date: Date; };
+            ..Unknown
+        }
+        CompatTime "kind" {
             Instant as "instant" = { at: Timestamp; };
             Zoned as "zoned" = { civil: DateTime; tz: String; };
             Floating as "floating" = { civil: DateTime; };
@@ -327,7 +334,7 @@ mod tests {
                     unknown: Unknowns::new(),
                 },
                 timezone: "UTC".into(),
-                starts_at: ts(),
+                starts_at: ts().into(),
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 skip_dates: Vec::new(),

@@ -245,10 +245,24 @@ pub fn export_format_name(format: ExportFormat) -> String {
 ///
 /// Skips, pauses and the series end are all honoured, because the whole
 /// routine is handed over rather than just its rule.
+///
+/// A floating routine fires at its wall-clock time in the reader's zone, and
+/// this has none: it reads in the routine's own zone. Prefer
+/// [`next_occurrence_ms_in`].
 #[uniffi::export]
 #[must_use]
 pub fn next_occurrence_ms(routine: RoutineItem, now_ms: u64) -> Option<i64> {
-    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms)
+    let zone = routine.timezone.clone();
+    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms, &zone)
+}
+
+/// [`next_occurrence_ms`] for a reader in `zone` (an IANA name, the zone the
+/// client reports through `on_time_zone_changed`): a floating routine's next
+/// occurrence at its wall-clock time there, a zoned one's in its zone.
+#[uniffi::export]
+#[must_use]
+pub fn next_occurrence_ms_in(routine: RoutineItem, now_ms: u64, zone: String) -> Option<i64> {
+    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms, &zone)
 }
 
 /// A running session's numbers, as the domain derives them.

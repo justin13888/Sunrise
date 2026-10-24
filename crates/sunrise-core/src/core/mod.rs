@@ -419,11 +419,13 @@ impl Core {
                 zone: zone.to_string(),
             });
         }
-        let (affected_tasks, notify) = if changed {
+        let (affected_tasks, notify, hard_violations) = if changed {
             let db = self.db.lock();
-            self.engine.time_zone_impact(&db, &from, &to, now_ms)?
+            let (affected, notify) = self.engine.time_zone_impact(&db, &from, &to, now_ms)?;
+            let hard = self.engine.hard_constraint_violations(&db, &to)?;
+            (affected, notify, hard)
         } else {
-            (0, false)
+            (0, false, Vec::new())
         };
         Ok(crate::commands::TimeZoneChange {
             previous,
@@ -431,6 +433,7 @@ impl Core {
             changed,
             affected_tasks,
             notify,
+            hard_violations,
         })
     }
 

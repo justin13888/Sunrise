@@ -263,7 +263,9 @@ async fn routine_materialization_convergence() {
             unknown: sunrise_domain::Unknowns::new(),
         },
         timezone: "UTC".into(),
-        starts_at: Timestamp::from_millisecond(i64::try_from(starts_ms).unwrap()).unwrap(),
+        starts_at: Timestamp::from_millisecond(i64::try_from(starts_ms).unwrap())
+            .unwrap()
+            .into(),
         ends_at: None,
         scheduling_constraints: vec![],
         catchup_policy: RoutineCatchupPolicy::Queue,

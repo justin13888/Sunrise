@@ -137,6 +137,14 @@ impl From<&SunriseTime> for TimeValue {
     }
 }
 
+/// The instant a client built before #506 reads for a routine or recurrence
+/// time it still gets as a bare `Timestamp`: the value resolved in zone `tz`
+/// (the routine's), or the latest instant for one that has none. The kind is
+/// in the matching `*_time` field.
+fn legacy_instant(t: &SunriseTime, tz: &str) -> jiff::Timestamp {
+    t.instant_or_last(&jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC))
+}
+
 impl From<TimeValue> for SunriseTime {
     fn from(t: TimeValue) -> Self {
         match t {
@@ -286,7 +294,8 @@ pub struct Recurrence {
     pub by_set_pos: Vec<i32>,
     /// `COUNT`.
     pub count: Option<u32>,
-    /// `UNTIL`.
+    /// `UNTIL`, as an instant: [`Self::until_time`] resolved in UTC. Kept
+    /// for clients built before #506; read and write `until_time`.
     pub until: Option<jiff::Timestamp>,
     /// Week start.
     pub wkst: Option<Weekday>,
@@ -294,6 +303,10 @@ pub struct Recurrence {
     /// the module docs.
     #[uniffi(default = None)]
     pub extra: Option<Vec<u8>>,
+    /// `UNTIL` with its kind (`floating` or `all_day`, compared with
+    /// occurrence keys in civil space). When set it wins over [`Self::until`].
+    #[uniffi(default = None)]
+    pub until_time: Option<TimeValue>,
 }
 
 impl From<&RRule> for Recurrence {
@@ -318,9 +331,10 @@ impl From<&RRule> for Recurrence {
             by_month: by_month.clone(),
             by_set_pos: by_set_pos.clone(),
             count: *count,
-            until: *until,
+            until: until.as_ref().map(|u| legacy_instant(u, "UTC")),
             wkst: wkst.clone(),
             extra: extra_out(unknown),
+            until_time: until.as_ref().map(TimeValue::from),
         }
     }
 }
@@ -335,7 +349,10 @@ impl From<Recurrence> for RRule {
             by_month: r.by_month,
             by_set_pos: r.by_set_pos,
             count: r.count,
-            until: r.until,
+            until: r
+                .until_time
+                .map(SunriseTime::from)
+                .or_else(|| r.until.map(SunriseTime::from)),
             wkst: r.wkst,
             unknown: extra_in(r.extra.as_deref()),
         }
@@ -723,7 +740,7 @@ impl From<&Stream> for StreamItem {
             sort_order: sort_order.clone(),
             archived: *archived,
             paused: *paused,
-            paused_until: *paused_until,
+            paused_until: paused_until.as_ref().map(|p| legacy_instant(p, "UTC")),
             review_cadence: review_cadence.clone(),
             default_context: *default_context,
             reminder_lead_s: *reminder_lead_s,
@@ -845,7 +862,7 @@ impl From<StreamEdit> for sunrise_domain::StreamPatch {
             sort_order: e.sort_order,
             archived: e.archived,
             paused: e.paused,
-            paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
+            paused_until: patch_field(e.set_paused_until.map(Into::into), e.clear_paused_until),
             reminder_lead_s: patch_field(e.set_reminder_lead_s, e.clear_reminder_lead_s),
             icon: patch_field(e.set_icon, e.clear_icon),
             default_context: patch_field(e.set_default_context, e.clear_default_context),
@@ -1021,11 +1038,13 @@ pub struct RoutineItem {
     pub template: Template,
     /// The recurrence.
     pub rrule: Recurrence,
-    /// IANA zone the recurrence is expanded in.
+    /// IANA zone the routine was set up in, and the zone a pinned anchor is
+    /// in.
     pub timezone: String,
-    /// Anchor instant.
+    /// The anchor as an instant: [`Self::starts_at_time`] resolved in
+    /// [`Self::timezone`]. Kept for clients built before #506.
     pub starts_at: jiff::Timestamp,
-    /// Series end.
+    /// The series end as an instant, resolved like `starts_at`.
     pub ends_at: Option<jiff::Timestamp>,
     /// Scheduling constraints applied to generated tasks.
     pub scheduling_constraints: Vec<Constraint>,
@@ -1049,12 +1068,26 @@ pub struct RoutineItem {
     pub streak_keys: Vec<String>,
     /// Paused (generates nothing).
     pub paused: bool,
-    /// Paused until this instant.
+    /// Paused until this instant, resolved like `starts_at`.
     pub paused_until: Option<jiff::Timestamp>,
     /// Archived.
     pub archived: bool,
     /// Tombstoned.
     pub deleted: bool,
+    /// The anchor with its kind: `floating` (follows the reader, the
+    /// default) or `zoned` (pinned). Always set by the core; when a client
+    /// sets it on a routine it hands back, it wins over `starts_at`.
+    #[uniffi(default = None)]
+    pub starts_at_time: Option<TimeValue>,
+    /// The series end with its kind (`floating` or `all_day`).
+    #[uniffi(default = None)]
+    pub ends_at_time: Option<TimeValue>,
+    /// The pause expiry with its kind.
+    #[uniffi(default = None)]
+    pub paused_until_time: Option<TimeValue>,
+    /// The last completion, with its kind (an instant).
+    #[uniffi(default = None)]
+    pub last_completed_at_time: Option<TimeValue>,
 }
 
 impl From<&Routine> for RoutineItem {
@@ -1093,8 +1126,8 @@ impl From<&Routine> for RoutineItem {
             template: Template::from(template),
             rrule: Recurrence::from(rrule),
             timezone: timezone.clone(),
-            starts_at: *starts_at,
-            ends_at: *ends_at,
+            starts_at: legacy_instant(starts_at, timezone),
+            ends_at: ends_at.as_ref().map(|t| legacy_instant(t, timezone)),
             scheduling_constraints: scheduling_constraints
                 .iter()
                 .map(Constraint::from)
@@ -1102,16 +1135,22 @@ impl From<&Routine> for RoutineItem {
             skipped_keys: skipped_keys.clone(),
             catchup_policy: catchup_policy.clone(),
             streak_counter: *streak_counter,
-            last_completed_at: *last_completed_at,
+            last_completed_at: last_completed_at
+                .as_ref()
+                .map(|t| legacy_instant(t, timezone)),
             grace_window_s: *grace_window_s,
             forgiveness_enabled: *forgiveness_enabled,
             streak_started_at: *streak_started_at,
             forgivenesses_in_window: *forgivenesses_in_window,
             streak_keys: streak_keys.clone(),
             paused: *paused,
-            paused_until: *paused_until,
+            paused_until: paused_until.as_ref().map(|t| legacy_instant(t, timezone)),
             archived: *archived,
             deleted: *deleted,
+            starts_at_time: Some(TimeValue::from(starts_at)),
+            ends_at_time: ends_at.as_ref().map(TimeValue::from),
+            paused_until_time: paused_until.as_ref().map(TimeValue::from),
+            last_completed_at_time: last_completed_at.as_ref().map(TimeValue::from),
         }
     }
 }
@@ -1131,8 +1170,13 @@ impl From<RoutineItem> for Routine {
             template: TaskTemplate::from(r.template),
             rrule: RRule::from(r.rrule),
             timezone: r.timezone,
-            starts_at: r.starts_at,
-            ends_at: r.ends_at,
+            starts_at: r
+                .starts_at_time
+                .map_or_else(|| r.starts_at.into(), SunriseTime::from),
+            ends_at: r
+                .ends_at_time
+                .map(SunriseTime::from)
+                .or_else(|| r.ends_at.map(Into::into)),
             scheduling_constraints: r
                 .scheduling_constraints
                 .into_iter()
@@ -1144,18 +1188,25 @@ impl From<RoutineItem> for Routine {
             skipped_keys: r.skipped_keys,
             catchup_policy: r.catchup_policy,
             streak_counter: r.streak_counter,
-            last_completed_at: r.last_completed_at,
+            last_completed_at: r
+                .last_completed_at_time
+                .map(SunriseTime::from)
+                .or_else(|| r.last_completed_at.map(Into::into)),
             grace_window_s: r.grace_window_s,
             forgiveness_enabled: r.forgiveness_enabled,
             streak_started_at: r.streak_started_at,
             forgivenesses_in_window: r.forgivenesses_in_window,
             streak_keys: r.streak_keys,
             paused: r.paused,
-            paused_until: r.paused_until,
+            paused_until: r
+                .paused_until_time
+                .map(SunriseTime::from)
+                .or_else(|| r.paused_until.map(Into::into)),
             archived: r.archived,
             deleted: r.deleted,
             unknown: sunrise_domain::Unknowns::new(),
         }
+        .normalized()
     }
 }
 
@@ -1166,26 +1217,53 @@ pub struct RoutineDraftIn {
     pub template: Template,
     /// The recurrence.
     pub rrule: Recurrence,
-    /// IANA zone to expand it in.
+    /// IANA zone the routine is set up in, and the zone a pinned anchor is
+    /// pinned to.
     pub timezone: String,
-    /// Anchor instant.
+    /// Anchor as an instant. When [`Self::anchor`] is not set, the routine
+    /// is `floating` at this instant's wall-clock time in [`Self::timezone`]:
+    /// a routine whose client named no zone follows the traveller
+    /// (ADR-0066 §1).
     pub starts_at: jiff::Timestamp,
-    /// Series end.
+    /// Series end as an instant, read as `floating` at its wall clock in
+    /// `timezone` when [`Self::ends_at_time`] is not set.
     pub ends_at: Option<jiff::Timestamp>,
     /// Scheduling constraints for generated tasks.
     pub scheduling_constraints: Vec<Constraint>,
     /// What to do with occurrences missed while offline.
     pub catchup_policy: RoutineCatchupPolicy,
+    /// The anchor with its kind: `floating`, or `zoned` in `timezone` to pin
+    /// it. Wins over `starts_at`.
+    #[uniffi(default = None)]
+    pub anchor: Option<TimeValue>,
+    /// The series end with its kind (`floating` or `all_day`). Wins over
+    /// `ends_at`.
+    #[uniffi(default = None)]
+    pub ends_at_time: Option<TimeValue>,
+}
+
+/// An instant's wall-clock time in `tz`, as a floating value: what a client
+/// that sends an instant and a zone and no kind means by a routine time.
+fn floating_in(at: jiff::Timestamp, tz: &str) -> SunriseTime {
+    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    SunriseTime::floating(at.to_zoned(zone).datetime())
 }
 
 impl From<RoutineDraftIn> for sunrise_domain::RoutineDraft {
     fn from(d: RoutineDraftIn) -> Self {
+        let starts_at = d
+            .anchor
+            .map_or_else(|| floating_in(d.starts_at, &d.timezone), SunriseTime::from);
+        let ends_at = d
+            .ends_at_time
+            .map(SunriseTime::from)
+            .or_else(|| d.ends_at.map(|e| floating_in(e, &d.timezone)));
         Self {
             template: d.template.into(),
             rrule: d.rrule.into(),
             timezone: d.timezone,
-            starts_at: d.starts_at,
-            ends_at: d.ends_at,
+            starts_at,
+            ends_at,
             scheduling_constraints: d
                 .scheduling_constraints
                 .into_iter()
@@ -1208,7 +1286,8 @@ pub struct RoutineEdit {
     /// New IANA zone.
     #[uniffi(default = None)]
     pub timezone: Option<String>,
-    /// New anchor.
+    /// New anchor, as an instant: read as `zoned` in the routine's zone at
+    /// its wall clock there. Prefer [`Self::set_starts_at_time`].
     #[uniffi(default = None)]
     pub starts_at: Option<jiff::Timestamp>,
     /// New series end.
@@ -1244,16 +1323,38 @@ pub struct RoutineEdit {
     /// Archive or unarchive.
     #[uniffi(default = None)]
     pub archived: Option<bool>,
+    /// New anchor with its kind: `floating` unpins the routine, `zoned` in
+    /// its zone pins it. Wins over `starts_at`.
+    #[uniffi(default = None)]
+    pub set_starts_at_time: Option<TimeValue>,
+    /// New series end with its kind. Wins over `set_ends_at`.
+    #[uniffi(default = None)]
+    pub set_ends_at_time: Option<TimeValue>,
+    /// New pause expiry with its kind (`all_day` for "until Monday"). Wins
+    /// over `set_paused_until`.
+    #[uniffi(default = None)]
+    pub set_paused_until_time: Option<TimeValue>,
 }
 
 impl From<RoutineEdit> for sunrise_domain::RoutinePatch {
     fn from(e: RoutineEdit) -> Self {
+        let set_ends = e
+            .set_ends_at_time
+            .map(SunriseTime::from)
+            .or_else(|| e.set_ends_at.map(Into::into));
+        let set_pause = e
+            .set_paused_until_time
+            .map(SunriseTime::from)
+            .or_else(|| e.set_paused_until.map(Into::into));
         Self {
             template: e.template.map(TaskTemplate::from),
             rrule: e.rrule.map(RRule::from),
             timezone: e.timezone,
-            starts_at: e.starts_at,
-            ends_at: patch_field(e.set_ends_at, e.clear_ends_at),
+            starts_at: e
+                .set_starts_at_time
+                .map(SunriseTime::from)
+                .or_else(|| e.starts_at.map(Into::into)),
+            ends_at: patch_field(set_ends, e.clear_ends_at),
             scheduling_constraints: e
                 .scheduling_constraints
                 .map(|l| l.into_iter().map(ScheduleConstraint::from).collect()),
@@ -1261,7 +1362,7 @@ impl From<RoutineEdit> for sunrise_domain::RoutinePatch {
             grace_window_s: patch_field(e.set_grace_window_s, e.clear_grace_window),
             forgiveness_enabled: e.forgiveness_enabled,
             paused: e.paused,
-            paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
+            paused_until: patch_field(set_pause, e.clear_paused_until),
             archived: e.archived,
         }
     }

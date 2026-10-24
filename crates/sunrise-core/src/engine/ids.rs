@@ -149,26 +149,33 @@ pub(super) fn extra_over_opaque(
     }))
 }
 
-/// Split an optional [`SunriseTime`] into its three storage columns:
-/// `(index_ms, kind, tz)`.
+/// An optional [`SunriseTime`] as its four storage columns.
+pub(super) type TimeParts<'a> = (Option<i64>, Option<&'a str>, Option<String>, Option<String>);
+
+/// Split an optional [`SunriseTime`] into its four storage columns:
+/// `(index_ms, kind, tz, civil)`.
 ///
 /// The index key is what every range query and `ORDER BY` in the engine reads,
-/// so adding kinds did not require touching one of them; the two sidecars are
-/// what let the kind survive the round trip. See the `tasks` table comment in
-/// `0013_baseline.sql`.
-pub(super) fn time_to_parts(
-    t: Option<&SunriseTime>,
-) -> (Option<i64>, Option<&str>, Option<String>) {
+/// so adding kinds did not require touching one of them; the sidecars are what
+/// let the kind survive the round trip, and the civil column what lets a civil
+/// kind's wall-clock time survive it without a zone (migration 0041,
+/// ADR-0066 §2). See the `tasks` table comment in `0013_baseline.sql`.
+pub(super) fn time_to_parts(t: Option<&SunriseTime>) -> TimeParts<'_> {
     match t {
-        None => (None, None, None),
+        None => (None, None, None, None),
         Some(v) => {
             let (ms, kind, tz) = v.to_parts();
-            (Some(ms), Some(kind), tz.map(std::borrow::Cow::into_owned))
+            (
+                Some(ms),
+                Some(kind),
+                tz.map(std::borrow::Cow::into_owned),
+                v.civil_part(),
+            )
         }
     }
 }
 
-/// Rebuild an optional [`SunriseTime`] from its three storage columns.
+/// Rebuild an optional [`SunriseTime`] from its four storage columns.
 ///
 /// A row with an index key but no kind is read as an instant: that is what a
 /// column written before the kind existed means, and what a build that does not
@@ -177,9 +184,15 @@ pub(super) fn time_from_parts(
     ms: Option<i64>,
     kind: Option<&str>,
     tz: Option<&str>,
+    civil: Option<&str>,
 ) -> Option<SunriseTime> {
     ms.map(|ms| {
-        SunriseTime::from_parts(ms, kind.unwrap_or(sunrise_domain::time::kind::INSTANT), tz)
+        SunriseTime::from_parts(
+            ms,
+            kind.unwrap_or(sunrise_domain::time::kind::INSTANT),
+            tz,
+            civil,
+        )
     })
 }
 
