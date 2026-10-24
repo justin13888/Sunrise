@@ -33,6 +33,7 @@ pub mod i18n;
 pub mod json;
 pub mod livesync;
 pub mod login;
+pub mod open_failure;
 pub mod pair;
 pub mod prefs_text;
 pub mod recover;

@@ -108,6 +108,30 @@ pub enum DbError {
         /// or SQLite refused the `VACUUM INTO`.
         source: std::io::Error,
     },
+    /// The copy taken before a projection rebuild could not be written, so
+    /// nothing was rebuilt.
+    ///
+    /// Rule 2's "no backup, no migration", applied to the rebuild that rule 4
+    /// runs under it (`docs/04-storage/migrations.md` §Migration rigor): the
+    /// vault is left as it was. See [`Db::back_up_for_rebuild`].
+    #[error("could not back up the vault before rebuilding it: {source}")]
+    RebuildBackup {
+        /// Why the copy failed.
+        source: std::io::Error,
+    },
+    /// A copy beside the vault could not be put back in its place, or the
+    /// vault could not be moved aside.
+    ///
+    /// Whatever was moved before the failure stays where it was moved to, and
+    /// nothing is deleted: the vault, the copy and anything set aside are all
+    /// still on disk under the names [`Db::restore_backup`] gave them.
+    #[error("could not restore the vault from {backup}: {source}")]
+    Restore {
+        /// The copy being restored, or the directory being moved aside.
+        backup: PathBuf,
+        /// Why.
+        source: std::io::Error,
+    },
     /// SQLCipher never finished initialising in this process, so no
     /// database can be keyed.
     ///
@@ -132,6 +156,9 @@ impl DbError {
             Self::StorageVTooOld { .. } | Self::StorageVPreBaseline { .. } => {
                 ErrorCode::StorageVTooOld
             }
+            Self::IntegrityCheckFailed { .. } => ErrorCode::StorageIntegrityCheckFailed,
+            Self::Backup { .. } | Self::RebuildBackup { .. } => ErrorCode::StorageBackupFailed,
+            Self::Migration { .. } => ErrorCode::StorageMigrationFailed,
             _ => ErrorCode::FatalInternal,
         }
     }
@@ -139,7 +166,38 @@ impl DbError {
 
 /// Open / managed SQLCipher connection.
 pub struct Db {
-    conn: Connection,
+    pub(crate) conn: Connection,
+    /// The file behind `conn`, or `None` for an in-memory vault.
+    pub(crate) path: Option<PathBuf>,
+    /// The copy of the vault this open took before it changed anything: the
+    /// pre-migration copy, or the pre-repair one. The first rebuild after the
+    /// open runs under it rather than taking a second, and takes it
+    /// ([`Self::back_up_for_rebuild`]).
+    pub(crate) taken_backup: Option<PathBuf>,
+    /// This open created the file: there is nothing in it a copy would keep.
+    pub(crate) created: bool,
+}
+
+/// What [`Db::ensure_schema`] found, and the copy it took.
+#[derive(Debug)]
+pub(crate) enum Schema {
+    /// No schema: every migration ran over an empty file.
+    Created,
+    /// An older schema, migrated under the copy at this path (`None` for a
+    /// connection with no file).
+    Upgraded(Option<PathBuf>),
+    /// This build's.
+    Current,
+}
+
+impl Schema {
+    /// The copy taken, if one was.
+    pub(crate) fn taken_backup(self) -> Option<PathBuf> {
+        match self {
+            Self::Upgraded(taken) => taken,
+            Self::Created | Self::Current => None,
+        }
+    }
 }
 
 impl core::fmt::Debug for Db {
@@ -176,9 +234,14 @@ impl Db {
         Self::apply_sqlcipher_key(&conn, vault_root)?;
         Self::apply_pragmas(&conn)?;
         Self::quick_check(&conn, true)?;
-        Self::ensure_schema(&mut conn, Some(path))?;
+        let schema = Self::ensure_schema(&mut conn, Some(path), false)?;
         Self::ensure_incremental_auto_vacuum(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: Some(path.to_path_buf()),
+            created: matches!(schema, Schema::Created),
+            taken_backup: schema.taken_backup(),
+        })
     }
 
     /// Open an in-memory DB (used by tests and for non-persisted vaults).
@@ -190,8 +253,13 @@ impl Db {
         Self::apply_sqlcipher_key(&conn, vault_root)?;
         Self::apply_pragmas(&conn)?;
         Self::quick_check(&conn, false)?;
-        Self::ensure_schema(&mut conn, None)?;
-        Ok(Self { conn })
+        Self::ensure_schema(&mut conn, None, false)?;
+        Ok(Self {
+            conn,
+            path: None,
+            taken_backup: None,
+            created: true,
+        })
     }
 
     /// Where [`Self::open`] copies the vault at `vault` before migrating it
@@ -216,7 +284,7 @@ impl Db {
     /// `encrypted_file` says the connection is a keyed file, which is what
     /// SQLCipher's per-page HMAC check needs: an in-memory database answers
     /// it with "database file is undefined".
-    fn quick_check(conn: &Connection, encrypted_file: bool) -> Result<(), DbError> {
+    pub(crate) fn quick_check(conn: &Connection, encrypted_file: bool) -> Result<(), DbError> {
         use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
         let rows = |pragma: &str| -> rusqlite::Result<Vec<String>> {
             let mut stmt = conn.prepare(pragma)?;
@@ -256,14 +324,14 @@ impl Db {
     }
 
     /// Log a failed check and build its error from the first few findings.
-    fn integrity_failed(lines: &[String]) -> DbError {
+    pub(crate) fn integrity_failed(lines: &[String]) -> DbError {
         /// `quick_check` reports up to 100 problems by default. The first few
         /// say what is wrong; the rest only lengthen the error.
         const REPORTED: usize = 5;
         tracing::error!(
             ev = "db.integrity.failed",
-            err_code = %ErrorCode::FatalInternal,
-            err_kind = "internal",
+            err_code = %ErrorCode::StorageIntegrityCheckFailed,
+            err_kind = "user",
             retryable = false,
             "the vault failed its integrity check"
         );
@@ -289,52 +357,17 @@ impl Db {
     /// key, which `the_backup_is_encrypted_under_the_vaults_own_key` pins.
     fn back_up(conn: &Connection, vault: &Path, from_v: u32) -> Result<(), DbError> {
         let backup = Self::backup_path(vault, from_v);
-        let mut tmp_name = backup.file_name().map(OsString::from).unwrap_or_default();
-        tmp_name.push(".tmp");
-        let tmp = backup.with_file_name(tmp_name);
-        let fail = |source: std::io::Error| {
+        if let Err(source) = Self::vacuum_into(conn, &backup) {
             tracing::error!(
                 ev = "db.backup.failed",
                 from_v = u64::from(from_v),
-                err_code = %ErrorCode::FatalInternal,
-                err_kind = "internal",
+                err_code = %ErrorCode::StorageBackupFailed,
+                err_kind = "user",
                 retryable = false,
                 cause = %source,
                 "could not back up the vault; it was not migrated"
             );
-            DbError::Backup { from_v, source }
-        };
-        let copy = || -> std::io::Result<()> {
-            match fs::remove_file(&tmp) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-            let target = tmp.to_str().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "the vault path is not UTF-8, which VACUUM INTO needs",
-                )
-            })?;
-            conn.execute("VACUUM INTO ?1", [target])
-                .map_err(std::io::Error::other)?;
-            fs::File::open(&tmp)?.sync_all()?;
-            fs::rename(&tmp, &backup)?;
-            // The rename is durable only once the directory entry is.
-            #[cfg(unix)]
-            if let Some(dir) = backup.parent() {
-                let dir = if dir.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    dir
-                };
-                fs::File::open(dir)?.sync_all()?;
-            }
-            Ok(())
-        };
-        if let Err(e) = copy() {
-            let _ = fs::remove_file(&tmp);
-            return Err(fail(e));
+            return Err(DbError::Backup { from_v, source });
         }
         tracing::info!(
             ev = "db.backup.ok",
@@ -344,8 +377,36 @@ impl Db {
         Ok(())
     }
 
-    /// Delete every pre-migration copy beside `vault`, and any half-written
-    /// one a crash left.
+    /// Write `conn`'s database to `target` with `VACUUM INTO`, durably: under
+    /// a temporary name, fsynced, renamed over any older file of that name,
+    /// and the directory fsynced. See [`Self::back_up`].
+    pub(crate) fn vacuum_into(conn: &Connection, target: &Path) -> std::io::Result<()> {
+        let tmp = crate::backup::sibling(target, ".tmp");
+        let copy = || -> std::io::Result<()> {
+            match fs::remove_file(&tmp) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            let to = tmp.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the vault path is not UTF-8, which VACUUM INTO needs",
+                )
+            })?;
+            conn.execute("VACUUM INTO ?1", [to])
+                .map_err(std::io::Error::other)?;
+            fs::File::open(&tmp)?.sync_all()?;
+            fs::rename(&tmp, target)?;
+            crate::backup::sync_parent(target)
+        };
+        copy().inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
+    }
+
+    /// Delete every pre-migration and pre-rebuild copy beside `vault`, and
+    /// any half-written one a crash left ([`crate::backup::is_backup_file`]).
     ///
     /// Called only on an open that found the vault current. Best-effort: a
     /// copy that cannot be deleted costs disk, never the open, and the next
@@ -354,7 +415,6 @@ impl Db {
         let Some(file_name) = vault.file_name().and_then(|n| n.to_str()) else {
             return;
         };
-        let prefix = format!("{file_name}.pre-v");
         let dir = match vault.parent() {
             Some(d) if !d.as_os_str().is_empty() => d,
             _ => Path::new("."),
@@ -365,18 +425,12 @@ impl Db {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let Some(rest) = name.strip_prefix(&prefix) else {
-                continue;
-            };
-            let version = rest
-                .strip_suffix(".bak")
-                .or_else(|| rest.strip_suffix(".bak.tmp"));
-            if version.is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())) {
+            if crate::backup::is_backup_file(file_name, name) {
                 if let Err(e) = fs::remove_file(entry.path()) {
                     tracing::warn!(
                         ev = "db.backup.remove_failed",
                         cause = %e,
-                        "could not delete a pre-migration copy; the next open retries"
+                        "could not delete a copy of the vault; the next open retries"
                     );
                 }
             }
@@ -400,7 +454,12 @@ impl Db {
         )?;
         Self::apply_sqlcipher_key(&conn, vault_root)?;
         Self::apply_pragmas(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: Some(path.to_path_buf()),
+            taken_backup: None,
+            created: false,
+        })
     }
 
     /// Create an encrypted vault at `path` whose schema is exactly what this
@@ -441,7 +500,10 @@ impl Db {
         Ok(db)
     }
 
-    fn apply_sqlcipher_key(conn: &Connection, vault_root: &VaultRootKey) -> Result<(), DbError> {
+    pub(crate) fn apply_sqlcipher_key(
+        conn: &Connection,
+        vault_root: &VaultRootKey,
+    ) -> Result<(), DbError> {
         ensure_cipher_ready()?;
         // Derive a 32-byte SQLCipher raw key from vault_root.
         let raw = sunrise_crypto::derive_key("sunrise.sqlcipher_key.v1", vault_root.as_bytes(), 32);
@@ -458,7 +520,7 @@ impl Db {
         Ok(())
     }
 
-    fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
+    pub(crate) fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
         // SQLCipher requires the key BEFORE any other pragma; the caller
         // ensures that by calling apply_sqlcipher_key first.
         //
@@ -495,7 +557,7 @@ impl Db {
     /// and a `VACUUM` that fails changes nothing, so the open goes on with the
     /// vault as it was and the next open tries again. A vault that cannot
     /// shrink is still a vault; one that will not open is not.
-    fn ensure_incremental_auto_vacuum(conn: &Connection) -> Result<(), DbError> {
+    pub(crate) fn ensure_incremental_auto_vacuum(conn: &Connection) -> Result<(), DbError> {
         if Self::auto_vacuum_mode(conn)? == 2 {
             return Ok(());
         }
@@ -541,12 +603,22 @@ impl Db {
         Ok(u64::try_from(before.saturating_sub(after)).unwrap_or(0))
     }
 
-    /// Bring the schema to this build's `STORAGE_V`.
+    /// Bring the schema to this build's `STORAGE_V`, and say what it found
+    /// and the pre-migration copy it took.
     ///
     /// `vault` is the file behind `conn`, or `None` for a connection with no
     /// file. It is what an upgrade is copied from first and what a current
     /// open deletes the copies beside.
-    fn ensure_schema(conn: &mut Connection, vault: Option<&Path>) -> Result<(), DbError> {
+    ///
+    /// `repairing` is [`Self::open_for_repair`]'s open, whose caller has not
+    /// checked the file: an upgrade is checked here before it starts, and a
+    /// current open keeps the copies beside it, among them the one the repair
+    /// has just taken.
+    pub(crate) fn ensure_schema(
+        conn: &mut Connection,
+        vault: Option<&Path>,
+        repairing: bool,
+    ) -> Result<Schema, DbError> {
         // Detect existing schema by probing for `schema_meta`.
         let exists: i64 = conn
             .query_row(
@@ -559,7 +631,8 @@ impl Db {
         if exists == 0 {
             // Nothing to back up: there is no data yet.
             Self::run_migrations(conn, 0, binary_v, "fresh")?;
-            return Self::quick_check(conn, vault.is_some());
+            Self::quick_check(conn, vault.is_some())?;
+            return Ok(Schema::Created);
         }
 
         let db_v: u32 =
@@ -589,20 +662,31 @@ impl Db {
             });
         }
         if db_v < binary_v {
+            // A failed check must not start a migration (rule 3). An ordinary
+            // open has checked already.
+            if repairing {
+                Self::quick_check(conn, vault.is_some())?;
+            }
             // No backup, no migration: a copy that cannot be made returns
             // here with the vault still at `db_v`.
-            if let Some(vault) = vault {
-                Self::back_up(conn, vault, db_v)?;
-            }
+            let taken = match vault {
+                Some(vault) => {
+                    Self::back_up(conn, vault, db_v)?;
+                    Some(Self::backup_path(vault, db_v))
+                }
+                None => None,
+            };
             Self::run_migrations(conn, db_v, binary_v, "upgrade")?;
-            return Self::quick_check(conn, vault.is_some());
+            Self::quick_check(conn, vault.is_some())?;
+            return Ok(Schema::Upgraded(taken));
         }
         // Current, and the caller's `quick_check` passed: this is the open
-        // that proves a migrated vault usable, so its copy has done its job.
-        if let Some(vault) = vault {
+        // that proves a migrated or rebuilt vault usable, so its copies have
+        // done their job.
+        if let Some(vault) = vault.filter(|_| !repairing) {
             Self::remove_backups(vault);
         }
-        Ok(())
+        Ok(Schema::Current)
     }
 
     /// Apply every migration with `id > from_v` in ascending order inside ONE
@@ -632,7 +716,7 @@ impl Db {
                     ev = "db.migrate.failed",
                     from_v = u64::from(from_v),
                     to_v = u64::from(m.id),
-                    err_code = "DB_MIGRATION_FAILED",
+                    err_code = %ErrorCode::StorageMigrationFailed,
                     err_kind = "permanent",
                     retryable = false,
                     cause = %source,
@@ -1320,7 +1404,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = Db::ensure_schema(&mut conn, None).unwrap_err();
+        let err = Db::ensure_schema(&mut conn, None, false).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1353,7 +1437,7 @@ mod tests {
             .unwrap();
             assert!(
                 matches!(
-                    Db::ensure_schema(&mut conn, None),
+                    Db::ensure_schema(&mut conn, None, false),
                     Err(DbError::StorageVPreBaseline { .. })
                 ),
                 "storage_v = {db_v} must be refused"
@@ -1364,7 +1448,7 @@ mod tests {
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();
         Db::apply_pragmas(&conn).unwrap();
-        Db::ensure_schema(&mut conn, None).unwrap();
+        Db::ensure_schema(&mut conn, None, false).unwrap();
         // Stamp a version strictly newer than this binary supports.
         let too_new = u32::from(STORAGE_V) + 1;
         conn.execute(
@@ -1372,7 +1456,7 @@ mod tests {
             rusqlite::params![too_new],
         )
         .unwrap();
-        let err = Db::ensure_schema(&mut conn, None).unwrap_err();
+        let err = Db::ensure_schema(&mut conn, None, false).unwrap_err();
         assert!(matches!(err, DbError::StorageVTooNew { .. }));
     }
 

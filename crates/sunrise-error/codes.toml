@@ -131,6 +131,30 @@ kind = "user"
 retryable = false
 since = "v1"
 
+[[code]]
+id = 304
+name = "STORAGE_INTEGRITY_CHECK_FAILED"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Migration rigor rule 3: PRAGMA quick_check found the vault file damaged, so it was not opened or migrated. Not a wrong key, which stays FATAL_INTERNAL. The app offers the repair (rule 4), a copy beside the vault where one exists, and the recovery code."
+
+[[code]]
+id = 305
+name = "STORAGE_BACKUP_FAILED"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Migration rigor rule 2: the copy taken before a migration or a projection rebuild could not be written (a full disk, a read-only directory), so neither ran and the vault is as it was. Freeing space and opening again is the remedy."
+
+[[code]]
+id = 306
+name = "STORAGE_MIGRATION_FAILED"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Failure recovery: a storage migration failed and rolled back, leaving the vault at the version it was found at. Opening again retries it; restoring from the recovery code is the way out when it fails every time."
+
 # --- Crypto ---------------------------------------------------------------
 
 [[code]]

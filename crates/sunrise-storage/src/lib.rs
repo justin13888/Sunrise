@@ -20,6 +20,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod backup;
 pub mod blob_store;
 pub mod db;
 pub mod migrations;
@@ -35,6 +36,7 @@ pub mod sync_local;
 #[cfg(test)]
 mod vault_fixtures;
 
+pub use backup::{BackupKind, VaultBackup};
 pub use blob_store::{BlobStore, BlobStoreError};
 pub use db::{ensure_cipher_ready, Db, DbError};
 pub use migrations::{current_storage_v, MIGRATIONS};

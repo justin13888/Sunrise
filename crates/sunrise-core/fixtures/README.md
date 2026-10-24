@@ -58,3 +58,20 @@ The bytes are not reproducible: SQLCipher writes a random salt into the file
 header and every wrap draws a fresh nonce, so every regeneration produces a
 different file with identical contents. Expect a whole-file diff, and review
 the module rather than the binary.
+
+# The vaults rebuild equivalence is checked over
+
+`projection_vault_storage_v<N>.db` is a vault the engine wrote when
+`STORAGE_V` was `N`, through every command family, so each row of its
+projection is the fold of an op in its log.
+[`../src/engine/tests/rebuild/fixture.rs`](../src/engine/tests/rebuild/fixture.rs)
+opens a copy with the ordinary `Db::open`, which migrates it, rebuilds the
+projection from the log, and requires every projection table to read as the
+migration left it ([`migrations.md`](../../../docs/04-storage/migrations.md)
+§Migration rigor rule 1). `sunrise-storage`'s fixtures cannot be checked that
+way: their envelopes are invented, and nothing refolds them.
+
+`mise run storage-fixtures` writes the one for this build's `STORAGE_V` when it
+is missing, and never rewrites one. Its keys are derived from the engine tests'
+vault root (thirty-two `0x5a` bytes) by their test keychain, and are as public
+as the root above.

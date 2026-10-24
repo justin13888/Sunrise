@@ -42,6 +42,9 @@ thiserror = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
+# The wire codes a vault that will not open is classified by
+# (`vault_session::OpenProblem`).
+sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
 # The full export's `calendar.ics` (`src/export.rs`) goes through the same
 # Block-to-event mapping and writer `sunrise ical export` does.

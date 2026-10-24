@@ -603,3 +603,13 @@ fn a_row_an_older_build_never_folded_is_folded_by_the_rebuild() {
     assert_eq!(dump(db.conn()), live);
     assert_eq!(read_task_t(&e, &db, task).title, "second");
 }
+
+/// Rebuild equivalence over committed vaults the engine wrote
+/// (`migrations.md` §Migration rigor rule 1).
+///
+/// `#[cfg(test)]` restates what this module already is, for
+/// `core-filesystem-gate.py`, which skips a test module by that attribute:
+/// the fixture is copied out of the tree, and that is a test reading a file,
+/// not the core reaching past its storage handle.
+#[cfg(test)]
+mod fixture;

@@ -1843,7 +1843,13 @@ USAGE:
                                  came from
     sunrise rebuild              rebuild every task, stream and other row
                                  from this vault's own op log, in one
-                                 transaction; nothing is sent
+                                 transaction, under a copy of the vault taken
+                                 first; nothing is sent
+    sunrise rebuild --repair     the same, for a vault that failed its
+                                 integrity check and will not open
+    sunrise backups [restore <file>]
+                                 the copies of this vault kept beside it, or
+                                 put one back in its place
     sunrise help                 show this message
 
 CAPTURE SYNTAX:
@@ -2306,7 +2312,14 @@ insecure_remote = "it is plain http:// to another machine; use https://"
 not_an_origin = "it has a path, query or credentials; give only scheme, host and port"
 
 [cli.rebuild]
-usage = "usage: rebuild"
+usage = "usage: rebuild [--repair]"
+# stdout, after `sunrise rebuild --repair` opened a vault that failed its
+# integrity check, rebuilt it from its own op log and checked it again.
+# {count} is how many ops were applied again; {copy} is the path of the copy
+# of the damaged file it took first.
+# stderr, when `sunrise rebuild --repair` finds no vault. {dir} is a path.
+no_vault = "there is no vault in {dir} to repair"
+repaired = "repaired the vault from {count, plural, one {# op} other {# ops}} of its own history; the damaged file was copied to {copy}"
 # stdout, after `sunrise rebuild` rebuilt the vault's rows from its own op
 # log. {count} is how many ops were applied again.
 done = "rebuilt the projection from {count, plural, one {# op} other {# ops}}"
@@ -2314,6 +2327,33 @@ done = "rebuilt the projection from {count, plural, one {# op} other {# ops}}"
 # in a shape this build refuses, so they were left out; the log file says
 # which.
 skipped = "{count, plural, one {# op this build would not apply was left out; the log names it} other {# ops this build would not apply were left out; the log names them}}"
+
+[cli.backups]
+usage = "usage: backups [restore <file>]"
+# stderr, when `sunrise backups` has nothing to list.
+none = "no copies of this vault are kept beside it"
+# After a copy's path in `sunrise backups`: what it was taken before.
+pre_rebuild = "taken before a rebuild or a repair"
+# {version} is the storage version the vault was upgraded from.
+pre_migration = "taken before an upgrade from storage version {version}"
+# stdout, after `sunrise backups restore`. {copy} is the copy put back;
+# {aside} is where the vault it replaced was moved, which is kept.
+restored = "restored {copy}; the vault it replaced was moved to {aside}"
+# As `restored`, when there was no vault file to replace.
+restored_alone = "restored {copy}"
+
+[cli.open]
+# stderr, under `error: …` when the vault would not open, before one line per
+# remedy below. The remedies are listed best first.
+remedies = "what you can do:"
+try_again = "run the command again"
+free_space = "free some disk space, then run the command again"
+repair = "repair it from its own history: sunrise rebuild --repair"
+# {copy} is a path to a copy of the vault kept beside it.
+restore = "put back the copy kept beside it, losing what was written after it: sunrise backups restore {copy}"
+recover = "restore the account from its 24-word code into an empty directory: SUNRISE_VAULT=<empty directory> sunrise recover"
+update = "install a newer version of Sunrise, which opens it"
+diagnostics = "nothing here mends it; report it, with the log file"
 
 [cli.devices]
 # A bullet under a removal's report. {count} earlier removals the account no
