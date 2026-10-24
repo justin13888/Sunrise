@@ -160,6 +160,20 @@ Optional but recommended. It is specified in
 - #301 becomes a notification-catalog entry over a value the core already
   computes.
 
+## Delivered (2026-10)
+
+The day schedule half (#338): the resolver, the planner day and the wind-down
+trigger are pure functions in `crates/sunrise-domain/src/day_schedule.rs`; the
+schedule is three maps of entries in the `Preferences` values map, written by
+`SetPreference` / `ClearPreference` with no migration and no merge rule of its
+own; Today, Upcoming and the briefs read `day_bounds`; the CLI has
+`sunrise day-schedule`. [`day-schedule.md`](../02-domain/day-schedule.md) §In
+the tree lists what stays civil midnight and why. One correction to §3's
+prose, not its rule: the boundary is the *later* of the next wake and the
+previous sleep, so the night until the next wake belongs to the day that
+ended with it. The macOS settings and the Apple scheduling of the wind-down
+are not built.
+
 ## What would force revisiting this
 
 1. **A preference that must differ per stream** (a stream-specific quiet

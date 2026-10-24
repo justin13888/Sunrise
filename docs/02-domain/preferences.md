@@ -137,7 +137,7 @@ Types use the CDDL names from [`overview.md`](./overview.md) and
 | `week_start` | `Weekday` | `"SU"` | `vault` | week views, the planner, reviews |
 | `home_timezone` | IANA zone name, or absent | absent | `vault` | dual-zone display when travelling ([`time.md`](../10-cross-cutting/time.md) §7) |
 | `time_format` | `"locale"` / `"h12"` / `"h24"` | `"locale"` | `vault_overridable` | every time label |
-| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down. Not in the key table yet: [#338](https://github.com/justin13888/Sunrise/issues/338) adds it with its map entries. |
+| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down. Held as three maps of entries, `day_schedule.weekday.<Weekday>`, `day_schedule.month_day.<-1, 1..31>` and `day_schedule.date.<civil-date>`, each its own register. |
 
 ### Tasks, triage and reviews
 
@@ -243,8 +243,10 @@ Not built yet:
   `week_start` reaches the week views with
   [#336](https://github.com/justin13888/Sunrise/issues/336), the notification
   keys reach the reminder planner with
-  [#347](https://github.com/justin13888/Sunrise/issues/347), and `day_schedule`
-  is [#338](https://github.com/justin13888/Sunrise/issues/338).
+  [#347](https://github.com/justin13888/Sunrise/issues/347). `day_schedule`
+  is read by every planner-day view and by the wind-down plan
+  ([#338](https://github.com/justin13888/Sunrise/issues/338),
+  [`day-schedule.md`](./day-schedule.md) §In the tree).
 - **No cross-version run covers the entity.** The baseline build the
   cross-version harness drives ([ADR-0057](../11-adr/0057-cross-version-merge-harness.md))
   predates `prf_`, and a vault write is gated until every device supports it,

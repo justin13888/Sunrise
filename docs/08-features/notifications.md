@@ -91,7 +91,7 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | 5 | Morning brief | not built (the view and `sunrise://morning` exist; nothing schedules it) | not built (same) | no client | no client | no client |
 | 6 | Triage nudge | not built | not built | no client | no client | no client |
 | 7 | Evening plan | not built (the view and `sunrise://evening` exist) | not built (same) | no client | no client | no client |
-| 8 | Wind-down | not built | not built | no client | no client | no client |
+| 8 | Wind-down | not built (the trigger is computed, `SunriseCore::wind_down_plan`; nothing schedules it) | not built (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |
 | 10 | Time zone changed | not built | not built | no client | no client | no client |
 | 11 | Weekly review | not built | not built | no client | no client | no client |
@@ -110,8 +110,8 @@ What exists today, read from the tree:
   `ReminderKind` (`crates/sunrise-domain/src/notify.rs:108#ReminderKind`) has a
   `Routine` variant that only a test constructs. The morning summary and
   end-of-day plan are queries
-  (`crates/sunrise-core/src/engine/notify.rs:22#query_morning_summary`,
-  `crates/sunrise-core/src/engine/notify.rs:44#query_end_of_day_plan`) that
+  (`crates/sunrise-core/src/engine/notify.rs:28#query_morning_summary`,
+  `crates/sunrise-core/src/engine/notify.rs:52#query_end_of_day_plan`) that
   nothing schedules.
 - **The Apple clients** share one scheduler: `ReminderScheduler` follows the
   change feed and reconciles against the OS's pending requests, and two
@@ -120,6 +120,20 @@ What exists today, read from the tree:
   (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift:31`), not a
   toggle per kind. No request sets an interruption level, and nothing observes a
   time-zone change.
+- **The wind-down trigger** (#8) is computed: the client layer's
+  `reminders::wind_down_notification`
+  (`crates/sunrise-client-core/src/reminders/wind_down.rs`) takes the next
+  sleep time of the day schedule
+  ([`../02-domain/day-schedule.md`](../02-domain/day-schedule.md)) in the
+  reader's zone, less `notifications.wind_down.lead_s`, on the primary device
+  with `notifications.enabled` and `notifications.wind_down.enabled` on. It is
+  held under its own identifier, `sunrise.wind_down`, outside the reminder
+  namespace, so the reminder reconcile never cancels it, and
+  `reconcile_wind_down` says whether to add, replace, cancel or keep it; a
+  zone change moves it and replaces it. `Schedule::wind_down` carries it,
+  the seam exports it as `SunriseCore::wind_down_plan`, and `sunrise reminders
+  plan` prints it. No Apple client schedules it: the time-sensitive level and
+  the Sleep Focus guidance (§Wind-down) are the client's.
 - **The client layer** turns the core's intents into an OS schedule
   (`crates/sunrise-client-core/src/reminders/mod.rs`): the 24-hour horizon,
   the 56-request cap with the earliest kept, the body text, and the reconcile

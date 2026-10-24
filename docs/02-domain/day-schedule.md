@@ -90,11 +90,14 @@ Properties, each pinned by a table test:
   because the boundaries are monotone: `boundary(d)` is always before civil
   midnight of `d+1` (a wake on `d` is on `d`, and a sleep that crosses midnight
   from `d-1` ends before `d-1`'s wake time on `d`), while `boundary(d+1)` is
-  never before it. The night
-  between sleep and the next wake belongs to the **next** day, and time after
-  midnight but before a late sleep belongs to the **previous** day. A task
+  never before it. A planner day runs from its own start to the **next
+  day's** start, so time after midnight belongs to the **previous** day until
+  the later of that day's sleep and the next day's wake: the night between
+  sleep and the next wake is still the day that ended with it. A task
   completed at 00:30 by someone who sleeps at 01:00 lands on the day they were
-  living.
+  living, and so does one opened at 03:00. This is the formula above; an
+  earlier draft of this paragraph gave the night to the next day, which the
+  formula never did.
 - **Unset collapses to civil.** With no schedule at all, every planner day is
   the civil day.
 - **A missing date is empty.** In a zone that skips a civil date
@@ -127,3 +130,53 @@ trigger #301 asks for.
   a 30-day month.
 - A `date` override for a past date is kept. It still determines that day's
   planner bounds for stats and history.
+
+## In the tree
+
+- **The rules** are `crates/sunrise-domain/src/day_schedule.rs`, pure
+  functions of `(schedule, date or instant, zone)`: `DaySchedule::window_for`,
+  `day_bounds`, `plannable`, `planner_date`, `planner_day_of` (the planner day
+  a stored time falls on: an `all_day` value's own date, else its resolved
+  instant's) and `wind_down_at` / `next_wind_down`. Their table tests
+  (precedence, a sleep past midnight, the gaps and folds of
+  `America/New_York`, `Australia/Lord_Howe` and `Pacific/Chatham`, the
+  skipped Apia date, an unset schedule, and contiguity over a week around
+  each) are `crates/sunrise-domain/src/day_schedule/tests.rs`.
+- **Storage** is the `Preferences` entity's `values` map, one key per entry:
+  the key table holds the three maps (`day_schedule.weekday`,
+  `day_schedule.month_day`, `day_schedule.date`, `PrefSpec::entries`), each
+  entry's value is `{ "wake", "sleep" }` (`PrefType::DayWindow`) or, for a
+  date, `{ "none": true }` (`PrefType::DayOverride`). An entry is written and
+  cleared with `Command::SetPreference` / `ClearPreference`, vault target, so
+  no command, table, migration or merge rule is the schedule's own. Two
+  devices' overrides for two dates both survive
+  (`crates/sunrise-core/src/engine/tests/preferences.rs#concurrent_day_schedule_overrides_for_different_dates_both_survive`).
+  `Query::Preferences` does not list the entries; `Query::DaySchedule {
+  at_ms }` returns the schedule and the reader's planner day holding `at_ms`.
+- **Readers of the planner day** (`crates/sunrise-core/src/engine/day_schedule.rs#planner_day_at`):
+  `Query::Today` (membership by `planner_day_of`), `Query::Upcoming` (each
+  day's bounds and membership), `Query::MorningSummary` (`since` and
+  `today_start` are planner-day starts), `Query::EndOfDayPlan` (the day and
+  the seven planner days after it), `DailyReview`'s Today list (it is
+  `Query::Today`), the time-zone change's lateness count, and Today's
+  sections (`sunrise_domain::today_section_in`, and
+  `sunrise_client_core::vocab::today_section_in` for a client holding the
+  schedule).
+- **Still civil midnight, on purpose:** the calendar grid (`DayBlocks`,
+  `WeekBlocks`, through `civil_span`), because a grid column is a calendar
+  date; the search grammar's date operators (`due:today`), which name
+  calendar dates; and an `all_day` value's own instant, which
+  `SunriseTime::resolve_in` and `due_in` still place at civil midnight. So a
+  brief's instant-window filter (`lands_in`) counts an all-day deadline on
+  the civil date after a late night into the night's planner day. Making an
+  `all_day` value resolve to its planner day's bounds is a change to every
+  `SunriseTime` comparison and is not part of #338.
+- **Wind-down** is planned by `crates/sunrise-client-core/src/reminders/wind_down.rs`
+  beside the reminder schedule (`Schedule::wind_down`), under its own
+  identifier `sunrise.wind_down`, re-planned in the reader's zone on every
+  call, so a zone change replaces it. The seam exports it as
+  `SunriseCore::wind_down_plan`. No Apple client schedules it yet.
+- **The CLI** reads and writes it with `sunrise day-schedule`, and
+  `sunrise prefs get day_schedule.…` reads one entry
+  (`crates/sunrise-e2e/tests/cli_day_schedule.rs` drives both against a
+  relay).

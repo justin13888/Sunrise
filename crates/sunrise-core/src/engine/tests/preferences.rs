@@ -631,3 +631,188 @@ fn a_vault_write_is_refused_while_another_device_lacks_the_feature() {
     )
     .unwrap();
 }
+
+fn day_schedule(e: &Engine, db: &Db) -> sunrise_domain::DaySchedule {
+    match e.query(db, Query::DaySchedule { at_ms: T0 }).unwrap() {
+        QueryResult::DaySchedule(d) => d.schedule,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+fn window(wake: (i8, i8), sleep: (i8, i8)) -> PrefValue {
+    PrefValue::DayWindow {
+        wake: jiff::civil::time(wake.0, wake.1, 0, 0),
+        sleep: jiff::civil::time(sleep.0, sleep.1, 0, 0),
+    }
+}
+
+/// #338: per-date overrides are set and cleared through a command, and two
+/// devices that each set an override for a different date, concurrently and
+/// before either has seen the other's create, both keep theirs. Each entry is
+/// its own register in the one `values` map, so no merge rule of its own is
+/// needed.
+#[test]
+fn concurrent_day_schedule_overrides_for_different_dates_both_survive() {
+    use jiff::civil::date;
+    use sunrise_domain::{DayOverride, DayWindow};
+    let mut p = pair();
+    set_clock(&p.ca, T0 + 1_000);
+    set_clock(&p.cb, T0 + 1_000);
+    set(
+        &p.ea,
+        &mut p.dba,
+        "day_schedule.date.2026-12-24",
+        window((9, 0), (1, 0)),
+        PrefTarget::Vault,
+    );
+    set(
+        &p.ea,
+        &mut p.dba,
+        "day_schedule.weekday.MO",
+        window((7, 0), (23, 0)),
+        PrefTarget::Vault,
+    );
+    set(
+        &p.eb,
+        &mut p.dbb,
+        "day_schedule.date.2026-12-25",
+        PrefValue::NoSchedule,
+        PrefTarget::Vault,
+    );
+    set(
+        &p.eb,
+        &mut p.dbb,
+        "day_schedule.month_day.-1",
+        window((5, 0), (22, 0)),
+        PrefTarget::Vault,
+    );
+    assert!(patches_of(&p.ea, &p.dba)[0].create && patches_of(&p.eb, &p.dbb)[0].create);
+
+    sync(&mut p);
+
+    let w = |wake: i8, sleep: i8| {
+        DayWindow::new(
+            jiff::civil::time(wake, 0, 0, 0),
+            jiff::civil::time(sleep, 0, 0, 0),
+        )
+        .unwrap()
+    };
+    for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
+        let s = day_schedule(e, db);
+        assert_eq!(
+            s.date.get(&date(2026, 12, 24)),
+            Some(&DayOverride::Window(w(9, 1)))
+        );
+        assert_eq!(s.date.get(&date(2026, 12, 25)), Some(&DayOverride::None));
+        assert_eq!(s.weekday_window(&Weekday::Mo), Some(w(7, 23)));
+        assert_eq!(s.month_day.get(&-1), Some(&w(5, 22)));
+        // The entries are vault registers, not keys `Query::Preferences` lists.
+        assert!(prefs(e, db)
+            .iter()
+            .all(|r| !r.key.starts_with("day_schedule")));
+    }
+    assert_eq!(stored(&p.dba), stored(&p.dbb));
+
+    // Clearing one override on one device clears it everywhere and touches
+    // no other entry.
+    set_clock(&p.ca, T0 + 2_000);
+    p.ea.apply(
+        &mut p.dba,
+        Command::ClearPreference {
+            key: "day_schedule.date.2026-12-24".into(),
+            target: PrefTarget::Vault,
+        },
+    )
+    .unwrap();
+    sync(&mut p);
+    for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
+        let s = day_schedule(e, db);
+        assert_eq!(s.date.get(&date(2026, 12, 24)), None);
+        assert_eq!(s.date.get(&date(2026, 12, 25)), Some(&DayOverride::None));
+    }
+
+    // Two writes to the same date converge on the later one.
+    set_clock(&p.ca, T0 + 3_000);
+    set_clock(&p.cb, T0 + 4_000);
+    set(
+        &p.ea,
+        &mut p.dba,
+        "day_schedule.date.2026-12-31",
+        window((10, 0), (2, 0)),
+        PrefTarget::Vault,
+    );
+    set(
+        &p.eb,
+        &mut p.dbb,
+        "day_schedule.date.2026-12-31",
+        window((8, 0), (3, 0)),
+        PrefTarget::Vault,
+    );
+    sync(&mut p);
+    for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
+        assert_eq!(
+            day_schedule(e, db).date.get(&date(2026, 12, 31)),
+            Some(&DayOverride::Window(w(8, 3)))
+        );
+    }
+}
+
+/// A day-schedule entry is vault-scoped, and its value must fit its level:
+/// `none` is a date override only, and wake equal to sleep is refused.
+#[test]
+fn a_day_schedule_entry_is_checked_before_anything_is_written() {
+    let mut p = pair();
+    for (key, value, target) in [
+        (
+            "day_schedule.weekday.MO",
+            PrefValue::NoSchedule,
+            PrefTarget::Vault,
+        ),
+        (
+            "day_schedule.weekday.MO",
+            window((7, 0), (7, 0)),
+            PrefTarget::Vault,
+        ),
+        (
+            "day_schedule.weekday.XX",
+            window((7, 0), (23, 0)),
+            PrefTarget::Vault,
+        ),
+        (
+            "day_schedule.month_day.0",
+            window((7, 0), (23, 0)),
+            PrefTarget::Vault,
+        ),
+        (
+            "day_schedule.weekday",
+            window((7, 0), (23, 0)),
+            PrefTarget::Vault,
+        ),
+        (
+            "day_schedule.weekday.MO",
+            window((7, 0), (23, 0)),
+            PrefTarget::Device,
+        ),
+    ] {
+        let err =
+            p.ea.apply(
+                &mut p.dba,
+                Command::SetPreference {
+                    key: key.into(),
+                    value,
+                    target,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                EngineError::Validation(
+                    ValidationError::Field { .. } | ValidationError::PreferenceScope
+                )
+            ),
+            "{key}: {err:?}"
+        );
+    }
+    assert!(patches_of(&p.ea, &p.dba).is_empty());
+}

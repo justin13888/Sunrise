@@ -235,6 +235,69 @@ pub fn upcoming(u: &sunrise_core::queries::Upcoming, reader: &TimeZone) -> Value
     })
 }
 
+/// A civil time as `HH:MM`.
+fn hm(t: jiff::civil::Time) -> Value {
+    Value::String(t.strftime("%H:%M").to_string())
+}
+
+fn window(w: sunrise_domain::DayWindow) -> Value {
+    json!({ "wake": hm(w.wake), "sleep": hm(w.sleep) })
+}
+
+/// `day-schedule`: the planner day and every entry of the schedule.
+///
+/// `{date, start_ms, end_ms, window, plannable, wind_down_ms, schedule}`:
+/// `window` the `{wake, sleep}` the date resolved to (`null` when unset),
+/// `plannable` its `{start_ms, end_ms}` (`null` when unset), `wind_down_ms`
+/// when that night's wind-down fires with `lead_s` (`null` without a sleep
+/// time), and `schedule` `{weekday: {MO: window, …}, month_day: {"1": window,
+/// "-1": window, …}, date: {"2026-12-25": window | "none", …}}`.
+#[must_use]
+pub fn day_schedule(day: &sunrise_core::PlannerDay, reader: &TimeZone, lead_s: u32) -> Value {
+    let s = &day.schedule;
+    let weekday: serde_json::Map<String, Value> = sunrise_domain::day_schedule::WEEKDAYS
+        .iter()
+        .zip(s.weekday.iter())
+        .filter_map(|(d, w)| w.map(|w| (d.as_str().to_owned(), window(w))))
+        .collect();
+    let month_day: serde_json::Map<String, Value> = s
+        .month_day
+        .iter()
+        .map(|(n, w)| (n.to_string(), window(*w)))
+        .collect();
+    let date: serde_json::Map<String, Value> = s
+        .date
+        .iter()
+        .map(|(d, o)| {
+            let v = match o {
+                sunrise_domain::DayOverride::Window(w) => window(*w),
+                sunrise_domain::DayOverride::None => Value::String("none".into()),
+            };
+            (d.to_string(), v)
+        })
+        .collect();
+    let wind_down = sunrise_domain::wind_down_at(s, day.date, reader, lead_s)
+        .ok()
+        .flatten()
+        .map(|w| w.fire_at.as_millisecond());
+    json!({
+        "date": day.date.to_string(),
+        "start_ms": day.start.as_millisecond(),
+        "end_ms": day.end.as_millisecond(),
+        "window": day.window.map(window),
+        "plannable": day.plannable.map(|(a, b)| json!({
+            "start_ms": a.as_millisecond(),
+            "end_ms": b.as_millisecond(),
+        })),
+        "wind_down_ms": wind_down,
+        "schedule": {
+            "weekday": weekday,
+            "month_day": month_day,
+            "date": date,
+        },
+    })
+}
+
 /// Print `v` as one line on stdout: the whole of a `--json` command's output.
 #[allow(clippy::print_stdout)]
 pub fn print(v: &Value) {

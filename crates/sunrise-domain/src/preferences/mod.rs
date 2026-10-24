@@ -178,6 +178,12 @@ pub enum PrefType {
     Cadence,
     /// `{ "start": civil-time, "end": civil-time }`, `start != end`.
     TimeWindow,
+    /// `{ "wake": civil-time, "sleep": civil-time }`, `wake != sleep`: one
+    /// day-schedule window (`docs/02-domain/day-schedule.md`).
+    DayWindow,
+    /// A [`Self::DayWindow`], or `{ "none": true }`: a per-date override,
+    /// which may say there is no schedule that date.
+    DayOverride,
 }
 
 /// A typed preference value: what a client sends and is shown.
@@ -208,6 +214,15 @@ pub enum PrefValue {
         /// Civil end; earlier than `start` wraps midnight.
         end: civil::Time,
     },
+    /// [`PrefType::DayWindow`], and a window under [`PrefType::DayOverride`].
+    DayWindow {
+        /// Civil wake time.
+        wake: civil::Time,
+        /// Civil sleep time; at or before `wake` falls on the next date.
+        sleep: civil::Time,
+    },
+    /// [`PrefType::DayOverride`]'s `{ "none": true }`: no schedule that date.
+    NoSchedule,
 }
 
 fn text(s: &str) -> Value {
@@ -227,6 +242,13 @@ fn map_get<'a>(entries: &'a [(Value, Value)], key: &str) -> Option<&'a Value> {
 
 fn read_civil(v: &Value) -> Option<civil::Time> {
     v.as_text()?.parse::<civil::Time>().ok()
+}
+
+fn read_day_window(m: &[(Value, Value)]) -> Option<PrefValue> {
+    Some(PrefValue::DayWindow {
+        wake: read_civil(map_get(m, "wake")?)?,
+        sleep: read_civil(map_get(m, "sleep")?)?,
+    })
 }
 
 fn read_weekday(v: &Value) -> Option<Weekday> {
@@ -252,6 +274,11 @@ impl PrefValue {
                 (text("end"), civil_text(*end)),
                 (text("start"), civil_text(*start)),
             ]),
+            Self::DayWindow { wake, sleep } => Value::Map(vec![
+                (text("wake"), civil_text(*wake)),
+                (text("sleep"), civil_text(*sleep)),
+            ]),
+            Self::NoSchedule => Value::Map(vec![(text("none"), Value::Bool(true))]),
         })
     }
 }
@@ -306,6 +333,15 @@ impl PrefType {
                     end: read_civil(map_get(m, "end")?)?,
                 }
             }
+            Self::DayWindow => read_day_window(v.as_map()?)?,
+            Self::DayOverride => {
+                let m = v.as_map()?;
+                match map_get(m, "none") {
+                    Some(none) if none.as_bool()? => PrefValue::NoSchedule,
+                    Some(_) => return None,
+                    None => read_day_window(m)?,
+                }
+            }
         };
         self.fits(&value).then_some(value)
     }
@@ -314,7 +350,7 @@ impl PrefType {
     #[must_use]
     pub fn fits(self, value: &PrefValue) -> bool {
         match (self, value) {
-            (Self::Bool, PrefValue::Bool(_)) => true,
+            (Self::Bool, PrefValue::Bool(_)) | (Self::DayOverride, PrefValue::NoSchedule) => true,
             (Self::Uint { min, max }, PrefValue::Uint(n)) => (min..=max).contains(n),
             (Self::UintOneOf(allowed), PrefValue::Uint(n)) => allowed.contains(n),
             (Self::Int { min, max }, PrefValue::Int(n)) => (min..=max).contains(n),
@@ -327,6 +363,9 @@ impl PrefType {
             (Self::Weekday, PrefValue::Weekday(d))
             | (Self::Cadence, PrefValue::Cadence { day: d, .. }) => !d.is_unknown(),
             (Self::TimeWindow, PrefValue::TimeWindow { start, end }) => start != end,
+            (Self::DayWindow | Self::DayOverride, PrefValue::DayWindow { wake, sleep }) => {
+                wake != sleep
+            }
             _ => false,
         }
     }
@@ -396,16 +435,44 @@ pub struct PrefSpec {
     /// file rather than the encrypted overlay. Always `device`-scoped, and
     /// never user content.
     pub bootstrap: bool,
+    /// For a map-valued key, the entries it holds: `key` is then a prefix,
+    /// and each entry is its own key and register, `key` + `.` + the entry
+    /// (`day_schedule.date.2026-12-25`). `None` for a scalar key.
+    pub entries: Option<PrefEntries>,
+}
+
+/// What follows the prefix of a map-valued key (`docs/02-domain/preferences.md`
+/// §Ops, "map-valued keys are maps of registers").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefEntries {
+    /// A weekday, `MO` .. `SU`.
+    Weekday,
+    /// A day of month, `-1` or `1` .. `31`.
+    MonthDay,
+    /// A civil date, `YYYY-MM-DD`.
+    Date,
 }
 
 mod keys;
 pub use keys::PREFERENCE_KEYS;
 
 /// The key table's entry for `key`, or `None` for a key this build does
-/// not know.
+/// not know. An entry of a map-valued key (`day_schedule.weekday.MO`) answers
+/// with its map's spec, whose `key` is the prefix; the map's prefix alone is
+/// not a key.
 #[must_use]
 pub fn pref_spec(key: &str) -> Option<&'static PrefSpec> {
-    PREFERENCE_KEYS.iter().find(|s| s.key == key)
+    if let Some(s) = PREFERENCE_KEYS
+        .iter()
+        .find(|s| s.entries.is_none() && s.key == key)
+    {
+        return Some(s);
+    }
+    let (prefix, _) = key.rsplit_once('.')?;
+    crate::day_schedule::DayScheduleEntry::parse_key(key)?;
+    PREFERENCE_KEYS
+        .iter()
+        .find(|s| s.entries.is_some() && s.key == prefix)
 }
 
 /// Whether `key` is a well-formed preference key:
@@ -516,9 +583,10 @@ pub fn resolve(
     }
 }
 
-/// Every non-bootstrap key, resolved against `overlay` and `vault`, in table
-/// order. Keys either map holds that the table does not are kept by their
-/// stores and not returned.
+/// Every non-bootstrap scalar key, resolved against `overlay` and `vault`, in
+/// table order. Keys either map holds that the table does not are kept by
+/// their stores and not returned, and so are the entries of a map-valued key
+/// (the day schedule), which [`crate::DaySchedule::from_values`] reads.
 #[must_use]
 pub fn resolve_all(
     overlay: &BTreeMap<String, CborValue>,
@@ -527,7 +595,7 @@ pub fn resolve_all(
 ) -> Vec<ResolvedPref> {
     PREFERENCE_KEYS
         .iter()
-        .filter(|s| !s.bootstrap)
+        .filter(|s| !s.bootstrap && s.entries.is_none())
         .map(|s| resolve(s, overlay.get(s.key), vault.get(s.key), class))
         .collect()
 }

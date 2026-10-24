@@ -19361,6 +19361,10 @@ mod local_write;
 /// The Upcoming view's civil days, span and no-date lane (#351).
 mod upcoming;
 
+/// The planner day: Today, Upcoming and the briefs on the day schedule's
+/// bounds (#338).
+mod day_schedule;
+
 /// The version DAG: parents, frontiers and heads (ADR-0065 PR 4).
 mod versions;
 

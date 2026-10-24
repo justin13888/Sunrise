@@ -215,7 +215,7 @@ run = "cargo test --workspace --all-targets"
 description = "Two CLI vaults against a real relay, through the real sunrise binary"
 run = [
   "cargo build -p sunrise-cli --bin sunrise",
-  "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller --test cli_pair_relay -- --include-ignored",
+  "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller --test cli_pair_relay --test cli_day_schedule -- --include-ignored",
 ]
 
 # The log-event and log-field gate, on its own, with the build it reads from in

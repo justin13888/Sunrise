@@ -266,6 +266,12 @@ pub(super) async fn reminders(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 "kind": kind_name(u.kind),
                 "reason": u.reason.to_string(),
             })).collect::<Vec<_>>(),
+            "wind_down": s.wind_down.as_ref().map(|w| serde_json::json!({
+                "identifier": w.identifier,
+                "date": w.date.to_string(),
+                "fire_at_ms": w.fire_at_ms,
+                "sleep_at_ms": w.sleep_at_ms,
+            })),
         }));
         return Ok(());
     }
@@ -287,6 +293,19 @@ pub(super) async fn reminders(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             n.entity.to_str(),
             n.title,
             n.body
+        );
+    }
+    if let Some(w) = &s.wind_down {
+        let at = |ms: i64| {
+            sunrise_client_core::vocab::instant_at(u64::try_from(ms).unwrap_or(0))
+                .to_zoned(reader.clone())
+        };
+        println!(
+            "{}  {:<7} {}  {}",
+            at(w.fire_at_ms).strftime("%Y-%m-%d %H:%M"),
+            "wind-down",
+            w.identifier,
+            strings::reminders::wind_down(&at(w.sleep_at_ms).strftime("%H:%M").to_string())
         );
     }
     for u in &s.unscheduled {

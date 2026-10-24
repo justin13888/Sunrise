@@ -21,6 +21,7 @@
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 
+use crate::day_schedule::{planner_date, planner_day_of, DaySchedule};
 use crate::time::SunriseTime;
 
 /// A section of the Today view, in the order the spec lists them.
@@ -63,6 +64,9 @@ impl TodaySection {
 /// Total by construction. A task carrying neither time cannot reach Today at
 /// all (the query selects on one or the other being set), and classifies as
 /// [`TodaySection::Due`] rather than panicking if one ever does.
+///
+/// Days are civil days here; [`today_section_in`] reads them as planner days
+/// of a day schedule.
 #[must_use]
 pub fn today_section(
     scheduled_at: Option<&SunriseTime>,
@@ -70,7 +74,21 @@ pub fn today_section(
     now_ms: u64,
     tz: &TimeZone,
 ) -> TodaySection {
-    if due_at.is_some_and(|d| is_overdue(d, now_ms, tz)) {
+    today_section_in(scheduled_at, due_at, now_ms, tz, &DaySchedule::default())
+}
+
+/// [`today_section`] with "today" the planner day of `schedule` that holds
+/// `now_ms` (`docs/02-domain/day-schedule.md` §Planner day): at 00:30, for
+/// someone who sleeps at 01:00, a task due "yesterday" is not overdue yet.
+#[must_use]
+pub fn today_section_in(
+    scheduled_at: Option<&SunriseTime>,
+    due_at: Option<&SunriseTime>,
+    now_ms: u64,
+    tz: &TimeZone,
+    schedule: &DaySchedule,
+) -> TodaySection {
+    if due_at.is_some_and(|d| is_overdue_in(d, now_ms, tz, schedule)) {
         TodaySection::Overdue
     } else if scheduled_at.is_some() {
         TodaySection::Scheduled
@@ -87,14 +105,28 @@ pub fn today_section(
 /// anyway.
 #[must_use]
 pub fn is_overdue(due_at: &SunriseTime, now_ms: u64, tz: &TimeZone) -> bool {
+    is_overdue_in(due_at, now_ms, tz, &DaySchedule::default())
+}
+
+/// [`is_overdue`] over the planner days of `schedule`: the deadline's planner
+/// day is before the one `now_ms` is in. With an empty schedule the two agree.
+#[must_use]
+pub fn is_overdue_in(
+    due_at: &SunriseTime,
+    now_ms: u64,
+    tz: &TimeZone,
+    schedule: &DaySchedule,
+) -> bool {
     let Ok(Ok(now)) = i64::try_from(now_ms).map(Timestamp::from_millisecond) else {
         // An unreadable clock is not evidence that anything is late.
         return false;
     };
-    let today = now.to_zoned(tz.clone()).date();
+    let Ok(today) = planner_date(schedule, now, tz) else {
+        return false;
+    };
     // A deadline with no instant in `tz` is not evidence of lateness either
     // (`docs/11-adr/0066-times-survive-travel.md` §3).
-    due_at.day_in(tz).is_some_and(|due| due < today)
+    planner_day_of(schedule, due_at, tz).is_some_and(|due| due < today)
 }
 
 #[cfg(test)]

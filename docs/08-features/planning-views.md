@@ -46,11 +46,13 @@ default*).
 
 > **Today's build** composes Scheduled Blocks, tasks scheduled today, tasks due
 > today and an Overdue section from `scheduled_at` and `due_at`: every open task
-> scheduled or due on or before the reader's civil day
+> scheduled or due on or before the reader's planner day
 > (`crates/sunrise-core/src/engine/query.rs#query_today`), with overdue meaning
-> `due_at` before the start of today. [#334](https://github.com/justin13888/Sunrise/issues/334)
-> moves it to the composition above, and [#338](https://github.com/justin13888/Sunrise/issues/338)
-> bounds the day by the day schedule.
+> `due_at` on a planner day before today's
+> (`sunrise_domain::today_section_in`). The day is bounded by the day schedule
+> ([`../02-domain/day-schedule.md`](../02-domain/day-schedule.md), #338), and
+> is the civil day without one. [#334](https://github.com/justin13888/Sunrise/issues/334)
+> moves it to the composition above.
 
 ## Upcoming
 
@@ -85,13 +87,13 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > **Today's build** has the query and the CLI. `Query::Upcoming { now_ms,
 > span_days, contexts }` (`crates/sunrise-core/src/engine/upcoming.rs`) folds
 > through the pure `crates/sunrise-domain/src/upcoming.rs#build_upcoming`: days
-> are civil days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
+> are planner days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
 > than a `zone` argument), each carrying its own `[start, end)` so a DST day
-> is 23 or 25 hours; a task is on the day `SunriseTime::day_in` puts it,
-> keeping its kind. Until [#334](https://github.com/justin13888/Sunrise/issues/334)
+> is 23 or 25 hours, and civil days with no day schedule; a task is on the day
+> `sunrise_domain::planner_day_of` puts it, keeping its kind. Until
+> [#334](https://github.com/justin13888/Sunrise/issues/334)
 > the plan is `scheduled_at` and a day's deadlines are one `due` list over
-> `due_at`; until [#338](https://github.com/justin13888/Sunrise/issues/338) a
-> day starts at civil midnight; and until
+> `due_at`; and until
 > [ADR-0046](../11-adr/0046-optional-stream.md) lands, "No stream" is the
 > Inbox, listed last. `span_days: None` reads `views.upcoming.span_days`; any
 > span but 7, 14 or 30 is refused. Blocks overlap a day as on the calendar

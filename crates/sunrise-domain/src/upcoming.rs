@@ -3,12 +3,13 @@
 //!
 //! Every decision the view makes is here, so no client re-derives one:
 //!
-//! - **Days are civil days in the reader's zone**, never multiples of
+//! - **Days are planner days in the reader's zone**, never multiples of
 //!   86,400,000 ms (`docs/10-cross-cutting/time.md` §4). Each day carries its
 //!   own `[start, end)`, which is 23 or 25 hours across a DST change. With no
-//!   day schedule yet (#338) a day starts at civil midnight.
-//! - **A task belongs to the day the reader sees its time on**
-//!   ([`SunriseTime::day_in`]), and keeps its kind: a floating 09:00 is on the
+//!   day schedule a day starts at civil midnight; with one, at the boundary
+//!   `docs/02-domain/day-schedule.md` §Planner day defines.
+//! - **A task belongs to the planner day its time falls on**
+//!   ([`crate::planner_day_of`]), and keeps its kind: a floating 09:00 is on the
 //!   same wall-clock day wherever the reader is, a zoned one is on whichever
 //!   day its instant falls in the reader's zone, and an all-day value is on
 //!   the date it names (`docs/11-adr/0066-times-survive-travel.md`).
@@ -22,13 +23,14 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use jiff::civil::{self, Date};
+use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use serde::Serialize;
 use sunrise_id::EntityRef;
 
 use crate::block::Block;
+use crate::day_schedule::{day_bounds, planner_day_of, DaySchedule};
 use crate::task::{Task, TaskState};
 use crate::time::SunriseTime;
 
@@ -55,12 +57,13 @@ pub enum UpcomingError {
     Calendar(Date),
 }
 
-/// One civil day of the view.
+/// One planner day of the view.
 #[derive(Debug, Clone, Serialize)]
 pub struct UpcomingDay<B> {
-    /// The civil date, in the reader's zone.
+    /// The planner day's date, in the reader's zone.
     pub date: Date,
-    /// The instant the day starts: civil midnight in the reader's zone.
+    /// The instant the day starts: civil midnight in the reader's zone with
+    /// no day schedule, its planner-day boundary with one.
     pub start: Timestamp,
     /// The instant the next day starts. `end - start` is 23 or 25 hours on a
     /// DST day.
@@ -97,11 +100,11 @@ pub struct NoDateGroup {
 /// The whole view.
 #[derive(Debug, Clone, Serialize)]
 pub struct Upcoming<B> {
-    /// The reader's civil today: the first day.
+    /// The reader's planner today: the first day.
     pub today: Date,
     /// How many days the view spans: one of [`UPCOMING_SPANS`].
     pub span_days: u32,
-    /// One entry per civil day from today, `span_days` of them.
+    /// One entry per planner day from today, `span_days` of them.
     pub days: Vec<UpcomingDay<B>>,
     /// Open tasks with no `scheduled_at`, grouped by Stream in the stream
     /// list's order, the "No stream" group last.
@@ -127,12 +130,15 @@ pub struct UpcomingInput<'a, B> {
     /// Keep only tasks carrying at least one of these; empty keeps all. Blocks
     /// carry no contexts and are never filtered.
     pub contexts: &'a [EntityRef],
-    /// The reader's civil today.
+    /// The reader's today: the planner day holding "now".
     pub today: Date,
     /// One of [`UPCOMING_SPANS`].
     pub span_days: u32,
     /// The reader's zone.
     pub tz: &'a TimeZone,
+    /// The day schedule whose planner days the view is laid out in. Empty
+    /// lays it out in civil days.
+    pub schedule: &'a DaySchedule,
 }
 
 // By hand rather than derived: a derive would require `B: Copy`, and the
@@ -163,23 +169,33 @@ pub fn upcoming_days(
     span_days: u32,
     tz: &TimeZone,
 ) -> Result<Vec<(Date, Timestamp, Timestamp)>, UpcomingError> {
+    upcoming_planner_days(today, span_days, tz, &DaySchedule::default())
+}
+
+/// The planner days `today ..= today + span_days - 1` of `schedule` with
+/// their bounds in `tz` (`docs/02-domain/day-schedule.md` §Planner day), each
+/// day's end being the next day's start. With an empty schedule these are
+/// [`upcoming_days`]' civil days.
+///
+/// # Errors
+///
+/// As [`upcoming_days`].
+pub fn upcoming_planner_days(
+    today: Date,
+    span_days: u32,
+    tz: &TimeZone,
+    schedule: &DaySchedule,
+) -> Result<Vec<(Date, Timestamp, Timestamp)>, UpcomingError> {
     if !is_upcoming_span(span_days) {
         return Err(UpcomingError::Span(span_days));
     }
-    let start_of = |d: Date| {
-        tz.to_zoned(d.to_datetime(civil::Time::midnight()))
-            .map(|z| z.timestamp())
-            .map_err(|_| UpcomingError::Calendar(d))
-    };
     let mut out = Vec::with_capacity(span_days as usize);
     let mut date = today;
-    let mut start = start_of(date)?;
     for _ in 0..span_days {
-        let next = date.tomorrow().map_err(|_| UpcomingError::Calendar(date))?;
-        let end = start_of(next)?;
+        let (start, end) =
+            day_bounds(schedule, date, tz).map_err(|_| UpcomingError::Calendar(date))?;
         out.push((date, start, end));
-        date = next;
-        start = end;
+        date = date.tomorrow().map_err(|_| UpcomingError::Calendar(date))?;
     }
     Ok(out)
 }
@@ -191,7 +207,7 @@ pub fn upcoming_days(
 /// As [`upcoming_days`].
 pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<B>, UpcomingError> {
     let tz = input.tz;
-    let bounds = upcoming_days(input.today, input.span_days, tz)?;
+    let bounds = upcoming_planner_days(input.today, input.span_days, tz, input.schedule)?;
     let rank = StreamRank::new(input.stream_order);
     let open: Vec<&Task> = input
         .tasks
@@ -218,11 +234,12 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
 
     let mut no_date: BTreeMap<EntityRef, Vec<Task>> = BTreeMap::new();
     for t in open {
-        let planned_day = t.scheduled_at.as_ref().and_then(|v| v.day_in(tz));
+        let day_of = |v: &SunriseTime| planner_day_of(input.schedule, v, tz);
+        let planned_day = t.scheduled_at.as_ref().and_then(day_of);
         if let Some(i) = planned_day.and_then(|d| index.get(&d)) {
             days[*i].planned.push(t.clone());
         }
-        let due_day = t.due_at.as_ref().and_then(|v| v.day_in(tz));
+        let due_day = t.due_at.as_ref().and_then(day_of);
         if let Some(d) = due_day.filter(|d| Some(*d) != planned_day) {
             if let Some(i) = index.get(&d) {
                 days[*i].due.push(t.clone());

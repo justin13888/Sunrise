@@ -14,6 +14,7 @@
 mod account;
 mod blocks;
 mod conflicts;
+mod day_schedule;
 mod devices;
 mod files;
 mod organize;
@@ -135,6 +136,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "views" => settings::views(ctx, rest).await,
         "prefs" => settings::prefs(ctx, rest).await,
         "tz" => settings::tz(ctx, rest),
+        "day-schedule" => day_schedule::day_schedule(ctx, rest).await,
 
         "sync" => plumbing::sync(ctx, rest).await,
         "rebuild" => plumbing::rebuild(ctx.core, rest),

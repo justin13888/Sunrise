@@ -13,6 +13,8 @@
 //! | weekday | `MO` .. `SU` |
 //! | cadence | `MO 09:00` |
 //! | time window | `22:00-07:00` |
+//! | day window (wake-sleep) | `07:00-01:00` |
+//! | day override | a day window, or `none` |
 //! | every text type | the text itself |
 
 use sunrise_domain::{PrefSpec, PrefType, PrefValue, Weekday};
@@ -54,6 +56,8 @@ pub fn expected(ty: PrefType) -> String {
         PrefType::Weekday => strings::prefs::expect_weekday(),
         PrefType::Cadence => strings::prefs::expect_cadence(),
         PrefType::TimeWindow => strings::prefs::expect_window(),
+        PrefType::DayWindow => strings::prefs::expect_day_window(),
+        PrefType::DayOverride => strings::prefs::expect_day_override(),
     }
 }
 
@@ -70,8 +74,17 @@ pub fn spec(key: &str) -> Result<&'static PrefSpec, PrefTextError> {
 /// # Errors
 /// [`PrefTextError::BadValue`].
 pub fn parse(spec: &PrefSpec, text: &str) -> Result<PrefValue, PrefTextError> {
+    parse_for(spec.key, spec, text)
+}
+
+/// [`parse`], naming `key` in the error: the entry typed, where `spec` is
+/// the map it belongs to (`day_schedule.weekday.MO` of `day_schedule.weekday`).
+///
+/// # Errors
+/// [`PrefTextError::BadValue`].
+pub fn parse_for(key: &str, spec: &PrefSpec, text: &str) -> Result<PrefValue, PrefTextError> {
     let bad = || PrefTextError::BadValue {
-        key: spec.key.to_owned(),
+        key: key.to_owned(),
         value: text.to_owned(),
         expected: expected(spec.ty),
     };
@@ -101,6 +114,14 @@ pub fn parse(spec: &PrefSpec, text: &str) -> Result<PrefValue, PrefTextError> {
                 end: civil_time(end).ok_or_else(bad)?,
             }
         }
+        PrefType::DayOverride if t.eq_ignore_ascii_case("none") => PrefValue::NoSchedule,
+        PrefType::DayWindow | PrefType::DayOverride => {
+            let (wake, sleep) = t.split_once('-').ok_or_else(bad)?;
+            PrefValue::DayWindow {
+                wake: civil_time(wake).ok_or_else(bad)?,
+                sleep: civil_time(sleep).ok_or_else(bad)?,
+            }
+        }
         PrefType::OneOf(_)
         | PrefType::Url
         | PrefType::Text
@@ -126,10 +147,14 @@ pub fn render(value: &PrefValue) -> String {
         PrefValue::Weekday(d) => d.as_str().to_owned(),
         PrefValue::Cadence { day, at } => format!("{} {}", day.as_str(), hm(*at)),
         PrefValue::TimeWindow { start, end } => format!("{}-{}", hm(*start), hm(*end)),
+        PrefValue::DayWindow { wake, sleep } => format!("{}-{}", hm(*wake), hm(*sleep)),
+        PrefValue::NoSchedule => "none".to_owned(),
     }
 }
 
-fn hm(t: jiff::civil::Time) -> String {
+/// `t` as `HH:MM`, the spelling every civil time here is typed in.
+#[must_use]
+pub fn hm(t: jiff::civil::Time) -> String {
     t.strftime("%H:%M").to_string()
 }
 
@@ -156,6 +181,10 @@ mod tests {
             ("time_format", "h24"),
             ("stale_after_days", "21"),
             ("home_timezone", "Asia/Kolkata"),
+            ("day_schedule.weekday.MO", "07:00-01:00"),
+            ("day_schedule.month_day.-1", "05:00-22:00"),
+            ("day_schedule.date.2026-12-25", "none"),
+            ("day_schedule.date.2026-12-24", "09:00-23:30"),
         ] {
             let v = parse(key(k), text).unwrap_or_else(|e| panic!("{k}: {e}"));
             assert_eq!(render(&v), text, "{k}");
@@ -171,6 +200,8 @@ mod tests {
         assert!(parse(key("time_format"), "h13").is_err());
         assert!(parse(key("week_start"), "XX").is_err());
         assert!(parse(key("home_timezone"), "Mars/Olympus").is_err());
+        assert!(parse(key("day_schedule.weekday.MO"), "07:00-07:00").is_err());
+        assert!(parse(key("day_schedule.weekday.MO"), "none").is_err());
     }
 
     #[test]

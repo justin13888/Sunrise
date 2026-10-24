@@ -2,14 +2,14 @@
 //! read the rows, resolve the civil bounds, and hand both to the pure
 //! `sunrise_domain::build_upcoming`.
 
-use super::ids::{blob16, ms_to_ts};
+use super::ids::blob16;
 use super::task::read_task;
 use super::{Engine, EngineError};
 use crate::queries::{BlockRow, QueryResult};
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::{
-    build_upcoming, inbox_stream_ref, is_upcoming_span, upcoming_days, PrefValue, UpcomingError,
-    UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS,
+    build_upcoming, inbox_stream_ref, is_upcoming_span, upcoming_planner_days, PrefValue,
+    UpcomingError, UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS,
 };
 use sunrise_id::EntityRef;
 use sunrise_storage::Db;
@@ -18,8 +18,8 @@ use sunrise_storage::Db;
 const SPAN_KEY: &str = "views.upcoming.span_days";
 
 impl Engine {
-    /// The Upcoming view from the civil day containing `now_ms` in the
-    /// device's zone.
+    /// The Upcoming view from the planner day containing `now_ms` in the
+    /// device's zone (`docs/02-domain/day-schedule.md`).
     ///
     /// The SQL reads every open task with no `scheduled_at` (the no-date
     /// lane) and every one whose `scheduled_at` or `due_at` index falls in
@@ -38,10 +38,9 @@ impl Engine {
             None => self.upcoming_span(db)?,
         };
         let tz = self.device_zone();
-        let today = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX))
-            .to_zoned(tz.clone())
-            .date();
-        let days = upcoming_days(today, span, &tz).map_err(upcoming_error)?;
+        let schedule = self.day_schedule(db)?;
+        let (today, _, _) = self.planner_day_at(&schedule, now_ms)?;
+        let days = upcoming_planner_days(today, span, &tz, &schedule).map_err(upcoming_error)?;
         let (Some(first), Some(last)) = (days.first(), days.last()) else {
             return Err(upcoming_error(UpcomingError::Span(span)));
         };
@@ -74,6 +73,7 @@ impl Engine {
             today,
             span_days: span,
             tz: &tz,
+            schedule: &schedule,
         })
         .map_err(upcoming_error)?;
         Ok(QueryResult::Upcoming(Box::new(view)))

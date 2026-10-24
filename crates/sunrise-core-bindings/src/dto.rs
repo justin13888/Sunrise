@@ -3670,6 +3670,17 @@ pub enum PreferenceValue {
         /// Civil end.
         end: jiff::civil::Time,
     },
+    /// A day-schedule window (`day_schedule.*` entries); a `sleep` at or
+    /// before `wake` is the next morning.
+    DayWindow {
+        /// Civil wake time.
+        wake: jiff::civil::Time,
+        /// Civil sleep time.
+        sleep: jiff::civil::Time,
+    },
+    /// A `day_schedule.date.*` override saying there is no schedule that
+    /// date.
+    NoSchedule,
 }
 
 impl From<PrefValue> for PreferenceValue {
@@ -3682,6 +3693,8 @@ impl From<PrefValue> for PreferenceValue {
             PrefValue::Weekday(day) => Self::Weekday { day },
             PrefValue::Cadence { day, at } => Self::Cadence { day, at },
             PrefValue::TimeWindow { start, end } => Self::TimeWindow { start, end },
+            PrefValue::DayWindow { wake, sleep } => Self::DayWindow { wake, sleep },
+            PrefValue::NoSchedule => Self::NoSchedule,
         }
     }
 }
@@ -3696,6 +3709,8 @@ impl From<PreferenceValue> for PrefValue {
             PreferenceValue::Weekday { day } => Self::Weekday(day),
             PreferenceValue::Cadence { day, at } => Self::Cadence { day, at },
             PreferenceValue::TimeWindow { start, end } => Self::TimeWindow { start, end },
+            PreferenceValue::DayWindow { wake, sleep } => Self::DayWindow { wake, sleep },
+            PreferenceValue::NoSchedule => Self::NoSchedule,
         }
     }
 }

@@ -307,6 +307,14 @@ pub enum Query {
     /// where its value came from. Bootstrap keys are read without the vault,
     /// through `BootstrapPreferences`.
     Preferences,
+    /// The day schedule (`docs/02-domain/day-schedule.md`) and the reader's
+    /// planner day holding `at_ms`: its bounds, the window it resolved to, and
+    /// its plannable span. Resolved in the device's zone at the time of the
+    /// read, so a zone change moves the bounds and never the stored times.
+    DaySchedule {
+        /// Any instant inside the planner day to describe (ms since epoch).
+        at_ms: u64,
+    },
     /// The unresolved conflicts (ADR-0065 §4): per entity and field, the
     /// winning write and every concurrent write that lost to it, and for a
     /// winning delete, the branches that edited the entity without seeing
@@ -400,6 +408,26 @@ pub enum QueryResult {
     /// `Conflicts` returns one row per conflicted field, by entity id and
     /// then field name. Empty when nothing is in conflict.
     Conflicts(Vec<crate::conflicts::EntityConflict>),
+    /// `DaySchedule` returns the schedule and one planner day. Boxed to keep
+    /// the enum small.
+    DaySchedule(Box<PlannerDay>),
+}
+
+/// What [`Query::DaySchedule`] returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlannerDay {
+    /// The planner day's date.
+    pub date: jiff::civil::Date,
+    /// Where it starts: `boundary(date)`.
+    pub start: jiff::Timestamp,
+    /// Where it ends: `boundary(date + 1)`, the next day's start.
+    pub end: jiff::Timestamp,
+    /// The window the date resolved to; `None` when it has no schedule.
+    pub window: Option<sunrise_domain::DayWindow>,
+    /// Wake to sleep, resolved; `None` when the date has no schedule.
+    pub plannable: Option<(jiff::Timestamp, jiff::Timestamp)>,
+    /// Every entry of the schedule.
+    pub schedule: sunrise_domain::DaySchedule,
 }
 
 /// What [`Query::SearchGrouped`] found (`docs/08-features/search.md`

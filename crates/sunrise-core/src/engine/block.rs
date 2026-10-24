@@ -315,6 +315,12 @@ impl Engine {
     /// Computed over civil dates rather than by adding `86_400_000` so a day
     /// that is 23 or 25 hours long across a DST transition is still exactly one
     /// day on the grid.
+    ///
+    /// Only the calendar grid reads it (`DayBlocks`, `WeekBlocks`): a grid
+    /// column is a calendar date, midnight to midnight, and a block that runs
+    /// past midnight is drawn on both columns. Every planner day (Today,
+    /// Upcoming, the briefs) reads `planner_day_at` instead
+    /// (`docs/02-domain/day-schedule.md` §Planner day).
     pub(super) fn civil_span(&self, at_ms: i64, days: i64) -> Result<(i64, i64), EngineError> {
         let tz = self.device_zone();
         let date = ms_to_ts(at_ms).to_zoned(tz).date();

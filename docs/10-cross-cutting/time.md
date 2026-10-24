@@ -393,5 +393,11 @@ York's spring-forward night, Kathmandu, Chatham, an offline stretch and Lord
 Howe's fall-back while a peer at home keeps working, asserting each day's
 routine wall-clock times and reminder instants, no duplicated or reset
 occurrence, streak continuity and convergence, plus the zoned re-pin and the
-hard-window flag after a zone change. The day schedule's rows wait on
-[#338](https://github.com/justin13888/Sunrise/issues/338).
+hard-window flag after a zone change. The day schedule's rows (a sleep past
+midnight, the gaps and folds of `America/New_York`, `Australia/Lord_Howe` and
+`Pacific/Chatham`, the skipped Apia date, and the reader's zone moving the
+planner day) run in `crates/sunrise-domain/src/day_schedule/tests.rs`, Today,
+Upcoming and the briefs on planner days in
+`crates/sunrise-core/src/engine/tests/day_schedule.rs`, and the traveller
+through the CLI in `crates/sunrise-e2e/tests/cli_day_schedule.rs`
+([#338](https://github.com/justin13888/Sunrise/issues/338)).

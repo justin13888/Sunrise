@@ -218,7 +218,8 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 | `review` | `{window: {start_ms, end_ms}, totals: {completed, deferred, dropped, created, reopened}, streams: [{id, name, completed, deferred, untouched}], slipped: [task]}` |
 | `review daily` | `{since_ms, inbox, today, blocked}`, each an array of tasks |
 | `brief morning\|evening` | `{brief, headline, sections: [{id, title, tasks}]}` |
-| `reminders plan` | `{enabled, zone_unknown, planned: [{identifier, fire_at_ms, kind, entity, title, body}], unscheduled: [{entity, kind, reason}]}` |
+| `reminders plan` | `{enabled, zone_unknown, planned: [{identifier, fire_at_ms, kind, entity, title, body}], unscheduled: [{entity, kind, reason}], wind_down}`, `wind_down` `{identifier, date, fire_at_ms, sleep_at_ms}` or `null` when this device fires none |
+| `day-schedule [show [<date>]]` | `{date, start_ms, end_ms, window, plannable, wind_down_ms, schedule}`: the planner day holding now (or `<date>`'s), `window` its `{wake, sleep}` as `HH:MM` (`null` when unset), `plannable` `{start_ms, end_ms}` or `null`, `wind_down_ms` that night's wind-down or `null`, and `schedule` `{weekday: {MO: window, …}, month_day: {"1": window, "-1": window, …}, date: {"2026-12-25": window \| "none", …}}` |
 | `views` | array of `{name, spec, query, contexts}` |
 | `prefs`, `prefs get <key>` | array of / one `{key, value, source, scope}`, `value` in the spelling `prefs set` reads |
 | `tz` | `{zone, source, zone_unknown}` |

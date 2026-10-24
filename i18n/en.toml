@@ -1849,6 +1849,14 @@ USAGE:
     sunrise tz [set <IANA>|clear]
                                  the zone times are read in, and where it
                                  came from
+    sunrise day-schedule [show [<date>]]
+                                 when you usually wake and sleep, and the
+                                 planner day it makes of today (or <date>)
+    sunrise day-schedule set <days>|day <n|last>|date <date> <wake>-<sleep>|none
+                                 days: MO..SU, mo,we, weekdays, weekend or
+                                 daily; a sleep at or before the wake is the
+                                 next morning
+    sunrise day-schedule clear <days>|day <n|last>|date <date>
     sunrise rebuild              rebuild every task, stream and other row
                                  from this vault's own op log, in one
                                  transaction, under a copy of the vault taken
@@ -2145,6 +2153,8 @@ usage = "unknown reminders mode `{arg}`; use plan"
 disabled = "reminders are switched off on this device (notifications.enabled), so nothing is planned"
 # A reminder the planner could not place. {entity} is its id; {reason} why.
 unscheduled = "{entity} has a reminder that cannot be placed: {reason}"
+# The wind-down line of `reminders plan`. {sleep} is the sleep time, HH:MM.
+wind_down = "wind down before sleeping at {sleep}"
 
 [cli.views]
 save_usage = "usage: views save <name> <view> [--query <text>] [--contexts a,b]"
@@ -2173,6 +2183,8 @@ expect_id = "an entity id"
 expect_weekday = "MO, TU, WE, TH, FR, SA or SU"
 expect_cadence = "a weekday and a time, e.g. MO 09:00"
 expect_window = "a start and an end, e.g. 22:00-07:00"
+expect_day_window = "a wake and a sleep time, e.g. 07:00-23:00 (a sleep at or before the wake is the next morning)"
+expect_day_override = "a wake and a sleep time, e.g. 07:00-23:00, or none"
 
 [cli.undo]
 usage = "usage: undo"
@@ -2207,6 +2219,21 @@ archive_context = "archive or unarchive context {name}"
 reorder = "reorder streams"
 bind = "bind tasks to block {name}"
 move_block = "move block {name}"
+
+[cli.day_schedule]
+usage = "usage: day-schedule [show [<YYYY-MM-DD>]] | day-schedule set <days>|day <1-31|last>|date <YYYY-MM-DD> <wake>-<sleep> | day-schedule set date <YYYY-MM-DD> none | day-schedule clear <days>|day <1-31|last>|date <YYYY-MM-DD>"
+unknown_verb = "unknown day-schedule verb `{verb}`; use show, set or clear"
+# {days} is what was typed for the weekdays.
+bad_days = "`{days}` names no weekday: use MO..SU, a comma list such as mo,we, or weekdays, weekend or daily"
+bad_month_day = "`{day}` is not a day of the month: use 1 to 31, or last"
+bad_date = "`{date}` is not a date: use YYYY-MM-DD"
+# The first line of `sunrise day-schedule`. {date} is the planner day's date;
+# {start} and {end} are local date-times, YYYY-MM-DD HH:MM.
+planner_day = "planner day {date}: {start} to {end}"
+# {wake} and {sleep} are HH:MM.
+window = "awake {wake} to {sleep}"
+no_window = "no wake or sleep time on this date"
+empty = "No day schedule is set, so every day runs midnight to midnight. Set one with `sunrise day-schedule set daily 07:00-23:00`."
 
 [cli.tz]
 usage = "usage: tz [show] | tz set <IANA> | tz clear"
