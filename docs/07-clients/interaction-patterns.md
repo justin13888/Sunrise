@@ -132,7 +132,7 @@ source: `BlockChip` (`CalendarView.swift:417-516`) carries a tap
 else, returning `model.reorder(moved, before: task.id)` and declining outright
 in Today and in Search. The write the cell would perform exists and is tested —
 `TaskListModel.bind(_:to:)` (`TaskListModel.swift:179`) issuing the same
-`Command::BindTask` (`crates/sunrise-core/src/commands.rs:157`) the grid's own
+`Command::BindTask` (`crates/sunrise-core/src/commands.rs:178#Command`) the grid's own
 drop issues — so building it is UI work with no core work behind it. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
