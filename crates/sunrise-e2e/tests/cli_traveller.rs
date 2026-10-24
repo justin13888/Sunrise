@@ -53,12 +53,19 @@ async fn floating_times_keep_their_wall_clock_and_nothing_stored_is_rewritten() 
         "a read rewrote nothing"
     );
 
-    // The block stays in New York: 14:00 there, whoever reads it.
-    let blocks = kolkata.json(&["blocks", "week"]).await;
+    // The block stays in New York: 14:00 there, whoever reads it. In
+    // Kolkata it falls today, tomorrow or the day after, and any of those
+    // can open a new week (tomorrow is Sunday on a Saturday), so read the
+    // weeks holding all three.
+    let mut blocks = Vec::new();
+    for at in ["today", "+1d", "+2d"] {
+        let week = kolkata.json(&["blocks", "week", at]).await;
+        blocks.extend(week.as_array().cloned().unwrap_or_default());
+    }
     let pinned = blocks
-        .as_array()
-        .and_then(|bs| bs.iter().find(|b| b["id"] == block.as_str()))
-        .unwrap_or_else(|| panic!("the block is on the grid: {blocks}"));
+        .iter()
+        .find(|b| b["id"] == block.as_str())
+        .unwrap_or_else(|| panic!("the block is on the grid: {blocks:?}"));
     assert_eq!(pinned["starts_at"]["kind"], "zoned");
     assert_eq!(pinned["starts_at"]["zone"], NEW_YORK);
 
