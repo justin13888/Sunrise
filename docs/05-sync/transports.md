@@ -69,7 +69,7 @@ path would re-enter.
 
 **Keepalive is implemented, and it is a comment rather than a frame.** The
 stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
-(`crates/sunrise-server/src/api/sync/stream.rs:26-31`, `:169`). The `0x0C Ping` /
+(`crates/sunrise-server/src/api/sync/stream.rs:29-38#KEEP_ALIVE_SECS`, `:209-212`). The `0x0C Ping` /
 `0x0D Pong` pair still exists in the message catalog and both sides still answer
 one, but neither sends one unprompted: a comment does the same job — stopping an
 intermediary from reaping an idle connection — with no frame type and nothing
