@@ -580,13 +580,22 @@ const DELIBERATE_CHANGES: &[DeliberateChange] = &[
         table: "identity",
         column: Some("id_d_priv_wrapped"),
     },
+    // The task-only index is dropped, and the next open writes both new
+    // indexes from the entity rows. Pinned by `db.rs`'s
+    // `migration_0040_replaces_the_task_index_with_two_empty_ones`.
+    DeliberateChange {
+        migration: 40,
+        table: "search_idx",
+        column: None,
+    },
 ];
 
 /// Every row of every table, as `table -> (columns, rows)`.
 ///
-/// FTS5's shadow tables are left out: they are `search_idx`'s storage, which
-/// is read through `search_idx` itself, and `schema_meta` is the stamp the
-/// migration is supposed to change.
+/// FTS5's shadow tables are left out: they are the storage of `search_idx`,
+/// `search_words` and `search_tri`, which is read through those tables
+/// themselves, and `schema_meta` is the stamp the migration is supposed to
+/// change.
 type Snapshot = BTreeMap<String, (Vec<String>, Vec<Vec<Value>>)>;
 
 fn snapshot(conn: &Connection) -> Snapshot {
@@ -595,6 +604,7 @@ fn snapshot(conn: &Connection) -> Snapshot {
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'table'
                  AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_idx_%'
+                 AND name NOT LIKE 'search_words_%' AND name NOT LIKE 'search_tri_%'
                  AND name <> 'schema_meta' ORDER BY name",
             )
             .expect("prepare");
@@ -762,6 +772,14 @@ fn the_seed_reaches_every_table_and_column_this_build_creates() {
         );
     }
     for row in SEED {
+        // A table a later migration drops is still filled in the fixtures
+        // written before it, which is where that migration's drop is checked.
+        let dropped = DELIBERATE_CHANGES
+            .iter()
+            .any(|c| c.table == row.table && c.column.is_none());
+        if dropped && !current.contains_key(row.table) {
+            continue;
+        }
         let (cols, _) = current.get(row.table).unwrap_or_else(|| {
             panic!(
                 "`seed::SEED` names `{}`, which no migration creates",

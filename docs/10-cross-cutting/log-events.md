@@ -209,6 +209,11 @@ them until code uses them.
 | `core.rebuild.progress` | info | A rebuild has folded another 5,000 entity ops; `n_ops` (folded so far), `n_total` (to fold). What a slow first open after an upgrade is doing. |
 | `core.rebuild.on_open_failed` | warn | The rebuild at open failed and was rolled back; `cause`. The vault opens on the projection it had, and the next open tries again. |
 | `core.rebuild.op_skipped` | warn | A rebuild left out an applied `Patch` that this build's registry would park or reject, the way the receive path would; `reason` (`park` or `invalid`), `stream_h`, `sender_h`, `seq`. Only an op an older build applied under different rules reaches it. |
+| `core.search.index_built` | info | Both search indexes were written from the entity rows, because `search_meta` had no record of them in this build's layout: the first open after migration 0040 ([ADR-0052](../11-adr/0052-search-v2.md)); `n_docs` (entities indexed), `mode` (`stemmed` or `unstemmed`, the word index's tokenizer). |
+| `core.search.index_failed` | warn | Writing the search indexes at open failed and was rolled back; `cause`. The vault opens, search answers from what the indexes hold, and the next open tries again. |
+| `core.search.reindex_started` | info | The content language changed, and the word index is being re-tokenized in the background into a shadow index; `mode` (the tokenizer it is building). Search answers from the old index until the swap. |
+| `core.search.reindex_progress` | debug | A re-index batch committed; `n_docs` (copied so far), `n_total` (in the index). |
+| `core.search.reindex_done` | info | The re-tokenized word index was swapped in; `n_docs`, `mode`. |
 | `core.snapshot.written` | info | This replica wrote a snapshot record of a stream at its own frontier, as the stream's compactor or on request; `stream_h`, `sender_h` (this device). |
 | `core.snapshot.skipped` | debug | No snapshot was written for a stream; `reason` (`gap`: an op is held above its device's contiguous prefix, so no frontier states this replica), `stream_h`. The next run tries again. |
 | `core.snapshot.applied` | info | A snapshot record was verified, its state joined in, and the stream's floors raised to its frontier; `stream_h`, `sender_h` (the device that wrote it), `n_retained` (the ops it carried whose effect is not in the merge state). |

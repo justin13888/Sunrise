@@ -222,6 +222,20 @@ impl Core {
                 "the projection could not be rebuilt at open; the vault opens on the one it had"
             );
         }
+        // Write both search indexes from the entity rows when the vault has
+        // no record of them in this build's layout: the first open after
+        // migration 0040 (ADR-0052). After the projection rebuild, which
+        // writes the rows they are built from. A re-index for a change of
+        // content language is not this: it runs in the background, through
+        // `Core::reindex_search`. A failure is logged and retried at the next
+        // open; search answers from what the indexes hold meanwhile.
+        if let Err(e) = engine.ensure_search_index(&mut db) {
+            tracing::warn!(
+                ev = "core.search.index_failed",
+                cause = %e,
+                "the search indexes could not be written at open; the next open tries again"
+            );
+        }
         // Replay what an earlier build parked because it did not know the
         // op's kind (issue #320, ADR-0045 §4). This is the upgrade the parking
         // was waiting for, and nothing else would bring those ops back: they
@@ -1413,6 +1427,42 @@ impl Core {
         }
         let mut db = self.db.lock();
         Ok(self.engine.rebuild_projection(&mut db)?)
+    }
+
+    /// Bring the word index of search into line with the vault's content
+    /// language (`search.content_language`, ADR-0052 §6), in the background:
+    /// it is re-tokenized into a shadow index a batch at a time, each batch
+    /// its own transaction with the vault released between them, and swapped
+    /// in with the last. Search answers from the old index until the swap,
+    /// and a re-index cut short resumes where it stopped at the next call.
+    ///
+    /// Cheap when the index already suits the language, which is the common
+    /// case, so a client may call it after every open and after the language
+    /// changes, here or on another device. Returns the last step's progress.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures, after which the
+    /// index is the old one and the next call resumes.
+    pub async fn reindex_search(&self) -> Result<crate::engine::SearchReindex, CoreError> {
+        loop {
+            if *self.closed.lock() {
+                return Err(CoreError::Closed);
+            }
+            let step = {
+                let mut db = self.db.lock();
+                self.engine.reindex_search_step(&mut db)?
+            };
+            if step.finished {
+                return Ok(step);
+            }
+            tracing::debug!(
+                ev = "core.search.reindex_progress",
+                n_docs = step.copied,
+                n_total = step.total,
+                "the word index re-index is part way through"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 
     /// The latest snapshot record of `stream_id` this vault wrote or applied,

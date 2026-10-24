@@ -109,6 +109,27 @@ crosses a snap boundary, at most once per frame, so it has a frame budget: **≤
 - The index's memory, resident while searching, counts against the ceilings below. A 100k-task
   vault MUST NOT push iOS past its 200 MB ceiling.
 
+**How it is measured.** `crates/sunrise-bench/benches/fts.rs` seeds each size through the command
+path: a third of the tasks carry a note, one block per twenty tasks, one stream per thousand, and
+1% of titles and notes carry the rare word and a CJK phrase. It runs `Query::SearchGrouped` for a
+rare word, a substring, a two-character CJK term, a stream filter with a word, a negation with a
+state filter and a typed prefix, 20 rounds each, and prints the p95 over all of them, the bytes the
+indexes occupy (`dbstat`) and the process's peak RSS. Nightly, at 10k only
+(`SUNRISE_BENCH_FTS_TASKS`); it does not gate.
+
+Measured on a shared Linux x86-64 host under load (not Baseline A), release build, at the revision
+that built #345:
+
+| Tasks | p95, the query mix | Slowest shape, its p95 | Rare-word query, Criterion median | Index bytes | Peak RSS |
+|---|---|---|---|---|---|
+| 10k | 12 ms | `budget -report state:open`, 12 ms | 0.69 ms | 4.0 MiB | 19.3 MiB |
+| 100k | 126 ms | `budget -report state:open`, 142 ms | 13 ms | 40.3 MiB | 34.5 MiB |
+
+Both sizes are inside the budget. The slowest shape is a word in about a quarter of the vault
+with a state filter, which reads every candidate task's row; a rare word is an order of magnitude
+cheaper. The RSS is the whole bench process, the seeded vault's
+connection included, at the default page cache.
+
 ## Memory ceiling (steady-state)
 
 - Desktop: ≤300 MB.

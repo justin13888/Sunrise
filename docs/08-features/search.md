@@ -13,16 +13,13 @@ leaves the device — is in
 [`../03-crypto/encrypted-search.md`](../03-crypto/encrypted-search.md).
 [#345](https://github.com/justin13888/Sunrise/issues/345) builds it.
 
-> **Status: what ships is free-text search over tasks only.** One FTS5 table,
-> `search_idx` (`crates/sunrise-storage/migrations/0013_baseline.sql:475`),
-> tokenized `porter unicode61 remove_diacritics 2`, written only for tasks
-> (`crates/sunrise-core/src/engine/merge/rows/task.rs:191#ftsr_upsert_task`).
-> `query_search` (`crates/sunrise-core/src/engine/query.rs:404#query_search`)
-> returns tasks by `bm25`, and `sanitize_fts_query`
-> (`crates/sunrise-core/src/engine/query.rs:453#sanitize_fts_query`) quotes
-> every whitespace token, so every operator on this page is searched for as
-> literal text today. §[What ships today](#what-ships-today) describes the
-> build; everything else on this page is the contract [#345](https://github.com/justin13888/Sunrise/issues/345) delivers.
+> **Status: the core is built; the Apple search view is not yet.** Both
+> indexes, the parser, the grouped and highlighted results, the content-language
+> re-index and the CLI ship; §[What is built](#what-is-built) says how, and
+> where the build differs from this page. Saved searches wait for the
+> `SavedView` entity ([#341](https://github.com/justin13888/Sunrise/issues/341)),
+> places for the Place entity ([#339](https://github.com/justin13888/Sunrise/issues/339)),
+> and the Apple clients still show the Tasks group as before.
 
 ## What is indexed
 
@@ -88,8 +85,13 @@ bare      = 1*( any char except ws, '"', "(", ")" ) ;
 ```
 
 - `OR` is an operator only in capitals. `a b OR c` means `a AND (b OR c)`.
-- Limits: 1024 characters, 32 clauses, nesting depth 8. Past a limit, the rest
-  of the input is read as text and a notice says so.
+- Limits: 1024 characters of query text (what the terms, phrases and
+  operators spell, each operator in its canonical form), 32 clauses, nesting
+  depth 8. Past the clause or depth limit, the rest of the input is read as one
+  phrase; past the text limit it is left out. A notice says which. Counting
+  the text rather than the raw input is what keeps the canonical text, which
+  can be a few characters longer than what was typed, reading back as the same
+  query.
 - An unknown key (`colour:red`) is text, not an error.
 - While typing, the last bare term also matches as a prefix (`pass` finds
   `passport` by word). Saved searches and the CLI do not add the prefix.
@@ -218,14 +220,26 @@ shadow tables, then swaps them in one transaction. Search keeps answering from
 the old index until the swap, and Settings shows progress. A rebuild is
 resumable after a crash.
 
+As built, a change of content language changes only whether the word index
+stems, and the trigram index does not depend on it, so the re-index copies the
+word index's own stored text, batch by batch, into a shadow word index with
+the new tokenizer, and swaps it in (`Core::reindex_search`). A write to a doc
+the copy has passed is made to both. A layout change (`search_meta.index_v`)
+is the other case: the indexes are written from the entity rows at open, in
+one transaction, because there is no old index worth answering from. The
+integrity-check trigger is not built.
+
 ## Performance and memory
 
 Budgets live in
 [`../10-cross-cutting/performance-budgets.md`](../10-cross-cutting/performance-budgets.md)
 §Search: p95 ≤ 100 ms over 10k tasks and ≤ 250 ms over 100k, and the index's
 resident memory counts against each platform's ceiling (iOS 200 MB). The
-Criterion bench measures both vault sizes with notes, blocks and events in
-proportion, records index bytes and peak RSS, and joins the baseline set.
+Criterion bench (`crates/sunrise-bench/benches/fts.rs`) measures both vault
+sizes with notes, blocks and streams in proportion (no build has calendar
+events yet), prints the p95 over a mix of query shapes, the index's bytes and
+the peak RSS beside Criterion's own numbers, and feeds `fts_query_10k_p99_ms`
+to the nightly baseline. The measured numbers are in the budget page.
 
 Phone constraints this design respects:
 
@@ -272,16 +286,47 @@ Empty, loading and error states follow the three-state contract in
 The empty state names the operators most likely to help ("Try `#stream` or
 `is:late`").
 
-## What ships today
+## What is built
 
-- **Index:** tasks only, in `search_idx`, with context *ids* (not names) in the
-  `contexts` column.
-- **Query:** `Query::Search { text, limit }` returns `QueryResult::Tasks` in
-  relevance order. Whitespace-only input returns nothing without touching FTS.
-- **Apple clients:** `SearchView` and `SearchModel` are shared by macOS (a pane,
-  reached by ⌘F, ⌘K and `/` in vim mode) and iOS (a search tab). The model
-  debounces at 150 ms and limits results to 200, and the rows are the same
-  `TaskRows` Today and Inbox use, so every row action has one implementation.
-- **CLI:** `sunrise search <query>...`, limit 100, tasks only.
-- **Bench:** `crates/sunrise-bench/benches/fts.rs` measures 10k tasks and feeds
-  `fts_query_10k_p99_ms`; it runs nightly and does not gate.
+- **Indexes** (migration 0040): `search_docs` names each indexed entity once
+  by `(kind, id)`, and its `doc` is the rowid of its row in `search_words`
+  (columns `title`, `aux`, `body`, weighted 10, 5, 1) and `search_tri`
+  (`title`, `body`, folded). `aux` holds a task's context names. Both are
+  projections: the fold's row writers in
+  `crates/sunrise-core/src/engine/merge/rows/search.rs` write them in the
+  transaction that applies the op, a tombstone removes the entity's row, and
+  a projection rebuild clears and refolds them. `search_meta`, the record of
+  how they were built, is source.
+- **Kinds indexed:** tasks (title, context names, the note's plain text),
+  streams (name, description), contexts (name, description), blocks (their own
+  title; a block that takes its title from its task is found through the
+  task) and attachments (filename). Notes are indexed as the plain text of the
+  task's or stream's `NoteBody`; a standalone `Note` entity has no projection
+  in this build, so there is no Notes group. Calendar events, places, saved
+  views and people have no entity to index yet; `kind:` accepts their names and
+  finds nothing.
+- **Parser:** `sunrise_domain::search::parse`, total, with
+  `parse(display(q)) == q` held by property tests
+  (`crates/sunrise-domain/tests/search_proptest.rs`). Unknown operators,
+  values an operator does not take, unbalanced quotes and parentheses, and
+  anything past a limit become text, with a notice.
+- **Query:** `Query::SearchGrouped { text, now_ms, prefix, per_group }` returns
+  `QueryResult::Search(SearchResults)`, and `Query::Search { text, limit }`
+  answers the Tasks group of the same query as `QueryResult::Tasks`. Every
+  operator evaluates except `target` (no soft deadline yet), `place:`,
+  `has:place`, `is:stale`, `is:fixed` and `is:flexible`, which match nothing
+  and raise an `unsupported` notice. `is:late` and `is:late-hard` read the hard
+  deadline through `sunrise_domain::is_overdue`. A hostile query never reaches
+  FTS5 unquoted, which a property test holds against a real index.
+- **CLI:** `sunrise search [--kind <k>[,<k>…]] [--all] <query>...` prints the
+  groups in order with a "… N more" line, notices on stderr, and with `--json`
+  the grouped document ([`../07-clients/overview.md`](../07-clients/overview.md)
+  §JSON output). It runs the content-language re-index first when one is due.
+- **UniFFI:** `CoreQuery::SearchGrouped`, `CoreQueryResult::Search` and
+  `SunriseCore::reindex_search`, added beside what was there.
+- **Apple clients:** unchanged. `SearchView` and `SearchModel` still ask
+  `Query::Search` and show the Tasks group, which now reads the operators,
+  CJK and substrings. Grouped results with highlights, ⌘S, operator
+  autocomplete, the scope token and the re-index progress in Settings are
+  still to build.
+- **Bench:** `crates/sunrise-bench/benches/fts.rs` (§Performance and memory).

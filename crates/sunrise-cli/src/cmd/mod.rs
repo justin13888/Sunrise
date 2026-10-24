@@ -18,6 +18,7 @@ mod files;
 mod organize;
 mod plumbing;
 mod reports;
+mod search;
 mod settings;
 mod tasks;
 mod upcoming;
@@ -96,7 +97,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
             tasks::list(ctx, ctx.core.query(Query::Inbox).await?);
             Ok(())
         }
-        "search" => tasks::search(ctx, rest).await,
+        "search" => search::search(ctx, rest).await,
         "show" => tasks::show(ctx, rest).await,
         "done" => tasks::done(ctx, rest).await,
         "edit" => tasks::edit(ctx, rest).await,

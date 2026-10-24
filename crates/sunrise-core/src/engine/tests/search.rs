@@ -1,0 +1,769 @@
+//! Search over every indexed kind (issue #345, ADR-0052): one index writer
+//! per kind with tombstone removal, the operators, CJK, substrings and
+//! diacritics, grouped and highlighted results, and the indexes rebuilt from
+//! the rows and re-tokenized for a new content language.
+//!
+//! Every write here runs the rebuild-identity check (`engine()` turns it on),
+//! so each test also shows a rebuild of the projection reproduces both
+//! indexes.
+
+use super::*;
+use crate::engine::rebuild::check::dump;
+use crate::queries::{SearchGroup, SearchResults};
+use sunrise_domain::search::{NoticeKind, SearchKind};
+use sunrise_domain::{
+    encode_note_body, Inline, NoteBlock, PrefTarget, PrefValue, StreamDraft, StreamPatch,
+};
+
+fn grouped(e: &Engine, db: &Db, text: &str) -> SearchResults {
+    grouped_with(e, db, text, false, None)
+}
+
+fn grouped_with(
+    e: &Engine,
+    db: &Db,
+    text: &str,
+    prefix: bool,
+    per_group: Option<u32>,
+) -> SearchResults {
+    match e
+        .query(
+            db,
+            Query::SearchGrouped {
+                text: text.into(),
+                now_ms: NOW as u64,
+                prefix,
+                per_group,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Search(r) => *r,
+        other => panic!("expected Search, got {other:?}"),
+    }
+}
+
+fn group(r: &SearchResults, kind: SearchKind) -> Option<&SearchGroup> {
+    r.groups.iter().find(|g| g.kind == kind)
+}
+
+/// Every hit's title, `kind:title`, in result order.
+fn hits(e: &Engine, db: &Db, text: &str) -> Vec<String> {
+    grouped(e, db, text)
+        .groups
+        .iter()
+        .flat_map(|g| {
+            g.hits
+                .iter()
+                .map(move |h| format!("{}:{}", g.kind.as_str(), h.title.text))
+        })
+        .collect()
+}
+
+fn note(text: &str) -> NoteBody {
+    encode_note_body(&[NoteBlock::Paragraph {
+        inline: vec![Inline::text(text)],
+    }])
+}
+
+fn task_with(e: &Engine, db: &mut Db, draft: TaskDraft) -> EntityRef {
+    e.apply(db, Command::CreateTask(draft)).unwrap().entity
+}
+
+fn new_stream(e: &Engine, db: &mut Db, name: &str, parent: Option<EntityRef>) -> EntityRef {
+    e.apply(
+        db,
+        Command::CreateStream(StreamDraft {
+            name: name.into(),
+            parent_id: parent,
+            description: Some(note("where the launch work lives")),
+            ..Default::default()
+        }),
+    )
+    .unwrap()
+    .entity
+}
+
+fn docs(db: &Db) -> Vec<(String, Vec<u8>)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT kind, id FROM search_docs ORDER BY kind, id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn indexed(db: &Db, r: EntityRef) -> bool {
+    docs(db).iter().any(|(_, id)| id[..] == r.bytes()[..])
+}
+
+/// The rows of the three search tables, by entity, as the rebuild check
+/// compares them.
+fn search_dump(db: &Db) -> Vec<(&'static str, Vec<String>)> {
+    dump(db.conn())
+        .into_iter()
+        .filter(|(t, _)| t.starts_with("search_"))
+        .collect()
+}
+
+#[test]
+fn every_kind_is_indexed_and_a_tombstone_removes_it() {
+    let (e, mut db) = (engine(), db());
+    let errands = new_context(&e, &mut db, "Errands");
+    let launch = new_stream(&e, &mut db, "Launch", None);
+    let task = task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "Renew the passport".into(),
+            body: Some(note("bring two photos")),
+            contexts: vec![errands],
+            stream_id: Some(launch),
+            ..Default::default()
+        },
+    );
+    let block = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                stream_id: launch,
+                ..block_draft(9, 1, Some("Deep work on the rocket"))
+            }),
+        )
+        .unwrap()
+        .entity;
+    let mut draft = attachment_draft(task);
+    draft.filename = "boarding-pass.pdf".into();
+    let file = e.apply(&mut db, Command::AttachFile(draft)).unwrap().entity;
+
+    for (text, kind, entity) in [
+        ("passport", SearchKind::Task, task),
+        ("photos", SearchKind::Task, task),
+        ("launch", SearchKind::Stream, launch),
+        ("errands", SearchKind::Context, errands),
+        ("rocket", SearchKind::Block, block),
+        ("boarding", SearchKind::Attachment, file),
+    ] {
+        let r = grouped(&e, &db, text);
+        let g = group(&r, kind).unwrap_or_else(|| panic!("{text}: no {kind:?} group"));
+        assert!(
+            g.hits.iter().any(|h| h.entity == entity),
+            "{text} finds the {kind:?}"
+        );
+    }
+    // A task is found by the names of its contexts.
+    let by_context = grouped(&e, &db, "errands");
+    assert!(group(&by_context, SearchKind::Task).is_some_and(|g| g.hits[0].entity == task));
+    // An attachment opens what it is attached to.
+    let r = grouped(&e, &db, "boarding");
+    let hit = &group(&r, SearchKind::Attachment).unwrap().hits[0];
+    assert_eq!(hit.opens, task);
+
+    e.apply(&mut db, Command::DetachFile(file)).unwrap();
+    e.apply(&mut db, Command::DeleteBlock(block)).unwrap();
+    e.apply(&mut db, Command::DeleteTask(task)).unwrap();
+    e.apply(&mut db, Command::DeleteContext(errands)).unwrap();
+    e.apply(&mut db, Command::DeleteStream(launch)).unwrap();
+    for r in [file, block, task, errands, launch] {
+        assert!(!indexed(&db, r), "{r} is unindexed by its tombstone");
+    }
+    assert!(grouped(&e, &db, "passport").groups.is_empty());
+    assert!(docs(&db).is_empty());
+}
+
+#[test]
+fn renaming_a_context_rewrites_the_tasks_that_carry_it() {
+    let (e, mut db) = (engine(), db());
+    let ctx = new_context(&e, &mut db, "Errands");
+    let task = task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "Buy milk".into(),
+            contexts: vec![ctx],
+            ..Default::default()
+        },
+    );
+    e.apply(
+        &mut db,
+        Command::UpdateContext {
+            id: ctx,
+            patch: ContextPatch {
+                name: Some("Chores".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(hits(&e, &db, "chores"), ["task:Buy milk", "context:Chores"]);
+    assert!(hits(&e, &db, "errands").is_empty());
+    e.apply(&mut db, Command::DeleteContext(ctx)).unwrap();
+    assert!(
+        hits(&e, &db, "chores").is_empty(),
+        "a deleted context stops matching"
+    );
+    assert_eq!(hits(&e, &db, "milk"), ["task:Buy milk"]);
+    let _ = task;
+}
+
+#[test]
+fn cjk_text_is_found_whole_in_part_and_by_two_characters() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "東京出張の準備");
+    new_task(&e, &mut db, "大阪の会議");
+    assert_eq!(hits(&e, &db, "東京出張"), ["task:東京出張の準備"]);
+    assert_eq!(hits(&e, &db, "出張の準"), ["task:東京出張の準備"]);
+    // Two characters cannot use trigrams; the title scan finds them.
+    assert_eq!(hits(&e, &db, "東京"), ["task:東京出張の準備"]);
+    assert_eq!(hits(&e, &db, "会議"), ["task:大阪の会議"]);
+    assert!(hits(&e, &db, "京都").is_empty());
+    let r = grouped(&e, &db, "東京");
+    assert_eq!(
+        group(&r, SearchKind::Task).unwrap().hits[0].title.ranges,
+        vec![(0, 2)]
+    );
+}
+
+#[test]
+fn a_substring_finds_the_word_it_is_inside() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "Renew the passport");
+    new_task(&e, &mut db, "Pay the bill");
+    assert_eq!(hits(&e, &db, "pass"), ["task:Renew the passport"]);
+    assert_eq!(hits(&e, &db, "sport"), ["task:Renew the passport"]);
+    // `pasport` is not `passport`: no typo tolerance.
+    assert!(hits(&e, &db, "pasport").is_empty());
+    let r = grouped(&e, &db, "sport");
+    assert_eq!(
+        group(&r, SearchKind::Task).unwrap().hits[0].title.ranges,
+        vec![(13, 18)]
+    );
+}
+
+#[test]
+fn diacritics_and_case_are_folded_both_ways() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "Café with Zoë");
+    new_task(&e, &mut db, "Update the resume");
+    assert_eq!(hits(&e, &db, "cafe"), ["task:Café with Zoë"]);
+    assert_eq!(hits(&e, &db, "ZOE"), ["task:Café with Zoë"]);
+    assert_eq!(hits(&e, &db, "résumé"), ["task:Update the resume"]);
+    // A substring across a folded letter.
+    assert_eq!(hits(&e, &db, "afe"), ["task:Café with Zoë"]);
+}
+
+#[test]
+fn word_hits_rank_above_substring_hits_and_titles_above_bodies() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "passport photos");
+    task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "Paperwork".into(),
+            body: Some(note("the passport form")),
+            ..Default::default()
+        },
+    );
+    new_task(&e, &mut db, "passports for everyone");
+    let order = hits(&e, &db, "passport");
+    assert_eq!(order[0], "task:passport photos");
+    assert_eq!(order.len(), 3);
+    let r = grouped(&e, &db, "passport");
+    let body_hit = group(&r, SearchKind::Task)
+        .unwrap()
+        .hits
+        .iter()
+        .find(|h| h.title.text == "Paperwork")
+        .unwrap();
+    let snip = body_hit.snippet.as_ref().unwrap();
+    assert_eq!(snip.text, "the passport form");
+    assert_eq!(snip.ranges, vec![(4, 12)]);
+    assert!(body_hit.title.ranges.is_empty());
+}
+
+#[test]
+fn structured_operators_narrow_the_hits() {
+    let (e, mut db) = (engine(), db());
+    let work = new_stream(&e, &mut db, "Work", None);
+    let ops = new_stream(&e, &mut db, "Ops", Some(work));
+    let home = new_stream(&e, &mut db, "Home", None);
+    let errands = new_context(&e, &mut db, "errands");
+    let mk = |e: &Engine, db: &mut Db, title: &str, stream, priority, contexts: Vec<EntityRef>| {
+        task_with(
+            e,
+            db,
+            TaskDraft {
+                title: title.into(),
+                stream_id: Some(stream),
+                priority,
+                contexts,
+                ..Default::default()
+            },
+        )
+    };
+    mk(&e, &mut db, "deploy api", work, Some(1), vec![]);
+    mk(&e, &mut db, "deploy db", ops, Some(3), vec![errands]);
+    let done = mk(&e, &mut db, "deploy garden", home, None, vec![errands]);
+    e.apply(&mut db, Command::CompleteTask(done)).unwrap();
+
+    let titles = |q: &str| {
+        let mut v: Vec<String> = grouped(&e, &db, q)
+            .groups
+            .iter()
+            .filter(|g| g.kind == SearchKind::Task)
+            .flat_map(|g| g.hits.iter().map(|h| h.title.text.clone()))
+            .collect();
+        v.sort();
+        v
+    };
+    // A stream takes in the streams nested under it.
+    assert_eq!(titles("#work deploy"), ["deploy api", "deploy db"]);
+    assert_eq!(titles("stream:ops deploy"), ["deploy db"]);
+    assert_eq!(titles("@errands"), ["deploy db", "deploy garden"]);
+    assert_eq!(titles("deploy state:done"), ["deploy garden"]);
+    assert_eq!(titles("deploy state:open"), ["deploy api", "deploy db"]);
+    assert_eq!(titles("!1"), ["deploy api"]);
+    assert_eq!(titles("priority>=2 deploy"), ["deploy db"]);
+    assert_eq!(titles("deploy -@errands"), ["deploy api"]);
+    assert_eq!(titles("api OR garden"), ["deploy api", "deploy garden"]);
+    assert_eq!(
+        titles("deploy (#home OR !1)"),
+        ["deploy api", "deploy garden"]
+    );
+    assert_eq!(titles("deploy is:inbox"), Vec::<String>::new());
+    // `kind:` picks the groups.
+    let r = grouped(&e, &db, "kind:stream");
+    assert_eq!(r.groups.len(), 1);
+    assert_eq!(r.groups[0].kind, SearchKind::Stream);
+    assert_eq!(r.groups[0].total, 3);
+    // A stream filter matches tasks and blocks, never the stream itself.
+    assert!(group(&grouped(&e, &db, "#work"), SearchKind::Stream).is_none());
+}
+
+#[test]
+fn date_operators_resolve_in_the_readers_day() {
+    let (e, mut db) = (engine(), db());
+    // NOW is 2023-11-14T22:13:20Z, a Tuesday, and the tests' zone is UTC.
+    let at = |d: jiff::civil::Date| SunriseTime::AllDay { date: d };
+    let today = jiff::civil::date(2023, 11, 14);
+    for (title, due) in [
+        ("due today", today),
+        ("due friday", jiff::civil::date(2023, 11, 17)),
+        ("due last month", jiff::civil::date(2023, 10, 2)),
+    ] {
+        task_with(
+            &e,
+            &mut db,
+            TaskDraft {
+                title: title.into(),
+                due_at: Some(at(due)),
+                scheduled_at: Some(at(due)),
+                ..Default::default()
+            },
+        );
+    }
+    new_task(&e, &mut db, "due never");
+    let titles = |q: &str| {
+        let mut v: Vec<String> = hits(&e, &db, q);
+        v.sort();
+        v
+    };
+    assert_eq!(titles("due:today"), ["task:due today"]);
+    assert_eq!(titles("hard:fri"), ["task:due friday"]);
+    assert_eq!(titles("due<today"), ["task:due last month"]);
+    assert_eq!(titles("due<=tomorrow due>=yesterday"), ["task:due today"]);
+    assert_eq!(
+        titles("planned:this-week"),
+        ["task:due friday", "task:due today"]
+    );
+    assert_eq!(titles("due:last-month"), ["task:due last month"]);
+    assert_eq!(
+        titles("due:2023-11-01..2023-11-30"),
+        ["task:due friday", "task:due today"]
+    );
+    assert_eq!(titles("due>+2d"), ["task:due friday"]);
+    assert_eq!(titles("due>+3d"), Vec::<String>::new());
+    assert_eq!(titles("due>=+3d"), ["task:due friday"]);
+    assert_eq!(titles("created:today kind:task").len(), 4);
+    assert_eq!(titles("is:late"), ["task:due last month"]);
+    assert_eq!(titles("has:deadline").len(), 3);
+}
+
+#[test]
+fn a_name_that_names_nothing_matches_nothing_and_says_so() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "deploy");
+    new_stream(&e, &mut db, "Work", None);
+    new_stream(&e, &mut db, "Workshop", None);
+    let r = grouped(&e, &db, "#wrok deploy");
+    assert!(r.groups.is_empty());
+    let n = &r.notices[0];
+    assert_eq!(n.kind, NoticeKind::UnknownName);
+    assert_eq!(n.detail.as_deref(), Some("wrok"));
+    assert_eq!((n.start, n.end), (1, 5));
+    let r = grouped(&e, &db, "#wor");
+    assert_eq!(r.notices[0].kind, NoticeKind::AmbiguousName);
+    // An exact name wins over a longer one it starts.
+    assert!(grouped(&e, &db, "#work").notices.is_empty());
+    // An operator this build cannot evaluate yet is said so too.
+    let r = grouped(&e, &db, "deploy is:stale");
+    assert!(r.groups.is_empty());
+    assert_eq!(r.notices[0].kind, NoticeKind::Unsupported);
+    // And what the parser read as text.
+    let r = grouped(&e, &db, "colour:red");
+    assert_eq!(r.notices[0].kind, NoticeKind::UnknownKey);
+    assert_eq!(r.canonical, "colour:red");
+}
+
+#[test]
+fn groups_come_in_the_fixed_order_each_capped_with_its_total() {
+    let (e, mut db) = (engine(), db());
+    for i in 0..12 {
+        new_stream(&e, &mut db, &format!("alpha stream {i}"), None);
+    }
+    for i in 0..3 {
+        new_task(&e, &mut db, &format!("alpha task {i}"));
+    }
+    new_context(&e, &mut db, "alpha");
+    let r = grouped(&e, &db, "alpha");
+    let kinds: Vec<SearchKind> = r.groups.iter().map(|g| g.kind).collect();
+    assert_eq!(
+        kinds,
+        [SearchKind::Task, SearchKind::Stream, SearchKind::Context]
+    );
+    let streams = group(&r, SearchKind::Stream).unwrap();
+    assert_eq!((streams.hits.len(), streams.total), (10, 12));
+    let r = grouped_with(&e, &db, "alpha kind:stream", false, Some(100));
+    assert_eq!(r.groups[0].hits.len(), 12);
+}
+
+#[test]
+fn the_word_being_typed_matches_as_a_prefix_only_when_asked() {
+    let (e, mut db) = (engine(), db());
+    new_task(&e, &mut db, "quarterly report");
+    // `qu` is two letters: no trigram, and no prefix unless the field asks.
+    assert!(grouped(&e, &db, "qu").groups.is_empty());
+    let r = grouped_with(&e, &db, "qu", true, None);
+    assert_eq!(
+        group(&r, SearchKind::Task).unwrap().hits[0].title.text,
+        "quarterly report"
+    );
+    assert_eq!(
+        group(&r, SearchKind::Task).unwrap().hits[0].title.ranges,
+        vec![(0, 2)]
+    );
+}
+
+#[test]
+fn the_task_query_answers_tasks_with_operators() {
+    let (e, mut db) = (engine(), db());
+    let work = new_stream(&e, &mut db, "Work", None);
+    task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "ship it".into(),
+            stream_id: Some(work),
+            ..Default::default()
+        },
+    );
+    new_task(&e, &mut db, "ship the parcel");
+    let QueryResult::Tasks(tasks) = e
+        .query(
+            &db,
+            Query::Search {
+                text: "#work ship".into(),
+                limit: 10,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("tasks");
+    };
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].title, "ship it");
+}
+
+#[test]
+fn the_indexes_written_from_the_rows_are_the_ones_the_fold_wrote() {
+    let (e, mut db) = (engine(), db());
+    let ctx = new_context(&e, &mut db, "Errands");
+    let s = new_stream(&e, &mut db, "Launch", None);
+    let t = task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "Renew the passport".into(),
+            body: Some(note("東京出張 photos")),
+            contexts: vec![ctx],
+            stream_id: Some(s),
+            ..Default::default()
+        },
+    );
+    e.apply(&mut db, Command::AttachFile(attachment_draft(t)))
+        .unwrap();
+    e.apply(
+        &mut db,
+        Command::CreateBlock(block_draft(9, 1, Some("focus"))),
+    )
+    .unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id: s,
+            patch: StreamPatch {
+                name: Some("Launch v2".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let folded = search_dump(&db);
+    assert!(
+        folded.iter().all(|(_, rows)| rows.len() == 5),
+        "{folded:#?}"
+    );
+    db.conn().execute("DELETE FROM search_meta", []).unwrap();
+    assert_eq!(e.ensure_search_index(&mut db).unwrap(), Some(5));
+    assert_eq!(search_dump(&db), folded);
+    assert_eq!(e.ensure_search_index(&mut db).unwrap(), None, "current now");
+}
+
+fn tokenizer(db: &Db) -> String {
+    db.conn()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'search_words'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn set_language(e: &Engine, db: &mut Db, tag: &str) {
+    e.apply(
+        db,
+        Command::SetPreference {
+            key: "search.content_language".into(),
+            value: PrefValue::Text(tag.into()),
+            target: PrefTarget::Vault,
+        },
+    )
+    .unwrap();
+}
+
+/// The task titles a query finds, sorted.
+fn task_hits(e: &Engine, db: &Db, q: &str) -> Vec<String> {
+    let mut v: Vec<String> = hits(e, db, q);
+    v.sort();
+    v
+}
+
+#[test]
+fn a_new_content_language_reindexes_in_batches_and_keeps_answering() {
+    let (e, mut db) = (engine(), db());
+    for title in [
+        "running shoes",
+        "she runs daily",
+        "東京出張",
+        "Café visit",
+        "passport renewal",
+        "quarterly report",
+        "deploy the api",
+    ] {
+        new_task(&e, &mut db, title);
+    }
+    e.ensure_search_index(&mut db).unwrap();
+    assert!(tokenizer(&db).contains("porter"), "English stems");
+    let neutral = ["東京", "pass", "cafe", "report", "deploy api", "daily"];
+    let before: Vec<Vec<String>> = neutral.iter().map(|q| task_hits(&e, &db, q)).collect();
+    // Stemming: `run` finds both.
+    assert_eq!(task_hits(&e, &db, "run").len(), 2);
+
+    set_language(&e, &mut db, "fr-CA");
+    let first = e.reindex_search_step_by(&mut db, 3).unwrap();
+    assert!(!first.finished);
+    assert_eq!((first.copied, first.total), (3, 7));
+    // Part way, search answers from the old, stemmed index.
+    assert_eq!(task_hits(&e, &db, "run").len(), 2);
+    // A doc written past the cursor and removed again leaves nothing behind.
+    let gone = new_task(&e, &mut db, "placeholder");
+    e.apply(&mut db, Command::DeleteTask(gone)).unwrap();
+    let mut steps = 1;
+    loop {
+        let step = e.reindex_search_step_by(&mut db, 3).unwrap();
+        steps += 1;
+        if step.finished {
+            assert_eq!(step.copied, step.total);
+            break;
+        }
+    }
+    assert_eq!(steps, 3);
+    assert!(!tokenizer(&db).contains("porter"), "French does not stem");
+    let after: Vec<Vec<String>> = neutral.iter().map(|q| task_hits(&e, &db, q)).collect();
+    assert_eq!(before, after, "locale-neutral queries find the same hits");
+    // `run` is now a word, not a stem: only the substring hit is left.
+    assert_eq!(
+        task_hits(&e, &db, "run"),
+        ["task:running shoes", "task:she runs daily"]
+    );
+    assert!(task_hits(&e, &db, "shoe").contains(&"task:running shoes".to_owned()));
+    // And it is done: the next step does nothing.
+    assert!(e.reindex_search_step(&mut db).unwrap().finished);
+    // Back to English stems again.
+    set_language(&e, &mut db, "en");
+    while !e.reindex_search_step(&mut db).unwrap().finished {}
+    assert!(tokenizer(&db).contains("porter"));
+}
+
+#[test]
+fn a_write_during_a_reindex_reaches_the_index_it_is_building() {
+    let (e, mut db) = (engine(), db());
+    let a = new_task(&e, &mut db, "alpha one");
+    for t in ["beta two", "gamma three", "delta four"] {
+        new_task(&e, &mut db, t);
+    }
+    e.ensure_search_index(&mut db).unwrap();
+    set_language(&e, &mut db, "de");
+    e.reindex_search_step_by(&mut db, 2).unwrap();
+    // `a` was copied; rename it, and add a task after the cursor.
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: a,
+            patch: TaskPatch {
+                title: Some("omega one".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    new_task(&e, &mut db, "epsilon five");
+    while !e.reindex_search_step_by(&mut db, 2).unwrap().finished {}
+    assert_eq!(task_hits(&e, &db, "omega"), ["task:omega one"]);
+    assert!(task_hits(&e, &db, "alpha").is_empty());
+    assert_eq!(task_hits(&e, &db, "epsilon"), ["task:epsilon five"]);
+    let words: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM search_words", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(words, 5);
+}
+
+#[test]
+fn a_projection_rebuild_abandons_a_reindex_and_the_next_step_restarts_it() {
+    let (e, mut db) = (engine(), db());
+    for t in ["one", "two", "three", "four"] {
+        new_task(&e, &mut db, t);
+    }
+    e.ensure_search_index(&mut db).unwrap();
+    set_language(&e, &mut db, "ja");
+    e.reindex_search_step_by(&mut db, 2).unwrap();
+    e.rebuild_projection(&mut db).unwrap();
+    let next: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'search_words_next'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(next, 0);
+    assert_eq!(task_hits(&e, &db, "three"), ["task:three"]);
+    while !e.reindex_search_step_by(&mut db, 2).unwrap().finished {}
+    assert!(!tokenizer(&db).contains("porter"));
+    assert_eq!(task_hits(&e, &db, "three"), ["task:three"]);
+}
+
+/// Fragments the grammar gives meaning to, and FTS5 syntax, so hostile input
+/// exercises both.
+const HOSTILE: &[&str] = &[
+    "a",
+    "pass",
+    "東京",
+    "東",
+    "é",
+    "\u{301}",
+    "OR",
+    "AND",
+    "NOT",
+    "NEAR",
+    "NEAR(",
+    "*",
+    "^",
+    "-",
+    "(",
+    ")",
+    "\"",
+    "'",
+    ":",
+    "#",
+    "@",
+    "!1",
+    "#work",
+    "@home",
+    "stream:",
+    "state:done",
+    "kind:task",
+    "due<fri",
+    "planned:",
+    "..",
+    ",",
+    "+",
+    "{",
+    "}",
+    "[",
+    "]",
+    "\\",
+    "%",
+    "_",
+    "\u{0}",
+    " ",
+    "  ",
+    "\t",
+    "\n",
+    "col:x",
+    "title:x",
+    "rowid",
+    ";",
+    "--",
+    "/*",
+];
+
+proptest::proptest! {
+    // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
+    // committed, at a path named here.
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 256,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/search.txt",
+            ),
+        )),
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// No query is an FTS5 syntax error, or any other error, whatever it
+    /// holds and whether or not the last word is a prefix.
+    #[test]
+    fn hostile_input_never_errors(
+        parts in proptest::collection::vec(proptest::sample::select(HOSTILE), 0..24),
+        prefix in proptest::bool::ANY,
+        raw in ".{0,40}",
+    ) {
+        let mut db = db();
+        let e = engine();
+        crate::engine::rebuild::check::disable();
+        new_task(&e, &mut db, "haystack passport 東京出張");
+        for text in [parts.concat(), parts.join(" "), raw] {
+            let res = e.query(
+                &db,
+                Query::SearchGrouped { text: text.clone(), now_ms: NOW as u64, prefix, per_group: None },
+            );
+            proptest::prop_assert!(res.is_ok(), "{text:?}: {res:?}");
+        }
+    }
+}

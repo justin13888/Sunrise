@@ -1,6 +1,7 @@
 //! The `blocks` row and its `block_tasks` bindings: the Block projection's
 //! writers. `Task.blocks` is read off the bindings, never written.
 
+use super::search::index_block;
 use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
 use rusqlite::{params, Transaction};
@@ -65,7 +66,7 @@ pub(in crate::engine::merge) fn upsert_block_row(
             &lww.device[..],
         ],
     )?;
-    Ok(())
+    index_block(tx, b)
 }
 
 /// Replace a Block's bindings with the op's set. Full-state, like every other

@@ -896,6 +896,43 @@ pub(super) const SEED: &[SeedRow] = &[
         table: "projection_rebuild",
         values: &[("id", I(1)), ("fold_v", I(287)), ("done_at_ms", I(288))],
     },
+    // The seed task in both full-text indexes (0040), under one doc: the
+    // first row of each index, so rowid 1.
+    SeedRow {
+        table: "search_docs",
+        values: &[
+            ("doc", I(1)),
+            ("kind", T(b"task")),
+            ("id", B(&TASK_IN_ALPHA)),
+        ],
+    },
+    SeedRow {
+        table: "search_words",
+        values: &[
+            ("title", T(ALPHA_TASK_TITLE.as_bytes())),
+            ("aux", T(b"Errands")),
+            ("body", T(b"block grammar")),
+        ],
+    },
+    SeedRow {
+        table: "search_tri",
+        values: &[
+            ("title", T(b"ship the migration fixture")),
+            ("body", T(b"block grammar")),
+        ],
+    },
+    // How they were built, mid-way through a re-index.
+    SeedRow {
+        table: "search_meta",
+        values: &[
+            ("id", I(1)),
+            ("index_v", I(290)),
+            ("stemmed", I(1)),
+            ("language", T(b"en-CA")),
+            ("reindex_stemmed", I(0)),
+            ("reindex_cursor", I(291)),
+        ],
+    },
 ];
 
 /// The columns `table` has in `conn`'s schema, or `None` if it has no such

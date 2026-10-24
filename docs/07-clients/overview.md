@@ -188,7 +188,8 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 
 | Command | Document |
 |---|---|
-| `today`, `inbox`, `search`, `stream`, `context`, `views apply` (task views) | array of tasks |
+| `today`, `inbox`, `stream`, `context`, `views apply` (task views) | array of tasks |
+| `search [--kind <k>] [--all] <query>` | `{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: [{id, opens, title, snippet, task}]}]}`, groups in the core's fixed order; `title` and `snippet` are `{text, ranges}` with each range `[start, end]` in Unicode scalars, `snippet` `null` when the body did not match, and `task` the whole task for a task hit, else `null`. Before #345 this was an array of tasks; a script reads them as `.groups[] \| select(.kind == "task") \| .hits[].task` |
 | `show <id>` | one task |
 | `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` and `tasks` arrays of tasks |
 | `next` | array of `{task, unblocks}` |

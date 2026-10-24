@@ -8,25 +8,30 @@ record adds what ADR-0008 left open: which kinds are indexed, how text that
 FTS5's word tokenizer cannot split is found, where the query language is
 parsed, how an index follows a language change, and what it may cost in memory.
 
-**Specified in** [`../08-features/search.md`](../08-features/search.md).
+**Specified in** [`../08-features/search.md`](../08-features/search.md), whose
+§What is built records the build and where it differs from the
+specification.
 **Budget in** [`../10-cross-cutting/performance-budgets.md`](../10-cross-cutting/performance-budgets.md)
 §Search. **Tracked by** [#345](https://github.com/justin13888/Sunrise/issues/345). Saved searches ride on the `SavedView` entity
 of [#341](https://github.com/justin13888/Sunrise/issues/341).
 
 ## Context
 
-What ships is free-text search over tasks, and nothing else.
+Before this decision was built, what shipped was free-text search over tasks,
+and nothing else. The citations below are to master at 36cc00bd, the last
+revision before the build; the code they name has since moved or gone.
 
 - **One index, one kind written.** `search_idx`
   (`crates/sunrise-storage/migrations/0013_baseline.sql:475`) uses
   `porter unicode61 remove_diacritics 2`, fixed at vault creation, and only
   tasks are written to it
-  (`crates/sunrise-core/src/engine/merge/rows/task.rs:191#ftsr_upsert_task`). Streams,
+  (`ftsr_upsert_task` in `crates/sunrise-core/src/engine/merge/rows/task.rs`). Streams,
   blocks, notes, context names, attachment filenames and places cannot be found.
 - **Search is a literal AND.** `query_search`
-  (`crates/sunrise-core/src/engine/query.rs:404#query_search`) matches
+  (in `crates/sunrise-core/src/engine/query.rs`, since moved to
+  `crates/sunrise-core/src/engine/search.rs`) matches
   `kind = 'task'` and orders by `bm25`. `sanitize_fts_query`
-  (`crates/sunrise-core/src/engine/query.rs:453#sanitize_fts_query`) quotes
+  (in the same file, since removed) quotes
   every whitespace token, which is what makes hostile input safe and also why
   `stream:work deploy` searches for the literal token `stream:work`.
 - **No CJK and no substrings.** `unicode61` treats a run of CJK text as one

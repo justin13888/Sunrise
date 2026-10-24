@@ -4,8 +4,9 @@
 //! # What a rebuild re-derives
 //!
 //! The entity rows, their side tables (`task_contexts`, `task_blockers`,
-//! `block_tasks`), the task rows of the full-text index, the per-field merge
-//! state they are projected from ([ADR-0044]), and the version DAG beside it
+//! `block_tasks`), the rows of both full-text indexes ([ADR-0052]), the
+//! per-field merge state they are projected from ([ADR-0044]), and the
+//! version DAG beside it
 //! ([ADR-0065] §1–§2), are all a function of the entity ops this replica
 //! applied. [`Engine::rebuild_projection`] clears them and folds those ops
 //! again, in one transaction:
@@ -39,17 +40,19 @@
 //! Everything else in the schema is source data or local state no op
 //! derives, and is not touched: the op log, keys, identity and devices, sync
 //! cursors and floors, the control-op folds (revocations, features), and
-//! local-only tables such as `device_preferences` and `blob_cache`. Inside
-//! the cleared tables four things survive, because no op still in the log
-//! derives them:
+//! local-only tables such as `device_preferences` and `blob_cache`, and
+//! `search_meta`, the record of how the full-text indexes were built, whose
+//! tokenizer the rebuild keeps. A background re-index of the word index for a
+//! new content language (`engine::search`) is abandoned, since the docs it
+//! copied are rewritten, and starts again the next time it is asked for.
+//! Inside the cleared tables three things survive, because no op still in
+//! the log derives them:
 //!
 //! - a placeholder `streams` row no op has stamped (`lww_device IS NULL`),
 //!   which `ensure_stream_row` wrote when an op named a stream before its
 //!   create; the lazily seeded Inbox is one;
 //! - each routine's `materialized_until_ms`, how far this device has
 //!   generated its occurrences, which is never on the wire;
-//! - every `search_idx` row whose `kind` is not `task`, since only task rows
-//!   are projected;
 //! - every `entity_versions` row of a compacted op. Compaction keeps them
 //!   (ADR-0065 D10) and the merge state's base carries no versions, so they
 //!   are kept here as compaction kept them, and their frontiers recomputed.
@@ -70,6 +73,7 @@
 //! projects an entity to a table it does not call a projection.
 //!
 //! [ADR-0044]: ../../../../docs/11-adr/0044-per-field-ops.md
+//! [ADR-0052]: ../../../../docs/11-adr/0052-search-v2.md
 //! [ADR-0059]: ../../../../docs/11-adr/0059-client-op-log-compaction.md
 //! [ADR-0065]: ../../../../docs/11-adr/0065-copy-on-write-entity-versions.md
 
@@ -119,8 +123,11 @@ pub(super) enum TableClass {
 pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
     use TableClass::{Projection, Source};
     &[
-        // The task search rows, and the side tables of entity rows.
-        ("search_idx", Projection),
+        // The full-text rows of every indexed kind, and the side tables of
+        // entity rows.
+        ("search_docs", Projection),
+        ("search_words", Projection),
+        ("search_tri", Projection),
         ("task_contexts", Projection),
         ("task_blockers", Projection),
         ("block_tasks", Projection),
@@ -186,6 +193,9 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("blob_fetches", Source),
         ("blob_cache", Source),
         ("blob_cache_backfill", Source),
+        // How the full-text indexes were built: their tokenizer, which a
+        // rebuild keeps, and any re-index under way, which it abandons.
+        ("search_meta", Source),
         // The record of the last rebuild, which the rebuild writes.
         ("projection_rebuild", Source),
     ]
@@ -265,20 +275,23 @@ fn compacted(table: &str, stream: &str, device: &str, seq: &str) -> String {
 }
 
 /// Clear every [`TableClass::Projection`] table, keeping the rows the module
-/// docs name: placeholder stream rows, search rows of other kinds, and the
-/// versions of compacted ops.
+/// docs name: placeholder stream rows and the versions of compacted ops.
+/// A background re-index of the word index is abandoned.
 fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     // Rows reference each other (a task its stream, a stream its parent).
     // Every reference is whole again once the refold has run, which is
     // before the transaction commits.
-    tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+    tx.execute_batch(
+        "PRAGMA defer_foreign_keys = ON;
+         DROP TABLE IF EXISTS search_words_next;
+         UPDATE search_meta SET reindex_stemmed = NULL, reindex_cursor = 0;",
+    )?;
     for (table, class) in TABLE_CLASSES {
         if *class != TableClass::Projection {
             continue;
         }
         let sql = match *table {
             "streams" => "DELETE FROM streams WHERE lww_device IS NOT NULL".to_owned(),
-            "search_idx" => "DELETE FROM search_idx WHERE kind = 'task'".to_owned(),
             "entity_versions" => format!(
                 "DELETE FROM entity_versions WHERE NOT {}",
                 compacted("entity_versions", "stream", "device", "seq")
@@ -288,36 +301,6 @@ fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         tx.execute(&sql, [])?;
     }
     Ok(())
-}
-
-/// Stand a plain temporary table in for the task rows of `search_idx` while
-/// the refold writes them.
-///
-/// The row writers keep the index current one task at a time, and each write
-/// first deletes the task's row by `id`, a column FTS5 cannot index. That is
-/// a scan of the whole index per write, which made a rebuild quadratic in the
-/// vault's task count: 2.7 ms an op at 10k tasks and growing. A `TEMP` table
-/// of the same name shadows the main one for every unqualified statement on
-/// this connection, and is indexed on `(kind, id)`. [`unshadow_search`] then
-/// copies its rows into the index in one statement, which is step 4 of the
-/// design ("rebuild FTS"). It is created inside the transaction, so a rollback
-/// drops it with everything else.
-fn shadow_search(tx: &Transaction<'_>) -> rusqlite::Result<()> {
-    tx.execute_batch(
-        "CREATE TEMP TABLE search_idx
-           (kind TEXT, id BLOB, stream_id BLOB, title TEXT, body TEXT, contexts TEXT);
-         CREATE INDEX temp.search_idx_by_id ON search_idx (kind, id);",
-    )
-}
-
-/// Move the shadowed task rows into the full-text index and drop the shadow.
-fn unshadow_search(tx: &Transaction<'_>) -> rusqlite::Result<()> {
-    tx.execute_batch(
-        "INSERT INTO main.search_idx (kind, id, stream_id, title, body, contexts)
-           SELECT kind, id, stream_id, title, body, contexts FROM temp.search_idx
-           ORDER BY rowid;
-         DROP TABLE temp.search_idx;",
-    )
 }
 
 /// A stored op the rebuild cannot read. The log is damaged, and the rebuild
@@ -369,13 +352,7 @@ impl Engine {
         });
         db.conn()
             .execute_batch(&format!("PRAGMA cache_size = {cache}"))?;
-        let report = result.inspect_err(|_| {
-            // The rollback drops the shadow table with the rest; this makes
-            // sure no later statement on this connection can resolve to it.
-            let _ = db
-                .conn()
-                .execute_batch("DROP TABLE IF EXISTS temp.search_idx");
-        })?;
+        let report = result?;
         tracing::info!(
             ev = "core.rebuild.done",
             n_ops = report.ops_replayed,
@@ -426,7 +403,6 @@ impl Engine {
         let kept = Kept::save(tx)?;
         let pending = pending_ops(tx)?;
         clear(tx)?;
-        shadow_search(tx)?;
         let compacted = join_stream_state(tx, &base)?;
         recompute_kept_versions(tx)?;
         let mut report = RebuildReport {
@@ -434,7 +410,6 @@ impl Engine {
             ..RebuildReport::default()
         };
         self.refold(tx, pending, &mut report)?;
-        unshadow_search(tx)?;
         kept.restore(tx)?;
         Ok(report)
     }
@@ -624,10 +599,16 @@ pub(super) mod check {
             if *class != TableClass::Projection {
                 continue;
             }
+            // A full-text row is named by its entity, not its rowid, which
+            // is the order the docs were first written in.
             let sql = match *table {
-                "search_idx" => {
-                    "SELECT kind, id, stream_id, title, body, contexts FROM search_idx".to_owned()
-                }
+                "search_docs" => "SELECT kind, id FROM search_docs".to_owned(),
+                "search_words" => "SELECT d.kind, d.id, w.title, w.aux, w.body
+                     FROM search_words w LEFT JOIN search_docs d ON d.doc = w.rowid"
+                    .to_owned(),
+                "search_tri" => "SELECT d.kind, d.id, t.title, t.body
+                     FROM search_tri t LEFT JOIN search_docs d ON d.doc = t.rowid"
+                    .to_owned(),
                 other => format!("SELECT * FROM {other}"),
             };
             let mut stmt = conn.prepare(&sql).expect("prepare dump");

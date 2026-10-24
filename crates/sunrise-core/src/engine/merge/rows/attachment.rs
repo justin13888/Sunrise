@@ -1,5 +1,6 @@
 //! The `attachments` row: the Attachment projection's writer.
 
+use super::search::index_attachment;
 use crate::engine::attachment::attachment_parent_kind;
 use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
@@ -83,5 +84,5 @@ pub(in crate::engine::merge) fn upsert_attachment_row(
             a.thumbnail_ciphertext_hash.as_ref().map(|b| &b[..]),
         ],
     )?;
-    Ok(())
+    index_attachment(tx, a)
 }

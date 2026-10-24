@@ -104,6 +104,8 @@ pub static ALLOWED: &[&str] = &[
     "n_bytes",
     "n_chunks",
     "n_devices",
+    // Indexed entities: a count of search docs, never their text.
+    "n_docs",
     "n_dropped",
     "n_exported",
     "n_imported",

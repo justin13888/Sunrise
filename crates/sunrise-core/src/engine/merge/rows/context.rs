@@ -3,13 +3,14 @@
 //!
 //! The purge is the only projection write that reaches into another entity's
 //! rows, because a Task's contexts live in a join table the Task does not own
-//! (ADR-0044 §5).
+//! (ADR-0044 §5). The other is the search text of the tasks carrying a
+//! context, which holds its name ([`index_context`]).
 
-use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
+use super::search::{index_context, reindex_task_row};
+use crate::engine::ids::{blob16, encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
 use rusqlite::{params, Transaction};
 use sunrise_domain::Context;
-use sunrise_id::{EntityKind, EntityRef};
 
 pub(in crate::engine::merge) fn insert_context_row(
     tx: &Transaction<'_>,
@@ -37,7 +38,7 @@ pub(in crate::engine::merge) fn insert_context_row(
             &lww.device[..],
         ],
     )?;
-    Ok(())
+    index_context(tx, c)
 }
 
 pub(in crate::engine::merge) fn update_context_row(
@@ -71,11 +72,12 @@ pub(in crate::engine::merge) fn update_context_row(
             c.id.bytes().to_vec(),
         ],
     )?;
-    Ok(())
+    index_context(tx, c)
 }
 
-/// Drop `ctx` from every Task carrying it and refresh those Tasks' FTS rows.
-/// Returns the number of memberships removed. Idempotent.
+/// Drop `ctx` from every Task carrying it and rewrite those Tasks' search
+/// rows, so its name stops matching them. Returns the number of memberships
+/// removed. Idempotent.
 pub(in crate::engine::merge) fn purge_context_from_tasks(
     tx: &Transaction<'_>,
     ctx: &[u8; 16],
@@ -92,33 +94,7 @@ pub(in crate::engine::merge) fn purge_context_from_tasks(
         params![&ctx[..]],
     )?;
     for tid in &task_ids {
-        refresh_task_contexts_fts(tx, tid)?;
+        reindex_task_row(tx, &blob16(tid))?;
     }
     Ok(task_ids.len())
-}
-
-/// Rewrite a task's `search_idx.contexts` column from its surviving
-/// `task_contexts` rows, so a purged context stops matching search.
-fn refresh_task_contexts_fts(tx: &Transaction<'_>, task_id: &[u8]) -> rusqlite::Result<()> {
-    let joined = {
-        let mut stmt = tx.prepare(
-            "SELECT context_id FROM task_contexts WHERE task_id = ? ORDER BY context_id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| r.get::<_, Vec<u8>>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .map(|raw| {
-                let mut a = [0u8; 16];
-                let take = raw.len().min(16);
-                a[..take].copy_from_slice(&raw[..take]);
-                EntityRef::new(EntityKind::Context, a).to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    tx.execute(
-        "UPDATE search_idx SET contexts = ? WHERE kind = 'task' AND id = ?",
-        params![joined, task_id],
-    )?;
-    Ok(())
 }

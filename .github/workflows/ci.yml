@@ -966,10 +966,12 @@ jobs:
         # `compaction` at its default sizes seeds 100k tasks through the
         # command path, about 24 minutes on an M-series Mac before a single
         # sample, so it runs at the 10k size `baseline.rs` records. `rebuild`
-        # seeds the same way and runs at 10k for the same reason.
+        # seeds the same way and runs at 10k for the same reason, and so does
+        # `fts`, whose 100k vault also carries notes and blocks.
         env:
           SUNRISE_BENCH_COMPACT_TASKS: "10000"
           SUNRISE_BENCH_REBUILD_TASKS: "10000"
+          SUNRISE_BENCH_FTS_TASKS: "10000"
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60

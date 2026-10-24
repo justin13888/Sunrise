@@ -103,6 +103,7 @@ mod rebuild;
 mod review;
 mod revocation;
 mod routine;
+mod search;
 mod snapshot;
 mod stream;
 mod sync;
@@ -130,6 +131,7 @@ pub(crate) use self::rebuild::check::{
 };
 pub use self::rebuild::RebuildReport;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
+pub use self::search::SearchReindex;
 pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 
 /// Vault-meta op-log stream id: 16 zero bytes.
@@ -727,6 +729,12 @@ impl Engine {
             Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
             Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
+            Query::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
+            } => self.query_search_grouped(db, &text, now_ms, prefix, per_group),
             Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and

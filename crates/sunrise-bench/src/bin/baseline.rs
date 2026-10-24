@@ -230,7 +230,7 @@ struct Bench {
 /// Every bench the baseline records.
 ///
 /// The sized groups list their *default* sizes only — `vault_open` at 10k and
-/// 100k rows, `compaction` and `rebuild` at 10k tasks. A run at another size writes a
+/// 100k rows, `compaction`, `rebuild` and `fts` at 10k tasks. A run at another size writes a
 /// directory no row names, which `--check` reports as unknown rather than
 /// comparing against a baseline taken at a different size. Both at
 /// 100k are left out because seeding takes about 24 minutes, longer than the
@@ -255,7 +255,7 @@ const BENCHES: &[Bench] = &[
         unit: Unit::Ms,
     },
     Bench {
-        dir: "fts",
+        dir: "fts/query_10000",
         p50: None,
         p99: "fts_query_10k_p99_ms",
         unit: Unit::Ms,

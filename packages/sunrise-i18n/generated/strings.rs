@@ -34,7 +34,10 @@ pub mod usage {
     ///                                  the undated tasks of each stream
     ///     sunrise inbox                list inbox tasks
     ///     sunrise next                 the focus planner's top picks
-    ///     sunrise search <query>...    full-text search
+    ///     sunrise search [--kind <k>] [--all] <query>...
+    ///                                  search everything, grouped by kind; the
+    ///                                  query takes #stream, @context, !1, state:,
+    ///                                  kind:, is:, has: and due<fri-style dates
     ///
     ///   the vault's shape
     ///     sunrise streams              list streams with open counts
@@ -224,7 +227,7 @@ pub mod usage {
     #[must_use]
     pub fn text() -> String {
         let mut out = String::new();
-        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then\n                                 the undated tasks of each stream\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search <query>...    full-text search\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n    sunrise export all <dir> [--no-fetch]\n                                 write everything, decrypted, into an empty\n                                 directory: every record as JSON, notes as\n                                 Markdown, blocks as .ics, attachment bytes,\n                                 and a manifest of BLAKE3 digests\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
+        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then\n                                 the undated tasks of each stream\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search [--kind <k>] [--all] <query>...\n                                 search everything, grouped by kind; the\n                                 query takes #stream, @context, !1, state:,\n                                 kind:, is:, has: and due<fri-style dates\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n    sunrise export all <dir> [--no-fetch]\n                                 write everything, decrypted, into an empty\n                                 directory: every record as JSON, notes as\n                                 Markdown, blocks as .ics, attachment bytes,\n                                 and a manifest of BLAKE3 digests\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
         out
     }
 }
@@ -615,11 +618,370 @@ pub mod capture {
 
 /// `search` messages.
 pub mod search {
+    use super::rt;
+
     /// search needs a query
     #[must_use]
     pub fn needs_query() -> String {
         let mut out = String::new();
         out.push_str("search needs a query");
+        out
+    }
+
+    /// ```text
+    /// usage: search [--kind <kind>[,<kind>...]] [--all] <query>...
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: search [--kind <kind>[,<kind>...]] [--all] <query>...");
+        out
+    }
+
+    /// unknown kind `{kind}`; use task, note, event, block, stream, context, place, attachment, view or person
+    #[must_use]
+    pub fn unknown_kind(kind: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown kind `");
+        out.push_str(kind);
+        out.push_str("`; use task, note, event, block, stream, context, place, attachment, view or person");
+        out
+    }
+
+    /// nothing matches “{text}”
+    #[must_use]
+    pub fn nothing(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("nothing matches “");
+        out.push_str(text);
+        out.push('”');
+        out
+    }
+
+    /// {count, plural, one {Tasks (#)} other {Tasks (#)}}
+    #[must_use]
+    pub fn group_task(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Tasks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Tasks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Notes (#)} other {Notes (#)}}
+    #[must_use]
+    pub fn group_note(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Notes (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Notes (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Calendar events (#)} other {Calendar events (#)}}
+    #[must_use]
+    pub fn group_event(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Calendar events (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Calendar events (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Blocks (#)} other {Blocks (#)}}
+    #[must_use]
+    pub fn group_block(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Blocks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Blocks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Streams (#)} other {Streams (#)}}
+    #[must_use]
+    pub fn group_stream(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Streams (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Streams (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Contexts (#)} other {Contexts (#)}}
+    #[must_use]
+    pub fn group_context(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Contexts (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Contexts (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Places (#)} other {Places (#)}}
+    #[must_use]
+    pub fn group_place(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Places (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Places (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Attachments (#)} other {Attachments (#)}}
+    #[must_use]
+    pub fn group_attachment(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Attachments (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Attachments (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Saved views (#)} other {Saved views (#)}}
+    #[must_use]
+    pub fn group_view(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Saved views (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Saved views (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {People (#)} other {People (#)}}
+    #[must_use]
+    pub fn group_person(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("People (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("People (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {… # more (--kind {kind} --all)} other {… # more (--kind {kind} --all)}}
+    #[must_use]
+    pub fn more(count: i64, kind: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more (--kind ");
+                out.push_str(kind);
+                out.push_str(" --all)");
+            }
+            _ => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more (--kind ");
+                out.push_str(kind);
+                out.push_str(" --all)");
+            }
+        }
+        out
+    }
+
+    /// `{text}` is no operator, so it was searched for as text
+    #[must_use]
+    pub fn notice_unknown_key(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is no operator, so it was searched for as text");
+        out
+    }
+
+    /// `{text}` is not a value that operator takes, so it was searched for as text
+    #[must_use]
+    pub fn notice_bad_value(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is not a value that operator takes, so it was searched for as text");
+        out
+    }
+
+    /// a quote was not closed; the phrase runs to the end
+    #[must_use]
+    pub fn notice_unclosed_quote() -> String {
+        let mut out = String::new();
+        out.push_str("a quote was not closed; the phrase runs to the end");
+        out
+    }
+
+    /// a parenthesis was not closed; it closes at the end
+    #[must_use]
+    pub fn notice_unclosed_group() -> String {
+        let mut out = String::new();
+        out.push_str("a parenthesis was not closed; it closes at the end");
+        out
+    }
+
+    /// a closing parenthesis with no opening one was ignored
+    #[must_use]
+    pub fn notice_stray_paren() -> String {
+        let mut out = String::new();
+        out.push_str("a closing parenthesis with no opening one was ignored");
+        out
+    }
+
+    /// an empty phrase was ignored
+    #[must_use]
+    pub fn notice_empty_phrase() -> String {
+        let mut out = String::new();
+        out.push_str("an empty phrase was ignored");
+        out
+    }
+
+    /// OR needs something on both sides, so it was searched for as a word
+    #[must_use]
+    pub fn notice_literal_or() -> String {
+        let mut out = String::new();
+        out.push_str("OR needs something on both sides, so it was searched for as a word");
+        out
+    }
+
+    /// the query is longer than search reads; the rest was ignored
+    #[must_use]
+    pub fn notice_too_long() -> String {
+        let mut out = String::new();
+        out.push_str("the query is longer than search reads; the rest was ignored");
+        out
+    }
+
+    /// the query has more parts than search reads; the rest was searched for as one phrase
+    #[must_use]
+    pub fn notice_too_many_clauses() -> String {
+        let mut out = String::new();
+        out.push_str("the query has more parts than search reads; the rest was searched for as one phrase");
+        out
+    }
+
+    /// parentheses nest deeper than search reads; the rest was searched for as one phrase
+    #[must_use]
+    pub fn notice_too_deep() -> String {
+        let mut out = String::new();
+        out.push_str("parentheses nest deeper than search reads; the rest was searched for as one phrase");
+        out
+    }
+
+    /// nothing is named “{text}”, so that part matches nothing
+    #[must_use]
+    pub fn notice_unknown_name(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("nothing is named “");
+        out.push_str(text);
+        out.push_str("”, so that part matches nothing");
+        out
+    }
+
+    /// more than one name starts with “{text}”, so that part matches nothing
+    #[must_use]
+    pub fn notice_ambiguous_name(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("more than one name starts with “");
+        out.push_str(text);
+        out.push_str("”, so that part matches nothing");
+        out
+    }
+
+    /// `{text}` is not available yet, so it matches nothing
+    #[must_use]
+    pub fn notice_unsupported(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is not available yet, so it matches nothing");
         out
     }
 }

@@ -14,6 +14,7 @@ mod block;
 mod context;
 mod preferences;
 mod routine;
+mod search;
 mod stream;
 mod task;
 
@@ -25,6 +26,9 @@ pub(in crate::engine::merge) use context::{
 pub(in crate::engine::merge) use preferences::upsert_preferences_row;
 pub(in crate::engine::merge) use routine::{insert_routine_row, update_routine_row};
 pub(in crate::engine::merge) use stream::{insert_stream_row, update_stream_row};
+// The full-text rows are written by the row writers above, and rebuilt from
+// the rows by `engine::search`, which is the one reader of the rest.
+pub(in crate::engine) use search::{create_words_sql, rebuild_from_rows};
 pub(in crate::engine::merge) use task::{
     ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row,
     replace_task_blockers, replace_task_contexts, update_task_row,

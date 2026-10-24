@@ -84,7 +84,8 @@ pub use control_op::{
 pub use core::{Core, CoreError};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, RebuildReport, SnapshotApplied, BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
+    Engine, EngineError, RebuildReport, SearchReindex, SnapshotApplied, BOOTSTRAP_FILE,
+    SNAPSHOT_FORMAT_V,
 };
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
@@ -93,7 +94,7 @@ pub use feature::{FeatureScope, MissingFeature};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount, Query,
-    QueryResult, StreamRow,
+    QueryResult, SearchGroup, SearchHit, SearchNotice, SearchResults, StreamRow,
 };
 pub use sync_driver::{
     BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,

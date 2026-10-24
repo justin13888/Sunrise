@@ -98,6 +98,9 @@ mod versions;
 pub(super) use patch::{check_patch, PatchProblem};
 #[cfg(test)]
 pub(super) use project::map_over_whole;
+// The search indexes' rows are the row writers'; `engine::search` builds them
+// from the rows when the layout changes.
+pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
 pub(super) use versions::recompute as recompute_versions;
 #[cfg(test)]

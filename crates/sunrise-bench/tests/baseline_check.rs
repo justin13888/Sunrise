@@ -42,7 +42,7 @@ fn expected_dirs() -> Vec<&'static str> {
         "submit",
         "query_today",
         "query_upcoming",
-        "fts",
+        "fts/query_10000",
         "sync_session",
         "prime_hlc/scan_10000",
         "prime_hlc/indexed_10000",

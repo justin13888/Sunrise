@@ -2,6 +2,7 @@
 //! an op naming an unknown stream hangs off is
 //! [`crate::engine::stream::ensure_stream_row`]'s, which writes no entity.
 
+use super::search::index_stream;
 use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
 use crate::engine::stream::cadence_str;
@@ -51,7 +52,7 @@ pub(in crate::engine::merge) fn insert_stream_row(
             &lww.device[..],
         ],
     )?;
-    Ok(())
+    index_stream(tx, s)
 }
 
 pub(in crate::engine::merge) fn update_stream_row(
@@ -100,5 +101,5 @@ pub(in crate::engine::merge) fn update_stream_row(
             id_blob,
         ],
     )?;
-    Ok(())
+    index_stream(tx, s)
 }
