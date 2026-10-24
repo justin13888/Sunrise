@@ -392,3 +392,57 @@ fn the_zone_comes_from_the_flag_the_environment_or_tz_set_and_an_unknown_one_is_
     ok(v, &["tz", "clear"]);
     assert_eq!(json_of(v, &["tz"])["source"], "system");
 }
+
+/// `upcoming` (#351): the span asked for, else the device's preference, days
+/// from the reader's today, each plan on the day it falls on with its kind,
+/// and undated tasks in the no-date lane.
+#[test]
+fn upcoming_lists_the_span_day_by_day_then_the_undated_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let in_ny = |args: &[&str]| -> Vec<String> {
+        ["--tz", "America/New_York"]
+            .iter()
+            .chain(args)
+            .map(|a| (*a).to_owned())
+            .collect()
+    };
+    let run = |args: &[&str]| {
+        ok(
+            v,
+            &in_ny(args).iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+    };
+    let json = |args: &[&str]| {
+        let mut with = vec!["--json"];
+        with.extend_from_slice(args);
+        let out = run(&with);
+        serde_json::from_str::<serde_json::Value>(out.trim())
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {out}"))
+    };
+    let call = first_id(&run(&["capture", "Call mom ^tomorrow 9am"]));
+    let someday = first_id(&run(&["capture", "Learn the cello"]));
+
+    let view = json(&["upcoming", "14"]);
+    assert_eq!(view["span_days"], 14);
+    let days = view["days"].as_array().expect("days");
+    assert_eq!(days.len(), 14);
+    assert_eq!(view["today"], days[0]["date"]);
+    let tomorrow = &days[1]["planned"][0];
+    assert_eq!(tomorrow["id"], call.as_str());
+    assert_eq!(tomorrow["scheduled_at"]["kind"], "floating");
+    let lane = view["no_date"].as_array().expect("no_date");
+    assert_eq!(lane.len(), 1);
+    assert_eq!(lane[0]["no_stream"], true);
+    assert_eq!(lane[0]["tasks"][0]["id"], someday.as_str());
+    assert_eq!(lane[0]["total"], 1);
+
+    let text = run(&["upcoming"]);
+    assert!(text.contains(&call) && text.contains("No date"), "{text}");
+    assert_eq!(json(&["upcoming"])["days"].as_array().unwrap().len(), 7);
+    run(&["prefs", "set", "views.upcoming.span_days", "30", "--device"]);
+    assert_eq!(json(&["upcoming"])["span_days"], 30);
+    for bad in ["9", "week", "0"] {
+        assert!(!run_in(v, &["upcoming", bad]).status.success(), "{bad}");
+    }
+}

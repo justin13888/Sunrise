@@ -14,6 +14,7 @@ use crate::dto::{
     SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
     WeeklyReviewReport,
 };
+use crate::upcoming::UpcomingReport;
 
 /// A read query.
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -197,6 +198,17 @@ pub enum CoreQuery {
     /// its value came from. The bootstrap keys are read without the vault,
     /// by `bootstrap_preferences`.
     Preferences,
+    /// Upcoming: the next 7, 14 or 30 civil days from today in the device's
+    /// zone, day by day, then a no-date lane per stream.
+    Upcoming {
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`].
+        now_ms: u64,
+        /// 7, 14 or 30; any other span is an error. Absent reads the
+        /// device's `views.upcoming.span_days` preference.
+        span_days: Option<u32>,
+        /// Narrow tasks to these contexts; empty means all.
+        contexts: Vec<EntityRef>,
+    },
 }
 
 impl CoreQuery {
@@ -278,6 +290,15 @@ impl CoreQuery {
             Self::Search { text, limit } => Query::Search { text, limit },
             Self::ParkedOpsSummary => Query::ParkedOpsSummary,
             Self::Preferences => Query::Preferences,
+            Self::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            } => Query::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            },
         }
     }
 }
@@ -449,6 +470,11 @@ pub enum CoreQueryResult {
         /// The keys.
         preferences: Vec<PreferenceItem>,
     },
+    /// The Upcoming view.
+    Upcoming {
+        /// The days and the no-date lane.
+        upcoming: UpcomingReport,
+    },
 }
 
 impl CoreQueryResult {
@@ -549,6 +575,9 @@ impl CoreQueryResult {
             },
             QueryResult::Preferences(p) => Self::Preferences {
                 preferences: p.into_iter().map(PreferenceItem::from).collect(),
+            },
+            QueryResult::Upcoming(u) => Self::Upcoming {
+                upcoming: UpcomingReport::from(u.as_ref()),
             },
         }
     }

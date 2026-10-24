@@ -44,6 +44,7 @@ losing it.
 | Read/write tasks | MUST | MUST | MUST | — | — | — |
 | Streams, contexts, routines | MUST | MUST (read + capture) | MUST | — | — | — |
 | Today / Inbox / Stream views | MUST | MUST (list form) | MUST | — | — | — |
+| Upcoming (7 / 14 / 30 days, no-date lane) | MUST | MUST (list form) | MUST | — | — | — |
 | Focus mode | MUST | MUST (`next`, `focus <id>`) | MUST | — | — | — |
 | Time-blocking on calendar grid | MUST | N/A | MUST | — | — | — |
 | Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
@@ -137,6 +138,10 @@ added:**
   embedded ([#14](https://github.com/justin13888/Sunrise/issues/14)), but
   nobody has seen a Mac offer it, so it stays **unmet** until someone does
   ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+- **Upcoming** on macOS and iOS. The view is the core's (`Query::Upcoming`)
+  and crosses the seam as `CoreQuery.upcoming`, but no Apple screen reaches it
+  yet: `TaskListKind.upcoming(span:)`, its sidebar and Browse entries and ⌘3
+  are the rest of [#351](https://github.com/justin13888/Sunrise/issues/351).
 
 The iOS widget row is graded **met**. The graded MUSTs live in
 three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
@@ -150,13 +155,14 @@ around it is recorded in the cells below and in
 [What is still narrow](#what-is-still-narrow) — an audit whose every row says
 "met" is worth nothing if the narrowness is not written down beside it.
 
-### macOS — 24 MUSTs
+### macOS — 25 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
 | Read/write tasks | met | sidebar → `TaskListView` → `TaskListModel` → `submit`/`query` |
 | Streams, contexts, routines | met | `BrowseSidebar` CRUD; `RoutinesView` → `RoutineEditorView` |
 | Today / Inbox / Stream views | met | `Destination.fixed` + per-stream tags → `TaskListView` |
+| Upcoming | unmet | No surface. `CoreQuery.upcoming` returns the days and the no-date lane, and nothing in `apps/apple` asks for it ([#351](https://github.com/justin13888/Sunrise/issues/351)) |
 | Focus mode | met | sidebar → `FocusView` → `FocusModel` (plan, start, interrupt, cascade) |
 | Time-blocking on calendar grid | met | sidebar → `CalendarView` → `CalendarModel`; day and week |
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
@@ -206,13 +212,14 @@ forbids a state carried by appearance alone. A screen that *can* print but is
 empty right now stays enabled and beeps; that is a different condition, and a
 menu item flickering as tasks come and go would explain less.
 
-### CLI — 9 MUSTs
+### CLI — 10 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
 | Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
 | Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
 | Today / Inbox / Stream views (list form) | met *(today, no context filter)* | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
+| Upcoming (list form) | met *(no drag, no context filter)* | `upcoming [7\|14\|30]` (`Query::Upcoming`): one block per civil day in the reader's zone, its blocks, plans and deadlines, then each stream's undated tasks, five each with "N more". With no span the device's `views.upcoming.span_days` decides; `--json` prints the days with their bounds. Rescheduling is `defer` / `schedule`, since a terminal has no drag |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
 | Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
@@ -248,11 +255,11 @@ moved. Refusing and then telling the user exactly how to proceed is the point:
 guessing would have left every such vault readable by anyone holding a copy of
 `sunrise`.
 
-### iOS — 24 MUSTs
+### iOS — 25 MUSTs
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **24 met.** The widget row is the newest. The other 23
+everything below it. **24 met**, and Upcoming unmet (below). The widget row is the newest met row. The other 23
 were graded as SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and are MUSTs of the
 phone/tablet class under ADR-0042. It is the record of what a user can
@@ -262,6 +269,7 @@ actually reach on a phone.
 |---|---|---|
 | Read/write tasks | met | Today tab (`iOS/VaultTabs.swift:69-71`) → the shared `TaskListView` (`:149-166`); the row menu's **Edit…** (`TaskListView.swift:217`) opens the Mac's own `TaskEditorView`; swipe actions for Delete and Tomorrow (`:199-203`) |
 | Streams, contexts, routines | met | Browse tab → `BrowseSidebar`: the toolbar's **Add** menu, which is where iOS puts what the Mac draws as a bottom bar (`:100-113`) → `StreamEditorView` / `ContextEditorView` (`:122-135`), and per-row Edit / Pause / Archive / Delete on a stream (`:268-285`) and on a context (`:311-318`). More → Routines → `RoutinesView`'s **New routine** (`:44`) |
+| Upcoming | unmet | No surface: Browse has no Upcoming entry yet, though `CoreQuery.upcoming` is on the seam ([#351](https://github.com/justin13888/Sunrise/issues/351)) |
 | Today / Inbox / Stream views | met | Today is a tab root (`VaultTabs.swift:69-71`); the Inbox, a stream and a context push onto Browse instead, so the list they came from stays behind them (`iOS/TabRoute.swift:97-98`) |
 | Focus mode | met | Focus tab (`VaultTabs.swift:87-93`) → the shared `FocusView`, and **Start focus session** on any row (`TaskListView.swift:225`) |
 | Time-blocking on calendar grid | met | Calendar tab (`VaultTabs.swift:77-83`) → the shared `CalendarView`: drag-to-create (`CalendarView.swift:279`), block move (`:467`) and resize (`:504`), `BlockEditorView` on tap |

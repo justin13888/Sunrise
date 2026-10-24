@@ -19307,3 +19307,6 @@ mod rebuild;
 
 /// One merge path for every local write (ADR-0065 PR 3).
 mod local_write;
+
+/// The Upcoming view's civil days, span and no-date lane (#351).
+mod upcoming;

@@ -224,6 +224,24 @@ pub enum Query {
         /// "Now" (ms since epoch).
         now_ms: u64,
     },
+    /// **Upcoming** (`docs/08-features/planning-views.md` §Upcoming, #351):
+    /// the next 7, 14 or 30 civil days from the reader's today, day by day,
+    /// and a no-date lane per Stream.
+    ///
+    /// Days are civil days in the device's zone, each with its own bounds, so
+    /// a DST day is 23 or 25 hours and a floating time stays on its wall-clock
+    /// day wherever the reader is. The fold is the pure
+    /// `sunrise_domain::build_upcoming`.
+    Upcoming {
+        /// "Now" (ms since epoch), from the injected clock. Fixes today.
+        now_ms: u64,
+        /// 7, 14 or 30; any other span is refused. `None` reads the
+        /// device-local `views.upcoming.span_days` preference.
+        span_days: Option<u32>,
+        /// Filter tasks to these contexts (empty means all). Blocks are not
+        /// filtered.
+        contexts: Vec<EntityRef>,
+    },
     /// The local notifications a client should schedule with the OS, between
     /// `now_ms` and `horizon_ms`.
     ///
@@ -328,6 +346,9 @@ pub enum QueryResult {
     MorningSummary(Box<MorningSummary>),
     /// `EndOfDayPlan` returns the end-of-day view.
     EndOfDayPlan(Box<EndOfDayPlan>),
+    /// `Upcoming` returns the days and the no-date lane. Boxed to keep the
+    /// enum small.
+    Upcoming(Box<Upcoming>),
     /// `ReminderIntents` returns what to schedule, earliest first.
     Reminders(Vec<ReminderIntent>),
     /// `ExportStats` returns the rendered document.
@@ -368,6 +389,13 @@ pub struct BlockRow {
     /// Task whose op has not arrived yet — a valid state, not a repair case.
     pub task_titles: Vec<String>,
 }
+
+/// What [`Query::Upcoming`] returns: the domain's view, each day's blocks
+/// as calendar-grid rows.
+pub type Upcoming = sunrise_domain::Upcoming<BlockRow>;
+
+/// One day of [`Upcoming`].
+pub type UpcomingDay = sunrise_domain::UpcomingDay<BlockRow>;
 
 /// One row of [`Query::FocusPlan`]: a proposal, with the two facts that put it
 /// where it is and the session the core would open for it.

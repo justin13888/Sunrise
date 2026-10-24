@@ -81,6 +81,7 @@ pub mod secret_copies;
 pub mod settings;
 pub mod sync_status;
 pub mod types;
+pub mod upcoming;
 pub mod vocab;
 
 pub use background::{SyncCancel, SyncOnceOutcome};

@@ -53,6 +53,7 @@ pub mod stream;
 pub mod task;
 pub mod time;
 pub mod unknown;
+pub mod upcoming;
 pub mod validation;
 
 pub use activity::{
@@ -147,6 +148,10 @@ pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCade
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use time::{first_day_of_week, shift_civil_days, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
+pub use upcoming::{
+    build_upcoming, is_upcoming_span, upcoming_days, NoDateGroup, Upcoming, UpcomingDay,
+    UpcomingError, UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS, NO_DATE_LANE_CAP, UPCOMING_SPANS,
+};
 pub use validation::{
     ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,
     MAX_FILENAME_LEN, MAX_MIME_TYPE_LEN, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN,
