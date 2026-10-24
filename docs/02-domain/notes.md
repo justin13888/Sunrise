@@ -12,11 +12,11 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
 > `EntityKind::Note`, though not by name: it falls through to the generic
-> refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:206-209`
+> refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:318-321#query_entity`
 > ("EntityById not supported for kind {:?}"). What *is* live is `NoteBody`
 > as a **field**, reached three ways — `Task.body`
-> (`crates/sunrise-domain/src/task.rs:97`), `Stream.description`
-> (`stream.rs:124`, given a column by migration
+> (`crates/sunrise-domain/src/task.rs:86#Task`), `Stream.description`
+> (`stream.rs:86`, given a column by migration
 > `0016_stream_description_and_default_context.sql`) and
 > `Routine.template.body`, which is a field of `TaskTemplate`
 > (`routine.rs:68-88`, `body` at `:87`) reached through `Routine.template`
@@ -138,7 +138,7 @@ bytes, not a proposal.** `NoteBody` is live on `Task.body`,
 `Stream.description` and `Routine.template.body` (banner above), and the codec
 encodes these exact map keys
 (`crates/sunrise-domain/src/note_body/encode.rs:133,:137-144`) and decodes them
-(`crates/sunrise-domain/src/note_body/decode.rs:207-216`).
+(`crates/sunrise-domain/src/note_body/decode.rs:209-218#inline_from_value`).
 Every other spec that shows a reference or a redaction —
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 §Egress scrubbing, [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)
