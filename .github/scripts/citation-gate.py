@@ -304,6 +304,25 @@ Also out, each for a reason:
   resolves to a directory declares nothing whatever its name ends in, so
   `schemas/bundle.json#thing` fails exactly as `crates/c/src/mod.rs#anything`
   does. Only the permalink fragment is exempt there, because it names no item.
+* **A line-bearing citation into Rust that no item encloses.** Every other
+  `path:LINE` citation into a `.rs` file carries a `#symbol` (#265), and these
+  are the three shapes left with only the line check, each because there is no
+  item for the suffix to name rather than because nobody named one:
+
+  - **Module-level `//!` prose** — `import.rs:7-9`, `api/blobs.rs:29-36`,
+    `sunrise-core-bindings/src/lib.rs:5`. The only container is the module,
+    and a `mod` is not a citation target, for the reason "The `#symbol`
+    suffix" above gives.
+  - **A free `//` comment between items** — `sunrise-log/src/plain.rs:89-93`,
+    which records the traits `Plain<T>` deliberately does *not* implement. What
+    it cites is an absence, and an absence declares nothing.
+  - **A range across several items of one `impl`** — `backoff.rs:31-63`, which
+    is `canonical` and `next_delay` together. No single item contains it, and
+    the `impl` that does is not a target either. Splitting the citation in two
+    would be a change to the sentence, which is the author's to make.
+
+  These are the residue after the sweep rather than a rule, so a new citation
+  that does have an enclosing item is expected to name it.
 
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.

@@ -135,7 +135,7 @@ the entity.
 
 ## Size policy
 
-- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs.rs:61`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
+- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
 - Recommended UX: nudge the user toward external storage links (Drive, Dropbox) for files > 25 MB.
 - No per-vault quota. The only ceiling is the fixed 100 MB per attachment above; there is no per-account accounting to charge a vault total against ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
@@ -211,7 +211,7 @@ until the preview closes. A row shows its thumbnail once it has arrived.
 Attachments are not pre-fetched on sync. Each device pulls on first view,
 verifies and keeps the sealed chunks in its local blob store.
 
-- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:164`).
+- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:166#AUTO_FETCH_MAX_BYTES`).
   Smaller attachments fetch without asking on first view.
 - Larger attachments show an inline placeholder with file name, size and a
   **Download** button. **Cancel** during transfer aborts and marks the request

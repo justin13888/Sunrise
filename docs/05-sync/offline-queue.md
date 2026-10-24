@@ -29,7 +29,7 @@ unacked.
 
 - On every locally-emitted op: insert into `ops` (immediately applied to
   materialized state) and `INSERT OR IGNORE` into `outbox`, in the caller's
-  transaction (`crates/sunrise-storage/src/sync_local.rs:42-51`). The
+  transaction (`crates/sunrise-storage/src/sync_local.rs:42-51#enqueue`). The
   `OR IGNORE` makes enqueue idempotent.
 - Pending means `acked_at_ms IS NULL` (`sync_local.rs:61-62,95`), which the
   partial index above serves directly.
@@ -44,7 +44,7 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:761` and `:817`, `ev = "sync.backoff"`).
+(`crates/sunrise-core/src/sync_driver.rs:882#run` and `:938`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
@@ -73,7 +73,7 @@ the schedule, and at most one wake is held however many land.
 `a_reconnect_wake_cuts_the_backoff_short` asserts both.
 
 One consequence worth naming because it looks like a bug and is not: the
-`min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52`)
+`min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52#next_delay`)
 is **unreachable on this policy**. With `max_retries = 5` the largest base is
 1600 ms, so the cap never binds; the only 30 s that ever elapses is the flat
 sleep on the exhausted branch.
@@ -122,7 +122,7 @@ code change that has not been made.
 ## Ack handling
 
 The ack is `Ack { batch_id, stream_id, server_first_seen_ms }`
-(`crates/sunrise-wire-protocol/src/payloads.rs:85-94`). There is **no
+(`crates/sunrise-wire-protocol/src/payloads.rs:91#AckPayload`). There is **no
 `applied_seq_range` field**; earlier revisions of this file specified one.
 
 On receipt the client stamps `acked_at_ms` on each of the batch's outbox rows.

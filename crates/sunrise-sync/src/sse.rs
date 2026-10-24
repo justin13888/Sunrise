@@ -87,7 +87,7 @@ const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// document like every other route and is capped by [`MAX_EVENT_BYTES`] like
 /// every other route, so this number applies to one side of `is_success` and
 /// not to the route.
-/// `crates/sunrise-server/src/api/blobs.rs:62` refuses to commit one larger
+/// `crates/sunrise-server/src/api/blobs.rs:427-431#finalize` refuses to commit one larger
 /// than this, so the number is the relay's own ceiling restated on the side
 /// that has to allocate it. Capping it at [`MAX_EVENT_BYTES`] instead would
 /// refuse every attachment over eight mebibytes, and leaving it uncapped — as
@@ -115,7 +115,7 @@ const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 /// the client carries no timeout of its own (see
 /// [`SseTransport::connect_with_bearer`]), [`HEAD_TIMEOUT`] ends when the head
 /// arrives and so bounds none of the body, and
-/// `crates/sunrise-core/src/sync_driver.rs:723` awaits the `Hello` send
+/// `crates/sunrise-core/src/sync_driver.rs:1183#handshake` awaits the `Hello` send
 /// bare, outside any `tokio::select!`. An unbounded read under that await parks
 /// the driver task with no error, no `SessionEnd::Disconnected`, no backoff and
 /// no log line. On the stream route the driver's `tokio::select!` *cancels*
@@ -127,7 +127,7 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// How long this client will wait for the *next* piece of an **attachment**.
 ///
 /// Fifteen seconds, and the number is not this module's own. It is
-/// `KEEP_ALIVE_SECS` (`crates/sunrise-server/src/api/sync/stream.rs:31`), the
+/// `KEEP_ALIVE_SECS` (`crates/sunrise-server/src/api/sync/stream.rs:38#KEEP_ALIVE_SECS`), the
 /// only value in this repository that says how long silence on a live
 /// connection is *normal* rather than broken, and
 /// `docs/05-sync/wire-protocol.md:360-366` states it in exactly this bound's
@@ -147,14 +147,14 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// ordinary rather than stalled — and the cost of calling it stalled is not
 /// one slow download. [`SseTransport::blob_fetch`] sends no `Range` header, so
 /// every attempt restarts at byte 0, and
-/// `crates/sunrise-core/src/blob_fetch.rs:103` allows ten of them before the
+/// `crates/sunrise-core/src/blob_fetch.rs:103#MAX_FETCH_ATTEMPTS` allows ten of them before the
 /// row is parked `partial` and the waiting client is told the attachment is
 /// unavailable. One gap per hundred megabytes is then a permanently
 /// unfetchable attachment.
 ///
 /// What this number costs, stated because the cost is not one wait: a peer
 /// that accepts the connection and then says nothing holds a fetch for fifteen
-/// seconds, and `crates/sunrise-core/src/blob_fetch.rs:103` allows ten such
+/// seconds, and `crates/sunrise-core/src/blob_fetch.rs:103#MAX_FETCH_ATTEMPTS` allows ten such
 /// attempts before the row is parked.
 ///
 /// Those ten are **not consecutive**, and nothing here should be read as
@@ -162,8 +162,8 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// `count_failure` records it and returns, and that crate's only `poke_sync()`
 /// fires once, when the request is made. The next attempt comes from the sync
 /// driver's anti-entropy backstop, which drains blob transfers and only then
-/// calls `deadlines.resynced()` (`crates/sunrise-core/src/sync_driver.rs:928`
-/// and `:929`) — so the next attempt is `DEFAULT_RESYNC_INTERVAL`, thirty
+/// calls `deadlines.resynced()` (`crates/sunrise-core/src/sync_driver.rs:1423#session`
+/// and `:1424`) — so the next attempt is `DEFAULT_RESYNC_INTERVAL`, thirty
 /// seconds, after the last one *ended*. On a quiet vault the cycle is
 /// therefore this bound plus thirty seconds, and the tenth attempt parks the
 /// row between six and seven minutes after the request. On a busy one an
@@ -203,7 +203,7 @@ const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15
 /// set. A relay, proxy or captive portal that completes TLS and then sends
 /// nothing therefore parked the awaiting task for good. On the `Hello` route
 /// that task is the sync driver, which awaits the send bare
-/// (`crates/sunrise-core/src/sync_driver.rs:723`), so the symptom was silence:
+/// (`crates/sunrise-core/src/sync_driver.rs:1183#handshake`), so the symptom was silence:
 /// no error, no `SessionEnd::Disconnected`, no backoff and no log line.
 ///
 /// A **total** bound, not an idle one, because a head is not a stream: it is
@@ -215,7 +215,7 @@ const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15
 /// mobile reconnect into a refused one.
 ///
 /// Fifteen seconds for the reason [`BLOB_IDLE_TIMEOUT`] is: `KEEP_ALIVE_SECS`
-/// (`crates/sunrise-server/src/api/sync/stream.rs:31`) is the only value in
+/// (`crates/sunrise-server/src/api/sync/stream.rs:38#KEEP_ALIVE_SECS`) is the only value in
 /// this repository that says how long silence from the relay is normal, and
 /// a client that tolerates fifteen seconds of it on one route cannot call less
 /// a dead peer on another. It applies to the event stream's open too: the
@@ -514,7 +514,7 @@ impl SseTransport {
         //
         // The deadline is the load-bearing half. This is the route the
         // handshake rides: `send_frame`'s `Hello` arm calls it, and
-        // `crates/sunrise-core/src/sync_driver.rs:723` awaits that send bare,
+        // `crates/sunrise-core/src/sync_driver.rs:1183#handshake` awaits that send bare,
         // outside any `tokio::select!`. An unbounded read here was not a retry
         // loop the driver eventually notices — it was the driver task parked
         // for good, with no error, no backoff and nothing in the log.
@@ -787,19 +787,19 @@ impl SseTransport {
                 //
                 // An **absent** code is a different condition and gets a
                 // different answer. `INTERNAL_UNKNOWN_CODE` is reserved for an
-                // unknown code, and "the relay sent a code this build has never
-                // heard of" is not "the relay sent no code": the first is a
-                // newer peer doing something the protocol permits, the second
-                // is a malformed event.
-                // `crates/sunrise-server/src/api/sync/stream.rs:72-78` declares
-                // `SyncEvent::Closed.code` as a `String` rather than an
-                // `Option<String>`, so no relay produces the second — which is
-                // exactly the argument the `Hello` arm below makes from
-                // `credential.rs:51` about a missing `session_id`, and it is
-                // made here for the same reason. Reporting it as a protocol
-                // error says what happened; folding it into the forward-compat
-                // code would file a broken relay under "newer than us" and
-                // hide it.
+                // unknown code, and "the relay sent a code this build has
+                // never heard of" is not "the relay sent no code": the first
+                // is a newer peer doing something the protocol permits, the
+                // second is a malformed event.
+                // `crates/sunrise-server/src/api/sync/stream.rs:107-109#SyncEvent`
+                // declares `SyncEvent::Closed.code` as a `String` rather than
+                // an `Option<String>`, so no relay produces the second — which
+                // is exactly the argument the `Hello` arm below makes from
+                // `crates/sunrise-server/src/api/sync/credential.rs:59#SessionResponse`
+                // about a missing `session_id`, and it is made here for the
+                // same reason. Reporting it as a protocol error says what
+                // happened; folding it into the forward-compat code would file
+                // a broken relay under "newer than us" and hide it.
                 let Some(code) = event.get("code").filter(|c| !c.is_null()) else {
                     return Err(TransportError::Protocol(
                         "closed event carries no code".to_owned(),
@@ -881,7 +881,7 @@ impl Transport for SseTransport {
                     serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
                 // A reply naming no session is a failed handshake, not a
                 // quiet one.
-                // `crates/sunrise-server/src/api/sync/credential.rs:51`
+                // `crates/sunrise-server/src/api/sync/credential.rs:59#SessionResponse`
                 // declares `session_id` as a `String` rather than an
                 // `Option<String>`, so a `200` without it is malformed by the
                 // server's own contract. Accepting it used to leave
@@ -2208,14 +2208,14 @@ mod tests {
     /// close this build is merely too old to read.
     ///
     /// The two conditions are not the same one, and
-    /// `docs/10-cross-cutting/error-handling.md:36` reserves
-    /// `INTERNAL_UNKNOWN_CODE` for the first of them — "an older client
-    /// receiving an **unknown** code". A relay one version ahead is doing
-    /// something the protocol permits; a relay sending no code at all is not,
-    /// because `crates/sunrise-server/src/api/sync/stream.rs:72-78` declares
-    /// `SyncEvent::Closed.code` as a `String` rather than an `Option<String>`.
-    /// That is the same argument the `Hello` arm makes from `credential.rs:51`
-    /// about a missing `session_id`, and this is the other end of it.
+    /// `docs/10-cross-cutting/error-handling.md:36` reserves `INTERNAL_UNKNOWN_CODE` for
+    /// the first of them — "an older client receiving an **unknown** code". A relay one
+    /// version ahead is doing something the protocol permits; a relay sending no code at
+    /// all is not, because `crates/sunrise-server/src/api/sync/stream.rs:107-109#SyncEvent`
+    /// declares `SyncEvent::Closed.code` as a `String` rather than an `Option<String>`.
+    /// That is the same argument the `Hello` arm makes from
+    /// `crates/sunrise-server/src/api/sync/credential.rs:59#SessionResponse` about a
+    /// missing `session_id`, and this is the other end of it.
     ///
     /// `null` counts as absent: a non-`Option` `String` does not accept one
     /// either, so the two reach this client for the same reason and get the
@@ -2606,7 +2606,7 @@ mod tests {
     /// blob route, so the split there is by status rather than by route.
     ///
     /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
-    /// (`crates/sunrise-server/src/api/blobs.rs:62`) restated on the side that
+    /// (`crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`) restated on the side that
     /// allocates it. Lowering it would refuse attachments the relay accepted,
     /// which is a failure no caller could diagnose from here. It bounds a
     /// fetched attachment and nothing else; a refused fetch is capped by
@@ -3982,7 +3982,7 @@ mod tests {
     /// reported "no sync session: send Hello first" — the wrong cause, since
     /// `Hello` was sent and acked.
     ///
-    /// `crates/sunrise-server/src/api/sync/credential.rs:51` declares
+    /// `crates/sunrise-server/src/api/sync/credential.rs:59#SessionResponse` declares
     /// `session_id` non-`Option`, so such a reply is malformed by the server's
     /// own contract. Both shapes now fail where they are read, and neither
     /// leaves an ack behind: the driver's reconnect is what decides what
@@ -4556,7 +4556,7 @@ mod tests {
     /// side, which is the side that matters anyway — sizing this route by
     /// [`super::MAX_EVENT_BYTES`] would refuse every attachment over eight
     /// mebibytes, and the relay commits them up to a hundred megabytes
-    /// (`crates/sunrise-server/src/api/blobs.rs:62`). A byte past the event cap
+    /// (`crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`). A byte past the event cap
     /// is enough to tell the two constants apart, and it is the cheapest body
     /// that can.
     ///
