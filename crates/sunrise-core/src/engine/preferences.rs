@@ -163,7 +163,7 @@ impl super::Engine {
         value: Option<PrefValue>,
         target: PrefTarget,
     ) -> Result<CommandResult, EngineError> {
-        let spec = check_write(key, value.as_ref(), target)?;
+        check_write(key, value.as_ref(), target)?;
         let encoded = value.as_ref().map(PrefValue::encode);
         match target {
             PrefTarget::Device => {
@@ -172,11 +172,11 @@ impl super::Engine {
                         Some(v) => tx.execute(
                             "INSERT INTO device_preferences (key, value) VALUES (?, ?)
                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                            params![spec.key, encode(v)?],
+                            params![key, encode(v)?],
                         )?,
                         None => tx.execute(
                             "DELETE FROM device_preferences WHERE key = ?",
-                            params![spec.key],
+                            params![key],
                         )?,
                     };
                     Ok(())
@@ -186,7 +186,9 @@ impl super::Engine {
             }
             PrefTarget::Vault => {
                 self.require_features(db, &[PREFERENCES_FEATURE], false)?;
-                self.patch_preferences(db, spec.key, encoded)
+                // `key`, not `spec.key`: an entry of a map-valued key is its
+                // own register, and its spec's key is the map's prefix.
+                self.patch_preferences(db, key, encoded)
             }
         }
     }
@@ -196,7 +198,7 @@ impl super::Engine {
     fn patch_preferences(
         &self,
         db: &mut Db,
-        key: &'static str,
+        key: &str,
         value: Option<CborValue>,
     ) -> Result<CommandResult, EngineError> {
         let target = preferences_ref();

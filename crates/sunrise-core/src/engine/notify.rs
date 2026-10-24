@@ -4,7 +4,7 @@
 //! The relay only ever sends a content-less wake-up, so a count or a title
 //! reaching the server would be the whole privacy model failing at once. The
 //! rules themselves are the pure `sunrise_domain::notify` functions; this
-//! module's job is to read the rows and resolve the civil bounds.
+//! module's job is to read the rows and resolve the planner-day bounds.
 
 use super::ids::ms_to_ts;
 use super::review::read_live_tasks;
@@ -18,16 +18,24 @@ use sunrise_domain::{
 };
 use sunrise_storage::Db;
 
+/// The date before `d`.
+fn day_before(d: jiff::civil::Date) -> Result<jiff::civil::Date, EngineError> {
+    d.yesterday()
+        .map_err(|e| EngineError::Invalid(format!("previous day: {e}")))
+}
+
 impl Engine {
     pub(super) fn query_morning_summary(
         &self,
         db: &Db,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let (today_start, today_end) = self.civil_span(now_ms as i64, 1)?;
-        // "Since the previous calendar date" — the start of yesterday, in the
-        // device's zone, computed over civil dates so a DST day is still a day.
-        let (prev_start, _) = self.civil_span(today_start - 1, 1)?;
+        // Today's planner day (`docs/02-domain/day-schedule.md`), and "since
+        // the previous one": the start of yesterday's, over civil dates so a
+        // DST day is still a day. With no day schedule both are civil days.
+        let schedule = self.day_schedule(db)?;
+        let (today, today_start, today_end) = self.planner_day_at(&schedule, now_ms)?;
+        let (prev_start, _) = self.planner_bounds(&schedule, day_before(today)?)?;
         let tasks = read_live_tasks(db.conn())?;
         Ok(QueryResult::MorningSummary(Box::new(
             build_morning_summary(
@@ -46,9 +54,13 @@ impl Engine {
         db: &Db,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let (day_start, day_end) = self.civil_span(now_ms as i64, 1)?;
-        // "The week ahead": the seven civil days that follow today.
-        let (_, week_end) = self.civil_span(now_ms as i64, 8)?;
+        let schedule = self.day_schedule(db)?;
+        let (today, day_start, day_end) = self.planner_day_at(&schedule, now_ms)?;
+        // "The week ahead": the seven planner days that follow today.
+        let last = today
+            .checked_add(jiff::Span::new().days(7))
+            .map_err(|e| EngineError::Invalid(format!("week ahead: {e}")))?;
+        let (_, week_end) = self.planner_bounds(&schedule, last)?;
         let tasks = read_live_tasks(db.conn())?;
         Ok(QueryResult::EndOfDayPlan(Box::new(build_end_of_day_plan(
             &tasks,

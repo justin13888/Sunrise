@@ -88,7 +88,8 @@ replaced with a gate everywhere else.
 
 The in-process scenarios above share one address space; these do not.
 `crates/sunrise-e2e/tests/cli_two_vaults.rs`,
-`crates/sunrise-e2e/tests/cli_traveller.rs` and
+`crates/sunrise-e2e/tests/cli_traveller.rs`,
+`crates/sunrise-e2e/tests/cli_day_schedule.rs` and
 `crates/sunrise-e2e/tests/cli_pair_relay.rs` boot the real relay and drive two
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on

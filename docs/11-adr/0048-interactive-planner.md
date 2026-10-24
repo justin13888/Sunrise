@@ -17,7 +17,7 @@ boundary), [ADR-0051](./0051-places.md) (place requirements) and
 
 There is no planner. Nothing in the workspace places a task into time:
 `crates/sunrise-domain/src/planning.rs` holds the Today sectioning
-(`crates/sunrise-domain/src/planning.rs:66#today_section`) and nothing that
+(`crates/sunrise-domain/src/planning.rs:71#today_section`) and nothing that
 moves anything. The inputs a planner would read all exist and nothing reads
 them together: `estimated_duration_s`
 (`crates/sunrise-domain/src/task.rs:114#Task`), `blocked_by`

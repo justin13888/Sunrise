@@ -127,6 +127,7 @@ mod tests {
             today,
             span_days: 7,
             tz: &tz,
+            schedule: &sunrise_domain::DaySchedule::default(),
         })
         .unwrap();
         let CoreQueryResult::Upcoming { upcoming } =

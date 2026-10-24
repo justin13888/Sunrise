@@ -103,6 +103,7 @@ fn view(
         today,
         span_days,
         tz: zone,
+        schedule: &crate::DaySchedule::default(),
     })
     .unwrap()
 }
@@ -375,6 +376,7 @@ fn closed_archived_and_deleted_tasks_are_not_upcoming_and_contexts_filter() {
         today: date(2026, 3, 9),
         span_days: 7,
         tz: &ny,
+        schedule: &crate::DaySchedule::default(),
     })
     .unwrap();
     assert_eq!(on(&filtered, d).0, ["errand"]);

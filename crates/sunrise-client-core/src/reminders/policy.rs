@@ -34,6 +34,12 @@ pub struct ReminderPolicy {
     pub block_enabled: bool,
     /// `notifications.routine_due.enabled`.
     pub routine_enabled: bool,
+    /// `notifications.wind_down.enabled`: fire the wind-down
+    /// ([`super::wind_down_notification`]) on this device when it is the
+    /// primary one and the night has a sleep time.
+    pub wind_down_enabled: bool,
+    /// `notifications.wind_down.lead_s`: how long before the sleep time.
+    pub wind_down_lead_s: u32,
     /// Whether this device should claim the primary register: it is unset (or
     /// names a revoked device) and notifications are on here. Write
     /// [`primary_claim`] when it is.
@@ -128,6 +134,11 @@ pub fn reminder_policy(
         task_enabled: flag(prefs, "notifications.task_reminder.enabled", true),
         block_enabled: flag(prefs, "notifications.block_start.enabled", true),
         routine_enabled: flag(prefs, "notifications.routine_due.enabled", true),
+        wind_down_enabled: flag(prefs, "notifications.wind_down.enabled", true),
+        wind_down_lead_s: match value(prefs, "notifications.wind_down.lead_s") {
+            Some(PrefValue::Uint(s)) => u32::try_from(s).unwrap_or(u32::MAX),
+            _ => 3600,
+        },
         claim_primary: enabled && primary.is_none(),
     }
 }

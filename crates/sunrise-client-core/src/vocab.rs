@@ -50,6 +50,21 @@ pub fn today_section(
     sunrise_domain::today_section(scheduled_at, due_at, now_ms, &zone_or_utc(tz))
 }
 
+/// [`today_section`] over the planner days of `schedule`
+/// (`docs/02-domain/day-schedule.md`): "today" and "overdue" are read against
+/// the planner day holding `now_ms`, which is what `Query::Today` selects by.
+/// A client with the vault's schedule calls this one.
+#[must_use]
+pub fn today_section_in(
+    scheduled_at: Option<&SunriseTime>,
+    due_at: Option<&SunriseTime>,
+    now_ms: u64,
+    tz: &str,
+    schedule: &sunrise_domain::DaySchedule,
+) -> TodaySection {
+    sunrise_domain::today_section_in(scheduled_at, due_at, now_ms, &zone_or_utc(tz), schedule)
+}
+
 /// `relative_day`'s two answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelativeDay {
@@ -359,6 +374,41 @@ mod tests {
         assert_eq!(
             today_section(None, Some(&floating(6, 23)), now, tz),
             TodaySection::Overdue
+        );
+    }
+
+    /// With a 01:00 sleep, 00:30 is still yesterday's planner day: a task due
+    /// yesterday is due, not overdue, until the next day begins.
+    #[test]
+    fn overdue_starts_at_the_planner_days_start_with_a_schedule() {
+        let due = SunriseTime::AllDay {
+            date: jiff::civil::date(2026, 3, 6),
+        };
+        let schedule = sunrise_domain::DaySchedule {
+            weekday: [sunrise_domain::DayWindow::new(
+                jiff::civil::time(7, 0, 0, 0),
+                jiff::civil::time(1, 0, 0, 0),
+            ); 7],
+            ..sunrise_domain::DaySchedule::default()
+        };
+        // 00:30 in Toronto on Saturday 2026-03-07 (EST).
+        let now = u64::try_from(
+            "2026-03-07T05:30Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond(),
+        )
+        .unwrap();
+        let tz = "America/Toronto";
+        assert_eq!(
+            today_section(None, Some(&due), now, tz),
+            TodaySection::Overdue,
+            "civil midnight has passed"
+        );
+        assert_eq!(
+            today_section_in(None, Some(&due), now, tz, &schedule),
+            TodaySection::Due,
+            "the planner day has not"
         );
     }
 

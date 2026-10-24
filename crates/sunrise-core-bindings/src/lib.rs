@@ -63,6 +63,7 @@ pub mod calendar;
 pub mod client;
 pub mod command;
 pub mod conflicts;
+pub mod day_schedule;
 pub mod dto;
 pub mod editing;
 pub mod flows;

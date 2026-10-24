@@ -10,7 +10,7 @@
 use super::attachment::read_attachment;
 use super::block::{block_row, read_block};
 use super::context::read_context;
-use super::ids::{ms_to_ts, require_kind};
+use super::ids::require_kind;
 use super::routine::read_routine;
 use super::stream::read_stream;
 use super::task::{actionable_scan, read_task, ref_of};
@@ -109,19 +109,21 @@ impl Engine {
     }
 
     /// Today: every open task scheduled or due on or before the reader's
-    /// civil day (`docs/10-cross-cutting/time.md` §4).
+    /// planner day (`docs/10-cross-cutting/time.md` §4,
+    /// `docs/02-domain/day-schedule.md`).
     ///
-    /// Today is the civil day containing `now_ms` in the device zone, not a
-    /// rolling 24 hours, and a task belongs to it by the date the reader sees
-    /// its time on ([`SunriseTime::day_in`]): an all-day value occupies its
-    /// whole day, so a task due "today" is here until midnight. Overdue and
-    /// slipped tasks stay, as before; `today_section` sorts them out.
+    /// Today is the planner day containing `now_ms` in the device zone, not a
+    /// rolling 24 hours: with no day schedule the civil day, and with one the
+    /// span from today's start to tomorrow's, so at 00:30 someone who sleeps
+    /// at 01:00 is still on the day they were living. A task belongs to the
+    /// planner day its time falls on ([`sunrise_domain::planner_day_of`]): an
+    /// all-day value occupies its whole day. Overdue and slipped tasks stay,
+    /// as before; `today_section_in` sorts them out.
     ///
     /// The SQL reads the storage index up to the end of the day plus
     /// [`PREFILTER_SLACK_MS`], and membership is then decided in Rust on the
     /// resolved value (§2 rule 2). Rows come back by their resolved time
     /// (`scheduled_at`, else `due_at`) with [`SunriseTime::cmp_in`], then id.
-    /// With a day schedule (#338) the day's bounds become its planner day's.
     pub(super) fn query_today(
         &self,
         db: &Db,
@@ -129,17 +131,8 @@ impl Engine {
         contexts: &[EntityRef],
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
-        let today = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX))
-            .to_zoned(tz.clone())
-            .date();
-        let day_end_ms = today
-            .tomorrow()
-            .ok()
-            .and_then(|d| {
-                tz.to_zoned(d.to_datetime(jiff::civil::Time::midnight()))
-                    .ok()
-            })
-            .map_or(i64::MAX, |z| z.timestamp().as_millisecond());
+        let schedule = self.day_schedule(db)?;
+        let (today, _, day_end_ms) = self.planner_day_at(&schedule, now_ms)?;
         let window_end = day_end_ms.saturating_add(PREFILTER_SLACK_MS);
 
         // `contexts` is an OR-set filter per docs/02-domain/contexts-and-tags.md:
@@ -188,8 +181,10 @@ impl Engine {
                 tasks.push(t);
             }
         }
-        let on_or_before_today =
-            |v: Option<&SunriseTime>| v.and_then(|v| v.day_in(&tz)).is_some_and(|d| d <= today);
+        let on_or_before_today = |v: Option<&SunriseTime>| {
+            v.and_then(|v| sunrise_domain::planner_day_of(&schedule, v, &tz))
+                .is_some_and(|d| d <= today)
+        };
         tasks.retain(|t| {
             on_or_before_today(t.scheduled_at.as_ref()) || on_or_before_today(t.due_at.as_ref())
         });
@@ -215,10 +210,11 @@ impl Engine {
     ) -> Result<(u32, bool), EngineError> {
         let moved =
             |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
+        let schedule = self.day_schedule(db)?;
         let late_moved = |v: Option<&SunriseTime>| {
             v.is_some_and(|v| {
-                sunrise_domain::is_overdue(v, now_ms, from)
-                    != sunrise_domain::is_overdue(v, now_ms, to)
+                sunrise_domain::is_overdue_in(v, now_ms, from, &schedule)
+                    != sunrise_domain::is_overdue_in(v, now_ms, to, &schedule)
             })
         };
         let affected = super::review::read_live_tasks(db.conn())?

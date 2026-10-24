@@ -26,6 +26,7 @@ pub mod capture;
 pub mod common;
 pub mod constraint;
 pub mod context;
+pub mod day_schedule;
 pub mod deps;
 pub mod epoch_ms;
 pub mod export;
@@ -77,6 +78,10 @@ pub use context::{
     Context, ContextDraft, ContextFacet, ContextPatch, ENERGY_PREFIX, MAX_CONTEXT_DESCRIPTION_LEN,
     WAITING_ON_PREFIX,
 };
+pub use day_schedule::{
+    day_bounds, next_wind_down, plannable, planner_date, planner_day_of, wind_down_at, DayOverride,
+    DaySchedule, DayScheduleEntry, DayWindow, OutOfCalendar, WindDown,
+};
 pub use deps::{
     blocker_is_open, effective_state, is_actionable, DependencyGraph, EffectiveTaskState,
 };
@@ -112,11 +117,11 @@ pub use phrase::{
     activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
     length_label, plan_reason, relative_day, short_duration,
 };
-pub use planning::{is_overdue, today_section, TodaySection};
+pub use planning::{is_overdue, is_overdue_in, today_section, today_section_in, TodaySection};
 pub use preferences::{
     pref_spec, preferences_ref, resolve as resolve_preference, resolve_all as resolve_preferences,
-    DeviceClass, PrefDefault, PrefScope, PrefSource, PrefSpec, PrefTarget, PrefType, PrefValue,
-    Preferences, ResolvedPref, PREFERENCES_BYTES, PREFERENCE_KEYS,
+    DeviceClass, PrefDefault, PrefEntries, PrefScope, PrefSource, PrefSpec, PrefTarget, PrefType,
+    PrefValue, Preferences, ResolvedPref, PREFERENCES_BYTES, PREFERENCE_KEYS,
 };
 pub use recur::parse_recurrence;
 pub use review::{
@@ -151,8 +156,9 @@ pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use time::{first_day_of_week, shift_civil_days, CompatTime, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use upcoming::{
-    build_upcoming, is_upcoming_span, upcoming_days, NoDateGroup, Upcoming, UpcomingDay,
-    UpcomingError, UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS, NO_DATE_LANE_CAP, UPCOMING_SPANS,
+    build_upcoming, is_upcoming_span, upcoming_days, upcoming_planner_days, NoDateGroup, Upcoming,
+    UpcomingDay, UpcomingError, UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS, NO_DATE_LANE_CAP,
+    UPCOMING_SPANS,
 };
 pub use validation::{
     ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,

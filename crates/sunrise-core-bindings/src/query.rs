@@ -234,6 +234,12 @@ pub enum CoreQuery {
         /// Also the quiet fields', which are kept but not shown by default.
         include_quiet: bool,
     },
+    /// The day schedule and the reader's planner day holding `at_ms`
+    /// (`docs/02-domain/day-schedule.md`).
+    DaySchedule {
+        /// Any instant inside the planner day to describe (epoch ms).
+        at_ms: u64,
+    },
 }
 
 impl CoreQuery {
@@ -342,6 +348,7 @@ impl CoreQuery {
                 entity,
                 include_quiet,
             },
+            Self::DaySchedule { at_ms } => Query::DaySchedule { at_ms },
         }
     }
 }
@@ -533,6 +540,11 @@ pub enum CoreQueryResult {
         /// One row per conflicted field.
         conflicts: Vec<ConflictItem>,
     },
+    /// The day schedule and one planner day.
+    DaySchedule {
+        /// The planner day, with every entry of the schedule.
+        day: crate::day_schedule::PlannerDayItem,
+    },
 }
 
 impl CoreQueryResult {
@@ -642,6 +654,9 @@ impl CoreQueryResult {
             },
             QueryResult::Conflicts(c) => Self::Conflicts {
                 conflicts: c.iter().map(ConflictItem::from).collect(),
+            },
+            QueryResult::DaySchedule(d) => Self::DaySchedule {
+                day: crate::day_schedule::PlannerDayItem::from(d.as_ref()),
             },
         }
     }

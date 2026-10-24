@@ -98,8 +98,8 @@ pub use events::{
 pub use feature::{FeatureScope, MissingFeature};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
-    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount, Query,
-    QueryResult, SearchGroup, SearchHit, SearchNotice, SearchResults, StreamRow,
+    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,
+    PlannerDay, Query, QueryResult, SearchGroup, SearchHit, SearchNotice, SearchResults, StreamRow,
 };
 /// What [`CoreError::Db`] carries, and the copies of a vault kept beside it
 /// ([`Core::vault_backups`]): named here so a client that branches on why a

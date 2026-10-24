@@ -7,8 +7,9 @@ use sunrise_domain::{ReminderIntent, UnscheduledReminder};
 use sunrise_id::{EntityKind, EntityRef};
 
 use super::{
-    plan, reconcile, reminder_policy, ClockStyle, PendingNotification, PlannedNotification,
-    Reconciliation, ReminderPolicy, HORIZON_MS, MAX_SCHEDULED,
+    plan, read_day_schedule, reconcile, reconcile_wind_down, reminder_policy,
+    wind_down_notification, ClockStyle, PendingNotification, PlannedNotification, Reconciliation,
+    ReminderPolicy, WindDownChange, WindDownNotification, HORIZON_MS, MAX_SCHEDULED,
 };
 
 /// What a client knows that the vault does not.
@@ -43,6 +44,13 @@ pub struct Schedule {
     /// Whether the reader's zone is a stand-in, so floating reminders were
     /// placed in UTC; the client reports the OS zone and re-plans.
     pub zone_unknown: bool,
+    /// The next wind-down this device should hold, if it fires one
+    /// ([`super::wind_down_notification`]). Planned in the reader's zone, so
+    /// a zone change moves it.
+    pub wind_down: Option<WindDownNotification>,
+    /// What to do with the wind-down the OS holds. [`Self::reconciliation`]
+    /// never names it.
+    pub wind_down_change: WindDownChange,
 }
 
 /// Re-plan this device's reminders against `core` and say what the OS must
@@ -88,9 +96,22 @@ pub async fn schedule(core: &Core, req: ScheduleRequest) -> Result<Schedule, Cor
     } else {
         (Vec::new(), Vec::new())
     };
+    let wind_down = if req.authorized {
+        let schedule = read_day_schedule(core, req.now_ms).await?;
+        wind_down_notification(
+            &policy,
+            &schedule,
+            crate::vocab::instant_at(req.now_ms),
+            &zone,
+        )
+    } else {
+        None
+    };
 
     Ok(Schedule {
         reconciliation: reconcile(&desired, &req.pending),
+        wind_down_change: reconcile_wind_down(wind_down.as_ref(), &req.pending),
+        wind_down,
         desired,
         unscheduled,
         policy,
@@ -141,7 +162,7 @@ async fn streams_of(core: &Core, intents: &[ReminderIntent]) -> BTreeMap<EntityR
     streams
 }
 
-fn unexpected(what: &str) -> CoreError {
+pub(super) fn unexpected(what: &str) -> CoreError {
     CoreError::Engine(sunrise_core::EngineError::Invalid(format!(
         "{what} read returned another shape"
     )))
@@ -305,6 +326,84 @@ mod tests {
         let s = schedule(&core, request(Vec::new())).await.unwrap();
         assert!(!s.policy.settings.is_primary_device);
         assert!(s.desired.is_empty());
+        assert!(
+            s.wind_down.is_none(),
+            "a device that is not primary is silent"
+        );
+        core.shutdown().await;
+    }
+
+    /// #301's trigger against a vault: once a sleep time is set the plan
+    /// carries a wind-down an hour before it, and a zone change re-plans it to
+    /// the same wall clock in the new zone under the same identifier.
+    #[tokio::test]
+    async fn a_sleep_time_plans_a_wind_down_that_follows_the_zone() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = vault(dir.path()).await;
+        let none = schedule(&core, request(Vec::new())).await.unwrap();
+        assert!(none.wind_down.is_none(), "no sleep time, no wind-down");
+        assert_eq!(none.wind_down_change, WindDownChange::Keep);
+
+        core.submit(Command::SetPreference {
+            key: "day_schedule.weekday.MO".into(),
+            value: PrefValue::DayWindow {
+                wake: jiff::civil::time(7, 0, 0, 0),
+                sleep: jiff::civil::time(23, 0, 0, 0),
+            },
+            target: PrefTarget::Vault,
+        })
+        .await
+        .unwrap();
+        // 2026-06-01 is a Monday: 23:00 EDT in Toronto is 03:00Z the next day.
+        let toronto = schedule(&core, request(Vec::new())).await.unwrap();
+        let w = toronto.wind_down.clone().unwrap();
+        assert_eq!(w.fire_at_ms, 1_780_365_600_000, "22:00 EDT");
+        assert!(matches!(toronto.wind_down_change, WindDownChange::Add(_)));
+        assert!(
+            toronto
+                .reconciliation
+                .add
+                .iter()
+                .all(|n| n.identifier != w.identifier),
+            "the reminder reconcile never names it"
+        );
+
+        let held = vec![PendingNotification {
+            identifier: w.identifier.clone(),
+            revision: Some(w.revision.clone()),
+        }];
+        let again = schedule(&core, request(held.clone())).await.unwrap();
+        assert_eq!(again.wind_down_change, WindDownChange::Keep);
+        assert!(
+            again.reconciliation.cancel.is_empty(),
+            "a held wind-down is not one of the reminders to withdraw"
+        );
+
+        core.on_time_zone_changed("America/Vancouver").unwrap();
+        let moved = schedule(&core, request(held)).await.unwrap();
+        let m = moved.wind_down.clone().unwrap();
+        assert_eq!(m.identifier, w.identifier);
+        assert_eq!(m.fire_at_ms, 1_780_376_400_000, "22:00 PDT");
+        assert!(matches!(moved.wind_down_change, WindDownChange::Replace(_)));
+
+        core.submit(Command::SetPreference {
+            key: "notifications.wind_down.enabled".into(),
+            value: PrefValue::Bool(false),
+            target: PrefTarget::Device,
+        })
+        .await
+        .unwrap();
+        let off = schedule(
+            &core,
+            request(vec![PendingNotification {
+                identifier: m.identifier.clone(),
+                revision: Some(m.revision),
+            }]),
+        )
+        .await
+        .unwrap();
+        assert!(off.wind_down.is_none());
+        assert_eq!(off.wind_down_change, WindDownChange::Cancel);
         core.shutdown().await;
     }
 }

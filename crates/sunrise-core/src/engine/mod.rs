@@ -88,6 +88,7 @@ mod chain;
 mod compaction;
 mod conflicts;
 mod context;
+mod day_schedule;
 mod export;
 mod features;
 mod focus;
@@ -744,6 +745,7 @@ impl Engine {
             } => self.query_search_grouped(db, &text, now_ms, prefix, per_group),
             Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
+            Query::DaySchedule { at_ms } => self.query_day_schedule(db, at_ms),
             Query::Conflicts {
                 entity,
                 include_quiet,

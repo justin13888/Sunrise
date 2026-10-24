@@ -79,9 +79,11 @@ fn section(
 /// The morning, in the order it reads: the day that closed, then what is
 /// already done today, then the two things that need a decision.
 ///
-/// `completed` is split on [`MorningSummary::today_start`], with each
+/// `completed` is split on [`MorningSummary::today_start`], the start of
+/// today's planner day (`docs/02-domain/day-schedule.md`), with each
 /// completion read in `tz`, the reader's zone — the zone the core drew that
-/// boundary in.
+/// boundary in. So a task done at 00:30 by someone who sleeps at 01:00 is
+/// "finished yesterday" the next morning.
 #[must_use]
 pub fn morning_sections(summary: &MorningSummary, tz: &TimeZone) -> Vec<BriefSection> {
     let (today, yesterday): (Vec<Task>, Vec<Task>) =

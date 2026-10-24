@@ -250,6 +250,9 @@ pub(super) async fn prefs(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 return Err(strings::prefs::usage().into());
             };
             prefs_text::spec(key)?;
+            if let Some(entry) = sunrise_domain::DayScheduleEntry::parse_key(key) {
+                return super::day_schedule::get_entry(ctx, key, &entry).await;
+            }
             let p = read_prefs(ctx)
                 .await?
                 .into_iter()
@@ -275,7 +278,7 @@ pub(super) async fn prefs(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 return Err(strings::prefs::usage().into());
             }
             let spec = prefs_text::spec(key)?;
-            let value = prefs_text::parse(spec, &value.join(" "))?;
+            let value = prefs_text::parse_for(key, spec, &value.join(" "))?;
             let target = target(spec.scope, device);
             ctx.core
                 .submit(Command::SetPreference {

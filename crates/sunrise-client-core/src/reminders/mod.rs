@@ -25,13 +25,22 @@
 //! answers with only [`Reconciliation::kept`], and a client that acts on
 //! `add`, `replace` and `cancel` alone touches the OS not at all.
 //!
-//! Everything here is pure except [`schedule()`], which reads the vault.
+//! The wind-down (`wind_down`) is planned beside them, under an identifier
+//! of its own: it belongs to no entity, so it is not one of these.
+//!
+//! Everything here is pure except [`schedule()`] and [`read_day_schedule`],
+//! which read the vault.
 
 mod policy;
 mod schedule;
+mod wind_down;
 
 pub use policy::{primary_claim, reminder_policy, ReminderPolicy, PRIMARY_DEVICE_KEY};
 pub use schedule::{read_policy, schedule, Schedule, ScheduleRequest};
+pub use wind_down::{
+    read_day_schedule, reconcile_wind_down, wind_down_notification, WindDownChange,
+    WindDownNotification, WIND_DOWN_IDENTIFIER, WIND_DOWN_TITLE,
+};
 
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
