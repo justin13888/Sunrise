@@ -1412,3 +1412,71 @@ fn a_version_1_doc_state_still_joins() {
         .unwrap();
     assert_eq!(versions, 0, "version 1 carried no versions");
 }
+
+/// A member held for the rest of its group completes when a snapshot brings
+/// the rest as versions whose ops it compacted away (D14).
+#[test]
+fn a_snapshot_completes_a_group_it_brings_the_rest_of() {
+    use super::field_merge::{emit_patch, set, text};
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    // The writer seals past its own group fold, so only the receiver's
+    // rebuild is checked.
+    crate::engine::rebuild::check::disable();
+    let t1 = new_task(&ea, &mut dba, "one");
+    let t2 = new_task(&ea, &mut dba, "two");
+    let member = |task: EntityRef, title: &str| {
+        InnerOp::Patch(Box::new(crate::inner_op::PatchPayload {
+            target: task,
+            create: false,
+            origin: None,
+            parents: None,
+            group: Some(crate::inner_op::GroupWire {
+                id: [8u8; 16],
+                size: 2,
+                unknown: Unknowns::new(),
+            }),
+            fields: [(
+                "title".to_owned(),
+                sunrise_domain::CborValue(set(text(title))),
+            )]
+            .into_iter()
+            .collect(),
+            unknown: Unknowns::new(),
+        }))
+    };
+    emit_patch(&ea, &mut dba, &INBOX, &member(t1, "one, grouped"));
+    emit_patch(&ea, &mut dba, &META_STREAM, &member(t2, "two, grouped"));
+    let record = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
+
+    for env in all_envs(&dba) {
+        if decode_envelope(&env).unwrap().stream_id == META_STREAM {
+            eb.apply_remote_all(&mut dbb, &env).unwrap();
+        }
+    }
+    let held: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_groups WHERE applied = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, 1, "the vault-meta member waits for the other");
+    let (outcome, events) = eb.apply_snapshot(&mut dbb, &record).unwrap();
+    assert!(
+        matches!(outcome, SnapshotApplied::Applied { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::Updated(t) if *t == t2)),
+        "{events:?}"
+    );
+    assert_eq!(read_task_t(&eb, &dbb, t1).title, "one, grouped");
+    assert_eq!(read_task_t(&eb, &dbb, t2).title, "two, grouped");
+    eb.assert_rebuild_identity(&dbb);
+}
