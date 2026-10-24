@@ -19,9 +19,10 @@
 //!   core just minted, and it does not exist a moment earlier. Redoing it
 //!   creates a fresh entity with a fresh id, so the step is re-bound to that
 //!   id as it is replayed; see [`sunrise_client_core::undo::rebind_creates`].
-//! * **A delete cannot be undone.** The core writes a tombstone and has no
-//!   restore op. The seam says so — [`UndoRefusal::Deleted`] — rather than
-//!   accepting the step and offering an undo that would silently do nothing.
+//! * **Undoing a delete restores the entity** (`CoreCommand::Restore`,
+//!   ADR-0065 §3). [`UndoRefusal::Deleted`] is kept for the Swift code that
+//!   matches on it, and is no longer produced: a step that cannot be inverted
+//!   is [`UndoRefusal::Unsupported`].
 //! * **A defer's counter does not come back down.** `deferred_count` is a
 //!   PN-counter; undo restores the date and the count keeps its history. A
 //!   review that said "deferred three times" should not change its mind
@@ -52,6 +53,10 @@ use crate::{BindingError, SunriseCore};
 pub enum UndoRefusal {
     /// A tombstone was written. The core has no restore op, so there is
     /// nothing to invert into.
+    ///
+    /// That held before `CoreCommand::Restore`. Undo of a delete is now a
+    /// restore (ADR-0065 §3), and this case is no longer produced; it stays
+    /// so that a `switch` over it keeps compiling.
     Deleted,
     /// Nothing about the command is reversible.
     Unsupported,

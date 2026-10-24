@@ -307,6 +307,17 @@ pub enum Query {
     /// where its value came from. Bootstrap keys are read without the vault,
     /// through `BootstrapPreferences`.
     Preferences,
+    /// The unresolved conflicts (ADR-0065 §4): per entity and field, the
+    /// winning write and every concurrent write that lost to it, and for a
+    /// winning delete, the branches that edited the entity without seeing
+    /// it. One entity's, or every entity's when `entity` is `None`.
+    Conflicts {
+        /// Only this entity's.
+        entity: Option<EntityRef>,
+        /// Also the quiet fields', whose losers are kept but not shown by
+        /// default.
+        include_quiet: bool,
+    },
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -386,6 +397,9 @@ pub enum QueryResult {
     /// `SearchGrouped` returns its groups, in the fixed kind order. Boxed to
     /// keep the enum small.
     Search(Box<SearchResults>),
+    /// `Conflicts` returns one row per conflicted field, by entity id and
+    /// then field name. Empty when nothing is in conflict.
+    Conflicts(Vec<crate::conflicts::EntityConflict>),
 }
 
 /// What [`Query::SearchGrouped`] found (`docs/08-features/search.md`

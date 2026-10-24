@@ -396,7 +396,7 @@ pub(super) async fn schedule(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 /// Named for the review's own vocabulary: `sunrise review` counts "dropped",
 /// and a triage surface that can only say yes (`done`) and not no is half a
 /// surface. Soft, like every other client's delete — the op is a tombstone,
-/// not an erase, and like every delete it cannot be undone.
+/// not an erase, and `sunrise undo` or `sunrise restore` brings it back.
 pub(super) async fn drop_tasks(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     if rest.is_empty() {
         return Err(strings::drop::needs_id().into());

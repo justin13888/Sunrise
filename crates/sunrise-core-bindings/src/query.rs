@@ -7,6 +7,7 @@ use sunrise_core::{Query, QueryResult};
 use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::EntityRef;
 
+use crate::conflicts::ConflictItem;
 use crate::dto::{
     hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
@@ -226,6 +227,13 @@ pub enum CoreQuery {
         /// Hits per group; absent is 50 tasks and 10 of every other kind.
         per_group: Option<u32>,
     },
+    /// The unresolved conflicts (ADR-0065 §4), one row per conflicted field.
+    Conflicts {
+        /// Only this entity's; every entity's when absent.
+        entity: Option<EntityRef>,
+        /// Also the quiet fields', which are kept but not shown by default.
+        include_quiet: bool,
+    },
 }
 
 impl CoreQuery {
@@ -326,6 +334,13 @@ impl CoreQuery {
                 now_ms,
                 prefix,
                 per_group,
+            },
+            Self::Conflicts {
+                entity,
+                include_quiet,
+            } => Query::Conflicts {
+                entity,
+                include_quiet,
             },
         }
     }
@@ -508,6 +523,12 @@ pub enum CoreQueryResult {
         /// The groups, notices and canonical query.
         results: SearchReport,
     },
+    /// The unresolved conflicts, by entity and then field. Empty when
+    /// nothing is in conflict.
+    Conflicts {
+        /// One row per conflicted field.
+        conflicts: Vec<ConflictItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -614,6 +635,9 @@ impl CoreQueryResult {
             },
             QueryResult::Search(r) => Self::Search {
                 results: SearchReport::from(r.as_ref()),
+            },
+            QueryResult::Conflicts(c) => Self::Conflicts {
+                conflicts: c.iter().map(ConflictItem::from).collect(),
             },
         }
     }

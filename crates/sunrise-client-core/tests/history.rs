@@ -134,9 +134,10 @@ async fn a_redone_create_is_undone_by_the_id_the_redo_minted() {
     core.shutdown().await;
 }
 
-/// A delete is still submitted, and says it cannot be undone.
+/// Undo of a delete is a restore (ADR-0065 §3): the task comes back, and
+/// redo deletes it again.
 #[tokio::test]
-async fn a_delete_is_written_and_reported_as_not_undoable() {
+async fn undo_of_a_delete_is_a_restore() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
     let history = UndoHistory::new();
@@ -146,8 +147,21 @@ async fn a_delete_is_written_and_reported_as_not_undoable() {
         .submit(&core, Command::DeleteTask(task), "delete".into())
         .await
         .unwrap();
-    assert_eq!(refused, Some(NotUndoable::Deleted));
+    assert_eq!(refused, None::<NotUndoable>, "a delete is undoable");
     assert_eq!(task_state(&core, task).await, None);
-    assert_eq!(history.labels(), UndoLabels::default());
+    assert_eq!(
+        history.undo(&core).await.unwrap().as_deref(),
+        Some("delete")
+    );
+    assert_eq!(
+        task_state(&core, task).await,
+        Some(TaskState::Todo),
+        "restored"
+    );
+    assert_eq!(
+        history.redo(&core).await.unwrap().as_deref(),
+        Some("delete")
+    );
+    assert_eq!(task_state(&core, task).await, None, "and deleted again");
     core.shutdown().await;
 }

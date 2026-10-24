@@ -279,9 +279,11 @@ it.
 
 ## Clarified by implementation (2026-10)
 
-Building this record raised ten questions it leaves open. Each answer below
+Building this record raised twelve questions it leaves open. Each answer below
 is binding on the implementation, and none changes a decision above except
-D10, which narrows §8 and the last consequence for this rollout.
+D10, which narrows §8 and the last consequence for this rollout, and D11,
+which says how §4's two commands write before §7's rollout, as D9 does for
+every other command.
 
 | # | Clarification | Why |
 |---|---|---|
@@ -295,6 +297,8 @@ D10, which narrows §8 and the last consequence for this rollout.
 | D8 | A group (§6) is identified by `(id, size)`. It is complete once at least `size` members are present; then every present member applies, and any later member applies at once. | The result stays a pure function of the op set, whatever order members arrive in. |
 | D9 | Until the vault requires `core.field_ops`, commands keep writing full-state ops, through the same merge path (§5). "Never emits a full-state op again" (§7) applies from the moment the feature is required. | ADR-0044 §9: the feature cannot be required while a paired device lacks it, and `Engine::require_features` refuses with `FeatureUnsupportedByDevices`. |
 | D10 | Compaction still folds the ops below the floor, but does **not** prune `entity_versions` or `entity_frontier` in this rollout. | A late version that names a pruned parent needs that parent's frontier, and any approximation of it diverges between replicas. A safe pruning rule is follow-up work. Until it lands, "Compaction bounds both" in §Consequences holds for the op log and the losers, not for the version rows. |
+| D11 | Until the vault requires `core.field_ops`, `ResolveConflict` and `Restore` write a full-state op of the entity as it projects, with the one field set, rather than being refused. | It is stamped after every version the writer applied and becomes the entity's legacy floor, so by D4 it clears every set below it on every replica that applies it. That settles every field of the entity at once, which is what any edit in that mode already does, and it keeps restore, the undo of a delete, available before the rollout. Once the feature is required, both write the `Patch` of §4. |
+| D12 | "Edited while deleted" (§3) is reported for the heads the winning delete does not precede, leaving out a head written by a full-state op or below the legacy floor. | A head is a branch's newest version, so a branch is reported once. A full-state head is D4's case: it cannot say which fields it meant to write. |
 
 The conflict classes are declared on each field in the registry's
 `for_each_entity!` (`crates/sunrise-id/src/registry.rs`), with the names the

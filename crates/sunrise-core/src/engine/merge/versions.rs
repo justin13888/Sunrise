@@ -40,8 +40,10 @@
 //! A parent that has not been applied contributes nothing until it is. That
 //! under-approximates `F`, and only ever omits an order, never invents one.
 //!
-//! Nothing reads the order yet: the register fold still decides by stamp
-//! (ADR-0044). The conflict classes of ADR-0065 §3 are the first reader.
+//! The register fold reads the order ([`super::register`]): two writes of
+//! one field that neither precedes the other are a conflict, decided by the
+//! field's class (ADR-0065 §3), and the heads tell the conflicts query which
+//! branches never saw a delete (§4).
 
 use super::state::{enc, hlc_of};
 use super::{OpRef, Stamp};
@@ -51,7 +53,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// For each device, the greatest stamp of its versions a version reaches.
-type Frontier = BTreeMap<[u8; 16], Stamp>;
+pub(super) type Frontier = BTreeMap<[u8; 16], Stamp>;
 
 /// Whether an op is a full-state op or a `Patch` (`entity_versions.kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +123,12 @@ fn stamp_of(tx: &Transaction<'_>, id: &[u8; 16], op: OpRef) -> rusqlite::Result<
     .optional()
 }
 
-fn frontier_of(tx: &Transaction<'_>, id: &[u8; 16], v: OpRef) -> rusqlite::Result<Frontier> {
+/// `F(v)` as stored: empty for a version that is not applied.
+pub(super) fn frontier_of(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    v: OpRef,
+) -> rusqlite::Result<Frontier> {
     let mut stmt = tx.prepare(
         "SELECT device, hlc_ms, hlc_logical, seq, stream FROM entity_frontier
          WHERE entity_id = ? AND v_stream = ? AND v_device = ? AND v_seq = ?",
@@ -139,7 +146,6 @@ fn frontier_of(tx: &Transaction<'_>, id: &[u8; 16], v: OpRef) -> rusqlite::Resul
 
 /// `F(v)` at one device: the greatest stamp of that device's versions `v`
 /// reaches.
-#[cfg(test)]
 fn frontier_at(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -495,9 +501,7 @@ pub(in crate::engine) fn recompute(tx: &Transaction<'_>, id: &[u8; 16]) -> rusql
 }
 
 /// The heads of `id` as op-refs, sorted: the `parents` a writer names
-/// (ADR-0065 §2). Only the tests read it until commands write `Patch` with
-/// parents, as [`precedes`] waits for the register fold's conflict classes.
-#[cfg(test)]
+/// (ADR-0065 §2).
 pub(in crate::engine) fn heads(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -509,7 +513,6 @@ pub(in crate::engine) fn heads(
 
 /// Whether version `a` of `id` precedes version `b`. `false` when either is
 /// not an applied version of `id`.
-#[cfg(test)]
 pub(in crate::engine) fn precedes(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -523,4 +526,63 @@ pub(in crate::engine) fn precedes(
         return Ok(false);
     };
     Ok(frontier_at(tx, id, b, &a.device)?.is_some_and(|r| r >= at))
+}
+
+/// One head of an entity, as the conflicts query reports a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::engine) struct HeadVersion {
+    pub(in crate::engine) at: Stamp,
+    /// The fields it wrote, sorted.
+    pub(in crate::engine) fields: Vec<String>,
+}
+
+/// The heads of `id` that `d` does not precede: the branches whose writer had
+/// not applied `d` (ADR-0065 §4, "edited while deleted" when `d` is the
+/// winning delete), oldest first. `d` itself is left out, and so is a head
+/// below `floor` or written by a full-state op, which D4 never surfaces.
+pub(in crate::engine) fn unmerged_heads(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    d: Stamp,
+    floor: Option<Stamp>,
+) -> rusqlite::Result<Vec<HeadVersion>> {
+    let mut out = Vec::new();
+    for h in heads(tx, id)? {
+        if h == d.op_ref() || precedes(tx, id, d.op_ref(), h)? {
+            continue;
+        }
+        let row: Option<(i64, i64, String, Vec<u8>)> = tx
+            .prepare(
+                "SELECT hlc_ms, hlc_logical, kind, fields FROM entity_versions
+                 WHERE entity_id = ? AND stream = ? AND device = ? AND seq = ?",
+            )?
+            .query_row(params![&id[..], &h.stream[..], &h.device[..], h.seq], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .optional()?;
+        let Some((ms, logical, kind, fields)) = row else {
+            continue;
+        };
+        let at = Stamp {
+            hlc: hlc_of(ms, logical),
+            device: h.device,
+            seq: h.seq,
+            stream: h.stream,
+        };
+        if kind != VersionKind::Patch.column() || floor.is_some_and(|l| at < l) {
+            continue;
+        }
+        let fields = super::state::dec(&fields)
+            .as_array()
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|n| n.as_text().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(HeadVersion { at, fields });
+    }
+    out.sort_by_key(|h| h.at);
+    Ok(out)
 }

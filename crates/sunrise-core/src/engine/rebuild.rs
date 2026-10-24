@@ -17,9 +17,9 @@
 //!    them by stamp, so it is dumped first ([`dump_compacted_base`]).
 //! 2. **Clear** every table [`TABLE_CLASSES`] classifies as a projection,
 //!    keeping the rows named below.
-//! 3. **Join the base back** with [`join_stream_state`], the snapshot join,
-//!    and recompute the frontiers and heads of every entity whose compacted
-//!    versions were kept.
+//! 3. **Join the base back.** Recompute the frontiers and heads of every
+//!    entity whose compacted versions were kept, then join the base with
+//!    [`join_stream_state`], the snapshot join.
 //! 4. **Refold the log.** Every applied entity op still in `ops` is read,
 //!    sorted by its merge stamp `(hlc, device, seq, stream)`, opened, and
 //!    folded through [`materialize_remote`], the step the receive path takes.
@@ -45,7 +45,7 @@
 //! tokenizer the rebuild keeps. A background re-index of the word index for a
 //! new content language (`engine::search`) is abandoned, since the docs it
 //! copied are rewritten, and starts again the next time it is asked for.
-//! Inside the cleared tables three things survive, because no op still in
+//! Inside the cleared tables four things survive, because no op still in
 //! the log derives them:
 //!
 //! - a placeholder `streams` row no op has stamped (`lww_device IS NULL`),
@@ -55,7 +55,12 @@
 //!   generated its occurrences, which is never on the wire;
 //! - every `entity_versions` row of a compacted op. Compaction keeps them
 //!   (ADR-0065 D10) and the merge state's base carries no versions, so they
-//!   are kept here as compaction kept them, and their frontiers recomputed.
+//!   are kept here as compaction kept them, and their frontiers recomputed;
+//! - every `register_losers` row a compacted op wrote. The base is a
+//!   `doc_state` v1, which carries each register's winner and not its
+//!   losers (ADR-0065 §8 adds them to `doc_state` with PR 6), so the losers
+//!   are kept as the fold left them, and the base's winners and the refold
+//!   are folded in beside them.
 //!
 //! # When a rebuild runs on its own
 //!
@@ -275,8 +280,8 @@ fn compacted(table: &str, stream: &str, device: &str, seq: &str) -> String {
 }
 
 /// Clear every [`TableClass::Projection`] table, keeping the rows the module
-/// docs name: placeholder stream rows and the versions of compacted ops.
-/// A background re-index of the word index is abandoned.
+/// docs name: placeholder stream rows, and the versions and register losers
+/// of compacted ops. A background re-index of the word index is abandoned.
 fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     // Rows reference each other (a task its stream, a stream its parent).
     // Every reference is whole again once the refold has run, which is
@@ -295,6 +300,10 @@ fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
             "entity_versions" => format!(
                 "DELETE FROM entity_versions WHERE NOT {}",
                 compacted("entity_versions", "stream", "device", "seq")
+            ),
+            "register_losers" => format!(
+                "DELETE FROM register_losers WHERE NOT {}",
+                compacted("register_losers", "stream", "device", "seq")
             ),
             other => format!("DELETE FROM {other}"),
         };
@@ -403,8 +412,10 @@ impl Engine {
         let kept = Kept::save(tx)?;
         let pending = pending_ops(tx)?;
         clear(tx)?;
-        let compacted = join_stream_state(tx, &base)?;
+        // The frontiers first: the join folds the base's registers into the
+        // losers kept beside them, which reads the order between them.
         recompute_kept_versions(tx)?;
+        let compacted = join_stream_state(tx, &base)?;
         let mut report = RebuildReport {
             compacted_entities: compacted.len() as u64,
             ..RebuildReport::default()

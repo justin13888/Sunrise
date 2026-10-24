@@ -3,10 +3,11 @@
 //!
 //! Every write here is idempotent, because the same op can be folded twice:
 //! by a redelivery, and by a snapshot join that carries what an op already
-//! folded here wrote. A register keeps the greater stamp and rewrites itself
+//! folded here wrote. A map entry keeps the greater stamp and rewrites itself
 //! at an equal one; an OR-set add or remove and a counter delta are keyed by
-//! the op that made them.
+//! the op that made them. Registers are [`super::register`]'s.
 
+use super::register::Registers;
 use super::OpRef;
 use super::Stamp;
 use crate::engine::ids::blob16;
@@ -15,11 +16,11 @@ use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 
-/// Whether a write stamped `at` replaces the one a register holds, stamped
+/// Whether a write stamped `at` replaces the one a map entry holds, stamped
 /// `held`: the register rule, [`lww_wins`], over `(hlc, device, seq)`, with
 /// the stream breaking a tie between two ops one device made in two streams.
-/// So a register keeps the greatest full [`Stamp`], the same order the legacy
-/// floor is compared in (`project::superseded`), and a register written at or
+/// So an entry keeps the greatest full [`Stamp`], the same order the legacy
+/// floor is compared in (`project::superseded`), and an entry written at or
 /// above the floor is never read as below it. An equal stamp is the same op
 /// folded again, and replaces itself with the same value.
 fn replaces(at: Stamp, held: Stamp) -> bool {
@@ -38,7 +39,7 @@ fn replaces(at: Stamp, held: Stamp) -> bool {
 
 // ---- CBOR helpers ----
 
-pub(super) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
+pub(in crate::engine) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
     sunrise_cbor::encode_canonical(v)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
@@ -48,7 +49,7 @@ pub(super) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
 /// A value an applied op wrote is shallower than the op by the levels the op
 /// wraps it in, so the bound refuses none of them. It does hold a value a
 /// joined snapshot carried to the same bound an op is held to.
-pub(super) fn dec(bytes: &[u8]) -> Value {
+pub(in crate::engine) fn dec(bytes: &[u8]) -> Value {
     sunrise_cbor::decode_bounded(&mut &bytes[..], sunrise_cbor::MAX_DOC_DEPTH)
         .unwrap_or(Value::Null)
 }
@@ -99,7 +100,7 @@ pub(super) fn hlc_of(ms: i64, logical: i64) -> Hlc {
     }
 }
 
-pub(super) fn stamp_cols(
+pub(in crate::engine) fn stamp_cols(
     ms: Option<i64>,
     logical: Option<i64>,
     device: Option<Vec<u8>>,
@@ -221,60 +222,6 @@ pub(super) fn write_meta(
             &m.head.device[..],
             m.head.seq,
             &m.head.stream[..],
-        ],
-    )?;
-    Ok(())
-}
-
-/// Write one register if `at` is not older than what it holds. An equal
-/// stamp is the same op folded again, and rewrites the same value.
-pub(super) fn write_register(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    field: &str,
-    value: Option<&Value>,
-    at: Stamp,
-    origin: &str,
-) -> rusqlite::Result<()> {
-    let held = tx
-        .query_row(
-            "SELECT hlc_ms, hlc_logical, device, seq, stream FROM merge_registers
-             WHERE entity_id = ? AND field = ?",
-            params![&id[..], field],
-            |r| {
-                Ok(stamp_cols(
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
-            },
-        )
-        .optional()?
-        .flatten();
-    if held.is_some_and(|h| !replaces(at, h)) {
-        return Ok(());
-    }
-    let bytes = value.map(enc).transpose()?;
-    tx.execute(
-        "INSERT INTO merge_registers
-         (entity_id, field, value, hlc_ms, hlc_logical, device, seq, stream, origin)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (entity_id, field) DO UPDATE SET
-            value = excluded.value, hlc_ms = excluded.hlc_ms,
-            hlc_logical = excluded.hlc_logical, device = excluded.device,
-            seq = excluded.seq, stream = excluded.stream, origin = excluded.origin",
-        params![
-            &id[..],
-            field,
-            bytes,
-            at.hlc.physical_ms,
-            at.hlc.logical,
-            &at.device[..],
-            at.seq,
-            &at.stream[..],
-            origin,
         ],
     )?;
     Ok(())
@@ -420,7 +367,9 @@ pub(super) fn add_delta(
 }
 
 /// Delete the state the legacy floor `floor` has made unreadable: every OR-set
-/// add stamped below it, and every counter delta at or below it.
+/// add stamped below it, every counter delta at or below it, and every
+/// register write below it, winner or loser ([`Registers::raise_floor`],
+/// which the fold writes back when it flushes).
 ///
 /// Each legacy op re-adds every element it carries under its own tag, so
 /// without this a long-lived set (`Routine.streak_keys`) written by full-state
@@ -441,7 +390,9 @@ pub(super) fn prune_below_floor(
     tx: &Transaction<'_>,
     id: &[u8; 16],
     floor: Stamp,
+    registers: &mut Registers,
 ) -> rusqlite::Result<()> {
+    registers.raise_floor(floor);
     let floor_params = params![
         &id[..],
         floor.hlc.physical_ms,
