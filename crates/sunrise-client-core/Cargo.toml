@@ -40,6 +40,9 @@ jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The persisted undo history writes a saved view's draft and edit as
+# canonical CBOR (`history/persist.rs`): its filter carries CBOR values.
+sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }

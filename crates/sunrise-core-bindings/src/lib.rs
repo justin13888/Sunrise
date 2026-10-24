@@ -80,6 +80,7 @@ pub mod query;
 pub mod recovery;
 pub mod relay_url;
 pub mod reminders;
+pub mod saved_views;
 pub mod search;
 pub mod secret_copies;
 pub mod settings;

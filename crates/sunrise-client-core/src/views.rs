@@ -1,9 +1,13 @@
-//! Saved views: a named view, query and context filter, recalled by name.
+//! Saved views: the per-device file they used to live in, and what the
+//! client layer adds to the synced entity they live in now (#341).
 //!
-//! `docs/07-clients/parity-matrix.md` marks "Saved searches / views" **MUST**
-//! on every client. The vault has no entity for one — a saved view is a
-//! *pointer at* data, not data — so this is a per-device local preference,
-//! written in a flat TOML subset this module reads itself.
+//! A saved view is a `SavedView` entity of the vault
+//! (`sunrise_domain::saved_view`): a view saved on one device exists on
+//! every device of the account, and names its contexts by id, so renaming a
+//! context keeps it working. The core evaluates it (`Query::SavedView`).
+//!
+//! Before that, a saved view was one line of a per-device file, written in a
+//! flat TOML subset this module reads itself:
 //!
 //! ```toml
 //! # ~/.config/sunrise/views.toml
@@ -11,17 +15,25 @@
 //! deep    = "view=today;contexts=deep-work"
 //! ```
 //!
-//! # Contexts are stored by name, not by id
+//! The file is read for one purpose now: the one-time import of a device's
+//! views into a vault ([`plan_import`]). The CLI runs it the first time
+//! `sunrise views` meets a vault and records that it did in
+//! [`IMPORT_MARKER`]; it no longer writes the file. The Apple client still
+//! reads and writes it through [`SavedViewStore`] until its own import ships
+//! (`TODO(#341)`: the Apple client's import and its switch to the entity).
 //!
-//! An `EntityRef` is a vault-local ULID. A saved view written on one machine
-//! and read on another — the same account, a paired laptop — would point at
-//! nothing, and the failure would be silent: the filter would resolve to an
-//! empty set and the view would look like an empty vault. Names are what the
-//! user typed and what the capture parser already resolves against, so they
-//! survive the trip; a name that no longer exists is reported on recall
-//! instead of quietly filtering everything away.
+//! The file named contexts by name, because an id meant nothing to another
+//! device's file. The import resolves each name to an id once, and a name
+//! that resolves to nothing is reported and kept on the view, never dropped.
 
 use std::path::PathBuf;
+
+mod entity;
+
+pub use entity::{
+    describe_entity, parse_view_kind, plan_import, primary_view, view_kind, ImportPlan,
+    IMPORT_MARKER,
+};
 
 /// The primary views every client presents, per
 /// `docs/07-clients/parity-matrix.md`.

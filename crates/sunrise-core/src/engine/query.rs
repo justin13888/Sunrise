@@ -320,6 +320,12 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("attachment {r}")))?;
                 Ok(QueryResult::Attachments(vec![a]))
             }
+            // The one view, deleted or not, in the list shape.
+            EntityKind::SavedView => {
+                let v = super::saved_view::read_saved_view(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("saved view {r}")))?;
+                Ok(QueryResult::SavedViews(vec![v]))
+            }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?}",
                 r.kind()

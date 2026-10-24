@@ -209,8 +209,8 @@ first, then the class rule, then the stamp (clarification D7):
 
 | Class | Fields | Rank among concurrent writes |
 |---|---|---|
-| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), `Stream.sort_order` and `Task.sort_order` (#340), presentation fields, and every field this build does not know | `(user, stamp)` |
-| tracked | `title`, `body`, `stream_id`, every time field, `scheduling_constraints`, `rrule`, `timezone`, template fields | `(user, stamp)` |
+| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), `Stream.sort_order` and `Task.sort_order` (#340), `SavedView.sort` and `SavedView.sort_order` (#341), presentation fields, and every field this build does not know | `(user, stamp)` |
+| tracked | `title`, `body`, `stream_id`, every time field, `scheduling_constraints`, `rrule`, `timezone`, template fields, `SavedView.name`, `view` and `filter` (#341) | `(user, stamp)` |
 | state | `Task.state` | `(user, state is done or cancelled, stamp)` |
 | tombstone | `deleted` | `(user, value is true, stamp)` |
 

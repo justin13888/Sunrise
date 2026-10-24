@@ -308,6 +308,11 @@ impl Engine {
     ) -> Result<CommandResult, EngineError> {
         let kind = entity.kind();
         check_register_set(kind, field, &value).map_err(EngineError::Invalid)?;
+        // A saved view has no full-state op: it is settled by a `Patch`
+        // descending from every head, ADR-0065 §4's form.
+        if kind == EntityKind::SavedView {
+            return self.settle_saved_view(db, entity, field, value, how == Settle::Restore);
+        }
         let now_ms = self.clock.now_ms();
         in_tx(db, |tx| {
             let Some(Value::Map(mut entries)) = projected(tx, entity)? else {

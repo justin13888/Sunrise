@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
     Attachment, Block, Context, Frequency, Preferences, RRule, Routine, RoutineCatchupPolicy,
-    Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
+    SavedView, Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
+    ViewFilter, ViewKind, ViewSort,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, FieldSpec, Merge, RecordSpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -368,6 +369,7 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
         EntityKind::Block => value.deserialized::<Block>().is_ok(),
         EntityKind::Attachment => value.deserialized::<Attachment>().is_ok(),
         EntityKind::Preferences => value.deserialized::<Preferences>().is_ok(),
+        EntityKind::SavedView => value.deserialized::<SavedView>().is_ok(),
         _ => true,
     }
 }
@@ -522,6 +524,18 @@ fn probe(kind: EntityKind) -> Option<Value> {
             created_at: at,
             updated_at: at,
             values: BTreeMap::new(),
+            unknown: Unknowns::new(),
+        }),
+        EntityKind::SavedView => Value::serialized(&SavedView {
+            id: id(EntityKind::SavedView),
+            created_at: at,
+            updated_at: at,
+            name: String::new(),
+            view: ViewKind::Today,
+            filter: ViewFilter::default(),
+            sort: ViewSort::Default,
+            sort_order: None,
+            deleted: false,
             unknown: Unknowns::new(),
         }),
         _ => return None,

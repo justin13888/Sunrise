@@ -152,56 +152,80 @@ Per Stream:
 A user creates a saved view by filtering the current view to taste and choosing
 "Save this view as…", or by saving a search with ⌘S ([`search.md`](./search.md)).
 
-A saved view is a **synced `SavedView` entity** in the vault ([#341](https://github.com/justin13888/Sunrise/issues/341)), merged
-per field ([ADR-0044](../11-adr/0044-per-field-ops.md)), so a view saved on one
-device exists on every device:
+A saved view is a **synced `SavedView` entity** (`svw_`) in the vault ([#341](https://github.com/justin13888/Sunrise/issues/341)),
+written only by `Patch`, one register per field
+([ADR-0044](../11-adr/0044-per-field-ops.md)), so a view saved on one device
+exists on every device, and an edit of one field on one device and of
+another on a second both survive. The shipped shape
+(`crates/sunrise-domain/src/saved_view.rs`):
 
 ```rust
 pub struct SavedView {
     pub id: EntityRef,
-    pub name: String,
-    pub spec: ViewSpec,
-    pub sort_order: FractionalIndex,   // position in the saved-views list
-    pub deleted: bool,
+    pub name: String,                  // tracked; not unique
+    pub view: ViewKind,                // tracked; lossless (today, inbox, stream, search, calendar, …)
+    pub filter: ViewFilter,            // tracked; one register for the whole filter
+    pub sort: ViewSort,                // quiet; default, manual (#340), created, updated, title, priority, due, scheduled
+    pub sort_order: Option<String>,    // quiet; position in the saved-views list
+    pub deleted: bool,                 // tombstone; Restore brings it back
 }
 
-pub enum ViewSpec {
-    /// A primary view with a typed filter.
-    Filtered { view: ViewKind, filter: ViewFilter, sort: ViewSort },
-    /// A saved search: canonical query text and the grammar it was written in.
-    Search { query: String, grammar_v: u16 },
-}
-
-pub struct ViewFilter {
-    pub streams: Option<StreamSelector>,       // ids (with descendants), or "no stream"
-    pub contexts: Vec<EntityRef>,              // by id, so a rename keeps working
-    pub priority: Option<RangeInclusive<u8>>,
+pub struct ViewFilter {                // every part optional, ANDed; values inside a part ORed
+    pub streams: Vec<EntityRef>,
+    pub contexts: Vec<EntityRef>,      // by id, so a rename keeps working
+    pub context_names: Vec<String>,    // names an import could not resolve: reported, matched by nothing
+    pub priority: Option<PriorityRange>,
     pub energy: Vec<Energy>,
-    pub lateness: Vec<Lateness>,
-    pub place: Option<EntityRef>,
-    pub window: Option<DateWindow>,            // over planned_at / target_at / hard_due_at, in reader-civil terms
-    pub text: Option<String>,                  // search grammar
+    pub window: Option<DateWindow>,    // over scheduled_at or due_at, in civil days from the reader's today
+    pub text: String,                  // a Search view's query; a title match otherwise
+    // + any part a newer build added, kept verbatim
 }
 ```
 
-The **result** is recomputed on each device by the core; it is never stored.
+The **result** is recomputed on each device by the core
+(`Query::SavedView`, `crates/sunrise-core/src/engine/saved_view.rs#evaluate_saved_view`);
+it is never stored. The view's base list is Today, the Inbox, the named
+Streams (every task when none), or the search for a Search view; the filter
+then narrows it in the reader's zone, and the sort orders it. A view of a
+screen with no list (calendar, focus, routines, review, the briefs) returns no
+tasks, and the client opens that screen. The result names any context the
+filter holds that no longer exists, and says when a filter part or view kind
+from a newer build could not be applied (`complete: false`): it then shows
+more than that build would, never silently less. A filter part this build
+does not know is written back unchanged by every edit
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6).
 Per-device scroll position and collapsed sections stay in the device-local
-overlay. An unknown filter kind written by a newer build is preserved on
-round-trip ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md)).
+overlay.
+
+The entity is the feature `saved_view.entity`: no view is written into a
+vault until every paired device has advertised it, because a build without
+it cannot decode a `Patch` naming `svw_`. Views are found by search under
+`kind:view`, by name.
 
 Examples:
 
-- "Errands today" — context `@errands`, planned on or before today, all open
-  streams.
-- "Waiting on" — context `waiting-on`, sorted by `created_at` descending.
-- "This week's deep work" — `@deep-work`, planned within the current week.
+- "Errands today" — context `@errands`, Today.
+- "Waiting on" — context `waiting-on`, sorted by `created`.
+- "This week's deep work" — `@deep-work`, `scheduled` within 0 to 6 days.
 
-> **Today's build** keeps saved views as a per-device TOML file,
-> `~/.config/sunrise/views.toml`, holding a view, a free-text query and context
-> *names* (`crates/sunrise-client-core/src/views.rs#SavedView`). A view saved on
-> the Mac does not exist on the iPhone, and renaming a context breaks every view
-> naming it. [#341](https://github.com/justin13888/Sunrise/issues/341) imports the file once, resolving names to ids and
-> reporting the ones it cannot.
+The per-device `~/.config/sunrise/views.toml` of earlier builds is imported
+once into each vault (`sunrise_client_core::views::plan_import`): context
+names resolve to ids, a name that resolves to nothing is reported and kept in
+`context_names`, a view the vault already has by name is left alone, and a
+marker beside the vault records the import. The CLI runs it the first time
+`sunrise views` meets a vault and no longer writes the file.
+
+> **Not built yet.** A "no stream" selector waits for optional streams
+> ([#332](https://github.com/justin13888/Sunrise/issues/332)), a lateness
+> predicate for lateness states ([#334](https://github.com/justin13888/Sunrise/issues/334)),
+> a place predicate for Place ([#339](https://github.com/justin13888/Sunrise/issues/339)),
+> and the window over `planned_at`, `target_at` and `hard_due_at` for those
+> fields ([#336](https://github.com/justin13888/Sunrise/issues/336)); each
+> arrives as a new part of `ViewFilter`, which older builds keep. The full
+> search grammar as a filter over every view is [#345](https://github.com/justin13888/Sunrise/issues/345).
+> The Apple client still reads and writes `views.toml`; its import
+> (`plan_saved_views_import` across the seam) and its switch to the entity
+> are its remaining part of #341.
 
 ## Calendar (week view)
 

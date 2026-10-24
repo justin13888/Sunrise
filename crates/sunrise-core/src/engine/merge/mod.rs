@@ -109,6 +109,19 @@ pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
 pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
 pub(super) use versions::unmerged_heads;
+
+/// The heads of entity `id` as this replica has applied them, in the wire
+/// form a `Patch`'s `parents` carries (ADR-0065 §2): what a writer that has
+/// seen every version names.
+pub(super) fn parents_of(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+) -> rusqlite::Result<Vec<crate::inner_op::OpRefWire>> {
+    Ok(versions::heads(tx, id)?
+        .into_iter()
+        .map(|h| crate::inner_op::OpRefWire(h.stream, h.device, h.seq))
+        .collect())
+}
 #[cfg(test)]
 pub(super) use versions::{heads, precedes};
 

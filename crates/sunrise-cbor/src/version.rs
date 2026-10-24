@@ -181,7 +181,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// its own full-state ops, so it needs no feature: an older device keeps
 /// writing tasks, and only shows them in its own order. Every v1..v15
 /// payload shape is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 16;
+///
+/// `17` adds the `svw_` saved-view entity (issue #341), written only by
+/// `Patch`, its value types (`ViewFilter`, `PriorityRange`, `DateWindow`)
+/// and lossless enums (`ViewKind`, `ViewSort`, `WindowField`), and its
+/// feature, `saved_view.entity`. A v16 build cannot decode a `Patch` naming a
+/// prefix it does not know, so none is written until every device has
+/// advertised the feature. Every v1..v16 payload shape is unchanged, so the
+/// floor does not move.
+pub const DOC_SCHEMA_V: u16 = 17;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -250,6 +258,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         16,
         hex32("ac96923d0675fabe2162d286f5ba5af7cb15cc4c32a4311bcc36e2fa6ad6c9ef"),
+    ),
+    (
+        17,
+        hex32("2fc9c2a11793f1e1940133d9d5949ddff676fa2cb73fbfd65f2175c0215a2531"),
     ),
 ];
 
@@ -563,4 +575,9 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// it writes; the first `Core::open` after it rebuilds the projection,
 /// because the fold's version moved with it, which moves a key a build
 /// before it kept as an unknown field into the column.
-pub const STORAGE_V: u16 = 42;
+///
+/// `43` is migration `0043_saved_views.sql` (issue #341): `saved_views`, the
+/// projection of the `SavedView` entity, empty. Schema-only: no build before
+/// it folded a saved-view op, and one it parked replays through the full
+/// apply path at the first open of this build, which changes `DOC_SCHEMA_V`.
+pub const STORAGE_V: u16 = 43;

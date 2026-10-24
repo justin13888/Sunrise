@@ -5,8 +5,8 @@ use sunrise_domain::search::{Highlighted, NoticeKind, SearchKind};
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
-    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SessionPlan, Stream,
-    StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
+    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SavedView,
+    SessionPlan, Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -333,6 +333,13 @@ pub enum Query {
         /// default.
         include_quiet: bool,
     },
+    /// Every live saved view (#341), in the saved-views list's order: placed
+    /// ones by `sort_order` and id, then the rest by name and id.
+    SavedViews,
+    /// Evaluate one saved view now, in the reader's zone, over the vault as
+    /// it is: the tasks it matches, in its order. The result is never stored
+    /// (`docs/08-features/planning-views.md` §Saved views).
+    SavedView(EntityRef),
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -418,6 +425,33 @@ pub enum QueryResult {
     /// `DaySchedule` returns the schedule and one planner day. Boxed to keep
     /// the enum small.
     DaySchedule(Box<PlannerDay>),
+    /// `SavedViews` returns the live views; `EntityById` of a `svw_` id
+    /// returns the one view, deleted or not.
+    SavedViews(Vec<SavedView>),
+    /// `SavedView` returns the view and what it matches. Boxed to keep the
+    /// enum small.
+    SavedView(Box<SavedViewResult>),
+}
+
+/// What [`Query::SavedView`] returns: the view and the tasks it matches now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SavedViewResult {
+    /// The view, as stored.
+    pub view: SavedView,
+    /// The tasks it matches, in its order. Empty for a view that opens a
+    /// screen of its own (calendar, focus, …) rather than a list: the client
+    /// opens that screen.
+    pub tasks: Vec<Task>,
+    /// Contexts the filter names that are deleted or that this replica does
+    /// not hold: they match no task, and the reader should be told.
+    pub missing_contexts: Vec<EntityRef>,
+    /// Context names an import could not resolve, kept on the view and
+    /// matched by nothing.
+    pub unresolved_names: Vec<String>,
+    /// Whether every part of the view is one this build evaluates. `false`
+    /// when a newer build added a filter part or a view kind this one
+    /// cannot read: the result then shows more than that build would.
+    pub complete: bool,
 }
 
 /// What [`Query::DaySchedule`] returns.

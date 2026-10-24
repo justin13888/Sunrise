@@ -13,7 +13,7 @@ use jiff::tz::TimeZone;
 use serde_json::{json, Value};
 use sunrise_core::queries::{ContextRow, DeviceRow, SearchResults, StreamRow};
 use sunrise_domain::search::Highlighted;
-use sunrise_domain::{Block, RoutineRow, SunriseTime, Task};
+use sunrise_domain::{Block, RoutineRow, SavedView, SunriseTime, Task};
 use sunrise_id::EntityRef;
 
 /// An id as text.
@@ -83,6 +83,38 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
 #[must_use]
 pub fn tasks(ts: &[Task], reader: &TimeZone) -> Value {
     Value::Array(ts.iter().map(|t| task(t, reader)).collect())
+}
+
+/// A saved view: `{id, name, view, spec, query, contexts, context_ids,
+/// streams, sort, sort_order}`. `spec` is the one-line summary, `query` the
+/// filter's free text, and `contexts` the contexts' current names (the shape
+/// the per-device file had, kept), beside their ids. Unresolved names an
+/// import kept are in `contexts` too, with no id.
+#[must_use]
+pub fn saved_view(
+    v: &SavedView,
+    context_name: &dyn Fn(EntityRef) -> Option<String>,
+    spec: &str,
+) -> Value {
+    let mut names: Vec<String> = v
+        .filter
+        .contexts
+        .iter()
+        .filter_map(|c| context_name(*c))
+        .collect();
+    names.extend(v.filter.context_names.iter().cloned());
+    json!({
+        "id": v.id.to_str(),
+        "name": v.name,
+        "view": v.view.as_str(),
+        "spec": spec,
+        "query": v.filter.text,
+        "contexts": names,
+        "context_ids": ids(&v.filter.contexts),
+        "streams": ids(&v.filter.streams),
+        "sort": v.sort.as_str(),
+        "sort_order": v.sort_order,
+    })
 }
 
 /// Highlighted text: `{text, ranges}`, each range `[start, end]` in Unicode

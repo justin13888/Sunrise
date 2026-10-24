@@ -392,3 +392,101 @@ async fn concurrent_reorders_converge() {
     assert_eq!(on_a[3], base[1], "both landed between the same two tasks");
     relay.abort();
 }
+
+/// The ids of the tasks `views apply <name>` lists on `device`.
+async fn applied(device: &Device, name: &str) -> Vec<String> {
+    device
+        .json(&["views", "apply", name])
+        .await
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// A view saved on one device is the vault's, so it runs on the other
+/// (#341), and it names its contexts by id, so renaming a context on either
+/// device breaks nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_view_saved_on_one_device_runs_on_the_other_through_a_rename() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, _) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    a.ok(&["contexts", "create", "errands"]).await;
+    let milk = first_id(&a.ok(&["capture", "Buy milk @errands"]).await);
+    a.ok(&["capture", "Write the report"]).await;
+    a.ok(&["views", "save", "out", "inbox", "--contexts", "errands"])
+        .await;
+    settle(&a, &b).await;
+
+    let listed = b.json(&["views"]).await;
+    assert_eq!(listed[0]["name"], "out", "{listed}");
+    assert_eq!(listed[0]["contexts"][0], "errands");
+    assert_eq!(applied(&b, "out").await, vec![milk.clone()]);
+
+    b.ok(&["contexts", "edit", "errands", "--name", "shops"])
+        .await;
+    settle(&a, &b).await;
+    assert_eq!(applied(&a, "out").await, vec![milk.clone()], "on A");
+    assert_eq!(applied(&b, "out").await, vec![milk.clone()], "on B");
+    assert_eq!(a.json(&["views"]).await[0]["contexts"][0], "shops");
+
+    // Renamed on A, deleted on B: one list on both.
+    a.ok(&["views", "rename", "out", "errands run"]).await;
+    settle(&a, &b).await;
+    assert_eq!(b.json(&["views"]).await[0]["name"], "errands run");
+    b.ok(&["views", "delete", "errands run"]).await;
+    settle(&a, &b).await;
+    assert_eq!(a.json(&["views"]).await, serde_json::json!([]));
+    relay.abort();
+}
+
+/// A device's old `views.toml` is imported once into the vault: its context
+/// names become ids, a name the vault lacks is reported and kept, and the
+/// file is never written again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_views_file_is_imported_once() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, _) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    a.ok(&["contexts", "create", "errands"]).await;
+    let milk = first_id(&a.ok(&["capture", "Buy milk @errands"]).await);
+    let file = a
+        .vault
+        .with_extension("config")
+        .join("sunrise")
+        .join("views.toml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let body = "out = \"view=inbox;contexts=errands,ghost\"\n";
+    std::fs::write(&file, body).unwrap();
+
+    let out = a.run(&["views"]).await;
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ghost"),
+        "the unresolved name is reported: {stderr}"
+    );
+    assert_eq!(applied(&a, "out").await, vec![milk.clone()]);
+    let listed = a.json(&["views"]).await;
+    assert_eq!(
+        listed.as_array().map(Vec::len),
+        Some(1),
+        "imported once: {listed}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        body,
+        "the file is left as it was"
+    );
+    a.ok(&["views", "save", "more", "today"]).await;
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        body,
+        "and never written"
+    );
+    settle(&a, &b).await;
+    assert_eq!(applied(&b, "out").await, vec![milk]);
+    relay.abort();
+}

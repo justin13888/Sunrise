@@ -11,7 +11,7 @@ use super::rows::{
     insert_task_contexts, insert_task_row, purge_context_from_tasks, replace_block_tasks,
     replace_task_blockers, replace_task_contexts, update_context_row, update_routine_row,
     update_stream_row, update_task_row, upsert_attachment_row, upsert_block_row,
-    upsert_preferences_row,
+    upsert_preferences_row, upsert_saved_view_row,
 };
 use super::state::{dec, enc, hlc_of, Meta};
 use super::{refresh, to_sql, OpRef, Stamp};
@@ -22,7 +22,8 @@ use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::{
-    inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, Stream, Task, TaskState,
+    inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task,
+    TaskState,
 };
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -518,6 +519,10 @@ pub(super) fn write_projection(
         EntityKind::Preferences => {
             let p: Preferences = decode!(Preferences);
             upsert_preferences_row(tx, &p, head)?;
+        }
+        EntityKind::SavedView => {
+            let v: SavedView = decode!(SavedView);
+            upsert_saved_view_row(tx, &v, head)?;
         }
         _ => return Ok(false),
     }

@@ -150,6 +150,51 @@ fn a_move_and_the_keys_its_undo_puts_back_round_trip() {
     same(&stacks, &round_trip(&stacks));
 }
 
+/// A saved view's create, edit and delete survive the trip, a filter part a
+/// newer build added and a cleared place in the list included (#341).
+#[test]
+fn saved_view_commands_round_trip_losslessly() {
+    use sunrise_domain::{SavedViewDraft, SavedViewPatch, ViewFilter, ViewKind, ViewSort};
+    let id = EntityRef::new(EntityKind::SavedView, [7; 16]);
+    let mut filter = ViewFilter {
+        text: "milk".into(),
+        ..ViewFilter::default()
+    };
+    filter.unknown.insert(
+        "place".into(),
+        sunrise_cbor::decode_lenient(&[0x62, b'p', b'x']).unwrap(),
+    );
+    let mut stacks = UndoStacks::default();
+    stacks.push(entry(
+        "save",
+        vec![Command::CreateSavedView(SavedViewDraft {
+            name: "Errands".into(),
+            view: ViewKind::from_raw("map"),
+            filter: filter.clone(),
+            sort: ViewSort::Manual,
+        })],
+        vec![Command::DeleteSavedView(id)],
+    ));
+    stacks.push(entry(
+        "edit",
+        vec![Command::UpdateSavedView {
+            id,
+            patch: SavedViewPatch {
+                filter: Some(filter),
+                sort_order: Some(None),
+                ..SavedViewPatch::default()
+            },
+        }],
+        vec![Command::Restore(id)],
+    ));
+    let back = round_trip(&stacks);
+    same(&stacks, &back);
+    let Command::UpdateSavedView { patch, .. } = &back.done[1].forward[0] else {
+        panic!("an edit");
+    };
+    assert_eq!(patch.sort_order, Some(None), "a clear, not a no-op");
+}
+
 #[test]
 fn a_step_with_a_command_out_of_scope_is_dropped_and_counted() {
     let mut stacks = UndoStacks::default();

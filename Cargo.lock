@@ -3221,6 +3221,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sunrise-auth",
+ "sunrise-cbor",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",

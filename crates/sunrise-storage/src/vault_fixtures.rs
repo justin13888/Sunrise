@@ -1668,3 +1668,22 @@ fn a_v41_vaults_tasks_gain_an_unplaced_sort_order_and_its_index() {
         .unwrap();
     assert_eq!(index, 1);
 }
+
+/// Migration 0043 (#341) over a real v42 vault: the `saved_views` table
+/// exists, empty, with the index the list reads.
+#[test]
+fn a_v42_vault_gains_an_empty_saved_views_table() {
+    let (_dir, db) = open_migrated(&fixture_name(42));
+    assert_eq!(row_count(&db, "saved_views"), 0);
+    assert!(row_count(&db, "tasks") > 0, "the fixture's tasks survive");
+    let index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'saved_views_live'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}

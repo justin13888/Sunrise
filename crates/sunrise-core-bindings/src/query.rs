@@ -240,6 +240,13 @@ pub enum CoreQuery {
         /// Any instant inside the planner day to describe (epoch ms).
         at_ms: u64,
     },
+    /// Every live saved view, in the saved-views list's order.
+    SavedViews,
+    /// Evaluate one saved view now: the tasks it matches, in its order.
+    SavedView {
+        /// The view.
+        id: EntityRef,
+    },
 }
 
 impl CoreQuery {
@@ -349,6 +356,8 @@ impl CoreQuery {
                 include_quiet,
             },
             Self::DaySchedule { at_ms } => Query::DaySchedule { at_ms },
+            Self::SavedViews => Query::SavedViews,
+            Self::SavedView { id } => Query::SavedView(id),
         }
     }
 }
@@ -545,6 +554,17 @@ pub enum CoreQueryResult {
         /// The planner day, with every entry of the schedule.
         day: crate::day_schedule::PlannerDayItem,
     },
+    /// Saved views: the live ones for `SavedViews`, the one for an
+    /// `EntityById` of a `svw_` id.
+    SavedViews {
+        /// The views.
+        views: Vec<crate::saved_views::SavedViewItem>,
+    },
+    /// One saved view, evaluated.
+    SavedView {
+        /// The view and what it matches.
+        result: crate::saved_views::SavedViewResultItem,
+    },
 }
 
 impl CoreQueryResult {
@@ -657,6 +677,15 @@ impl CoreQueryResult {
             },
             QueryResult::DaySchedule(d) => Self::DaySchedule {
                 day: crate::day_schedule::PlannerDayItem::from(d.as_ref()),
+            },
+            QueryResult::SavedViews(v) => Self::SavedViews {
+                views: v
+                    .iter()
+                    .map(crate::saved_views::SavedViewItem::from)
+                    .collect(),
+            },
+            QueryResult::SavedView(r) => Self::SavedView {
+                result: crate::saved_views::SavedViewResultItem::from(r.as_ref()),
             },
         }
     }

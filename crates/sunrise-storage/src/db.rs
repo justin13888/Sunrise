@@ -1102,7 +1102,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(projected, 11, "the registry projects eleven tables");
+        assert_eq!(projected, 12, "the registry projects twelve tables");
     }
 
     /// 0014 adds `streams.sort_order`, defaulting to the "never ordered"

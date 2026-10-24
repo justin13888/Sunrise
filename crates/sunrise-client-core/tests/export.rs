@@ -138,6 +138,14 @@ async fn seed(core: &Core) {
     })
     .await
     .unwrap();
+    core.submit(Command::CreateSavedView(sunrise_domain::SavedViewDraft {
+        name: "Errands".into(),
+        view: sunrise_domain::ViewKind::Today,
+        filter: sunrise_domain::ViewFilter::default(),
+        sort: sunrise_domain::ViewSort::Default,
+    }))
+    .await
+    .unwrap();
 }
 
 /// Every file under `dir`, by `/`-separated relative path.

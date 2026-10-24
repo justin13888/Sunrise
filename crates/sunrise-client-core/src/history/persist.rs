@@ -36,8 +36,9 @@ use serde::{Deserialize, Serialize};
 use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
     BlockDraft, ContextDraft, ContextPatch, Energy, NoteBody, RRule, RoutineCatchupPolicy,
-    RoutineDraft, RoutinePatch, ScheduleConstraint, StreamColor, StreamDraft, StreamPatch,
-    StreamReviewCadence, SunriseTime, TaskDraft, TaskPatch, TaskState, TaskTemplate,
+    RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch, ScheduleConstraint, StreamColor,
+    StreamDraft, StreamPatch, StreamReviewCadence, SunriseTime, TaskDraft, TaskPatch, TaskState,
+    TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -196,6 +197,46 @@ enum Cmd {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<EntityRef>,
     },
+    CreateSavedView(Cbor<SavedViewDraft>),
+    UpdateSavedView {
+        id: EntityRef,
+        patch: Cbor<SavedViewPatch>,
+    },
+    DeleteSavedView(EntityRef),
+}
+
+/// A value written as the hex of its canonical CBOR: a saved view's filter
+/// carries fields a newer build added as CBOR values, which JSON cannot hold
+/// losslessly.
+struct Cbor<T>(T);
+
+impl<T: Serialize> Serialize for Cbor<T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let bytes = sunrise_cbor::encode_canonical(&self.0).map_err(serde::ser::Error::custom)?;
+        let hex = bytes.iter().fold(String::new(), |mut out, x| {
+            use std::fmt::Write;
+            let _ = write!(out, "{x:02x}");
+            out
+        });
+        s.serialize_str(&hex)
+    }
+}
+
+impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Cbor<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let hex = String::deserialize(d)?;
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| {
+                hex.get(i..i + 2)
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+                    .ok_or_else(|| serde::de::Error::custom("not hex"))
+            })
+            .collect::<Result<Vec<u8>, D::Error>>()?;
+        sunrise_cbor::decode_lenient(&bytes)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Cmd {
@@ -225,6 +266,12 @@ impl Cmd {
             Command::DeleteBlock(id) => Self::DeleteBlock(id),
             Command::DetachFile(id) => Self::DetachFile(id),
             Command::MoveTasks { ids, after, before } => Self::MoveTasks { ids, after, before },
+            Command::CreateSavedView(d) => Self::CreateSavedView(Cbor(d)),
+            Command::UpdateSavedView { id, patch } => Self::UpdateSavedView {
+                id,
+                patch: Cbor(patch),
+            },
+            Command::DeleteSavedView(id) => Self::DeleteSavedView(id),
             _ => return None,
         })
     }
@@ -255,6 +302,9 @@ impl Cmd {
             Self::DeleteBlock(id) => Command::DeleteBlock(id),
             Self::DetachFile(id) => Command::DetachFile(id),
             Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
+            Self::CreateSavedView(d) => Command::CreateSavedView(d.0),
+            Self::UpdateSavedView { id, patch } => Command::UpdateSavedView { id, patch: patch.0 },
+            Self::DeleteSavedView(id) => Command::DeleteSavedView(id),
         }
     }
 }

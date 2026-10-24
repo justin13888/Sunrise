@@ -949,6 +949,76 @@
             "tag": "routine"
         },
         {
+            "features": ["saved_view.entity"],
+            "merge": "lww",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "svw_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "tombstone",
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "filter",
+                            "type": "ViewFilter"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "name",
+                            "type": "String"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "sort",
+                            "type": "ViewSort"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "sort_order",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "view",
+                            "type": "ViewKind"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "SavedView"
+                }
+            ],
+            "tag": "saved_view"
+        },
+        {
             "features": [],
             "merge": "lww",
             "ops": [
@@ -1330,8 +1400,43 @@
         },
         {
             "fallback": null,
+            "name": "ViewKind",
+            "variants": [
+                "calendar",
+                "evening",
+                "focus",
+                "inbox",
+                "morning",
+                "review",
+                "routines",
+                "search",
+                "stream",
+                "today"
+            ]
+        },
+        {
+            "fallback": "default",
+            "name": "ViewSort",
+            "variants": [
+                "created",
+                "default",
+                "due",
+                "manual",
+                "priority",
+                "scheduled",
+                "title",
+                "updated"
+            ]
+        },
+        {
+            "fallback": null,
             "name": "Weekday",
             "variants": ["FR", "MO", "SA", "SU", "TH", "TU", "WE"]
+        },
+        {
+            "fallback": null,
+            "name": "WindowField",
+            "variants": ["due", "scheduled"]
         }
     ],
     "features": [
@@ -1392,6 +1497,17 @@
                 "entity": "routine"
             },
             "since": 15
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "saved_view.entity",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "saved_view"
+            },
+            "since": 17
         }
     ],
     "format": 1,
@@ -1537,6 +1653,25 @@
             ],
             "keeps_unknowns": true,
             "name": "DateRange",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "field",
+                    "type": "WindowField"
+                },
+                {
+                    "name": "from_days",
+                    "type": "Option<i32>"
+                },
+                {
+                    "name": "to_days",
+                    "type": "Option<i32>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "DateWindow",
             "shape": "record"
         },
         {
@@ -1709,6 +1844,21 @@
             ],
             "keeps_unknowns": true,
             "name": "PatchPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "max",
+                    "type": "u8"
+                },
+                {
+                    "name": "min",
+                    "type": "u8"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "PriorityRange",
             "shape": "record"
         },
         {
@@ -1988,6 +2138,41 @@
             ],
             "keeps_unknowns": true,
             "name": "VaultRequiresPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "context_names",
+                    "type": "Vec<String>"
+                },
+                {
+                    "name": "contexts",
+                    "type": "Vec<EntityRef>"
+                },
+                {
+                    "name": "energy",
+                    "type": "Vec<Energy>"
+                },
+                {
+                    "name": "priority",
+                    "type": "Option<PriorityRange>"
+                },
+                {
+                    "name": "streams",
+                    "type": "Vec<EntityRef>"
+                },
+                {
+                    "name": "text",
+                    "type": "String"
+                },
+                {
+                    "name": "window",
+                    "type": "Option<DateWindow>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ViewFilter",
             "shape": "record"
         },
         {

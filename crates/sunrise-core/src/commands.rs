@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
     InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime, TaskDraft, TaskPatch,
-    TaskState,
+    SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch,
+    SunriseTime, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -465,6 +465,25 @@ pub enum Command {
         /// The task they land above, or `None` for the bottom of the list.
         before: Option<EntityRef>,
     },
+    /// Save a view (`docs/08-features/planning-views.md` §Saved views,
+    /// #341): a new `svw_` entity, last in the saved-views list.
+    ///
+    /// Written as one `Patch` on the vault-meta stream, which needs the vault
+    /// to require `saved_view.entity`: refused with
+    /// `FeatureUnsupportedByDevices` while a paired device lacks it.
+    CreateSavedView(SavedViewDraft),
+    /// Edit a saved view: one `Patch` writing exactly the fields the patch
+    /// names, so an edit of one field never overwrites a concurrent edit of
+    /// another. Refused with `NotFound` for a view this replica does not hold
+    /// or holds deleted, and `Invalid` for an edit that changes nothing.
+    UpdateSavedView {
+        /// The view.
+        id: EntityRef,
+        /// The fields to write.
+        patch: SavedViewPatch,
+    },
+    /// Delete a saved view. [`Self::Restore`] brings it back.
+    DeleteSavedView(EntityRef),
 }
 
 /// One item of [`Command::BulkTasks`]: a task, and what to do to it.
