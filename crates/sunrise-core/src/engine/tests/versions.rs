@@ -308,6 +308,61 @@ fn a_parent_stamped_after_its_child_is_ignored() {
     assert_eq!(dags[0], dags[1]);
 }
 
+/// A version that names itself as a parent is not its own ancestor, also
+/// when it arrives late and the entity's frontiers are recomputed: D3 drops
+/// an edge whose stamp is not below the child's, and its own is equal.
+#[test]
+fn a_version_naming_itself_is_not_its_own_ancestor() {
+    let mut p = pair();
+    let task = shared_task(
+        &mut p,
+        TaskDraft {
+            title: "draft".into(),
+            ..Default::default()
+        },
+    );
+    let me = p.eb.keychain.device_id();
+    let next_seq: i64 = p
+        .dbb
+        .conn()
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM ops WHERE stream_id = ? AND device_id = ?",
+            rusqlite::params![&inbox()[..], &me[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let itself = OpRef {
+        stream: inbox(),
+        device: me,
+        seq: u64::try_from(next_seq).unwrap(),
+    };
+    set_clock(&p.cb, T0 + 1_000);
+    let (first_env, first) = emit_patch(
+        &p.eb,
+        &mut p.dbb,
+        &inbox(),
+        &titled(task, "b", Some(&[itself])),
+    );
+    assert_eq!(first, itself, "the op-ref was predicted");
+    set_clock(&p.cb, T0 + 2_000);
+    let (second_env, second) = emit_patch(&p.eb, &mut p.dbb, &inbox(), &titled(task, "c", None));
+
+    let (e, mut db) = receiver(&[&p.ea, &p.eb]);
+    e.apply_remote(&mut db, &create_env_for(&p.dba, task.bytes()))
+        .unwrap();
+    e.apply_remote(&mut db, &second_env).unwrap();
+    e.apply_remote(&mut db, &first_env).unwrap();
+    assert!(!precedes_in(&db, task, first, first));
+    assert!(precedes_in(&db, task, first, second));
+    // A's full-state create names nothing, so it stays a head beside B's.
+    let create = versions_of(&db, task)[0];
+    let mut expected = vec![create, second];
+    expected.sort();
+    assert_eq!(heads_of(&db, task), expected);
+    assert_eq!(dag(&db, task), dag(&p.dbb, task));
+    e.assert_rebuild_identity(&db);
+}
+
 /// The heads are the versions nothing else descends from: two concurrent
 /// branches are both heads until a version names them both.
 #[test]
