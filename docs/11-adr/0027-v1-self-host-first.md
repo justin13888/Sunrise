@@ -41,9 +41,9 @@ subscriptions, a `processed_stripe_events` table, a webhook route and
 none of it exists. Grep agrees: there is no Stripe client in the workspace, no
 webhook route, no quota accounting in `crates/sunrise-server`. The only trace
 is `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'` column
-(`crates/sunrise-server/src/store/accounts.rs:28`) that `resolve_account` sets to
-`"free"` at provisioning (`store/accounts.rs:107`) and that is read exactly once, to
-echo onto `AccountInfo` (`api/accounts.rs:92`). Nothing gates on it.
+(`crates/sunrise-server/src/store/accounts.rs:53#SCHEMA`) that `resolve_account` sets to
+`"free"` at provisioning (`store/accounts.rs:116`) and that is read exactly once, to
+echo onto `AccountInfo` (`api/accounts.rs:118`). Nothing gates on it.
 
 The numbers do not stay in that file:
 
@@ -91,8 +91,8 @@ Xiaomi 13T, OnePlus 11 — under the heading "Device used in CI / QA". There is
 no Android source, no Gradle or SDK configuration, no Android CI job and no
 device anywhere in the repository. The complete set of Android traces in the
 tree is: the string `"android"` in the device-platform allowlist
-(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:79`,
-`crates/sunrise-relay-client/src/bootstrap.rs:53`), two comments saying Kotlin
+(`crates/sunrise-server/src/api/devices.rs:19#PLATFORMS`, `store/devices.rs:79`,
+`crates/sunrise-relay-client/src/bootstrap.rs:53#DeviceIdentity`), two comments saying Kotlin
 bindings would be generated "when Android arrives"
 (`crates/sunrise-core-bindings/src/lib.rs:5`, `Cargo.toml:10`), and
 `.github/workflows/release.yml:893`, which says outright: "Google Play — there
@@ -140,9 +140,9 @@ enforces are fixed operator constants, not per-account accounting:
 | Limit | Value | Source |
 |---|---|---|
 | Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
-| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:53` |
-| Blob chunk count | 4096 | `api/blobs.rs:57` |
-| Blob size | 100 MB | `api/blobs.rs:61` |
+| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:59#MAX_CHUNK_BYTES` |
+| Blob chunk count | 4096 | `api/blobs.rs:63` |
+| Blob size | 100 MB | `api/blobs.rs:67` |
 | Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log.rs:121,130` |
 
 No `plan_tier` metric label. No `AUTH_QUOTA_EXCEEDED` or `AUTH_RATE_LIMITED` on
@@ -177,7 +177,7 @@ adversary who can shift `server_first_seen_ms` can shift the fold, and
 therefore the root, which makes a divergent root deniable.
 
 `Ack.server_first_seen_ms` stays on the wire
-(`crates/sunrise-wire-protocol/src/payloads.rs:93`, stamped at
+(`crates/sunrise-wire-protocol/src/payloads.rs:108#AckPayload`, stamped at
 `api/sync/publish.rs:111,226`) as an advisory clock-skew hint. It MUST NOT influence merge
 order, fold order or acceptance.
 
@@ -309,7 +309,7 @@ is that dedup by key sharing does not exist at any scope.
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
 (`crates/sunrise-server/src/api/blobs.rs:239-265,448-457`). This reconciles
-`crates/sunrise-domain/src/attachment.rs:42-44` ("assigned by the creating
+`crates/sunrise-domain/src/attachment.rs:42-44#Attachment` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.
 
