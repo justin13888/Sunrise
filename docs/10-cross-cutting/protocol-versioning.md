@@ -179,7 +179,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `14`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `15`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -229,7 +229,19 @@ From now on:
   `parents` and `group` keys to `Patch`
   ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §3, §1, §6).
   No build writes either key yet; a `Patch` without them encodes as before,
-  and a v13 build keeps them as unknown keys.
+  and a v13 build keeps them as unknown keys. `DOC_SCHEMA_V` 15 retyped six
+  bare-instant fields to `SunriseTime` (`Routine.starts_at`, `ends_at`,
+  `paused_until`, `last_completed_at`, `RRule.until`, `Stream.paused_until`;
+  [#506](https://github.com/justin13888/Sunrise/issues/506),
+  [ADR-0066](../11-adr/0066-times-survive-travel.md) §1). It changes no
+  variant's shape for a value an older build can hold: an instant is still
+  written bare, so a routine whose times are all instants, or zoned in its
+  own zone, is written as a v14 build reads it. A time a v14 build cannot
+  read is written only into a vault that requires the feature
+  `routine.civil_times`, declared on the feature as the `(variant, field)`
+  pairs it retypes, which a v14 build lacks and so stops writing routines.
+  A v14 payload's bare instants read as zoned in the routine's zone
+  ([`time.md`](./time.md) §1).
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

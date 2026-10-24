@@ -397,17 +397,20 @@ The shape above is the design of record. The tree still ships the previous
 model, tracked in [#331](https://github.com/justin13888/Sunrise/issues/331) (with [#336](https://github.com/justin13888/Sunrise/issues/336) for the time fields and [#319](https://github.com/justin13888/Sunrise/issues/319) for the
 merge):
 
-- The anchor is `starts_at: Timestamp` beside a separate `timezone` string, and
-  a zone change re-derives the wall clock from the instant, so 09:00 LA becomes
-  12:00 NY (`crates/sunrise-domain/src/routine.rs#Routine`,
-  `crates/sunrise-domain/src/routine_gen.rs#expand`).
-- `paused_until` is stored and never read
-  (`crates/sunrise-domain/src/routine_gen.rs#occurrences_in`).
+- The anchor is still `starts_at` beside a `timezone` string rather than one
+  `anchor` field, but it is a `SunriseTime` (#506): `floating` by default,
+  `zoned` when pinned, expanded in civil space, and a zone change keeps its
+  wall clock (`crates/sunrise-domain/src/routine.rs#rezone`,
+  `crates/sunrise-domain/src/routine_gen.rs#expand`). A bare instant written
+  before `DOC_SCHEMA_V` 15 reads as zoned in `timezone`
+  ([`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §1).
+- `paused_until` is honoured as §Pausing says
+  (`crates/sunrise-domain/src/routine_gen/series.rs#is_paused_at`).
 - Catch-up applies only on first materialization
   (`crates/sunrise-core/src/engine/routine.rs#materialize_one_routine`).
-- The streak key is built from the actual instant
-  (`crates/sunrise-domain/src/routine_gen.rs#occurrence_key_at`) while task ids
-  and skips use the intended wall clock, so the keys differ on a DST day.
+- The streak key, the skip and the task id share the intended key: the streak
+  recovers it from the task id
+  (`crates/sunrise-domain/src/routine_gen/series.rs#occurrence_key_of`).
 - `streak_counter` and `streak_keys` merge with the whole row, so concurrent
   completions of different occurrences lose one.
 - `RoutinePatch` has no edit scope (`crates/sunrise-domain/src/routine.rs#RoutinePatch`),

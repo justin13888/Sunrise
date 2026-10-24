@@ -173,3 +173,45 @@ zone and flagged, never moved (#333).
 2. **A calendar provider that sends floating recurring events without a
    `TZID` but means a fixed zone.** The importer would then need a per-source
    default.
+
+## Delivered (2026-10)
+
+[#535](https://github.com/justin13888/Sunrise/pull/535) delivered §3, §4's
+defer and §5. The routine half (#506, with the routine parts of #331 and the
+constraint parts of #333) delivers §1, §2 and the rest of §5:
+
+- **§1.** The routine anchor, end, `UNTIL`, pause and last completion, and a
+  stream's pause, are `SunriseTime`s (`DOC_SCHEMA_V` 15). A routine with no
+  zone is `floating`; a zone pins it. Expansion is in civil space, and a
+  floating routine's occurrences resolve in the reader's zone. An occurrence
+  is planned with the anchor's kind. Changing a routine's zone keeps every
+  wall-clock time it holds (`Routine::rezone`) and re-pins the untouched
+  occurrences already planned. A pause with an expiry generates again once
+  it runs out. The streak key is the intended key, recovered from the task
+  id (`Routine::occurrence_key_of`), so the task id, a skip and the streak
+  agree on a DST-gap day (#331).
+- **The forward-compatibility rule.** A bare instant in one of these fields
+  reads as `zoned` at its wall clock in the routine's `timezone`, or
+  `floating` at its wall clock in UTC when `timezone` does not resolve; a
+  pause and a last completion stay instants (time.md §1). An instant is
+  still written bare. A routine that holds a time an older build cannot read
+  is written only into a vault that requires `routine.civil_times`; until
+  every paired device advertises it, a routine every build can read is
+  written in the old form, and a new routine with no zone is pinned to its
+  zone rather than refused.
+- **§2.** Every `SunriseTime` column has a `*_civil` sidecar (migration 0041,
+  `STORAGE_V` 41), and a stored value is rebuilt from it and its zone name
+  alone. The migration does not derive civil times in SQL, which cannot read
+  tzdata: `FOLD_V` 3 rebuilds every row from the op log at the next open,
+  and the ops carry each civil value as written.
+- **§5, constraints.** A wrapping window (`22:00–02:00`) is valid and belongs
+  to the day it starts on; a zone change lists the open planned tasks that
+  now break a hard window (`TimeZoneChange::hard_violations`).
+- **Not yet.** Concurrent defers still fold to one count:
+  `deferred_count` is a counter in the fold, but defer writes a full-state
+  op until a vault requires `core.field_ops`
+  (`TODO(ADR-0065 PR7, #447, #334)` in `defer_task`). For the same reason a
+  concurrent completion of two occurrences of one routine on two devices
+  keeps one streak key. Edit scopes, template propagation, catch-up of
+  occurrences left open, and the hard-constraint flag at generation remain
+  #331's.
