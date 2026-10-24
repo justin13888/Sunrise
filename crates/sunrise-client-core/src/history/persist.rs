@@ -159,6 +159,7 @@ enum Cmd {
         to: SunriseTime,
     },
     DeleteTask(EntityRef),
+    Restore(EntityRef),
     PromoteToStream {
         id: EntityRef,
         stream: EntityRef,
@@ -198,6 +199,7 @@ impl Cmd {
             Command::DeferTask { id, to_ms } => Self::DeferTask { id, to_ms },
             Command::DeferTaskTo { id, to } => Self::DeferTaskTo { id, to },
             Command::DeleteTask(id) => Self::DeleteTask(id),
+            Command::Restore(id) => Self::Restore(id),
             Command::PromoteToStream { id, stream } => Self::PromoteToStream { id, stream },
             Command::CreateStream(d) => Self::CreateStream(d),
             Command::UpdateStream { id, patch } => Self::UpdateStream { id, patch },
@@ -223,6 +225,7 @@ impl Cmd {
             Self::DeferTask { id, to_ms } => Command::DeferTask { id, to_ms },
             Self::DeferTaskTo { id, to } => Command::DeferTaskTo { id, to },
             Self::DeleteTask(id) => Command::DeleteTask(id),
+            Self::Restore(id) => Command::Restore(id),
             Self::PromoteToStream { id, stream } => Command::PromoteToStream { id, stream },
             Self::CreateStream(d) => Command::CreateStream(d),
             Self::UpdateStream { id, patch } => Command::UpdateStream { id, patch },

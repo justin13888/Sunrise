@@ -37,18 +37,24 @@
 //!
 //! # Why a join reproduces a full replay
 //!
-//! Every write in [`super::state`] is idempotent and order-independent: a
-//! register keeps the greatest stamp, an add, a remove and a delta are keyed
-//! by the op that made them, and the legacy floor only rises. So the state of
+//! Every write in [`super::state`] and [`super::register`] is idempotent and
+//! order-independent: a register keeps the antichain of its writes, a map
+//! entry the greatest stamp, an add, a remove and a delta are keyed by the op
+//! that made them, and the legacy floor only rises. `doc_state` v1 carries a
+//! register's winner and not its losers, nor the versions that order them, so
+//! a joined winner reaches only itself; a projection rebuild keeps the losers
+//! of the ops it joins (`engine::rebuild`), and `doc_state` v2 carries both
+//! (ADR-0065 §8). So the state of
 //! a set of ops is the join of the states of any cover of it, and
 //! [`join_stream_state`] folds each snapshot row in through exactly the write
 //! an op carrying it would have used. A replica that joins a snapshot and then
 //! applies the ops above its frontier holds the state a replica that replayed
 //! every op holds, whatever it held before.
 
+use super::register::Registers;
 use super::state::{
     add_delta, add_element, dec, prune_below_floor, read_meta, remove_element, write_map_entry,
-    write_meta, write_register, Meta,
+    write_meta, Meta,
 };
 use super::{project_and_write, OpRef, Stamp};
 use crate::engine::ids::blob16;
@@ -649,8 +655,9 @@ pub(in crate::engine) fn join_stream_state(
         let local = read_meta(tx, id)?;
         let before = local.as_ref().and_then(|m| m.legacy);
         let meta = join_meta(local, &e.meta);
+        let mut regs = Registers::load(tx, e.spec, id, before)?;
         if let Some(floor) = meta.legacy.filter(|l| before.is_none_or(|b| *l > b)) {
-            prune_below_floor(tx, id, floor)?;
+            prune_below_floor(tx, id, floor, &mut regs)?;
         }
         for r in list(e.entries, "registers")? {
             let items = r.as_array().map_or(&[][..], Vec::as_slice);
@@ -658,15 +665,15 @@ pub(in crate::engine) fn join_stream_state(
                 Some(Value::Null) => None,
                 v => Some(dec(&blob(v, "register value")?)),
             };
-            write_register(
+            regs.offer(
                 tx,
-                id,
                 &text(items.first(), "register field")?,
                 value.as_ref(),
                 stamp(items.get(3), "register stamp")?,
                 &text(items.get(2), "register origin")?,
             )?;
         }
+        regs.flush(tx)?;
         for r in list(e.entries, "maps")? {
             let items = r.as_array().map_or(&[][..], Vec::as_slice);
             write_map_entry(

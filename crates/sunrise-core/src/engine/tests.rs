@@ -19343,3 +19343,7 @@ mod versions;
 /// Search over every indexed kind, and the indexes' upkeep (issue #345,
 /// ADR-0052).
 mod search;
+
+/// The register fold by conflict class, the conflicts query, and resolve and
+/// restore (ADR-0065 PR 5).
+mod conflicts;

@@ -11,7 +11,7 @@
 //!
 //! | Type | State | Value |
 //! |---|---|---|
-//! | register | `(value, stamp, origin)` | the write with the greatest stamp |
+//! | register | the concurrent `(value, stamp, origin)` writes | the one its conflict class ranks highest ([`register`]) |
 //! | map | one register per key | every key whose register is not null |
 //! | OR-set | `(element, tag)` adds and removed `(element, tag)` pairs | every element with an add whose tag is not removed |
 //! | counter | the `inc` deltas, once per op | the sum, plus the legacy base |
@@ -73,16 +73,19 @@
 //!
 //! Every op folded here is first admitted as a version of its entity
 //! ([`versions`], ADR-0065 §1–§2): its parents, its causal frontier, and the
-//! entity's heads. The register fold does not read them yet; it still keeps
-//! the greatest stamp, as ADR-0044 does.
+//! entity's heads. The register fold reads them ([`register`], §3–§4): a
+//! register keeps the writes no other write descends from, picks its winner
+//! by the field's conflict class, and keeps the rest as losers, which
+//! `Query::Conflicts` reports. Two full-state ops are concurrent, but only the
+//! newer survives the legacy floor, so a legacy-only history keeps no loser.
 //!
 //! # Visibility, delete, and derived fields
 //!
 //! An entity is projected only once a create has been applied: a `Patch` with
 //! `create`, or any legacy op, since every legacy op wrote a whole row.
-//! `deleted` is a register like any other, so an edit that arrives after a
-//! delete is kept inside the tombstoned entity and shows again on a restore
-//! (ADR-0044 §5). `created_at` is the legacy register where one wrote it, and
+//! `deleted` is a register of the tombstone class: a delete beats a
+//! concurrent restore, and an edit concurrent with a delete is kept inside the
+//! tombstoned entity and shows again on a restore (ADR-0044 §5, ADR-0065 §3). `created_at` is the legacy register where one wrote it, and
 //! the least create stamp's physical time otherwise; `updated_at` is the later
 //! of the legacy register and the newest `Patch`'s physical time (§10). A
 //! `Patch` may write neither, nor `id`, nor a field the registry declares
@@ -90,19 +93,23 @@
 
 mod patch;
 mod project;
+mod register;
 mod rows;
 mod snapshot;
 mod state;
 mod versions;
 
-pub(super) use patch::{check_patch, PatchProblem};
+pub(super) use patch::{check_patch, check_register_set, set_field, PatchProblem};
 #[cfg(test)]
 pub(super) use project::map_over_whole;
 // The search indexes' rows are the row writers'; `engine::search` builds them
 // from the rows when the layout changes.
+pub(super) use register::{class_of, kept_registers, Member};
 pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
+pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
 pub(super) use versions::recompute as recompute_versions;
+pub(super) use versions::unmerged_heads;
 #[cfg(test)]
 pub(super) use versions::{heads, precedes};
 
@@ -111,8 +118,10 @@ pub(super) use versions::{heads, precedes};
 /// It moves when a build folds the same ops into different rows or merge
 /// state, and a vault last rebuilt at another version is rebuilt once, at
 /// open (`Engine::rebuild_if_stale`). `1` adds the version DAG (ADR-0065
-/// §1–§2), whose tables a vault before migration 0039 does not have.
-pub(crate) const FOLD_V: u32 = 1;
+/// §1–§2), whose tables a vault before migration 0039 does not have. `2`
+/// folds registers by their conflict classes (§3) and keeps the losers (§4),
+/// which a vault folded at `1` holds none of.
+pub(crate) const FOLD_V: u32 = 2;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;
@@ -121,16 +130,17 @@ use crate::inner_op::InnerOp;
 use ciborium::value::Value;
 use patch::FieldOp;
 use project::{project, write_projection};
+use register::Registers;
 use rusqlite::Transaction;
 use state::{
     add_delta, add_element, prune_below_floor, read_meta, remove_element, write_map_entry,
-    write_meta, write_register, Meta,
+    write_meta, Meta,
 };
 use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::EntityRef;
-use versions::{admit_version, Version, VersionKind};
+use versions::{admit_version, Admission, Version, VersionKind};
 
 // ---- stamps and op-refs ----
 
@@ -166,7 +176,7 @@ impl Stamp {
         }
     }
 
-    const fn op_ref(&self) -> OpRef {
+    pub(super) const fn op_ref(&self) -> OpRef {
         OpRef {
             stream: self.stream,
             device: self.device,
@@ -214,7 +224,7 @@ impl OpRef {
 // ---- folds ----
 
 const USER: &str = "user";
-const GENERATED: &str = "generated";
+pub(super) const GENERATED: &str = "generated";
 
 /// The origin of a legacy full-state op, from its op-log `inner_kind` and its
 /// payload's CBOR map. ADR-0044 §3: a legacy op is a user write, except the
@@ -232,6 +242,7 @@ fn legacy_origin(inner_kind: &str, state: &[(Value, Value)]) -> &'static str {
 }
 
 /// Fold a legacy full-state op, given as its payload's CBOR map (§7).
+#[allow(clippy::too_many_arguments)]
 fn fold_legacy(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
@@ -240,12 +251,13 @@ fn fold_legacy(
     at: Stamp,
     origin: &str,
     meta: &mut Meta,
+    regs: &mut Registers,
 ) -> rusqlite::Result<()> {
     meta.note(at);
     meta.note_create(at);
     if meta.legacy.is_none_or(|l| at > l) {
         meta.legacy = Some(at);
-        prune_below_floor(tx, id, at)?;
+        prune_below_floor(tx, id, at, regs)?;
     }
     let floor = meta.legacy;
     let Some(record) = spec.records.first() else {
@@ -261,7 +273,7 @@ fn fold_legacy(
         let value = get(state, field.name);
         match field.crdt {
             Crdt::Register | Crdt::Derived | Crdt::Counter => {
-                write_register(tx, id, field.name, value.as_ref(), at, origin)?;
+                regs.offer(tx, field.name, value.as_ref(), at, origin)?;
             }
             Crdt::OrSet => {
                 for element in value
@@ -288,21 +300,14 @@ fn fold_legacy(
                 let sub = spec.record(field.value_type);
                 for sub_field in sub.map_or(&[][..], |s| s.fields) {
                     let name = format!("{}.{}", field.name, sub_field.name);
-                    write_register(
-                        tx,
-                        id,
-                        &name,
-                        get(inner, sub_field.name).as_ref(),
-                        at,
-                        origin,
-                    )?;
+                    regs.offer(tx, &name, get(inner, sub_field.name).as_ref(), at, origin)?;
                 }
                 for (k, v) in inner {
                     let Some(k) = k.as_text() else { continue };
                     if sub.is_some_and(|s| s.fields.iter().any(|f| f.name == k)) {
                         continue;
                     }
-                    write_register(tx, id, &format!("{}.{k}", field.name), Some(v), at, origin)?;
+                    regs.offer(tx, &format!("{}.{k}", field.name), Some(v), at, origin)?;
                 }
             }
         }
@@ -313,11 +318,12 @@ fn fold_legacy(
         if record.fields.iter().any(|f| f.name == k) {
             continue;
         }
-        write_register(tx, id, k, Some(v), at, origin)?;
+        regs.offer(tx, k, Some(v), at, origin)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fold_patch(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -326,6 +332,7 @@ fn fold_patch(
     at: Stamp,
     origin: &str,
     meta: &mut Meta,
+    regs: &mut Registers,
 ) -> rusqlite::Result<()> {
     meta.note(at);
     if create {
@@ -337,7 +344,7 @@ fn fold_patch(
     );
     for (field, op) in ops {
         match op {
-            FieldOp::Set(v) => write_register(tx, id, field, Some(v), at, origin)?,
+            FieldOp::Set(v) => regs.offer(tx, field, Some(v), at, origin)?,
             FieldOp::Edit { add, remove } => {
                 for element in add {
                     add_element(tx, id, field, element, at, meta.legacy)?;
@@ -368,6 +375,25 @@ fn refresh(tx: &Transaction<'_>, target: EntityRef) -> Result<(), EngineError> {
     project_and_write(tx, spec, target, &mut meta)?;
     write_meta(tx, target.bytes(), spec.tag, &meta)?;
     Ok(())
+}
+
+/// The entity as the fold projects it, as a CBOR map: its row before the
+/// row writers decode it. `None` for an entity with no merge state, or none
+/// created yet.
+pub(super) fn projected(
+    tx: &Transaction<'_>,
+    target: EntityRef,
+) -> rusqlite::Result<Option<Value>> {
+    let Some(meta) = read_meta(tx, target.bytes())? else {
+        return Ok(None);
+    };
+    project(tx, target.kind().spec(), target, &meta)
+}
+
+/// The legacy floor of entity `id` (the module docs' `L`), if a full-state
+/// op has been applied to it.
+pub(super) fn legacy_floor(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<Option<Stamp>> {
+    Ok(read_meta(tx, id)?.and_then(|m| m.legacy))
 }
 
 fn project_and_write(
@@ -475,8 +501,10 @@ fn merge_op_inner(
                 group: p.group.as_ref().map(|g| (g.id, g.size)),
                 fields: ops.iter().map(|(name, _)| name.clone()).collect(),
             };
-            admit_version(tx, id, &version)?;
-            fold_patch(tx, id, p.create, &ops, at, origin, &mut meta)?;
+            let admitted = admit_version(tx, id, &version)?;
+            let mut regs = registers_after(tx, spec, id, &meta, admitted)?;
+            fold_patch(tx, id, p.create, &ops, at, origin, &mut meta, &mut regs)?;
+            regs.flush(tx)?;
         }
         other => {
             let Some(state) = legacy_state(other) else {
@@ -495,13 +523,33 @@ fn merge_op_inner(
                 group: None,
                 fields: legacy_fields(spec, entries),
             };
-            admit_version(tx, id, &version)?;
-            fold_legacy(tx, spec, id, entries, at, origin, &mut meta)?;
+            let admitted = admit_version(tx, id, &version)?;
+            let mut regs = registers_after(tx, spec, id, &meta, admitted)?;
+            fold_legacy(tx, spec, id, entries, at, origin, &mut meta, &mut regs)?;
+            regs.flush(tx)?;
         }
     }
     project_and_write(tx, spec, target, &mut meta)?;
     write_meta(tx, id, spec.tag, &meta)?;
     Ok(())
+}
+
+/// The entity's registers, loaded after its newest version was admitted.
+/// A version that arrived late recomputed the entity's frontiers, which can
+/// order writes the registers keep as concurrent, so they are filtered again
+/// ([`Registers::refilter`]).
+fn registers_after(
+    tx: &Transaction<'_>,
+    spec: &'static EntitySpec,
+    id: &[u8; 16],
+    meta: &Meta,
+    admitted: Admission,
+) -> rusqlite::Result<Registers> {
+    let mut regs = Registers::load(tx, spec, id, meta.legacy)?;
+    if admitted.refined {
+        regs.refilter(tx)?;
+    }
+    Ok(regs)
 }
 
 /// The fields a legacy full-state op writes: every field this build

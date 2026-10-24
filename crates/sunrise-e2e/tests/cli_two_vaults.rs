@@ -112,6 +112,36 @@ async fn concurrent_defers_converge_on_one_plan() {
     relay.abort();
 }
 
+/// Whether `task` is in the Inbox `device` lists.
+async fn live(device: &Device, task: &str) -> bool {
+    device
+        .json(&["inbox"])
+        .await
+        .as_array()
+        .is_some_and(|ts| ts.iter().any(|t| t["id"] == task))
+}
+
+/// What `sunrise conflicts --json` reports, quiet fields included.
+async fn conflicts(device: &Device) -> Value {
+    device.json(&["conflicts", "--all"]).await
+}
+
+/// A delete on one device against an edit on the other, then a restore.
+///
+/// What holds **today**: the devices agree on whether the task is live, and
+/// the later write wins the whole task, so B's edit, made after A's drop,
+/// brings it back. Both CLIs write full-state ops: ADR-0065 D9 keeps every
+/// command on them until the vault requires `core.field_ops`, which no build
+/// registers yet. Two full-state ops name no parents and never surface a
+/// conflict (D4), so neither device reports one. `sunrise restore` brings a
+/// dropped task back on both.
+///
+/// TODO(ADR-0065 8/8): once commands write `Patch` with parents, the delete
+/// wins and B's edit is kept as an "edited while deleted" conflict. Assert
+/// `!live(&a, ..)` after the first settle, that `conflicts` names B's edit
+/// under `deleted`, and that `restore` clears it. The engine already folds
+/// and reports exactly that for `Patch` versions
+/// (`crates/sunrise-core/src/engine/tests/conflicts.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_on_one_device_against_an_edit_on_the_other() {
     let (addr, relay) = spawn_relay().await;
@@ -122,23 +152,85 @@ async fn a_delete_on_one_device_against_an_edit_on_the_other() {
     b.ok(&["edit", &task, "!2"]).await;
     settle(&a, &b).await;
 
-    // What holds today: the two devices agree on whether the task is live.
-    let live = |inbox: &Value| {
-        inbox
-            .as_array()
-            .is_some_and(|ts| ts.iter().any(|t| t["id"] == task.as_str()))
-    };
-    let on_a = live(&a.json(&["inbox"]).await);
-    let on_b = live(&b.json(&["inbox"]).await);
-    assert_eq!(on_a, on_b, "the devices converged on the delete");
-    // Today the later write wins the whole entity, and B's edit came after
-    // A's drop, so the task is live again on both devices.
+    let on_a = live(&a, &task).await;
+    assert_eq!(
+        on_a,
+        live(&b, &task).await,
+        "the devices converged on the delete"
+    );
     assert!(
         on_a,
         "entity-level last-writer-wins: the later edit resurrects it"
     );
-    // TODO(ADR-0065 PR5): the delete wins and the edit is kept as a conflict
-    // the user resolves; assert `!on_a`, and that the conflict list names B's
-    // edit, once conflicts are recorded.
+    assert_eq!(
+        conflicts(&a).await,
+        serde_json::json!([]),
+        "D4: no conflict"
+    );
+    assert_eq!(conflicts(&b).await, serde_json::json!([]));
+
+    // A drops it again, and B restores it.
+    a.ok(&["drop", &task]).await;
+    settle(&a, &b).await;
+    assert!(!live(&b, &task).await, "dropped on both");
+    b.ok(&["restore", &task]).await;
+    settle(&a, &b).await;
+    assert!(
+        live(&a, &task).await && live(&b, &task).await,
+        "restored on both"
+    );
+    assert_eq!(a.task(&task).await["priority"], 2, "with the fields it had");
+    relay.abort();
+}
+
+/// Two devices retitle one task while apart, and one of them settles it.
+///
+/// What holds **today**: both CLIs write full-state ops (ADR-0065 D9), so the
+/// later retitle wins, the earlier one is not kept, and no conflict is
+/// reported (D4). `conflicts resolve --value` still settles the field, as a
+/// write both devices converge on.
+///
+/// TODO(ADR-0065 8/8): once commands write `Patch` with parents, the two
+/// retitles are concurrent `title` versions: assert that `conflicts --json`
+/// on each device reports one `tracked` conflict on `title` with the other
+/// title as its loser, that `conflicts resolve <id> title --pick <loser>`
+/// makes the loser the title on both, and that the list is then empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_retitles_converge_and_resolve() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, task) = two_devices(dir.path(), &format!("http://{addr}")).await;
+
+    a.ok(&["retitle", &task, "Renew passport at the embassy"])
+        .await;
+    b.ok(&["retitle", &task, "Renew passport by post"]).await;
+    settle(&a, &b).await;
+
+    let on_a = a.task(&task).await;
+    assert_eq!(on_a["title"], b.task(&task).await["title"], "one title");
+    assert_eq!(on_a["title"], "Renew passport by post", "the later write");
+    assert_eq!(
+        conflicts(&a).await,
+        serde_json::json!([]),
+        "D4: no conflict"
+    );
+
+    a.ok(&[
+        "conflicts",
+        "resolve",
+        &task,
+        "title",
+        "--value",
+        "Renew passport at the embassy",
+    ])
+    .await;
+    settle(&a, &b).await;
+    for device in [&a, &b] {
+        assert_eq!(
+            device.task(&task).await["title"],
+            "Renew passport at the embassy"
+        );
+        assert_eq!(conflicts(device).await, serde_json::json!([]));
+    }
     relay.abort();
 }

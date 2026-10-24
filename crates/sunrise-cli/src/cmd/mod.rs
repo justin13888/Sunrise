@@ -13,6 +13,7 @@
 
 mod account;
 mod blocks;
+mod conflicts;
 mod devices;
 mod files;
 mod organize;
@@ -105,6 +106,8 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "defer" => tasks::defer(ctx, rest).await,
         "schedule" => tasks::schedule(ctx, rest).await,
         "drop" => tasks::drop_tasks(ctx, rest).await,
+        "restore" => conflicts::restore(ctx, rest).await,
+        "conflicts" => conflicts::conflicts(ctx, rest).await,
         "note" => tasks::note(ctx, rest).await,
         "next" => tasks::next(ctx, false).await,
         "focus" => tasks::focus(ctx, rest).await,

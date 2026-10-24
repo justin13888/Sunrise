@@ -22,10 +22,17 @@
 //!   That inverse is the one that cannot be built by [`invert`]: the id to
 //!   delete does not exist until the core has minted it, so it is read off
 //!   `CommandResult::entity` *after* the write instead of off a row before it.
-//! * A **delete cannot be undone.** `Command::DeleteTask` writes a tombstone
-//!   and the core has no restore op, so there is nothing to invert into. The
-//!   caller is told so rather than the step being silently skipped — which is
-//!   why deletion belongs behind a confirmation.
+//! * A **delete is undone by a restore** (ADR-0065 §3): `Command::Restore`
+//!   is a later write of `deleted = false`, so undo of a delete brings the
+//!   entity back with the fields it had, and undo of a restore deletes it
+//!   again. An attachment has no restore, so detaching one stays
+//!   [`NotUndoable::Unsupported`].
+//! * A **conflict resolution cannot be undone.** `Command::ResolveConflict`
+//!   settles a field by writing a version that descends from every write the
+//!   device had seen. Setting the old winner back is an ordinary edit, but
+//!   the conflict itself, the concurrent writes, cannot be brought back by
+//!   any write, and an undo that put the value back and called the conflict
+//!   restored would be lying about it.
 //! * A **defer's counter does not come back down.** `deferred_count` is a
 //!   PN-counter the engine increments; undo restores the date, and the count
 //!   keeps its history. A review that said "deferred three times" should not
@@ -53,7 +60,7 @@ use sunrise_core::Command;
 use sunrise_domain::{
     ContextPatch, RoutinePatch, RoutineRow, StreamPatch, Task, TaskPatch, TaskState,
 };
-use sunrise_id::EntityRef;
+use sunrise_id::{EntityKind, EntityRef};
 
 /// What [`invert`] needs to read out of whatever the client is holding.
 ///
@@ -109,7 +116,8 @@ impl UndoEntry {
 /// Why a step could not be recorded, for the status line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotUndoable {
-    /// A tombstone: the core has no restore op.
+    /// A tombstone the core could not restore. Kept for clients that match
+    /// on it; since `Command::Restore` exists, [`invert`] never returns it.
     Deleted,
     /// Nothing about the command is reversible (or its target is not loaded).
     Unsupported,
@@ -312,16 +320,32 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
                 },
             })
         }
-        Command::DeleteTask(_)
-        | Command::DeleteStream(_)
-        | Command::DeleteContext(_)
-        | Command::DeleteRoutine(_) => Err(NotUndoable::Deleted),
+        // A delete is undone by a later write of `deleted = false`, which
+        // brings the entity back as it was (ADR-0065 §3).
+        Command::DeleteTask(id)
+        | Command::DeleteStream(id)
+        | Command::DeleteContext(id)
+        | Command::DeleteRoutine(id)
+        | Command::DeleteBlock(id) => Ok(Command::Restore(*id)),
+        Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
         // Creates land here too, and `Unsupported` is the right answer *from
         // here*: a create is reversible, but the entity to delete does not
         // exist until the core has minted it. See [`invert_create`], which the
         // caller reaches for once it holds the result of the write.
         _ => Err(NotUndoable::Unsupported),
     }
+}
+
+/// The delete of `id`, for the kinds [`Command::Restore`] brings back.
+const fn delete_of(id: EntityRef) -> Option<Command> {
+    Some(match id.kind() {
+        EntityKind::Task => Command::DeleteTask(id),
+        EntityKind::Stream => Command::DeleteStream(id),
+        EntityKind::Context => Command::DeleteContext(id),
+        EntityKind::Routine => Command::DeleteRoutine(id),
+        EntityKind::Block => Command::DeleteBlock(id),
+        _ => return None,
+    })
 }
 
 /// The patch that restores whatever `patch` is about to change.
@@ -595,21 +619,56 @@ mod tests {
     }
 
     #[test]
-    fn a_delete_is_refused_rather_than_half_undone() {
-        let rows = rows_with(task(1));
-        assert_eq!(
-            invert(&rows, &[Command::DeleteTask(tid(1))]).unwrap_err(),
-            NotUndoable::Deleted
-        );
+    fn undo_of_a_delete_is_a_restore() {
+        // No row is read: the restore brings back whatever the entity was.
+        let rows = Rows::default();
+        for id in [
+            tid(1),
+            sid(1),
+            EntityRef::new(EntityKind::Context, [3; 16]),
+            EntityRef::new(EntityKind::Routine, [4; 16]),
+            EntityRef::new(EntityKind::Block, [5; 16]),
+        ] {
+            let delete = delete_of(id).expect("a kind with a delete");
+            let back = invert(&rows, std::slice::from_ref(&delete)).expect("invertible");
+            assert!(
+                matches!(back[..], [Command::Restore(r)] if r == id),
+                "{back:?}"
+            );
+            // And the restore undoes back into the same delete.
+            let again = invert(&rows, &back).expect("invertible");
+            assert!(
+                matches!(&again[..], [d] if deletes(d) == Some(id)),
+                "{again:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_with_an_uninvertible_command_is_refused_whole() {
         // All or nothing: one un-invertible command sinks the whole batch,
         // because a half-undone bulk operation is worse than one that refuses.
+        let rows = rows_with(task(1));
+        let resolve = Command::ResolveConflict {
+            entity: tid(1),
+            field: "title".into(),
+            value: serde_json::from_value(serde_json::json!("x")).expect("a CBOR text"),
+        };
+        assert_eq!(
+            invert(&rows, &[Command::CompleteTask(tid(1)), resolve]).unwrap_err(),
+            NotUndoable::Unsupported
+        );
         assert_eq!(
             invert(
                 &rows,
-                &[Command::CompleteTask(tid(1)), Command::DeleteTask(tid(1))]
+                &[Command::DetachFile(EntityRef::new(
+                    EntityKind::Attachment,
+                    [7; 16]
+                ))]
             )
             .unwrap_err(),
-            NotUndoable::Deleted
+            NotUndoable::Unsupported,
+            "an attachment has no restore"
         );
     }
 

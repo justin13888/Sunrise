@@ -52,6 +52,7 @@ mod blob_fetch;
 mod blob_sync;
 pub mod commands;
 pub mod config;
+pub mod conflicts;
 pub mod control_op;
 pub mod core;
 // Test-only: the generator and its pins. The build's registry, which the
@@ -76,6 +77,10 @@ pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{Command, CommandResult, FocusStartDraft, TimeZoneChange};
 pub use config::{
     Clock, CoreConfig, HlcClock, MonotonicHlc, ReportedZoneClock, Rng, SystemClock, SystemRng,
+};
+pub use conflicts::{
+    BadVersionRef, ConflictClass, ConflictWrite, DeletedEdit, EntityConflict, VersionRef,
+    WriteOrigin,
 };
 pub use control_op::{
     DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,

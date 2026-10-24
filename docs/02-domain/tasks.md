@@ -287,9 +287,10 @@ shape, and each gap is tracked:
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).
 - The `due ≥ scheduled` check compares storage index keys: [#336](https://github.com/justin13888/Sunrise/issues/336).
 - Concurrent `blocked_by` cycles persist: [#333](https://github.com/justin13888/Sunrise/issues/333).
-- A delete cannot be undone: the client's undo refuses it
-  (`crates/sunrise-client-core/src/undo.rs`), because a legacy full-state
-  tombstone has no restore op: [#319](https://github.com/justin13888/Sunrise/issues/319).
+- Undo of a delete is `Command::Restore`, a later write of `deleted = false`
+  (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). Until commands
+  write `Patch`, it is a full-state op of the task as it projects, so it also
+  settles every other field on this device's values (ADR-0065 D11).
 - Manual order lives in the Apple client's `UserDefaults`, not in `sort_order`:
   [#340](https://github.com/justin13888/Sunrise/issues/340).
 - `routine_occurrence` is an instant, not the civil key: [#331](https://github.com/justin13888/Sunrise/issues/331).

@@ -107,9 +107,17 @@ nothing shared between the devices but the relay.
 - **Concurrent defers** converge on one plan, which keeps its floating wall
   clock and kind.
 - **Delete on one device, edit on the other**: the devices agree, and today
-  the later edit resurrects the task (entity-level last-writer-wins).
-  ADR-0065 makes the delete win and keeps the edit as a conflict; the
-  assertions for that are a `TODO(ADR-0065 PR5)` in the test.
+  the later edit resurrects the task, with no conflict reported on either
+  side: both CLIs write full-state ops, and two of those never make one
+  (ADR-0065 D4, D9). A drop and a `sunrise restore` then bring it back on
+  both, with its fields. Once commands write `Patch` with parents, the
+  delete wins and the edit is kept as a conflict; those assertions are a
+  `TODO(ADR-0065 8/8)` in the test. The engine already folds and reports
+  them for `Patch` versions (`crates/sunrise-core/src/engine/tests/conflicts.rs`).
+- **Concurrent retitles**: the later title wins on both, no conflict is
+  reported (D4), and `sunrise conflicts resolve <id> title --value …`
+  settles the title on both. The surfaced conflict and its `--pick` are a
+  `TODO(ADR-0065 8/8)`, for the same reason.
 - **The traveller**: A writes in `America/New_York` (`SUNRISE_TZ`), then reads
   and edits in `Asia/Kolkata`. A floating 09:00 stays 09:00 at another instant,
   a zoned block keeps its own zone, a read or a zone change rewrites nothing

@@ -47,6 +47,14 @@ capture and triage
                                set or clear the plan, counting nothing
   sunrise done <id>...         complete one or more tasks
   sunrise drop <id>...         soft-delete one or more tasks
+  sunrise restore <id>...      bring back deleted tasks, streams, contexts,
+                               routines or blocks
+  sunrise conflicts [list] [<id>] [--all]
+                               fields two devices wrote without seeing each
+                               other, with every write kept; --all adds quiet
+                               fields
+  sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)
+                               settle one field on a kept write or a new value
   sunrise note <id> [<text>...|-|--file <path|->] [--force]
                                print, replace or clear a task's note
   sunrise show <id>            one task's fields, each time with its kind
@@ -208,10 +216,28 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 | `prefs`, `prefs get <key>` | array of / one `{key, value, source, scope}`, `value` in the spelling `prefs set` reads |
 | `tz` | `{zone, source, zone_unknown}` |
 | `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |
+| `conflicts [list] [<id>] [--all]` | array of `{entity, field, class, winner, losers, edited_while_deleted}`: `class` one of `tracked`, `state`, `tombstone`, and with `--all` `quiet` or `merge`; `winner` and each of `losers` a write `{version, device, origin, at_ms, value}`, `origin` `user` or `generated`, `value` the written value as JSON (`null` for a write that left the field unset); `edited_while_deleted` an array of `{version, device, fields}`. Empty when nothing is in conflict |
 
 Write commands, `export` (which has its own `json` format), `export all`
 (whose `manifest.json` is its document, [`../04-storage/export-format.md`](../04-storage/export-format.md))
 and the account commands print as they always have.
+
+### Conflicts and restore
+
+`sunrise conflicts` lists what `Query::Conflicts` reports
+([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
+§Seeing and settling a conflict): per entity and field, the write shown and
+each write kept, with its value and its version. The table prints a version
+as the writing device's first eight hex digits and its `seq`
+(`3567b6be/2`), and `--json` as the whole op-ref,
+`<stream hex>.<device hex>.<seq>`. `conflicts resolve <id> <field> --pick
+<version>` settles the field on the write that version made, by either
+spelling; `--value <v>` on a new value, read as JSON when it parses as JSON
+and as plain text otherwise, so `--value 'Renew passport'` and `--value 3`
+both need no quoting and `--value '"3"'` is the text. `sunrise restore <id>`
+undeletes a task, stream, context, routine or block. Both write a full-state
+op until the vault requires `core.field_ops`, which settles every field of
+the entity on the values this device shows (ADR-0065 D4, D9).
 
 ### Undo across processes
 
@@ -226,8 +252,11 @@ client layer's (`history::persist`), which keeps "clear this field" and "leave
 it" apart: plain serde collapses both to `null`, and the undo of setting a
 priority on a task that had none would then do nothing.
 
-A delete, a revocation, a focus session and a routine skip have no inverse;
-they are still written, and leave nothing to undo. An undo is a new write and
+A delete is undone by a restore (`Command::Restore`, ADR-0065 §3), and a
+restore by the delete. A revocation, a focus session, a routine skip and a
+conflict resolution have no inverse; they are still written, and leave
+nothing to undo. A resolution settles a conflict, and no write can bring the
+concurrent writes back. An undo is a new write and
 merges like one, so a field another device has changed since loses the tie
 exactly as a manual edit would. A history that does not open — another
 vault's, a damaged file — is a fresh one, with a note on stderr.

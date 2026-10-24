@@ -257,14 +257,32 @@ pub enum CoreCommand {
         /// The vault, or this device.
         target: PreferenceTarget,
     },
+    /// Bring back a deleted task, stream, context, routine or block. See
+    /// [`sunrise_core::Command::Restore`]; undo of a delete submits it.
+    Restore {
+        /// Target.
+        id: EntityRef,
+    },
+    /// Settle one field's conflict on `value`. See
+    /// [`sunrise_core::Command::ResolveConflict`].
+    ResolveConflict {
+        /// The entity.
+        entity: EntityRef,
+        /// The field's wire name, as `ConflictItem::field` names it.
+        field: String,
+        /// The value as canonical CBOR: a `ConflictWriteItem::value` handed
+        /// back, or one the client encoded.
+        value: Vec<u8>,
+    },
 }
 
 impl CoreCommand {
     /// Lower into the core's own command type.
     ///
-    /// Fallible in exactly one place: `AttachFile` carries fixed-width byte
-    /// arrays that UniFFI can only express as a `Vec<u8>` and a hex string, so
-    /// their length is checked here. Every id arrived as an already-lifted
+    /// Fallible in two places: `AttachFile` carries fixed-width byte arrays
+    /// that UniFFI can only express as a `Vec<u8>` and a hex string, so their
+    /// length is checked here, and `ResolveConflict`'s value must be canonical
+    /// CBOR. Every id arrived as an already-lifted
     /// `EntityRef`, and that parsing happened at the boundary in
     /// [`crate::types`]'s `custom_type!`.
     pub(crate) fn into_core(self) -> Result<Command, crate::BindingError> {
@@ -348,6 +366,16 @@ impl CoreCommand {
             Self::ClearPreference { key, target } => Command::ClearPreference {
                 key,
                 target: target.into(),
+            },
+            Self::Restore { id } => Command::Restore(id),
+            Self::ResolveConflict {
+                entity,
+                field,
+                value,
+            } => Command::ResolveConflict {
+                entity,
+                field,
+                value: crate::conflicts::value_in(&value)?,
             },
         })
     }

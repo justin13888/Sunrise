@@ -16,10 +16,11 @@
 //!   core just minted, and it does not exist a moment earlier. Redoing it
 //!   creates a fresh entity with a fresh id, so the step is re-bound to that
 //!   id as it is replayed; see [`crate::undo::rebind_creates`].
-//! * **A delete cannot be undone.** The core writes a tombstone and has no
-//!   restore op, so [`UndoHistory::submit`] says so —
-//!   [`NotUndoable::Deleted`] — rather than accepting the step and offering an
-//!   undo that would silently do nothing.
+//! * **Undoing a delete restores the entity** (`Command::Restore`, ADR-0065
+//!   §3), a later write of `deleted = false`. A step that cannot be inverted
+//!   (a conflict resolution, a detached attachment) is refused with
+//!   [`NotUndoable::Unsupported`] rather than accepted with an undo that
+//!   would silently do nothing.
 //!
 //! The rows the inverse is read from come from the **vault**, not from
 //! whatever the client happens to be holding. [`EntityLookup`] was written as
@@ -163,8 +164,9 @@ fn wanted(cmds: &[Command]) -> Wanted {
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,
             Command::UpdateRoutine { .. } => wanted.routines = true,
-            // Everything else is either a tombstone or has no inverse; both
-            // reach `invert` as a refusal and need no rows read for them.
+            // Everything else needs no rows read: a delete and a restore
+            // invert into each other by id alone, and the rest has no
+            // inverse and reaches `invert` as a refusal.
             _ => {}
         }
     }

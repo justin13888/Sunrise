@@ -335,6 +335,61 @@ fn rebuild_after_compaction_keeps_the_compacted_state() {
     );
 }
 
+/// Compaction deletes the ops below its floor, and the register losers they
+/// wrote stay: the base a rebuild joins is a `doc_state` v1, which carries
+/// winners only, so a rebuild keeps the compacted ops' losers as the fold
+/// left them (ADR-0065 §8, until PR 6 carries them in the snapshot).
+#[test]
+fn a_rebuild_after_compaction_keeps_the_losers_the_compacted_ops_wrote() {
+    use super::field_merge::{emit_patch, patch, set, text};
+    let c = Arc::new(FakeClock(PLMutex::new(T0)));
+    let ((ea, mut dba), (eb, mut dbb)) = pair(&c);
+    let task = new_task(&ea, &mut dba, "t");
+    sync(&dba, &eb, &mut dbb);
+    // B's write loses, and B's ops are the ones compaction folds here: A's
+    // own `Patch` was never sent, so it stays in the log.
+    for (at, e, db, title) in [
+        (1_000, &eb, &mut dbb, "from b"),
+        (2_000, &ea, &mut dba, "from a"),
+    ] {
+        set_clock(&c, T0 + at);
+        let op = patch(task, false, vec![("title", set(text(title)))]);
+        emit_patch(e, db, &INBOX, &op);
+    }
+    sync(&dba, &eb, &mut dbb);
+    sync(&dbb, &ea, &mut dba);
+    let losers = |db: &Db| -> Vec<String> {
+        dump(db.conn())
+            .into_iter()
+            .find(|(t, _)| *t == "register_losers")
+            .map(|(_, rows)| rows)
+            .unwrap_or_default()
+    };
+    assert_eq!(losers(&dba).len(), 1, "B's title lost to A's, and is kept");
+
+    dba.conn()
+        .execute("UPDATE outbox SET acked_at_ms = 1", [])
+        .unwrap();
+    set_clock(&c, T0 + 2 * DAY);
+    assert!(eb.publish_stream_digest(&mut dbb, &INBOX).unwrap());
+    sync(&dbb, &ea, &mut dba);
+    let policy = CompactionPolicy {
+        retention_ms: DAY,
+        ..CompactionPolicy::default()
+    };
+    let compacted = ea.compact_op_log(&mut dba, &policy).unwrap();
+    assert!(compacted.ops_removed >= 2, "{compacted:?}");
+    let before = losers(&dba);
+    ea.assert_rebuild_identity(&dba);
+    ea.rebuild_projection(&mut dba).unwrap();
+    assert_eq!(
+        losers(&dba),
+        before,
+        "a conflict outlives the ops behind it"
+    );
+    assert_eq!(read_task_t(&ea, &dba, task).title, "from a");
+}
+
 /// A parked op stays parked and out of the projection, and the rows no op
 /// derives survive: the Inbox placeholder, a routine's materialization
 /// watermark, this device's preference overlay and its blob cache index.

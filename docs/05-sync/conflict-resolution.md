@@ -24,6 +24,14 @@ status: accepted
 > from a build that emits one merges per field.
 > [`crdt-design.md`](./crdt-design.md) §What exists in the tree has the
 > detail.
+>
+> **Conflicts** ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+> §3–§4) are folded, kept, listed and settled: every register keeps the
+> concurrent writes that lost, the field's class picks the one shown, and
+> `sunrise conflicts` (`Query::Conflicts`) lists them. Two full-state ops never
+> make a conflict (clarification D4), so between two devices on this build,
+> which both write full-state ops, none arises; a `Patch` naming its parents,
+> from a build that writes one, does. §Seeing and settling a conflict below.
 
 The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices. The banner above says which of them a device's own writes can exercise today.
 
@@ -31,12 +39,12 @@ The merge layer resolves every concurrent edit deterministically, with no user p
 
 | Field type | Policy |
 |---|---|
-| Register (title, `planned_at`, `target_at`, `hard_due_at`, priority, `sort_order`, each nested value as a whole, …) | LWW per field with the `(hlc, device_id, seq)` tiebreak |
+| Register (title, `planned_at`, `target_at`, `hard_due_at`, priority, `sort_order`, each nested value as a whole, …) | Of two ordered writes, the later. Of concurrent writes, the one the field's conflict class ranks highest, with the rest kept: quiet and tracked fields by the `(hlc, device_id, seq)` key below, `state` terminal over open, `deleted` delete over restore, and a generated write below every concurrent user write (ADR-0065 §3) |
 | Map (entries edited independently, such as `Preferences.values` and day-schedule entries) | One LWW register per key; a key is removed by a tombstone, never forgotten |
 | Set membership (`Task.contexts`, `Task.blocked_by`, `Block.tasks`, a routine's `skipped_keys` and `streak_keys`) | Observed-remove OR-set: a concurrent add survives a remove that did not observe it. `Task.blocks` is derived from `Block.tasks`, not merged. |
 | Counter (`deferred_count`) | PN-counter (commutative add/sub) |
 | Streaks | Derived at read time from `streak_keys` and `skipped_keys`; never stored or merged. Today they are still stored, and merge as registers ([#331](https://github.com/justin13888/Sunrise/issues/331)). |
-| Deletion (`deleted`) | An ordinary register. An edit that arrives after a delete stays inside the tombstoned entity and shows again on a restore; it never resurrects it. |
+| Deletion (`deleted`) | A register of the tombstone class: a delete beats a concurrent restore. An edit concurrent with a delete stays inside the tombstoned entity, is reported as edited while deleted, and shows again on a restore; it never resurrects it. A restore is an ordinary later write. |
 | A full-state op | A write to every field it carries, at its own stamp. A register or map key written before the newest full-state op reads as that op left it, an OR-set add before it reads as removed unless the op re-adds it, and a counter is that op's value plus every increment after it ([`crdt-design.md`](./crdt-design.md) §Legacy full-state ops). |
 | Ordering (children of a Stream) | `sort_order` fractional key, one LWW register per entity |
 | Rich text (notes) | Not specified. A text CRDT would arrive as a new field-op kind under its own ADR (ADR-0044 §What would force revisiting this). No CRDT library is in the workspace. |
@@ -100,9 +108,13 @@ A and B both transition a task on the same op-window:
 
 | A → | B → | Result |
 |---|---|---|
-| `done` | `cancelled` | LWW: later timestamp wins. UI may show "transitioned through cancelled." |
-| `done` | `done` | Same value. Idempotent. `completed_at` is LWW. |
-| `done` | `in_progress` | Later wins; user can "redo" it as `done` if they intended that. |
+| `done` | `cancelled` | Two terminal states: the later stamp wins, and the other is kept and reported as a conflict on `state`. |
+| `done` | `done` | Same value: no conflict (ADR-0065 D5). `completed_at` is quiet and takes the later stamp. |
+| `done` | `in_progress` | Terminal over open: `done` wins whatever the stamps, and `in_progress` is kept and reported, so the user can make it win in one action. A reopen written *after* seeing the completion is an ordinary later write and wins. |
+
+This is the outcome for `Patch` versions. Two full-state ops, which every
+command writes until the vault requires `core.field_ops`, are decided by stamp
+alone and keep no loser (ADR-0065 D4), exactly as before.
 
 ### Concurrent deadline edits
 
@@ -164,6 +176,41 @@ Each entity's position is its own `sort_order` register (ADR-0044 §3), so concu
 
 A grants share to peer P; B revokes the same share concurrently. We treat share grants and revokes as ordered by the same `(hlc, device_id, seq)` key; the later wins. Edge case: if grant wins after revoke, peer P briefly has access until A's revoke arrives — minimal exposure.
 
+### Seeing and settling a conflict
+
+A field is **in conflict** when its register keeps a losing write that a
+`Patch` made (a full-state op's write is kept and never reported, D4), whose
+value differs from the winner's (D5), on a tracked, state or tombstone field.
+A quiet field's losers are kept and reported only when asked for. A winning
+delete also reports the branches that edited the entity without seeing it.
+
+- **Listing.** `Query::Conflicts { entity, include_quiet }` returns, per
+  entity and field, the winner and each kept loser: value, stamp, device,
+  origin and version (the op-ref). `sunrise conflicts [<id>] [--all]` prints
+  it, and `--json` gives the documented shape
+  ([`../07-clients/overview.md`](../07-clients/overview.md) §JSON output).
+  Every replica that has applied the same versions reports the same
+  conflicts.
+- **Resolving.** `Command::ResolveConflict { entity, field, value }` settles
+  a field on `value`, which may be the winner's, a loser's or a new one
+  (`sunrise conflicts resolve <id> <field> --pick <version> | --value <v>`).
+  A write that descends from every kept write of a field clears its set on
+  every replica that applies it. Resolving `deleted` to `true` acknowledges a
+  delete.
+- **Restoring.** `Command::Restore(id)` writes `deleted = false`
+  (`sunrise restore <id>`), which also clears a tombstone conflict. Undo of a
+  delete is a restore.
+
+Until the vault requires `core.field_ops`, both commands write what every
+command writes, a full-state op: the entity as this device projects it, with
+the one field set, stamped after every version the device has applied. It
+becomes the entity's newest full-state op, so every kept write below it
+leaves its register (D4), on every replica that applies it. That settles
+every field of the entity at once, on the values this device shows, which is
+what any edit in that mode already does. Once commands write `Patch`, a
+resolution is a `Patch` naming all the entity's heads as parents and writing
+the one field (ADR-0065 §4).
+
 ## Merge journal — removed
 
 **There is no merge journal.** `merge_journal` was dropped by
@@ -178,16 +225,18 @@ Its absence is asserted, not merely current: `baseline_omits_the_dead_schema`
 in `crates/sunrise-storage/src/db.rs` fails if `merge_journal` reappears, so a
 future migration cannot reintroduce it by copy-paste.
 
-The consequence for the product: **an automatic merge is currently invisible.**
-Nothing records that a concurrent edit lost, so the "X edits merged
-automatically this week" review surface has no data behind it — and neither does
-the UI state that used to exist for it.
+What a journal was for is now the merge state's own: a register keeps every
+concurrent write that lost (`register_losers`, migration 0039, written from
+ADR-0065's fifth pull request), and `Query::Conflicts` reports them
+(§Seeing and settling a conflict). It is not a journal. It holds the writes no
+later write has superseded, not a history of merges, and a resolution removes
+them. A merge that settled without a conflict, two equal values or ordered
+writes, still leaves no record, so the "X edits merged automatically this
+week" review surface has no data behind it.
 [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
-§Three-state view contract dropped its `conflict` state on exactly this ground:
-a view cannot raise a toast about a loss nothing recorded. Under
-[ADR-0044](../11-adr/0044-per-field-ops.md) a losing *field* write is well
-defined again, so a per-field journal is possible. Reinstating it still needs
-its own ADR superseding 0018's removal, not a restore of the schema above.
+§Three-state view contract dropped its `conflict` state when nothing recorded
+a loss; a client can now read one from `Query::Conflicts`, and the Apple
+client's UI for it is follow-up work.
 
 ## Atomic batches
 

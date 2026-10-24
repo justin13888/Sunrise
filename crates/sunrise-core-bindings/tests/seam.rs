@@ -1233,13 +1233,10 @@ async fn only_inbox_task(core: &SunriseCore) -> sunrise_id::EntityRef {
     }
 }
 
-/// A delete is submitted and reported as un-undoable — not refused, and not
-/// silently accepted onto a stack that would do nothing.
+/// A delete is undoable: its undo is a restore, and the task is back
+/// (ADR-0065 §3). `CoreCommand::Restore` does the same directly.
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_still_happens_and_says_it_cannot_be_undone() {
-    use sunrise_core_bindings::client::undo_refusal_explanation;
-    use sunrise_core_bindings::UndoRefusal;
-
+async fn undoing_a_delete_restores_the_task() {
     let (_dir, core) = open_core().await;
     let created = core
         .submit(CoreCommand::CreateTask {
@@ -1256,16 +1253,19 @@ async fn deleting_still_happens_and_says_it_cannot_be_undone() {
         .await
         .expect("delete");
 
-    assert_eq!(out.not_undoable, Some(UndoRefusal::Deleted));
-    assert!(
-        undo_refusal_explanation(UndoRefusal::Deleted).contains("tombstone"),
-        "the seam words it, not each client"
-    );
-    assert_eq!(inbox_len(&core).await, 0, "the delete still happened");
-    assert!(
-        core.undo_state().undo_label.is_none(),
-        "nothing went on the stack, so nothing is offered"
-    );
+    assert_eq!(out.not_undoable, None, "a delete is undoable");
+    assert_eq!(inbox_len(&core).await, 0, "the delete happened");
+    assert!(core.undo_state().undo_label.is_some());
+    core.undo().await.expect("undo");
+    assert_eq!(inbox_len(&core).await, 1, "its undo restored the task");
+
+    core.submit(CoreCommand::DeleteTask { id: created.entity })
+        .await
+        .expect("delete again");
+    core.submit(CoreCommand::Restore { id: created.entity })
+        .await
+        .expect("restore");
+    assert_eq!(inbox_len(&core).await, 1, "restored through the seam");
     core.shutdown().await;
 }
 

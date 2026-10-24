@@ -72,7 +72,7 @@ where). Sharing, per-stream sync and compaction follow the key domain.
 
 | Domain field | Field type (ADR-0044 §3) |
 |---|---|
-| Scalars and optional fields (`title`, `state`, `planned_at`, `target_at`, `hard_due_at`, `stream_id`, `sort_order`, `deleted`, …) | LWW register, compared by `(hlc, device_id, seq)`, with an origin (`generated` or `user`) |
+| Scalars and optional fields (`title`, `state`, `planned_at`, `target_at`, `hard_due_at`, `stream_id`, `sort_order`, `deleted`, …) | Register: the concurrent writes no other write descends from, with a winner picked by the field's conflict class, each write with an origin (`generated` or `user`). See §Registers and conflict classes |
 | Nested values edited as a unit (`scheduling_constraints`, `rrule`, each `template.*` field) | One LWW register for the whole value |
 | Map-valued fields (`Preferences.values`, day-schedule entries) | Map: one LWW register per key, tombstoned keys |
 | `Task.contexts`, `Task.blocked_by`, `Block.tasks` | Observed-remove OR-set (add-wins) |
@@ -108,7 +108,8 @@ entity:
 
 | Field type | Rule |
 |---|---|
-| Register, map key | A write stamped below `L` reads as absent |
+| Register | A write stamped below `L` is not a candidate: it leaves the register's antichain and is deleted, winner or loser (ADR-0065 D4) |
+| Map key | A write stamped below `L` reads as absent |
 | OR-set | An add stamped below `L` reads as removed; `L` re-adds each element of its own value under its own tag |
 | Counter | The base `L` carried, plus every `inc` stamped after `L` |
 
@@ -127,8 +128,10 @@ that converges.
 stream)`: the stream breaks a tie between two ops one device made in two
 streams with an equal clock and `seq`, so the register that holds the
 greatest stamp is never read as below `L`. When `L` rises, what it makes
-unreadable is deleted: the adds below it and the counter deltas at or below
-it. An add or delta that arrives below `L` is not stored. So a set written only
+unreadable is deleted: the adds below it, the counter deltas at or below it,
+and every register write below it, a kept loser included
+(`state::prune_below_floor`). An add, delta or register write that arrives
+below `L` is not stored. So a set written only
 by legacy ops holds one add per element, not one per element per op.
 
 The removes that named a pruned add are kept, inert. Deleting them with their
@@ -193,8 +196,53 @@ concurrent. The heads, the versions nothing else descends from, are flagged
 `is_head`. A version that arrives after one that reaches it, by naming it or
 by being its device's later version, recomputes every frontier of the entity
 in stamp order, so the stored DAG is a function of the versions applied,
-whatever order they came in. The register fold does not read it yet; it still
-keeps the greatest stamp.
+whatever order they came in. The register fold reads it (below), and the
+heads are what the conflicts query reports as branches.
+
+### Registers and conflict classes
+
+A register keeps the **antichain** of its writes (ADR-0065 §3–§4,
+`engine::merge::register`): every write at or above `L` that no other such
+write descends from. `merge_registers` holds the winner and `register_losers`
+the rest. The winner is the member with the greatest rank, which is origin
+first, then the class rule, then the stamp (clarification D7):
+
+| Class | Fields | Rank among concurrent writes |
+|---|---|---|
+| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), presentation fields, and every field this build does not know | `(user, stamp)` |
+| tracked | `title`, `body`, `stream_id`, every time field, `scheduling_constraints`, `rrule`, `timezone`, template fields | `(user, stamp)` |
+| state | `Task.state` | `(user, state is done or cancelled, stamp)` |
+| tombstone | `deleted` | `(user, value is true, stamp)` |
+
+`user` is 1 for a user write and 0 for a generated one, so a generated write
+never beats a concurrent user write and still replaces one it descends from,
+which is not in the antichain. Ordered writes are decided by the order alone:
+the later one is the only candidate left. The registry declares each class
+(`crates/sunrise-id/src/registry.rs`), and quiet and tracked differ only in
+whether a loser is reported.
+
+The winner is an argmax over a set, so no two writes are ever merged pair by
+pair and no order of evaluation is involved. The stored antichain is kept
+incrementally and is still a function of the versions applied: a write is left
+out only when another descends from it or it is below `L`, and both are
+permanent once true. A version that arrives late can order two writes kept as
+concurrent; the entity's frontiers are then recomputed and every register is
+filtered again.
+
+Two full-state ops name no parents, so they are concurrent, but only `L`
+survives the floor: a history of full-state ops alone keeps no loser and
+projects exactly as entity-level last-writer-wins did. A full-state op that
+loses to a concurrent `Patch` is kept, marked `legacy`, and never reported
+(D4).
+
+**Conflicts.** `Query::Conflicts` reports a field whose kept losers include
+one written by a `Patch` with a value other than the winner's (D5), for a
+tracked, state or tombstone field, and for a quiet one when asked. A winning
+delete also reports the heads it does not precede: branches that edited the
+entity without seeing the delete. A write that descends from every member of
+a field's antichain clears it, which is what `Command::ResolveConflict` and
+`Command::Restore` write. `conflict-resolution.md` is the user-facing
+account.
 
 ### Visibility, timestamps and validation
 
@@ -217,11 +265,12 @@ keeps the greatest stamp.
 
 | Scenario | Result |
 |---|---|
-| Device A renames a task; device B renames it | The `title` register takes the greater `(hlc, device_id, seq)` |
+| Device A renames a task; device B renames it | As `Patch` versions: the `title` register shows the greater stamp and keeps the other, reported as a tracked conflict. As full-state ops, which every command writes until `core.field_ops`: the later op wins whole and nothing is kept (D4) |
+| Device A completes a task; device B, not having seen it, starts it | As `Patch` versions: `done` wins whatever the stamps, and `in_progress` is kept and reported (state class). A reopen written after seeing the completion is an ordinary later write and wins |
 | Device A renames a task; device B sets its priority | Both survive: they are different registers |
 | Device A adds context X; device B removes context X | The add survives if B had not observed A's add-tag; otherwise X is removed |
 | Device A marks done; device B edits the title | Both apply; the task is done with the new title |
-| Device A deletes a task; device B edits it | The task stays deleted. B's edit is kept inside the tombstoned entity, and a restore shows it (ADR-0044 §5) |
+| Device A deletes a task; device B edits it | As `Patch` versions: the task stays deleted, B's edit is applied inside the tombstone and reported as edited while deleted, and a restore shows it (ADR-0044 §5, ADR-0065 §3). As full-state ops: the later op wins whole, so a later edit brings the task back |
 | Two devices complete the same routine occurrence | Both add the same key to `streak_keys`; the set counts it once, and the derived streak advances once |
 | Device A adds `x → y` to `blocked_by`; device B adds `y → x` | Both edges stay in the OR-sets. The edge whose earliest surviving add-tag is newer is suppressed at read time ([`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) §Dependencies) |
 

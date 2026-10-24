@@ -219,7 +219,7 @@ fn parse_field_op(raw: &Value) -> Result<FieldOp, PatchProblem> {
 
 /// The registered field `name` names, and the record it belongs to: a
 /// top-level field, or `parent.child` under a nested record.
-fn registered_field(
+pub(super) fn registered_field(
     spec: &'static EntitySpec,
     name: &str,
 ) -> Option<(&'static RecordSpec, &'static FieldSpec)> {
@@ -302,14 +302,40 @@ fn value_fits(kind: EntityKind, field: &str, value: &Value) -> bool {
     let Some(Value::Map(mut entries)) = probe(kind) else {
         return true;
     };
-    let path: Vec<&str> = match field.split_once('.') {
+    set_field(kind, &mut entries, field, value.clone());
+    deserializes_as(kind, Value::Map(entries))
+}
+
+/// Whether `value` is a write a `Patch` could make to `kind`'s register
+/// `name`: a field the registry declares a register, or one it does not
+/// know, and a value the field's type can hold. The same check
+/// [`check_patch`] makes of a `set`.
+///
+/// # Errors
+/// Why it is not, for a caller to report.
+pub(in crate::engine) fn check_register_set(
+    kind: EntityKind,
+    name: &str,
+    value: &Value,
+) -> Result<(), String> {
+    check_field(kind.spec(), kind, name, &FieldOp::Set(value.clone()))
+}
+
+/// Write `value` at field `name` of an entity's CBOR map: under its parent's
+/// map for a nested field (`template.title`), at the top otherwise.
+pub(in crate::engine) fn set_field(
+    kind: EntityKind,
+    entries: &mut Vec<(Value, Value)>,
+    name: &str,
+    value: Value,
+) {
+    let path: Vec<&str> = match name.split_once('.') {
         Some((parent, child)) if nested_record(kind.spec(), parent).is_some() => {
             vec![parent, child]
         }
-        _ => vec![field],
+        _ => vec![name],
     };
-    set_path(&mut entries, &path, value.clone());
-    deserializes_as(kind, Value::Map(entries))
+    set_path(entries, &path, value);
 }
 
 fn set_path(entries: &mut Vec<(Value, Value)>, path: &[&str], value: Value) {

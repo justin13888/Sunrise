@@ -107,6 +107,11 @@ fn every_patch_family_and_both_stacks_round_trip() {
         })],
         vec![Command::DeleteTask(task(9))],
     ));
+    stacks.push(entry(
+        "drop",
+        vec![Command::DeleteTask(task(8))],
+        vec![Command::Restore(task(8))],
+    ));
     let undone = stacks.take_undo().expect("a step");
     stacks.push_undone(undone);
 

@@ -86,6 +86,7 @@ mod attachment;
 mod block;
 mod chain;
 mod compaction;
+mod conflicts;
 mod context;
 mod export;
 mod features;
@@ -609,6 +610,12 @@ impl Engine {
             }
             Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
+            Command::Restore(id) => self.restore(db, id),
+            Command::ResolveConflict {
+                entity,
+                field,
+                value,
+            } => self.resolve_conflict(db, entity, &field, value),
             Command::PromoteToStream { id, stream } => self.promote_task(db, id, stream),
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
@@ -737,6 +744,10 @@ impl Engine {
             } => self.query_search_grouped(db, &text, now_ms, prefix, per_group),
             Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
+            Query::Conflicts {
+                entity,
+                include_quiet,
+            } => self.query_conflicts(db, entity, include_quiet),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

@@ -264,12 +264,16 @@ is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
   offer it on a failed open, are still
   [#441](https://github.com/justin13888/Sunrise/issues/441).
 
-Three things inside the cleared tables are kept, because no op still in the log
+Four things inside the cleared tables are kept, because no op still in the log
 derives them: a placeholder `streams` row no op has stamped (the lazily seeded
-Inbox among them), each routine's `materialized_until_ms`, and the
+Inbox among them), each routine's `materialized_until_ms`, the
 `entity_versions` rows of compacted ops, which compaction keeps
 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D10) and whose
-frontiers and heads the rebuild recomputes.
+frontiers and heads the rebuild recomputes before it joins the base, and the
+`register_losers` rows compacted ops wrote. The base is a `doc_state` v1,
+which carries each register's winner and not its losers, so those losers are
+kept as the fold left them and the base and the refold fold in beside them
+(ADR-0065 §8 moves them into the snapshot with its sixth pull request).
 
 **It runs automatically at open when the fold changed.** A rebuild records the
 version of the fold it ran, `FOLD_V`, in `projection_rebuild`, a source table
@@ -282,7 +286,10 @@ open of any later build whose fold differs; a `STORAGE_V` bump alone does
 not. Migration 0039 relies on it: the version DAG's tables start empty, and
 the rows an older build wrote without folding (before migration 0033, or
 before ADR-0065's third pull request) are folded from their ops rather than
-read back from the row.
+read back from the row. `FOLD_V` 2 (ADR-0065's fifth pull request) folds
+registers by their conflict classes and keeps the losers in
+`register_losers`, which a vault folded at 1 holds none of, so a vault opened
+by that build rebuilds once more, with no migration: the tables are 0039's.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 
@@ -293,7 +300,13 @@ How it behaves on a large vault, decided for ADR-0065's fourth pull request:
   reads and folds meet a half-rebuilt projection.
 - **Progress is logged**, as `core.rebuild.progress` every 5,000 ops, after
   `core.rebuild.stale` names the fold version it replaces. Nothing reaches a
-  client yet, since no subscriber exists before `Core::open` returns.
+  client, since no subscriber exists before `Core::open` returns. Decided for
+  ADR-0065's fifth pull request, with the second rebuild a vault takes: no
+  progress sink in `CoreConfig` yet. One would be an additive callback a
+  client registers before `Core::open`, and a client can only use it with a
+  launch screen that shows a rebuild, which no client has. It is worth adding
+  when the rebuild bench or a field report shows an open blocking long
+  enough to need one, and adding it then breaks no caller.
 - **A failure is not fatal.** The transaction rolls back, `core.rebuild.on_open_failed`
   is logged, the vault opens on the projection it had, and the next open
   tries again.
