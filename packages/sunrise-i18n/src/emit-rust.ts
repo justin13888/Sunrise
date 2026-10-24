@@ -200,8 +200,13 @@ function emitFunction(
         .filter((entry): entry is [string, Message] => entry[1] !== undefined);
     // A multi-line message is fenced as `text`: rustdoc reads any line its
     // layout indents by four spaces as a doctest, and a usage screen has many.
+    // So is one with `<` or `[`: rustdoc reads `<name>` as an HTML tag and
+    // `[list]` as an intra-doc link, and a usage line has both.
     const doc = sourceText(source).split("\n");
-    const fenced = doc.length > 1 ? ["```text", ...doc, "```"] : doc;
+    const fenced =
+        doc.length > 1 || doc.some((l) => /[<[]/.test(l))
+            ? ["```text", ...doc, "```"]
+            : doc;
     const lines = [
         ...fenced.map((l) => `${indent}/// ${l}`.trimEnd()),
         `${indent}#[must_use]`,

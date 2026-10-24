@@ -20,7 +20,7 @@
 //!
 //! # What is kept
 //!
-//! Only the commands an [`UndoEntry`](crate::UndoEntry) can hold: the ones
+//! Only the commands an [`UndoEntry`] can hold: the ones
 //! [`crate::undo::invert`] inverts, the creates it inverts, and the inverses
 //! it builds. A step holding anything else is dropped from the written
 //! history rather than written lossily ([`to_json`] reports how many).

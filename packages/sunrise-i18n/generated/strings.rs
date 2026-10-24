@@ -621,7 +621,9 @@ pub mod search {
 
 /// `streams` messages.
 pub mod streams {
+    /// ```text
     /// usage: stream <id|name>; `sunrise streams` lists them
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -639,7 +641,9 @@ pub mod streams {
         out
     }
 
+    /// ```text
     /// usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]
+    /// ```
     #[must_use]
     pub fn create_usage() -> String {
         let mut out = String::new();
@@ -647,7 +651,9 @@ pub mod streams {
         out
     }
 
+    /// ```text
     /// usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]
+    /// ```
     #[must_use]
     pub fn edit_usage() -> String {
         let mut out = String::new();
@@ -714,7 +720,9 @@ pub mod streams {
 
 /// `contexts` messages.
 pub mod contexts {
+    /// ```text
     /// usage: context <id|name>; `sunrise contexts` lists them
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -732,7 +740,9 @@ pub mod contexts {
         out
     }
 
+    /// ```text
     /// usage: contexts create <name>... [--description <text>]
+    /// ```
     #[must_use]
     pub fn create_usage() -> String {
         let mut out = String::new();
@@ -740,7 +750,9 @@ pub mod contexts {
         out
     }
 
+    /// ```text
     /// usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]
+    /// ```
     #[must_use]
     pub fn edit_usage() -> String {
         let mut out = String::new();
@@ -783,7 +795,9 @@ pub mod drop {
 
 /// `edit` messages.
 pub mod edit {
+    /// ```text
     /// usage: edit <id>... <tokens>...; see `sunrise help`
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -810,7 +824,9 @@ pub mod edit {
 
 /// `retitle` messages.
 pub mod retitle {
+    /// ```text
     /// usage: retitle <id> <text>...; see `sunrise help`
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -838,7 +854,9 @@ pub mod retitle {
 
 /// `defer` messages.
 pub mod defer {
+    /// ```text
     /// usage: defer <id>... <when>; see `sunrise help`
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -882,7 +900,9 @@ pub mod focus {
         out
     }
 
+    /// ```text
     /// usage: focus end [--done]; got {arg}
+    /// ```
     #[must_use]
     pub fn end_usage(arg: &str) -> String {
         let mut out = String::new();
@@ -891,7 +911,9 @@ pub mod focus {
         out
     }
 
+    /// ```text
     /// no focus session is running; `sunrise focus <id>` opens one
+    /// ```
     #[must_use]
     pub fn none_running() -> String {
         let mut out = String::new();
@@ -902,7 +924,9 @@ pub mod focus {
 
 /// `schedule` messages.
 pub mod schedule {
+    /// ```text
     /// usage: schedule <id>... <when>|-; see `sunrise help`
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -921,7 +945,9 @@ pub mod schedule {
 
 /// `show` messages.
 pub mod show {
+    /// ```text
     /// usage: show <task-id>
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -932,7 +958,9 @@ pub mod show {
 
 /// `note` messages.
 pub mod note {
+    /// ```text
     /// usage: note <task-id> [<text>...|-|--file <path|->] [--force]
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1013,7 +1041,9 @@ pub mod routines {
         out
     }
 
+    /// ```text
     /// usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]
+    /// ```
     #[must_use]
     pub fn create_usage() -> String {
         let mut out = String::new();
@@ -1021,7 +1051,9 @@ pub mod routines {
         out
     }
 
+    /// ```text
     /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]
+    /// ```
     #[must_use]
     pub fn edit_usage() -> String {
         let mut out = String::new();
@@ -1048,7 +1080,9 @@ pub mod routines {
         out
     }
 
+    /// ```text
     /// the reader's zone has no IANA name; pass --zone <IANA> for this routine
+    /// ```
     #[must_use]
     pub fn needs_zone() -> String {
         let mut out = String::new();
@@ -1056,7 +1090,9 @@ pub mod routines {
         out
     }
 
+    /// ```text
     /// this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>
+    /// ```
     #[must_use]
     pub fn no_next() -> String {
         let mut out = String::new();
@@ -1075,7 +1111,9 @@ pub mod blocks {
         out
     }
 
+    /// ```text
     /// usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]
+    /// ```
     #[must_use]
     pub fn create_usage() -> String {
         let mut out = String::new();
@@ -1083,7 +1121,9 @@ pub mod blocks {
         out
     }
 
+    /// ```text
     /// usage: block move <block-id> --from <when> [--to <when>]
+    /// ```
     #[must_use]
     pub fn move_usage() -> String {
         let mut out = String::new();
@@ -1091,7 +1131,9 @@ pub mod blocks {
         out
     }
 
+    /// ```text
     /// usage: block bind|unbind <block-id> <task-id>...
+    /// ```
     #[must_use]
     pub fn bind_usage() -> String {
         let mut out = String::new();
@@ -1099,7 +1141,9 @@ pub mod blocks {
         out
     }
 
+    /// ```text
     /// usage: block merge <block-id> <block-id>
+    /// ```
     #[must_use]
     pub fn merge_usage() -> String {
         let mut out = String::new();
@@ -1258,7 +1302,9 @@ pub mod reminders {
 
 /// `views` messages.
 pub mod views {
+    /// ```text
     /// usage: views save <name> <view> [--query <text>] [--contexts a,b]
+    /// ```
     #[must_use]
     pub fn save_usage() -> String {
         let mut out = String::new();
@@ -1266,7 +1312,9 @@ pub mod views {
         out
     }
 
+    /// ```text
     /// usage: views apply <name>
+    /// ```
     #[must_use]
     pub fn apply_usage() -> String {
         let mut out = String::new();
@@ -1274,7 +1322,9 @@ pub mod views {
         out
     }
 
+    /// ```text
     /// usage: views delete <name>
+    /// ```
     #[must_use]
     pub fn delete_usage() -> String {
         let mut out = String::new();
@@ -1314,7 +1364,9 @@ pub mod views {
 
 /// `prefs` messages.
 pub mod prefs {
+    /// ```text
     /// usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1673,7 +1725,9 @@ pub mod undo {
 pub mod tz {
     use super::rt;
 
+    /// ```text
     /// usage: tz [show] | tz set <IANA> | tz clear
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1766,7 +1820,9 @@ pub mod tz {
         out
     }
 
+    /// ```text
     /// this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz
+    /// ```
     #[must_use]
     pub fn unknown_note() -> String {
         let mut out = String::new();
@@ -1779,7 +1835,9 @@ pub mod tz {
 pub mod upcoming {
     use super::rt;
 
+    /// ```text
     /// usage: upcoming [7|14|30]
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1850,7 +1908,9 @@ pub mod upcoming {
 
 /// `export` messages.
 pub mod export {
+    /// ```text
     /// usage: export <trends|activity|focus|streaks> [json|csv] [path]
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1880,7 +1940,9 @@ pub mod ical {
         out
     }
 
+    /// ```text
     /// usage: ical import <path|-> | ical export [today|week] [path]
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1888,7 +1950,9 @@ pub mod ical {
         out
     }
 
+    /// ```text
     /// usage: ical import <path|-> [--stream <id>] [--source <name>]
+    /// ```
     #[must_use]
     pub fn import_usage() -> String {
         let mut out = String::new();
@@ -1925,7 +1989,9 @@ pub mod ical {
 pub mod attachments {
     use super::rt;
 
+    /// ```text
     /// usage: attachments <task-id>
+    /// ```
     #[must_use]
     pub fn list_usage() -> String {
         let mut out = String::new();
@@ -1933,7 +1999,9 @@ pub mod attachments {
         out
     }
 
+    /// ```text
     /// usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -1941,7 +2009,9 @@ pub mod attachments {
         out
     }
 
+    /// ```text
     /// usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]
+    /// ```
     #[must_use]
     pub fn add_usage() -> String {
         let mut out = String::new();
@@ -1949,7 +2019,9 @@ pub mod attachments {
         out
     }
 
+    /// ```text
     /// usage: attachment remove <attachment-id>
+    /// ```
     #[must_use]
     pub fn remove_usage() -> String {
         let mut out = String::new();
@@ -1957,7 +2029,9 @@ pub mod attachments {
         out
     }
 
+    /// ```text
     /// usage: attachment get <attachment-id> [path]
+    /// ```
     #[must_use]
     pub fn get_usage() -> String {
         let mut out = String::new();
@@ -1965,7 +2039,9 @@ pub mod attachments {
         out
     }
 
+    /// ```text
     /// usage: attachment cancel <id>
+    /// ```
     #[must_use]
     pub fn cancel_usage() -> String {
         let mut out = String::new();
@@ -2093,7 +2169,9 @@ pub mod sync {
         out
     }
 
+    /// ```text
     /// usage: sync [--once] | sync --watch [--rounds <n>] | sync status
+    /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
@@ -2487,7 +2565,9 @@ pub mod devices {
         out
     }
 
+    /// ```text
     /// usage: sunrise device revoke <id-prefix> [--reason <r>]
+    /// ```
     #[must_use]
     pub fn revoke_usage() -> String {
         let mut out = String::new();
@@ -2897,7 +2977,9 @@ pub mod recover {
         out
     }
 
+    /// ```text
     /// a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in
+    /// ```
     #[must_use]
     pub fn needs_code() -> String {
         let mut out = String::new();
@@ -3082,7 +3164,9 @@ pub mod vault {
         out
     }
 
+    /// ```text
     /// no key for vault {id} in {keystore}. The key never lives beside the data — a vault directory copied on its own is ciphertext. Bring the keystore over from the machine that made it, or supply the root directly with {var}=<64 hex chars>.
+    /// ```
     #[must_use]
     pub fn root_missing(id: &str, keystore: &str, var: &str) -> String {
         let mut out = String::new();

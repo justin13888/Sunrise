@@ -65,7 +65,7 @@
 //!   anchor a range grows from.
 //! * [`note_blocks`] — a note body as a block editor edits it, and the
 //!   interlock that opens a body read-only rather than losing what it holds.
-//! * [`print`] — a printed document's pagination and file name.
+//! * [`print`](mod@print) — a printed document's pagination and file name.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials

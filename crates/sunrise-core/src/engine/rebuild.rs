@@ -283,7 +283,7 @@ fn unreadable(stream: &[u8; 16], device: &[u8; 16], seq: u64, why: &str) -> Engi
 impl Engine {
     /// Rebuild the projection from the local op log: clear every table the
     /// entity ops are folded into and fold them again, in one transaction.
-    /// See the [module docs](self) for the steps and for what is kept.
+    /// The `engine::rebuild` module docs give the steps and what is kept.
     ///
     /// Nothing is sent and no clock is read: the result is a function of the
     /// vault's op log, its compacted merge state and the local rows it keeps.
