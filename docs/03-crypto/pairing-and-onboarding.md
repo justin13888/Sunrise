@@ -8,7 +8,7 @@ Three flows: account creation, adding a new device, recovering identity. Recover
 
 ## Implementation status
 
-**The handshake and the relay rendezvous under it are real; no Apple client drives the rendezvous yet, and what crosses is not yet the `PairingPayload` below.**
+**The handshake and the relay rendezvous under it are real, and the Apple apps and the CLI (`sunrise pair join` / `sunrise pair add`) drive it; what crosses is not yet the `PairingPayload` below.**
 
 Implemented, in `crates/sunrise-pairing`:
 
@@ -26,7 +26,7 @@ Implemented on the relay and in the seam:
 
 Not implemented:
 
-* **No Apple client uses the rendezvous.** `apps/apple` still walks the eight copy/paste legs over `DevicePairing`, and nothing on either platform reads a QR with the camera ([#464](https://github.com/justin13888/Sunrise/issues/464)). The crypto is unaffected by how the bytes travel: the SAS binds the transcript either way.
+* **No camera.** The relay is the default transport in `apps/apple` (`PairingModel`), with the eight copy/paste legs over `DevicePairing` as the fallback, but nothing on either platform reads a QR with the camera ([#464](https://github.com/justin13888/Sunrise/issues/464)). The crypto is unaffected by how the bytes travel: the SAS binds the transcript either way.
 * **The numeric-only path.** Nothing turns a typed six-digit code into a session: the rendezvous is addressed by the 16-byte `pair_id` alone ([#465](https://github.com/justin13888/Sunrise/issues/465)).
 * **The rendezvous, not the messages.** What crosses the channel is the three-message exchange §Flow specifies — offer, request, grant — encoded as integer-keyed canonical CBOR (`crates/sunrise-pairing/src/protocol.rs`). **Neither identity private key travels.** `ID_D_priv` stopped in [#76](https://github.com/justin13888/Sunrise/issues/76): sealing to the identity needs only the public half, and a paired device that held the private one could open the identity copy of every epoch. `ID_S_priv` stopped in [#105](https://github.com/justin13888/Sunrise/issues/105): it signs every `DeviceCert`, so a device holding it could mint one for any device id it invented. The joining device mints its own `D_S` / `D_D` and the sponsor issues its cert; `Command::TrustDevice` is gone.
 * **Account creation (§Account creation) has a client on the CLI only.** `sunrise bootstrap` mints nothing new — the identity keypair is `Keychain::create`'s, minted at first vault open — but it is what publishes `ID_S_pub`/`ID_D_pub` and a sealed recovery blob to the relay, and it shows the 24-word recovery code once. **No Apple client does**, so a vault created there still uploads no blob and its `ID_D_priv` has no second copy; see [`recovery.md`](./recovery.md) §Implementation status. The unlock method is still not chosen by any client: every `Unlock` variant carries an already-materialized vault root.
