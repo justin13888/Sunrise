@@ -135,10 +135,13 @@ Per Stream:
 - Header: name, color, paused/archived state, share status.
 - Default sort: soonest first — the earliest of `planned_at`, `target_at` and
   `hard_due_at`, then id as a deterministic tiebreak so two replicas render one
-  order. A manual order, where the user has arranged the list, is a synced
-  fractional index computed in Rust ([#340](https://github.com/justin13888/Sunrise/issues/340)), replacing today's per-device
-  order ([`../07-clients/interaction-patterns.md` §Reorder](../07-clients/interaction-patterns.md#reorder)).
-  `sort_order` on Streams orders the sidebar, not this list.
+  order. A manual order, where the user has arranged the list, is
+  `Task.sort_order`, a synced fractional index computed in Rust by
+  `Command::MoveTasks` ([#340](https://github.com/justin13888/Sunrise/issues/340)): the placed tasks lead, by key and then by
+  id, and the rest follow in the default sort. `Query::StreamTasks`,
+  `Query::Inbox` and `Query::ContextTasks` return their lists in that order
+  (`crates/sunrise-core/src/engine/query.rs#sort_listing`).
+  `Stream.sort_order` orders the sidebar, not this list.
 - **Sub-tabs (mutually exclusive)**: Open / Done / All / Routines. Rendered as
   full-width tabs at the top of the pane, not filter chips, since chips imply
   combinable filters and these states are mutually exclusive.

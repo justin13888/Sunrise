@@ -1685,6 +1685,10 @@ USAGE:
                                  deferral
     sunrise done <id>...         complete one or more tasks
     sunrise drop <id>...         soft-delete one or more tasks
+    sunrise move <id>... before|after <id>
+    sunrise move <id>... first|last
+                                 hand-arrange tasks within their stream; the
+                                 order syncs to every device
     sunrise restore <id>...      bring back deleted tasks, streams, contexts,
                                  routines or blocks
     sunrise conflicts [list] [<id>] [--all]
@@ -2046,6 +2050,12 @@ needs_id = "done needs at least one task id"
 [cli.drop]
 needs_id = "drop needs at least one task id"
 
+[cli.reorder]
+usage = "usage: move <id>... before|after <id> | move <id>... first|last"
+# {id} is a task being moved, {anchor} the task it was to land next to.
+other_stream = "{id} is not in the stream {anchor} is in; a task's order is kept within its own stream"
+unchanged = "already in that order"
+
 [cli.restore]
 needs_id = "restore needs at least one id"
 
@@ -2217,6 +2227,7 @@ delete = "delete {name}"
 archive_stream = "archive or unarchive stream {name}"
 archive_context = "archive or unarchive context {name}"
 reorder = "reorder streams"
+reorder_tasks = "move “{title}”"
 bind = "bind tasks to block {name}"
 move_block = "move block {name}"
 

@@ -53,6 +53,7 @@ pub mod stats;
 pub mod streak;
 pub mod stream;
 pub mod task;
+pub mod task_order;
 pub mod time;
 pub mod unknown;
 pub mod upcoming;

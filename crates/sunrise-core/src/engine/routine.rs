@@ -678,6 +678,7 @@ fn build_routine_task(
         assignee: None,
         routine_id: Some(routine.id),
         routine_occurrence: Some(at),
+        sort_order: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

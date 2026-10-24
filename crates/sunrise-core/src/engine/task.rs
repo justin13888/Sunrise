@@ -64,6 +64,7 @@ impl Engine {
             assignee: d.assignee,
             routine_id: None,
             routine_occurrence: None,
+            sort_order: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -201,6 +202,9 @@ impl Engine {
         }
         if let Some(arch) = patch.archived {
             task.archived = arch;
+        }
+        if let Some(key) = patch.sort_order {
+            task.sort_order = key;
         }
         // Re-check cross-field invariants on the patched Task. A patch that
         // sets only `due_at` earlier than the existing `scheduled_at` (or an
@@ -501,6 +505,18 @@ pub(super) struct TaskWrite {
 }
 
 impl TaskWrite {
+    /// An update of `task` that clears no gate and completes nothing: a
+    /// write of a field no command gate covers, such as a manual-order key
+    /// (`engine::task_order`).
+    pub(super) const fn plain(task: Task) -> Self {
+        Self {
+            task,
+            delete: false,
+            completes: false,
+            soft: Vec::new(),
+        }
+    }
+
     /// The op and the stream it is logged in: the task's own.
     pub(super) fn op(&self) -> (InnerOp, [u8; 16]) {
         let stream = *self.task.stream_id.bytes();
@@ -710,7 +726,7 @@ pub(super) fn read_task(
                     scheduled_at_kind, scheduled_at_tz,
                     due_at_kind, due_at_tz,
                     completed_at_kind, completed_at_tz, extra, reminder_lead_s,
-                    scheduled_at_civil, due_at_civil, completed_at_civil
+                    scheduled_at_civil, due_at_civil, completed_at_civil, sort_order
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -744,6 +760,7 @@ pub(super) fn read_task(
                     r.get::<_, Option<String>>(26)?,
                     r.get::<_, Option<String>>(27)?,
                     r.get::<_, Option<String>>(28)?,
+                    r.get::<_, Option<String>>(29)?,
                 ))
             },
         )
@@ -805,6 +822,7 @@ pub(super) fn read_task(
             EntityRef::new(EntityKind::Routine, a)
         }),
         routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
+        sort_order: t.29,
         archived: t.10 != 0,
         deleted: t.11 != 0,
         unknown: decode_unknowns(t.24),

@@ -48,27 +48,29 @@ Parser is a single deterministic function in core (string in, structured task dr
 - Drag within a list (cross-platform).
 - Keyboard: `Alt+↑/↓` to move within parent.
 
-**Streams sync; tasks do not.** The two halves of this gesture land in two
-different places, and the difference is in the domain rather than in any one
-client:
+**Both sync.** Each half of the gesture writes a fractional index through the
+core:
 
 | | Where the order lives | Syncs |
 |---|---|---|
 | Streams | `Stream.sort_order`, a fractional index ([`../02-domain/streams.md` §Sort order](../02-domain/streams.md#sort-order)) | Yes |
-| Tasks | Per device — `UserDefaults` on macOS (`ListOrderStore`) | No |
+| Tasks | `Task.sort_order`, the same encoding, one order per task within its stream ([`../02-domain/tasks.md`](../02-domain/tasks.md), [#340](https://github.com/justin13888/Sunrise/issues/340)) | Yes |
 
-A Task has **no ordering facet at all**: not on `Task`, not on `TaskEdit`, and
-none in [`../02-domain/tasks.md`](../02-domain/tasks.md). There is nothing to
-write, so there is nothing to sync, and a hand-arranged task list is a fact
-about the machine it was arranged on — kept beside the other device facts, lost
-with the device, and never mistaken for the user's data. Giving Tasks their own
-`sort_order` is a `DOC_SCHEMA_V` bump and is not built.
+A client never computes a task key. It hands the list it shows and the drop to
+`sunrise_client_core::task_order::plan_move` (`plan_task_move` across the
+seam), which names the rows that move and their two neighbours, and submits the
+`MoveTasks` that comes back; the core computes the keys. Rows nobody placed
+come after the placed ones, in the order the core returned them, so a task
+arriving by sync or capture never looks like somebody rewrote the arrangement.
+The CLI's gesture is `sunrise move <id>... before|after <id>` and
+`sunrise move <id>... first|last`.
 
-A per-device task order also has to answer a question the synced one does not:
-what happens to a row it has never seen. Rows the order knows come first, in
-the order it remembers; everything else follows in the order the core returned
-it, so a task arriving by sync or capture never looks like somebody rewrote the
-arrangement. Lists the core itself ranks — Today, sectioned by urgency, and
+The Apple client kept a per-device order in `UserDefaults`
+(`ListOrderStore`) before tasks had one. Its one-time import is
+`import_task_list_order`, which places what the device kept ahead of the rest
+and imports nothing into a list another device already arranged; wiring it,
+and reducing `ListOrder.swift` to a drag adapter over `plan_task_move`, is the
+Apple client's remaining part of #340. Lists the core itself ranks — Today, sectioned by urgency, and
 Search, ranked per keystroke — decline the gesture rather than accepting a drop
 they cannot honour.
 
@@ -220,8 +222,8 @@ resizes within the grid by its own gestures rather than by a drop. The grid's
 own `dropDestination` serves exactly one cell — *Task → Calendar block*, since
 `accept(items:at:)` takes `tsk_` payloads only — so it is evidence for that
 cell and for no other. Stream reorder is `ForEach.onMove` writing
-`Stream.sort_order` through the core, so it syncs; task reorder is per-device,
-per [§Reorder](#reorder) above.
+`Stream.sort_order` through the core, so it syncs; task reorder writes
+`Task.sort_order` the same way, per [§Reorder](#reorder) above.
 
 ### Drag-and-drop UX tokens
 

@@ -75,6 +75,7 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
         "blocked_by": ids(&t.blocked_by),
         "note": note,
         "updated_at_ms": t.updated_at.as_millisecond(),
+        "sort_order": t.sort_order,
     })
 }
 
@@ -352,6 +353,7 @@ mod tests {
             "blocked_by",
             "note",
             "updated_at_ms",
+            "sort_order",
         ] {
             assert!(v.get(key).is_some(), "missing {key}");
         }
@@ -386,6 +388,7 @@ mod tests {
             routine_id: None,
             routine_occurrence: None,
             reminder_lead_s: None,
+            sort_order: None,
             archived: false,
             deleted: false,
             unknown: sunrise_domain::Unknowns::new(),

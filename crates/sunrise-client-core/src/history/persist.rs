@@ -189,6 +189,13 @@ enum Cmd {
     CreateBlock(BlockDraft),
     DeleteBlock(EntityRef),
     DetachFile(EntityRef),
+    MoveTasks {
+        ids: Vec<EntityRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<EntityRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<EntityRef>,
+    },
 }
 
 impl Cmd {
@@ -217,6 +224,7 @@ impl Cmd {
             Command::CreateBlock(d) => Self::CreateBlock(d),
             Command::DeleteBlock(id) => Self::DeleteBlock(id),
             Command::DetachFile(id) => Self::DetachFile(id),
+            Command::MoveTasks { ids, after, before } => Self::MoveTasks { ids, after, before },
             _ => return None,
         })
     }
@@ -246,6 +254,7 @@ impl Cmd {
             Self::CreateBlock(d) => Command::CreateBlock(d),
             Self::DeleteBlock(id) => Command::DeleteBlock(id),
             Self::DetachFile(id) => Command::DetachFile(id),
+            Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
         }
     }
 }
@@ -358,6 +367,8 @@ struct TaskPatchDef {
     reminder_lead_s: Option<Option<u32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
+    sort_order: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize)]

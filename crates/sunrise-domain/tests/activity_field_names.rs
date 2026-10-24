@@ -54,6 +54,7 @@ fn task() -> Task {
         assignee: None,
         routine_id: None,
         routine_occurrence: None,
+        sort_order: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

@@ -338,12 +338,40 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
             }
             Ok(Command::BulkTasks(back))
         }
+        // A move is undone by putting back the keys it replaced, read off the
+        // rows before it, as one bulk command when it moved more than one
+        // task. An unplaced task goes back to unplaced.
+        Command::MoveTasks { ids, .. } => invert_move(state, ids),
         // Creates land here too, and `Unsupported` is the right answer *from
         // here*: a create is reversible, but the entity to delete does not
         // exist until the core has minted it. See [`invert_create`], which the
         // caller reaches for once it holds the result of the write.
         _ => Err(NotUndoable::Unsupported),
     }
+}
+
+/// The inverse of a move: the keys it is about to replace, read off the rows
+/// before it, as one bulk command when it moves more than one task. An
+/// unplaced task goes back to unplaced.
+fn invert_move<S: EntityLookup + ?Sized>(
+    state: &S,
+    ids: &[EntityRef],
+) -> Result<Command, NotUndoable> {
+    let mut back = Vec::with_capacity(ids.len());
+    for id in ids {
+        let t = task(state, *id)?;
+        back.push(BulkTaskItem {
+            id: *id,
+            action: sunrise_core::BulkTaskAction::Update(Box::new(TaskPatch {
+                sort_order: Some(t.sort_order.clone()),
+                ..TaskPatch::default()
+            })),
+        });
+    }
+    Ok(match back.as_slice() {
+        [one] => one.as_command(),
+        _ => Command::BulkTasks(back),
+    })
 }
 
 /// The delete of `id`, for the kinds [`Command::Restore`] brings back.
@@ -389,6 +417,7 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
         assignee: patch.assignee.map(|_| t.assignee),
         reminder_lead_s: patch.reminder_lead_s.map(|_| t.reminder_lead_s),
         archived: patch.archived.map(|_| t.archived),
+        sort_order: patch.sort_order.as_ref().map(|_| t.sort_order.clone()),
     }
 }
 
@@ -486,6 +515,7 @@ mod tests {
             assignee: None,
             routine_id: None,
             routine_occurrence: None,
+            sort_order: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -497,6 +527,62 @@ mod tests {
             tasks: vec![t],
             ..Rows::default()
         }
+    }
+
+    /// A move is undone by putting back the keys it replaced: one task's as
+    /// one update, several as one bulk command, and an unplaced task goes
+    /// back to unplaced.
+    #[test]
+    fn a_move_inverts_to_the_keys_it_replaced() {
+        let mut placed = task(1);
+        placed.sort_order = Some("G".into());
+        let rows = Rows {
+            tasks: vec![placed, task(2)],
+            ..Rows::default()
+        };
+        let one = Command::MoveTasks {
+            ids: vec![tid(1)],
+            after: None,
+            before: None,
+        };
+        match &invert(&rows, &[one]).expect("invertible")[..] {
+            [Command::UpdateTask { id, patch }] => {
+                assert_eq!(*id, tid(1));
+                assert_eq!(patch.sort_order, Some(Some("G".into())));
+                assert!(patch.title.is_none(), "nothing else is touched");
+            }
+            other => panic!("{other:?}"),
+        }
+        let both = Command::MoveTasks {
+            ids: vec![tid(2), tid(1)],
+            after: None,
+            before: None,
+        };
+        match &invert(&rows, &[both]).expect("invertible")[..] {
+            [Command::BulkTasks(items)] => {
+                let keys: Vec<_> = items
+                    .iter()
+                    .map(|i| match &i.action {
+                        sunrise_core::BulkTaskAction::Update(p) => (i.id, p.sort_order.clone()),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(
+                    keys,
+                    vec![(tid(2), Some(None)), (tid(1), Some(Some("G".into())))]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let missing = Command::MoveTasks {
+            ids: vec![tid(9)],
+            after: None,
+            before: None,
+        };
+        assert_eq!(
+            invert(&rows, &[missing]).unwrap_err(),
+            NotUndoable::Unsupported
+        );
     }
 
     #[test]

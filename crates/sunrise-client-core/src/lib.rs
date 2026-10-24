@@ -65,6 +65,8 @@
 //!   command names, and its clamped highlight.
 //! * [`selection`] — a list's keyboard selection: cursor, ticked rows and the
 //!   anchor a range grows from.
+//! * [`task_order`] — a drag in a task list as the one `MoveTasks` it is,
+//!   and the one-time import of an order a device kept for itself.
 //! * [`note_blocks`] — a note body as a block editor edits it, and the
 //!   interlock that opens a body read-only rather than losing what it holds.
 //! * [`print`](mod@print) — a printed document's pagination and file name.
@@ -124,6 +126,7 @@ pub mod share;
 #[cfg(feature = "relay")]
 pub mod sync;
 pub mod sync_status;
+pub mod task_order;
 #[cfg(test)]
 mod test_support;
 pub mod undo;

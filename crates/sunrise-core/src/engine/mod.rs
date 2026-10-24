@@ -111,6 +111,7 @@ mod snapshot;
 mod stream;
 mod sync;
 mod task;
+mod task_order;
 #[cfg(test)]
 mod tests;
 mod upcoming;
@@ -673,6 +674,7 @@ impl Engine {
             Command::ClearPreference { key, target } => {
                 self.write_preference(db, &key, None, target)
             }
+            Command::MoveTasks { ids, after, before } => self.move_tasks(db, ids, after, before),
         }
     }
 

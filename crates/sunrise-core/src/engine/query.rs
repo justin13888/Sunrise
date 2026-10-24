@@ -60,6 +60,15 @@ pub(super) fn sort_by_landing(
     });
 }
 
+/// Order a Stream or Context listing: manual order
+/// ([`sunrise_domain::task_order::sort_manually`], issue #340), so every
+/// task someone placed leads by its key, and the rest follow by when they
+/// land, unplanned first, as [`sort_by_landing`] orders them.
+pub(super) fn sort_listing(tasks: &mut [sunrise_domain::Task], tz: &jiff::tz::TimeZone) {
+    sort_by_landing(tasks, tz, Unlanded::First);
+    sunrise_domain::task_order::sort_manually(tasks);
+}
+
 impl Engine {
     /// What completing `task` released — the mid-session unblock cascade.
     ///

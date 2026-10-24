@@ -83,7 +83,15 @@ Field-level rationale:
   `Stream.sort_order` ([`streams.md` §Sort order](./streams.md#sort-order)).
   One order per task, within its stream or within the no-stream set. A reorder
   rewrites one key; ties break by id. The core computes keys
-  (`MoveTasks { ids, before, after }`); clients never do. Tracked in [#340](https://github.com/justin13888/Sunrise/issues/340).
+  (`MoveTasks { ids, before, after }`); clients never do. A list in manual
+  order shows its placed tasks first, by key and then by id, and its unplaced
+  tasks after them in the list's own order
+  (`crates/sunrise-domain/src/task_order.rs#sort_manually`), so a task that
+  arrives by sync or capture never lands inside a hand-arranged run. An
+  anchor of a move must itself be placed: a client dropping below unplaced
+  rows moves them too, and one dropping between two equal keys moves the
+  lower one too (`crates/sunrise-client-core/src/task_order.rs#plan_move`). A
+  move of several tasks is one group (ADR-0065 §6) ([#340](https://github.com/justin13888/Sunrise/issues/340)).
 - **There is no `blocks_others` field, and no `blocked` state.** Both are
   derived at read time (see §State machine) and neither is persisted or
   serialized.
@@ -112,7 +120,7 @@ user-facing write surface:
 | `deferred_count` | `+1` from each defer. No command resets it. |
 | `triaged_at` | `MarkTriaged` sets it to now; `ReturnToInbox` clears it. |
 | `late_acknowledged_at` | `Triage` with `Keep` sets it to now. |
-| `sort_order` | `MoveTasks` only. |
+| `sort_order` | `MoveTasks`, and the undo of one, which puts back the key it replaced (`TaskPatch.sort_order`). No client computes a key. |
 | `blocks` | Derived read-only from the `block_tasks` index; see [`time-blocks.md`](./time-blocks.md) §Symmetry. |
 | `routine_id` / `routine_occurrence_key` | Set only by routine materialization. No patch field in either direction. |
 | `deleted` | `DeleteTask` sets it. A restore clears it, and a restore is how a delete is undone ([ADR-0044](../11-adr/0044-per-field-ops.md) §5). No other write resurrects a deleted task. |
@@ -291,6 +299,13 @@ shape, and each gap is tracked:
   (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). Until commands
   write `Patch`, it is a full-state op of the task as it projects, so it also
   settles every other field on this device's values (ADR-0065 D11).
-- Manual order lives in the Apple client's `UserDefaults`, not in `sort_order`:
+- `sort_order` is written by full-state `task.update` ops, like every other
+  task edit until the vault requires `core.field_ops` (ADR-0065 D9). It is
+  one quiet register, so concurrent moves of different tasks both survive and
+  concurrent moves of one task converge on one key. A build before
+  `DOC_SCHEMA_V` 16 keeps the key as an unknown field and writes it back, so
+  no feature gates it. The Apple client still keeps its own order in
+  `UserDefaults` until its one-time import
+  (`sunrise_client_core::task_order::import_list_order`) is wired:
   [#340](https://github.com/justin13888/Sunrise/issues/340).
 - `routine_occurrence` is an instant, not the civil key: [#331](https://github.com/justin13888/Sunrise/issues/331).

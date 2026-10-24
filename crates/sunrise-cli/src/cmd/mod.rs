@@ -17,6 +17,7 @@ mod conflicts;
 mod day_schedule;
 mod devices;
 mod files;
+mod order;
 mod organize;
 mod plumbing;
 mod reports;
@@ -107,6 +108,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "defer" => tasks::defer(ctx, rest).await,
         "schedule" => tasks::schedule(ctx, rest).await,
         "drop" => tasks::drop_tasks(ctx, rest).await,
+        "move" => order::move_tasks(ctx, rest).await,
         "restore" => conflicts::restore(ctx, rest).await,
         "conflicts" => conflicts::conflicts(ctx, rest).await,
         "note" => tasks::note(ctx, rest).await,

@@ -177,6 +177,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "civil_times",
         sql: include_str!("../migrations/0041_civil_times.sql"),
     },
+    Migration {
+        id: 42,
+        name: "task_sort_order",
+        sql: include_str!("../migrations/0042_task_sort_order.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

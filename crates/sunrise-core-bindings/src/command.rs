@@ -289,6 +289,18 @@ pub enum CoreCommand {
         /// The tasks and their actions; a task may appear once.
         items: Vec<BulkTaskItemIn>,
     },
+    /// Place tasks, in the order given, between two neighbours in manual
+    /// order; the core computes the keys. See
+    /// [`sunrise_core::Command::MoveTasks`]. A drag's three fields come from
+    /// [`crate::task_order::plan_task_move`].
+    MoveTasks {
+        /// The tasks to place, in the order they will be in.
+        ids: Vec<EntityRef>,
+        /// The task they land below, or none for the top.
+        after: Option<EntityRef>,
+        /// The task they land above, or none for the bottom.
+        before: Option<EntityRef>,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -445,6 +457,7 @@ impl CoreCommand {
             Self::BulkTasks { items } => {
                 Command::BulkTasks(items.into_iter().map(Into::into).collect())
             }
+            Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
         })
     }
 }

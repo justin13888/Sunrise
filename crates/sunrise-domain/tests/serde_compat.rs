@@ -86,6 +86,7 @@ fn expected_task() -> Task {
         assignee: Some(eref(EntityKind::Person, 0x66)),
         routine_id: Some(eref(EntityKind::Routine, 0x77)),
         routine_occurrence: Some(ts(T_ROUTINE_OCC)),
+        sort_order: None,
         archived: true,
         deleted: false,
         unknown: Unknowns::new(),

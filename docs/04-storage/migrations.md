@@ -355,7 +355,10 @@ and the routine and stream time sidecars that migration 0041 adds. The
 migration cannot compute a civil time in SQL, which has no tzdata, so it
 adds the columns empty and relies on this rebuild: the ops carry each civil
 value as it was written, which is more faithful than any derivation from
-`*_ms`.
+`*_ms`. `FOLD_V` 4 (#340) writes `Task.sort_order` to the `tasks.sort_order`
+column migration 0042 adds. A build before it kept a key a newer device wrote
+in `tasks.extra`, as an unknown field, and SQL cannot move it out of the CBOR
+blob, so the migration adds the column empty and this rebuild moves the key.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

@@ -85,7 +85,7 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 14
+DOC_SCHEMA_V          = 16
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
@@ -179,7 +179,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `15`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `16`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -241,7 +241,13 @@ From now on:
   `routine.civil_times`, declared on the feature as the `(variant, field)`
   pairs it retypes, which a v14 build lacks and so stops writing routines.
   A v14 payload's bare instants read as zoned in the routine's zone
-  ([`time.md`](./time.md) §1).
+  ([`time.md`](./time.md) §1). `DOC_SCHEMA_V` 16 added one optional Task
+  field, `sort_order`, a task's manual-order key
+  ([#340](https://github.com/justin13888/Sunrise/issues/340)). A task nobody
+  placed omits it and encodes as before. It needs no feature: a v15 build
+  keeps the key as an unknown field and writes it back unchanged in its own
+  full-state ops, so it keeps writing tasks and only lists them in its own
+  order.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

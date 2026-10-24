@@ -35,9 +35,9 @@ pub(in crate::engine::merge) fn insert_task_row(
           routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
-          scheduled_at_civil, due_at_civil, completed_at_civil)
+          scheduled_at_civil, due_at_civil, completed_at_civil, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -76,6 +76,7 @@ pub(in crate::engine::merge) fn insert_task_row(
             sched_civil,
             due_civil,
             done_civil,
+            t.sort_order,
         ],
     )?;
     Ok(())
@@ -108,7 +109,7 @@ pub(in crate::engine::merge) fn update_task_row(
             completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
             scheduled_at_civil = ?, due_at_civil = ?, completed_at_civil = ?,
             deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
-            body = ?, scheduling_constraints = ?, extra = ?,
+            body = ?, scheduling_constraints = ?, extra = ?, sort_order = ?,
             updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
@@ -138,6 +139,7 @@ pub(in crate::engine::merge) fn update_task_row(
             body_blob,
             constraints_blob,
             extra_blob,
+            t.sort_order,
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
             lww.hlc.logical,

@@ -147,6 +147,23 @@ pub struct Task {
     /// be confused with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminder_lead_s: Option<u32>,
+    /// Where the task sits in a hand-arranged list: a fractional-index key
+    /// in the encoding of [`crate::sort_order`], or `None` for a task nobody
+    /// has placed (`docs/02-domain/tasks.md`, issue #340).
+    ///
+    /// One order per task, within its stream. A list that honours manual
+    /// order shows the placed tasks first, by key and then by id (two devices
+    /// inserting at one gap write the same key, and the id breaks the tie the
+    /// same way on every replica), and then the unplaced ones in the list's
+    /// own order ([`crate::task_order::sort_manually`]). It is one register
+    /// (quiet), so a reorder rewrites this task's key and no sibling's.
+    ///
+    /// Written by `Command::MoveTasks`, which computes the key, and by the
+    /// undo of one, which puts back the key it replaced. Absent on the wire
+    /// when unset, so a task nobody placed encodes as it did before
+    /// `DOC_SCHEMA_V` 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<String>,
     /// Archived (out of default views).
     #[serde(default)]
     pub archived: bool,
@@ -228,6 +245,14 @@ pub struct TaskPatch {
     pub reminder_lead_s: Option<Option<u32>>,
     /// Archive or unarchive.
     pub archived: Option<bool>,
+    /// Put back a manual-order key, or (`Some(None)`) unplace the task.
+    ///
+    /// Not how a task is moved: `Command::MoveTasks` computes keys, and a
+    /// client never does. This is what the undo of a move writes, the key the
+    /// move replaced, read off the row before it. Validated with
+    /// [`crate::sort_order::validate`].
+    #[serde(default)]
+    pub sort_order: Option<Option<String>>,
 }
 
 impl TaskDraft {
@@ -311,6 +336,9 @@ impl TaskPatch {
         }
         if let Some(list) = &self.scheduling_constraints {
             validate_constraint_list(list)?;
+        }
+        if let Some(Some(k)) = &self.sort_order {
+            crate::sort_order::validate_as(k, crate::task_order::FIELD)?;
         }
         Ok(())
     }

@@ -173,7 +173,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// A v14 payload still decodes, its bare instants read as zoned in the
 /// routine's zone, so the floor does not move. It also hashes each
 /// feature's `retyped` fields.
-pub const DOC_SCHEMA_V: u16 = 15;
+///
+/// `16` adds one optional field to the Task record, `sort_order`, a
+/// fractional-index key (issue #340): a task's place in a hand-arranged
+/// list. A task nobody placed omits it and encodes exactly as before. A v15
+/// build keeps the key as an unknown field and writes it back unchanged in
+/// its own full-state ops, so it needs no feature: an older device keeps
+/// writing tasks, and only shows them in its own order. Every v1..v15
+/// payload shape is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 16;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -238,6 +246,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         15,
         hex32("953c59ed8729b185b79ca821da37d40facc115054b8c11150d19d8e0b6999de4"),
+    ),
+    (
+        16,
+        hex32("ac96923d0675fabe2162d286f5ba5af7cb15cc4c32a4311bcc36e2fa6ad6c9ef"),
     ),
 ];
 
@@ -544,4 +556,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// value is computed in SQL, and the first `Core::open` after it rebuilds the
 /// projection from the op log, which carries each civil value as written,
 /// because the fold's version moved with it.
-pub const STORAGE_V: u16 = 41;
+///
+/// `42` is migration `0042_task_sort_order.sql` (issue #340): a task's place in
+/// a hand-arranged list, `tasks.sort_order`, NULL for a task nobody placed,
+/// and the index a stream's list in manual order reads. Schema-only in what
+/// it writes; the first `Core::open` after it rebuilds the projection,
+/// because the fold's version moved with it, which moves a key a build
+/// before it kept as an unknown field into the column.
+pub const STORAGE_V: u16 = 42;

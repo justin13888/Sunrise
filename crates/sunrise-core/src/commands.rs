@@ -434,6 +434,37 @@ pub enum Command {
         /// Which store to clear it from.
         target: PrefTarget,
     },
+    /// Place `ids`, in the order given, between `after` and `before` in
+    /// manual order (`Task.sort_order`, `docs/02-domain/tasks.md`, #340).
+    ///
+    /// The core computes every key, strictly between the two anchors' keys,
+    /// so a multi-row drag keeps its rows' relative order, and nothing but the
+    /// moved tasks is written: a move of one task rewrites one key. `after:
+    /// None` is the top of the list and `before: None` the bottom; with both
+    /// `None` the keys spread over the whole key space, which is what a move
+    /// into a list with no placed task wants.
+    ///
+    /// A list in manual order puts its placed tasks first, so an anchor must
+    /// be placed itself: a client dropping a run below an unplaced row moves
+    /// the unplaced rows above it too, in the order it shows them
+    /// (`sunrise_client_core::task_order::plan_move` does this). Refused with
+    /// `Invalid` for an empty or repeated `ids`, an anchor among `ids`, an
+    /// anchor that is not placed, and anchors whose keys are not strictly
+    /// increasing (two equal keys, which concurrent moves can leave, have no
+    /// key between them: move the later anchor too). Refused with `NotFound`
+    /// for a task this replica does not hold.
+    ///
+    /// More than one task is one commit (ADR-0065 §6), as
+    /// [`Self::BulkTasks`] is: each task gets its own op, and every replica
+    /// shows the whole move or none of it.
+    MoveTasks {
+        /// The tasks to place, in the order they will be in.
+        ids: Vec<EntityRef>,
+        /// The task they land below, or `None` for the top of the list.
+        after: Option<EntityRef>,
+        /// The task they land above, or `None` for the bottom of the list.
+        before: Option<EntityRef>,
+    },
 }
 
 /// One item of [`Command::BulkTasks`]: a task, and what to do to it.

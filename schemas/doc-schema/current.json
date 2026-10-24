@@ -1236,6 +1236,12 @@
                             "type": "Vec<ScheduleConstraint>"
                         },
                         {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "sort_order",
+                            "type": "Option<String>"
+                        },
+                        {
                             "conflict": "state",
                             "crdt": "register",
                             "name": "state",
