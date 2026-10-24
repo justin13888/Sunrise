@@ -18,13 +18,13 @@ The creating device computes it while sealing
 ([`../02-domain/attachments.md`](../02-domain/attachments.md)`:27`, "assigned by
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
-(`crates/sunrise-server/src/api/blobs.rs:239-265`), takes the same first 16
-bytes as the storage key (`blob_key`, `blobs.rs:433-442`), and returns it as
-`blb_` + 32 lowercase hex (`blobs.rs:289`). The two values are equal by
+(`crates/sunrise-server/src/api/blobs.rs:390-426#finalize`), takes the same first 16
+bytes as the storage key (`blob_key`, `blobs.rs:759-769`), and returns it as
+`blb_` + 32 lowercase hex (`blobs.rs:470`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.
 
 That one 16-byte value is `Attachment.blob_id`
-(`crates/sunrise-domain/src/attachment.rs:42-44`), the local chunk-path key, the
+(`crates/sunrise-domain/src/attachment.rs:42-44#Attachment`), the local chunk-path key, the
 relay's storage key, and the `{blob_id}` path segment of `GET /api/v1/blobs/{blob_id}`.
 **There is no second id and no mapping table.**
 
@@ -55,8 +55,8 @@ per account (§Server-side storage below).
 - Chunks are streamed to/from the server independently.
 - **Two different numbers, often confused.** 256 KiB is the *plaintext* chunking
   unit. 1 MiB is the relay's ceiling on a single *ciphertext* chunk body
-  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs.rs:53`), alongside a
-  4096-chunk cap (`:57`) and a 100 MB per-blob cap (`:61`). A 256 KiB plaintext
+  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs.rs:59#MAX_CHUNK_BYTES`), alongside a
+  4096-chunk cap (`:63`) and a 100 MB per-blob cap (`:67`). A 256 KiB plaintext
   chunk seals to 256 KiB + a 16-byte tag, comfortably inside the ceiling; the
   ceiling is an anti-DoS bound on a request body, not a chunk size.
 
@@ -180,7 +180,7 @@ There is no `BlobMeta` structure. The metadata a blob has is the `Attachment`
 entity itself — `{blob_key, blob_id, chunk_count, content_hash, size_bytes,
 mime_type, filename}`, specified at
 [`../02-domain/attachments.md`](../02-domain/attachments.md)`:17-33` and modelled
-at `crates/sunrise-domain/src/attachment.rs:38-50`. Earlier revisions of this
+at `crates/sunrise-domain/src/attachment.rs:23#Attachment`. Earlier revisions of this
 file specified a parallel CDDL with a per-chunk `chunk_id`; both the structure
 and the second id are gone.
 
