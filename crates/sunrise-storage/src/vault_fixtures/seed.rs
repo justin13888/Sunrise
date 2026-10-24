@@ -43,6 +43,7 @@ const DEFERRED_OP: [u8; 16] = [0x0d; 16];
 const PARKED_OP: [u8; 16] = [0x0e; 16];
 const NEXT_IDENTITY: [u8; 16] = [0x2a; 16];
 const GROUP_ID: [u8; 16] = [0x2b; 16];
+const SAVED_VIEW: [u8; 16] = [0x2c; 16];
 
 /// CBOR `[[h'01' * 16, h'02' * 16, 7]]`: a version's one parent op-ref.
 const VERSION_PARENTS: [u8; 37] = {
@@ -165,6 +166,25 @@ pub(super) const SEED: &[SeedRow] = &[
             ("lww_device", B(&DEVICE_LAPTOP)),
             ("extra", B(b"\xa1\x01\x41r")),
             ("rrule_cbor", B(b"\xa2\x01\x02\x03\x04")),
+        ],
+    },
+    SeedRow {
+        table: "saved_views",
+        values: &[
+            ("id", B(&SAVED_VIEW)),
+            ("name", T(b"Errands")),
+            ("view", T(b"today")),
+            ("filter", B(b"\xa1\x64text\x64milk")),
+            ("sort", T(b"manual")),
+            ("sort_order", T(b"N")),
+            ("deleted", I(0)),
+            ("created_at_ms", I(51)),
+            ("updated_at_ms", I(52)),
+            ("lww_hlc_ms", I(HLC_MS + 9)),
+            ("lww_hlc_logical", I(53)),
+            ("lww_seq", I(54)),
+            ("lww_device", B(&DEVICE_LAPTOP)),
+            ("extra", B(b"\xa1\x01\x41v")),
         ],
     },
     SeedRow {

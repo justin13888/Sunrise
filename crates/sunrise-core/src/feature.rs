@@ -130,6 +130,17 @@ pub static FEATURES: &[Feature] = &[
         ],
         since: 15,
     },
+    // Saved views, a synced entity (issue #341). Like `preferences.entity`
+    // it has no op kind or field of its own: every op on it is a `Patch`
+    // whose `ref` is a `svw_` id.
+    Feature {
+        id: "saved_view.entity",
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 17,
+    },
 ];
 
 /// What a feature locks when a build lacks it.

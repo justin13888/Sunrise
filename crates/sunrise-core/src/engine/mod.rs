@@ -106,6 +106,7 @@ mod rebuild;
 mod review;
 mod revocation;
 mod routine;
+mod saved_view;
 mod search;
 mod snapshot;
 mod stream;
@@ -675,6 +676,9 @@ impl Engine {
                 self.write_preference(db, &key, None, target)
             }
             Command::MoveTasks { ids, after, before } => self.move_tasks(db, ids, after, before),
+            Command::CreateSavedView(d) => self.create_saved_view(db, d),
+            Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, patch),
+            Command::DeleteSavedView(id) => self.delete_saved_view(db, id),
         }
     }
 
@@ -755,6 +759,8 @@ impl Engine {
                 entity,
                 include_quiet,
             } => self.query_conflicts(db, entity, include_quiet),
+            Query::SavedViews => self.query_saved_views(db),
+            Query::SavedView(id) => self.evaluate_saved_view(db, id),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

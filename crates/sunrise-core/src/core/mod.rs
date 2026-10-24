@@ -476,6 +476,7 @@ impl Core {
             | Command::CreateContext(_)
             | Command::CreateRoutine(_)
             | Command::CreateBlock(_)
+            | Command::CreateSavedView(_)
             | Command::MergeBlocks { .. }
             | Command::AttachFile(_)
             // A focus session is created, never mutated: `StartFocus` mints a
@@ -487,6 +488,7 @@ impl Core {
             | Command::DeleteContext(_)
             | Command::DeleteRoutine(_)
             | Command::DeleteBlock(_)
+            | Command::DeleteSavedView(_)
             | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
             _ => DomainEvent::Updated(res.entity),
         };

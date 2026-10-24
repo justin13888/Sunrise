@@ -47,6 +47,9 @@ impl Engine {
             preferences: read_preferences(conn, &sunrise_domain::PREFERENCES_BYTES)?,
             ..VaultRecords::default()
         };
+        let mut views = super::saved_view::read_saved_views(conn)?;
+        views.sort_by_key(|v| v.id);
+        out.saved_views = views;
         let inbox = sunrise_domain::inbox_stream_ref();
         for id in ids(
             conn,

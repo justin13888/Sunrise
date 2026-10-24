@@ -1,8 +1,7 @@
 //! The client layer: everything between `sunrise-core` and a user interface
 //! that is not any one client's.
 //!
-//! None of it is a domain rule (the vault has no entity for an undo step or a
-//! saved view), and none of it is rendering (no pixels, no keys, no terminal).
+//! None of it is a domain rule (the vault has no entity for an undo step), and none of it is rendering (no pixels, no keys, no terminal).
 //! Put in a client, it gets reimplemented by the next one, and the two then
 //! disagree about what undo does, what a saved view means, or when a recovery
 //! has finished. So every client links this crate — the `UniFFI` seam the
@@ -16,8 +15,8 @@
 //! * [`history`] — a session's undo and redo stacks, recorded and replayed
 //!   against a live vault, and ([`history::persist`]) written down losslessly
 //!   for a client whose session outlives its process.
-//! * [`views`] — named saved views, stored per device as a preference, and
-//!   the [`views::SavedViewStore`] that reads and writes them.
+//! * [`views`] — saved views: the one-time import of the per-device
+//!   `views.toml` into the synced entity, and the words a client shows one in.
 //! * [`preferences`] — the bootstrap preferences file a device reads before
 //!   it has a vault, written so a crash leaves one whole file or the other.
 //! * [`ids`] — lowercase hex for the ids that have no `EntityRef` prefix.

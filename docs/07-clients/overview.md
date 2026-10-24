@@ -222,7 +222,7 @@ placed it.
 | `brief morning\|evening` | `{brief, headline, sections: [{id, title, tasks}]}` |
 | `reminders plan` | `{enabled, zone_unknown, planned: [{identifier, fire_at_ms, kind, entity, title, body}], unscheduled: [{entity, kind, reason}], wind_down}`, `wind_down` `{identifier, date, fire_at_ms, sleep_at_ms}` or `null` when this device fires none |
 | `day-schedule [show [<date>]]` | `{date, start_ms, end_ms, window, plannable, wind_down_ms, schedule}`: the planner day holding now (or `<date>`'s), `window` its `{wake, sleep}` as `HH:MM` (`null` when unset), `plannable` `{start_ms, end_ms}` or `null`, `wind_down_ms` that night's wind-down or `null`, and `schedule` `{weekday: {MO: window, …}, month_day: {"1": window, "-1": window, …}, date: {"2026-12-25": window \| "none", …}}` |
-| `views` | array of `{name, spec, query, contexts}` |
+| `views` | array of `{id, name, view, spec, query, contexts, context_ids, streams, sort, sort_order}`: the vault's saved views (#341), `spec` the one-line summary, `query` the filter's free text, `contexts` the contexts' current names (with any name an import could not resolve) and `context_ids` their ids |
 | `prefs`, `prefs get <key>` | array of / one `{key, value, source, scope}`, `value` in the spelling `prefs set` reads |
 | `tz` | `{zone, source, zone_unknown}` |
 | `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |

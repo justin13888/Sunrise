@@ -166,6 +166,69 @@ fn sunrise_time_writes_its_described_variants() {
     assert_eq!(names, crate::time::kind::KNOWN);
 }
 
+/// The saved view's filter and its two parts (#341). Every part is skipped
+/// when empty, so the full one writes every name and the default none.
+#[test]
+fn the_saved_view_filter_writes_its_described_names() {
+    use crate::{DateWindow, PriorityRange, ViewFilter, WindowField};
+    let id = EntityRef::new(sunrise_id::EntityKind::Context, [1; 16]);
+    assert_value_wire_names(
+        "ViewFilter",
+        &ViewFilter {
+            streams: vec![EntityRef::new(sunrise_id::EntityKind::Stream, [2; 16])],
+            contexts: vec![id],
+            context_names: vec!["ghost".into()],
+            priority: Some(PriorityRange {
+                min: 1,
+                max: 2,
+                unknown: Unknowns::new(),
+            }),
+            energy: vec![crate::Energy::Low],
+            window: Some(DateWindow {
+                field: WindowField::Due,
+                from_days: Some(-1),
+                to_days: Some(1),
+                unknown: Unknowns::new(),
+            }),
+            text: "milk".into(),
+            unknown: Unknowns::new(),
+        },
+        &[],
+    );
+    assert_value_wire_names(
+        "ViewFilter",
+        &ViewFilter::default(),
+        &[
+            "streams",
+            "contexts",
+            "context_names",
+            "priority",
+            "energy",
+            "window",
+            "text",
+        ],
+    );
+    assert_value_wire_names(
+        "PriorityRange",
+        &PriorityRange {
+            min: 1,
+            max: 5,
+            unknown: Unknowns::new(),
+        },
+        &[],
+    );
+    assert_value_wire_names(
+        "DateWindow",
+        &DateWindow {
+            field: WindowField::Scheduled,
+            from_days: None,
+            to_days: None,
+            unknown: Unknowns::new(),
+        },
+        &["from_days", "to_days"],
+    );
+}
+
 /// The two value types whose wire form is another type: `NoteBody` is
 /// its bytes, and `WeekdaySet`, whose serde is hand-written, is a list of
 /// weekday spellings.
@@ -204,6 +267,9 @@ fn every_described_value_record_is_checked_on_the_wire() {
         "ReviewTotals",
         "ReviewSnapshotStream",
         "StreakRow",
+        "ViewFilter",
+        "PriorityRange",
+        "DateWindow",
     ];
     for v in VALUE_TYPES {
         if matches!(v.shape, ValueShape::Record { .. }) {

@@ -24,9 +24,9 @@
 use crate::{
     Attachment, Block, CborValue, Chunk, CompatTime, Context, Energy, FocusEnd, FocusKind,
     FocusStart, Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule,
-    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy,
+    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, SavedView,
     ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
-    TaskState, TaskTemplate, Unknowns,
+    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -80,7 +80,10 @@ macro_rules! check_records {
 sunrise_id::for_each_entity!(check_records);
 
 #[allow(unused_imports)]
-use crate::{ConstraintSeverity, DateRange, Frequency, TimeOfDayRange, Weekday, WeekdaySet};
+use crate::{
+    ConstraintSeverity, DateRange, DateWindow, Frequency, PriorityRange, TimeOfDayRange, Weekday,
+    WeekdaySet, WindowField,
+};
 #[allow(unused_imports)]
 use jiff::civil::{Date, DateTime, Time};
 
@@ -146,6 +149,27 @@ sunrise_id::describe_value_types! {
             title: String;
             streak: i64;
             last_completed_at_ms: Option<u64>;
+            ..unknown
+        }
+        ViewFilter {
+            streams: Vec<EntityRef>;
+            contexts: Vec<EntityRef>;
+            context_names: Vec<String>;
+            priority: Option<PriorityRange>;
+            energy: Vec<Energy>;
+            window: Option<DateWindow>;
+            text: String;
+            ..unknown
+        }
+        PriorityRange {
+            min: u8;
+            max: u8;
+            ..unknown
+        }
+        DateWindow {
+            field: WindowField;
+            from_days: Option<i32>;
+            to_days: Option<i32>;
             ..unknown
         }
     ],
@@ -531,6 +555,26 @@ mod tests {
 
     mod value_types;
 
+    #[test]
+    fn saved_views_write_their_registered_names() {
+        assert_wire_names(
+            "SavedView",
+            &SavedView {
+                id: eref(EntityKind::SavedView, 1),
+                created_at: ts(),
+                updated_at: ts(),
+                name: "v".into(),
+                view: ViewKind::Today,
+                filter: ViewFilter::default(),
+                sort: ViewSort::Default,
+                sort_order: None,
+                deleted: false,
+                unknown: Unknowns::new(),
+            },
+            &["sort_order"],
+        );
+    }
+
     /// Every registered record is reached by one of the tests above.
     #[test]
     fn every_registered_record_is_checked_on_the_wire() {
@@ -549,6 +593,7 @@ mod tests {
             "Interruption",
             "ReviewSnapshot",
             "Preferences",
+            "SavedView",
         ];
         for r in ENTITIES.iter().flat_map(|e| e.records.iter()) {
             assert!(

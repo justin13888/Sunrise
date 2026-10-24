@@ -516,6 +516,34 @@ macro_rules! for_each_entity {
                     }
                 ],
             }
+            /// `svw_` — a saved view (issue #341,
+            /// `docs/08-features/planning-views.md` §Saved views).
+            ///
+            /// Written only by `Patch`, as Preferences is: it has no
+            /// full-state op family, so `ops` is empty, and each field is its
+            /// own register, so concurrent edits of different fields survive.
+            SavedView {
+                prefix: "svw_",
+                tag: "saved_view",
+                merge: Lww,
+                owner: Meta,
+                features: ["saved_view.entity"],
+                ops: [],
+                records: [
+                    SavedView @ ("saved_views", "id", Extra) {
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        name: String => Register(Tracked);
+                        view: ViewKind => Register(Tracked);
+                        filter: ViewFilter => Register(Tracked);
+                        sort: ViewSort => Register(Quiet);
+                        sort_order: Option<String> => Register(Quiet);
+                        deleted: bool => Register(Tombstone);
+                        ..unknown
+                    }
+                ],
+            }
         }
     };
 }

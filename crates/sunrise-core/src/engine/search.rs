@@ -359,6 +359,7 @@ fn entity_kind(kind: SearchKind) -> Option<EntityKind> {
         SearchKind::Context => EntityKind::Context,
         SearchKind::Block => EntityKind::Block,
         SearchKind::Attachment => EntityKind::Attachment,
+        SearchKind::View => EntityKind::SavedView,
         _ => return None,
     })
 }
@@ -715,6 +716,7 @@ impl<'a> Run<'a> {
             ),
             SearchKind::Context => ("contexts", "id", "created_at_ms"),
             SearchKind::Attachment => ("attachments", "id", "created_at_ms"),
+            SearchKind::View => ("saved_views", "id", "created_at_ms"),
             _ => return Ok(()),
         };
         let read = |r: &rusqlite::Row<'_>, from: usize| -> rusqlite::Result<Attrs> {

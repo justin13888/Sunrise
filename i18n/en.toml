@@ -1821,7 +1821,11 @@ USAGE:
   views and preferences
     sunrise views                list saved views
     sunrise views save <name> <view> [--query <q>] [--contexts a,b]
+                                 [--stream <s>] [--sort <order>]
+                                 save or edit a view; it syncs to every
+                                 device, and names contexts by id
     sunrise views apply|delete <name>
+    sunrise views rename <name> <new name>
     sunrise prefs [list]         every preference, its value and its source
     sunrise prefs get <key>
     sunrise prefs set <key> <value> [--device]
@@ -2167,13 +2171,26 @@ unscheduled = "{entity} has a reminder that cannot be placed: {reason}"
 wind_down = "wind down before sleeping at {sleep}"
 
 [cli.views]
-save_usage = "usage: views save <name> <view> [--query <text>] [--contexts a,b]"
+save_usage = "usage: views save <name> <view> [--query <text>] [--contexts a,b] [--stream <s>] [--sort <order>]"
 apply_usage = "usage: views apply <name>"
+rename_usage = "usage: views rename <name> <new name>"
 delete_usage = "usage: views delete <name>"
-unknown_verb = "unknown views verb `{verb}`; use list, save, apply or delete"
+unknown_verb = "unknown views verb `{verb}`; use list, save, apply, rename or delete"
 no_such = "no saved view named `{name}`; `sunrise views` lists them"
+# {ids} lists the views' ids, comma separated.
+ambiguous = "more than one saved view is named `{name}` ({ids}); name it by id"
 # {error} names what in the view could not be read.
 bad_spec = "that view will not do: {error}"
+# The one-time import of this device's views.toml into the vault.
+imported = "imported the saved view `{name}` from views.toml"
+# {view} is a view's name, {name} the context or stream name it held.
+import_unresolved = "the saved view `{view}` named `{name}`, which this vault does not have; it is kept on the view and matches nothing"
+# {error} says why; the import is tried again next time.
+import_failed = "the saved view `{name}` was not imported ({error}); it will be tried again"
+# {id} is a context id.
+missing_context = "the view names a context that no longer exists ({id}); it matches nothing"
+unresolved_name = "the view names `{name}`, a context this vault does not have; it matches nothing"
+incomplete = "this view uses filters from a newer version of Sunrise, which this one cannot apply; it shows more than they would"
 
 [cli.prefs]
 usage = "usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]"

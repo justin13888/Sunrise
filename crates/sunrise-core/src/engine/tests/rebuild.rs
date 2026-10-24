@@ -91,6 +91,33 @@ fn rich_history(e: &Engine, db: &mut Db) {
         },
     )
     .unwrap();
+    // A saved view (#341), the other entity written only by `Patch`.
+    let view = e
+        .apply(
+            db,
+            Command::CreateSavedView(sunrise_domain::SavedViewDraft {
+                name: "Errands".into(),
+                view: sunrise_domain::ViewKind::Inbox,
+                filter: sunrise_domain::ViewFilter {
+                    text: "milk".into(),
+                    ..Default::default()
+                },
+                sort: sunrise_domain::ViewSort::Manual,
+            }),
+        )
+        .unwrap()
+        .entity;
+    e.apply(
+        db,
+        Command::UpdateSavedView {
+            id: view,
+            patch: sunrise_domain::SavedViewPatch {
+                name: Some("Errands run".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
 }
 
 /// [`rich_history`] without the vault preference, the one entity this build

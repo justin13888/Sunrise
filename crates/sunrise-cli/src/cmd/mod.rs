@@ -25,6 +25,7 @@ mod search;
 mod settings;
 mod tasks;
 mod upcoming;
+mod views;
 
 pub(crate) use account::recover;
 
@@ -135,7 +136,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
 
         "undo" => settings::undo(ctx, rest).await,
         "redo" => settings::redo(ctx, rest).await,
-        "views" => settings::views(ctx, rest).await,
+        "views" => views::views(ctx, rest).await,
         "prefs" => settings::prefs(ctx, rest).await,
         "tz" => settings::tz(ctx, rest),
         "day-schedule" => day_schedule::day_schedule(ctx, rest).await,

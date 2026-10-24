@@ -1,14 +1,12 @@
-//! Undo and redo, saved views, and preferences: the client's own state.
+//! Undo and redo, and preferences: the client's own state. Saved views are
+//! `views.rs`.
 
 use sunrise_cli::i18n::strings;
 use sunrise_cli::prefs_text;
-use sunrise_client_core::views::{parse_view, SavedView, SavedViewStore};
-use sunrise_client_core::View;
 use sunrise_core::{Command, Query, QueryResult};
-use sunrise_domain::{PrefScope, PrefSource, PrefTarget, Task};
-use sunrise_id::EntityRef;
+use sunrise_domain::{PrefScope, PrefSource, PrefTarget};
 
-use super::{flag_value, has, positionals, resolve_context, Archived, CmdResult, Ctx};
+use super::{has, positionals, CmdResult, Ctx};
 
 /// `undo` — reverse the most recent write this vault recorded.
 ///
@@ -44,167 +42,6 @@ pub(super) async fn redo(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             Ok(())
         }
         None => Err(strings::undo::nothing_to_redo().into()),
-    }
-}
-
-/// The saved-view file every client on this device reads.
-fn store() -> SavedViewStore {
-    SavedViewStore::at(sunrise_client_core::views::config_path())
-}
-
-/// The views on file, with a note on stderr for each line that did not read.
-fn load_views() -> Vec<SavedView> {
-    let (views, warnings) = store().load();
-    for w in warnings {
-        eprintln!("{}", strings::general::note(&w));
-    }
-    views
-}
-
-/// `views [save|apply|delete …]`.
-///
-/// Saved views are the client layer's ([`sunrise_client_core::views`]): one
-/// file per device, shared with every client on it, contexts kept by name so
-/// a view written on one device recalls on another.
-pub(super) async fn views(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
-    let args = rest.get(1..).unwrap_or_default();
-    match rest.first().map(String::as_str) {
-        None | Some("list") => {
-            let views = load_views();
-            if ctx.json {
-                sunrise_cli::json::print(
-                    &views
-                        .iter()
-                        .map(|v| {
-                            serde_json::json!({
-                                "name": v.name,
-                                "spec": v.spec(),
-                                "query": v.query,
-                                "contexts": v.contexts,
-                            })
-                        })
-                        .collect(),
-                );
-                return Ok(());
-            }
-            for v in views {
-                println!("{:<16} {}", v.name, v.describe());
-            }
-            Ok(())
-        }
-        Some("save") => save_view(args),
-        Some("apply") => {
-            let [name] = args else {
-                return Err(strings::views::apply_usage().into());
-            };
-            let view = load_views()
-                .into_iter()
-                .find(|v| &v.name == name)
-                .ok_or_else(|| strings::views::no_such(name))?;
-            apply_view(ctx, &view).await
-        }
-        Some("delete") => {
-            let [name] = args else {
-                return Err(strings::views::delete_usage().into());
-            };
-            let mut all = load_views();
-            let before = all.len();
-            all.retain(|v| &v.name != name);
-            if all.len() == before {
-                return Err(strings::views::no_such(name).into());
-            }
-            store().save(&all)?;
-            println!("deleted  {name}");
-            Ok(())
-        }
-        Some(other) => Err(strings::views::unknown_verb(other).into()),
-    }
-}
-
-/// `views save <name> <view> [--query <text>] [--contexts a,b]`.
-fn save_view(args: &[String]) -> CmdResult {
-    let words = positionals(args, &["--query", "--contexts"], &[]);
-    let [name, view] = words.as_slice() else {
-        return Err(strings::views::save_usage().into());
-    };
-    let mut spec = format!("view={view}");
-    if let Some(q) = flag_value(args, "--query") {
-        spec.push_str(";query=");
-        spec.push_str(&q);
-    }
-    if let Some(c) = flag_value(args, "--contexts") {
-        spec.push_str(";contexts=");
-        spec.push_str(&c);
-    }
-    // The client layer's parser, so a view saved here reads the same way in
-    // every other client — and a typo is refused now, not on recall.
-    let saved = parse_view(name, &spec).map_err(|e| strings::views::bad_spec(&e))?;
-    let mut all = load_views();
-    all.retain(|v| v.name != saved.name);
-    all.push(saved.clone());
-    store().save(&all)?;
-    println!("{:<16} {}", saved.name, saved.describe());
-    Ok(())
-}
-
-/// Recall a view: the screen it names, narrowed by its query and contexts.
-///
-/// The task views (Today, Inbox, Search, Stream) are filtered to the view's
-/// contexts; a context name that no longer resolves is said on stderr rather
-/// than silently filtering everything away. A Stream view names its stream in
-/// `query`. The other views have no filter to apply and simply run.
-async fn apply_view(ctx: &Ctx<'_>, view: &SavedView) -> CmdResult {
-    let mut contexts: Vec<EntityRef> = Vec::new();
-    for name in &view.contexts {
-        match resolve_context(ctx.core, name, Archived::Include).await {
-            Ok(id) => contexts.push(id),
-            Err(e) => eprintln!("{}", strings::general::note(&e.to_string())),
-        }
-    }
-    let tasks: Vec<Task> = match view.view {
-        View::Today => match ctx
-            .core
-            .query(Query::Today {
-                now_ms: ctx.core.now_ms(),
-                contexts: contexts.clone(),
-            })
-            .await?
-        {
-            QueryResult::Tasks(t) | QueryResult::StreamTasks(t) => t,
-            _ => Vec::new(),
-        },
-        View::Inbox => tasks_of(ctx.core.query(Query::Inbox).await?),
-        View::Search => tasks_of(
-            ctx.core
-                .query(Query::Search {
-                    text: view.query.clone(),
-                    limit: 100,
-                })
-                .await?,
-        ),
-        View::Stream => {
-            let id = super::resolve_stream(ctx.core, &view.query, Archived::Include).await?;
-            tasks_of(ctx.core.query(Query::StreamTasks(id)).await?)
-        }
-        View::Calendar => return super::blocks::list(ctx, &[]).await,
-        View::Focus => return super::tasks::next(ctx, false).await,
-        View::Routines => return super::organize::routines(ctx, &[]).await,
-        View::Review => return super::reports::review(ctx, &[]).await,
-        View::Morning => return super::reports::brief(ctx, &["morning".to_owned()]).await,
-        View::Evening => return super::reports::brief(ctx, &["evening".to_owned()]).await,
-    };
-    let filtered: Vec<Task> = tasks
-        .into_iter()
-        .filter(|t| contexts.is_empty() || contexts.iter().any(|c| t.contexts.contains(c)))
-        .collect();
-    super::tasks::list(ctx, QueryResult::Tasks(filtered));
-    Ok(())
-}
-
-fn tasks_of(r: QueryResult) -> Vec<Task> {
-    match r {
-        QueryResult::Tasks(t) | QueryResult::StreamTasks(t) => t,
-        _ => Vec::new(),
     }
 }
 

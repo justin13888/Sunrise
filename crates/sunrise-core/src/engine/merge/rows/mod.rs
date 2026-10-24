@@ -14,6 +14,7 @@ mod block;
 mod context;
 mod preferences;
 mod routine;
+mod saved_view;
 mod search;
 mod stream;
 mod task;
@@ -25,6 +26,7 @@ pub(in crate::engine::merge) use context::{
 };
 pub(in crate::engine::merge) use preferences::upsert_preferences_row;
 pub(in crate::engine::merge) use routine::{insert_routine_row, update_routine_row};
+pub(in crate::engine::merge) use saved_view::upsert_saved_view_row;
 pub(in crate::engine::merge) use stream::{insert_stream_row, update_stream_row};
 // The full-text rows are written by the row writers above, and rebuilt from
 // the rows by `engine::search`, which is the one reader of the rest.

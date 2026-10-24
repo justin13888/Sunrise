@@ -301,6 +301,25 @@ pub enum CoreCommand {
         /// The task they land above, or none for the bottom.
         before: Option<EntityRef>,
     },
+    /// Save a view, synced to every device. See
+    /// [`sunrise_core::Command::CreateSavedView`].
+    CreateSavedView {
+        /// The view.
+        draft: crate::saved_views::SavedViewDraftIn,
+    },
+    /// Edit a saved view: only the fields set are written. See
+    /// [`sunrise_core::Command::UpdateSavedView`].
+    UpdateSavedView {
+        /// The view.
+        id: EntityRef,
+        /// The fields to write.
+        edit: crate::saved_views::SavedViewEdit,
+    },
+    /// Delete a saved view; `Restore` brings it back.
+    DeleteSavedView {
+        /// The view.
+        id: EntityRef,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -458,6 +477,12 @@ impl CoreCommand {
                 Command::BulkTasks(items.into_iter().map(Into::into).collect())
             }
             Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
+            Self::CreateSavedView { draft } => Command::CreateSavedView(draft.into()),
+            Self::UpdateSavedView { id, edit } => Command::UpdateSavedView {
+                id,
+                patch: edit.into(),
+            },
+            Self::DeleteSavedView { id } => Command::DeleteSavedView(id),
         })
     }
 }

@@ -58,7 +58,8 @@
 use sunrise_core::queries::{ContextRow, StreamRow};
 use sunrise_core::{BulkTaskItem, Command};
 use sunrise_domain::{
-    ContextPatch, RoutinePatch, RoutineRow, StreamPatch, Task, TaskPatch, TaskState,
+    ContextPatch, RoutinePatch, RoutineRow, SavedView, SavedViewPatch, StreamPatch, Task,
+    TaskPatch, TaskState,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -82,6 +83,13 @@ pub trait EntityLookup {
     fn context(&self, id: EntityRef) -> Option<&ContextRow>;
     /// The routine row `id`, if this client is holding it.
     fn routine(&self, id: EntityRef) -> Option<&RoutineRow>;
+    /// The saved view `id`, if this client is holding it. A client that
+    /// holds none can leave this out: an edit of a view is then not
+    /// undoable, which is what a miss always means here.
+    fn saved_view(&self, id: EntityRef) -> Option<&SavedView> {
+        let _ = id;
+        None
+    }
 }
 
 /// How many steps back `u` can walk.
@@ -164,6 +172,7 @@ pub const fn is_create(cmd: &Command) -> bool {
             | Command::CreateRoutine(_)
             | Command::CreateBlock(_)
             | Command::AttachFile(_)
+            | Command::CreateSavedView(_)
     )
 }
 
@@ -200,6 +209,7 @@ pub fn invert_create(cmd: &Command, created: EntityRef) -> Result<Command, NotUn
         Command::CreateRoutine(_) => Ok(Command::DeleteRoutine(created)),
         Command::CreateBlock(_) => Ok(Command::DeleteBlock(created)),
         Command::AttachFile(_) => Ok(Command::DetachFile(created)),
+        Command::CreateSavedView(_) => Ok(Command::DeleteSavedView(created)),
         _ => Err(NotUndoable::Unsupported),
     }
 }
@@ -326,7 +336,9 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         | Command::DeleteStream(id)
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
-        | Command::DeleteBlock(id) => Ok(Command::Restore(*id)),
+        | Command::DeleteBlock(id)
+        | Command::DeleteSavedView(id) => Ok(Command::Restore(*id)),
+        Command::UpdateSavedView { id, patch } => invert_view_edit(state, *id, patch),
         Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
         // A bulk command is undone by one bulk command, so the undo is as
         // atomic as the write: each item's inverse, in reverse.
@@ -374,6 +386,26 @@ fn invert_move<S: EntityLookup + ?Sized>(
     })
 }
 
+/// The inverse of a saved-view edit: the fields it writes, as the view held
+/// them before it.
+fn invert_view_edit<S: EntityLookup + ?Sized>(
+    state: &S,
+    id: EntityRef,
+    patch: &SavedViewPatch,
+) -> Result<Command, NotUndoable> {
+    let v = state.saved_view(id).ok_or(NotUndoable::Unsupported)?;
+    Ok(Command::UpdateSavedView {
+        id,
+        patch: SavedViewPatch {
+            name: patch.name.as_ref().map(|_| v.name.clone()),
+            view: patch.view.as_ref().map(|_| v.view.clone()),
+            filter: patch.filter.as_ref().map(|_| v.filter.clone()),
+            sort: patch.sort.as_ref().map(|_| v.sort.clone()),
+            sort_order: patch.sort_order.as_ref().map(|_| v.sort_order.clone()),
+        },
+    })
+}
+
 /// The delete of `id`, for the kinds [`Command::Restore`] brings back.
 const fn delete_of(id: EntityRef) -> Option<Command> {
     Some(match id.kind() {
@@ -382,6 +414,7 @@ const fn delete_of(id: EntityRef) -> Option<Command> {
         EntityKind::Context => Command::DeleteContext(id),
         EntityKind::Routine => Command::DeleteRoutine(id),
         EntityKind::Block => Command::DeleteBlock(id),
+        EntityKind::SavedView => Command::DeleteSavedView(id),
         _ => return None,
     })
 }
@@ -526,6 +559,77 @@ mod tests {
         Rows {
             tasks: vec![t],
             ..Rows::default()
+        }
+    }
+
+    /// A saved view's create is undone by deleting it, a delete by a restore,
+    /// and an edit by writing back the fields it touched, read off the view.
+    #[test]
+    fn saved_view_commands_invert() {
+        use sunrise_domain::{SavedViewDraft, ViewFilter, ViewKind, ViewSort};
+        struct Views(SavedView);
+        impl EntityLookup for Views {
+            fn task(&self, _: EntityRef) -> Option<&Task> {
+                None
+            }
+            fn stream(&self, _: EntityRef) -> Option<&StreamRow> {
+                None
+            }
+            fn context(&self, _: EntityRef) -> Option<&ContextRow> {
+                None
+            }
+            fn routine(&self, _: EntityRef) -> Option<&RoutineRow> {
+                None
+            }
+            fn saved_view(&self, id: EntityRef) -> Option<&SavedView> {
+                (id == self.0.id).then_some(&self.0)
+            }
+        }
+        let id = EntityRef::new(EntityKind::SavedView, [7; 16]);
+        let held = Views(SavedView {
+            id,
+            created_at: jiff::Timestamp::UNIX_EPOCH,
+            updated_at: jiff::Timestamp::UNIX_EPOCH,
+            name: "Old".into(),
+            view: ViewKind::Today,
+            filter: ViewFilter::default(),
+            sort: ViewSort::Title,
+            sort_order: Some("N".into()),
+            deleted: false,
+            unknown: Unknowns::new(),
+        });
+        let create = Command::CreateSavedView(SavedViewDraft {
+            name: "x".into(),
+            view: ViewKind::Today,
+            filter: ViewFilter::default(),
+            sort: ViewSort::Default,
+        });
+        assert!(is_create(&create));
+        assert!(matches!(
+            invert_create(&create, id),
+            Ok(Command::DeleteSavedView(d)) if d == id
+        ));
+        assert!(matches!(
+            invert(&held, &[Command::DeleteSavedView(id)]).unwrap()[..],
+            [Command::Restore(r)] if r == id
+        ));
+        assert!(matches!(
+            invert(&held, &[Command::Restore(id)]).unwrap()[..],
+            [Command::DeleteSavedView(r)] if r == id
+        ));
+        let edit = Command::UpdateSavedView {
+            id,
+            patch: SavedViewPatch {
+                name: Some("New".into()),
+                ..SavedViewPatch::default()
+            },
+        };
+        match &invert(&held, &[edit]).unwrap()[..] {
+            [Command::UpdateSavedView { patch, .. }] => {
+                assert_eq!(patch.name.as_deref(), Some("Old"));
+                assert!(patch.sort.is_none(), "only what the edit touched");
+            }
+            other => panic!("{other:?}"),
         }
     }
 

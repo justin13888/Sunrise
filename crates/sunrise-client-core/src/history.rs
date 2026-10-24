@@ -122,6 +122,7 @@ impl UndoStacks {
 #[derive(Debug, Default)]
 pub struct VaultRows {
     tasks: BTreeMap<EntityRef, Task>,
+    saved_views: BTreeMap<EntityRef, sunrise_domain::SavedView>,
     streams: Vec<StreamRow>,
     contexts: Vec<ContextRow>,
     routines: Vec<RoutineRow>,
@@ -140,12 +141,16 @@ impl EntityLookup for VaultRows {
     fn routine(&self, id: EntityRef) -> Option<&RoutineRow> {
         self.routines.iter().find(|r| r.id == id)
     }
+    fn saved_view(&self, id: EntityRef) -> Option<&sunrise_domain::SavedView> {
+        self.saved_views.get(&id)
+    }
 }
 
 /// Which reads `cmds` will need before it is applied.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Wanted {
     tasks: Vec<EntityRef>,
+    saved_views: Vec<EntityRef>,
     streams: bool,
     contexts: bool,
     routines: bool,
@@ -163,6 +168,7 @@ fn wanted(cmds: &[Command]) -> Wanted {
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
             Command::BulkTasks(items) => wanted.tasks.extend(items.iter().map(|i| i.id)),
             Command::MoveTasks { ids, .. } => wanted.tasks.extend(ids.iter().copied()),
+            Command::UpdateSavedView { id, .. } => wanted.saved_views.push(*id),
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,
             Command::UpdateRoutine { .. } => wanted.routines = true,
@@ -188,6 +194,13 @@ pub async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultRows, Co
     for id in wanted.tasks {
         if let QueryResult::Task(t) = core.query(Query::EntityById(id)).await? {
             rows.tasks.insert(id, *t);
+        }
+    }
+    for id in wanted.saved_views {
+        if let QueryResult::SavedViews(mut v) = core.query(Query::EntityById(id)).await? {
+            if let Some(v) = v.pop() {
+                rows.saved_views.insert(id, v);
+            }
         }
     }
     if wanted.streams {

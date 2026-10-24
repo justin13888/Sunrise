@@ -96,6 +96,7 @@ fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str
     use sunrise_domain::focus::{FocusKind, InterruptionReason};
     use sunrise_domain::routine::RoutineCatchupPolicy;
     use sunrise_domain::rrule::{Frequency, Weekday};
+    use sunrise_domain::saved_view::{ViewKind, ViewSort, WindowField};
     use sunrise_domain::stream::{StreamColor, StreamReviewCadence};
     use sunrise_domain::task::TaskState;
     use sunrise_domain::Energy;
@@ -126,7 +127,10 @@ fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str
         with_fallback!("StreamColor", StreamColor),
         with_fallback!("StreamReviewCadence", StreamReviewCadence),
         with_fallback!("TaskState", TaskState),
+        without_fallback!("ViewKind", ViewKind),
+        with_fallback!("ViewSort", ViewSort),
         without_fallback!("Weekday", Weekday),
+        without_fallback!("WindowField", WindowField),
     ]
 }
 

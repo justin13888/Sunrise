@@ -19381,3 +19381,6 @@ mod groups;
 
 /// Manual task order: `MoveTasks` and the listings that honour it (#340).
 mod task_order;
+
+/// Saved views, a synced entity written only by `Patch` (#341).
+mod saved_views;

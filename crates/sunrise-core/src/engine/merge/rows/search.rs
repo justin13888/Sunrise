@@ -27,7 +27,8 @@ use crate::engine::EngineError;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_domain::search::{fold, SearchKind};
 use sunrise_domain::{
-    decode_note_body, note_body_to_plain_text, Attachment, Block, Context, NoteBody, Stream, Task,
+    decode_note_body, note_body_to_plain_text, Attachment, Block, Context, NoteBody, SavedView,
+    Stream, Task,
 };
 
 /// How much of a body the trigram index holds, in bytes of folded text
@@ -141,6 +142,25 @@ pub(in crate::engine) fn doc_of_attachment(a: &Attachment) -> SearchDoc {
         aux: String::new(),
         body: String::new(),
     }
+}
+
+/// A saved view: its name, and its filter's free text as body text.
+pub(in crate::engine) fn doc_of_saved_view(v: &SavedView) -> SearchDoc {
+    SearchDoc {
+        kind: SearchKind::View,
+        id: *v.id.bytes(),
+        title: v.name.clone(),
+        aux: String::new(),
+        body: v.filter.text.clone(),
+    }
+}
+
+/// Index a saved view.
+pub(in crate::engine) fn index_saved_view(
+    tx: &Transaction<'_>,
+    v: &SavedView,
+) -> rusqlite::Result<()> {
+    index_doc(tx, &doc_of_saved_view(v))
 }
 
 /// `text` folded, cut to at most `max` bytes on a character boundary.
@@ -375,6 +395,10 @@ pub(in crate::engine) fn rebuild_from_rows(
             index_attachment(tx, &a)?;
             n += 1;
         }
+    }
+    for v in crate::engine::saved_view::read_saved_views(tx)? {
+        index_saved_view(tx, &v)?;
+        n += 1;
     }
     Ok(n)
 }
