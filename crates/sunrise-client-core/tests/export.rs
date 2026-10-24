@@ -210,15 +210,19 @@ async fn the_manifest_vouches_for_every_file_and_reads_back() {
     assert_eq!(files[path], b"42 EUR");
 
     // The note's Markdown projection sits beside its JSON.
-    let task: Task = serde_json::from_slice(
-        files["entities/task.jsonl"]
-            .split(|b| *b == b'\n')
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
+    let task = plumber(&lines(&files, "task"));
     let note = &files[&format!("notes/{}.md", task.id.to_str())];
     assert_eq!(note, b"Ask about the boiler.\n");
+}
+
+/// The seeded task with the note and the floating plan. The routine
+/// materializes another, and ids are random, so the file's order is not it.
+fn plumber(tasks: &[Task]) -> Task {
+    tasks
+        .iter()
+        .find(|t| t.title == "Call the plumber")
+        .cloned()
+        .unwrap_or_else(|| panic!("the seeded task is exported: {tasks:?}"))
 }
 
 /// The records of `entities/<kind>.jsonl`, one per line.
@@ -245,7 +249,7 @@ async fn every_record_reads_back_as_itself_with_its_kind() {
     let tasks: Vec<Task> = lines(&files, "task");
     assert_eq!(tasks, records.tasks);
     assert_eq!(
-        tasks[0].scheduled_at,
+        plumber(&tasks).scheduled_at,
         Some(SunriseTime::floating(
             jiff::civil::date(2026, 1, 2).at(9, 0, 0, 0)
         )),
