@@ -57,6 +57,15 @@ pub enum ErrorCode {
     StorageVTooNew,
     /// Local DB schema needs upgrade.
     StorageVTooOld,
+    /// `PRAGMA quick_check` found the vault file damaged; it was neither
+    /// opened nor migrated (`migrations.md` §Migration rigor rule 3).
+    StorageIntegrityCheckFailed,
+    /// The copy taken before a migration or a projection rebuild could not
+    /// be written, so neither ran (`migrations.md` §Migration rigor rule 2).
+    StorageBackupFailed,
+    /// A storage migration failed and rolled back; the vault is at the
+    /// version it was found at.
+    StorageMigrationFailed,
 
     // Crypto
     /// AEAD open / signature / KDF failed.
@@ -157,6 +166,9 @@ impl ErrorCode {
             Self::StorageVaultLocked => "STORAGE_VAULT_LOCKED",
             Self::StorageVTooNew => "STORAGE_V_TOO_NEW",
             Self::StorageVTooOld => "STORAGE_V_TOO_OLD",
+            Self::StorageIntegrityCheckFailed => "STORAGE_INTEGRITY_CHECK_FAILED",
+            Self::StorageBackupFailed => "STORAGE_BACKUP_FAILED",
+            Self::StorageMigrationFailed => "STORAGE_MIGRATION_FAILED",
             Self::CryptoDecryptFailed => "CRYPTO_DECRYPT_FAILED",
             Self::CryptoRecoveryBlobInvalid => "CRYPTO_RECOVERY_BLOB_INVALID",
             Self::CryptoAadMismatch => "CRYPTO_AAD_MISMATCH",
@@ -211,6 +223,8 @@ impl ErrorCode {
             | Self::AuthDeviceSigInvalid
             | Self::StorageVTooNew
             | Self::StorageVTooOld
+            | Self::StorageIntegrityCheckFailed
+            | Self::StorageBackupFailed
             | Self::CryptoRecoveryBlobInvalid
             | Self::SyncBatchTooLarge
             | Self::SyncStreamNotFound
@@ -220,6 +234,7 @@ impl ErrorCode {
             | Self::CryptoSuiteMismatch
             | Self::SyncProtocolVersionMismatch
             | Self::SyncTamperDetected
+            | Self::StorageMigrationFailed
             | Self::SyncOpInvalid
             | Self::SyncCursorGap
             | Self::SyncResumeConflict
@@ -259,7 +274,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 42] {
+    pub const fn all() -> [Self; 45] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -275,6 +290,9 @@ impl ErrorCode {
             Self::StorageVaultLocked,
             Self::StorageVTooNew,
             Self::StorageVTooOld,
+            Self::StorageIntegrityCheckFailed,
+            Self::StorageBackupFailed,
+            Self::StorageMigrationFailed,
             Self::CryptoDecryptFailed,
             Self::CryptoRecoveryBlobInvalid,
             Self::CryptoAadMismatch,

@@ -14,6 +14,7 @@ A finite enum across the system. Examples:
 - `AUTH_DEVICE_SIG_INVALID`
 - `AUTH_TOKEN_INVALID`
 - `STORAGE_VAULT_LOCKED`
+- `STORAGE_INTEGRITY_CHECK_FAILED`
 - `SYNC_PROTOCOL_VERSION_MISMATCH`
 - `SYNC_TAMPER_DETECTED`
 - `SYNC_NETWORK_UNAVAILABLE`
@@ -32,7 +33,7 @@ Codes are stable across versions; new codes can be added but never repurposed.
 - The Rust enum at `crates/sunrise-error/src/codes.rs` mirrors that manifest. It is *intended* to be generated; until the build script lands it is hand-maintained, and `crates/sunrise-error/tests/manifest_in_sync.rs` is what holds the two together. The TypeScript mirror this section used to place at `packages/sunrise-error-ts` does not exist — nothing in TypeScript reads the registry yet.
 - Codes are added at minor-version boundaries; never reused, never renamed.
 - Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
-- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.
+- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304 (`STORAGE_INTEGRITY_CHECK_FAILED`, then `STORAGE_BACKUP_FAILED` and `STORAGE_MIGRATION_FAILED`: the three ways a vault fails to open that [04-storage/migrations.md](../04-storage/migrations.md) §Migration rigor gives a client a way out of).
 - An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
 ## Error envelope (core → UI)

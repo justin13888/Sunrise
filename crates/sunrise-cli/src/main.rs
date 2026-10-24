@@ -43,7 +43,7 @@ mod cmd;
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::i18n::strings;
-use sunrise_cli::{livesync, login, pair, undo_file, vault, zone};
+use sunrise_cli::{livesync, login, open_failure, pair, undo_file, vault, zone};
 use sunrise_core::SystemRng;
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
@@ -197,6 +197,32 @@ async fn run(
             cmd::recover(&vault_dir(), rest).await?;
             return Ok(());
         }
+        // Both answer a vault that will not open, so neither can wait for
+        // the open below: it is what refuses the vault
+        // (`sunrise_cli::open_failure`).
+        "backups" => {
+            for line in open_failure::backups(&vault_dir(), env!("CARGO_PKG_VERSION"), rest)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        "rebuild" if rest.first().is_some_and(|a| a == "--repair") => {
+            if rest.len() != 1 {
+                return Err(strings::rebuild::usage().into());
+            }
+            let dir = vault_dir();
+            // Checked before the root is resolved, which mints one for a
+            // directory that has none.
+            if !dir.join("vault.db").exists() {
+                return Err(strings::rebuild::no_vault(&dir.display().to_string()).into());
+            }
+            let root = vault::resolve(&dir, &SystemRng)?;
+            println!(
+                "{}",
+                open_failure::repair(&dir, env!("CARGO_PKG_VERSION"), root).await?
+            );
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -235,7 +261,11 @@ async fn run(
         &livesync::SyncPlan::default(),
         None,
     )
-    .await?;
+    .await
+    // What to do next comes with the error: a damaged vault, a copy that
+    // could not be written and a failed migration each have their own way
+    // out (`sunrise_cli::open_failure`).
+    .map_err(|e| open_failure::explain(&dir_for_store, &e, false))?;
 
     // Then the real plan. Almost nothing starts a driver: opening one for a
     // command that exits milliseconds later would just churn the relay.

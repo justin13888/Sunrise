@@ -252,7 +252,7 @@ git status --short apps/apple/SunriseTests/PairingFixture.swift
 '''
 
 [tasks.storage-fixtures]
-description = "Write the old-vault fixtures missing under crates/sunrise-storage/fixtures/"
+description = "Write the old-vault fixtures missing under crates/sunrise-storage/fixtures/ and crates/sunrise-core/fixtures/"
 shell = "bash -c"
 # The generator is an `#[ignore]`d test rather than a binary, so that the
 # fixtures and the assertions about them are the same code reading the same
@@ -267,13 +267,19 @@ shell = "bash -c"
 # rewritten at today's schema is no longer old, and the migration chain it
 # exists to exercise then runs over nothing. To rewrite one deliberately,
 # delete it first.
+#
+# The second generator writes the engine-built vault that rule 1's rebuild
+# equivalence is checked over (`engine/tests/rebuild/fixture.rs` in
+# `sunrise-core`): the storage fixtures' invented ops cannot be refolded.
 run = """
 set -euo pipefail
 cargo test -p sunrise-storage --lib \
   vault_fixtures::write_the_missing_vault_fixtures -- --ignored --exact
+cargo test -p sunrise-core --lib \
+  engine::tests::rebuild::fixture::write_the_missing_projection_fixture -- --ignored --exact
 echo
-echo "written: crates/sunrise-storage/fixtures/"
-git status --short crates/sunrise-storage/fixtures/
+echo "written: crates/sunrise-storage/fixtures/ crates/sunrise-core/fixtures/"
+git status --short crates/sunrise-storage/fixtures/ crates/sunrise-core/fixtures/
 """
 
 [tasks.keychain-fixture]

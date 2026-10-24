@@ -101,6 +101,10 @@ pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount, Query,
     QueryResult, SearchGroup, SearchHit, SearchNotice, SearchResults, StreamRow,
 };
+/// What [`CoreError::Db`] carries, and the copies of a vault kept beside it
+/// ([`Core::vault_backups`]): named here so a client that branches on why a
+/// vault would not open needs no dependency on the storage crate.
+pub use sunrise_storage::{BackupKind, DbError, VaultBackup};
 pub use sync_driver::{
     BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,
 };

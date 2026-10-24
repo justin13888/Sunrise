@@ -11,8 +11,162 @@
 //! Ported from the Apple app's `SessionModel`. The transitions are pure: the
 //! key store, the vault directory and the core are the caller's, and each
 //! method takes what they answered.
+//!
+//! # A vault that exists and will not open
+//!
+//! [`OpenProblem`] reads why off the core's error, by its wire code, and
+//! [`open_remedies`] is what a client offers for it: repair the vault from
+//! its own op log, put back a copy kept beside it, restore the account from
+//! its recovery code, try again, update, or, when none of those applies,
+//! send diagnostics (`docs/04-storage/migrations.md` §Failure recovery and
+//! §Migration rigor rules 2 to 4). Every client asks the same table, so the
+//! CLI's message and the app's screen offer the same ways out.
+
+use sunrise_core::CoreError;
+use sunrise_error::ErrorCode;
 
 use crate::host::{vault_root, BadVaultRoot};
+
+/// Why a vault that exists would not open, as a client branches on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpenProblem {
+    /// The integrity check found the file damaged
+    /// (`STORAGE_INTEGRITY_CHECK_FAILED`). Nothing was migrated or written.
+    Damaged,
+    /// The copy a migration or a rebuild runs under could not be written,
+    /// so neither ran (`STORAGE_BACKUP_FAILED`): a full disk, most often.
+    /// The vault is as it was.
+    BackupFailed,
+    /// A migration failed and rolled back (`STORAGE_MIGRATION_FAILED`). The
+    /// vault is at the version it was found at.
+    MigrationFailed,
+    /// A newer build wrote the vault (`STORAGE_V_TOO_NEW`).
+    TooNew,
+    /// The vault predates the storage baseline, and no build upgrades it
+    /// (`STORAGE_V_TOO_OLD`).
+    TooOld,
+    /// Something else has the vault open: another process, or another open
+    /// in this one.
+    Busy,
+    /// Anything else: a key that does not open the file, an I/O failure, a
+    /// bug. Nothing here says the vault is damaged, so nothing is offered
+    /// that would replace it.
+    Other,
+}
+
+impl OpenProblem {
+    /// The problem a wire code names; [`Self::Other`] for any code that is
+    /// not one of a failed open's.
+    #[must_use]
+    pub const fn from_code(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::StorageIntegrityCheckFailed => Self::Damaged,
+            ErrorCode::StorageBackupFailed => Self::BackupFailed,
+            ErrorCode::StorageMigrationFailed => Self::MigrationFailed,
+            ErrorCode::StorageVTooNew => Self::TooNew,
+            ErrorCode::StorageVTooOld => Self::TooOld,
+            ErrorCode::StorageVaultLocked => Self::Busy,
+            _ => Self::Other,
+        }
+    }
+
+    /// Why `Core::open` (or `Core::open_repairing`) returned `e`.
+    #[must_use]
+    pub fn of(e: &CoreError) -> Self {
+        if let CoreError::VaultLock(sunrise_core::VaultLockError::AlreadyHeld { .. }) = e {
+            return Self::Busy;
+        }
+        e.db_error()
+            .map_or(Self::Other, |db| Self::from_code(db.as_error_code()))
+    }
+}
+
+/// One way out of a vault that will not open, in the order
+/// [`open_remedies`] lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpenRemedy {
+    /// Open again, unchanged. After freeing disk space, for
+    /// [`OpenProblem::BackupFailed`].
+    TryAgain,
+    /// Repair the vault from its own op log (`Core::open_repairing`), under
+    /// a copy of the file as it is.
+    Repair,
+    /// Put back a copy of the vault kept beside it (`Core::vault_backups`,
+    /// `Core::restore_vault_backup`), losing what was written after it.
+    RestoreBackup,
+    /// Move the vault aside (`Core::set_vault_aside`) and restore the account
+    /// into its place from the recovery code, which replays its history from
+    /// the relay.
+    RecoverFromCode,
+    /// Install a newer Sunrise, which opens it.
+    UpdateApp,
+    /// Nothing here mends it: send diagnostics.
+    SendDiagnostics,
+}
+
+/// What a client knows beside the error when it decides what to offer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OpenContext {
+    /// A copy of the vault is kept beside it (`Core::vault_backups` is not
+    /// empty).
+    pub has_backup: bool,
+    /// The account is on a relay and has a recovery code, so it can be
+    /// restored from it.
+    pub can_recover: bool,
+    /// The error came from a repair: offering it again would fail again.
+    pub repair_tried: bool,
+}
+
+/// The ways out of `problem`, best first, never empty. A list that is only
+/// [`OpenRemedy::SendDiagnostics`] is a fatal failure ([`is_fatal`]).
+///
+/// | Problem | Offered |
+/// |---|---|
+/// | `Damaged` | repair (not after one failed), restore a copy, recover from the code |
+/// | `BackupFailed` | try again, after freeing space |
+/// | `MigrationFailed` | try again, recover from the code |
+/// | `TooNew` | update |
+/// | `TooOld` | recover from the code |
+/// | `Busy` | try again |
+/// | `Other` | nothing |
+///
+/// A copy is offered for damage only. After a failed migration or copy the
+/// vault is exactly as it was, so a copy of it holds nothing it does not.
+/// The recovery code is offered only where the vault cannot be read as it
+/// is; it is never offered for [`OpenProblem::Other`], which may be a key
+/// the client holds wrongly rather than anything wrong with the vault.
+/// [`OpenRemedy::SendDiagnostics`] closes every list but `TooNew`'s and
+/// `Busy`'s, whose remedies cannot fail for a reason worth reporting.
+#[must_use]
+pub fn open_remedies(problem: OpenProblem, cx: OpenContext) -> Vec<OpenRemedy> {
+    use OpenRemedy::{
+        RecoverFromCode, Repair, RestoreBackup, SendDiagnostics, TryAgain, UpdateApp,
+    };
+    let recover = cx.can_recover.then_some(RecoverFromCode);
+    let offered: Vec<Option<OpenRemedy>> = match problem {
+        OpenProblem::Damaged => vec![
+            (!cx.repair_tried).then_some(Repair),
+            cx.has_backup.then_some(RestoreBackup),
+            recover,
+            Some(SendDiagnostics),
+        ],
+        OpenProblem::BackupFailed => vec![Some(TryAgain), Some(SendDiagnostics)],
+        OpenProblem::MigrationFailed => vec![Some(TryAgain), recover, Some(SendDiagnostics)],
+        OpenProblem::TooNew => vec![Some(UpdateApp)],
+        OpenProblem::TooOld => vec![recover, Some(SendDiagnostics)],
+        OpenProblem::Busy => vec![Some(TryAgain)],
+        OpenProblem::Other => vec![Some(SendDiagnostics)],
+    };
+    offered.into_iter().flatten().collect()
+}
+
+/// Whether `remedies` offers nothing but diagnostics: the failed open is
+/// fatal, and the client says so rather than offering a button that cannot
+/// help.
+#[must_use]
+pub fn is_fatal(remedies: &[OpenRemedy]) -> bool {
+    remedies.iter().all(|r| *r == OpenRemedy::SendDiagnostics)
+}
 
 /// Why a vault cannot be opened right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +390,186 @@ impl VaultSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use OpenRemedy::{
+        RecoverFromCode, Repair, RestoreBackup, SendDiagnostics, TryAgain, UpdateApp,
+    };
+
+    const ALL: [OpenProblem; 7] = [
+        OpenProblem::Damaged,
+        OpenProblem::BackupFailed,
+        OpenProblem::MigrationFailed,
+        OpenProblem::TooNew,
+        OpenProblem::TooOld,
+        OpenProblem::Busy,
+        OpenProblem::Other,
+    ];
+
+    fn every_context() -> Vec<OpenContext> {
+        let mut all = Vec::new();
+        for has_backup in [false, true] {
+            for can_recover in [false, true] {
+                for repair_tried in [false, true] {
+                    all.push(OpenContext {
+                        has_backup,
+                        can_recover,
+                        repair_tried,
+                    });
+                }
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn a_damaged_vault_offers_the_repair_then_a_copy_then_the_code() {
+        let cx = OpenContext {
+            has_backup: true,
+            can_recover: true,
+            repair_tried: false,
+        };
+        assert_eq!(
+            open_remedies(OpenProblem::Damaged, cx),
+            [Repair, RestoreBackup, RecoverFromCode, SendDiagnostics]
+        );
+        assert_eq!(
+            open_remedies(OpenProblem::Damaged, OpenContext::default()),
+            [Repair, SendDiagnostics],
+            "no copy and no account: the repair is what is left"
+        );
+    }
+
+    #[test]
+    fn a_repair_that_failed_is_not_offered_again() {
+        let cx = OpenContext {
+            has_backup: false,
+            can_recover: false,
+            repair_tried: true,
+        };
+        let remedies = open_remedies(OpenProblem::Damaged, cx);
+        assert_eq!(remedies, [SendDiagnostics]);
+        assert!(is_fatal(&remedies));
+        let cx = OpenContext {
+            has_backup: true,
+            ..cx
+        };
+        assert_eq!(
+            open_remedies(OpenProblem::Damaged, cx),
+            [RestoreBackup, SendDiagnostics]
+        );
+    }
+
+    /// A copy holds only what the vault already does after a failed
+    /// migration or copy, and an unclassified failure may be a key held
+    /// wrongly: neither is a reason to replace the vault.
+    #[test]
+    fn only_damage_offers_a_copy_and_an_unknown_failure_replaces_nothing() {
+        for problem in ALL {
+            for cx in every_context() {
+                let remedies = open_remedies(problem, cx);
+                assert!(!remedies.is_empty(), "{problem:?} {cx:?}");
+                if problem != OpenProblem::Damaged {
+                    assert!(!remedies.contains(&RestoreBackup), "{problem:?} {cx:?}");
+                    assert!(!remedies.contains(&Repair), "{problem:?} {cx:?}");
+                }
+                if !cx.can_recover || matches!(problem, OpenProblem::Other) {
+                    assert!(!remedies.contains(&RecoverFromCode), "{problem:?} {cx:?}");
+                }
+            }
+        }
+        assert!(is_fatal(&open_remedies(
+            OpenProblem::Other,
+            OpenContext {
+                has_backup: true,
+                can_recover: true,
+                repair_tried: false,
+            }
+        )));
+    }
+
+    #[test]
+    fn the_rest_offer_what_mends_them() {
+        let cx = OpenContext {
+            has_backup: true,
+            can_recover: true,
+            repair_tried: false,
+        };
+        assert_eq!(
+            open_remedies(OpenProblem::BackupFailed, cx),
+            [TryAgain, SendDiagnostics]
+        );
+        assert_eq!(
+            open_remedies(OpenProblem::MigrationFailed, cx),
+            [TryAgain, RecoverFromCode, SendDiagnostics]
+        );
+        assert_eq!(open_remedies(OpenProblem::TooNew, cx), [UpdateApp]);
+        assert_eq!(
+            open_remedies(OpenProblem::TooOld, cx),
+            [RecoverFromCode, SendDiagnostics]
+        );
+        assert_eq!(open_remedies(OpenProblem::Busy, cx), [TryAgain]);
+        assert!(is_fatal(&open_remedies(
+            OpenProblem::TooOld,
+            OpenContext::default()
+        )));
+        assert!(!is_fatal(&open_remedies(OpenProblem::Busy, cx)));
+    }
+
+    #[test]
+    fn each_open_failure_is_read_off_its_wire_code() {
+        for (code, problem) in [
+            (ErrorCode::StorageIntegrityCheckFailed, OpenProblem::Damaged),
+            (ErrorCode::StorageBackupFailed, OpenProblem::BackupFailed),
+            (
+                ErrorCode::StorageMigrationFailed,
+                OpenProblem::MigrationFailed,
+            ),
+            (ErrorCode::StorageVTooNew, OpenProblem::TooNew),
+            (ErrorCode::StorageVTooOld, OpenProblem::TooOld),
+            (ErrorCode::StorageVaultLocked, OpenProblem::Busy),
+            (ErrorCode::FatalInternal, OpenProblem::Other),
+            (ErrorCode::CryptoDecryptFailed, OpenProblem::Other),
+        ] {
+            assert_eq!(OpenProblem::from_code(code), problem, "{code}");
+        }
+    }
+
+    #[test]
+    fn each_open_failure_is_read_off_the_cores_error() {
+        use sunrise_core::{DbError, EngineError, VaultLockError};
+        let damaged = || DbError::IntegrityCheckFailed {
+            detail: "NULL value in t.a".into(),
+        };
+        assert_eq!(
+            OpenProblem::of(&CoreError::Db(damaged())),
+            OpenProblem::Damaged
+        );
+        assert_eq!(
+            OpenProblem::of(&CoreError::Engine(EngineError::Storage(damaged()))),
+            OpenProblem::Damaged,
+            "a repair's rebuild reports through the engine"
+        );
+        assert_eq!(
+            OpenProblem::of(&CoreError::Db(DbError::RebuildBackup {
+                source: std::io::Error::other("disk full"),
+            })),
+            OpenProblem::BackupFailed
+        );
+        assert_eq!(
+            OpenProblem::of(&CoreError::VaultLock(VaultLockError::AlreadyHeld {
+                holder_pid: 7,
+                holder_started_at: "0".into(),
+            })),
+            OpenProblem::Busy
+        );
+        assert_eq!(
+            OpenProblem::of(&CoreError::Db(DbError::CipherUnavailable {
+                detail: "PRAGMA key".into(),
+            })),
+            OpenProblem::Other,
+            "a storage failure that is not damage replaces nothing"
+        );
+        assert_eq!(OpenProblem::of(&CoreError::Closed), OpenProblem::Other);
+    }
 
     fn started(stored: &StoredRoot, exists: bool) -> (VaultSession, VaultStep) {
         let mut s = VaultSession::new(None);

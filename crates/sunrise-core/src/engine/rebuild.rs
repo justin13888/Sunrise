@@ -376,12 +376,18 @@ impl Engine {
     /// migration 0039, or the first open of a build whose fold differs. See
     /// the [module docs](self#when-a-rebuild-runs-on-its-own).
     ///
+    /// The vault is copied first ([`Db::back_up_for_rebuild`]): the open's
+    /// own pre-migration copy when it took one, `<vault>.pre-rebuild.bak`
+    /// otherwise, and nothing for a vault the open has just created.
+    ///
     /// Returns what the rebuild did, or `None` when the projection was
     /// current and nothing ran.
     ///
     /// # Errors
-    /// As [`Self::rebuild_projection`], which leaves the projection as it was
-    /// and `projection_rebuild` unwritten, so the next call tries again.
+    /// [`sunrise_storage::DbError::RebuildBackup`] when the copy cannot be
+    /// written, and nothing is rebuilt. As [`Self::rebuild_projection`]
+    /// otherwise, which leaves the projection as it was and
+    /// `projection_rebuild` unwritten, so the next call tries again.
     pub(crate) fn rebuild_if_stale(
         &self,
         db: &mut Db,
@@ -403,6 +409,12 @@ impl Engine {
             to_v = FOLD_V,
             "the projection was built by another fold, and is rebuilt from the op log"
         );
+        // Under a copy of the vault (rule 4), or the one this open took
+        // before migrating it. A vault this open created has nothing yet a
+        // copy would keep, and one in memory has no file to copy.
+        if !db.created_by_this_open() {
+            db.back_up_for_rebuild()?;
+        }
         self.rebuild_projection(db).map(Some)
     }
 

@@ -85,6 +85,7 @@ pub mod settings;
 pub mod sync_status;
 pub mod types;
 pub mod upcoming;
+pub mod vault_repair;
 pub mod vocab;
 
 pub use background::{SyncCancel, SyncOnceOutcome};
@@ -292,6 +293,33 @@ pub enum BindingError {
     /// the vault syncs.
     #[error("recovery: {0}")]
     RecoveryIncomplete(String),
+    /// The vault's integrity check failed: the file is damaged, and was not
+    /// opened or migrated (`STORAGE_INTEGRITY_CHECK_FAILED`).
+    ///
+    /// This and the five variants after it are what [`SunriseCore::open`]
+    /// and [`SunriseCore::open_repairing`] raise for a vault that exists and
+    /// will not open, one per [`sunrise_client_core::vault_session::OpenProblem`] but `Other`, which
+    /// stays [`BindingError::Core`]. Each reads as the `Core` message it
+    /// replaces. The client offers what [`vault_repair::open_remedies`]
+    /// lists for it.
+    #[error("core: {0}")]
+    VaultDamaged(String),
+    /// The copy a migration or rebuild runs under could not be written, so
+    /// neither ran and the vault is as it was (`STORAGE_BACKUP_FAILED`).
+    #[error("core: {0}")]
+    VaultBackupFailed(String),
+    /// A migration failed and rolled back (`STORAGE_MIGRATION_FAILED`).
+    #[error("core: {0}")]
+    VaultMigrationFailed(String),
+    /// A newer build wrote the vault (`STORAGE_V_TOO_NEW`).
+    #[error("core: {0}")]
+    VaultTooNew(String),
+    /// The vault predates the storage baseline (`STORAGE_V_TOO_OLD`).
+    #[error("core: {0}")]
+    VaultTooOld(String),
+    /// Something else has the vault open (`STORAGE_VAULT_LOCKED`).
+    #[error("core: {0}")]
+    VaultBusy(String),
 }
 
 impl From<sunrise_integrations::IntegrationError> for BindingError {
@@ -408,6 +436,15 @@ impl SunriseCore {
     ///
     /// It defaults to `None`, so every existing Swift call site keeps
     /// compiling and keeps meaning what it meant.
+    ///
+    /// # Errors
+    ///
+    /// For a vault that will not open, the `Vault…` variant naming why:
+    /// [`BindingError::VaultDamaged`] and the five after it, for which
+    /// [`vault_repair::open_remedies`] says what to offer, and
+    /// [`BindingError::Core`] for any other reason.
+    /// [`BindingError::BadVaultRoot`] and [`BindingError::Pairing`] for what
+    /// was handed in.
     // `default(paired_bundle = None)` is what keeps every existing Swift call
     // site compiling and meaning what it meant: the generated signature gains
     // an argument the foreign side may omit, rather than a fourth required one.
@@ -434,7 +471,8 @@ impl SunriseCore {
                 paired,
             },
         )
-        .await?;
+        .await
+        .map_err(vault_repair::open_failed)?;
         Ok(Self::wrap(core))
     }
 
@@ -875,10 +913,14 @@ impl SunriseCore {
     /// folded again from the ops, in one transaction (issue #441). Nothing
     /// is reported on `subscribe_changes`; re-read what is on screen.
     ///
+    /// The vault is copied first, to `<vault>.pre-rebuild.bak`, which the
+    /// next open deletes; [`vault_repair::vault_backups`] lists it until then.
+    ///
     /// # Errors
     ///
-    /// [`BindingError::Core`] if an op in the log cannot be read or the
-    /// vault cannot be written. The projection is then left as it was.
+    /// [`BindingError::Core`] if the copy cannot be written, an op in the log
+    /// cannot be read or the vault cannot be written. The projection is then
+    /// left as it was.
     pub fn rebuild_projection(&self) -> Result<dto::RebuildReportItem, BindingError> {
         Ok(self.inner.rebuild_projection()?.into())
     }

@@ -76,6 +76,20 @@ pub enum CoreError {
     },
 }
 
+impl CoreError {
+    /// The storage error inside, whether the vault returned it directly or
+    /// through the engine: what a client reads to tell a damaged vault, a
+    /// failed migration or a copy that could not be written from the rest
+    /// (`DbError::as_error_code`).
+    #[must_use]
+    pub const fn db_error(&self) -> Option<&DbError> {
+        match self {
+            Self::Db(e) | Self::Engine(EngineError::Storage(e)) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Default routine-materialization interval, per
 /// `docs/08-features/recurrence-engine.md` §generation-timing.
 pub const ROUTINE_TIMER_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -147,12 +161,25 @@ impl Core {
     /// Acquires the OS-level vault lock; if another process holds it, returns
     /// `VaultLock(AlreadyHeld { holder_pid, holder_started_at })`.
     pub async fn open(cfg: CoreConfig, unlock: Unlock) -> Result<Self, CoreError> {
+        Ok(Self::open_as(cfg, unlock, OpenMode::Ordinary).await?.0)
+    }
+
+    /// The open behind [`Self::open`] and [`Self::open_repairing`], and what
+    /// a repair's rebuild did.
+    pub(crate) async fn open_as(
+        cfg: CoreConfig,
+        unlock: Unlock,
+        mode: OpenMode,
+    ) -> Result<(Self, Option<crate::engine::RebuildReport>), CoreError> {
         let pid = holder_pid();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let (vault_root, identity_seed) = unlock.into_parts();
         let db_path = cfg.vault_dir.join("vault.db");
-        let mut db = Db::open(&db_path, &vault_root)?;
+        let mut db = match mode {
+            OpenMode::Ordinary => Db::open(&db_path, &vault_root)?,
+            OpenMode::Repair => Db::open_for_repair(&db_path, &vault_root)?,
+        };
         let (changes_tx, _) = broadcast::channel(256);
         let (sync_tx, _) = broadcast::channel(64);
         // Load-or-create the persistent device identity. The keychain takes
@@ -215,13 +242,26 @@ impl Core {
         // fails is rolled back, so the vault opens on the projection it had,
         // and the next open tries again: an op the rebuild cannot read is
         // damage to report, not a reason to refuse the vault.
-        if let Err(e) = engine.rebuild_if_stale(&mut db) {
-            tracing::warn!(
-                ev = "core.rebuild.on_open_failed",
-                cause = %e,
-                "the projection could not be rebuilt at open; the vault opens on the one it had"
-            );
-        }
+        //
+        // Under a copy of the vault taken first (rule 4's "under a rule-2
+        // backup"), or the one this open took before migrating: a copy that
+        // cannot be written skips the rebuild like any other failure.
+        //
+        // A repair rebuilds whatever the fold, and its rebuild and the check
+        // after it are the open: a vault they cannot mend is not opened.
+        let repaired = match mode {
+            OpenMode::Ordinary => {
+                if let Err(e) = engine.rebuild_if_stale(&mut db) {
+                    tracing::warn!(
+                        ev = "core.rebuild.on_open_failed",
+                        cause = %e,
+                        "the projection could not be rebuilt at open; the vault opens on the one it had"
+                    );
+                }
+                None
+            }
+            OpenMode::Repair => Some(repair::rebuild_and_check(&engine, &mut db)?),
+        };
         // Write both search indexes from the entity rows when the vault has
         // no record of them in this build's layout: the first open after
         // migration 0040 (ADR-0052). After the projection rebuild, which
@@ -326,7 +366,7 @@ impl Core {
                 "the attachment cache could not be brought under its limit at launch"
             );
         }
-        Ok(core)
+        Ok((core, repaired))
     }
 
     /// The one core entry point for a time-zone change
@@ -1414,18 +1454,23 @@ impl Core {
     /// state, and fold every applied entity op again, in one transaction
     /// (issue #441). See [`Engine::rebuild_projection`].
     ///
+    /// The vault is copied first, to `<vault>.pre-rebuild.bak`, which the
+    /// next open deletes ([`Db::back_up_for_rebuild`]).
+    ///
     /// Nothing is broadcast on `changes()`: every row may have been
     /// rewritten, so a client re-reads what it shows.
     ///
     /// # Errors
-    /// [`CoreError::Closed`] after close; [`EngineError::Invalid`] for an op
-    /// in the log that cannot be read; storage failures. On any error the
-    /// projection is left as it was.
+    /// [`CoreError::Closed`] after close; [`DbError::RebuildBackup`] when the
+    /// copy cannot be written, and nothing is rebuilt;
+    /// [`EngineError::Invalid`] for an op in the log that cannot be read;
+    /// storage failures. On any error the projection is left as it was.
     pub fn rebuild_projection(&self) -> Result<crate::engine::RebuildReport, CoreError> {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
         let mut db = self.db.lock();
+        db.back_up_for_rebuild()?;
         Ok(self.engine.rebuild_projection(&mut db)?)
     }
 
@@ -1577,6 +1622,10 @@ fn format_iso8601(ms: u64) -> String {
     // but the lock-file payload is human-readable for debugging only.
     format!("{ms}")
 }
+
+mod repair;
+
+pub(crate) use repair::OpenMode;
 
 #[cfg(test)]
 mod tests;
