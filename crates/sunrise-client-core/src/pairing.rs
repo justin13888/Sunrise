@@ -31,6 +31,17 @@
 //! relay origin by [`crate::relay_url`]'s rule. The scanned QR names a relay
 //! too, but it is text anyone can print, so [`scanned_pair_id`] refuses a code
 //! whose relay is another origin before any request is made.
+//!
+//! # The rest of a pairing
+//!
+//! * [`PairingDevice`] — one device's half of the protocol: the transcript,
+//!   the SAS and the three sealed messages, as base64url text.
+//! * [`RelayPairing`] — that half with this rendezvous carrying its messages,
+//!   in the order the protocol fixes. The `UniFFI` seam's `RelayPairing` wraps
+//!   it, and so does the CLI.
+//! * [`PairingRun`] — [`crate::pairing_flow::PairingFlow`]'s transitions run
+//!   to the end against a [`PairingSeam`], for a caller with no event loop of
+//!   its own; [`RelaySeam`] is the real seam.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -39,6 +50,58 @@ use sunrise_pairing::decode_qr_payload;
 use sunrise_relay_client::api;
 
 use crate::relay_url::{parse_relay_url, RelayUrlIssue};
+
+mod device;
+mod relay;
+mod run;
+
+pub use device::{account_tag, DeviceStep, PairingDevice};
+pub use relay::{seal_grant, seal_offer, RelayPairing};
+pub use run::{PairingRun, PairingSeam, PairingSide, RelaySeam, RunStop};
+
+/// Why a pairing step failed, in the classes a client words differently.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PairingFault {
+    /// The protocol refused: out of turn, a message that does not open, a
+    /// declined SAS, a code whose key is not the peer's.
+    #[error("{0}")]
+    Pairing(String),
+    /// A 32-byte seed arrived at another length.
+    #[error("a 32-byte key arrived as {len} bytes")]
+    BadLength {
+        /// How many bytes arrived.
+        len: u32,
+    },
+    /// The vault could not export its identity or issue the cert.
+    #[error("{0}")]
+    Vault(String),
+    /// The rendezvous stopped.
+    #[error(transparent)]
+    Rendezvous(#[from] RendezvousError),
+}
+
+/// How long [`relay_answers`] waits for the relay.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether the relay at `relay_url` answers `GET /api/v1/health` with a
+/// `200` within [`PROBE_TIMEOUT`].
+///
+/// Asked before a session is opened: inside a pairing a dropped packet is
+/// retried for up to [`WAIT_CAP`], and before one has started that patience
+/// is a wait that outlasts the person. The route needs no bearer and is
+/// limited apart from the pairing routes, so asking costs the pairing nothing.
+pub async fn relay_answers(relay_url: &str) -> bool {
+    let Ok(origin) = parse_relay_url(relay_url) else {
+        return false;
+    };
+    let Ok(client) = api::Client::new(origin.as_str()) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(PROBE_TIMEOUT, client.health(None)).await,
+        Ok(Ok(_))
+    )
+}
 
 /// How often a wait asks the relay for the other side's next message.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(400);

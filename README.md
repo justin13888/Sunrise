@@ -253,6 +253,20 @@ SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
 SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- today
 ```
 
+With a relay running, the same pairing goes through the relay instead, with the six-digit SAS printed on both devices and confirmed on each — the path the Apple apps take, through the same client-layer code. The device being added shows the code:
+
+```bash
+# Terminal 2 — B prints a pairing code and waits:
+SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair join
+
+# Terminal 1 — A takes it; both then ask for the digits the other one shows:
+SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair add '<the code B printed>'
+```
+
+`--yes` or `--confirm-sas <digits>` answers the digits without a prompt, and `--json` prints the code, the digits and the outcome as one JSON object per line; [`docs/07-clients/overview.md`](docs/07-clients/overview.md) §Pairing has the rest. `cargo test -p sunrise-e2e --test cli_pair_relay` runs it end to end through the real binary.
+
 > Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
 
 Each step prints the next one, so the sequence is discoverable from the first command. `pair request` parks B's freshly minted device keys in `/tmp/vault-b/pending-pairing` (mode 0600) because its two steps are two processes; `pair accept` consumes and deletes them. If B's directory already holds a vault the exchange refuses it — there is no account left to decide — so delete `/tmp/vault-b` and start again. The old `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` variables are **gone**: the single file they moved was the whole account including the signing key, which is exactly what stopped travelling. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:

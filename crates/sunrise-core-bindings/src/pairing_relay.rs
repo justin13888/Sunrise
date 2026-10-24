@@ -3,7 +3,7 @@
 //!
 //! [`DevicePairing`] is transport-agnostic, and until the rendezvous existed
 //! its only transport was a person copying six base64 strings between two
-//! screens. [`RelayPairing`] wraps one and moves each of those strings through
+//! screens. [`RelayPairing`] moves each of those strings through
 //! `POST /api/v1/pairing/{send,receive,abort}` (`docs/06-server/api.md`
 //! §Pairing rendezvous), in the order the protocol fixes. Nothing about the
 //! crypto changes: the relay sees Noise ciphertext, the SAS binds the
@@ -30,16 +30,19 @@
 //!
 //! The rendezvous itself — the polling, the retry bound, the `429` that
 //! refuses a new session, and the rule that the bearer goes only to this
-//! device's relay origin — is the client layer's
-//! [`sunrise_client_core::pairing`], so every client pairs the same way. This
-//! file lowers it onto [`DevicePairing`] and [`BindingError`].
+//! device's relay origin — and the order the six messages cross in are the
+//! client layer's [`sunrise_client_core::pairing::RelayPairing`], which the
+//! CLI's `sunrise pair join` and `sunrise pair add` drive too, so every client
+//! pairs the same way. This file lowers it onto [`BindingError`].
+//!
+//! [`DevicePairing`]: crate::pairing::DevicePairing
+//! [`DevicePairing::receive_message`]: crate::pairing::DevicePairing::receive_message
 
 use std::sync::Arc;
 
-use sunrise_client_core::pairing::{scanned_pair_id, Rendezvous, RendezvousError, RendezvousRole};
-use sunrise_pairing::decode_qr_payload;
+use sunrise_client_core::pairing::{self as client, RendezvousError};
 
-use crate::pairing::{DevicePairing, PairedBundle, PairingRole};
+use crate::pairing::{PairedBundle, PairingRole};
 use crate::{BindingError, SunriseCore};
 
 pub use sunrise_client_core::pairing::{POLL_INTERVAL, WAIT_CAP};
@@ -47,15 +50,16 @@ pub use sunrise_client_core::pairing::{POLL_INTERVAL, WAIT_CAP};
 /// One device's half of a pairing whose messages travel through the relay.
 #[derive(uniffi::Object)]
 pub struct RelayPairing {
-    pairing: Arc<DevicePairing>,
-    rendezvous: Rendezvous,
+    inner: client::RelayPairing,
 }
 
 impl std::fmt::Debug for RelayPairing {
     /// The role only: see [`DevicePairing`]'s `Debug` for why.
+    ///
+    /// [`DevicePairing`]: crate::pairing::DevicePairing
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RelayPairing")
-            .field("role", &self.pairing.role())
+            .field("role", &self.role())
             .finish_non_exhaustive()
     }
 }
@@ -87,21 +91,8 @@ impl RelayPairing {
         bearer: String,
         account_email: String,
     ) -> Result<Arc<Self>, BindingError> {
-        let pairing = Arc::new(DevicePairing::offer(relay_url.clone(), account_email)?);
-        let qr = pairing
-            .qr_payload()
-            .ok_or_else(|| BindingError::Pairing("the new device has no QR".into()))?;
-        let pair_id = decode_qr_payload(&qr)
-            .map_err(|e| BindingError::Pairing(e.to_string()))?
-            .pair_id;
-        let rendezvous = Rendezvous::new(&relay_url, &bearer, pair_id, RendezvousRole::NewDevice)?;
-        let this = Self {
-            pairing,
-            rendezvous,
-        };
-        let first = this.pairing.next_message()?;
-        this.rendezvous.send(first).await?;
-        Ok(Arc::new(this))
+        let inner = client::RelayPairing::offer(&relay_url, &bearer, &account_email).await?;
+        Ok(Arc::new(Self { inner }))
     }
 
     /// Begin on the **existing** device, from the QR as scanned or pasted.
@@ -128,26 +119,20 @@ impl RelayPairing {
         relay_url: String,
         bearer: String,
     ) -> Result<Arc<Self>, BindingError> {
-        let pair_id = scanned_pair_id(&qr_payload, &relay_url)?;
-        let pairing = Arc::new(DevicePairing::accept(qr_payload.trim().to_owned())?);
-        let rendezvous =
-            Rendezvous::new(&relay_url, &bearer, pair_id, RendezvousRole::ExistingDevice)?;
-        Ok(Arc::new(Self {
-            pairing,
-            rendezvous,
-        }))
+        let inner = client::RelayPairing::accept(&qr_payload, &relay_url, &bearer)?;
+        Ok(Arc::new(Self { inner }))
     }
 
     /// The QR payload to display, on the new device.
     #[must_use]
     pub fn qr_payload(&self) -> Option<String> {
-        self.pairing.qr_payload()
+        self.inner.qr_payload()
     }
 
     /// This device's role.
     #[must_use]
     pub fn role(&self) -> PairingRole {
-        self.pairing.role()
+        self.inner.role().into()
     }
 
     /// Run the Noise handshake over the relay and return the SAS both users
@@ -165,8 +150,7 @@ impl RelayPairing {
     /// when the session is gone; [`BindingError::Relay`] when the relay cannot
     /// be reached within [`WAIT_CAP`].
     pub async fn handshake(&self) -> Result<String, BindingError> {
-        let ran = self.run_handshake().await;
-        self.abort_on_failure(ran).await
+        Ok(self.inner.handshake().await?)
     }
 
     /// The user tapped "Match" on the **existing** device: hand the new one
@@ -182,8 +166,7 @@ impl RelayPairing {
     /// [`SunriseCore::send_pairing_grant`], and [`BindingError::Pairing`] when
     /// the new device rejected the SAS or left.
     pub async fn sponsor(&self, core: Arc<SunriseCore>) -> Result<(), BindingError> {
-        let ran = self.run_sponsor(&core).await;
-        self.abort_on_failure(ran).await
+        Ok(self.inner.sponsor(core.core()).await?)
     }
 
     /// The user tapped "Match" on the **new** device: wait for the offer, mint
@@ -198,6 +181,9 @@ impl RelayPairing {
     /// As [`DevicePairing::request_device_cert`] and
     /// [`DevicePairing::open_pairing_grant`], and [`BindingError::Pairing`]
     /// when the existing device rejected the SAS or left.
+    ///
+    /// [`DevicePairing::request_device_cert`]: crate::pairing::DevicePairing::request_device_cert
+    /// [`DevicePairing::open_pairing_grant`]: crate::pairing::DevicePairing::open_pairing_grant
     pub async fn join(
         &self,
         nickname: String,
@@ -205,81 +191,20 @@ impl RelayPairing {
         seed_s: Vec<u8>,
         seed_d: Vec<u8>,
     ) -> Result<PairedBundle, BindingError> {
-        let ran = self.run_join(nickname, platform, seed_s, seed_d).await;
-        self.abort_on_failure(ran).await
+        let payload = self.inner.join(nickname, platform, seed_s, seed_d).await?;
+        PairedBundle::try_from(&payload)
     }
 
     /// The user tapped "Don't match": discard the keys here and tell the other
     /// device through the relay, which is the spec's `pair_abort`.
     pub async fn reject(&self) {
-        let _ = self.pairing.confirm(false);
-        self.rendezvous.abort().await;
+        self.inner.reject().await;
     }
 
     /// Stop at any point: end any wait in progress, discard the keys and drop
     /// the relay session. Idempotent.
     pub async fn cancel(&self) {
-        self.rendezvous.cancel();
-        let _ = self.pairing.confirm(false);
-        self.rendezvous.abort().await;
-    }
-}
-
-impl RelayPairing {
-    async fn run_handshake(&self) -> Result<String, BindingError> {
-        match self.pairing.role() {
-            PairingRole::NewDevice => {
-                let second = self.rendezvous.next().await?;
-                self.pairing.receive_message(second)?;
-                let third = self.pairing.next_message()?;
-                self.rendezvous.send(third).await?;
-            }
-            PairingRole::ExistingDevice => {
-                let first = self.rendezvous.next().await?;
-                self.pairing.receive_message(first)?;
-                let second = self.pairing.next_message()?;
-                self.rendezvous.send(second).await?;
-                let third = self.rendezvous.next().await?;
-                self.pairing.receive_message(third)?;
-            }
-        }
-        self.pairing.sas()
-    }
-
-    async fn run_sponsor(&self, core: &SunriseCore) -> Result<(), BindingError> {
-        self.pairing.confirm(true)?;
-        let offer = core.send_pairing_offer(Arc::clone(&self.pairing))?;
-        self.rendezvous.send(offer).await?;
-        let request = self.rendezvous.next().await?;
-        let grant = core.send_pairing_grant(Arc::clone(&self.pairing), request)?;
-        Ok(self.rendezvous.send(grant).await?)
-    }
-
-    async fn run_join(
-        &self,
-        nickname: String,
-        platform: String,
-        seed_s: Vec<u8>,
-        seed_d: Vec<u8>,
-    ) -> Result<PairedBundle, BindingError> {
-        self.pairing.confirm(true)?;
-        let offer = self.rendezvous.next().await?;
-        let request = self
-            .pairing
-            .request_device_cert(offer, nickname, platform, seed_s, seed_d)?;
-        self.rendezvous.send(request).await?;
-        let grant = self.rendezvous.next().await?;
-        self.pairing.open_pairing_grant(grant)
-    }
-
-    /// Drop the relay session when a step failed, so the other device learns
-    /// at its next poll rather than at the session's expiry.
-    async fn abort_on_failure<T>(&self, ran: Result<T, BindingError>) -> Result<T, BindingError> {
-        if ran.is_err() {
-            let _ = self.pairing.confirm(false);
-            self.rendezvous.abort().await;
-        }
-        ran
+        self.inner.cancel().await;
     }
 }
 

@@ -141,7 +141,11 @@ and the relay has no part in pairing at all.** There is no pairing route in
 server's `Hello` response sets only `REQUIRED_CLIENT_BITS |
 REQUIRED_SERVER_BITS | SrvTokenRefresh`.
 
-What ships instead is a **manual three-file exchange**, driven by the CLI in
+What ships instead is the relay's pairing rendezvous
+([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous), which the
+Apple apps and the CLI's `sunrise pair join` / `sunrise pair add` both drive
+through the client layer's `RelayPairing`, and for a device with no relay a
+**manual three-file exchange**, driven by the CLI in
 `crates/sunrise-cli/src/pair.rs`: `sunrise pair offer`, `request`, `issue`,
 `accept`, with the user moving each file between the two machines. Three files
 because pairing is three messages — the account's signing key does not travel,

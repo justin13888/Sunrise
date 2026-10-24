@@ -257,7 +257,8 @@ mod tests {
         assert!(usage.starts_with("sunrise — command-line client for Sunrise\n\nUSAGE:\n"));
         assert!(usage.contains("\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n"));
         assert!(usage.ends_with("see `sunrise pair`.\n"));
-        assert!(strings::pair::usage().starts_with("usage:\n  sunrise pair offer    --out"));
+        assert!(strings::pair::usage().starts_with("usage:\n  over the relay"));
+        assert!(strings::pair::usage().contains("\n  sunrise pair offer    --out"));
     }
 
     /// A count reads as a plural, never as "1 devices".

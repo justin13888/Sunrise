@@ -367,3 +367,20 @@ fn a_done_screen_going_away_cancels_nothing() {
     done.submitted(PairingLeg::Grant, Ok(None));
     assert!(done.dismissed().is_empty());
 }
+
+#[test]
+fn the_digits_are_read_in_two_threes() {
+    assert_eq!(grouped_sas("123456"), "123 456");
+    assert_eq!(grouped_sas("12345"), "12345", "not six digits: as given");
+    assert_eq!(grouped_sas("12a456"), "12a456");
+}
+
+#[test]
+fn a_typed_answer_matches_only_the_same_six_digits() {
+    for typed in ["123456", "123 456", " 123-456\n"] {
+        assert!(sas_matches(typed, "123456"), "{typed:?}");
+    }
+    for typed in ["", "  ", "123457", "12345", "1234567", "654321"] {
+        assert!(!sas_matches(typed, "123456"), "{typed:?}");
+    }
+}
