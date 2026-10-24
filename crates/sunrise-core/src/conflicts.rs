@@ -115,6 +115,10 @@ pub enum ConflictClass {
     /// A register of a field whose writes all survive (a counter's legacy
     /// base). Never surfaced unless asked for.
     Merge,
+    /// A `Task.blocked_by` edge or a `Stream.parent_id` that the read-time
+    /// cycle rule sets aside (ADR-0065 §5, #333): concurrent writes closed a
+    /// loop, and the edge reads as absent. Always surfaced.
+    DependencyCycle,
 }
 
 impl From<Conflict> for ConflictClass {
@@ -176,6 +180,13 @@ pub struct EntityConflict {
     /// For `deleted` when the delete won: the branches that edited the entity
     /// without having seen the delete, oldest first. Empty otherwise.
     pub edited_while_deleted: Vec<DeletedEdit>,
+    /// For [`ConflictClass::DependencyCycle`]: the loop the set-aside edge
+    /// would close, from `entity` back to `entity`. Empty otherwise.
+    ///
+    /// The `winner` is then the write of the set-aside edge itself (its
+    /// value the blocker or parent it names), the one the rule chose not to
+    /// show, and `losers` is empty. Removing any edge of the loop ends it.
+    pub cycle: Vec<EntityRef>,
 }
 
 #[cfg(test)]

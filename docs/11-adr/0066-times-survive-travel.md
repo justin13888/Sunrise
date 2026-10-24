@@ -207,11 +207,12 @@ constraint parts of #333) delivers §1, §2 and the rest of §5:
 - **§5, constraints.** A wrapping window (`22:00–02:00`) is valid and belongs
   to the day it starts on; a zone change lists the open planned tasks that
   now break a hard window (`TimeZoneChange::hard_violations`).
-- **Not yet.** Concurrent defers still fold to one count:
-  `deferred_count` is a counter in the fold, but defer writes a full-state
-  op until a vault requires `core.field_ops`
-  (`TODO(ADR-0065 PR7, #447, #334)` in `defer_task`). For the same reason a
-  concurrent completion of two occurrences of one routine on two devices
-  keeps one streak key. Edit scopes, template propagation, catch-up of
+- **Since ADR-0065's seventh pull request**, concurrent defers both count
+  and concurrent completions of two occurrences of one routine keep both
+  streak keys, between devices that all fold field ops (ADR-0065
+  clarification D16): a defer is then a `Patch` that adds one to
+  `deferred_count`, and a streak advance one that adds its key, from which
+  the streak is derived. Against a device that does not, both stay the
+  full-state ops of before. Edit scopes, template propagation, catch-up of
   occurrences left open, and the hard-constraint flag at generation remain
   #331's.

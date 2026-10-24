@@ -223,7 +223,12 @@ replica.
 - `name` MUST be non-empty.
 - `parent_id` MUST refer to a non-archived, non-deleted, top-level Stream **at the time the `parent_id` is set or changed**. A `parent_id` that later names a tombstone reads as top-level (see §Deleting a stream).
 - `DeleteStream` with `MoveTo` MUST name a live stream other than the one being deleted.
-- Cycles are impossible by structure (one-level limit + no parent self-reference).
+- Cycles are impossible by structure on one device (one-level limit + no
+  parent self-reference). Two devices that each nest one stream under the
+  other concurrently merge into a loop; every replica reads the stream whose
+  `parent_id` write is newest as top-level, and reports the loop as a
+  `dependency_cycle` conflict ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+  §5, D18).
 
 ## Deleting a stream
 

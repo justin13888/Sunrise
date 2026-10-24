@@ -182,7 +182,9 @@ resolve_cycles(edges) -> (dag, suppressed):
   suppressed edge revives on every replica, because the function is re-run over
   the new state.
 - **Visible.** Each suppressed edge is reported to views as a dependency
-  conflict on both tasks, with an action to remove it (a normal OR-set remove).
+  conflict on both tasks, with an action to remove it (a normal OR-set remove):
+  `Query::Conflicts` class `dependency_cycle`
+  ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D18).
 
 `blocked`, the planner and every dependency view read the resolved `dag`, never
 the raw sets. `resolve_cycles` lives in `sunrise-domain` beside `would_cycle`
@@ -234,8 +236,9 @@ SQL; evaluation happens in Rust. See
   re-evaluated (`crates/sunrise-core/src/engine/task.rs#check_schedule_constraints`).
 - There is no `at_place` dimension
   (`crates/sunrise-domain/src/constraint.rs#ScheduleConstraint`).
-- A concurrent `blocked_by` cycle persists and leaves both tasks blocked; no
-  merge-path code resolves it.
+- A suppressed edge is reported as one `dependency_cycle` conflict on the task
+  that holds it, listing the loop; asking for either task's conflicts returns
+  it. Search's `is:blocked` still reads the raw sets.
 
 ## See also
 

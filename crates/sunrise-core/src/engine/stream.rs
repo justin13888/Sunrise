@@ -18,12 +18,12 @@ use crate::commands::CommandResult;
 use crate::inner_op::InnerOp;
 use crate::queries::{QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::sort_order;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
-    SunriseTime, INBOX_STREAM_BYTES,
+    inbox_stream_ref, resolve_parent_cycles, RootedStream, Stream, StreamColor, StreamDraft,
+    StreamPatch, StreamReviewCadence, SunriseTime, INBOX_STREAM_BYTES,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -414,6 +414,12 @@ pub(super) fn read_stream(
         a[..take].copy_from_slice(&b[..take]);
         EntityRef::new(EntityKind::Stream, a)
     });
+    // A stream the cycle rule reads as a root has no parent here, whatever
+    // its register holds (`rooted_streams`).
+    let parent = match parent {
+        Some(_) if rooted_streams(conn)?.iter().any(|r| r.stream.bytes() == id) => None,
+        other => other,
+    };
     let stream = Stream {
         reminder_lead_s,
         id: EntityRef::new(EntityKind::Stream, *id),
@@ -446,6 +452,50 @@ pub(super) fn read_stream(
         unknown: decode_unknowns(extra),
     };
     Ok(Some(stream))
+}
+
+/// The streams the `parent_id` cycle rule reads as roots (ADR-0065 §5), with
+/// the parent each one's register names and the loop it closes.
+///
+/// Every stream's `parent_id` is its own register, so two devices that each
+/// nest one stream under the other merge into a loop. In each loop the
+/// stream whose `parent_id` write has the greatest stamp reads as a root
+/// ([`sunrise_domain::resolve_parent_cycles`]). Applied when a stream is
+/// read, never written, so every replica holding the same registers reads
+/// the same forest. A forest, the usual case, needs no stamp lookup.
+pub(super) fn rooted_streams(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<RootedStream<Option<super::merge::Stamp>>>, EngineError> {
+    let mut stmt =
+        conn.prepare("SELECT stream_id, parent_id FROM streams WHERE parent_id IS NOT NULL")?;
+    let edges: Vec<(EntityRef, EntityRef)> = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|(c, p)| {
+            (
+                EntityRef::new(EntityKind::Stream, blob16(&c)),
+                EntityRef::new(EntityKind::Stream, blob16(&p)),
+            )
+        })
+        .collect();
+    let (_, unstamped) = resolve_parent_cycles(edges.iter().map(|(c, p)| (*c, *p, ())));
+    if unstamped.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stamps: BTreeMap<[u8; 16], super::merge::Stamp> =
+        super::merge::register_winners(conn, "parent_id")?
+            .into_iter()
+            .map(|(id, _, at)| (id, at))
+            .collect();
+    let (_, rooted) = resolve_parent_cycles(
+        edges
+            .into_iter()
+            .map(|(c, p)| (c, p, stamps.get(c.bytes()).copied())),
+    );
+    Ok(rooted)
 }
 
 /// A Stream's review cadence in its storage string form (matches the serde

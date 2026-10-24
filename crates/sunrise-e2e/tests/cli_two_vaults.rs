@@ -86,6 +86,12 @@ async fn concurrent_edits_to_different_fields_of_one_task_converge() {
     relay.abort();
 }
 
+/// Two defers of one task, made while the devices are apart.
+///
+/// Both devices are this build and have told each other so, so each defer is
+/// a `Patch` that sets the plan and adds one to `deferred_count` (ADR-0065
+/// clarification D16): both count (#334), and the two plans are a conflict
+/// both devices report.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_defers_converge_on_one_plan() {
     let (addr, relay) = spawn_relay().await;
@@ -106,9 +112,16 @@ async fn concurrent_defers_converge_on_one_plan() {
     assert!(on_a["scheduled_at"]["value"]
         .as_str()
         .is_some_and(|v| v.ends_with("T09:00:00")));
-    // Both deferrals were made; the counter is a register today, so it
-    // reads the winner's count rather than the sum.
-    assert!(on_a["deferred_count"].as_i64().is_some_and(|n| n >= 1));
+    assert_eq!(on_a["deferred_count"], 2, "both deferrals count");
+    let reported = |c: &Value| {
+        c.as_array().is_some_and(|cs| {
+            cs.iter()
+                .any(|c| c["entity"] == task.as_str() && c["field"] == "scheduled_at")
+        })
+    };
+    let (on_a, on_b) = (conflicts(&a).await, conflicts(&b).await);
+    assert!(reported(&on_a), "{on_a}");
+    assert_eq!(on_a, on_b, "both devices report the same conflict");
     relay.abort();
 }
 

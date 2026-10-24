@@ -133,6 +133,7 @@ impl Engine {
         let stream = *view.start.stream_id.bytes();
         let state = completion.as_ref().map(|c| c.task.state.clone());
         let op = InnerOp::FocusEnd(Box::new(end));
+        let field_ops = self.writes_field_ops(db.conn())?;
         let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
             let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
             if let Some(c) = completion {
@@ -143,8 +144,10 @@ impl Engine {
                 // it (`docs/08-features/focus-mode.md`: "a focus session that
                 // completes a routine occurrence increments the routine
                 // streak").
-                if let Some(routine) = c.streak {
-                    self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+                if let Some(streak) = &c.streak {
+                    if let Some(routine) = streak.op_in(tx, field_ops)? {
+                        self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+                    }
                 }
             }
             Ok(done)
@@ -439,7 +442,7 @@ impl Engine {
 /// is as close to them as a method's return type can live.
 struct FocusCompletion {
     task: Task,
-    streak: Option<InnerOp>,
+    streak: Option<super::routine::StreakWrite>,
 }
 
 /// Materialize one focus op. Every write is an insert that ignores a conflict

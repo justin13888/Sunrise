@@ -85,7 +85,8 @@ pub use day_schedule::{
     DaySchedule, DayScheduleEntry, DayWindow, OutOfCalendar, WindDown,
 };
 pub use deps::{
-    blocker_is_open, effective_state, is_actionable, DependencyGraph, EffectiveTaskState,
+    blocker_is_open, effective_state, is_actionable, resolve_cycles, DependencyGraph,
+    EffectiveTaskState, SuppressedEdge,
 };
 pub use export::{
     activity_table, focus_table, streaks_table, trends_table, Cell, ExportDataset, ExportFormat,
@@ -154,10 +155,13 @@ pub use stats::{
     WeekBucket, WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
 };
 pub use streak::{
-    StreakOutcome, StreakRow, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE, FORGIVENESS_WINDOW_S,
-    MAX_GRACE_WINDOW_S,
+    DerivedStreak, StreakOutcome, StreakRow, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE,
+    FORGIVENESS_WINDOW_S, MAX_GRACE_WINDOW_S,
 };
-pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
+pub use stream::{
+    resolve_parent_cycles, RootedStream, Stream, StreamColor, StreamDraft, StreamPatch,
+    StreamReviewCadence,
+};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use time::{first_day_of_week, shift_civil_days, CompatTime, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};

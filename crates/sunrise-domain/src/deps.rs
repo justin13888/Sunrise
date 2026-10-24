@@ -173,6 +173,137 @@ impl DependencyGraph {
     }
 }
 
+/// A `blocked_by` edge the cycle rule sets aside (#333,
+/// ADR-0065 §5): it stays in the task's merged set, and no read of the
+/// dependency graph sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppressedEdge<S> {
+    /// The task whose `blocked_by` names the edge.
+    pub task: EntityRef,
+    /// The blocker it names.
+    pub blocker: EntityRef,
+    /// The stamp the rule ordered it by.
+    pub stamp: S,
+    /// The cycle it would close, from `task` back to `task`: `task`, then
+    /// `blocker`, then the kept edges leading back. A self-block is
+    /// `[task, task]`.
+    pub cycle: Vec<EntityRef>,
+}
+
+/// The acyclic graph the merged `blocked_by` sets read as, and the edges set
+/// aside to make it so (#333).
+///
+/// Concurrent edits on two devices can each pass the local check
+/// ([`DependencyGraph::would_cycle`]) and still merge into a cycle, since
+/// `blocked_by` is an add-wins set. The rule that breaks it is **oldest edge
+/// first**: the edges are taken in ascending `stamp` order (ties by task, then
+/// blocker), and an edge that would close a cycle among the edges already
+/// kept is suppressed. So of `A→B` and a concurrent `B→A`, the newer one
+/// reads as absent, and an edge that closes a longer loop is judged against
+/// the kept graph alone.
+///
+/// The result is a pure function of the set of `(task, blocker, stamp)`
+/// triples, whatever order they are given in, so every replica that holds
+/// the same merged sets reads the same graph without exchanging anything.
+/// Nothing is written: the edge stays in the set, and removing another edge
+/// of its cycle brings it back.
+///
+/// The caller gives each edge the stamp of its oldest surviving add, which
+/// is a fact of the merged set, not of this replica. An edge given twice
+/// keeps its least stamp.
+#[must_use]
+pub fn resolve_cycles<S, I>(edges: I) -> (DependencyGraph, Vec<SuppressedEdge<S>>)
+where
+    S: Ord + Clone,
+    I: IntoIterator<Item = (EntityRef, EntityRef, S)>,
+{
+    let mut ordered: Vec<(S, EntityRef, EntityRef)> =
+        edges.into_iter().map(|(t, b, s)| (s, t, b)).collect();
+    ordered.sort();
+    // One edge per (task, blocker): the oldest, which sorts first.
+    let mut seen: BTreeSet<(EntityRef, EntityRef)> = BTreeSet::new();
+    ordered.retain(|(_, t, b)| seen.insert((*t, *b)));
+    let mut kept = DependencyGraph::new();
+    let mut suppressed = Vec::new();
+    for (stamp, task, blocker) in ordered {
+        if let Some(back) = kept.path(blocker, task) {
+            let mut cycle = Vec::with_capacity(back.len() + 1);
+            cycle.push(task);
+            cycle.extend(back);
+            suppressed.push(SuppressedEdge {
+                task,
+                blocker,
+                stamp,
+                cycle,
+            });
+        } else {
+            kept.add_edge(task, blocker);
+        }
+    }
+    (kept, suppressed)
+}
+
+impl DependencyGraph {
+    /// A shortest path of `blocked_by` edges from `from` to `to`, both
+    /// included, or `None` when `to` is not reachable. `from == to` is the
+    /// path `[from]`.
+    fn path(&self, from: EntityRef, to: EntityRef) -> Option<Vec<EntityRef>> {
+        let mut came_from: BTreeMap<EntityRef, EntityRef> = BTreeMap::new();
+        let mut queue = std::collections::VecDeque::from([from]);
+        let mut seen = BTreeSet::from([from]);
+        while let Some(node) = queue.pop_front() {
+            if node == to {
+                let mut out = vec![to];
+                let mut at = to;
+                while let Some(prev) = came_from.get(&at) {
+                    out.push(*prev);
+                    at = *prev;
+                }
+                out.reverse();
+                return Some(out);
+            }
+            for next in self.blockers_of(&node) {
+                if seen.insert(*next) {
+                    came_from.insert(*next, node);
+                    queue.push_back(*next);
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether some chain of edges leads back to where it started.
+    #[must_use]
+    pub fn has_cycle(&self) -> bool {
+        // Kahn's algorithm: a graph is acyclic exactly when repeatedly
+        // removing nodes with no remaining blockers removes every node.
+        let mut nodes: BTreeSet<EntityRef> = self.forward.keys().copied().collect();
+        nodes.extend(self.reverse.keys().copied());
+        let mut waiting: BTreeMap<EntityRef, usize> = nodes
+            .iter()
+            .map(|n| (*n, self.blockers_of(n).len()))
+            .collect();
+        let mut ready: Vec<EntityRef> = waiting
+            .iter()
+            .filter(|(_, n)| **n == 0)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut removed = 0usize;
+        while let Some(node) = ready.pop() {
+            removed += 1;
+            for dependent in self.blocks_others(&node) {
+                if let Some(n) = waiting.get_mut(dependent) {
+                    *n -= 1;
+                    if *n == 0 {
+                        ready.push(*dependent);
+                    }
+                }
+            }
+        }
+        removed != nodes.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +426,106 @@ mod tests {
         let g = DependencyGraph::from_edges([(t(1), t(2)), (t(2), t(1))]);
         assert!(g.would_cycle(t(3), &BTreeSet::from([t(1), t(3)])));
         assert!(!g.would_cycle(t(4), &BTreeSet::from([t(1)])));
+    }
+
+    #[test]
+    fn of_two_concurrent_edges_closing_a_loop_the_newer_is_suppressed() {
+        let (g, dropped) = resolve_cycles([(t(1), t(2), 5u32), (t(2), t(1), 7)]);
+        assert_eq!(g.blockers_of(&t(1)), &BTreeSet::from([t(2)]));
+        assert!(g.blockers_of(&t(2)).is_empty());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!((dropped[0].task, dropped[0].blocker), (t(2), t(1)));
+        assert_eq!(dropped[0].stamp, 7);
+        assert_eq!(dropped[0].cycle, vec![t(2), t(1), t(2)]);
+        assert!(!g.has_cycle());
+        // Equal stamps break by task, then blocker.
+        let (_, tie) = resolve_cycles([(t(2), t(1), 5u32), (t(1), t(2), 5)]);
+        assert_eq!((tie[0].task, tie[0].blocker), (t(2), t(1)));
+    }
+
+    #[test]
+    fn a_self_block_is_suppressed_and_an_acyclic_graph_is_kept_whole() {
+        let (g, dropped) = resolve_cycles([(t(1), t(1), 1u32), (t(2), t(3), 2), (t(3), t(4), 3)]);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].cycle, vec![t(1), t(1)]);
+        assert_eq!(g.edge_count(), 2);
+    }
+
+    #[test]
+    fn a_longer_loop_drops_only_its_newest_edge() {
+        // 1→2 (old), 2→3, 3→1 (newest), and an unrelated 4→1 after it.
+        let (g, dropped) = resolve_cycles([
+            (t(3), t(1), 30u32),
+            (t(1), t(2), 10),
+            (t(2), t(3), 20),
+            (t(4), t(1), 40),
+        ]);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!((dropped[0].task, dropped[0].blocker), (t(3), t(1)));
+        assert_eq!(dropped[0].cycle, vec![t(3), t(1), t(2), t(3)]);
+        assert_eq!(g.edge_count(), 3);
+        assert!(!g.has_cycle());
+    }
+
+    #[test]
+    fn an_edge_given_twice_keeps_its_oldest_stamp() {
+        let (_, dropped) = resolve_cycles([(t(1), t(2), 9u32), (t(2), t(1), 5), (t(1), t(2), 3)]);
+        assert_eq!((dropped[0].task, dropped[0].stamp), (t(2), 5));
+    }
+
+    #[test]
+    fn has_cycle_sees_a_loop_and_nothing_else() {
+        assert!(DependencyGraph::from_edges([(t(1), t(2)), (t(2), t(1))]).has_cycle());
+        assert!(DependencyGraph::from_edges([(t(1), t(1))]).has_cycle());
+        assert!(
+            DependencyGraph::from_edges([(t(1), t(2)), (t(2), t(3)), (t(3), t(1))]).has_cycle()
+        );
+        assert!(!DependencyGraph::from_edges([(t(1), t(2)), (t(3), t(2))]).has_cycle());
+        assert!(!DependencyGraph::from_edges([(t(1), t(2)), (t(2), t(3))]).has_cycle());
+        assert!(!DependencyGraph::new().has_cycle());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 256,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// #333: any order of the same merged edges yields the same acyclic
+        /// graph and the same suppressed edges, and only an edge that would
+        /// close a cycle is ever suppressed.
+        #[test]
+        fn any_merge_order_resolves_to_the_same_dag(
+            raw in proptest::collection::vec((0u8..6, 0u8..6, 0u32..40), 0..24),
+            seed in proptest::prelude::any::<u64>(),
+        ) {
+            let edges: Vec<(EntityRef, EntityRef, u32)> =
+                raw.iter().map(|(a, b, s)| (t(*a), t(*b), *s)).collect();
+            let mut shuffled = edges.clone();
+            // A deterministic shuffle from the seed (xorshift).
+            let mut x = seed | 1;
+            for i in (1..shuffled.len()).rev() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let j = usize::try_from(x % (i as u64 + 1)).unwrap_or(0);
+                shuffled.swap(i, j);
+            }
+            let (g1, d1) = resolve_cycles(edges.clone());
+            let (g2, d2) = resolve_cycles(shuffled);
+            proptest::prop_assert_eq!(&g1, &g2);
+            proptest::prop_assert_eq!(&d1, &d2);
+            proptest::prop_assert!(!g1.has_cycle());
+            for d in &d1 {
+                // Putting the suppressed edge back alone would close its cycle.
+                let mut with = g1.blockers_of(&d.task).clone();
+                with.insert(d.blocker);
+                proptest::prop_assert!(g1.would_cycle(d.task, &with));
+            }
+            // Every distinct edge is kept or suppressed, never both.
+            let distinct: BTreeSet<(EntityRef, EntityRef)> =
+                edges.iter().map(|(a, b, _)| (*a, *b)).collect();
+            proptest::prop_assert_eq!(distinct.len(), g1.edge_count() + d1.len());
+        }
     }
 }

@@ -490,6 +490,14 @@ impl<'a> Run<'a> {
             "SELECT stream_id, name, parent_id FROM streams
              WHERE deleted = 0 AND name IS NOT NULL AND name <> ''",
         )?;
+        // A stream the parent cycle rule reads as a root nests under nothing
+        // (`stream::rooted_streams`), so `stream:` takes no loop round.
+        let rooted = super::stream::rooted_streams(db.conn())?;
+        for (id, _, parent) in &mut streams {
+            if rooted.iter().any(|r| r.stream == *id) {
+                *parent = None;
+            }
+        }
         let inbox = inbox_stream_ref();
         if !streams.iter().any(|(id, _, _)| *id == inbox) {
             streams.push((inbox, "Inbox".to_owned(), None));

@@ -14,7 +14,7 @@ use super::ids::{
     blob16, decode_unknowns, ms_to_ts, parse_energy, parse_task_state, require_kind,
     require_writable_stream, time_from_parts,
 };
-use super::routine::read_routine;
+use super::routine::{read_routine, StreakWrite};
 use super::write::Appended;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::{BulkTaskAction, BulkTaskItem, CommandResult};
@@ -24,8 +24,9 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, violations_by_severity, DependencyGraph, NoteBody, Routine,
-    ScheduleConstraint, SunriseTime, Task, TaskDraft, TaskPatch, TaskState, ValidationError,
+    inbox_stream_ref, resolve_cycles, violations_by_severity, DependencyGraph, NoteBody, Routine,
+    ScheduleConstraint, StreakOutcome, SunriseTime, SuppressedEdge, Task, TaskDraft, TaskPatch,
+    TaskState, ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -97,21 +98,25 @@ impl Engine {
         // grace-window / forgiveness / idempotency rules and reports
         // `Duplicate` when this occurrence was already counted, in which case
         // no routine op is emitted at all.
-        let streak_op = if write.completes {
+        let streak = if write.completes {
             self.streak_advance(db, &write.task, now_ms)?
         } else {
             None
         };
-        let (op, stream) = write.op();
+        let field_ops = self.writes_field_ops(db.conn())?;
         let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let (op, stream) = write.op_in(tx, field_ops)?;
             let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
-            // The streak advance is a routine.update op in the SAME
-            // transaction, so the counter can never diverge from the
-            // completion that caused it, and it converges on every other
-            // replica through the ordinary full-state routine merge. Each op
-            // is folded with its own stamp, the one every peer folds it with.
-            if let Some(routine) = streak_op {
-                self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+            // The streak advance is a routine op in the SAME transaction, so
+            // the counter can never diverge from the completion that caused
+            // it. Each op is folded with its own stamp, the one every peer
+            // folds it with. As a `Patch` it adds the occurrence's key, which
+            // a concurrent completion of another occurrence cannot lose
+            // (clarification D16).
+            if let Some(streak) = &streak {
+                if let Some(routine) = streak.op_in(tx, field_ops)? {
+                    self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+                }
             }
             Ok(done)
         })?;
@@ -213,8 +218,8 @@ impl Engine {
         if touches_blockers {
             // Local cycle/self-block check over the dependency index, per
             // docs/02-domain/tasks.md §Validation. Deliberately local: a cycle
-            // formed concurrently on two devices is broken by the merge
-            // tie-breaker, not here.
+            // formed concurrently on two devices is broken at read time by
+            // the cycle rule (`resolved_dependencies`, #333), not here.
             let graph = read_dependency_graph(conn)?;
             if graph.would_cycle(task.id, &task.blocked_by) {
                 return Err(ValidationError::BlockedByCycle.into());
@@ -229,6 +234,7 @@ impl Engine {
         Ok(TaskWrite {
             task,
             delete: false,
+            defers: false,
             completes: sets_done && prev_state != TaskState::Done,
             soft,
         })
@@ -324,12 +330,12 @@ impl Engine {
         let mut task = read_task(conn, id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.scheduled_at = Some(to);
-        // TODO(ADR-0065 PR7, #447, #334): a read-increment-write inside a
-        // full-state op, so two concurrent defers fold to one count. The fold
-        // already merges `deferred_count` as a PN-counter (`Crdt::Counter`,
-        // `merge::state::add_delta`); what is missing is the emission: once a
-        // vault requires `core.field_ops`, defer writes a `Patch` carrying
-        // `{"deferred_count": {"inc": 1}}` and both counts survive.
+        // The full-state op carries the count read, plus one, so of two
+        // concurrent defers written that way one count survives. Where every
+        // paired device folds field ops, the defer is written as the `Patch`
+        // `{"scheduled_at": {"set": ..}, "deferred_count": {"inc": 1}}`
+        // instead ([`TaskWrite::op_in`], clarification D16), and the counter
+        // keeps both (#334).
         task.deferred_count = task.deferred_count.saturating_add(1);
         task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
@@ -340,6 +346,7 @@ impl Engine {
         Ok(TaskWrite {
             task,
             delete: false,
+            defers: true,
             completes: false,
             soft,
         })
@@ -377,6 +384,7 @@ impl Engine {
         Ok(TaskWrite {
             task,
             delete: deleted,
+            defers: false,
             completes: false,
             soft: Vec::new(),
         })
@@ -389,8 +397,11 @@ impl Engine {
         write: TaskWrite,
         now_ms: u64,
     ) -> Result<CommandResult, EngineError> {
-        let (op, stream) = write.op();
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        let field_ops = self.writes_field_ops(db.conn())?;
+        let done = db.with_tx(|tx| {
+            let (op, stream) = write.op_in(tx, field_ops)?;
+            self.append_and_fold(tx, &op, &stream, now_ms)
+        })?;
         Ok(write.result(done))
     }
 
@@ -439,30 +450,48 @@ impl Engine {
         // Two occurrences of one routine completed together each count: the
         // routine is advanced in memory once per occurrence, in item order,
         // and written once.
-        let mut routines: BTreeMap<EntityRef, (Routine, bool)> = BTreeMap::new();
+        // Each routine, the keys it counted on time, and whether it moved.
+        let mut routines: BTreeMap<EntityRef, (Routine, Vec<String>, bool)> = BTreeMap::new();
         for write in writes.iter().filter(|w| w.completes) {
             let Some(rid) = write.task.routine_id else {
                 continue;
             };
-            let (routine, moved) = match routines.entry(rid) {
+            let (routine, on_time, moved) = match routines.entry(rid) {
                 Entry::Occupied(held) => held.into_mut(),
                 Entry::Vacant(slot) => {
                     let Some(routine) = read_routine(db.conn(), rid.bytes())? else {
                         continue;
                     };
-                    slot.insert((routine, false))
+                    slot.insert((routine, Vec::new(), false))
                 }
             };
-            *moved |= self.advance_streak_of(routine, &write.task, now_ms);
-        }
-        let mut members: Vec<(InnerOp, [u8; 16])> = writes.iter().map(TaskWrite::op).collect();
-        for (routine, moved) in routines.into_values() {
-            if moved {
-                let routine = self.routine_op_form(db, &routine)?;
-                members.push((InnerOp::RoutineUpdate(Box::new(routine)), META_STREAM));
+            if let Some((key, outcome)) = self.advance_streak_of(routine, &write.task, now_ms) {
+                *moved = true;
+                if outcome == StreakOutcome::Incremented {
+                    on_time.push(key);
+                }
             }
         }
-        let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
+        let mut streaks = Vec::new();
+        for (routine, on_time, moved) in routines.into_values() {
+            if moved {
+                let full = self.routine_op_form(db, &routine)?;
+                streaks.push(StreakWrite::new(full, on_time));
+            }
+        }
+        let field_ops = self.writes_field_ops(db.conn())?;
+        let done = db.with_tx(|tx| {
+            let mut members: Vec<(InnerOp, [u8; 16])> = writes
+                .iter()
+                .map(|w| w.op_in(tx, field_ops))
+                .collect::<rusqlite::Result<_>>()?;
+            for streak in &streaks {
+                if let Some(op) = streak.op_in(tx, field_ops)? {
+                    members.push((op, META_STREAM));
+                }
+            }
+            self.append_and_fold_group(tx, members, now_ms)
+        })?;
         let soft: Vec<ScheduleConstraint> =
             writes.iter().flat_map(|w| w.soft.iter().cloned()).collect();
         let first = writes.into_iter().next().map(|mut w| {
@@ -498,6 +527,8 @@ pub(super) struct TaskWrite {
     pub(super) task: Task,
     /// A `TaskDelete` rather than a `TaskUpdate`.
     delete: bool,
+    /// A defer: `scheduled_at` and one more `deferred_count`.
+    defers: bool,
     /// The task's first move to `done`, which advances its routine's streak.
     pub(super) completes: bool,
     /// The `soft` scheduling constraints the write violates.
@@ -512,6 +543,7 @@ impl TaskWrite {
         Self {
             task,
             delete: false,
+            defers: false,
             completes: false,
             soft: Vec::new(),
         }
@@ -526,6 +558,32 @@ impl TaskWrite {
             InnerOp::TaskUpdate(self.task.clone())
         };
         (op, stream)
+    }
+
+    /// The op of [`Self::op`], or for a defer where `field_ops` holds
+    /// ([`Engine::writes_field_ops`], clarification D16), the `Patch` that
+    /// sets `scheduled_at` and adds one to `deferred_count`, naming the heads
+    /// `tx` holds. Built inside the command's transaction, so the parents are
+    /// the heads it writes over.
+    pub(super) fn op_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        field_ops: bool,
+    ) -> rusqlite::Result<(InnerOp, [u8; 16])> {
+        if !(field_ops && self.defers) {
+            return Ok(self.op());
+        }
+        let planned = ciborium::value::Value::serialized(&self.task.scheduled_at)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let op = super::write::field_patch(
+            tx,
+            self.task.id,
+            vec![
+                ("scheduled_at", super::write::set_op(planned)),
+                ("deferred_count", super::write::inc_op(1)),
+            ],
+        )?;
+        Ok((op, *self.task.stream_id.bytes()))
     }
 
     /// What the command returns, once the op is logged as `done`.
@@ -586,6 +644,10 @@ fn constraint_violations(
 /// `actionable_only` pushes the planner's first criterion into SQL, so a vault
 /// full of blocked work cannot crowd the scan cap with rows the planner would
 /// throw away anyway.
+///
+/// An edge the cycle rule suppresses ([`resolved_dependencies`]) is counted
+/// in neither direction, so a cycle two devices merged leaves one of its
+/// tasks actionable.
 pub(super) fn actionable_scan(
     conn: &rusqlite::Connection,
     stream: Option<EntityRef>,
@@ -593,18 +655,21 @@ pub(super) fn actionable_scan(
     actionable_only: bool,
 ) -> Result<Vec<([u8; 16], u32, u32)>, EngineError> {
     let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
+    let suppressed = suppressed_edge_keys(conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, open_blockers, unblocks FROM (
              SELECT t.id AS id,
                     (SELECT COUNT(*) FROM task_blockers tb
                        LEFT JOIN tasks b ON b.id = tb.blocker_id
                       WHERE tb.task_id = t.id
+                        AND instr(?4, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0
                         AND (b.id IS NULL
                              OR (b.deleted = 0
                                  AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers,
                     (SELECT COUNT(*) FROM task_blockers tb2
                        JOIN tasks d ON d.id = tb2.task_id
                       WHERE tb2.blocker_id = t.id
+                        AND instr(?4, '|' || hex(tb2.task_id) || hex(tb2.blocker_id) || '|') = 0
                         AND d.deleted = 0 AND d.archived = 0
                         AND d.state NOT IN ('done', 'cancelled')) AS unblocks
              FROM tasks t
@@ -620,7 +685,7 @@ pub(super) fn actionable_scan(
     )?;
     let rows = stmt
         .query_map(
-            params![stream_blob, limit, i64::from(actionable_only)],
+            params![stream_blob, limit, i64::from(actionable_only), suppressed],
             |r| {
                 Ok((
                     r.get::<_, Vec<u8>>(0)?,
@@ -690,18 +755,75 @@ fn read_task_blockers(
     Ok(out)
 }
 
-/// The whole dependency graph, for the local submit-time cycle check.
+/// The whole dependency graph as every read sees it: the `blocked_by` edges
+/// of the projection, with the edges the cycle rule suppresses left out
+/// ([`resolved_dependencies`]). The local submit-time cycle check reads it.
 fn read_dependency_graph(conn: &rusqlite::Connection) -> Result<DependencyGraph, EngineError> {
+    Ok(resolved_dependencies(conn)?.0)
+}
+
+/// An edge's place in the cycle rule's order: the stamp of its oldest
+/// surviving add, or `None` (first) for an edge the merged set holds no add
+/// of, which the projection never writes.
+pub(super) type EdgeStamp = Option<super::merge::Stamp>;
+
+/// The dependency graph with the cycle rule applied, and the edges it
+/// suppresses (#333, ADR-0065 §5).
+///
+/// `blocked_by` merges as an add-wins set, so edges two devices add
+/// concurrently can close a cycle neither device could have written, and
+/// every task on it would read as blocked for good. The rule is applied
+/// here, at read time, and never written: oldest edge first, by the stamp of
+/// the edge's oldest surviving add ([`sunrise_domain::resolve_cycles`]). So
+/// one task's write never re-projects another's row, and every replica that
+/// holds the same merged sets reads the same graph. An acyclic graph, the
+/// usual case, costs one scan and no stamp lookup.
+pub(super) fn resolved_dependencies(
+    conn: &rusqlite::Connection,
+) -> Result<(DependencyGraph, Vec<SuppressedEdge<EdgeStamp>>), EngineError> {
     let mut stmt = conn.prepare("SELECT task_id, blocker_id FROM task_blockers")?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
     })?;
-    let mut graph = DependencyGraph::new();
+    let mut edges = Vec::new();
     for row in rows {
         let (task, blocker) = row?;
-        graph.add_edge(task_ref(&task), task_ref(&blocker));
+        edges.push((task_ref(&task), task_ref(&blocker)));
     }
-    Ok(graph)
+    let graph = DependencyGraph::from_edges(edges.iter().copied());
+    if !graph.has_cycle() {
+        return Ok((graph, Vec::new()));
+    }
+    let adds = super::merge::oldest_live_adds(conn, "blocked_by")?;
+    let stamped = edges.into_iter().map(|(task, blocker)| {
+        let element = ciborium::value::Value::serialized(&blocker)
+            .ok()
+            .and_then(|v| super::merge::encode_value(&v).ok());
+        let at = element.and_then(|e| adds.get(&(*task.bytes(), e)).copied());
+        (task, blocker, at)
+    });
+    Ok(resolve_cycles(stamped))
+}
+
+/// The edges [`resolved_dependencies`] suppresses, as the SQL readers of
+/// `task_blockers` leave them out: `|` then each edge's
+/// `hex(task_id) || hex(blocker_id)` followed by `|`, or empty when there
+/// are none. A reader adds
+/// `instr(?, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0`.
+pub(super) fn suppressed_edge_keys(conn: &rusqlite::Connection) -> Result<String, EngineError> {
+    use std::fmt::Write as _;
+    let (_, suppressed) = resolved_dependencies(conn)?;
+    if suppressed.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = String::from("|");
+    for edge in suppressed {
+        for b in edge.task.bytes().iter().chain(edge.blocker.bytes()) {
+            let _ = write!(out, "{b:02X}");
+        }
+        out.push('|');
+    }
+    Ok(out)
 }
 
 /// Widen a stored 16-byte id back into a Task [`EntityRef`].

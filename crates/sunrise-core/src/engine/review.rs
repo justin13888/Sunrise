@@ -10,12 +10,13 @@
 
 use super::ids::{blob16, ms_to_ts};
 use super::lww::LwwStamp;
+use super::merge::{check_patch, set_field, FieldOp};
 use super::routine::read_routines;
 use super::stream::{paused_streams, stream_member_tasks};
 use super::task::{actionable_scan, read_task};
 use super::{Engine, EngineError, MAX_TREND_WEEKS, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{decode_inner_op, InnerOp};
+use crate::inner_op::{decode_inner_op, InnerOp, PatchPayload};
 use crate::queries::QueryResult;
 use rusqlite::{params, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,20 +102,53 @@ impl Engine {
     /// A row that cannot be opened (an envelope from a device whose cert this
     /// replica never stored) is **skipped, not an error**: a partial history is
     /// still a useful history, and one unreadable op must not blank a review.
+    ///
+    /// A task `Patch` carries only the fields it wrote, and the folds read
+    /// whole tasks. So each one is replayed onto the task as the record
+    /// before it left it ([`replay_task_patch`]), or, when the history read
+    /// holds no earlier record of that task (compacted, or outside the
+    /// window), onto the task as it projects now. It then reads as the
+    /// `TaskCreated`, `TaskUpdated` or `TaskDeleted` of that whole task, and
+    /// `fold_activity` and `fold_trends` read it as any other.
     fn decode_op_records(
         &self,
+        conn: &rusqlite::Connection,
         keys: &BTreeMap<[u8; 16], [u8; 32]>,
         rows: Vec<OpRow>,
     ) -> Vec<OpRecord> {
+        let mut tasks: BTreeMap<EntityRef, Task> = BTreeMap::new();
         rows.into_iter()
             .filter_map(|row| {
                 let inner = self.open_logged_op(keys, &row.envelope)?;
+                let target = inner.target_ref();
+                let (payload, after) = match inner {
+                    InnerOp::Patch(p) if target.kind() == EntityKind::Task => {
+                        let base = match tasks.get(&target) {
+                            Some(t) => Some(t.clone()),
+                            None => read_task(conn, target.bytes()).ok().flatten(),
+                        };
+                        replay_task_patch(base, &p, row.ts_ms)
+                    }
+                    InnerOp::TaskCreate(t) => {
+                        let after = Some(t.clone());
+                        (OpPayload::TaskCreated(Box::new(t)), after)
+                    }
+                    InnerOp::TaskUpdate(t) => {
+                        let after = Some(t.clone());
+                        (OpPayload::TaskUpdated(Box::new(t)), after)
+                    }
+                    InnerOp::TaskDelete(t) => (OpPayload::TaskDeleted, Some(t)),
+                    other => (op_payload(other), None),
+                };
+                if let Some(t) = after {
+                    tasks.insert(target, t);
+                }
                 Some(OpRecord {
                     op_id: row.op_id,
                     at_ms: row.ts_ms,
                     device: row.device,
-                    target: inner.target_ref(),
-                    payload: op_payload(inner),
+                    target,
+                    payload,
                 })
             })
             .collect()
@@ -178,7 +212,7 @@ impl Engine {
         let rows = stmt
             .query_map(params![since], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(self.decode_op_records(&keys, rows))
+        Ok(self.decode_op_records(db.conn(), &keys, rows))
     }
 
     /// The ops that make up one entity's activity feed.
@@ -218,7 +252,7 @@ impl Engine {
         let rows = stmt
             .query_map(params![id], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(self.decode_op_records(&keys, rows))
+        Ok(self.decode_op_records(db.conn(), &keys, rows))
     }
 
     /// The device-local week grid, each week beginning on the `week_start`
@@ -334,7 +368,10 @@ impl Engine {
             .collect();
 
         let tasks = read_live_tasks(db.conn())?;
-        let routines = read_routines(db.conn())?;
+        let routines: Vec<_> = read_routines(db.conn())?
+            .into_iter()
+            .map(|r| self.streak_now(r, now_ms))
+            .collect();
         let drift_window = drift_window(window, DRIFT_WINDOW_WEEKS)?;
         let drift: Vec<RoutineDrift> = routines
             .iter()
@@ -385,7 +422,11 @@ impl Engine {
         let rows = stmt
             .query_map(params![since, until], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(fold_activity(&self.decode_op_records(&keys, rows)))
+        Ok(fold_activity(&self.decode_op_records(
+            db.conn(),
+            &keys,
+            rows,
+        )))
     }
 
     pub(super) fn query_daily_review(
@@ -473,6 +514,7 @@ impl Engine {
                 let rows: Vec<StreakRow> = read_routines(db.conn())?
                     .into_iter()
                     .filter(|r| !r.deleted && !r.archived)
+                    .map(|r| self.streak_now(r, now_ms))
                     .map(|r| StreakRow {
                         routine: r.id,
                         title: r.template.title,
@@ -555,12 +597,104 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceFeatures(_)
         // A digest says what a replica holds, not what anyone did.
         | InnerOp::StreamDigest(_)
-        // A field-level write carries no whole task to diff against, and this
-        // build never emits one (ADR-0044 §9). The timeline reads it once
-        // commands emit it.
+        // A field-level write of a task is replayed onto the task before
+        // it by the history reader (`replay_task_patch`), which never hands
+        // one here; one of any other entity is bookkeeping, as the full-state
+        // ops of those entities are.
         | InnerOp::Patch(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
+}
+
+/// What a task `Patch` stamped at `at_ms` reads as in the history: its
+/// register, set and counter writes replayed onto `base`, the task as the
+/// record before it left it, as a whole task (ADR-0065 PR 7).
+///
+/// A create starts from the defaults a `Patch` create projects with when
+/// there is no earlier record. `deleted` set to `true` reads as
+/// `TaskDeleted`, a create as `TaskCreated`, anything else as
+/// `TaskUpdated`. A `Patch` this build cannot read, or whose result is not
+/// a whole task, reads as `Ignored`, as it did before.
+pub(super) fn replay_task_patch(
+    base: Option<Task>,
+    p: &PatchPayload,
+    at_ms: u64,
+) -> (OpPayload, Option<Task>) {
+    use ciborium::value::Value;
+    let Ok(ops) = check_patch(p) else {
+        return (OpPayload::Ignored, None);
+    };
+    let stamp = Value::serialized(&ms_to_ts(i64::try_from(at_ms).unwrap_or(i64::MAX)))
+        .unwrap_or(Value::Null);
+    let mut entries: Vec<(Value, Value)> = match base.as_ref().map(Value::serialized) {
+        Some(Ok(Value::Map(m))) => m,
+        None if p.create => {
+            let text = |s: &str| Value::Text(s.to_owned());
+            vec![
+                (
+                    text("id"),
+                    Value::serialized(&p.target).unwrap_or(Value::Null),
+                ),
+                (text("created_at"), stamp.clone()),
+                (text("title"), text("")),
+                (text("state"), text("todo")),
+                (
+                    text("stream_id"),
+                    Value::serialized(&inbox_stream_ref()).unwrap_or(Value::Null),
+                ),
+            ]
+        }
+        _ => return (OpPayload::Ignored, None),
+    };
+    let mut deletes = false;
+    for (name, op) in ops {
+        match op {
+            FieldOp::Set(v) => {
+                if name == "deleted" {
+                    deletes = v == Value::Bool(true);
+                }
+                set_field(EntityKind::Task, &mut entries, &name, v);
+            }
+            FieldOp::Edit { add, remove } => {
+                let mut held: Vec<Value> = entries
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some(name.as_str()))
+                    .and_then(|(_, v)| v.as_array().cloned())
+                    .unwrap_or_default();
+                held.retain(|e| !remove.iter().any(|(r, _)| r == e));
+                for e in add {
+                    if !held.contains(&e) {
+                        held.push(e);
+                    }
+                }
+                set_field(EntityKind::Task, &mut entries, &name, Value::Array(held));
+            }
+            FieldOp::Inc(n) => {
+                let held = entries
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some(name.as_str()))
+                    .and_then(|(_, v)| v.as_integer())
+                    .and_then(|i| i64::try_from(i).ok())
+                    .unwrap_or(0);
+                let v = Value::Integer(held.saturating_add(n).into());
+                set_field(EntityKind::Task, &mut entries, &name, v);
+            }
+            // A task has no map field.
+            FieldOp::Map(_) => {}
+        }
+    }
+    set_field(EntityKind::Task, &mut entries, "updated_at", stamp);
+    let Ok(task) = Value::Map(entries).deserialized::<Task>() else {
+        return (OpPayload::Ignored, None);
+    };
+    let payload = if p.create {
+        OpPayload::TaskCreated(Box::new(task.clone()))
+    } else if deletes {
+        OpPayload::TaskDeleted
+    } else {
+        OpPayload::TaskUpdated(Box::new(task.clone()))
+    };
+    (payload, Some(task))
 }
 
 /// The routine-tuning window: the `weeks` civil weeks ending with the reviewed

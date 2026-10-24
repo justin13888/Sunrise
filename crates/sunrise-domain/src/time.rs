@@ -281,6 +281,10 @@ impl SunriseTime {
     /// `docs/10-cross-cutting/time.md` §2 rule 1 makes to start-of-day: a task
     /// due "Friday" is on time all of Friday. With no day schedule yet (#338)
     /// the day ends at the next civil midnight in `tz`.
+    ///
+    /// TODO(#334): with a day schedule, the end of the all-day value's
+    /// planner day, `boundary(d + 1)` of `crate::day_schedule::day_bounds`;
+    /// it lands with #334's lateness states, which read it.
     #[must_use]
     pub fn due_in(&self, tz: &TimeZone) -> Option<Timestamp> {
         match self {

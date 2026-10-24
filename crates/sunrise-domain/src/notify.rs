@@ -528,6 +528,15 @@ fn completion_ms(t: &Task, tz: &TimeZone) -> i64 {
 /// The instant a task "lands" on in `tz`: its scheduled time, or its deadline
 /// when it has no scheduled time. `None` for a task with neither, or with a
 /// kind this build cannot place.
+///
+/// TODO(#334): an `all_day` value lands at civil midnight of its date
+/// ([`SunriseTime::resolve_in`]), not at the start of its planner day
+/// (`crate::day_schedule::day_bounds`, #338). With a sleep time past
+/// midnight, a brief's planner-day window `[from_ms, to_ms)` can therefore
+/// count an all-day value of the next date into the late night of the day
+/// before. #334's `lateness(task, now, reader_zone, schedule)` resolves an
+/// all-day value to `boundary(d)` / `boundary(d + 1)` (time.md §2 rule 1,
+/// ADR-0047 `due()`), and this reads it from there.
 fn lands_at(t: &Task, tz: &TimeZone) -> Option<i64> {
     t.scheduled_at
         .as_ref()

@@ -93,7 +93,7 @@ impl Routine {
     /// Whether `occ` is skipped, matching either an explicit skipped key or a
     /// `skip_dates` timestamp by identical civil minute in the zone it
     /// resolves in.
-    fn is_skipped(&self, occ: &Occurrence, tz: &TimeZone) -> bool {
+    pub(crate) fn is_skipped(&self, occ: &Occurrence, tz: &TimeZone) -> bool {
         if self.skipped_keys.iter().any(|k| k == &occ.key) {
             return true;
         }
