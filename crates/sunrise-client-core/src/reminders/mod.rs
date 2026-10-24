@@ -25,7 +25,7 @@
 //! answers with only [`Reconciliation::kept`], and a client that acts on
 //! `add`, `replace` and `cancel` alone touches the OS not at all.
 //!
-//! Everything here is pure except [`schedule`], which reads the vault.
+//! Everything here is pure except [`schedule()`], which reads the vault.
 
 mod policy;
 mod schedule;

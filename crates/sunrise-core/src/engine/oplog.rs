@@ -79,7 +79,7 @@ impl Engine {
         )
     }
 
-    /// [`Self::ops_insert`] with the seal epoch chosen by the caller.
+    /// Insert an op into the log with the seal epoch chosen by the caller.
     ///
     /// A rotation needs this. The ops that *carry* the new keys have to be
     /// sealed under the **old** epoch: a device that does not yet hold the new
