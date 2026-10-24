@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use sunrise_cbor::CborValue;
 use sunrise_cli::i18n::strings;
 use sunrise_core::{
-    Command, ConflictWrite, EntityConflict, Query, QueryResult, VersionRef, WriteOrigin,
+    Command, ConflictClass, ConflictWrite, EntityConflict, Query, QueryResult, VersionRef,
+    WriteOrigin,
 };
 use sunrise_id::EntityRef;
 
@@ -90,6 +91,13 @@ async fn list(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             c.field,
             class.as_str().unwrap_or("?")
         );
+        if c.class == ConflictClass::DependencyCycle {
+            // The winner is the edge the rule sets aside: kept, not shown.
+            println!("  set aside  {}", write_line(&c.winner));
+            let names: Vec<String> = c.cycle.iter().map(EntityRef::to_str).collect();
+            println!("  cycle  {}", names.join(" -> "));
+            continue;
+        }
         println!("  shown  {}", write_line(&c.winner));
         for l in &c.losers {
             println!("  kept   {}", write_line(l));
@@ -163,6 +171,7 @@ fn conflict_json(c: &EntityConflict) -> Value {
             "device": hex16(&e.device),
             "fields": e.fields,
         })).collect::<Vec<_>>(),
+        "cycle": c.cycle.iter().map(EntityRef::to_str).collect::<Vec<_>>(),
     })
 }
 
@@ -260,8 +269,27 @@ mod tests {
             winner: write(0xaa, 2),
             losers: vec![write(0xbb, 1), write(0xbb, 3)],
             edited_while_deleted: Vec::new(),
+            cycle: Vec::new(),
         };
         assert_eq!(picked(&c, "bbbbbbbb/3").unwrap().version.seq, 3);
+        // A dependency cycle prints its class and its loop.
+        let (t1, t2) = (
+            EntityRef::new(sunrise_id::EntityKind::Task, [1; 16]),
+            EntityRef::new(sunrise_id::EntityKind::Task, [2; 16]),
+        );
+        let cycle = EntityConflict {
+            entity: t2,
+            field: "blocked_by".into(),
+            class: ConflictClass::DependencyCycle,
+            winner: write(0xaa, 4),
+            losers: Vec::new(),
+            edited_while_deleted: Vec::new(),
+            cycle: vec![t2, t1, t2],
+        };
+        let j = conflict_json(&cycle);
+        assert_eq!(j["class"], "dependency_cycle");
+        assert_eq!(j["cycle"], json!([t2.to_str(), t1.to_str(), t2.to_str()]));
+        assert_eq!(conflict_json(&c)["cycle"], json!([]));
         let whole = c.winner.version.to_string();
         assert_eq!(picked(&c, &whole).unwrap().version.seq, 2);
         assert!(picked(&c, "bbbbbbbb/9").is_err());

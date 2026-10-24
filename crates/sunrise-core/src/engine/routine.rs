@@ -50,6 +50,59 @@ use sunrise_storage::Db;
 /// end, a `zoned` wall-clock time in a DST gap, a non-instant pause.
 pub(crate) const ROUTINE_CIVIL_TIMES_FEATURE: &str = "routine.civil_times";
 
+/// The routine write a completion's streak advance makes: the advanced
+/// routine as a full-state op, and the keys of the occurrences it counted on
+/// time.
+pub(super) struct StreakWrite {
+    /// The advanced routine, in the form [`Engine::routine_op_form`] chose.
+    routine: Routine,
+    /// The occurrence keys completed within their grace window, sorted.
+    on_time: Vec<String>,
+}
+
+impl StreakWrite {
+    /// The advance of `routine`, which counted the occurrences `on_time`
+    /// within their grace window.
+    pub(super) fn new(routine: Routine, mut on_time: Vec<String>) -> Self {
+        on_time.sort();
+        Self { routine, on_time }
+    }
+
+    /// The op it is written as, if any.
+    ///
+    /// Without `field_ops`, the full-state `RoutineUpdate` carrying the
+    /// streak the completion rule computed. With it (clarification D16), the
+    /// `Patch` that adds the on-time keys to `streak_keys`, from which every
+    /// replica derives the streak (D17); a key added by a concurrent
+    /// completion of another occurrence on another device survives beside it,
+    /// so both count (#331). A completion past its grace window adds no key,
+    /// which is what makes it a miss, so it writes nothing
+    /// (`docs/02-domain/routines-and-recurrence.md` §Streak).
+    pub(super) fn op_in(
+        &self,
+        tx: &Transaction<'_>,
+        field_ops: bool,
+    ) -> rusqlite::Result<Option<InnerOp>> {
+        if !field_ops {
+            return Ok(Some(InnerOp::RoutineUpdate(Box::new(self.routine.clone()))));
+        }
+        if self.on_time.is_empty() {
+            return Ok(None);
+        }
+        let keys = self
+            .on_time
+            .iter()
+            .map(|k| ciborium::value::Value::Text(k.clone()))
+            .collect();
+        super::write::field_patch(
+            tx,
+            self.routine.id,
+            vec![("streak_keys", super::write::add_op(keys))],
+        )
+        .map(Some)
+    }
+}
+
 impl Engine {
     /// The form of `routine` its op is written in.
     ///
@@ -94,52 +147,52 @@ impl Engine {
         db: &mut Db,
         task: &Task,
         now_ms: u64,
-    ) -> Result<Option<InnerOp>, EngineError> {
+    ) -> Result<Option<StreakWrite>, EngineError> {
         let (Some(rid), Some(_)) = (task.routine_id, task.routine_occurrence) else {
             return Ok(None);
         };
         let Some(mut routine) = read_routine(db.conn(), rid.bytes())? else {
             return Ok(None);
         };
-        if !self.advance_streak_of(&mut routine, task, now_ms) {
+        let Some((key, outcome)) = self.advance_streak_of(&mut routine, task, now_ms) else {
             return Ok(None);
-        }
+        };
+        let on_time = (outcome == StreakOutcome::Incremented).then_some(key);
         let routine = self.routine_op_form(db, &routine)?;
-        Ok(Some(InnerOp::RoutineUpdate(Box::new(routine))))
+        Ok(Some(StreakWrite::new(
+            routine,
+            on_time.into_iter().collect(),
+        )))
     }
 
     /// Record `task`'s completion in `routine`'s streak, in memory: what
     /// [`Self::streak_advance`] writes, and what a bulk completion of several
     /// occurrences of one routine applies to it once per occurrence. Returns
-    /// whether the streak moved; an occurrence already counted does not.
+    /// the occurrence's key and what the completion did, or `None` when the
+    /// streak did not move: an occurrence already counted does not.
     pub(super) fn advance_streak_of(
         &self,
         routine: &mut Routine,
         task: &Task,
         now_ms: u64,
-    ) -> bool {
-        let Some(occurrence_at) = task.routine_occurrence else {
-            return false;
-        };
+    ) -> Option<(String, StreakOutcome)> {
+        let occurrence_at = task.routine_occurrence?;
         // A key no expansion near the occurrence has (the rule was edited
         // since) falls back to the occurrence's wall clock in the routine's
         // zone, the key this build counted before #331.
-        let Some(key) = routine
+        let key = routine
             .occurrence_key_of(&task.id, occurrence_at)
-            .or_else(|| occurrence_key_at(&routine.timezone, occurrence_at).ok())
-        else {
-            return false;
-        };
+            .or_else(|| occurrence_key_at(&routine.timezone, occurrence_at).ok())?;
         let reader = self.device_zone();
         let due = parse_occurrence_key(&key)
             .and_then(|c| routine.occurrence_instant(c, &reader))
             .unwrap_or(occurrence_at);
         let outcome = routine.record_occurrence_completion(&key, due, ms_to_ts(now_ms as i64));
         if outcome == StreakOutcome::Duplicate {
-            return false;
+            return None;
         }
         routine.updated_at = ms_to_ts(now_ms as i64);
-        true
+        Some((key, outcome))
     }
 
     pub(super) fn create_routine(
@@ -599,7 +652,27 @@ impl Engine {
     }
 
     pub(super) fn query_routines(&self, db: &Db) -> Result<QueryResult, EngineError> {
-        Ok(QueryResult::Routines(read_routines(db.conn())?))
+        let now_ms = self.clock.now_ms();
+        Ok(QueryResult::Routines(
+            read_routines(db.conn())?
+                .into_iter()
+                .map(|r| self.streak_now(r, now_ms))
+                .collect(),
+        ))
+    }
+
+    /// `routine` with its streak as a read shows it at `now_ms`: the stored
+    /// streak, with the occurrences after the newest key that lapsed since
+    /// applied as misses ([`Routine::streak_as_of`]). Stored streak fields
+    /// are as of the newest key, a function of the data; "as of now" is a
+    /// function of the clock, so it is applied here, at read time, and never
+    /// written (ADR-0065 §5).
+    pub(super) fn streak_now(&self, mut routine: Routine, now_ms: u64) -> Routine {
+        let now = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
+        routine
+            .streak_as_of(now, &self.device_zone())
+            .apply_to(&mut routine);
+        routine
     }
 }
 

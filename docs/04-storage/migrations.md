@@ -358,7 +358,10 @@ value as it was written, which is more faithful than any derivation from
 `*_ms`. `FOLD_V` 4 (#340) writes `Task.sort_order` to the `tasks.sort_order`
 column migration 0042 adds. A build before it kept a key a newer device wrote
 in `tasks.extra`, as an unknown field, and SQL cannot move it out of the CBOR
-blob, so the migration adds the column empty and this rebuild moves the key.
+blob, so the migration adds the column empty and this rebuild moves the key. `FOLD_V` 5 (ADR-0065's seventh pull request) derives
+a routine's streak fields from its `streak_keys` and `skipped_keys` once a
+`Patch` has written one of them (#331), with no migration; a routine only
+full-state ops wrote projects as it did at 4.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

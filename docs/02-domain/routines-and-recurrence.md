@@ -354,6 +354,26 @@ A streak is deliberately not a PN-counter: a streak resets, and a counter that
 must be reset by subtracting its current value is not convergent under
 concurrent completions. A set of keys is.
 
+**What the code does today** ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+D16, D17). The streak fields are still stored, and two ways write them:
+
+- A full-state routine op carries them, computed by the completion rule in
+  `crates/sunrise-domain/src/streak.rs` (`record_occurrence_completion`),
+  which anchors the forgiveness window at `streak_started_at`. Until a
+  `Patch` writes a key, a routine shows exactly these.
+- Between devices that all fold field ops, an on-time completion is a
+  `Patch` adding its key, and a late one writes nothing. Once a `Patch` has
+  written `streak_keys` or `skipped_keys`, `project` derives the four fields
+  from the keys (`Routine::derived_streak`), oldest occurrence first up to the
+  newest key: a keyed occurrence counts, a skipped one is neutral, and any
+  other spends the forgiveness allowance or ends the run, the window anchored
+  as above. A read (`Query::Routine(s)`, the weekly review, the streak export)
+  then applies as misses the occurrences after the newest key whose grace
+  window has closed (`Routine::streak_as_of`).
+
+The walk newest-first over expected keys, with no stored anchor, described
+above, is the target; the read-time miss rule is the part of it that ships.
+
 ## Pausing
 
 A routine is paused at key `k` when `paused` is true and either `paused_until`

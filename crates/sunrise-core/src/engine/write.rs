@@ -15,7 +15,10 @@
 //! through, and a rebuild of the log lands on the rows the commands left.
 //!
 //! The ops are still full-state (ADR-0065 §7, plan decision D9): the
-//! `Patch` builders arrive with `core.field_ops`.
+//! `Patch` builders arrive with `core.field_ops`. Two writes are already
+//! `Patch`es once every paired device folds them (clarification D16,
+//! [`Engine::writes_field_ops`]): a defer's count, and a completion's streak
+//! key, the two whose concurrent writes a full-state op loses.
 //!
 //! A command whose writes are only correct together appends them as one
 //! group ([`Engine::append_and_fold_group`], §6), which every replica folds
@@ -27,8 +30,52 @@ use super::groups::{mark, record_local, Group};
 use super::lww::{materialize_member, materialize_remote, LwwStamp};
 use super::merge::OpRef;
 use super::Engine;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::{encode_inner_op, InnerOp, PatchPayload};
+use ciborium::value::Value;
 use rusqlite::Transaction;
+use sunrise_domain::{CborValue, Unknowns};
+
+/// A `Patch` of `target` making the field ops `fields`, as a command writes
+/// one: its parents are the entity's heads as this replica holds them inside
+/// `tx`, sorted by op-ref, and the key is left out when there are none
+/// (ADR-0065 §2, plan §2F).
+///
+/// Each entry is a field's name and its field op (`{"set": v}`, `{"inc": n}`,
+/// `{"add": [..]}`), as [`set_op`], [`inc_op`] and [`add_op`] build them.
+pub(super) fn field_patch(
+    tx: &Transaction<'_>,
+    target: sunrise_id::EntityRef,
+    fields: Vec<(&str, Value)>,
+) -> rusqlite::Result<InnerOp> {
+    let parents = super::merge::parents_of(tx, target.bytes())?;
+    Ok(InnerOp::Patch(Box::new(PatchPayload {
+        target,
+        create: false,
+        origin: None,
+        parents: (!parents.is_empty()).then_some(parents),
+        group: None,
+        fields: fields
+            .into_iter()
+            .map(|(name, op)| (name.to_owned(), CborValue(op)))
+            .collect(),
+        unknown: Unknowns::new(),
+    })))
+}
+
+/// A register write, `{"set": v}`.
+pub(super) fn set_op(v: Value) -> Value {
+    Value::Map(vec![(Value::Text("set".into()), v)])
+}
+
+/// A counter delta, `{"inc": n}`.
+pub(super) fn inc_op(n: i64) -> Value {
+    Value::Map(vec![(Value::Text("inc".into()), Value::Integer(n.into()))])
+}
+
+/// An OR-set add of `elements`, `{"add": [..]}`.
+pub(super) fn add_op(elements: Vec<Value>) -> Value {
+    Value::Map(vec![(Value::Text("add".into()), Value::Array(elements))])
+}
 
 /// What [`Engine::append_and_fold`] logged.
 #[derive(Debug, Clone, Copy)]

@@ -166,7 +166,12 @@ every remote replica while the originating replica kept it.
 Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
-- Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived at read time from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Today the streak counter is still stored, a register written with the routine's full state by the device that recorded the completion ([#331](https://github.com/justin13888/Sunrise/issues/331)).
+- Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Two devices completing **different** occurrences add two keys, and both count.
+- Between devices that all fold field ops, each completion's key is a `Patch` of the routine (ADR-0065 D16), and `project` derives the streak from the keys (D17). Against a device that does not, the streak is still a register written with the routine's full state by the device that recorded the completion, and of two concurrent completions one key survives ([#331](https://github.com/justin13888/Sunrise/issues/331)).
+
+### Concurrent dependency cycles
+
+Two devices can each add a `blocked_by` edge that passes the local cycle check, `A→B` on one and `B→A` on the other, and merge into a cycle, since `blocked_by` is an add-wins set. Every replica reads the merged edges oldest first, by the stamp of each edge's oldest surviving add, and an edge that would close a cycle among those already kept is **suppressed**: it stays in the set and no read of the dependency graph sees it (`Query::Actionable`, the focus plan, the unblock cascade, the daily review's blocked set, and the local check itself). A stream nesting loop is read the same way: the stream whose `parent_id` write is newest reads as a root ([#333](https://github.com/justin13888/Sunrise/issues/333), ADR-0065 §5, D18). Each suppressed edge is a conflict of class `dependency_cycle` on the task or stream holding it, listed with the loop it would close; removing any edge of the loop ends it.
 
 ### Concurrent list reorders
 

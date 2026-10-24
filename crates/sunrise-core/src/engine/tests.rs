@@ -15527,9 +15527,15 @@ fn re_completing_an_occurrence_never_moves_the_streak() {
     .unwrap();
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
 
-    let after = routine_of(&e, &db, rid);
+    // The stored streak is as of the newest key, and the duplicate left it.
+    let after = super::routine::read_routine(db.conn(), rid.bytes())
+        .unwrap()
+        .unwrap();
     assert_eq!(after.streak_counter, 1);
     assert_eq!(after.streak_keys, after_first.streak_keys);
+    // A read applies the occurrences that lapsed since, ten days of them:
+    // the first is forgiven and the second ends the run (ADR-0065 §5).
+    assert_eq!(routine_of(&e, &db, rid).streak_counter, 0);
     assert_eq!(
         routine_op_count(&db),
         routine_ops_before,
@@ -19384,3 +19390,7 @@ mod task_order;
 
 /// Saved views, a synced entity written only by `Patch` (#341).
 mod saved_views;
+
+/// Values `project` derives, the read-time cycle rules, and the history
+/// readers that understand `Patch` (ADR-0065 PR 7).
+mod derived;

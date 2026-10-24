@@ -37,11 +37,18 @@ status: proposed
 >   field still loses to a later full-state write. A `Patch` from a build that
 >   emits one merges field by field. Undoing a delete as a restore (ADR-0044
 >   §5) waits for the same gate.
-> - **Streaks are still stored.** The streak fields are carried as registers.
->   Deriving them from `streak_keys` and `skipped_keys` is
->   [#331](https://github.com/justin13888/Sunrise/issues/331).
+> - **Streaks are stored, and derived once a `Patch` writes a key.** The
+>   streak fields are registers a full-state routine op carries. Once a
+>   `Patch` stamped above the legacy floor has written `streak_keys` or
+>   `skipped_keys`, `project` derives them from the keys instead
+>   ([#331](https://github.com/justin13888/Sunrise/issues/331), ADR-0065
+>   D17). Between devices that all fold field ops, a defer and a streak
+>   advance are already such `Patch`es (D16).
 > - **The read-time invariant rules of ADR-0044 §6 are not applied**, except
->   that a tombstoned context is not shown on a task. A merged state that breaks
+>   that a tombstoned context is not shown on a task, and the two cycle rules
+>   of ADR-0065 §5: a `blocked_by` edge that closes a cycle, newest first, and
+>   the newest `parent_id` of a stream nesting loop read as absent, and are
+>   reported as `dependency_cycle` conflicts (D18). A merged state that breaks
 >   another invariant is stored and read as it is, and
 >   `core.merge.invariant_derived` is not emitted.
 > - **A field's default is not declared in the registry** (ADR-0044 §2). The

@@ -13,7 +13,7 @@ use super::context::read_context;
 use super::ids::require_kind;
 use super::routine::read_routine;
 use super::stream::read_stream;
-use super::task::{actionable_scan, read_task, ref_of};
+use super::task::{actionable_scan, read_task, ref_of, suppressed_edge_keys};
 use super::{Engine, EngineError};
 use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, ParkedOpCount, QueryResult};
 use rusqlite::params;
@@ -83,23 +83,28 @@ impl Engine {
         require_kind(task, EntityKind::Task)?;
         // Dependents that are still open, with their *remaining* open-blocker
         // count. An unknown blocker counts as open, matching `query_actionable`.
+        // An edge the cycle rule suppresses releases nothing and holds
+        // nothing back (`task::resolved_dependencies`).
+        let suppressed = suppressed_edge_keys(db.conn())?;
         let mut stmt = db.conn().prepare(
             "SELECT d.id,
                     (SELECT COUNT(*) FROM task_blockers tb2
                        LEFT JOIN tasks b ON b.id = tb2.blocker_id
                       WHERE tb2.task_id = d.id
+                        AND instr(?2, '|' || hex(tb2.task_id) || hex(tb2.blocker_id) || '|') = 0
                         AND (b.id IS NULL
                              OR (b.deleted = 0
                                  AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers
              FROM task_blockers tb
                JOIN tasks d ON d.id = tb.task_id
              WHERE tb.blocker_id = ?1
+               AND instr(?2, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0
                AND d.deleted = 0 AND d.archived = 0
                AND d.state NOT IN ('done', 'cancelled')
              ORDER BY d.id ASC",
         )?;
         let rows = stmt
-            .query_map(params![task.bytes().to_vec()], |r| {
+            .query_map(params![task.bytes().to_vec(), suppressed], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -303,6 +308,7 @@ impl Engine {
             EntityKind::Routine => {
                 let rt = read_routine(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
+                let rt = self.streak_now(rt, self.clock.now_ms());
                 Ok(QueryResult::Routine(Box::new(rt)))
             }
             EntityKind::Block => {

@@ -243,6 +243,40 @@ impl Engine {
         record_device_features(tx, sender, &p.features, hlc, now_ms)
     }
 
+    /// Whether a defer and a streak advance are written as `Patch`es
+    /// (ADR-0065 clarification D16): this build has `routine.civil_times`,
+    /// at least one other device is paired and not revoked, and every such
+    /// device has advertised it.
+    ///
+    /// `routine.civil_times` is the newest feature, and every build that
+    /// advertises it folds a `Patch` with parents, a counter `inc` and an
+    /// OR-set `add` on a task or a routine as this one does (ADR-0065 PR 1–5
+    /// landed before it). A vault with no peer has no concurrent write to
+    /// lose, so it keeps its full-state ops, and the streak rules they carry.
+    /// `core.field_ops` (PR 8) replaces this test with the vault's own
+    /// requirement.
+    pub(super) fn writes_field_ops(&self, conn: &Connection) -> rusqlite::Result<bool> {
+        use super::routine::ROUTINE_CIVIL_TIMES_FEATURE;
+        if !self
+            .features
+            .iter()
+            .any(|f| f.id == ROUTINE_CIVIL_TIMES_FEATURE)
+        {
+            return Ok(false);
+        }
+        let me = self.keychain.device_id();
+        let peers: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM devices d WHERE d.device_id != ?1 \
+             AND NOT EXISTS (SELECT 1 FROM device_revocations r WHERE r.device_id = d.device_id)",
+            params![&me[..]],
+            |r| r.get(0),
+        )?;
+        Ok(peers > 0
+            && self
+                .devices_lacking(conn, ROUTINE_CIVIL_TIMES_FEATURE)?
+                .is_empty())
+    }
+
     /// Whether the vault's required set holds feature `id`.
     pub(super) fn vault_requires(&self, conn: &Connection, id: &str) -> rusqlite::Result<bool> {
         conn.query_row(

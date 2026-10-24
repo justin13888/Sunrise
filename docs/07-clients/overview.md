@@ -226,7 +226,7 @@ placed it.
 | `prefs`, `prefs get <key>` | array of / one `{key, value, source, scope}`, `value` in the spelling `prefs set` reads |
 | `tz` | `{zone, source, zone_unknown}` |
 | `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |
-| `conflicts [list] [<id>] [--all]` | array of `{entity, field, class, winner, losers, edited_while_deleted}`: `class` one of `tracked`, `state`, `tombstone`, and with `--all` `quiet` or `merge`; `winner` and each of `losers` a write `{version, device, origin, at_ms, value}`, `origin` `user` or `generated`, `value` the written value as JSON (`null` for a write that left the field unset); `edited_while_deleted` an array of `{version, device, fields}`. Empty when nothing is in conflict |
+| `conflicts [list] [<id>] [--all]` | array of `{entity, field, class, winner, losers, edited_while_deleted, cycle}`: `class` one of `tracked`, `state`, `tombstone`, `dependency_cycle`, and with `--all` `quiet` or `merge`; for `dependency_cycle` (a `blocked_by` edge or a `parent_id` the cycle rule sets aside), `winner` is that edge's own write and `cycle` the loop it would close, as ids from `entity` back to `entity`, empty for every other class; `winner` and each of `losers` a write `{version, device, origin, at_ms, value}`, `origin` `user` or `generated`, `value` the written value as JSON (`null` for a write that left the field unset); `edited_while_deleted` an array of `{version, device, fields}`. Empty when nothing is in conflict |
 
 `pair join` and `pair add` wait on the other device, so with `--json` each
 prints one JSON object per line as it happens rather than one document at the

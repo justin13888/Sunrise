@@ -99,7 +99,7 @@ mod snapshot;
 mod state;
 mod versions;
 
-pub(super) use patch::{check_patch, check_register_set, set_field, PatchProblem};
+pub(super) use patch::{check_patch, check_register_set, set_field, FieldOp, PatchProblem};
 #[cfg(test)]
 pub(super) use project::map_over_whole;
 // The search indexes' rows are the row writers'; `engine::search` builds them
@@ -108,7 +108,6 @@ pub(super) use register::{class_of, kept_registers, Member};
 pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
 pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
-pub(super) use versions::unmerged_heads;
 
 /// The heads of entity `id` as this replica has applied them, in the wire
 /// form a `Patch`'s `parents` carries (ADR-0065 §2): what a writer that has
@@ -122,6 +121,7 @@ pub(super) fn parents_of(
         .map(|h| crate::inner_op::OpRefWire(h.stream, h.device, h.seq))
         .collect())
 }
+pub(super) use versions::unmerged_heads;
 #[cfg(test)]
 pub(super) use versions::{heads, precedes};
 
@@ -137,14 +137,16 @@ pub(super) use versions::{heads, precedes};
 /// (migration 0041, #506), which no row folded before it holds. `4` writes
 /// `Task.sort_order` to its own column (migration 0042, #340), where a build
 /// before it kept a key a newer device wrote in `extra`, as an unknown field.
-pub(crate) const FOLD_V: u32 = 4;
+/// `5` derives a routine's streak fields from its keys once a `Patch` has
+/// written them (ADR-0065 §5, #331), where a routine folded at `4` holds the
+/// registers.
+pub(crate) const FOLD_V: u32 = 5;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;
 use super::EngineError;
 use crate::inner_op::{InnerOp, FULL_STATE_GROUP_KEY};
 use ciborium::value::Value;
-use patch::FieldOp;
 use project::{project, write_projection};
 use register::Registers;
 use rusqlite::Transaction;
@@ -411,6 +413,79 @@ pub(super) fn projected(
 /// op has been applied to it.
 pub(super) fn legacy_floor(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<Option<Stamp>> {
     Ok(read_meta(tx, id)?.and_then(|m| m.legacy))
+}
+
+/// `(entity, element's canonical CBOR)` to the stamp of its oldest live add.
+pub(super) type OldestAdds = std::collections::BTreeMap<([u8; 16], Vec<u8>), Stamp>;
+
+/// One register's winner: `(entity, value, stamp)`.
+pub(super) type Winner = ([u8; 16], Option<Value>, Stamp);
+
+/// For every element of OR-set `field` on every entity, the stamp of its
+/// oldest surviving add: an add whose tag no remove names. Adds below an
+/// entity's legacy floor are not stored (`state::prune_below_floor`), so
+/// every add read here is one the projection counts.
+///
+/// Read-time rules order an entity's elements by it (ADR-0065 §5): it is a
+/// fact of the merged set, the same on every replica that holds it.
+pub(super) fn oldest_live_adds(
+    conn: &rusqlite::Connection,
+    field: &str,
+) -> rusqlite::Result<OldestAdds> {
+    let mut stmt = conn.prepare(
+        "SELECT a.entity_id, a.element, a.hlc_ms, a.hlc_logical, a.tag_device, a.tag_seq,
+                a.tag_stream
+         FROM merge_orset_adds a
+         WHERE a.field = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM merge_orset_removes r
+               WHERE r.entity_id = a.entity_id AND r.field = a.field
+                 AND r.element = a.element AND r.tag_stream = a.tag_stream
+                 AND r.tag_device = a.tag_device AND r.tag_seq = a.tag_seq)",
+    )?;
+    let rows = stmt.query_map([field], |r| {
+        Ok((
+            blob16(&r.get::<_, Vec<u8>>(0)?),
+            r.get::<_, Vec<u8>>(1)?,
+            state::stamp_cols(r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
+        ))
+    })?;
+    let mut out = OldestAdds::new();
+    for row in rows {
+        let (entity, element, at) = row?;
+        let Some(at) = at else { continue };
+        out.entry((entity, element))
+            .and_modify(|held| *held = (*held).min(at))
+            .or_insert(at);
+    }
+    Ok(out)
+}
+
+/// The stamp of the winning write of register `field` of every entity that
+/// holds one: `(entity, value, stamp)`.
+pub(super) fn register_winners(
+    conn: &rusqlite::Connection,
+    field: &str,
+) -> rusqlite::Result<Vec<Winner>> {
+    let mut stmt = conn.prepare(
+        "SELECT entity_id, value, hlc_ms, hlc_logical, device, seq, stream
+         FROM merge_registers WHERE field = ?1",
+    )?;
+    let rows = stmt.query_map([field], |r| {
+        Ok((
+            blob16(&r.get::<_, Vec<u8>>(0)?),
+            r.get::<_, Option<Vec<u8>>>(1)?,
+            state::stamp_cols(r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (entity, value, at) = row?;
+        if let Some(at) = at {
+            out.push((entity, value.as_deref().map(state::dec), at));
+        }
+    }
+    Ok(out)
 }
 
 fn project_and_write(

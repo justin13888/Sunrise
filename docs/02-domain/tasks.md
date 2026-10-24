@@ -294,7 +294,6 @@ shape, and each gap is tracked:
 - The whole Task merges as one full-state LWW unit, so `contexts`, `blocked_by`
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).
 - The `due ≥ scheduled` check compares storage index keys: [#336](https://github.com/justin13888/Sunrise/issues/336).
-- Concurrent `blocked_by` cycles persist: [#333](https://github.com/justin13888/Sunrise/issues/333).
 - Undo of a delete is `Command::Restore`, a later write of `deleted = false`
   (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). Until commands
   write `Patch`, it is a full-state op of the task as it projects, so it also

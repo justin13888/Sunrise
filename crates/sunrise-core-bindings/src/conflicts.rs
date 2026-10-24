@@ -50,8 +50,8 @@ pub struct ConflictItem {
     pub entity: EntityRef,
     /// The field's wire name (`template.title` for a nested one).
     pub field: String,
-    /// `tracked`, `state`, `tombstone`, or with quiet ones asked for, `quiet`
-    /// or `merge`.
+    /// `tracked`, `state`, `tombstone`, `dependency_cycle`, or with quiet
+    /// ones asked for, `quiet` or `merge`.
     pub class: String,
     /// The write the entity shows.
     pub winner: ConflictWriteItem,
@@ -60,6 +60,11 @@ pub struct ConflictItem {
     /// For `deleted` when the delete won: the branches that edited the
     /// entity without seeing it.
     pub edited_while_deleted: Vec<ConflictEditItem>,
+    /// For `dependency_cycle`: the loop the set-aside edge would close,
+    /// from `entity` back to `entity`. The `winner` is then that edge's
+    /// own write, the one no read shows (ADR-0065 §5). Empty otherwise.
+    #[uniffi(default = [])]
+    pub cycle: Vec<EntityRef>,
 }
 
 const fn class_name(c: ConflictClass) -> &'static str {
@@ -69,6 +74,7 @@ const fn class_name(c: ConflictClass) -> &'static str {
         ConflictClass::State => "state",
         ConflictClass::Tombstone => "tombstone",
         ConflictClass::Merge => "merge",
+        ConflictClass::DependencyCycle => "dependency_cycle",
     }
 }
 
@@ -115,6 +121,7 @@ impl From<&EntityConflict> for ConflictItem {
                 .iter()
                 .map(ConflictEditItem::from)
                 .collect(),
+            cycle: c.cycle.clone(),
         }
     }
 }
@@ -158,6 +165,7 @@ mod tests {
             winner: write(2, b'b'),
             losers: vec![write(1, b'a')],
             edited_while_deleted: Vec::new(),
+            cycle: Vec::new(),
         };
         let item = ConflictItem::from(&core);
         assert_eq!(item.class, "tracked");

@@ -328,9 +328,86 @@ pub(super) fn project(
             }
         }
     }
+    if kind == EntityKind::Routine && keys_written_by_a_patch(tx, id, legacy)? {
+        derive_streak(&mut top);
+    }
     Ok(Some(Value::Map(
         top.into_iter().map(|(k, v)| (Value::Text(k), v)).collect(),
     )))
+}
+
+/// The routine fields [`derive_streak`] computes (ADR-0044 §3).
+const STREAK_FIELDS: [&str; 4] = [
+    "streak_counter",
+    "last_completed_at",
+    "streak_started_at",
+    "forgivenesses_in_window",
+];
+
+/// Whether a `Patch` stamped above the legacy floor `legacy` wrote the
+/// routine's `streak_keys` or `skipped_keys`.
+///
+/// Until one has, the streak fields are the registers the newest full-state
+/// op carried, as they always were, so a history of full-state ops alone
+/// projects exactly as before (the legacy guard, ADR-0065 §5). Once one has,
+/// the keys hold a write that op never saw, and only a derivation from the
+/// keys counts it.
+fn keys_written_by_a_patch(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    legacy: Option<Stamp>,
+) -> rusqlite::Result<bool> {
+    let mut stmt = tx.prepare(
+        "SELECT fields, hlc_ms, hlc_logical, device, seq, stream FROM entity_versions
+         WHERE entity_id = ? AND kind = 'patch'",
+    )?;
+    let rows = stmt.query_map(params![&id[..]], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, load_stamp(r, 1)?))
+    })?;
+    for row in rows {
+        let (fields, at) = row?;
+        if legacy.is_some_and(|l| at <= l) {
+            continue;
+        }
+        let writes_keys = dec(&fields).as_array().is_some_and(|names| {
+            names
+                .iter()
+                .any(|n| matches!(n.as_text(), Some("streak_keys" | "skipped_keys")))
+        });
+        if writes_keys {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Replace the routine's streak fields in `top` with the ones its keys add up
+/// to ([`Routine::derived_streak`]). A routine that does not decode yet is
+/// left as it is: it is not projected until it does.
+fn derive_streak(top: &mut BTreeMap<String, Value>) {
+    let map = Value::Map(
+        top.iter()
+            .map(|(k, v)| (Value::Text(k.clone()), v.clone()))
+            .collect(),
+    );
+    let Ok(mut routine) = map.deserialized::<Routine>() else {
+        return;
+    };
+    routine.derived_streak().apply_to(&mut routine);
+    let Ok(Value::Map(written)) = Value::serialized(&routine) else {
+        return;
+    };
+    for name in STREAK_FIELDS {
+        // A field serde leaves out at its default is left out here too.
+        match written.iter().find(|(k, _)| k.as_text() == Some(name)) {
+            Some((_, v)) => {
+                top.insert(name.to_owned(), v.clone());
+            }
+            None => {
+                top.remove(name);
+            }
+        }
+    }
 }
 
 /// A map field's value from its entries, all at or above the legacy floor,

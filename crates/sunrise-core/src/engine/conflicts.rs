@@ -39,11 +39,14 @@
 //! [`Command::Restore`]: crate::Command::Restore
 
 use super::ids::{ms_to_ts, require_writable_stream};
+use super::merge::Stamp;
 use super::merge::{
     check_register_set, class_of, kept_registers, legacy_floor, projected, set_field,
     unmerged_heads, Member, GENERATED,
 };
 use super::snapshot::in_tx;
+use super::stream::rooted_streams;
+use super::task::resolved_dependencies;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::conflicts::{
@@ -100,7 +103,7 @@ fn conflicts_in(
     tx: &Transaction<'_>,
     entity: Option<EntityRef>,
     include_quiet: bool,
-) -> rusqlite::Result<Vec<EntityConflict>> {
+) -> Result<Vec<EntityConflict>, EngineError> {
     let only = entity.map(|e| *e.bytes());
     let mut out: Vec<EntityConflict> = Vec::new();
     for k in kept_registers(tx, only.as_ref())? {
@@ -127,6 +130,7 @@ fn conflicts_in(
             winner: write_of(&k.winner),
             losers,
             edited_while_deleted: Vec::new(),
+            cycle: Vec::new(),
         });
     }
 
@@ -205,10 +209,55 @@ fn conflicts_in(
                 winner: write_of(&Member { at, value, origin }),
                 losers: Vec::new(),
                 edited_while_deleted: edits,
+                cycle: Vec::new(),
             });
         }
     }
+    out.extend(cycle_conflicts(tx, entity)?);
     out.sort_by(|a, b| (a.entity.bytes(), &a.field).cmp(&(b.entity.bytes(), &b.field)));
+    Ok(out)
+}
+
+/// The edges the read-time cycle rules set aside (ADR-0065 §5), each as a
+/// [`ConflictClass::DependencyCycle`] conflict of its entity: a task's
+/// suppressed `blocked_by` edge (#333) and a stream read as a root.
+fn cycle_conflicts(
+    tx: &Transaction<'_>,
+    entity: Option<EntityRef>,
+) -> Result<Vec<EntityConflict>, EngineError> {
+    // One entity's conflicts include every loop it is a member of.
+    let wanted = |cycle: &[EntityRef]| entity.is_none_or(|only| cycle.contains(&only));
+    let write = |at: Stamp, value: &EntityRef| -> Result<ConflictWrite, EngineError> {
+        let value = Value::serialized(value).map_err(|e| EngineError::Cbor(e.to_string()))?;
+        Ok(write_of(&Member {
+            at,
+            value: Some(super::merge::encode_value(&value)?),
+            origin: "user".to_owned(),
+        }))
+    };
+    let cycle = |members: Vec<EntityRef>, entity: EntityRef, field: &str, winner| EntityConflict {
+        entity,
+        field: field.to_owned(),
+        class: ConflictClass::DependencyCycle,
+        winner,
+        losers: Vec::new(),
+        edited_while_deleted: Vec::new(),
+        cycle: members,
+    };
+    let mut out = Vec::new();
+    let (_, suppressed) = resolved_dependencies(tx)?;
+    for edge in suppressed {
+        if let (true, Some(at)) = (wanted(&edge.cycle), edge.stamp) {
+            let w = write(at, &edge.blocker)?;
+            out.push(cycle(edge.cycle, edge.task, "blocked_by", w));
+        }
+    }
+    for root in rooted_streams(tx)? {
+        if let (true, Some(at)) = (wanted(&root.cycle), root.stamp) {
+            let w = write(at, &root.parent)?;
+            out.push(cycle(root.cycle, root.stream, "parent_id", w));
+        }
+    }
     Ok(out)
 }
 
