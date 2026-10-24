@@ -1517,12 +1517,12 @@ pub mod routines {
     }
 
     /// ```text
-    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]
+    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]
     /// ```
     #[must_use]
     pub fn edit_usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]");
+        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]");
         out
     }
 
