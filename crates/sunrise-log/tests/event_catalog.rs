@@ -1742,6 +1742,10 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
     );
 }
 
+/// Sources behind `#[cfg(windows)]`, which no other host compiles. The scan
+/// below skips them off Windows, and asserts they call no log macro.
+const WINDOWS_ONLY: &[&str] = &["crates/sunrise-private-file/src/windows.rs"];
+
 #[test]
 fn the_scan_reaches_what_cargo_compiles() {
     let files = &sources().0;
@@ -1757,7 +1761,20 @@ fn the_scan_reaches_what_cargo_compiles() {
     let missing: Vec<String> = tracked_package_sources()
         .into_iter()
         .filter(|f| !files.contains_key(f))
+        .filter(|f| !(cfg!(not(windows)) && WINDOWS_ONLY.contains(&f.as_str())))
         .collect();
+    // A file compiled only for Windows has no dep-info on this host, so the
+    // scan cannot read it. That is safe only while it logs nothing.
+    for path in WINDOWS_ONLY {
+        let text = std::fs::read_to_string(workspace_root().join(path))
+            .unwrap_or_else(|e| panic!("{path} is named in WINDOWS_ONLY: {e}"));
+        for mac in ["trace!", "debug!", "info!", "warn!", "error!", "event!"] {
+            assert!(
+                !text.contains(mac),
+                "{path} is skipped off Windows as logging nothing, but it calls {mac}"
+            );
+        }
+    }
     assert!(
         missing.is_empty(),
         "these files are tracked under a workspace crate's `src/` and no dep-info \
