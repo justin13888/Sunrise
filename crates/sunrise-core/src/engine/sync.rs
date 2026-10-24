@@ -12,9 +12,10 @@
 //! yet, and only then what the op says.
 
 use super::chain::{check_covered, check_duplicate, check_links, reconcile};
+use super::groups::{event_of, Folded};
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::hex_short;
-use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
+use super::lww::{remap_legacy_inbox, LwwStamp};
 use super::merge::{check_patch, PatchProblem};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::park::{diagnostic_kind, schema_fp_mismatch};
@@ -424,6 +425,7 @@ impl Engine {
 
         let mut applied = false;
         let mut absorbed: Vec<([u8; 16], u32)> = Vec::new();
+        let mut folded: Vec<Folded> = Vec::new();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             // e0. A position a compaction floor covers is an op this replica
             //     folded and deleted: a duplicate, not a new op (ADR-0059). A
@@ -498,8 +500,15 @@ impl Engine {
                     self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms, env.epoch)?;
             } else {
                 // f. Merge the op into its entity's field state, or write its
-                //    append-only record.
-                materialize_remote(tx, &inner, &lww, &env.stream_id)?;
+                //    append-only record. A member of a group is held until
+                //    the group is complete, and the member that completes it
+                //    folds every one (ADR-0065 §6).
+                folded = self
+                    .fold_received(tx, &inner, &lww, &env.stream_id, now_ms)
+                    .map_err(|e| match e {
+                        EngineError::Sqlite(e) => e,
+                        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+                    })?;
             }
             // g. Advance the sync cursor to the end of the contiguous prefix.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id, now_ms)?;
@@ -510,9 +519,9 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut events = match effect {
-            OpEffect::Create => vec![DomainEvent::Created(target)],
-            OpEffect::Update => vec![DomainEvent::Updated(target)],
-            OpEffect::Delete => vec![DomainEvent::Deleted(target)],
+            OpEffect::Create | OpEffect::Update | OpEffect::Delete => {
+                folded.iter().map(|&(t, e)| event_of(t, e)).collect()
+            }
             // A newly applied `VaultRequires` can lock edits on this build, so
             // a client has to re-read what it may edit (ADR-0045 §8). It is
             // reported as its target, the vault-meta stream, which names no

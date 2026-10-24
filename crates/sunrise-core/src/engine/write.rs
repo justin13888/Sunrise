@@ -17,9 +17,15 @@
 //! The ops are still full-state (ADR-0065 §7, plan decision D9): the
 //! `Patch` builders arrive with `core.field_ops`.
 //!
+//! A command whose writes are only correct together appends them as one
+//! group ([`Engine::append_and_fold_group`], §6), which every replica folds
+//! whole or not at all (`engine::groups`).
+//!
 //! [`materialize_remote`]: super::lww::materialize_remote
 
-use super::lww::materialize_remote;
+use super::groups::{mark, record_local, Group};
+use super::lww::{materialize_member, materialize_remote, LwwStamp};
+use super::merge::OpRef;
 use super::Engine;
 use crate::inner_op::{encode_inner_op, InnerOp};
 use rusqlite::Transaction;
@@ -52,10 +58,84 @@ impl Engine {
         stream: &[u8; 16],
         now_ms: u64,
     ) -> rusqlite::Result<Appended> {
+        let (done, lww) = self.append(tx, op, stream, now_ms)?;
+        materialize_remote(tx, op, &lww, stream)?;
+        Ok(done)
+    }
+
+    /// Append `members` as one group (ADR-0065 §6) and fold every one of
+    /// them, in this transaction: the writes of a command that are only
+    /// correct together. Each member is `(op, stream)`, sealed in order.
+    ///
+    /// The group's id is drawn from the injected rng and its size is the
+    /// number of members. A receiver holds each member back until it holds
+    /// them all (`engine::groups`), so no replica shows part of the commit.
+    /// One member is no group, and is appended as [`Self::append_and_fold`]
+    /// appends it.
+    pub(super) fn append_and_fold_group(
+        &self,
+        tx: &Transaction<'_>,
+        members: Vec<(InnerOp, [u8; 16])>,
+        now_ms: u64,
+    ) -> rusqlite::Result<Vec<Appended>> {
+        if members.len() < 2 {
+            return members
+                .iter()
+                .map(|(op, stream)| self.append_and_fold(tx, op, stream, now_ms))
+                .collect();
+        }
+        let mut id = [0u8; 16];
+        self.rng.fill_bytes(&mut id);
+        let group = Group {
+            id,
+            size: members.len() as u64,
+        };
+        let mut logged = Vec::with_capacity(members.len());
+        for (mut op, stream) in members {
+            debug_assert!(!op.is_control(), "a control op has no fold");
+            // The slot is taken first: the mark names the member's own
+            // op-ref, which is not known until its `seq` is.
+            let slot = self.log_slot(tx, &stream, now_ms)?;
+            let at = OpRef {
+                stream,
+                device: slot.lww.device,
+                seq: slot.seq,
+            };
+            mark(&mut op, group, at);
+            let done = self.seal(tx, &op, &stream, now_ms, slot)?;
+            record_local(tx, group, at, done.1.hlc, now_ms)?;
+            logged.push((op, stream, done));
+        }
+        for (op, stream, done) in &logged {
+            materialize_member(tx, op, &done.1, stream, Some(group.pair()))?;
+        }
+        Ok(logged.into_iter().map(|(.., (done, _))| done).collect())
+    }
+
+    /// Take a slot in `stream` and seal `op` into it.
+    fn append(
+        &self,
+        tx: &Transaction<'_>,
+        op: &InnerOp,
+        stream: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<(Appended, LwwStamp)> {
         debug_assert!(!op.is_control(), "a control op has no fold");
+        let slot = self.log_slot(tx, stream, now_ms)?;
+        self.seal(tx, op, stream, now_ms, slot)
+    }
+
+    /// Seal `op` into the log at `slot`.
+    fn seal(
+        &self,
+        tx: &Transaction<'_>,
+        op: &InnerOp,
+        stream: &[u8; 16],
+        now_ms: u64,
+        slot: super::oplog::LogSlot,
+    ) -> rusqlite::Result<(Appended, LwwStamp)> {
         let inner = encode_inner_op(op)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let slot = self.log_slot(tx, stream, now_ms)?;
         let (seq, lww) = (slot.seq, slot.lww);
         let op_id = self.fresh_op_id(now_ms);
         self.ops_insert_at(
@@ -75,7 +155,6 @@ impl Engine {
             slot.epoch,
             &slot.key,
         )?;
-        materialize_remote(tx, op, &lww, stream)?;
-        Ok(Appended { op_id, seq })
+        Ok((Appended { op_id, seq }, lww))
     }
 }

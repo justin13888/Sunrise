@@ -161,6 +161,7 @@ fn wanted(cmds: &[Command]) -> Wanted {
             | Command::DeferTaskTo { id, .. }
             | Command::UpdateTask { id, .. }
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
+            Command::BulkTasks(items) => wanted.tasks.extend(items.iter().map(|i| i.id)),
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,
             Command::UpdateRoutine { .. } => wanted.routines = true,

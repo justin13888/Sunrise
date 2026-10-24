@@ -360,7 +360,8 @@ fn pack(cluster: &[(EntityRef, i64, i64)], out: &mut Vec<PlacedBlock>) {
     }
 }
 
-/// Why a merge did not happen, or happened in part.
+/// Why a merge did not happen. A merge is one commit, so nothing of it is
+/// ever left half done.
 #[derive(Debug, Error)]
 pub enum MergeError {
     /// The union does not validate: in practice two or more bound tasks and
@@ -371,47 +372,33 @@ pub enum MergeError {
     /// vault's id), or is not a block.
     #[error("no block {0}")]
     NotABlock(EntityRef),
-    /// The vault refused a write or a read. `created` is the merged block
-    /// when the create had already landed, so the caller can say that the
-    /// union exists and an original is still standing.
+    /// The vault refused the read or the write.
     #[error("{source}")]
     Core {
         /// What the core said.
         source: CoreError,
-        /// The merged block, when it was created before the failure.
-        created: Option<EntityRef>,
     },
 }
 
-/// The commands that merge `a` and `b`, in the order they must be submitted:
-/// create the union, then tombstone the two originals.
-///
-/// `docs/02-domain/time-blocks.md` §Conflicts defines merge as exactly those
-/// three writes, and the core has no command that makes them one transaction
-/// (nor a multi-command one). So the order is the guarantee: the create goes
-/// first, and a failure there leaves the vault untouched. A failure after it
-/// leaves the union and an original standing, which the user can see and
-/// delete. The Apple app tombstoned first and created last, so a failed
-/// create left both blocks gone and nothing in their place.
+/// The command that merges `a` and `b`, once their union is known to
+/// validate in `reader`: [`Command::MergeBlocks`], which creates the union
+/// and tombstones both originals as one commit (ADR-0065 §6), so no replica
+/// ever shows the union beside an original or the originals gone with no
+/// union (`docs/02-domain/time-blocks.md` §Conflicts).
 ///
 /// # Errors
 /// [`ValidationError`] when the union does not validate.
-pub fn merge_commands(a: &Block, b: &Block, reader: &TimeZone) -> Result<[Command; 3], MergeError> {
-    let draft = sunrise_domain::merge_blocks(a, b, reader)?;
-    Ok([
-        Command::CreateBlock(draft),
-        Command::DeleteBlock(a.id),
-        Command::DeleteBlock(b.id),
-    ])
+pub fn merge_command(a: &Block, b: &Block, reader: &TimeZone) -> Result<Command, MergeError> {
+    sunrise_domain::merge_blocks(a, b, reader)?;
+    Ok(Command::MergeBlocks { a: a.id, b: b.id })
 }
 
 /// Merge the blocks `a` and `b` in `core`, read in `reader`: one call for
-/// the Resolve menu's **Merge**, submitting [`merge_commands`] in order.
-/// Returns the merged block.
+/// the Resolve menu's **Merge**, submitting [`merge_command`]. Returns the
+/// merged block.
 ///
 /// # Errors
-/// [`MergeError`]; see [`merge_commands`] for what a failure part-way
-/// leaves.
+/// [`MergeError`]. Nothing is written unless all of the merge is.
 pub async fn merge_blocks(
     core: &Core,
     a: EntityRef,
@@ -420,24 +407,12 @@ pub async fn merge_blocks(
 ) -> Result<EntityRef, MergeError> {
     let first = read_block(core, a).await?;
     let second = read_block(core, b).await?;
-    let [create, delete_a, delete_b] = merge_commands(&first, &second, reader)?;
-    let created = core
-        .submit(create)
+    let merge = merge_command(&first, &second, reader)?;
+    Ok(core
+        .submit(merge)
         .await
-        .map_err(|source| MergeError::Core {
-            source,
-            created: None,
-        })?
-        .entity;
-    for delete in [delete_a, delete_b] {
-        core.submit(delete)
-            .await
-            .map_err(|source| MergeError::Core {
-                source,
-                created: Some(created),
-            })?;
-    }
-    Ok(created)
+        .map_err(|source| MergeError::Core { source })?
+        .entity)
 }
 
 /// One block, read from the vault.
@@ -448,10 +423,7 @@ async fn read_block(core: &Core, id: EntityRef) -> Result<Block, MergeError> {
             .map(|r| r.block)
             .ok_or(MergeError::NotABlock(id))?),
         Ok(_) => Err(MergeError::NotABlock(id)),
-        Err(source) => Err(MergeError::Core {
-            source,
-            created: None,
-        }),
+        Err(source) => Err(MergeError::Core { source }),
     }
 }
 

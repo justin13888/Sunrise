@@ -268,12 +268,11 @@ pub fn drag_block_bounds(
 #[uniffi::export(async_runtime = "tokio")]
 impl SunriseCore {
     /// The Resolve menu's **Merge**, in one call: create the union of blocks
-    /// `a` and `b`, then tombstone both. Returns the merged block.
+    /// `a` and `b` and tombstone both, as one commit. Returns the merged
+    /// block.
     ///
-    /// Not one transaction — the core has no command that is — so the create
-    /// goes first: a failure there writes nothing, and a failure after it
-    /// leaves the union and an original standing, never neither. See
-    /// [`sunrise_client_core::calendar::merge_commands`].
+    /// All of it is written or none, here and on every peer (ADR-0065 §6).
+    /// See [`sunrise_client_core::calendar::merge_command`].
     pub async fn merge_blocks(
         &self,
         a: EntityRef,

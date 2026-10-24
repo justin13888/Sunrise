@@ -280,5 +280,5 @@ with nothing, and loses a merge's union to the other block's bound.
 The Calendar view shades the overlap region and shows a "Resolve" overflow menu with three actions:
 
 - **Keep both** — no-op; closes the menu.
-- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. Mechanically: create the union, then tombstone the two original Blocks, in that order (`crates/sunrise-client-core/src/calendar.rs#merge_blocks`). The core has no command that makes the three writes one transaction, so the order is the guarantee: a failed create writes nothing, and a failure after it leaves the union and an original standing, never neither.
+- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. Mechanically: create the union and tombstone the two original Blocks, as one command, `Command::MergeBlocks` (`crates/sunrise-core/src/engine/block.rs#merge_blocks`). The three writes are one group ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §6, D13): the writer folds them in one transaction, and a peer holds each until it has all three, so no device shows the union beside an original, or the originals gone with no union.
 - **Adjust times** — opens a side-by-side editor for both Blocks.

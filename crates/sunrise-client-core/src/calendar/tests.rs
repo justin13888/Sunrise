@@ -353,19 +353,13 @@ fn a_dragged_block_keeps_its_kind_and_sends_only_what_moved() {
 }
 
 #[test]
-fn a_merge_creates_the_union_before_it_tombstones_either_original() {
+fn a_merge_is_one_command() {
     let a = block(1, at(9, 0), at(11, 0));
     let b = block(2, at(10, 0), at(13, 0));
-    let [create, first, second] = merge_commands(&a, &b, &utc()).unwrap();
-    match create {
-        Command::CreateBlock(draft) => {
-            assert_eq!(draft.starts_at, a.starts_at);
-            assert_eq!(draft.ends_at, b.ends_at);
-        }
-        other => panic!("the create goes first, got {other:?}"),
-    }
-    assert!(matches!(first, Command::DeleteBlock(x) if x == a.id));
-    assert!(matches!(second, Command::DeleteBlock(x) if x == b.id));
+    assert!(matches!(
+        merge_command(&a, &b, &utc()).unwrap(),
+        Command::MergeBlocks { a: x, b: y } if x == a.id && y == b.id
+    ));
 }
 
 /// Two untitled blocks over two tasks each have no single title to shadow:
@@ -379,7 +373,7 @@ fn a_merge_that_would_not_validate_writes_nothing() {
     a.tasks.insert(EntityRef::new(EntityKind::Task, [5; 16]));
     b.tasks.insert(EntityRef::new(EntityKind::Task, [6; 16]));
     assert!(matches!(
-        merge_commands(&a, &b, &utc()),
+        merge_command(&a, &b, &utc()),
         Err(MergeError::Invalid(_))
     ));
 }

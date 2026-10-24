@@ -56,7 +56,7 @@
 //! [ADR-0014]: ../../../docs/11-adr/0014-entity-level-lww-merge.md
 
 use sunrise_core::queries::{ContextRow, StreamRow};
-use sunrise_core::Command;
+use sunrise_core::{BulkTaskItem, Command};
 use sunrise_domain::{
     ContextPatch, RoutinePatch, RoutineRow, StreamPatch, Task, TaskPatch, TaskState,
 };
@@ -328,6 +328,16 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         | Command::DeleteRoutine(id)
         | Command::DeleteBlock(id) => Ok(Command::Restore(*id)),
         Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
+        // A bulk command is undone by one bulk command, so the undo is as
+        // atomic as the write: each item's inverse, in reverse.
+        Command::BulkTasks(items) => {
+            let mut back = Vec::with_capacity(items.len());
+            for item in items.iter().rev() {
+                let inverse = invert_one(state, &item.as_command())?;
+                back.push(BulkTaskItem::of_command(&inverse).ok_or(NotUndoable::Unsupported)?);
+            }
+            Ok(Command::BulkTasks(back))
+        }
         // Creates land here too, and `Unsupported` is the right answer *from
         // here*: a create is reversible, but the entity to delete does not
         // exist until the core has minted it. See [`invert_create`], which the

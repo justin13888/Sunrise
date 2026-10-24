@@ -279,11 +279,12 @@ it.
 
 ## Clarified by implementation (2026-10)
 
-Building this record raised twelve questions it leaves open. Each answer below
+Building this record raised fifteen questions it leaves open. Each answer below
 is binding on the implementation, and none changes a decision above except
-D10, which narrows §8 and the last consequence for this rollout, and D11,
+D10, which narrows §8 and the last consequence for this rollout, D11,
 which says how §4's two commands write before §7's rollout, as D9 does for
-every other command.
+every other command, and D13, which says how §6's groups are marked in that
+mode.
 
 | # | Clarification | Why |
 |---|---|---|
@@ -299,6 +300,9 @@ every other command.
 | D10 | Compaction still folds the ops below the floor, but does **not** prune `entity_versions` or `entity_frontier` in this rollout. | A late version that names a pruned parent needs that parent's frontier, and any approximation of it diverges between replicas. A safe pruning rule is follow-up work. Until it lands, "Compaction bounds both" in §Consequences holds for the op log and the losers, not for the version rows. |
 | D11 | Until the vault requires `core.field_ops`, `ResolveConflict` and `Restore` write a full-state op of the entity as it projects, with the one field set, rather than being refused. | It is stamped after every version the writer applied and becomes the entity's legacy floor, so by D4 it clears every set below it on every replica that applies it. That settles every field of the entity at once, which is what any edit in that mode already does, and it keeps restore, the undo of a delete, available before the rollout. Once the feature is required, both write the `Patch` of §4. |
 | D12 | "Edited while deleted" (§3) is reported for the heads the winning delete does not precede, leaving out a head written by a full-state op or below the legacy floor. | A head is a branch's newest version, so a branch is reported once. A full-state head is D4's case: it cannot say which fields it meant to write. |
+| D13 | Until the vault requires `core.field_ops`, a group's members are full-state ops (D9), and each carries the top-level mark `"op_group": {"id", "size", "op"}` beside its entity's fields, where `op` is the member's own op-ref. A build that reads the mark holds the member as §6 says; the fold never reads the mark as a field. A build from before this record reads it as an unknown field, applies each member as it arrives, and may write the mark back in a later op of its own, which marks nothing because its `op` names another op. Once the feature is required, members are `Patch`es with `group`. | A full-state op has no key of its own, and a new op kind or envelope field would be parked by, or visible to, builds that need neither. Binding the mark to its op makes a copy inert, so the result stays a function of the ops (D8). Atomicity on older builds is what it was before groups: per op. |
+| D14 | A member counts as present once its op is logged or a joined `doc_state` carries its version (§8); `pending_groups` names it by its deterministic op id. Compaction never deletes a member that is still held, and a rebuild keeps the rows of members whose ops it deleted. | A member compacted away at the writer must still complete the group on a replica that joins the writer's snapshot and receives the rest as ops. |
+| D15 | `doc_state` v2 carries the versions, frontiers and losers of the ops it covers. A joined frontier entry keeps the greater of the two stamps, and recomputing an entity's frontiers starts from what is stored, so a frontier a snapshot carried, which can reach versions this replica never holds, survives a later recompute. | A frontier only grows (§2), so a stored one is a floor, never more than the exact frontier, and taking the larger keeps the join order-independent. |
 
 The conflict classes are declared on each field in the registry's
 `for_each_entity!` (`crates/sunrise-id/src/registry.rs`), with the names the

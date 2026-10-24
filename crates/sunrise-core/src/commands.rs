@@ -86,6 +86,21 @@ pub enum Command {
         /// The value to settle on.
         value: sunrise_cbor::CborValue,
     },
+    /// Apply one action to each of several Tasks, all or nothing: the
+    /// "bulk is atomic" rule of ADR-0047 §Triage
+    /// (`docs/11-adr/0047-deadlines-and-lateness.md`, #335), over the actions
+    /// this build has. ADR-0047's `Command::Triage`, whose backdated
+    /// completion, drop reason and acknowledgement need fields `Task` does
+    /// not have yet, is follow-up work.
+    ///
+    /// Every item is validated against the vault as it stands before any is
+    /// written, exactly as the single command it names would be, and one
+    /// refusal refuses the whole batch with nothing written. The writes are
+    /// then one commit (ADR-0065 §6): each task still gets its own op, and
+    /// every replica shows all of them or none. A routine's streak advances
+    /// once per occurrence completed, in the same commit. A task may appear
+    /// once; an empty batch is refused.
+    BulkTasks(Vec<BulkTaskItem>),
     /// Move a Task between Streams.
     PromoteToStream {
         /// Task to move.
@@ -200,6 +215,21 @@ pub enum Command {
     /// Soft-delete a Block. Bound Tasks are untouched — a Block is a plan for
     /// when to do the work, never the work itself.
     DeleteBlock(EntityRef),
+    /// Merge two Blocks into one (`docs/02-domain/time-blocks.md`
+    /// §Conflicts): create their union ([`sunrise_domain::merge_blocks`],
+    /// read in the reader's zone) and tombstone both, as one commit
+    /// (ADR-0065 §6). No replica ever shows the union beside an original, or
+    /// the originals gone with no union.
+    ///
+    /// Refused with `NotFound` for a block this replica does not hold, and
+    /// `Invalid` for a deleted one, for `a == b`, and for a union that does
+    /// not validate. Returns the union.
+    MergeBlocks {
+        /// One block.
+        a: EntityRef,
+        /// The other.
+        b: EntityRef,
+    },
     /// Bind a Task to a Block.
     ///
     /// Maintains the spec's symmetry ("Bound Task's `blocks` field updates
@@ -404,6 +434,76 @@ pub enum Command {
         /// Which store to clear it from.
         target: PrefTarget,
     },
+}
+
+/// One item of [`Command::BulkTasks`]: a task, and what to do to it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkTaskItem {
+    /// The task.
+    pub id: EntityRef,
+    /// The action.
+    pub action: BulkTaskAction,
+}
+
+/// What [`Command::BulkTasks`] does to one task. Each is the single command
+/// of the same name, checked and written as that command is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BulkTaskAction {
+    /// [`Command::CompleteTask`].
+    Complete,
+    /// [`Command::DeferTaskTo`].
+    DeferTo(SunriseTime),
+    /// [`Command::UpdateTask`]: a stream move, a drop (`state: Cancelled`)
+    /// or any other patch.
+    Update(Box<TaskPatch>),
+    /// [`Command::DeleteTask`].
+    Delete,
+    /// [`Command::Restore`].
+    Restore,
+}
+
+impl BulkTaskItem {
+    /// The single command this item is.
+    #[must_use]
+    pub fn as_command(&self) -> Command {
+        let id = self.id;
+        match &self.action {
+            BulkTaskAction::Complete => Command::CompleteTask(id),
+            BulkTaskAction::DeferTo(to) => Command::DeferTaskTo { id, to: to.clone() },
+            BulkTaskAction::Update(patch) => Command::UpdateTask {
+                id,
+                patch: (**patch).clone(),
+            },
+            BulkTaskAction::Delete => Command::DeleteTask(id),
+            BulkTaskAction::Restore => Command::Restore(id),
+        }
+    }
+
+    /// The item a single task command is, or `None` for a command that is
+    /// not one: what lets an undo of a bulk command be one bulk command.
+    #[must_use]
+    pub fn of_command(cmd: &Command) -> Option<Self> {
+        let (id, action) = match cmd {
+            Command::CompleteTask(id) => (*id, BulkTaskAction::Complete),
+            Command::DeferTaskTo { id, to } => (*id, BulkTaskAction::DeferTo(to.clone())),
+            Command::UpdateTask { id, patch } => {
+                (*id, BulkTaskAction::Update(Box::new(patch.clone())))
+            }
+            Command::PromoteToStream { id, stream } => (
+                *id,
+                BulkTaskAction::Update(Box::new(TaskPatch {
+                    stream_id: Some(*stream),
+                    ..TaskPatch::default()
+                })),
+            ),
+            Command::DeleteTask(id) => (*id, BulkTaskAction::Delete),
+            Command::Restore(id) if id.kind() == sunrise_id::EntityKind::Task => {
+                (*id, BulkTaskAction::Restore)
+            }
+            _ => return None,
+        };
+        Some(Self { id, action })
+    }
 }
 
 /// Draft for [`Command::StartFocus`]. The core fills the session id, the

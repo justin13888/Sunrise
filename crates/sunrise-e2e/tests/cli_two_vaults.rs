@@ -234,3 +234,64 @@ async fn concurrent_retitles_converge_and_resolve() {
     }
     relay.abort();
 }
+
+/// The ids of the blocks `device` lists for tomorrow.
+async fn blocks_tomorrow(device: &Device) -> Vec<String> {
+    let listed = device.json(&["blocks", "tomorrow"]).await;
+    let mut ids: Vec<String> = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["id"].as_str().map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// A merge and a bulk completion are each one commit (ADR-0065 §6): the
+/// peer shows all of either or none, a batch with one task it cannot
+/// complete changes nothing, and one `undo` takes the whole batch back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merge_and_a_bulk_completion_reach_the_peer_whole() {
+    let (addr, relay) = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    let second = first_id(&a.ok(&["capture", "Book the ferry"]).await);
+    let mut blocks = Vec::new();
+    for (from, to) in [
+        ("tomorrow 9am", "tomorrow 10am"),
+        ("tomorrow 10am", "tomorrow 11am"),
+    ] {
+        blocks.push(first_id(
+            &a.ok(&[
+                "block", "create", "--from", from, "--to", to, "--title", "Desk",
+            ])
+            .await,
+        ));
+    }
+    settle(&a, &b).await;
+
+    // A batch naming a task that does not exist refuses every task in it.
+    let refused = a
+        .run(&["done", &first, "tsk_01J00000000000000000000000"])
+        .await;
+    assert!(!refused.status.success());
+    assert_eq!(a.task(&first).await["state"], "todo");
+
+    a.ok(&["done", &first, &second]).await;
+    let merged = first_id(&a.ok(&["block", "merge", &blocks[0], &blocks[1]]).await);
+    settle(&a, &b).await;
+    for id in [&first, &second] {
+        assert_eq!(b.task(id).await["state"], "done", "{id}");
+    }
+    assert_eq!(blocks_tomorrow(&b).await, vec![merged]);
+    assert_eq!(blocks_tomorrow(&a).await, blocks_tomorrow(&b).await);
+
+    // The batch is one step of the undo history, and its undo one commit.
+    a.ok(&["undo"]).await;
+    settle(&a, &b).await;
+    for id in [&first, &second] {
+        assert_eq!(b.task(id).await["state"], "todo", "{id}");
+    }
+    relay.abort();
+}

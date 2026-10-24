@@ -33,7 +33,7 @@
 //! `sunrise_cli::undo_file`).
 
 use serde::{Deserialize, Serialize};
-use sunrise_core::Command;
+use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
     BlockDraft, ContextDraft, ContextPatch, Energy, NoteBody, RRule, RoutineCatchupPolicy,
     RoutineDraft, RoutinePatch, ScheduleConstraint, StreamColor, StreamDraft, StreamPatch,
@@ -159,6 +159,7 @@ enum Cmd {
         to: SunriseTime,
     },
     DeleteTask(EntityRef),
+    BulkTasks(Vec<BulkItem>),
     Restore(EntityRef),
     PromoteToStream {
         id: EntityRef,
@@ -199,6 +200,9 @@ impl Cmd {
             Command::DeferTask { id, to_ms } => Self::DeferTask { id, to_ms },
             Command::DeferTaskTo { id, to } => Self::DeferTaskTo { id, to },
             Command::DeleteTask(id) => Self::DeleteTask(id),
+            Command::BulkTasks(items) => {
+                Self::BulkTasks(items.into_iter().map(BulkItem::of).collect())
+            }
             Command::Restore(id) => Self::Restore(id),
             Command::PromoteToStream { id, stream } => Self::PromoteToStream { id, stream },
             Command::CreateStream(d) => Self::CreateStream(d),
@@ -225,6 +229,9 @@ impl Cmd {
             Self::DeferTask { id, to_ms } => Command::DeferTask { id, to_ms },
             Self::DeferTaskTo { id, to } => Command::DeferTaskTo { id, to },
             Self::DeleteTask(id) => Command::DeleteTask(id),
+            Self::BulkTasks(items) => {
+                Command::BulkTasks(items.into_iter().map(BulkItem::into_item).collect())
+            }
             Self::Restore(id) => Command::Restore(id),
             Self::PromoteToStream { id, stream } => Command::PromoteToStream { id, stream },
             Self::CreateStream(d) => Command::CreateStream(d),
@@ -239,6 +246,54 @@ impl Cmd {
             Self::CreateBlock(d) => Command::CreateBlock(d),
             Self::DeleteBlock(id) => Command::DeleteBlock(id),
             Self::DetachFile(id) => Command::DetachFile(id),
+        }
+    }
+}
+
+/// One item of a bulk command, with its patch encoded losslessly.
+#[derive(Serialize, Deserialize)]
+struct BulkItem {
+    id: EntityRef,
+    action: BulkAction,
+}
+
+// Built and dropped once per item a history file holds; boxing the patch
+// would buy nothing but a `with` shim for the box.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BulkAction {
+    Complete,
+    DeferTo(SunriseTime),
+    Update(#[serde(with = "TaskPatchDef")] TaskPatch),
+    Delete,
+    Restore,
+}
+
+impl BulkItem {
+    fn of(item: BulkTaskItem) -> Self {
+        Self {
+            id: item.id,
+            action: match item.action {
+                BulkTaskAction::Complete => BulkAction::Complete,
+                BulkTaskAction::DeferTo(to) => BulkAction::DeferTo(to),
+                BulkTaskAction::Update(patch) => BulkAction::Update(*patch),
+                BulkTaskAction::Delete => BulkAction::Delete,
+                BulkTaskAction::Restore => BulkAction::Restore,
+            },
+        }
+    }
+
+    fn into_item(self) -> BulkTaskItem {
+        BulkTaskItem {
+            id: self.id,
+            action: match self.action {
+                BulkAction::Complete => BulkTaskAction::Complete,
+                BulkAction::DeferTo(to) => BulkTaskAction::DeferTo(to),
+                BulkAction::Update(patch) => BulkTaskAction::Update(Box::new(patch)),
+                BulkAction::Delete => BulkTaskAction::Delete,
+                BulkAction::Restore => BulkTaskAction::Restore,
+            },
         }
     }
 }

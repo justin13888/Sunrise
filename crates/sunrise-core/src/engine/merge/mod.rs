@@ -1,7 +1,7 @@
 //! Per-field merge (ADR-0044): every field of an entity merges by its own CRDT
 //! type, and the entity row is the read projection of that state.
 //!
-//! [`merge_op`] is the one entry point. It folds one op into the entity's
+//! [`merge_member`] is the one entry point. It folds one op into the entity's
 //! field state (migration 0033's `merge_*` tables) and then writes the merged
 //! entity back to its row. The row writers are private to this module
 //! (`rows`): a row is only ever the fold's output, for a local command's op
@@ -108,7 +108,6 @@ pub(super) use register::{class_of, kept_registers, Member};
 pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
 pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
-pub(super) use versions::recompute as recompute_versions;
 pub(super) use versions::unmerged_heads;
 #[cfg(test)]
 pub(super) use versions::{heads, precedes};
@@ -128,7 +127,7 @@ pub(crate) const FOLD_V: u32 = 3;
 use super::ids::blob16;
 use super::lww::LwwStamp;
 use super::EngineError;
-use crate::inner_op::InnerOp;
+use crate::inner_op::{InnerOp, FULL_STATE_GROUP_KEY};
 use ciborium::value::Value;
 use patch::FieldOp;
 use project::{project, write_projection};
@@ -197,7 +196,7 @@ pub(super) struct OpRef {
 
 impl OpRef {
     /// `[bstr .size 16, bstr .size 16, uint]`.
-    fn from_value(v: &Value) -> Option<Self> {
+    pub(super) fn from_value(v: &Value) -> Option<Self> {
         let items = v.as_array()?;
         let [stream, device, seq] = items.as_slice() else {
             return None;
@@ -314,10 +313,11 @@ fn fold_legacy(
             }
         }
     }
-    // Every key a newer build wrote, as a register under its own name.
+    // Every key a newer build wrote, as a register under its own name. A
+    // group's mark is the op's, not the entity's (D13), and is not folded.
     for (k, v) in state {
         let Some(k) = k.as_text() else { continue };
-        if record.fields.iter().any(|f| f.name == k) {
+        if k == FULL_STATE_GROUP_KEY || record.fields.iter().any(|f| f.name == k) {
             continue;
         }
         regs.offer(tx, k, Some(v), at, origin)?;
@@ -437,21 +437,37 @@ fn legacy_state(inner: &InnerOp) -> Option<Result<Value, ciborium::value::Error>
     })
 }
 
-/// Fold one entity op into its entity's field state and project the entity
-/// to its row (ADR-0044).
-///
-/// `inner` is a legacy full-state op of an entity that merges as
-/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
-/// accepted. `lww` is the
-/// sender's stamp and `stream` the stream the op was sealed under, which
-/// together are the op's merge stamp and its OR-set tag.
+/// [`merge_member`] for an op of no group, as the tests fold one.
+#[cfg(test)]
 pub(super) fn merge_op(
     tx: &Transaction<'_>,
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: [u8; 16],
 ) -> rusqlite::Result<()> {
-    merge_op_inner(tx, inner, lww, stream).map_err(to_sql)
+    merge_member(tx, inner, lww, stream, None)
+}
+
+/// Fold one entity op into its entity's field state and project the entity
+/// to its row (ADR-0044).
+///
+/// `inner` is a legacy full-state op of an entity that merges as
+/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
+/// accepted. `lww` is the sender's stamp and `stream` the stream the op was
+/// sealed under, which together are the op's merge stamp and its OR-set tag.
+///
+/// The op may be one member of a group (ADR-0065 §6), which its version
+/// records: a `Patch` names its group itself, and `group` is the group of a
+/// full-state member, whose mark `engine::groups` read off it
+/// (clarification D13).
+pub(super) fn merge_member(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    lww: &LwwStamp,
+    stream: [u8; 16],
+    group: Option<([u8; 16], u64)>,
+) -> rusqlite::Result<()> {
+    merge_op_inner(tx, inner, lww, stream, group).map_err(to_sql)
 }
 
 /// Carry an engine error out through a transaction closure, which speaks
@@ -468,6 +484,7 @@ fn merge_op_inner(
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: [u8; 16],
+    legacy_group: Option<([u8; 16], u64)>,
 ) -> Result<(), EngineError> {
     let target = inner.target_ref();
     let spec = target.kind().spec();
@@ -522,7 +539,7 @@ fn merge_op_inner(
                 origin,
                 create: other.inner_kind().ends_with(".create"),
                 parents: None,
-                group: None,
+                group: legacy_group,
                 fields: legacy_fields(spec, entries),
             };
             let admitted = admit_version(tx, id, &version)?;
@@ -566,7 +583,9 @@ fn legacy_fields(spec: &'static EntitySpec, state: &[(Value, Value)]) -> BTreeSe
     fields.extend(
         state
             .iter()
-            .filter_map(|(k, _)| k.as_text().map(str::to_owned)),
+            .filter_map(|(k, _)| k.as_text())
+            .filter(|k| *k != FULL_STATE_GROUP_KEY)
+            .map(str::to_owned),
     );
     fields
 }

@@ -4,8 +4,8 @@
 //! ([`sunrise_client_core::calendar`]): a new block's bounds are written in
 //! the kind the calendar writes ([`sunrise_client_core::calendar::NEW_BLOCK_KIND`]
 //! unless `--kind` says otherwise), a move keeps each bound's kind and zone,
-//! and a merge is the Resolve menu's three writes in the order that leaves the
-//! vault readable if one fails.
+//! and a merge is the Resolve menu's one command, which writes the union and
+//! both tombstones as one commit.
 
 use sunrise_cli::i18n::strings;
 use sunrise_cli::when;
