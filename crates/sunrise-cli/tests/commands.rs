@@ -446,3 +446,38 @@ fn upcoming_lists_the_span_day_by_day_then_the_undated_tasks() {
         assert!(!run_in(v, &["upcoming", bad]).status.success(), "{bad}");
     }
 }
+
+/// `export all` through the binary: the directory on stdout, a manifest whose
+/// sizes match the files, the task's record with its kind, and a refusal to
+/// write into a non-empty directory. The format itself is tested in
+/// `crates/sunrise-client-core/tests/export.rs`.
+#[test]
+fn export_all_writes_a_directory_whose_manifest_matches_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let id = first_id(&ok(v, &["capture", "Renew passport ^tomorrow 9am"]));
+    let dest = v.join("export");
+    let dest_s = dest.to_str().unwrap();
+    assert_eq!(
+        ok(v, &["export", "all", dest_s, "--no-fetch"]).trim(),
+        dest_s
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dest.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "sunrise-export");
+    for f in manifest["files"].as_array().unwrap() {
+        let bytes = std::fs::read(dest.join(f["path"].as_str().unwrap())).unwrap();
+        assert_eq!(f["size"], bytes.len());
+    }
+    let tasks = std::fs::read_to_string(dest.join("entities/task.jsonl")).unwrap();
+    let task: serde_json::Value = serde_json::from_str(tasks.lines().next().unwrap()).unwrap();
+    assert_eq!(task["id"], id);
+    assert_eq!(task["scheduled_at"]["kind"], "floating");
+
+    assert!(
+        !run_in(v, &["export", "all", dest_s]).status.success(),
+        "a non-empty directory is refused"
+    );
+    assert!(!run_in(v, &["export", "all"]).status.success());
+}

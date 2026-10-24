@@ -65,6 +65,7 @@ pub mod command;
 pub mod dto;
 pub mod editing;
 pub mod flows;
+pub mod full_export;
 pub mod ical;
 pub mod keyboard;
 pub mod links;
@@ -728,6 +729,35 @@ impl SunriseCore {
         at_ms: u64,
     ) -> Result<String, BindingError> {
         Ok(sunrise_integrations::ical_vault::export(&self.inner, window, at_ms).await?)
+    }
+
+    /// Write everything, decrypted, into `dir`, in the open format of
+    /// `docs/04-storage/export-format.md`: every record as JSON lines, notes
+    /// as Markdown, every Block as one `.ics`, the attachment bytes, and a
+    /// `manifest.json` of versions and BLAKE3 digests, written last.
+    ///
+    /// `dir` must not exist yet or be an empty directory. With `fetch`,
+    /// attachment bytes that are on the relay and not here are downloaded
+    /// first; whatever is still not here is listed in the manifest as
+    /// missing, with the reason. The same writer as `sunrise export all`.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] for a destination that is not empty, a file
+    /// that could not be written, or a vault that could not be read.
+    pub async fn export_all(
+        &self,
+        dir: String,
+        fetch: bool,
+    ) -> Result<full_export::FullExportSummary, BindingError> {
+        let manifest = sunrise_client_core::export::export_all(
+            &self.inner,
+            std::path::Path::new(&dir),
+            sunrise_client_core::export::ExportOptions { fetch },
+        )
+        .await
+        .map_err(|e| BindingError::Core(e.to_string()))?;
+        Ok(full_export::FullExportSummary::from(&manifest))
     }
 
     /// Attach a file to a task: seal the bytes, store them, record the

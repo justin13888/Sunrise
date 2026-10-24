@@ -301,6 +301,50 @@ pub(super) async fn reminders(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     Ok(())
 }
 
+/// `export all <dir> [--no-fetch]` — everything, decrypted, in the open
+/// format of `docs/04-storage/export-format.md`.
+///
+/// The writer is the client layer's (`sunrise_client_core::export`), so this
+/// writes the same bytes the apps do. stdout gets the directory, for a script
+/// to pick up; the count and each attachment left out go to stderr.
+async fn export_all(core: &Core, rest: &[String]) -> CmdResult {
+    use sunrise_client_core::export::{export_all, ExportOptions};
+    use sunrise_core::export::MissingReason;
+    let words = super::positionals(rest, &[], &["--no-fetch"]);
+    let [dir] = words.as_slice() else {
+        return Err(strings::export::all_usage().into());
+    };
+    let opts = ExportOptions {
+        fetch: !super::has(rest, "--no-fetch"),
+    };
+    let manifest = export_all(core, std::path::Path::new(dir), opts).await?;
+    for a in &manifest.attachments {
+        let line = match a.missing_reason {
+            None => continue,
+            Some(MissingReason::NotFetched) => {
+                strings::export::missing_not_fetched(&a.id, &a.filename)
+            }
+            Some(MissingReason::NeverUploaded) => {
+                strings::export::missing_never_uploaded(&a.id, &a.filename)
+            }
+            Some(MissingReason::FetchFailed) => {
+                strings::export::missing_fetch_failed(&a.id, &a.filename)
+            }
+        };
+        eprintln!("{}", strings::general::note(&line));
+    }
+    eprintln!(
+        "{}",
+        strings::export::all_written(
+            // The manifest is a file too, and is not in its own list.
+            i64::try_from(manifest.files.len() + 1).unwrap_or(i64::MAX),
+            dir
+        )
+    );
+    println!("{dir}");
+    Ok(())
+}
+
 /// `export <dataset> [json|csv] [path]`.
 ///
 /// With no path the document goes to **stdout**: a CLI's stdout is its
@@ -310,6 +354,9 @@ pub(super) async fn export(core: &Core, rest: &[String]) -> CmdResult {
     let Some(name) = rest.first() else {
         return Err(strings::export::usage().into());
     };
+    if name == "all" {
+        return export_all(core, &rest[1..]).await;
+    }
     let dataset = match name.as_str() {
         "trends" | "trend" => ExportDataset::Trends,
         "activity" | "timeline" => ExportDataset::Activity,

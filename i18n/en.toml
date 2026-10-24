@@ -1750,6 +1750,11 @@ USAGE:
     sunrise reminders plan       this device's reminders for the next day
     sunrise export <dataset> [json|csv] [path]
                                  trends | activity | focus | streaks
+    sunrise export all <dir> [--no-fetch]
+                                 write everything, decrypted, into an empty
+                                 directory: every record as JSON, notes as
+                                 Markdown, blocks as .ics, attachment bytes,
+                                 and a manifest of BLAKE3 digests
 
   calendar interchange (RFC 5545)
     sunrise ical import <path|-> [--stream <id>] [--source <name>]
@@ -2157,8 +2162,16 @@ no_stream = "No stream"
 more = "{count, plural, one {… # more} other {… # more}}"
 
 [cli.export]
-usage = "usage: export <trends|activity|focus|streaks> [json|csv] [path]"
+usage = "usage: export all <dir> [--no-fetch] | export <trends|activity|focus|streaks> [json|csv] [path]"
 unknown_dataset = "unknown dataset: {name}"
+all_usage = "usage: export all <dir> [--no-fetch]"
+# Said on stderr once an export is complete; {dir} is the destination.
+all_written = "{files, plural, one {# file written to {dir}} other {# files written to {dir}}}"
+# One line per attachment whose bytes are not in the export. {id} is the
+# attachment's id and {filename} its name.
+missing_not_fetched = "{id} {filename}: not on this device, and --no-fetch was given"
+missing_never_uploaded = "{id} {filename}: no device uploaded these bytes, so they cannot be fetched"
+missing_fetch_failed = "{id} {filename}: the download did not bring them"
 
 [cli.ical]
 # {mode} is what the user typed, in quotes.

@@ -87,6 +87,7 @@ mod block;
 mod chain;
 mod compaction;
 mod context;
+mod export;
 mod features;
 mod focus;
 mod identity;

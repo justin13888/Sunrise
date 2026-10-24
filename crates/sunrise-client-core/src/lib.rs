@@ -40,6 +40,8 @@
 //!   user meant, in a zone the caller names, with no silent fallback.
 //! * [`editor`] — the task, block and routine editors' forms, turned into
 //!   patches that carry only what changed and keep every time's kind.
+//! * [`export`] — the full decrypted export written into a directory the
+//!   caller names (`docs/04-storage/export-format.md`).
 //! * [`schedule`] — defer, snooze, schedule and the Today capture default,
 //!   in civil days and in the kind the plan already has.
 //! * [`calendar`] — the grid's days and week start, block layout, snapping,
@@ -96,6 +98,7 @@ pub mod brief;
 pub mod calendar;
 pub mod civil;
 pub mod editor;
+pub mod export;
 pub mod focus;
 pub mod gate;
 pub mod history;
