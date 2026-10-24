@@ -442,8 +442,8 @@ impl SunriseCore {
     /// directory `vault_dir`, and return the vault open.
     ///
     /// `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8, by the same
-    /// implementation `sunrise recover` runs (`sunrise_onboarding::
-    /// recover_account`): fetch the account's identity key and its sealed
+    /// implementation `sunrise recover` runs
+    /// (`sunrise_client_core::recovery::recover_account`): fetch the account's identity key and its sealed
     /// blob, open the blob with `code`, create the vault from the restored
     /// identity under `vault_root`, register this device with the relay as
     /// `nickname`, and wait up to `catch_up_ms` for the history to replay.
