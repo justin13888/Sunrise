@@ -347,6 +347,10 @@ impl CoreQuery {
 }
 
 /// What a query returned.
+// The variants are the Swift enum's cases, by value: boxing the largest
+// (`Routine`, grown by its four `*_time` fields in #506) would not change
+// what crosses the FFI, only add an allocation on this side of it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum CoreQueryResult {
     /// A task list.

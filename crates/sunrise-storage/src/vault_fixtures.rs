@@ -1578,3 +1578,65 @@ fn re_opening_a_migrated_fixture_changes_nothing() {
         assert_eq!(row_count(&db, "tasks"), 2, "open {open} lost a row");
     }
 }
+
+/// Migration 0041 (#506, ADR-0066 §2) over a real v40 vault: the routine's
+/// times gain the kinds their bare instants mean, a zoned anchor and end in
+/// the routine's own zone and an instant pause and last completion, the
+/// stream's pause is an instant, and every `*_civil` column starts NULL, for
+/// the rebuild at the next open to fill from the ops.
+#[test]
+fn a_v40_vaults_routine_and_stream_times_gain_their_kinds_and_empty_civil_columns() {
+    let (_dir, db) = open_migrated(&fixture_name(40));
+    let one = |sql: &str| -> Option<String> {
+        db.conn()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+    };
+    let zone = one("SELECT timezone FROM routines");
+    assert_eq!(
+        one("SELECT starts_at_kind FROM routines").as_deref(),
+        Some("zoned")
+    );
+    assert_eq!(
+        one("SELECT starts_at_tz FROM routines"),
+        zone,
+        "pinned in its zone"
+    );
+    assert_eq!(
+        one("SELECT ends_at_kind FROM routines").as_deref(),
+        Some("zoned")
+    );
+    assert_eq!(one("SELECT ends_at_tz FROM routines"), zone);
+    assert_eq!(
+        one("SELECT paused_until_kind FROM routines").as_deref(),
+        Some("instant")
+    );
+    assert_eq!(
+        one("SELECT last_completed_at_kind FROM routines").as_deref(),
+        Some("instant")
+    );
+    assert_eq!(
+        one("SELECT paused_until_kind FROM streams WHERE paused_until_ms IS NOT NULL").as_deref(),
+        Some("instant")
+    );
+    for (table, col) in [
+        ("tasks", "scheduled_at_civil"),
+        ("tasks", "due_at_civil"),
+        ("tasks", "completed_at_civil"),
+        ("blocks", "starts_at_civil"),
+        ("blocks", "ends_at_civil"),
+        ("routines", "starts_at_civil"),
+        ("routines", "ends_at_civil"),
+        ("streams", "paused_until_civil"),
+    ] {
+        let set: i64 = db
+            .conn()
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {col} IS NOT NULL"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("`{table}.{col}` after 0041: {e}"));
+        assert_eq!(set, 0, "`{table}.{col}` starts NULL");
+    }
+}

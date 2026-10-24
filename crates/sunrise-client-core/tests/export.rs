@@ -103,7 +103,9 @@ async fn seed(core: &Core) {
         },
         rrule: sunrise_domain::RRule::parse("FREQ=WEEKLY").unwrap(),
         timezone: "UTC".into(),
-        starts_at: jiff::Timestamp::from_millisecond(1_767_225_600_000).unwrap(),
+        starts_at: jiff::Timestamp::from_millisecond(1_767_225_600_000)
+            .unwrap()
+            .into(),
         ends_at: None,
         scheduling_constraints: Vec::new(),
         catchup_policy: RoutineCatchupPolicy::Skip,

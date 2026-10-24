@@ -206,7 +206,7 @@ pub async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultRows, Co
             let now =
                 jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap_or(i64::MAX))
                     .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-            rows.routines = sunrise_domain::routine_rows(&r, now);
+            rows.routines = sunrise_domain::routine_rows(&r, now, &core.reader_zone());
         }
     }
     Ok(rows)

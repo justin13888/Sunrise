@@ -352,6 +352,12 @@ read back from the row. `FOLD_V` 2 (ADR-0065's fifth pull request) folds
 registers by their conflict classes and keeps the losers in
 `register_losers`, which a vault folded at 1 holds none of, so a vault opened
 by that build rebuilds once more, with no migration: the tables are 0039's.
+`FOLD_V` 3 (#506) writes the `*_civil` sidecar of every `SunriseTime` column
+and the routine and stream time sidecars that migration 0041 adds. The
+migration cannot compute a civil time in SQL, which has no tzdata, so it
+adds the columns empty and relies on this rebuild: the ops carry each civil
+value as it was written, which is more faithful than any derivation from
+`*_ms`.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

@@ -89,12 +89,59 @@ fn every_kind_round_trips_through_storage() {
     ];
     for c in cases {
         let (ms, k, tz) = c.to_parts();
+        let civil = c.civil_part();
         assert_eq!(
-            SunriseTime::from_parts(ms, k, tz.as_deref()),
+            SunriseTime::from_parts(ms, k, tz.as_deref(), civil.as_deref()),
             c,
             "round trip {c:?}"
         );
     }
+}
+
+/// A stored wall-clock time is stored, not recomputed (ADR-0066 §2): with its
+/// civil column, a zoned value reads back as written whatever its index key
+/// says, so a tzdata change that moved the instant cannot move 09:00, and a
+/// zone this build does not know keeps its civil time and name.
+#[test]
+fn a_stored_civil_time_is_read_back_without_its_zone() {
+    let civil = civil::date(2026, 3, 8).at(2, 30, 0, 0);
+    let in_gap = SunriseTime::zoned(civil, "America/New_York");
+    let (ms, kind, tz) = in_gap.to_parts();
+    let text = in_gap.civil_part();
+    assert_eq!(text.as_deref(), Some("2026-03-08T02:30:00"));
+    // The index key resolves the gap to 03:30 EDT; the civil column keeps
+    // 02:30, which re-deriving from the key would lose.
+    assert_eq!(
+        SunriseTime::from_parts(ms, kind, tz.as_deref(), text.as_deref()),
+        in_gap
+    );
+    assert_ne!(
+        SunriseTime::from_parts(ms, kind, tz.as_deref(), None),
+        in_gap
+    );
+
+    // A key a tzdata change has left an hour stale.
+    let stale = ms + 3_600_000;
+    assert_eq!(
+        SunriseTime::from_parts(stale, kind, tz.as_deref(), text.as_deref()),
+        in_gap
+    );
+
+    // A zone this build cannot resolve: civil time and name, byte for byte.
+    let unknown = SunriseTime::zoned(civil::date(2026, 6, 1).at(9, 0, 0, 0), "Mars/Olympus_Mons");
+    let (ms, kind, tz) = unknown.to_parts();
+    assert_eq!(
+        SunriseTime::from_parts(ms, kind, tz.as_deref(), unknown.civil_part().as_deref()),
+        unknown
+    );
+
+    // A civil value at the calendar's edge keeps its date.
+    let edge = SunriseTime::all_day(civil::Date::MAX);
+    let (ms, kind, tz) = edge.to_parts();
+    assert_eq!(
+        SunriseTime::from_parts(ms, kind, tz.as_deref(), edge.civil_part().as_deref()),
+        edge
+    );
 }
 
 /// A kind a newer build added, with an optional `at` anchor.
@@ -198,7 +245,7 @@ fn an_unknown_kind_orders_by_its_anchor_or_last() {
 fn an_unknown_kind_without_its_sidecar_degrades_to_an_instant() {
     for tz in [None, Some("Europe/Berlin"), Some("cbor:zz"), Some("cbor:0")] {
         assert_eq!(
-            SunriseTime::from_parts(1_700_000_000_000, "lunar_phase", tz),
+            SunriseTime::from_parts(1_700_000_000_000, "lunar_phase", tz, None),
             SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_000).unwrap()),
             "sidecar {tz:?}"
         );

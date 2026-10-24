@@ -702,9 +702,9 @@ impl<'a> Run<'a> {
                 "tasks",
                 "id",
                 "stream_id, state, priority, estimated_min,
-                 scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
-                 due_at_ms, due_at_kind, due_at_tz,
-                 completed_at_ms, completed_at_kind, completed_at_tz,
+                 scheduled_at_ms, scheduled_at_kind, scheduled_at_tz, scheduled_at_civil,
+                 due_at_ms, due_at_kind, due_at_tz, due_at_civil,
+                 completed_at_ms, completed_at_kind, completed_at_tz, completed_at_civil,
                  created_at_ms, routine_id IS NOT NULL, length(COALESCE(body, X'')) > 0",
             ),
             SearchKind::Block => ("blocks", "id", "stream_id, created_at_ms"),
@@ -723,6 +723,7 @@ impl<'a> Run<'a> {
                     r.get(at)?,
                     r.get::<_, Option<String>>(at + 1)?.as_deref(),
                     r.get::<_, Option<String>>(at + 2)?.as_deref(),
+                    r.get::<_, Option<String>>(at + 3)?.as_deref(),
                 ))
             };
             Ok(match kind {
@@ -734,11 +735,11 @@ impl<'a> Run<'a> {
                         .and_then(|p| u8::try_from(p).ok()),
                     estimate: r.get::<_, Option<i64>>(from + 3)?.is_some(),
                     planned: time(from + 4)?,
-                    hard: time(from + 7)?,
-                    done: time(from + 10)?,
-                    created_ms: r.get(from + 13)?,
-                    recurring: r.get(from + 14)?,
-                    has_note: r.get(from + 15)?,
+                    hard: time(from + 8)?,
+                    done: time(from + 12)?,
+                    created_ms: r.get(from + 16)?,
+                    recurring: r.get(from + 17)?,
+                    has_note: r.get(from + 18)?,
                 },
                 SearchKind::Block => Attrs {
                     stream: Some(blob16(&r.get::<_, Vec<u8>>(from)?)),

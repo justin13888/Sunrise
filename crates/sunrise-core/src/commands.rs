@@ -454,6 +454,10 @@ pub struct TimeZoneChange {
     /// `notifications.timezone_changed.enabled` preference, off by default,
     /// is on.
     pub notify: bool,
+    /// Open planned tasks whose plan violates a `hard` scheduling constraint
+    /// in the new zone, by id (#333, time.md §7): re-evaluated on every
+    /// change, flagged, and never moved. Empty when nothing changed.
+    pub hard_violations: Vec<sunrise_id::EntityRef>,
 }
 
 /// Result of a command, returned synchronously to the caller after the

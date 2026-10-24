@@ -346,7 +346,11 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
             routine: r.id,
             title: r.template.title.clone(),
             streak: r.streak_counter,
-            last_completed_at_ms: r.last_completed_at.and_then(ts_to_ms),
+            last_completed_at_ms: r
+                .last_completed_at
+                .as_ref()
+                .and_then(|t| t.resolve_in(&zone))
+                .and_then(ts_to_ms),
             unknown: Unknowns::new(),
         })
         .collect();
@@ -961,14 +965,14 @@ mod tests {
                 },
                 rrule: RRule::parse("FREQ=DAILY").unwrap(),
                 timezone: "UTC".into(),
-                starts_at: ts(MON),
+                starts_at: ts(MON).into(),
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 skip_dates: Vec::new(),
                 skipped_keys: Vec::new(),
                 catchup_policy: RoutineCatchupPolicy::Skip,
                 streak_counter: streak,
-                last_completed_at: Some(ts(MON + DAY)),
+                last_completed_at: Some(ts(MON + DAY).into()),
                 grace_window_s: None,
                 forgiveness_enabled: true,
                 streak_started_at: None,

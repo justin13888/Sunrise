@@ -57,7 +57,7 @@ fn value_records_write_their_described_names() {
             by_month: vec![1],
             by_set_pos: vec![1],
             count: Some(3),
-            until: Some(ts()),
+            until: Some(ts().into()),
             wkst: Some(Weekday::Mo),
             unknown: Unknowns::new(),
         },

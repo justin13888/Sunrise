@@ -15,6 +15,7 @@ static NEWER: &[Feature] = &[Feature {
     op_kinds: &["TaskProbe"],
     fields: &[],
     field_op_kinds: &[],
+    retyped: &[],
     since: 8,
 }];
 
@@ -23,6 +24,7 @@ static STRUCTURAL: &[Feature] = &[Feature {
     op_kinds: &[],
     fields: &[],
     field_op_kinds: &[],
+    retyped: &[],
     since: 8,
 }];
 

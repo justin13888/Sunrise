@@ -326,7 +326,7 @@ struct StreamPatchDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     paused: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    paused_until: Option<Option<jiff::Timestamp>>,
+    paused_until: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
     reminder_lead_s: Option<Option<u32>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
@@ -357,10 +357,11 @@ struct RoutinePatchDef {
     rrule: Option<RRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timezone: Option<String>,
+    // A bare instant persisted before #506 reads as an instant `SunriseTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    starts_at: Option<jiff::Timestamp>,
+    starts_at: Option<SunriseTime>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    ends_at: Option<Option<jiff::Timestamp>>,
+    ends_at: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scheduling_constraints: Option<Vec<ScheduleConstraint>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,7 +373,7 @@ struct RoutinePatchDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     paused: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    paused_until: Option<Option<jiff::Timestamp>>,
+    paused_until: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived: Option<bool>,
 }

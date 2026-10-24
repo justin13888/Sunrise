@@ -183,7 +183,7 @@ macro_rules! for_each_entity {
                         sort_order: String => Register(Quiet);
                         archived: bool => Register(Quiet);
                         paused: bool => Register(Quiet);
-                        paused_until: Option<Timestamp> => Register(Quiet);
+                        paused_until: Option<CompatTime> => Register(Tracked);
                         review_cadence: StreamReviewCadence => Register(Quiet);
                         default_context: Option<EntityRef> => Register(Quiet);
                         reminder_lead_s: Option<u32> => Register(Quiet);
@@ -230,7 +230,7 @@ macro_rules! for_each_entity {
                 tag: "routine",
                 merge: Lww,
                 owner: Meta,
-                features: [],
+                features: ["routine.civil_times"],
                 ops: [
                     /// Create a routine (full state). Boxed to keep the enum small.
                     RoutineCreate(Box<Routine>) = "routine.create", Create, id;
@@ -249,21 +249,21 @@ macro_rules! for_each_entity {
                         template: TaskTemplate => Nested;
                         rrule: RRule => Register(Tracked);
                         timezone: String => Register(Tracked);
-                        starts_at: Timestamp => Register(Tracked);
-                        ends_at: Option<Timestamp> => Register(Tracked);
+                        starts_at: CompatTime => Register(Tracked);
+                        ends_at: Option<CompatTime> => Register(Tracked);
                         scheduling_constraints: Vec<ScheduleConstraint> => Register(Tracked);
                         skip_dates: Vec<Timestamp> => Register(Tracked);
                         skipped_keys: Vec<String> => OrSet;
                         catchup_policy: RoutineCatchupPolicy => Register(Quiet);
                         streak_counter: i64 => Derived;
-                        last_completed_at: Option<Timestamp> => Derived;
+                        last_completed_at: Option<CompatTime> => Derived;
                         grace_window_s: Option<u64> => Register(Quiet);
                         forgiveness_enabled: bool => Register(Quiet);
                         streak_started_at: Option<Timestamp> => Derived;
                         forgivenesses_in_window: u32 => Derived;
                         streak_keys: Vec<String> => OrSet;
                         paused: bool => Register(Quiet);
-                        paused_until: Option<Timestamp> => Register(Quiet);
+                        paused_until: Option<CompatTime> => Register(Tracked);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
                         ..unknown

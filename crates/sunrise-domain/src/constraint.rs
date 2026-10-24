@@ -51,8 +51,14 @@ crate::unknown::lossy_enum!(ConstraintSeverity, fallback = Soft, {
     Soft => "soft",
 });
 
-/// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
-/// be strictly `< end` (midnight wrap is not supported).
+/// Local wall-clock time-of-day window. Half-open `[start, end)`.
+///
+/// A window whose `end` is before its `start` **wraps midnight** and ends on
+/// the following civil day (#333, `docs/10-cross-cutting/time.md` §5):
+/// `22:00–02:00` holds 23:30 and 01:30. Such a window belongs to the day it
+/// starts on, so the part after midnight is checked against the other
+/// dimensions (weekday, date range) as the previous day. `start == end` is
+/// refused: it names either nothing or everything.
 ///
 /// Not `Copy`: it keeps the fields a newer build adds to it (ADR-0045 §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +81,30 @@ impl TimeOfDayRange {
             start,
             end,
             unknown: Unknowns::new(),
+        }
+    }
+
+    /// Whether the window wraps past midnight (`end` before `start`).
+    #[must_use]
+    pub fn wraps(&self) -> bool {
+        self.end < self.start
+    }
+
+    /// Where wall-clock `t` falls: `None` outside the window,
+    /// `Some(false)` in it on the civil day it started, `Some(true)` in it
+    /// after midnight on the day after (only for a window that wraps).
+    #[must_use]
+    pub fn place(&self, t: Time) -> Option<bool> {
+        if self.wraps() {
+            if t >= self.start {
+                Some(false)
+            } else if t < self.end {
+                Some(true)
+            } else {
+                None
+            }
+        } else {
+            (t >= self.start && t < self.end).then_some(false)
         }
     }
 }
@@ -302,8 +332,9 @@ pub enum ConstraintError {
     /// `date_range`).
     #[error("scheduling constraint populates no window dimension")]
     Empty,
-    /// `time_of_day.start` was not strictly `< time_of_day.end`.
-    #[error("time_of_day.start must be < time_of_day.end")]
+    /// `time_of_day.start` equalled `time_of_day.end`. A window whose end is
+    /// before its start wraps midnight and is valid.
+    #[error("time_of_day.start must differ from time_of_day.end")]
     TimeRange,
     /// `date_range.start` was `> date_range.end`.
     #[error("date_range.start must be ≤ date_range.end")]
@@ -364,7 +395,7 @@ impl ScheduleConstraint {
             return Err(ConstraintError::Empty);
         }
         if let Some(t) = &self.time_of_day {
-            if t.start >= t.end {
+            if t.start == t.end {
                 return Err(ConstraintError::TimeRange);
             }
         }
@@ -381,27 +412,35 @@ impl ScheduleConstraint {
     /// True if every populated dimension holds at `zdt` (evaluated in that
     /// zoned datetime's local wall-clock terms).
     ///
-    /// - `time_of_day`: local time within `[start, end)`.
+    /// - `time_of_day`: local time within `[start, end)`, or for a window that
+    ///   wraps midnight, at or after `start` or before `end`.
     /// - `days_of_week`: local weekday in the set (empty set == all days; a
     ///   set holding a day token this build does not know == all days too,
     ///   see [`WeekdaySet`]).
     /// - `date_range`: local date within the inclusive range.
     ///
+    /// The window's day is the day it starts on: in the after-midnight part
+    /// of a wrapping window, the weekday and the date are the previous day's.
+    /// The moment is converted to civil time first, and no window bound is
+    /// ever resolved (time.md §3), so a window a DST gap empties is simply
+    /// empty that night.
+    ///
     /// A field this build does not know is not evaluated: it cannot say what
     /// the field restricts, and an unknown value must never invent a block.
     #[must_use]
     pub fn is_satisfied_at(&self, zdt: &Zoned) -> bool {
+        let mut day = zdt.date();
         if let Some(t) = &self.time_of_day {
-            let now = zdt.time();
-            if now < t.start || now >= t.end {
-                return false;
+            match t.place(zdt.time()) {
+                None => return false,
+                Some(true) => day = day.yesterday().unwrap_or(day),
+                Some(false) => {}
             }
         }
-        if !self.days_of_week.admits(&weekday_of(zdt)) {
+        if !self.days_of_week.admits(&weekday_of_date(day)) {
             return false;
         }
         if let Some(d) = &self.date_range {
-            let day = zdt.date();
             if day < d.start {
                 return false;
             }
@@ -415,10 +454,10 @@ impl ScheduleConstraint {
     }
 }
 
-/// Map a zoned datetime's weekday to the domain [`Weekday`].
-fn weekday_of(zdt: &Zoned) -> Weekday {
+/// Map a civil date's weekday to the domain [`Weekday`].
+fn weekday_of_date(day: Date) -> Weekday {
     // `to_monday_one_offset`: 1=Monday .. 7=Sunday.
-    match zdt.weekday().to_monday_one_offset() {
+    match day.weekday().to_monday_one_offset() {
         1 => Weekday::Mo,
         2 => Weekday::Tu,
         3 => Weekday::We,
@@ -532,7 +571,8 @@ mod tests {
     }
 
     #[test]
-    fn time_range_must_be_ordered() {
+    fn a_window_may_wrap_midnight_but_not_be_empty() {
+        // `end` before `start` wraps past midnight (#333).
         let c = tod(
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
@@ -541,9 +581,9 @@ mod tests {
             },
             ConstraintSeverity::Hard,
         );
-        assert_eq!(c.validate(), Err(ConstraintError::TimeRange));
+        assert_eq!(c.validate(), Ok(()));
 
-        // Equal start/end is also rejected (strictly <).
+        // Equal start/end names nothing (or everything), and is refused.
         let c = tod(
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
@@ -639,6 +679,67 @@ mod tests {
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 16, 59)));
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 17, 0))); // exclusive end
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 8, 59)));
+    }
+
+    /// A `22:00–02:00` window holds both sides of midnight and belongs to the
+    /// day it starts on (#333).
+    #[test]
+    fn a_wrapping_window_holds_both_sides_of_midnight_on_its_start_day() {
+        let mut c = tod(
+            TimeOfDayRange::new(time(22, 0, 0, 0), time(2, 0, 0, 0)),
+            ConstraintSeverity::Hard,
+        );
+        c.days_of_week = WeekdaySet::from_days([Weekday::Mo]);
+        assert!(c.validate().is_ok());
+        // Monday 2026-08-03 22:00 and 23:59, then Tuesday 01:59: all Monday's.
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 22, 0)));
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 23, 59)));
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 4, 1, 59)));
+        // The exclusive end, and the gap between the end and the start.
+        assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 2, 0)));
+        assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 12, 0)));
+        // Monday 01:00 is Sunday's window, which the weekday refuses.
+        assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 1, 0)));
+        // Tuesday 22:00 starts Tuesday's window.
+        assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 22, 0)));
+    }
+
+    /// Across a DST night the window is evaluated on the moment's civil time,
+    /// and no bound is resolved: New York's spring-forward night has no 02:30,
+    /// so a `02:00–03:00` window is empty, and `22:00–02:30` still ends at the
+    /// first wall clock at or after 02:30, which is 03:00 EDT.
+    #[test]
+    fn a_wrapping_window_across_a_spring_forward_night() {
+        let ny = TimeZone::get("America/New_York").unwrap();
+        let at = |h: i8, m: i8, d: i8| {
+            date(2026, 3, d)
+                .at(h, m, 0, 0)
+                .to_zoned(ny.clone())
+                .unwrap()
+        };
+        let c = tod(
+            TimeOfDayRange::new(time(22, 0, 0, 0), time(2, 30, 0, 0)),
+            ConstraintSeverity::Hard,
+        );
+        assert!(c.is_satisfied_at(&at(23, 0, 7)));
+        assert!(c.is_satisfied_at(&at(1, 59, 8)));
+        // 02:00 does not exist; the next wall clock is 03:00, past the end.
+        assert!(!c.is_satisfied_at(&at(3, 0, 8)));
+        let gap = tod(
+            TimeOfDayRange::new(time(2, 0, 0, 0), time(3, 0, 0, 0)),
+            ConstraintSeverity::Hard,
+        );
+        let night: Vec<Zoned> = (0..240)
+            .map(|m| {
+                at(0, 0, 8)
+                    .checked_add(jiff::SignedDuration::from_mins(m))
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            night.iter().all(|z| !gap.is_satisfied_at(z)),
+            "empty that night"
+        );
     }
 
     #[test]

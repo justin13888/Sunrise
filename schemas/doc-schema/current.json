@@ -725,7 +725,7 @@
             "tag": "review_snapshot"
         },
         {
-            "features": [],
+            "features": ["routine.civil_times"],
             "merge": "lww",
             "ops": [
                 {
@@ -783,7 +783,7 @@
                             "conflict": "tracked",
                             "crdt": "register",
                             "name": "ends_at",
-                            "type": "Option<Timestamp>"
+                            "type": "Option<CompatTime>"
                         },
                         {
                             "conflict": "quiet",
@@ -813,7 +813,7 @@
                             "conflict": "merge",
                             "crdt": "derived",
                             "name": "last_completed_at",
-                            "type": "Option<Timestamp>"
+                            "type": "Option<CompatTime>"
                         },
                         {
                             "conflict": "quiet",
@@ -822,10 +822,10 @@
                             "type": "bool"
                         },
                         {
-                            "conflict": "quiet",
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "paused_until",
-                            "type": "Option<Timestamp>"
+                            "type": "Option<CompatTime>"
                         },
                         {
                             "conflict": "tracked",
@@ -855,7 +855,7 @@
                             "conflict": "tracked",
                             "crdt": "register",
                             "name": "starts_at",
-                            "type": "Timestamp"
+                            "type": "CompatTime"
                         },
                         {
                             "conflict": "merge",
@@ -1046,10 +1046,10 @@
                             "type": "bool"
                         },
                         {
-                            "conflict": "quiet",
+                            "conflict": "tracked",
                             "crdt": "register",
                             "name": "paused_until",
-                            "type": "Option<Timestamp>"
+                            "type": "Option<CompatTime>"
                         },
                         {
                             "conflict": "quiet",
@@ -1343,6 +1343,7 @@
             ],
             "id": "attachment.thumbnail",
             "op_kinds": [],
+            "retyped": [],
             "scope": {
                 "entity": "attachment"
             },
@@ -1353,10 +1354,38 @@
             "fields": [],
             "id": "preferences.entity",
             "op_kinds": [],
+            "retyped": [],
             "scope": {
                 "entity": "preferences"
             },
             "since": 11
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "routine.civil_times",
+            "op_kinds": [],
+            "retyped": [
+                "RoutineCreate.ends_at",
+                "RoutineCreate.last_completed_at",
+                "RoutineCreate.paused_until",
+                "RoutineCreate.rrule.until",
+                "RoutineCreate.starts_at",
+                "RoutineDelete.ends_at",
+                "RoutineDelete.last_completed_at",
+                "RoutineDelete.paused_until",
+                "RoutineDelete.rrule.until",
+                "RoutineDelete.starts_at",
+                "RoutineUpdate.ends_at",
+                "RoutineUpdate.last_completed_at",
+                "RoutineUpdate.paused_until",
+                "RoutineUpdate.rrule.until",
+                "RoutineUpdate.starts_at"
+            ],
+            "scope": {
+                "entity": "routine"
+            },
+            "since": 15
         }
     ],
     "format": 1,
@@ -1440,6 +1469,54 @@
             "keeps_unknowns": true,
             "name": "Chunk",
             "shape": "record"
+        },
+        {
+            "keeps_unknowns": true,
+            "name": "CompatTime",
+            "shape": "variants",
+            "tag": "kind",
+            "variants": [
+                {
+                    "fields": [
+                        {
+                            "name": "date",
+                            "type": "Date"
+                        }
+                    ],
+                    "name": "all_day"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "civil",
+                            "type": "DateTime"
+                        }
+                    ],
+                    "name": "floating"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "name": "instant"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "civil",
+                            "type": "DateTime"
+                        },
+                        {
+                            "name": "tz",
+                            "type": "String"
+                        }
+                    ],
+                    "name": "zoned"
+                }
+            ]
         },
         {
             "fields": [
@@ -1660,7 +1737,7 @@
                 },
                 {
                     "name": "until",
-                    "type": "Option<Timestamp>"
+                    "type": "Option<CompatTime>"
                 },
                 {
                     "name": "wkst",

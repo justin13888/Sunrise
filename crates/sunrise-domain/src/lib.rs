@@ -125,12 +125,12 @@ pub use review::{
     WeeklyReviewInput,
 };
 pub use routine::{
-    materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
-    RoutineReviewCadence, TaskTemplate,
+    materialization_horizon_days, read_legacy_instant, Routine, RoutineCatchupPolicy, RoutineDraft,
+    RoutinePatch, RoutineReviewCadence, TaskTemplate,
 };
 pub use routine_gen::{
-    expand, occurrence_key_at, occurrence_task_id, routine_rows, ExpandError, Occurrence,
-    RoutineRow,
+    expand, occurrence_key_at, occurrence_task_id, parse_occurrence_key, routine_rows, ExpandError,
+    Occurrence, RoutineRow,
 };
 pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
@@ -148,7 +148,7 @@ pub use streak::{
 };
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
-pub use time::{first_day_of_week, shift_civil_days, SunriseTime, Unresolvable};
+pub use time::{first_day_of_week, shift_civil_days, CompatTime, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use upcoming::{
     build_upcoming, is_upcoming_span, upcoming_days, NoDateGroup, Upcoming, UpcomingDay,

@@ -4,8 +4,18 @@
 //! described in `docs/08-features/recurrence-engine.md` and
 //! `docs/02-domain/routines-and-recurrence.md`. [`RRule`]
 //! (parsed in [`crate::rrule`]) describes *which* wall-clock instants recur;
-//! [`expand`] turns a rule + anchor + timezone + window into concrete
-//! [`Occurrence`] instants.
+//! [`expand`] turns a rule + civil anchor + resolution zone + window into
+//! concrete [`Occurrence`]s.
+//!
+//! # Civil space (`docs/10-cross-cutting/time.md` §6)
+//!
+//! The rule is expanded over **civil date-times**, from the anchor's
+//! wall-clock value, with no zone involved. An occurrence's key is its civil
+//! value. The zone enters only to place a key on the timeline: the anchor's
+//! own zone for a `zoned` routine, the reader's for a `floating` one
+//! ([`Routine::occurrence_zone`](crate::Routine::occurrence_zone)). So moving a routine to another zone, or
+//! reading a floating one in another, changes when occurrences fire and
+//! never which occurrences exist or what their keys are.
 //!
 //! # Determinism
 //!
@@ -37,8 +47,8 @@
 //! [`TimeZone::to_ambiguous_zoned`]: jiff::tz::TimeZone::to_ambiguous_zoned
 //! [`AmbiguousZoned::compatible`]: jiff::tz::AmbiguousZoned::compatible
 
-use crate::routine::Routine;
 use crate::rrule::{Frequency, RRule, Weekday};
+use crate::time::SunriseTime;
 use jiff::civil::{Date, DateTime, Time, Weekday as JiffWeekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
@@ -61,13 +71,19 @@ pub const MAX_PERIODS: usize = 100_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Occurrence {
     /// Stable, tzdb-drift-immune key: the intended civil datetime formatted as
-    /// `YYYY-MM-DDTHH:MM` in the routine's timezone (minute precision).
+    /// `YYYY-MM-DDTHH:MM` (minute precision). The task id, a skip and a
+    /// streak entry all use it (#331).
     pub key: String,
-    /// The absolute instant this occurrence fires at (DST-resolved).
+    /// The intended wall-clock value the key names, before any DST shift: an
+    /// occurrence's planned time is this, of the anchor's kind
+    /// ([`Routine::occurrence_time`](crate::Routine::occurrence_time)).
+    pub civil: DateTime,
+    /// The absolute instant this occurrence fires at, resolved in the
+    /// expansion's zone by the one DST rule (time.md §3).
     pub at: Timestamp,
 }
 
-/// Errors returned by [`expand`] / [`Routine::occurrences_in`].
+/// Errors returned by [`expand`] / [`Routine::occurrences_in`](crate::Routine::occurrences_in).
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExpandError {
     /// The scan exceeded [`MAX_PERIODS`] interval periods without terminating.
@@ -357,17 +373,47 @@ fn apply_setpos(dates: &[Date], setpos: &[i32]) -> Vec<Date> {
     sel
 }
 
-/// Expand `rrule` anchored at `anchor` (interpreted in `tz`) into the
-/// occurrences whose instants fall in `[window.0, window.1)`.
+/// Whether an occurrence at wall-clock `civil`, firing at `at` in `tz`, is
+/// within the bound `bound` (`UNTIL` or `ends_at`, inclusive).
 ///
-/// See the module docs for the DST disambiguation policy and determinism
-/// guarantees. `COUNT` is counted from the anchor across the whole series (not
-/// just the window); `UNTIL` bounds instants inclusively. Invalid civil dates
-/// (e.g. Feb 30 from `BYMONTHDAY=30`) are silently skipped per RFC 5545.
+/// A civil bound is compared in civil space (`docs/10-cross-cutting/time.md`
+/// §6): a floating one with the key's wall clock, an all-day one with its
+/// date, a zoned one in the expansion's zone with its wall clock. An instant,
+/// or a zoned bound in another zone, is compared on the timeline. `None` for
+/// a kind this build cannot place, which bounds nothing it can read: the
+/// caller generates nothing for it.
+fn within_bound(
+    bound: &SunriseTime,
+    civil: DateTime,
+    at: Timestamp,
+    tz: &TimeZone,
+) -> Option<bool> {
+    Some(match bound {
+        SunriseTime::Floating { civil: c } => civil <= *c,
+        SunriseTime::AllDay { date } => civil.date() <= *date,
+        SunriseTime::Zoned { civil: c, tz: name }
+            if TimeZone::get(name).is_ok_and(|z| crate::time::same_zone(&z, tz, at)) =>
+        {
+            civil <= *c
+        }
+        other => at <= other.resolve_in(tz)?,
+    })
+}
+
+/// Expand `rrule` anchored at wall-clock `anchor` into the occurrences whose
+/// instants, resolved in `tz`, fall in `[window.0, window.1)`.
+///
+/// The expansion itself is in civil space (see the module docs); `tz` places
+/// each key on the timeline by the one DST rule, and is the anchor's zone for
+/// a zoned routine and the reader's for a floating one. `COUNT` is counted
+/// from the anchor across the whole series (not just the window); `UNTIL`
+/// bounds keys inclusively, a civil `UNTIL` in civil space. Invalid civil dates (e.g. Feb
+/// 30 from `BYMONTHDAY=30`) are silently skipped per RFC 5545.
 ///
 /// A rule holding a `FREQ`, `BYDAY` or `WKST` value this build does not know
-/// ([`RRule::is_understood`]) expands to **no occurrences** (ADR-0045 §6):
-/// any schedule this build guessed for it could be the wrong one.
+/// ([`RRule::is_understood`]), or an `UNTIL` of a kind it does not know,
+/// expands to **no occurrences** (ADR-0045 §6): any schedule this build
+/// guessed for it could be the wrong one.
 ///
 /// # Errors
 ///
@@ -375,25 +421,30 @@ fn apply_setpos(dates: &[Date], setpos: &[i32]) -> Vec<Date> {
 /// [`MAX_PERIODS`] interval periods.
 pub fn expand(
     rrule: &RRule,
-    anchor: Timestamp,
+    anchor: DateTime,
     tz: &TimeZone,
     window: (Timestamp, Timestamp),
 ) -> Result<Vec<Occurrence>, ExpandError> {
-    if !rrule.is_understood() {
+    if !rrule.is_understood() || rrule.until.as_ref().is_some_and(SunriseTime::is_unknown) {
         return Ok(Vec::new());
     }
     let (win_start, win_end) = window;
-    let anchor_zoned = anchor.to_zoned(tz.clone());
-    let anchor_dt = anchor_zoned.datetime();
-    let anchor_date = anchor_dt.date();
-    let tod = anchor_dt.time();
+    let anchor_date = anchor.date();
+    let tod = anchor.time();
     let wkst = rrule
         .wkst
         .as_ref()
         .and_then(to_jiff_weekday)
         .unwrap_or(JiffWeekday::Monday);
     let interval = i64::from(rrule.interval.max(1));
-    let win_end_date = win_end.to_zoned(tz.clone()).date();
+    // A period starting after the window's end in `tz` cannot hold an
+    // occurrence inside it; one day of slack covers a key the DST rule
+    // moves past midnight.
+    let win_end_date = win_end
+        .to_zoned(tz.clone())
+        .date()
+        .tomorrow()
+        .unwrap_or(Date::MAX);
 
     let mut out = Vec::new();
     let mut count_seen: u32 = 0;
@@ -426,8 +477,8 @@ pub fn expand(
                 Ok(z) => z.timestamp(),
                 Err(_) => continue,
             };
-            if let Some(until) = rrule.until {
-                if inst > until {
+            if let Some(until) = &rrule.until {
+                if !within_bound(until, dt, inst, tz).unwrap_or(false) {
                     done = true;
                     break;
                 }
@@ -442,6 +493,7 @@ pub fn expand(
             if inst >= win_start && inst < win_end {
                 out.push(Occurrence {
                     key: format_key(d, tod),
+                    civil: dt,
                     at: inst,
                 });
             }
@@ -472,18 +524,13 @@ pub fn occurrence_task_id(routine_id: &EntityRef, key: &str) -> EntityRef {
     EntityRef::new(EntityKind::Task, bytes)
 }
 
-/// The occurrence key for an already-materialized instant, resolved in `tz`.
+/// The key of the wall-clock minute instant `at` falls on in zone `tz`.
 ///
-/// Used by the streak counter, which starts from a Task's stored
-/// `routine_occurrence` rather than from a fresh expansion. Every replica holds
-/// the same `routine_occurrence` and the same routine timezone, so every
-/// replica derives the same key — which is what makes the streak's idempotency
-/// set converge.
-///
-/// Note this resolves the *actual* instant's civil datetime. For an occurrence
-/// that DST shifted (see the module docs), that differs from the intended
-/// wall-clock key [`expand`] emitted. The key only has to be stable and unique
-/// per occurrence, and it is both.
+/// A key for a time a user picked ("skip the one at 09:00 on the 3rd"). It
+/// is the intended key of an occurrence only when the DST rule did not move
+/// that occurrence: the streak and skip of a materialized occurrence use
+/// [`Routine::occurrence_key_of`](crate::Routine::occurrence_key_of), which recovers the intended key, so all
+/// three agree on a spring-forward day (#331).
 ///
 /// # Errors
 ///
@@ -494,245 +541,6 @@ pub fn occurrence_key_at(tz: &str, at: Timestamp) -> Result<String, ExpandError>
     Ok(format_key(dt.date(), dt.time()))
 }
 
-impl Routine {
-    /// Expand this routine's occurrences within `window`, applying its
-    /// timezone, `starts_at` anchor, `ends_at` upper bound, and skip filters
-    /// (both explicit skipped keys and `skip_dates`). A paused, archived, or
-    /// deleted routine yields no occurrences.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExpandError::InvalidTimeZone`] if the IANA timezone string
-    /// does not resolve, or [`ExpandError::WindowTooLarge`] from [`expand`].
-    pub fn occurrences_in(
-        &self,
-        window: (Timestamp, Timestamp),
-    ) -> Result<Vec<Occurrence>, ExpandError> {
-        if self.paused || self.archived || self.deleted {
-            return Ok(Vec::new());
-        }
-        let tz = TimeZone::get(&self.timezone)
-            .map_err(|_| ExpandError::InvalidTimeZone(self.timezone.clone()))?;
-        let mut occ = expand(&self.rrule, self.starts_at, &tz, window)?;
-        if let Some(end) = self.ends_at {
-            occ.retain(|o| o.at <= end);
-        }
-        occ.retain(|o| !self.is_skipped(o, &tz));
-        Ok(occ)
-    }
+mod series;
 
-    /// Whether `occ` is skipped, matching either an explicit skipped key or a
-    /// `skip_dates` timestamp by identical civil minute in the routine's tz.
-    fn is_skipped(&self, occ: &Occurrence, tz: &TimeZone) -> bool {
-        if self.skipped_keys.iter().any(|k| k == &occ.key) {
-            return true;
-        }
-        self.skip_dates.iter().any(|ts| {
-            let dt = ts.to_zoned(tz.clone()).datetime();
-            format_key(dt.date(), dt.time()) == occ.key
-        })
-    }
-}
-
-/// One projected row of the Routines list: the routine's template title, a
-/// human-readable RRULE summary, and its next occurrence.
-///
-/// The parsed rule and the whole template are carried alongside the prose
-/// because both are lossy in the other direction: `RoutinePatch.template`
-/// replaces the *whole* template, so an edit that only changes a title must
-/// still send back the stream, priority and contexts it did not touch, and
-/// [`crate::rrule::rrule_summary`] cannot be parsed back into the rule it
-/// described.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoutineRow {
-    /// Routine id.
-    pub id: EntityRef,
-    /// Template title.
-    pub title: String,
-    /// Human-readable recurrence summary (e.g. `every 2 weeks on Mo, We`).
-    pub rrule: String,
-    /// Next occurrence at or after "now", if one exists inside the routine's
-    /// materialization horizon.
-    pub next: Option<Timestamp>,
-    /// Whether the routine is paused (no occurrences are generated).
-    pub paused: bool,
-    /// The routine's task template, kept so an edit patches the fields the
-    /// user changed and leaves the rest exactly as they were.
-    pub template: crate::routine::TaskTemplate,
-    /// The parsed recurrence, kept because the summary string is lossy and
-    /// cannot be patched back.
-    pub rule: RRule,
-    /// Current streak counter, so a Routines list can answer "am I keeping
-    /// this up?" without a second query per row.
-    pub streak: i64,
-}
-
-/// Project a routine list into [`RoutineRow`]s, resolving each routine's next
-/// occurrence at or after `now`.
-///
-/// The lookahead window is the routine's own per-FREQ materialization horizon
-/// (`docs/02-domain/routines-and-recurrence.md`), so a yearly routine still
-/// resolves while a daily one stays cheap. Pure over `now` — no wall clock is
-/// read here, which keeps the projection deterministic and unit-testable, and
-/// is why every client can share it.
-#[must_use]
-pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
-    routines
-        .iter()
-        .map(|r| {
-            let horizon_h =
-                i64::from(crate::routine::materialization_horizon_days(&r.rrule.freq)) * 24;
-            let next = now
-                .checked_add(jiff::SignedDuration::from_hours(horizon_h))
-                .ok()
-                .and_then(|end| r.occurrences_in((now, end)).ok())
-                .and_then(|occ| occ.first().map(|o| o.at));
-            RoutineRow {
-                id: r.id,
-                title: r.template.title.clone(),
-                rrule: crate::rrule::rrule_summary(&r.rrule),
-                next,
-                paused: r.paused,
-                template: r.template.clone(),
-                rule: r.rrule.clone(),
-                streak: r.streak_counter,
-            }
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod row_tests {
-    use super::*;
-    use crate::inbox::inbox_stream_ref;
-    use crate::routine::{RoutineCatchupPolicy, TaskTemplate};
-    use crate::unknown::Unknowns;
-
-    /// 2026-01-01T00:00:00Z — the fixed "now" for routine projection tests.
-    fn now() -> Timestamp {
-        "2026-01-01T00:00:00Z".parse().expect("valid timestamp")
-    }
-
-    fn fake_routine(idx: u8, title: &str, rrule: &str, starts_at: &str) -> Routine {
-        Routine {
-            id: EntityRef::new(EntityKind::Routine, [idx; 16]),
-            created_at: Timestamp::UNIX_EPOCH,
-            updated_at: Timestamp::UNIX_EPOCH,
-            template: TaskTemplate {
-                title: title.into(),
-                stream_id: inbox_stream_ref(),
-                contexts: Vec::new(),
-                energy: None,
-                priority: None,
-                estimated_duration_s: None,
-                body: None,
-                unknown: crate::Unknowns::new(),
-            },
-            rrule: RRule::parse(rrule).expect("valid rrule"),
-            timezone: "UTC".into(),
-            starts_at: starts_at.parse().expect("valid timestamp"),
-            ends_at: None,
-            scheduling_constraints: Vec::new(),
-            skip_dates: Vec::new(),
-            skipped_keys: Vec::new(),
-            catchup_policy: RoutineCatchupPolicy::Skip,
-            streak_counter: 0,
-            last_completed_at: None,
-            grace_window_s: None,
-            forgiveness_enabled: true,
-            streak_started_at: None,
-            forgivenesses_in_window: 0,
-            streak_keys: Vec::new(),
-            paused: false,
-            paused_until: None,
-            archived: false,
-            deleted: false,
-            unknown: Unknowns::new(),
-        }
-    }
-
-    #[test]
-    fn rrule_summary_reads_as_english() {
-        let daily = fake_routine(1, "t", "FREQ=DAILY", "2026-01-01T09:00:00Z");
-        assert_eq!(crate::rrule::rrule_summary(&daily.rrule), "every day");
-
-        let biweekly = fake_routine(
-            2,
-            "t",
-            "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE",
-            "2026-01-05T09:00:00Z",
-        );
-        assert_eq!(
-            crate::rrule::rrule_summary(&biweekly.rrule),
-            "every 2 weeks on Mo, We"
-        );
-
-        let monthly = fake_routine(
-            3,
-            "t",
-            "FREQ=MONTHLY;BYMONTHDAY=1;COUNT=6",
-            "2026-01-01T09:00:00Z",
-        );
-        assert_eq!(
-            crate::rrule::rrule_summary(&monthly.rrule),
-            "every month day 1 ×6"
-        );
-    }
-
-    #[test]
-    fn every_phrase_the_parser_accepts_summarizes_back() {
-        // The two halves are inverses in prose, not in bytes: this pins that
-        // the summary of a parsed phrase is at least *readable*, and that the
-        // round-trippable form still survives the domain parser.
-        for text in ["every day", "every 3 days", "weekdays", "monthly on day 1"] {
-            let rule = crate::recur::parse_recurrence(text).expect("parses");
-            let summary = crate::rrule::rrule_summary(&rule);
-            assert!(summary.starts_with("every"), "{text} -> {summary}");
-        }
-    }
-
-    #[test]
-    fn routine_rows_resolve_the_next_occurrence() {
-        let daily = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
-        let rows = routine_rows(&[daily], now());
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].title, "Water plants");
-        assert_eq!(rows[0].rrule, "every day");
-        assert_eq!(
-            rows[0].next,
-            Some("2026-01-01T09:00:00Z".parse().expect("valid timestamp"))
-        );
-    }
-
-    #[test]
-    fn routine_rows_project_a_paused_routine_with_no_next() {
-        let mut r = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
-        r.paused = true;
-        let rows = routine_rows(&[r], now());
-        assert!(rows[0].paused);
-        assert_eq!(rows[0].next, None);
-    }
-
-    #[test]
-    fn routine_rows_report_no_next_past_the_series_end() {
-        // A daily series that stopped in 2025 has nothing left to schedule.
-        let r = fake_routine(
-            1,
-            "Old habit",
-            "FREQ=DAILY;UNTIL=20250601T000000Z",
-            "2025-01-01T09:00:00Z",
-        );
-        let rows = routine_rows(&[r], now());
-        assert_eq!(rows[0].next, None);
-    }
-
-    #[test]
-    fn a_row_carries_the_template_and_the_parsed_rule_back() {
-        // Both are load-bearing for editing: patching a title must not drop
-        // the rest of the template, and the prose summary cannot be reparsed.
-        let r = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
-        let rows = routine_rows(std::slice::from_ref(&r), now());
-        assert_eq!(rows[0].template.title, r.template.title);
-        assert_eq!(rows[0].rule, r.rrule);
-    }
-}
+pub use series::{parse_occurrence_key, routine_rows, RoutineRow};

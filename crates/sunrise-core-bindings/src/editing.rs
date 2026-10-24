@@ -119,8 +119,13 @@ pub struct RoutineEditorForm {
     pub timezone: String,
     /// Catch-up policy.
     pub catchup_policy: RoutineCatchupPolicy,
-    /// Series end, or none.
+    /// Series end as an instant, resolved in `timezone`; kept for clients
+    /// built before #506. An unchanged one keeps the stored end's kind.
     pub ends_at: Option<Timestamp>,
+    /// Series end with its kind (`floating` or `all_day`). Wins over
+    /// `ends_at` when set.
+    #[uniffi(default = None)]
+    pub ends_at_time: Option<TimeValue>,
 }
 
 /// The task editor's form for `task`, seeded from what is stored.
@@ -202,9 +207,13 @@ pub fn routine_editor_form(routine: RoutineItem) -> RoutineEditorForm {
         energy: form.energy,
         estimated_duration_s: form.estimated_duration_s,
         rrule: Recurrence::from(&form.rrule),
+        ends_at: form
+            .ends_at
+            .as_ref()
+            .map(|e| e.instant_or_last(&sunrise_client_core::vocab::zone_or_utc(&form.timezone))),
+        ends_at_time: form.ends_at.as_ref().map(TimeValue::from),
         timezone: form.timezone,
         catchup_policy: form.catchup_policy,
-        ends_at: form.ends_at,
     }
 }
 
@@ -216,6 +225,22 @@ pub fn routine_editor_edit(
     routine: RoutineItem,
     form: RoutineEditorForm,
 ) -> Result<RoutineEdit, BindingError> {
+    let stored = routine_fields(routine);
+    let zone = sunrise_client_core::vocab::zone_or_utc(&stored.timezone);
+    let ends_at = match (form.ends_at_time, form.ends_at) {
+        (Some(t), _) => Some(SunriseTime::from(t)),
+        // A legacy client hands back the instant it was given: unchanged,
+        // so the stored end keeps its kind.
+        (None, Some(at))
+            if stored
+                .ends_at
+                .as_ref()
+                .is_some_and(|e| e.instant_or_last(&zone) == at) =>
+        {
+            stored.ends_at.clone()
+        }
+        (None, other) => other.map(SunriseTime::from),
+    };
     let form = editor::RoutineForm {
         title: form.title,
         stream_id: form.stream_id,
@@ -225,9 +250,9 @@ pub fn routine_editor_edit(
         rrule: RRule::from(form.rrule),
         timezone: form.timezone,
         catchup_policy: form.catchup_policy,
-        ends_at: form.ends_at,
+        ends_at,
     };
-    editor::routine_patch(&routine_fields(routine), &form)
+    editor::routine_patch(&stored, &form)
         .map(routine_edit)
         .map_err(editor_error)
 }
@@ -350,7 +375,10 @@ fn routine_fields(routine: RoutineItem) -> editor::RoutineFields {
         rrule: RRule::from(routine.rrule),
         timezone: routine.timezone,
         catchup_policy: routine.catchup_policy,
-        ends_at: routine.ends_at,
+        ends_at: routine
+            .ends_at_time
+            .map(SunriseTime::from)
+            .or_else(|| routine.ends_at.map(Into::into)),
     }
 }
 
@@ -407,7 +435,10 @@ fn routine_edit(patch: RoutinePatch) -> RoutineEdit {
         rrule: patch.rrule.as_ref().map(Recurrence::from),
         timezone: patch.timezone,
         catchup_policy: patch.catchup_policy,
-        set_ends_at,
+        set_ends_at: set_ends_at
+            .as_ref()
+            .map(|e| e.instant_or_last(&jiff::tz::TimeZone::UTC)),
+        set_ends_at_time: set_ends_at.as_ref().map(TimeValue::from),
         clear_ends_at,
         ..RoutineEdit::default()
     }

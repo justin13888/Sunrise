@@ -160,7 +160,20 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// encodes exactly as before, and a v13 build keeps them as unknown keys.
 /// Every v1..v13 payload shape is unchanged, so the floor still does not
 /// move.
-pub const DOC_SCHEMA_V: u16 = 14;
+///
+/// `15` retypes six fields from a bare instant to a `SunriseTime` (issue
+/// #506, ADR-0066 §1): `Routine.starts_at`, `ends_at`, `paused_until` and
+/// `last_completed_at`, `RRule.until`, and `Stream.paused_until`, each a
+/// `CompatTime`: an instant is still written as the bare timestamp, and
+/// every other kind tagged. A routine time a v14 build cannot read (a
+/// floating anchor, an all-day end, a non-instant pause) is written only into
+/// a vault that requires the feature `routine.civil_times`, which a v14 build
+/// lacks and so stops writing routines; a routine whose times all have a
+/// bare instant is written as one, so a v14 build reads it as it always did.
+/// A v14 payload still decodes, its bare instants read as zoned in the
+/// routine's zone, so the floor does not move. It also hashes each
+/// feature's `retyped` fields.
+pub const DOC_SCHEMA_V: u16 = 15;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -221,6 +234,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         14,
         hex32("300fb530ec0d3b3c3e5e24ed878fb9cc866cb4f2a3496bd37388369887f3749b"),
+    ),
+    (
+        15,
+        hex32("953c59ed8729b185b79ca821da37d40facc115054b8c11150d19d8e0b6999de4"),
     ),
 ];
 
@@ -517,4 +534,14 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// schema-only in effect: no `search_idx` row is carried, and the first
 /// `Core::open` after it rebuilds both indexes from the entity rows, because
 /// `search_meta` holds no row.
-pub const STORAGE_V: u16 = 40;
+///
+/// `41` is migration `0041_civil_times.sql` (issue #506, ADR-0066 §2): every
+/// `SunriseTime` column gains a `*_civil` sidecar holding the wall-clock value a
+/// civil kind means, so a read never re-derives it from the index key, and
+/// the routine's anchor, end, pause and last completion and the stream's
+/// pause gain the `_kind` and `_tz` sidecars the task times have, back-filled
+/// with what their bare instants meant. Not schema-only in effect: no civil
+/// value is computed in SQL, and the first `Core::open` after it rebuilds the
+/// projection from the op log, which carries each civil value as written,
+/// because the fold's version moved with it.
+pub const STORAGE_V: u16 = 41;

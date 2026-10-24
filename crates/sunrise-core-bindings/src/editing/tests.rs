@@ -132,7 +132,7 @@ fn routine() -> RoutineItem {
         },
         rrule: RRule::parse("FREQ=DAILY").unwrap(),
         timezone: TZ.into(),
-        starts_at: Timestamp::UNIX_EPOCH,
+        starts_at: Timestamp::UNIX_EPOCH.into(),
         ends_at: None,
         scheduling_constraints: Vec::new(),
         skip_dates: Vec::new(),

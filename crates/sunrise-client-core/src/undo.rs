@@ -857,7 +857,7 @@ mod tests {
                     },
                     rrule: RRule::parse("FREQ=DAILY").expect("valid rrule"),
                     timezone: "UTC".into(),
-                    starts_at: jiff::Timestamp::UNIX_EPOCH,
+                    starts_at: jiff::Timestamp::UNIX_EPOCH.into(),
                     ends_at: None,
                     scheduling_constraints: Vec::new(),
                     catchup_policy: RoutineCatchupPolicy::Skip,

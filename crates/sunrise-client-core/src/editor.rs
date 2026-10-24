@@ -18,7 +18,6 @@
 //! by [`crate::civil::field_edit`].
 
 use jiff::tz::TimeZone;
-use jiff::Timestamp;
 use sunrise_domain::{
     Block, BlockPatch, Energy, RRule, Routine, RoutineCatchupPolicy, RoutinePatch, SunriseTime,
     Task, TaskPatch, TaskTemplate,
@@ -301,8 +300,8 @@ pub struct RoutineFields {
     pub timezone: String,
     /// What happens to occurrences missed offline.
     pub catchup_policy: RoutineCatchupPolicy,
-    /// Series end.
-    pub ends_at: Option<Timestamp>,
+    /// Series end (`floating` or `all_day`).
+    pub ends_at: Option<SunriseTime>,
 }
 
 impl From<&Routine> for RoutineFields {
@@ -312,7 +311,7 @@ impl From<&Routine> for RoutineFields {
             rrule: r.rrule.clone(),
             timezone: r.timezone.clone(),
             catchup_policy: r.catchup_policy.clone(),
-            ends_at: r.ends_at,
+            ends_at: r.ends_at.clone(),
         }
     }
 }
@@ -337,7 +336,7 @@ pub struct RoutineForm {
     /// Catch-up policy.
     pub catchup_policy: RoutineCatchupPolicy,
     /// Series end, or `None` when the routine does not stop.
-    pub ends_at: Option<Timestamp>,
+    pub ends_at: Option<SunriseTime>,
 }
 
 /// The routine editor's form, seeded from `stored`.
@@ -352,7 +351,7 @@ pub fn routine_form(stored: &RoutineFields) -> RoutineForm {
         rrule: stored.rrule.clone(),
         timezone: stored.timezone.clone(),
         catchup_policy: stored.catchup_policy.clone(),
-        ends_at: stored.ends_at,
+        ends_at: stored.ends_at.clone(),
     }
 }
 
@@ -363,8 +362,9 @@ pub fn routine_form(stored: &RoutineFields) -> RoutineForm {
 /// and it is the stored template with those five replaced: contexts, body
 /// and the fields a newer build wrote go back as they arrived (ADR-0045 §6).
 /// The Apple editor sent the template, the rule, the zone, the policy and the
-/// end on every save. `ends_at` is still a bare instant here (#506 makes it a
-/// `SunriseTime`), so it is compared as one.
+/// end on every save. `ends_at` is a `SunriseTime` and is compared as the
+/// value it is, kind included, so an end the form did not touch keeps its
+/// kind.
 ///
 /// # Errors
 /// [`EditorError::EmptyTitle`] for a blank title.
@@ -390,7 +390,7 @@ pub fn routine_patch(
         timezone: (form.timezone != stored.timezone).then(|| form.timezone.clone()),
         catchup_policy: (form.catchup_policy != stored.catchup_policy)
             .then(|| form.catchup_policy.clone()),
-        ends_at: changed(stored.ends_at.as_ref(), form.ends_at),
+        ends_at: changed(stored.ends_at.as_ref(), form.ends_at.clone()),
         ..RoutinePatch::default()
     })
 }

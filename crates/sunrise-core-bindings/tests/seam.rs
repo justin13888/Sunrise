@@ -921,6 +921,8 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+                anchor: None,
+                ends_at_time: None,
             },
         })
         .await
@@ -1103,6 +1105,8 @@ async fn a_routine_keeps_the_nested_fields_its_client_handed_back() {
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+                anchor: None,
+                ends_at_time: None,
             },
         })
         .await

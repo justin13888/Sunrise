@@ -338,6 +338,7 @@ fn canonical_order(mut schema: Value) -> Value {
         sort_strings(&mut f["op_kinds"]);
         sort_strings(&mut f["fields"]);
         sort_strings(&mut f["field_op_kinds"]);
+        sort_strings(&mut f["retyped"]);
     }
     schema["features"] = Value::Array(features);
     sort_strings(&mut schema["conflict_rules"]["terminal_states"]);
@@ -392,6 +393,11 @@ fn raw_schema() -> Value {
                 "op_kinds": f.op_kinds,
                 "fields": f.fields,
                 "field_op_kinds": f.field_op_kinds,
+                "retyped": f
+                    .retyped
+                    .iter()
+                    .map(|(variant, path)| format!("{variant}.{path}"))
+                    .collect::<Vec<_>>(),
                 "since": f.since,
             })
         })

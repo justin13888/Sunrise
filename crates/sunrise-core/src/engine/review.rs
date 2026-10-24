@@ -339,7 +339,15 @@ impl Engine {
         let drift: Vec<RoutineDrift> = routines
             .iter()
             .filter(|r| !r.deleted && !r.archived)
-            .filter_map(|r| routine_drift(r, drift_window, DEFAULT_DRIFT_THRESHOLD).ok())
+            .filter_map(|r| {
+                routine_drift(
+                    r,
+                    drift_window,
+                    DEFAULT_DRIFT_THRESHOLD,
+                    &self.device_zone(),
+                )
+                .ok()
+            })
             .collect();
 
         Ok(build_weekly_review(WeeklyReviewInput {
@@ -471,6 +479,7 @@ impl Engine {
                         streak: r.streak_counter,
                         last_completed_at_ms: r
                             .last_completed_at
+                            .and_then(|t| t.resolve_in(&jiff::tz::TimeZone::UTC))
                             .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
                         unknown: sunrise_domain::Unknowns::new(),
                     })

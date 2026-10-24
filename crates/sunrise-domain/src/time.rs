@@ -42,6 +42,7 @@ mod shift;
 mod week;
 mod zone;
 
+pub use codec::compat;
 pub use resolve::Unresolvable;
 pub use shift::shift_civil_days;
 pub use week::first_day_of_week;
@@ -100,6 +101,15 @@ pub enum SunriseTime {
         raw: Unknowns,
     },
 }
+
+/// A [`SunriseTime`] in a field that was a bare instant before
+/// `DOC_SCHEMA_V` 15, written through [`compat`]: an instant as the bare
+/// timestamp, every other kind tagged.
+///
+/// The same Rust type; the name is what the entity registry and the
+/// canonical document schema call such a field, so the encoding is part of
+/// the schema's fingerprint.
+pub type CompatTime = SunriseTime;
 
 /// The key an [`SunriseTime::Unknown`] value with no `at` instant is indexed
 /// at, and the instant [`SunriseTime::instant_or_last`] sorts a value that
@@ -388,7 +398,40 @@ impl SunriseTime {
         (self.index_ms(), self.kind_str(), tz)
     }
 
-    /// Rebuild from the three storage columns.
+    /// The `_civil` storage column: the wall-clock value a civil kind means,
+    /// as its ISO 8601 text, beside the index key and the sidecars
+    /// (`docs/11-adr/0066-times-survive-travel.md` §2).
+    ///
+    /// `Some` for [`SunriseTime::Zoned`] and [`SunriseTime::Floating`] (a
+    /// civil date-time, `2026-03-08T02:30:00`) and [`SunriseTime::AllDay`] (a
+    /// date, `2026-03-08`); `None` for the kinds that are not civil. Storing
+    /// it is what makes [`SunriseTime::from_parts`] read a stored value back
+    /// without consulting a zone: a tzdata change cannot move a stored 09:00,
+    /// and a zone this build does not know keeps its civil time byte for
+    /// byte.
+    #[must_use]
+    pub fn civil_part(&self) -> Option<String> {
+        match self {
+            Self::Zoned { civil, .. } | Self::Floating { civil } => Some(civil.to_string()),
+            Self::AllDay { date } => Some(date.to_string()),
+            Self::Instant { .. } | Self::Unknown { .. } => None,
+        }
+    }
+
+    /// Rebuild from the storage columns: the index key, the `_kind` and `_tz`
+    /// sidecars, and the `_civil` column [`SunriseTime::civil_part`] wrote.
+    ///
+    /// A civil kind is rebuilt from `civil` and its zone name and nothing
+    /// else (`docs/11-adr/0066-times-survive-travel.md` §2): `index_ms` is a
+    /// storage key, and is not read back for one. A `Zoned` value naming a
+    /// zone this build cannot resolve keeps its civil time and its name.
+    ///
+    /// A row written before the `_civil` column existed (migration 0041) has
+    /// `civil` NULL until the projection is rebuilt from the op log, which the
+    /// first open after that migration does. Such a value is derived from
+    /// `index_ms` as it was before: a zoned one in its own zone, a floating
+    /// or all-day one in UTC. That derivation is the fallback, and nothing a
+    /// build after 0041 writes reaches it.
     ///
     /// An unrecognised `kind` reads back as the [`SunriseTime::Unknown`] value
     /// [`SunriseTime::to_parts`] stored, its other fields decoded from the
@@ -399,31 +442,34 @@ impl SunriseTime {
     /// [`SunriseTime::Instant`] at `index_ms` rather than failing: that is
     /// still a real time, a well-formed one to re-emit, and refusing to read
     /// it would lose the whole task over one column.
-    ///
-    /// TODO(#506, ADR-0066 §2): a `Zoned` value's civil time is re-derived
-    /// here from `index_ms`, so a tzdata change moves it and a zone this build
-    /// cannot resolve rebuilds it in UTC; a civil value at the calendar's
-    /// edge, indexed at the end of the range, reads back moved to that end.
-    /// The fix stores the civil time beside `index_ms`, a `STORAGE_V`
-    /// migration.
     #[must_use]
-    pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>) -> Self {
+    pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>, civil: Option<&str>) -> Self {
         let at = Timestamp::from_millisecond(index_ms).unwrap_or(Timestamp::UNIX_EPOCH);
         let utc_civil = || at.to_zoned(TimeZone::UTC).datetime();
+        let stored_civil = civil.and_then(|c| c.parse::<civil::DateTime>().ok());
         match kind {
             kind::ZONED => {
-                // A zoned value's index key IS its true instant, so the civil
-                // time comes back by converting into its OWN zone — not UTC.
                 let name = tz.unwrap_or("UTC");
-                let zone = TimeZone::get(name).unwrap_or(TimeZone::UTC);
+                let civil = stored_civil.unwrap_or_else(|| {
+                    // Pre-0041 rows only: a zoned value's index key was its
+                    // true instant, so the civil time comes back in its OWN
+                    // zone.
+                    let zone = TimeZone::get(name).unwrap_or(TimeZone::UTC);
+                    at.to_zoned(zone).datetime()
+                });
                 Self::Zoned {
-                    civil: at.to_zoned(zone).datetime(),
+                    civil,
                     tz: name.to_string(),
                 }
             }
-            kind::FLOATING => Self::Floating { civil: utc_civil() },
+            kind::FLOATING => Self::Floating {
+                civil: stored_civil.unwrap_or_else(utc_civil),
+            },
             kind::ALL_DAY => Self::AllDay {
-                date: utc_civil().date(),
+                date: civil
+                    .and_then(|c| c.parse::<civil::Date>().ok())
+                    .or_else(|| stored_civil.map(civil::DateTime::date))
+                    .unwrap_or_else(|| utc_civil().date()),
             },
             kind::INSTANT => Self::Instant { at },
             other => match tz.and_then(decode_raw_sidecar) {

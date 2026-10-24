@@ -831,7 +831,9 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap()).unwrap(),
+            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap())
+                .unwrap()
+                .into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             catchup_policy: RoutineCatchupPolicy::Skip,
@@ -960,7 +962,9 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
         },
         rrule: RRule::parse("FREQ=DAILY").unwrap(),
         timezone: "UTC".into(),
-        starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap()).unwrap(),
+        starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap())
+            .unwrap()
+            .into(),
         ends_at: None,
         scheduling_constraints: Vec::new(),
         catchup_policy: RoutineCatchupPolicy::Skip,

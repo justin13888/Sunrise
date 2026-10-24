@@ -1,6 +1,7 @@
 //! Stream entity per `docs/02-domain/streams.md`.
 
 use crate::common::NoteBody;
+use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};
 use jiff::Timestamp;
@@ -129,9 +130,13 @@ pub struct Stream {
     /// Paused state.
     #[serde(default)]
     pub paused: bool,
-    /// Optional pause expiry.
-    #[serde(default)]
-    pub paused_until: Option<Timestamp>,
+    /// Optional pause expiry. Any kind (`docs/10-cross-cutting/time.md` §1);
+    /// an instant is written as the bare timestamp this field held before
+    /// `DOC_SCHEMA_V` 15 ([`crate::time::compat`]), which is the only kind
+    /// the stream commands write today, so a stream's wire form is unchanged
+    /// for every build.
+    #[serde(default, with = "crate::time::compat::option")]
+    pub paused_until: Option<SunriseTime>,
     /// Review cadence preference.
     pub review_cadence: StreamReviewCadence,
     /// Optional default Context applied to new tasks captured into this Stream.
@@ -214,7 +219,7 @@ pub struct StreamPatch {
     /// Pause / unpause.
     pub paused: Option<bool>,
     /// New pause expiry.
-    pub paused_until: Option<Option<Timestamp>>,
+    pub paused_until: Option<Option<SunriseTime>>,
     /// New default reminder lead time; `Some(None)` falls back to the device
     /// default.
     pub reminder_lead_s: Option<Option<u32>>,

@@ -38,7 +38,7 @@ fn golden_a_spring_forward_shifts_to_0330() {
     let r = rule("FREQ=DAILY");
     let anchor = at(&tz, 2025, 3, 1, 2, 30);
     let window = (at(&tz, 2025, 3, 1, 0, 0), at(&tz, 2025, 3, 15, 0, 0));
-    let occ = expand(&r, anchor, &tz, window).unwrap();
+    let occ = expand(&r, local(&tz, anchor), &tz, window).unwrap();
 
     let march9 = occ
         .iter()
@@ -59,7 +59,7 @@ fn golden_b_fall_back_takes_earlier_offset() {
     let r = rule("FREQ=DAILY");
     let anchor = at(&tz, 2025, 11, 1, 1, 30);
     let window = (at(&tz, 2025, 11, 1, 0, 0), at(&tz, 2025, 11, 5, 0, 0));
-    let occ = expand(&r, anchor, &tz, window).unwrap();
+    let occ = expand(&r, local(&tz, anchor), &tz, window).unwrap();
 
     let nov2 = occ.iter().find(|o| o.key == "2025-11-02T01:30").unwrap();
     let z = nov2.at.to_zoned(tz.clone());
@@ -80,7 +80,7 @@ fn golden_c_lord_howe_30min_dst_gap() {
     let r = rule("FREQ=DAILY");
     let anchor = at(&tz, 2025, 10, 1, 2, 15);
     let window = (at(&tz, 2025, 10, 1, 0, 0), at(&tz, 2025, 10, 10, 0, 0));
-    let occ = expand(&r, anchor, &tz, window).unwrap();
+    let occ = expand(&r, local(&tz, anchor), &tz, window).unwrap();
 
     let oct5 = occ.iter().find(|o| o.key == "2025-10-05T02:15").unwrap();
     let l = local(&tz, oct5.at);
@@ -94,7 +94,7 @@ fn golden_d_monthly_last_friday_via_setpos() {
     let r = rule("FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1");
     let anchor = at(&tz, 2025, 1, 1, 9, 0);
     let window = (at(&tz, 2025, 1, 1, 0, 0), at(&tz, 2025, 7, 1, 0, 0));
-    let occ = expand(&r, anchor, &tz, window).unwrap();
+    let occ = expand(&r, local(&tz, anchor), &tz, window).unwrap();
     assert_eq!(
         keys(&occ),
         vec![
@@ -118,14 +118,14 @@ fn golden_e_weekly_interval2_wkst_sensitivity() {
 
     let wkst_mo = expand(
         &rule("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU,TU;WKST=MO"),
-        anchor,
+        local(&tz, anchor),
         &tz,
         window,
     )
     .unwrap();
     let wkst_su = expand(
         &rule("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU,TU;WKST=SU"),
-        anchor,
+        local(&tz, anchor),
         &tz,
         window,
     )
@@ -153,7 +153,7 @@ fn golden_f_count_and_until_respected() {
     let anchor = at(&tz, 2025, 1, 1, 9, 0);
     let wide = (at(&tz, 2025, 1, 1, 0, 0), at(&tz, 2026, 1, 1, 0, 0));
 
-    let counted = expand(&rule("FREQ=DAILY;COUNT=3"), anchor, &tz, wide).unwrap();
+    let counted = expand(&rule("FREQ=DAILY;COUNT=3"), local(&tz, anchor), &tz, wide).unwrap();
     assert_eq!(
         keys(&counted).len(),
         3,
@@ -166,7 +166,7 @@ fn golden_f_count_and_until_respected() {
 
     let until = expand(
         &rule("FREQ=DAILY;UNTIL=2025-01-03T09:00:00Z"),
-        anchor,
+        local(&tz, anchor),
         &tz,
         wide,
     )
@@ -182,7 +182,7 @@ fn golden_g_invalid_monthday_skipped() {
     let r = rule("FREQ=MONTHLY;BYMONTHDAY=31");
     let anchor = at(&tz, 2025, 1, 31, 8, 0);
     let window = (at(&tz, 2025, 1, 1, 0, 0), at(&tz, 2025, 9, 1, 0, 0));
-    let occ = keys(&expand(&r, anchor, &tz, window).unwrap());
+    let occ = keys(&expand(&r, local(&tz, anchor), &tz, window).unwrap());
     // Months with a 31st only: Jan, Mar, May, Jul, Aug.
     assert_eq!(
         occ,
@@ -232,7 +232,7 @@ fn an_interval_too_large_for_jiff_is_not_a_panic() {
             // Whatever it answers, it answers. The anchor itself is the only
             // occurrence any of these can have inside a one-year window, and
             // an `ExpandError` is an equally acceptable result.
-            if let Ok(occ) = expand(&r, anchor, &tz, window) {
+            if let Ok(occ) = expand(&r, local(&tz, anchor), &tz, window) {
                 assert!(
                     occ.len() <= 1,
                     "FREQ={freq};INTERVAL={interval} produced {} occurrences in one year",
@@ -331,12 +331,12 @@ mod prop {
             ).unwrap();
             let window = (ws, we);
 
-            let Ok(occ) = expand(&rrule, anchor, &tz, window) else {
+            let Ok(occ) = expand(&rrule, local(&tz, anchor), &tz, window) else {
                 return Ok(());
             };
 
             // Determinism: same inputs, same outputs.
-            let occ2 = expand(&rrule, anchor, &tz, window).unwrap();
+            let occ2 = expand(&rrule, local(&tz, anchor), &tz, window).unwrap();
             prop_assert_eq!(&occ, &occ2);
 
             // All within window, strictly increasing instants, unique keys.

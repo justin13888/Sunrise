@@ -21,7 +21,7 @@
 
 use crate::activity::{OpPayload, OpRecord};
 use crate::routine::Routine;
-use crate::routine_gen::{expand, occurrence_key_at, ExpandError};
+use crate::routine_gen::{occurrence_key_at, ExpandError};
 use crate::rrule::Weekday;
 use crate::task::TaskState;
 use jiff::civil::Weekday as JiffWeekday;
@@ -424,9 +424,10 @@ pub struct RoutineDrift {
     pub paused: bool,
 }
 
-/// Measure one Routine's drift over `window`.
+/// Measure one Routine's drift over `window`, for a reader in `reader` (where
+/// a floating routine's occurrences fall).
 ///
-/// Pure: the occurrence set comes from [`expand`], completion comes from the
+/// Pure: the occurrence set comes from [`Routine::series_in`], completion comes from the
 /// Routine's own `streak_keys` (the idempotency-key set the streak mechanics
 /// already maintain), and explicit skips from `skipped_keys` / `skip_dates`.
 /// No database, no clock.
@@ -434,16 +435,13 @@ pub fn routine_drift(
     routine: &Routine,
     window: (Timestamp, Timestamp),
     threshold: f64,
+    reader: &TimeZone,
 ) -> Result<RoutineDrift, ExpandError> {
-    let tz = TimeZone::get(&routine.timezone)
-        .map_err(|_| ExpandError::InvalidTimeZone(routine.timezone.clone()))?;
-    // `expand` (not `Routine::occurrences_in`) on purpose: the drift measure
-    // needs the *unfiltered* occurrence set, because an explicitly skipped
-    // occurrence is a data point, and `occurrences_in` drops exactly those.
-    let mut occurrences = expand(&routine.rrule, routine.starts_at, &tz, window)?;
-    if let Some(end) = routine.ends_at {
-        occurrences.retain(|o| o.at <= end);
-    }
+    // `series_in` (not `Routine::occurrences_in`) on purpose: the drift
+    // measure needs the *unfiltered* occurrence set, because an explicitly
+    // skipped occurrence is a data point, and `occurrences_in` drops exactly
+    // those.
+    let occurrences = routine.series_in(window, reader)?;
     // `skip_dates` is matched by civil minute in the routine's zone, the same
     // way `Routine::is_skipped` does it — a stored instant that a tzdb update
     // moved must still match the occurrence it was meant to skip.
@@ -481,6 +479,8 @@ pub fn routine_drift(
         streak: routine.streak_counter,
         last_completed_at_ms: routine
             .last_completed_at
+            .as_ref()
+            .and_then(|t| t.resolve_in(reader))
             .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
         paused: routine.paused,
     })
@@ -922,7 +922,7 @@ mod tests {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: ts(MON),
+            starts_at: ts(MON).into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),
@@ -960,7 +960,13 @@ mod tests {
         r.streak_keys = week_keys();
         r.streak_keys.sort();
         r.streak_counter = 7;
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!(d.expected, 7);
         assert_eq!(d.completed, 7);
         assert_eq!(d.missed, 0);
@@ -978,7 +984,13 @@ mod tests {
         keys.sort();
         r.streak_keys = keys;
 
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!((d.expected, d.completed, d.missed), (7, 4, 3));
         assert!((d.drift - 3.0 / 7.0).abs() < 1e-12);
         assert!(d.over_threshold);
@@ -1001,6 +1013,7 @@ mod tests {
             &r,
             (ts(MON), ts(MON + 10 * 86_400_000)),
             DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
         )
         .unwrap();
         assert_eq!((d.expected, d.completed, d.missed), (10, 7, 3));
@@ -1015,7 +1028,13 @@ mod tests {
         r.streak_keys.sort();
         r.skipped_keys = keys[5..].to_vec();
 
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!((d.completed, d.skipped, d.missed), (5, 2, 2));
     }
 
@@ -1027,6 +1046,7 @@ mod tests {
             &r,
             (ts(MON - 10 * WEEK_MS), ts(MON - 9 * WEEK_MS)),
             DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
         )
         .unwrap();
         assert_eq!(d.expected, 0);
@@ -1042,11 +1062,17 @@ mod tests {
     fn drift_carries_the_routines_title_last_completion_and_paused_flag() {
         let mut r = daily_routine();
         r.template.title = "Water the ferns".into();
-        r.last_completed_at = Some(ts(MON + 3 * 86_400_000));
+        r.last_completed_at = Some(ts(MON + 3 * 86_400_000).into());
         r.paused = true;
         r.streak_counter = 4;
 
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!(d.routine, r.id);
         assert_eq!(
             d.title, "Water the ferns",
@@ -1074,8 +1100,14 @@ mod tests {
     #[test]
     fn a_pre_epoch_last_completion_is_reported_as_none_not_wrapped() {
         let mut r = daily_routine();
-        r.last_completed_at = Some(Timestamp::from_millisecond(-1).unwrap());
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        r.last_completed_at = Some(Timestamp::from_millisecond(-1).unwrap().into());
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!(d.last_completed_at_ms, None);
     }
 
@@ -1088,11 +1120,17 @@ mod tests {
         // Four days of a seven-day window: MON, +1, +2, +3. The bound is
         // inclusive (`o.at <= end`), so the occurrence landing exactly on
         // `ends_at` counts.
-        r.ends_at = Some(ts(MON + 3 * 86_400_000));
+        r.ends_at = Some(ts(MON + 3 * 86_400_000).into());
         r.streak_keys = week_keys()[..4].to_vec();
         r.streak_keys.sort();
 
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!(
             d.expected, 4,
             "the three days after `ends_at` are not occurrences"
@@ -1109,6 +1147,7 @@ mod tests {
             &unbounded,
             (ts(MON), ts(MON + WEEK_MS)),
             DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
         )
         .unwrap();
         assert_eq!((d2.expected, d2.missed), (7, 3));
@@ -1125,7 +1164,13 @@ mod tests {
         // Wednesday of the anchored week, as an instant rather than a key.
         r.skip_dates = vec![ts(MON + 2 * 86_400_000)];
 
-        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
+        )
+        .unwrap();
         assert_eq!(d.expected, 7);
         assert_eq!(
             d.skipped, 1,
@@ -1154,6 +1199,7 @@ mod tests {
             &within,
             (ts(MON), ts(MON + WEEK_MS)),
             DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
         )
         .unwrap();
         assert_eq!(d.skipped, 1, "a second's drift is the same civil minute");
@@ -1164,6 +1210,7 @@ mod tests {
             &outside,
             (ts(MON), ts(MON + WEEK_MS)),
             DEFAULT_DRIFT_THRESHOLD,
+            &TimeZone::UTC,
         )
         .unwrap();
         assert_eq!(
@@ -1173,13 +1220,29 @@ mod tests {
         );
     }
 
+    /// A routine whose zone this build does not know is not read in UTC: its
+    /// legacy instant anchor has no zone to pin to, so it reads as floating
+    /// (`crate::routine::read_legacy_instant`) and its occurrences fall where
+    /// the reader is.
     #[test]
-    fn an_unresolvable_timezone_is_an_error_not_a_silent_utc_fallback() {
+    fn an_unresolvable_timezone_reads_in_the_readers_zone_not_utc() {
         let mut r = daily_routine();
         r.timezone = "Mars/Olympus".into();
+        let kolkata = TimeZone::get("Asia/Kolkata").unwrap();
+        let d = routine_drift(
+            &r,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+            &kolkata,
+        )
+        .unwrap();
+        assert_eq!(d.expected, 7);
+        let occ = r.series_in((ts(MON), ts(MON + WEEK_MS)), &kolkata).unwrap();
+        let first = occ.first().unwrap();
         assert_eq!(
-            routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD),
-            Err(ExpandError::InvalidTimeZone("Mars/Olympus".into()))
+            first.at.to_zoned(kolkata).datetime().time(),
+            first.civil.time(),
+            "at its wall clock in the reader's zone"
         );
     }
 

@@ -243,6 +243,15 @@ impl Engine {
         record_device_features(tx, sender, &p.features, hlc, now_ms)
     }
 
+    /// Whether the vault's required set holds feature `id`.
+    pub(super) fn vault_requires(&self, conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM vault_required_features WHERE feature = ?)",
+            params![id],
+            |r| r.get(0),
+        )
+    }
+
     /// Make the vault require `ids`, emitting one `VaultRequires` for those it
     /// does not require yet. Returns the ids that were added; empty means the
     /// vault already required them all and nothing was emitted.

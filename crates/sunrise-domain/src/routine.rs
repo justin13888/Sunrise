@@ -4,8 +4,11 @@ use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
+use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
+use jiff::civil;
+use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
@@ -76,11 +79,14 @@ pub struct TaskTemplate {
 
 impl TaskTemplate {
     /// Build a `TaskDraft` for this occurrence.
+    ///
+    /// `scheduled_at` is the occurrence's planned time, of the anchor's kind
+    /// ([`Routine::occurrence_time`]): a floating routine's occurrence is
+    /// floating at its civil key, a zoned one's zoned in the anchor's zone.
+    /// An occurrence is never an instant
+    /// (`docs/11-adr/0066-times-survive-travel.md` §1).
     #[must_use]
-    pub fn to_draft(&self, scheduled_at: Option<Timestamp>) -> TaskDraft {
-        // A materialized occurrence lands on a computed INSTANT: the recurrence
-        // engine has already resolved the routine's own timezone (`Routine.tz`)
-        // against the occurrence date, so there is nothing left floating.
+    pub fn to_draft(&self, scheduled_at: Option<SunriseTime>) -> TaskDraft {
         TaskDraft {
             title: self.title.clone(),
             body: self.body.clone(),
@@ -89,7 +95,7 @@ impl TaskTemplate {
             priority: self.priority,
             energy: self.energy.clone(),
             estimated_duration_s: self.estimated_duration_s,
-            scheduled_at: scheduled_at.map(Into::into),
+            scheduled_at,
             due_at: None,
             scheduling_constraints: Vec::new(),
             assignee: None,
@@ -136,13 +142,26 @@ pub struct Routine {
     pub template: TaskTemplate,
     /// Recurrence rule.
     pub rrule: RRule,
-    /// IANA timezone string (e.g., `"America/Los_Angeles"`).
+    /// IANA timezone string (e.g., `"America/Los_Angeles"`): the zone the
+    /// routine was set up in, and the zone a zoned anchor is pinned to.
+    ///
+    /// A zoned anchor names its own zone, which is kept equal to this one
+    /// ([`Routine::rezone`]). A floating anchor has no zone; for it this is
+    /// only where the routine was created, and the zone an instant written
+    /// before `DOC_SCHEMA_V` 15 is read in ([`Routine::normalize_legacy_times`]).
     pub timezone: String,
-    /// Inclusive start.
-    pub starts_at: Timestamp,
-    /// Optional inclusive end.
-    #[serde(default)]
-    pub ends_at: Option<Timestamp>,
+    /// The anchor: the first occurrence's wall-clock time.
+    ///
+    /// `floating` (the default: "daily at 08:00" wherever the user is) or
+    /// `zoned` (the user pinned a zone, or an import carried a `TZID`),
+    /// `docs/11-adr/0066-times-survive-travel.md` §1. A bare instant from a
+    /// build before `DOC_SCHEMA_V` 15 means `zoned` in [`Self::timezone`].
+    #[serde(with = "crate::time::compat")]
+    pub starts_at: SunriseTime,
+    /// Optional inclusive end: `floating` or `all_day`, compared with
+    /// occurrence keys in civil space (`docs/10-cross-cutting/time.md` §6).
+    #[serde(default, with = "crate::time::compat::option")]
+    pub ends_at: Option<SunriseTime>,
     /// Scheduling constraints (value list; whole list is one LWW register).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
@@ -178,9 +197,10 @@ pub struct Routine {
     /// (#331), because a reset is not a commutative counter operation.
     #[serde(default)]
     pub streak_counter: i64,
-    /// Last successful completion (for streak grace).
-    #[serde(default)]
-    pub last_completed_at: Option<Timestamp>,
+    /// Last successful completion (for streak grace): a recorded moment, so
+    /// an instant.
+    #[serde(default, with = "crate::time::compat::option")]
+    pub last_completed_at: Option<SunriseTime>,
     /// Completion grace window in seconds. `None` = the spec default of 24h
     /// ([`crate::streak::DEFAULT_GRACE_WINDOW_S`]); clamped to
     /// [`crate::streak::MAX_GRACE_WINDOW_S`] on read. Absent on the wire when
@@ -208,9 +228,12 @@ pub struct Routine {
     /// Paused.
     #[serde(default)]
     pub paused: bool,
-    /// Pause expiry.
-    #[serde(default)]
-    pub paused_until: Option<Timestamp>,
+    /// Pause expiry, of any kind: while [`Self::paused`] is set, an
+    /// occurrence before it is not generated, and one at or after it is.
+    /// `all_day` ("pause until Monday") resumes at the start of that day in
+    /// the reader's zone. `None` pauses until unpaused.
+    #[serde(default, with = "crate::time::compat::option")]
+    pub paused_until: Option<SunriseTime>,
     /// Archived.
     #[serde(default)]
     pub archived: bool,
@@ -231,12 +254,16 @@ pub struct RoutineDraft {
     pub template: TaskTemplate,
     /// RRULE body (parsed from the user's input).
     pub rrule: RRule,
-    /// IANA timezone.
+    /// IANA timezone: where the routine is set up, and the zone a zoned
+    /// anchor is pinned to.
     pub timezone: String,
-    /// Inclusive start.
-    pub starts_at: Timestamp,
-    /// Optional inclusive end.
-    pub ends_at: Option<Timestamp>,
+    /// The anchor: `floating` unless the user pinned a zone, in which case
+    /// `zoned` in [`Self::timezone`]. An instant means `zoned` in
+    /// [`Self::timezone`] at its wall clock there ([`read_legacy_instant`]);
+    /// any other kind is refused.
+    pub starts_at: SunriseTime,
+    /// Optional inclusive end (`floating` or `all_day`).
+    pub ends_at: Option<SunriseTime>,
     /// Optional scheduling constraints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
@@ -259,16 +286,106 @@ impl RoutineDraft {
                 constraint: "iana_timezone",
             });
         }
-        if let Some(end) = self.ends_at {
-            if end < self.starts_at {
-                return Err(ValidationError::Field {
-                    field: "routine.ends_at",
-                    constraint: "after_starts_at",
-                });
-            }
-        }
+        validate_anchor(&self.starts_at, &self.timezone)?;
+        validate_end(self.ends_at.as_ref(), &self.starts_at, &self.timezone)?;
         validate_constraint_list(&self.scheduling_constraints)?;
         Ok(())
+    }
+}
+
+/// An anchor is `floating`, or `zoned` in the routine's own zone. An instant
+/// is accepted and means what a legacy one does ([`read_legacy_instant`]):
+/// `zoned` in the routine's zone at that instant's wall clock.
+fn validate_anchor(anchor: &SunriseTime, timezone: &str) -> Result<(), ValidationError> {
+    match anchor {
+        SunriseTime::Floating { .. } | SunriseTime::Instant { .. } => Ok(()),
+        SunriseTime::Zoned { tz, .. } if tz == timezone => Ok(()),
+        SunriseTime::Zoned { .. } => Err(ValidationError::Field {
+            field: "routine.starts_at",
+            constraint: "zone_is_timezone",
+        }),
+        _ => Err(ValidationError::Field {
+            field: "routine.starts_at",
+            constraint: "floating_or_zoned",
+        }),
+    }
+}
+
+/// An end is not before the anchor, compared in civil space.
+fn validate_end(
+    end: Option<&SunriseTime>,
+    anchor: &SunriseTime,
+    timezone: &str,
+) -> Result<(), ValidationError> {
+    let Some(end) = end else {
+        return Ok(());
+    };
+    let Some(start) = civil_of(anchor, timezone) else {
+        return Ok(());
+    };
+    let before = match end {
+        SunriseTime::AllDay { date } => *date < start.date(),
+        SunriseTime::Unknown { .. } => false,
+        _ => civil_of(end, timezone).is_some_and(|e| e < start),
+    };
+    if before {
+        return Err(ValidationError::Field {
+            field: "routine.ends_at",
+            constraint: "after_starts_at",
+        });
+    }
+    Ok(())
+}
+
+/// The wall-clock value of a routine time, read in the routine's civil
+/// frame: its own civil value for a civil kind, an instant's wall clock in
+/// `timezone` (the legacy reading), midnight of an all-day date.
+fn civil_of(t: &SunriseTime, timezone: &str) -> Option<civil::DateTime> {
+    match t {
+        SunriseTime::Zoned { civil, .. } | SunriseTime::Floating { civil } => Some(*civil),
+        SunriseTime::AllDay { date } => Some(date.to_datetime(civil::Time::midnight())),
+        SunriseTime::Instant { at } => {
+            let zone = TimeZone::get(timezone).unwrap_or(TimeZone::UTC);
+            Some(at.to_zoned(zone).datetime())
+        }
+        SunriseTime::Unknown { .. } => None,
+    }
+}
+
+/// How a bare instant written to a routine anchor, end or `UNTIL` before
+/// `DOC_SCHEMA_V` 15 reads (#506, `docs/10-cross-cutting/time.md` §1): as
+/// `zoned` at its wall-clock time in the routine's `timezone`, which is what
+/// expansion always made of it, so an existing routine keeps firing when it
+/// did. When `timezone` names no zone this build knows, as `floating` at the
+/// instant's wall clock in UTC: there is no zone to pin it to, and UTC is the
+/// frame the instant was written in. Any other value is returned unchanged.
+#[must_use]
+pub fn read_legacy_instant(t: SunriseTime, timezone: &str) -> SunriseTime {
+    let SunriseTime::Instant { at } = t else {
+        return t;
+    };
+    match TimeZone::get(timezone) {
+        Ok(zone) => SunriseTime::zoned(at.to_zoned(zone).datetime(), timezone),
+        Err(_) => SunriseTime::floating(at.to_zoned(TimeZone::UTC).datetime()),
+    }
+}
+
+/// `t` as the bare instant a build before `DOC_SCHEMA_V` 15 reads, when that
+/// instant reads back as exactly `t` ([`read_legacy_instant`]); `None` when
+/// it does not.
+///
+/// A `zoned` value in the routine's own zone has one, unless its wall-clock
+/// time is in a DST gap: the gap moves it, and the moved time would read
+/// back. An instant is its own. No other kind has one.
+fn legacy_instant_of(t: &SunriseTime, timezone: &str) -> Option<SunriseTime> {
+    match t {
+        SunriseTime::Instant { .. } => Some(t.clone()),
+        SunriseTime::Zoned { civil, tz } if tz == timezone => {
+            let zone = TimeZone::get(tz).ok()?;
+            let at = zone.to_zoned(*civil).ok()?.timestamp();
+            (at.to_zoned(zone).datetime() == *civil).then_some(SunriseTime::instant(at))
+        }
+        _ => None,
     }
 }
 
@@ -282,10 +399,11 @@ pub struct RoutinePatch {
     pub rrule: Option<RRule>,
     /// Replace the IANA timezone string.
     pub timezone: Option<String>,
-    /// Replace the anchor start.
-    pub starts_at: Option<Timestamp>,
+    /// Replace the anchor (`floating`, or `zoned` in the routine's zone).
+    /// A `floating` anchor unpins the routine; a `zoned` one pins it.
+    pub starts_at: Option<SunriseTime>,
     /// Set/clear the inclusive end.
-    pub ends_at: Option<Option<Timestamp>>,
+    pub ends_at: Option<Option<SunriseTime>>,
     /// Replace the whole scheduling-constraints list (LWW).
     pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
     /// Replace the catchup policy.
@@ -298,7 +416,7 @@ pub struct RoutinePatch {
     /// Pause / unpause.
     pub paused: Option<bool>,
     /// Set/clear the pause expiry.
-    pub paused_until: Option<Option<Timestamp>>,
+    pub paused_until: Option<Option<SunriseTime>>,
     /// Archive / unarchive.
     pub archived: Option<bool>,
 }
@@ -320,7 +438,169 @@ impl RoutinePatch {
         if let Some(list) = &self.scheduling_constraints {
             validate_constraint_list(list)?;
         }
+        if let Some(SunriseTime::AllDay { .. } | SunriseTime::Unknown { .. }) = &self.starts_at {
+            return Err(ValidationError::Field {
+                field: "routine.starts_at",
+                constraint: "floating_or_zoned",
+            });
+        }
         Ok(())
+    }
+}
+
+impl Routine {
+    /// Read the times a build before `DOC_SCHEMA_V` 15 wrote as bare
+    /// instants by [`read_legacy_instant`]: the anchor, the end and the
+    /// rule's `UNTIL`. A routine that has none is unchanged.
+    ///
+    /// Decoding keeps the wire value as it arrived; this is what it means.
+    /// Every reader that acts on a routine reads it through here: the
+    /// engine's row writer and reader, and [`Routine::occurrences_in`].
+    /// `paused_until` and `last_completed_at` allow the instant kind, so
+    /// theirs stay instants.
+    pub fn normalize_legacy_times(&mut self) {
+        let tz = self.timezone.clone();
+        self.starts_at = read_legacy_instant(self.starts_at.clone(), &tz);
+        self.ends_at = self.ends_at.take().map(|t| read_legacy_instant(t, &tz));
+        self.rrule.until = self.rrule.until.take().map(|t| read_legacy_instant(t, &tz));
+    }
+
+    /// [`Routine::normalize_legacy_times`], by value.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        self.normalize_legacy_times();
+        self
+    }
+
+    /// Whether the anchor follows the reader (`floating`).
+    #[must_use]
+    pub const fn is_floating(&self) -> bool {
+        matches!(self.starts_at, SunriseTime::Floating { .. })
+    }
+
+    /// The anchor's wall-clock time, read as [`Routine::normalize_legacy_times`]
+    /// reads it; `None` for a kind this build does not know.
+    #[must_use]
+    pub fn anchor_civil(&self) -> Option<civil::DateTime> {
+        civil_of(&self.starts_at, &self.timezone)
+    }
+
+    /// The zone this routine's occurrences resolve in for a reader in
+    /// `reader` (`docs/10-cross-cutting/time.md` §6): the anchor's own zone
+    /// when it is `zoned`, the reader's when it is `floating`.
+    ///
+    /// A zoned anchor naming a zone this build does not know resolves in the
+    /// reader's zone, as every such value does (time.md §3). A legacy instant
+    /// anchor resolves in `timezone`, or the reader's when that does not
+    /// resolve either.
+    #[must_use]
+    pub fn occurrence_zone(&self, reader: &TimeZone) -> TimeZone {
+        match &self.starts_at {
+            SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).unwrap_or_else(|_| reader.clone()),
+            SunriseTime::Instant { .. } => {
+                TimeZone::get(&self.timezone).unwrap_or_else(|_| reader.clone())
+            }
+            _ => reader.clone(),
+        }
+    }
+
+    /// The planned time of the occurrence keyed at wall-clock `civil`: of the
+    /// anchor's kind (`docs/11-adr/0066-times-survive-travel.md` §1), so a
+    /// floating routine's occurrence follows the reader and a zoned one's
+    /// stays in its zone. Never an instant.
+    #[must_use]
+    pub fn occurrence_time(&self, civil: civil::DateTime) -> SunriseTime {
+        match &self.starts_at {
+            SunriseTime::Zoned { tz, .. } => SunriseTime::zoned(civil, tz.clone()),
+            SunriseTime::Instant { .. } => SunriseTime::zoned(civil, self.timezone.clone()),
+            _ => SunriseTime::floating(civil),
+        }
+    }
+
+    /// Move the routine to zone `tz`, keeping every wall-clock time it holds
+    /// (`docs/11-adr/0066-times-survive-travel.md` §1): a zoned anchor, end
+    /// or `UNTIL` in the old zone is re-pinned to `tz` at the same civil
+    /// time, so "08:00 Los Angeles" becomes "08:00 New York", and no
+    /// occurrence key changes. A floating anchor stays floating.
+    pub fn rezone(&mut self, tz: String) {
+        self.normalize_legacy_times();
+        let old = std::mem::replace(&mut self.timezone, tz);
+        let new = self.timezone.clone();
+        let repin = |t: &mut SunriseTime| {
+            if let SunriseTime::Zoned { tz: z, .. } = t {
+                if *z == old {
+                    z.clone_from(&new);
+                }
+            }
+        };
+        repin(&mut self.starts_at);
+        if let Some(e) = self.ends_at.as_mut() {
+            repin(e);
+        }
+        if let Some(u) = self.rrule.until.as_mut() {
+            repin(u);
+        }
+    }
+
+    /// Pin a floating anchor to [`Self::timezone`] at the same wall-clock
+    /// time; a zoned anchor is unchanged. What a new routine falls back to in
+    /// a vault where a paired device cannot read a floating one yet.
+    pub fn rezone_pinned(&mut self) {
+        if let SunriseTime::Floating { civil } = self.starts_at {
+            self.starts_at = SunriseTime::zoned(civil, self.timezone.clone());
+        }
+    }
+
+    /// The checks a draft's times get ([`RoutineDraft::validate`]), for a
+    /// routine an edit produced: the anchor is `floating` or `zoned` in the
+    /// routine's zone, and the end is not before it.
+    ///
+    /// # Errors
+    /// [`ValidationError::Field`] naming the time that fails.
+    pub fn validate_times(&self) -> Result<(), ValidationError> {
+        let r = self.clone().normalized();
+        validate_anchor(&r.starts_at, &r.timezone)?;
+        validate_end(r.ends_at.as_ref(), &r.starts_at, &r.timezone)
+    }
+
+    /// This routine in the wire form a build before `DOC_SCHEMA_V` 15 reads,
+    /// or `None` when it holds a time that form cannot carry.
+    ///
+    /// Each [`crate::time::compat`] field is written as the bare instant it
+    /// was, where that instant reads back as exactly this value
+    /// ([`read_legacy_instant`]): a zoned anchor, end or `UNTIL` in the
+    /// routine's own zone, and an instant `paused_until` or
+    /// `last_completed_at`. A floating or all-day value has no such instant,
+    /// and neither has a zoned wall-clock time in a DST gap. The engine
+    /// writes this form while the vault does not require
+    /// `routine.civil_times`, so a routine every device can read stays
+    /// readable by every device.
+    #[must_use]
+    pub fn legacy_wire_form(&self) -> Option<Self> {
+        let tz = self.timezone.as_str();
+        let instant_only = |t: &SunriseTime| match t {
+            SunriseTime::Instant { .. } => Some(t.clone()),
+            _ => None,
+        };
+        let mut out = self.clone();
+        out.starts_at = legacy_instant_of(&self.starts_at, tz)?;
+        out.ends_at = match &self.ends_at {
+            Some(t) => Some(legacy_instant_of(t, tz)?),
+            None => None,
+        };
+        out.rrule.until = match &self.rrule.until {
+            Some(t) => Some(legacy_instant_of(t, tz)?),
+            None => None,
+        };
+        out.paused_until = match &self.paused_until {
+            Some(t) => Some(instant_only(t)?),
+            None => None,
+        };
+        out.last_completed_at = match &self.last_completed_at {
+            Some(t) => Some(instant_only(t)?),
+            None => None,
+        };
+        Some(out)
     }
 }
 

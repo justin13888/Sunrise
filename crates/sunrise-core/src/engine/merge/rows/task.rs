@@ -17,9 +17,9 @@ pub(in crate::engine::merge) fn insert_task_row(
     t: &Task,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
-    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
-    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
-    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+    let (sched_ms, sched_kind, sched_tz, sched_civil) = time_to_parts(t.scheduled_at.as_ref());
+    let (due_ms, due_kind, due_tz, due_civil) = time_to_parts(t.due_at.as_ref());
+    let (done_ms, done_kind, done_tz, done_civil) = time_to_parts(t.completed_at.as_ref());
     let extra_blob = encode_unknowns(&t.unknown)?;
 
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
@@ -34,9 +34,10 @@ pub(in crate::engine::merge) fn insert_task_row(
           completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
           routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
           scheduling_constraints, extra, head_root,
-          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
+          scheduled_at_civil, due_at_civil, completed_at_civil)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -72,6 +73,9 @@ pub(in crate::engine::merge) fn insert_task_row(
             lww.hlc.logical,
             lww.seq,
             &lww.device[..],
+            sched_civil,
+            due_civil,
+            done_civil,
         ],
     )?;
     Ok(())
@@ -82,9 +86,9 @@ pub(in crate::engine::merge) fn update_task_row(
     t: &Task,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
-    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
-    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
-    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+    let (sched_ms, sched_kind, sched_tz, sched_civil) = time_to_parts(t.scheduled_at.as_ref());
+    let (due_ms, due_kind, due_tz, due_civil) = time_to_parts(t.due_at.as_ref());
+    let (done_ms, done_kind, done_tz, done_civil) = time_to_parts(t.completed_at.as_ref());
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let extra_blob = extra_over_opaque(
         tx,
@@ -102,6 +106,7 @@ pub(in crate::engine::merge) fn update_task_row(
             scheduled_at_ms = ?, scheduled_at_kind = ?, scheduled_at_tz = ?,
             due_at_ms = ?, due_at_kind = ?, due_at_tz = ?,
             completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
+            scheduled_at_civil = ?, due_at_civil = ?, completed_at_civil = ?,
             deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?, extra = ?,
             updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
@@ -123,6 +128,9 @@ pub(in crate::engine::merge) fn update_task_row(
             done_ms,
             done_kind,
             done_tz,
+            sched_civil,
+            due_civil,
+            done_civil,
             t.deferred_count,
             t.reminder_lead_s,
             t.archived as i64,

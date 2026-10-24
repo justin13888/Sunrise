@@ -197,7 +197,7 @@ impl Engine {
     /// cancelled must not silently overrule them.
     fn autocomplete_focused_task(
         &self,
-        db: &Db,
+        db: &mut Db,
         task_id: EntityRef,
         now_ms: u64,
     ) -> Result<Option<FocusCompletion>, EngineError> {

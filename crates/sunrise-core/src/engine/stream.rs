@@ -23,7 +23,7 @@ use sunrise_domain::sort_order;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     inbox_stream_ref, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
-    INBOX_STREAM_BYTES,
+    SunriseTime, INBOX_STREAM_BYTES,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -126,6 +126,17 @@ impl Engine {
             stream.paused = p;
         }
         if let Some(pu) = patch.paused_until {
+            // TODO(#506): a non-instant expiry needs a `stream.civil_times`
+            // feature, as the routine's does: a build before `DOC_SCHEMA_V` 15
+            // reads only the bare instant this field held.
+            if pu
+                .as_ref()
+                .is_some_and(|t| !matches!(t, SunriseTime::Instant { .. }))
+            {
+                return Err(EngineError::Invalid(
+                    "stream.paused_until: only an instant can be written yet".into(),
+                ));
+            }
             stream.paused_until = pu;
         }
         stream.updated_at = ms_to_ts(now_ms as i64);
@@ -343,7 +354,8 @@ pub(super) fn read_stream(
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
                     paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order,
-                    extra, description, default_context
+                    extra, description, default_context,
+                    paused_until_kind, paused_until_tz, paused_until_civil
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -364,6 +376,11 @@ pub(super) fn read_stream(
                     r.get::<_, Option<Vec<u8>>>(13)?,
                     r.get::<_, Option<Vec<u8>>>(14)?,
                     r.get::<_, Option<Vec<u8>>>(15)?,
+                    (
+                        r.get::<_, Option<String>>(16)?,
+                        r.get::<_, Option<String>>(17)?,
+                        r.get::<_, Option<String>>(18)?,
+                    ),
                 ))
             },
         )
@@ -385,6 +402,7 @@ pub(super) fn read_stream(
         extra,
         description_raw,
         default_ctx_raw,
+        (pause_kind, pause_tz, pause_civil),
     )) = row
     else {
         return Ok(None);
@@ -410,7 +428,12 @@ pub(super) fn read_stream(
         sort_order,
         archived: archived != 0,
         paused: paused != 0,
-        paused_until: paused_until_ms.map(ms_to_ts),
+        paused_until: super::ids::time_from_parts(
+            paused_until_ms,
+            pause_kind.as_deref(),
+            pause_tz.as_deref(),
+            pause_civil.as_deref(),
+        ),
         review_cadence: parse_cadence(&cadence_str),
         default_context: default_ctx_raw.map(|b| {
             let mut a = [0u8; 16];

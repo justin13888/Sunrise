@@ -457,7 +457,8 @@ pub(super) fn read_block(
         .query_row(
             "SELECT stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
                     ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
-                    deleted, extra, created_at_ms, updated_at_ms
+                    deleted, extra, created_at_ms, updated_at_ms,
+                    starts_at_civil, ends_at_civil
              FROM blocks WHERE id = ?",
             params![&id[..]],
             |r| {
@@ -475,6 +476,8 @@ pub(super) fn read_block(
                     r.get::<_, Option<Vec<u8>>>(10)?,
                     r.get::<_, i64>(11)?,
                     r.get::<_, i64>(12)?,
+                    r.get::<_, Option<String>>(13)?,
+                    r.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -487,8 +490,8 @@ pub(super) fn read_block(
         created_at: ms_to_ts(b.11.max(0)),
         updated_at: ms_to_ts(b.12.max(0)),
         stream_id: EntityRef::new(EntityKind::Stream, blob16(&b.0)),
-        starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref()),
-        ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref()),
+        starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref(), b.13.as_deref()),
+        ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref(), b.14.as_deref()),
         title: b.7,
         title_track_task: b.8 != 0,
         tasks: read_block_tasks(conn, id)?,

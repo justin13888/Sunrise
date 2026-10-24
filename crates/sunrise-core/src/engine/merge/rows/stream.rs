@@ -3,7 +3,7 @@
 //! [`crate::engine::stream::ensure_stream_row`]'s, which writes no entity.
 
 use super::search::index_stream;
-use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
+use crate::engine::ids::{encode_unknowns, extra_over_opaque, time_to_parts, ExtraTable};
 use crate::engine::lww::LwwStamp;
 use crate::engine::stream::cadence_str;
 use rusqlite::{params, Transaction};
@@ -39,7 +39,7 @@ pub(in crate::engine::merge) fn insert_stream_row(
             s.color.as_str(),
             s.icon,
             s.paused as i64,
-            s.paused_until.map(|t| t.as_millisecond()),
+            time_to_parts(s.paused_until.as_ref()).0,
             cadence_str(&s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
@@ -52,7 +52,20 @@ pub(in crate::engine::merge) fn insert_stream_row(
             &lww.device[..],
         ],
     )?;
+    write_pause_sidecars(tx, &id_blob, s)?;
     index_stream(tx, s)
+}
+
+/// The `paused_until` sidecars (migration 0041), beside the index key the
+/// row statement writes.
+fn write_pause_sidecars(tx: &Transaction<'_>, id: &[u8], s: &Stream) -> rusqlite::Result<()> {
+    let (_, kind, tz, civil) = time_to_parts(s.paused_until.as_ref());
+    tx.execute(
+        "UPDATE streams SET paused_until_kind = ?, paused_until_tz = ?, paused_until_civil = ?
+         WHERE stream_id = ?",
+        params![kind, tz, civil, id],
+    )?;
+    Ok(())
 }
 
 pub(in crate::engine::merge) fn update_stream_row(
@@ -87,7 +100,7 @@ pub(in crate::engine::merge) fn update_stream_row(
             s.color.as_str(),
             s.icon,
             s.paused as i64,
-            s.paused_until.map(|t| t.as_millisecond()),
+            time_to_parts(s.paused_until.as_ref()).0,
             cadence_str(&s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
@@ -101,5 +114,6 @@ pub(in crate::engine::merge) fn update_stream_row(
             id_blob,
         ],
     )?;
+    write_pause_sidecars(tx, &id_blob, s)?;
     index_stream(tx, s)
 }

@@ -261,7 +261,9 @@ async fn routine_delete_vs_update_converges() {
                 unknown: sunrise_domain::Unknowns::new(),
             },
             timezone: "UTC".into(),
-            starts_at: Timestamp::from_millisecond(1_700_000_000_000).unwrap(),
+            starts_at: Timestamp::from_millisecond(1_700_000_000_000)
+                .unwrap()
+                .into(),
             ends_at: None,
             scheduling_constraints: vec![],
             catchup_policy: RoutineCatchupPolicy::Skip,

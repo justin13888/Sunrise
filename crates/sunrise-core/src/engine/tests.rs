@@ -209,7 +209,7 @@ mod testutil {
             },
             rrule: RRule::parse(rrule).unwrap(),
             timezone: "UTC".into(),
-            starts_at: ms_to_ts(starts_ms),
+            starts_at: ms_to_ts(starts_ms).into(),
             ends_at: None,
             scheduling_constraints: constraints,
             catchup_policy: policy,
@@ -1300,7 +1300,7 @@ mod testutil {
     pub(super) fn occurrence_tasks(routine: &Routine, n: usize) -> Vec<(EntityRef, i64)> {
         let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
         routine
-            .occurrences_in(window)
+            .occurrences_in(window, &jiff::tz::TimeZone::UTC)
             .unwrap()
             .into_iter()
             .take(n)
@@ -3628,7 +3628,9 @@ fn create_routine_materializes_future_tasks_with_linkage() {
 
     // Daily occurrences within the 14-day horizon are all materialized.
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
-    let occ = routine.occurrences_in(window).unwrap();
+    let occ = routine
+        .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+        .unwrap();
     assert!(occ.len() >= 13, "daily horizon materializes ~14 days");
 
     // Each occurrence has a deterministic task with linkage + copied
@@ -3641,7 +3643,10 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         };
         assert_eq!(t.routine_id, Some(rid));
         assert_eq!(t.routine_occurrence, Some(o.at));
-        assert_eq!(t.scheduled_at, Some(o.at.into()));
+        // Planned at its civil key, of the anchor's kind: zoned in the
+        // routine's zone, never an instant (ADR-0066 §1).
+        assert_eq!(t.scheduled_at, Some(routine.occurrence_time(o.civil)));
+        assert!(matches!(t.scheduled_at, Some(SunriseTime::Zoned { .. })));
         assert_eq!(t.scheduling_constraints, vec![c.clone()]);
     }
 }
@@ -3689,7 +3694,7 @@ fn two_engines_produce_identical_task_ids() {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: ms_to_ts(NOW + 3_600_000),
+            starts_at: ms_to_ts(NOW + 3_600_000).into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),
@@ -3805,7 +3810,9 @@ fn skip_occurrence_prevents_task() {
     let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
     let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
-    let occ = routine.occurrences_in(window).unwrap();
+    let occ = routine
+        .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+        .unwrap();
     let target = occ[2].key.clone();
     let tid = occurrence_task_id(&rid, &target);
 
@@ -3855,7 +3862,9 @@ fn update_routine_regenerates_future_but_keeps_started() {
     let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
     let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
-    let daily = routine.occurrences_in(window).unwrap();
+    let daily = routine
+        .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+        .unwrap();
     // occ[0] is the anchor weekday (kept by a weekly rule); occ[2] is a
     // different weekday (dropped); mark occ[3] in-progress so it survives.
     let keep_anchor = occurrence_task_id(&rid, &daily[0].key);
@@ -14239,6 +14248,7 @@ fn unknown_routine_fields_survive_the_materialized_row() {
         .unwrap()
         .expect("routine exists");
     routine.unknown = future_fields();
+    let routine = e.routine_op_form(&mut db, &routine).unwrap();
     log_and_fold(
         &e,
         &mut db,
@@ -14925,7 +14935,7 @@ fn deterministic_routine_task_converges() {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: ms_to_ts(NOW + 3_600_000),
+            starts_at: ms_to_ts(NOW + 3_600_000).into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),
@@ -14970,7 +14980,7 @@ fn deterministic_routine_task_converges() {
 
     // Pick the first materialized occurrence's deterministic task id.
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
-    let occ = r.occurrences_in(window).unwrap();
+    let occ = r.occurrences_in(window, &jiff::tz::TimeZone::UTC).unwrap();
     let tid = occurrence_task_id(&r.id, &occ[0].key);
 
     // Exchange the two create envelopes both ways.
@@ -18770,9 +18780,13 @@ fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
     };
     let stored = rows.iter().find(|r| r.id == rid).unwrap();
     assert_eq!(stored.rrule, rule, "the stored rule reads back verbatim");
-    let row = sunrise_domain::routine_rows(std::slice::from_ref(stored), ms_to_ts(NOW))
-        .pop()
-        .unwrap();
+    let row = sunrise_domain::routine_rows(
+        std::slice::from_ref(stored),
+        ms_to_ts(NOW),
+        &jiff::tz::TimeZone::UTC,
+    )
+    .pop()
+    .unwrap();
     assert!(
         row.rrule.starts_with("unrecognised schedule"),
         "{}",
@@ -19063,7 +19077,9 @@ fn update_routine_regenerates_a_future_task_in_an_unknown_state() {
     let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
     let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
-    let daily = routine.occurrences_in(window).unwrap();
+    let daily = routine
+        .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+        .unwrap();
     // occ[2] falls on a weekday a weekly rule drops.
     let drop_id = occurrence_task_id(&rid, &daily[2].key);
     set_unknown_state(&e, &mut db, drop_id, "snoozed");
@@ -19237,7 +19253,11 @@ fn skipping_an_occurrence_tombstones_its_task_in_an_unknown_state() {
     let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
     let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
     let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
-    let key = routine.occurrences_in(window).unwrap()[2].key.clone();
+    let key = routine
+        .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+        .unwrap()[2]
+        .key
+        .clone();
     let tid = occurrence_task_id(&rid, &key);
     set_unknown_state(&e, &mut db, tid, "snoozed");
 
@@ -19323,6 +19343,10 @@ mod attachment_thumbnail;
 /// Today, the calendar windows and validation in the reader's zone
 /// (`docs/10-cross-cutting/time.md`, issue #336).
 mod time_zones;
+
+/// The traveller harness: routines, reminders and constraints across a
+/// scripted itinerary and a peer at home (ADR-0066).
+mod traveller;
 
 /// An inner op nested past `sunrise_cbor::MAX_DOC_DEPTH` parks; one at it
 /// applies (ADR-0045 §4).

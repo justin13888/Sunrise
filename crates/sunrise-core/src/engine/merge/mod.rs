@@ -120,8 +120,10 @@ pub(super) use versions::{heads, precedes};
 /// open (`Engine::rebuild_if_stale`). `1` adds the version DAG (ADR-0065
 /// §1–§2), whose tables a vault before migration 0039 does not have. `2`
 /// folds registers by their conflict classes (§3) and keeps the losers (§4),
-/// which a vault folded at `1` holds none of.
-pub(crate) const FOLD_V: u32 = 2;
+/// which a vault folded at `1` holds none of. `3` writes every
+/// `SunriseTime`'s civil column and the routine and stream time sidecars
+/// (migration 0041, #506), which no row folded before it holds.
+pub(crate) const FOLD_V: u32 = 3;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

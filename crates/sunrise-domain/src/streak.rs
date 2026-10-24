@@ -118,7 +118,7 @@ impl Routine {
             .insert(insert_at, occurrence_key.to_string());
 
         self.slide_forgiveness_window(now);
-        self.last_completed_at = Some(now);
+        self.last_completed_at = Some(now.into());
 
         let deadline = occurrence_at
             .as_second()
@@ -206,7 +206,7 @@ mod tests {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: ts(T0),
+            starts_at: ts(T0).into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(out, StreakOutcome::Incremented);
         assert_eq!(r.streak_counter, 1);
         assert_eq!(r.streak_started_at, Some(ts(T0 + 60)));
-        assert_eq!(r.last_completed_at, Some(ts(T0 + 60)));
+        assert_eq!(r.last_completed_at, Some(ts(T0 + 60).into()));
     }
 
     #[test]

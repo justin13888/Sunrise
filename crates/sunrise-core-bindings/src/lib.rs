@@ -1136,6 +1136,7 @@ impl SunriseCore {
             changed: c.changed,
             affected_tasks: c.affected_tasks,
             notify: c.notify,
+            hard_violations: c.hard_violations,
         })
     }
 
@@ -1518,6 +1519,10 @@ pub struct TimeZoneChange {
     /// Whether to post the one local notification naming the new zone; the
     /// `notifications.timezone_changed.enabled` preference, off by default.
     pub notify: bool,
+    /// Open planned tasks whose plan breaks a hard scheduling constraint in
+    /// the new zone (#333). Flag them; the core never moves them.
+    #[uniffi(default = [])]
+    pub hard_violations: Vec<EntityRef>,
 }
 
 /// One change to the local vault, addressed by entity.
