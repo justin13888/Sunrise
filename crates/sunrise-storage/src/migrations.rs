@@ -162,6 +162,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "attachment_thumbnails",
         sql: include_str!("../migrations/0038_attachment_thumbnails.sql"),
     },
+    Migration {
+        id: 39,
+        name: "entity_versions",
+        sql: include_str!("../migrations/0039_entity_versions.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

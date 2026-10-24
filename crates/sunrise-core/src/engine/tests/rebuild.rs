@@ -49,12 +49,16 @@ fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
     }
 }
 
-/// The projection a reader sees: every projection table but the merge
-/// state, which a local command still leaves to be folded later.
+/// The projection a reader sees: every projection table but the merge state
+/// and the version DAG the rows are folded from.
 fn rows(db: &Db) -> Vec<(&'static str, Vec<String>)> {
     dump(db.conn())
         .into_iter()
-        .filter(|(table, _)| !table.starts_with("merge_"))
+        .filter(|(table, _)| {
+            !table.starts_with("merge_")
+                && !table.starts_with("entity_")
+                && !matches!(*table, "register_losers" | "pending_groups")
+        })
         .collect()
 }
 
@@ -77,6 +81,21 @@ fn rename(e: &Engine, db: &mut Db, task: EntityRef, title: &str) {
 /// its occurrences, a block bound to a task, an attachment, a focus session
 /// with an interruption, a review snapshot and a vault preference.
 fn rich_history(e: &Engine, db: &mut Db) {
+    legacy_history(e, db);
+    e.apply(
+        db,
+        Command::SetPreference {
+            key: "week_start".into(),
+            value: PrefValue::Weekday(sunrise_domain::Weekday::Mo),
+            target: PrefTarget::Vault,
+        },
+    )
+    .unwrap();
+}
+
+/// [`rich_history`] without the vault preference, the one entity this build
+/// writes as a `Patch`: a history made only of full-state ops.
+fn legacy_history(e: &Engine, db: &mut Db) {
     let errands = new_context(e, db, "errands");
     let home = new_context(e, db, "home");
     let work = e
@@ -173,15 +192,6 @@ fn rich_history(e: &Engine, db: &mut Db) {
             streaks: Vec::new(),
             note: None,
         }),
-    )
-    .unwrap();
-    e.apply(
-        db,
-        Command::SetPreference {
-            key: "week_start".into(),
-            value: PrefValue::Weekday(sunrise_domain::Weekday::Mo),
-            target: PrefTarget::Vault,
-        },
     )
     .unwrap();
 }
@@ -439,4 +449,110 @@ fn an_unreadable_op_rolls_the_rebuild_back() {
         )
         .unwrap();
     assert_eq!(shadows, 0, "the search index is the vault's own again");
+}
+
+/// What a vault holds the first time a build with the version DAG opens it:
+/// the rows and merge state an older build folded, with no versions and no
+/// record of a rebuild (migration 0039). With `merge_state`, the merge state
+/// is gone too, as in a vault from before migration 0033.
+fn as_an_older_build_left_it(db: &Db, merge_state: bool) {
+    let mut tables = vec!["entity_versions", "entity_frontier", "projection_rebuild"];
+    if merge_state {
+        tables.extend([
+            "merge_entities",
+            "merge_registers",
+            "merge_map_entries",
+            "merge_orset_adds",
+            "merge_orset_removes",
+            "merge_counter_deltas",
+        ]);
+    }
+    for table in tables {
+        db.conn()
+            .execute(&format!("DELETE FROM {table}"), [])
+            .unwrap();
+    }
+}
+
+/// ADR-0065 §7: a vault with only legacy history projects exactly as before
+/// after the migration, whose open rebuilds it from the log. Every row reads
+/// as it did, whether the vault had merge state (0033) or none, and the
+/// merge state and version DAG are the ones the live fold of the same ops
+/// holds.
+#[test]
+fn a_legacy_only_vault_projects_identically_after_the_migration() {
+    let c = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+    let ((ea, mut dba), (eb, mut dbb)) = pair(&c);
+    legacy_history(&ea, &mut dba);
+    set_clock(&c, (NOW + 1_000) as u64);
+    let from_b = new_task(&eb, &mut dbb, "from b");
+    sync(&dba, &eb, &mut dbb);
+    sync(&dbb, &ea, &mut dba);
+    rename(&ea, &mut dba, from_b, "from b, renamed on a");
+    sync(&dba, &eb, &mut dbb);
+    let patches: i64 = dba
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE inner_kind = 'Patch'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(patches, 0, "the history is legacy only");
+
+    for (e, db) in [(&ea, &mut dba), (&eb, &mut dbb)] {
+        let live = dump(db.conn());
+        let seen = rows(db);
+        for merge_state in [false, true] {
+            as_an_older_build_left_it(db, merge_state);
+            assert_eq!(rows(db), seen, "the rows are the older build's");
+            let report = e.rebuild_if_stale(db).unwrap().expect("the open rebuilds");
+            assert_eq!(report.ops_skipped, 0);
+            assert_eq!(rows(db), seen, "and read exactly as they did");
+            assert_eq!(dump(db.conn()), live);
+            assert_eq!(e.rebuild_if_stale(db).unwrap(), None);
+        }
+    }
+}
+
+/// A build before ADR-0065 PR 3 wrote a command's row and logged its op
+/// without folding it, so its vault can hold a row newer than the merge
+/// state behind it. The rebuild at open folds the op from the log, where
+/// the first op to touch the entity used to fold the row.
+#[test]
+fn a_row_an_older_build_never_folded_is_folded_by_the_rebuild() {
+    let (e, mut db) = (engine(), db());
+    let task = new_task(&e, &mut db, "first");
+    let state: Vec<&str> = TABLE_CLASSES
+        .iter()
+        .map(|(table, _)| *table)
+        .filter(|table| table.starts_with("merge_") || table.starts_with("entity_"))
+        .collect();
+    for table in &state {
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE stale_{table} AS SELECT * FROM {table}"
+            ))
+            .unwrap();
+    }
+    rename(&e, &mut db, task, "second");
+    let live = dump(db.conn());
+    let seen = rows(&db);
+
+    // Put the merge state back as it was before the rename: the row says
+    // "second", and nothing behind it does.
+    as_an_older_build_left_it(&db, true);
+    for table in &state {
+        db.conn()
+            .execute_batch(&format!("INSERT INTO {table} SELECT * FROM stale_{table}"))
+            .unwrap();
+    }
+    assert_eq!(rows(&db), seen);
+    assert_ne!(dump(db.conn()), live, "the merge state is behind the row");
+
+    e.rebuild_if_stale(&mut db)
+        .unwrap()
+        .expect("the open rebuilds");
+    assert_eq!(dump(db.conn()), live);
+    assert_eq!(read_task_t(&e, &db, task).title, "second");
 }

@@ -2,8 +2,8 @@
 //! field write at a time.
 //!
 //! Every write here is idempotent, because the same op can be folded twice:
-//! from its envelope, by a redelivery or a rebuild, and once more when a row
-//! an older build wrote is read back (`sync_from_row`). A register keeps the greater stamp and rewrites itself
+//! by a redelivery, and by a snapshot join that carries what an op already
+//! folded here wrote. A register keeps the greater stamp and rewrites itself
 //! at an equal one; an OR-set add or remove and a counter delta are keyed by
 //! the op that made them.
 
@@ -69,8 +69,6 @@ pub(super) struct Meta {
     pub(super) patch_ms: Option<u64>,
     /// The greatest stamp of any op applied: the row's stamp.
     pub(super) head: Stamp,
-    /// The row stamp this merge last wrote or folded.
-    pub(super) row: Option<(Hlc, [u8; 16], u64)>,
 }
 
 impl Meta {
@@ -81,7 +79,6 @@ impl Meta {
             legacy: None,
             patch_ms: None,
             head: at,
-            row: None,
         }
     }
 
@@ -123,24 +120,10 @@ pub(super) fn read_meta(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result
                 create_hlc_ms, create_hlc_logical, create_device, create_seq, create_stream,
                 legacy_hlc_ms, legacy_hlc_logical, legacy_device, legacy_seq, legacy_stream,
                 patch_ms,
-                head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream,
-                row_hlc_ms, row_hlc_logical, row_device, row_seq
+                head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream
          FROM merge_entities WHERE entity_id = ?",
         params![&id[..]],
         |r| {
-            let row = match (
-                r.get::<_, Option<i64>>(17)?,
-                r.get::<_, Option<i64>>(18)?,
-                r.get::<_, Option<Vec<u8>>>(19)?,
-                r.get::<_, Option<i64>>(20)?,
-            ) {
-                (Some(ms), Some(logical), Some(device), Some(seq)) => Some((
-                    hlc_of(ms, logical),
-                    blob16(&device),
-                    u64::try_from(seq.max(0)).unwrap_or(0),
-                )),
-                _ => None,
-            };
             Ok(Meta {
                 created: r.get::<_, i64>(0)? != 0,
                 create: stamp_cols(r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?),
@@ -155,7 +138,6 @@ pub(super) fn read_meta(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result
                         seq: 0,
                         stream: [0u8; 16],
                     }),
-                row,
             })
         },
     )
@@ -192,23 +174,15 @@ pub(super) fn write_meta(
 ) -> rusqlite::Result<()> {
     let c = split(m.create);
     let l = split(m.legacy);
-    let (row_ms, row_logical, row_device, row_seq) = match m.row {
-        None => (None, None, None, None),
-        Some((hlc, device, seq)) => (
-            Some(hlc.physical_ms),
-            Some(hlc.logical),
-            Some(device.to_vec()),
-            Some(seq),
-        ),
-    };
+    // `row_*` is no longer written (migration 0039): a row is the fold's
+    // output, so there is no other stamp for it to have.
     tx.execute(
         "INSERT INTO merge_entities
          (entity_id, kind, created,
           create_hlc_ms, create_hlc_logical, create_device, create_seq, create_stream,
           legacy_hlc_ms, legacy_hlc_logical, legacy_device, legacy_seq, legacy_stream,
-          patch_ms, head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream,
-          row_hlc_ms, row_hlc_logical, row_device, row_seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          patch_ms, head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entity_id) DO UPDATE SET
             created = excluded.created,
             create_hlc_ms = excluded.create_hlc_ms,
@@ -226,11 +200,7 @@ pub(super) fn write_meta(
             head_hlc_logical = excluded.head_hlc_logical,
             head_device = excluded.head_device,
             head_seq = excluded.head_seq,
-            head_stream = excluded.head_stream,
-            row_hlc_ms = excluded.row_hlc_ms,
-            row_hlc_logical = excluded.row_hlc_logical,
-            row_device = excluded.row_device,
-            row_seq = excluded.row_seq",
+            head_stream = excluded.head_stream",
         params![
             &id[..],
             tag,
@@ -251,10 +221,6 @@ pub(super) fn write_meta(
             &m.head.device[..],
             m.head.seq,
             &m.head.stream[..],
-            row_ms,
-            row_logical,
-            row_device,
-            row_seq,
         ],
     )?;
     Ok(())

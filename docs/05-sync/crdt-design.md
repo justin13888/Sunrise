@@ -119,7 +119,7 @@ The OR-set rule removes *every* add below `L`. ADR-0044 §7 removes only the
 adds of elements `L` does not carry. The value is the same either way, since
 `L` re-adds what it carries. They differ only for a later remove that observed
 `L`'s tag but not an older one. Under this rule a replica that never saw the
-older tags agrees with one that replayed every op. That is the case for any
+older tags agrees with one that replayed every op. That was the case for any
 replica that seeded an entity from its row (below), so the rule is the one
 that converges.
 
@@ -147,7 +147,7 @@ after it applies on top, and where the whole value is not a map the newer
 entries replace it. So a map an unknown field held survives a full-state op
 from a build that cannot read it, as a registered map does.
 
-### Local writes, and seeding from a row
+### Local writes, and rows written another way
 
 A local command builds its op, appends it to the op log, and folds it through
 the call a received op takes (`Engine::append_and_fold`, then
@@ -170,13 +170,31 @@ field, is not generated again.
 Two kinds of row were written another way. An entity a vault held before
 migration 0033 has a row and no field state, and a build before ADR-0065's
 third pull request wrote each command's row directly and left the merge to
-fold it before the next op. The first op to touch such an entity seeds the
-state from the row, read as the legacy op that wrote it, at the row's stamp,
-with the origin the logged op that wrote it reads as. Under the rule above
-only `L` matters, so this is what replaying every earlier op would give, up to
-what the row cannot hold, and the row projects identically. A row this build
-wrote is the merge's own, so the seed finds nothing to fold. The rebuild on
-open that ADR-0065's fourth pull request adds retires the seed.
+fold it before the next op. Until ADR-0065's fourth pull request, the first op
+to touch such an entity seeded the state from the row, read as the legacy op
+that wrote it. Now `Core::open` rebuilds the projection from the op log
+whenever the vault was last rebuilt by another version of the fold
+(`FOLD_V`), which includes every vault opened for the first time after
+migration 0039, and before anything reads the projection or folds an op into
+it. The log holds the op behind every such row, so each is folded from its op,
+and a legacy-only history projects exactly as it did. No row is read back as
+an op any more.
+
+### Versions
+
+Every op folded into an entity is also admitted as one of its *versions*
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §1–§2), in
+`entity_versions` (migration 0039), keyed by its op-ref. A version's causal
+frontier, in `entity_frontier`, maps each device to the greatest stamp of that
+device's versions it reaches through the `parents` it names and through its
+own device's previous version (clarifications D1–D3). `a` precedes `b` when
+`b`'s frontier at `a`'s device is at least `a`'s stamp; otherwise they are
+concurrent. The heads, the versions nothing else descends from, are flagged
+`is_head`. A version that arrives after one that reaches it, by naming it or
+by being its device's later version, recomputes every frontier of the entity
+in stamp order, so the stored DAG is a function of the versions applied,
+whatever order they came in. The register fold does not read it yet; it still
+keeps the greatest stamp.
 
 ### Visibility, timestamps and validation
 

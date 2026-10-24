@@ -29,7 +29,6 @@ use super::identity::{
 };
 use super::ids::*;
 use super::lww::*;
-use super::merge::legacy_rows::*;
 use super::oplog::*;
 use super::routine::*;
 use super::stream::*;
@@ -697,6 +696,24 @@ mod testutil {
     /// Materialize a Stream row with **no op**, so a later command against it
     /// can still be the vault-meta stream's first writer.
     ///
+    /// Fold `op` into `db` as an op stamped `lww` and sealed under `stream`
+    /// would be folded, without logging it: the row, its merge state and its
+    /// version, with no op in the log behind them. Nothing is sealed, so no
+    /// key is minted.
+    pub(super) fn fold_unlogged(db: &mut Db, op: &InnerOp, lww: &LwwStamp, stream: [u8; 16]) {
+        db.with_tx(|tx| materialize_remote(tx, op, lww, &stream))
+            .unwrap();
+    }
+
+    /// Log `op` under `stream` and fold it, as a command does, at the
+    /// engine's clock: how a full-state op written by another build, say one
+    /// carrying fields this build does not model, reaches the projection.
+    pub(super) fn log_and_fold(e: &Engine, db: &mut Db, op: &InnerOp, stream: &[u8; 16]) {
+        let now_ms = e.clock.now_ms();
+        db.with_tx(|tx| e.append_and_fold(tx, op, stream, now_ms).map(|_| ()))
+            .unwrap();
+    }
+
     /// Every command emits an op, and the first op of any kind mints the
     /// vault-meta key — including a Task's, because minting the Inbox key
     /// emits `key_envelope` control ops into vault-meta, which mints that too.
@@ -725,8 +742,12 @@ mod testutil {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        db.with_tx(|tx| insert_stream_row(tx, &stream, &seeded_stamp()))
-            .unwrap();
+        fold_unlogged(
+            db,
+            &InnerOp::StreamCreate(stream),
+            &seeded_stamp(),
+            META_STREAM,
+        );
         // A row no op wrote: no rebuild of the log reproduces it.
         crate::engine::rebuild::check::disable();
         id
@@ -745,8 +766,12 @@ mod testutil {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        db.with_tx(|tx| insert_context_row(tx, &ctx, &seeded_stamp()))
-            .unwrap();
+        fold_unlogged(
+            db,
+            &InnerOp::ContextCreate(ctx),
+            &seeded_stamp(),
+            META_STREAM,
+        );
         // A row no op wrote: no rebuild of the log reproduces it.
         crate::engine::rebuild::check::disable();
         id
@@ -788,14 +813,15 @@ mod testutil {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        db.with_tx(|tx| {
-            // The routine's template Stream has to exist for the foreign key,
-            // and `ensure_stream_row` materializes one without emitting an op
-            // — which is exactly the property this helper needs.
-            ensure_stream_row(tx, &routine.template.stream_id, T0)?;
-            insert_routine_row(tx, &routine, T0, &seeded_stamp())
-        })
-        .unwrap();
+        // The fold materializes the template Stream's row for the foreign key
+        // (`ensure_stream_row`) without emitting an op, which is exactly the
+        // property this helper needs.
+        fold_unlogged(
+            db,
+            &InnerOp::RoutineCreate(Box::new(routine)),
+            &seeded_stamp(),
+            META_STREAM,
+        );
         // A row no op wrote: no rebuild of the log reproduces it.
         crate::engine::rebuild::check::disable();
         id
@@ -3688,11 +3714,12 @@ fn two_engines_produce_identical_task_ids() {
         let mut db = db();
         let e = engine();
         let r = fixed_routine();
-        db.with_tx(|tx| {
-            ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
-            insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
-        })
-        .unwrap();
+        fold_unlogged(
+            &mut db,
+            &InnerOp::RoutineCreate(Box::new(r.clone())),
+            &e.lww_stamp(1),
+            META_STREAM,
+        );
         e.materialize_one_routine(&mut db, &r, NOW as u64).unwrap();
         live_task_ids(&db)
     }
@@ -13846,9 +13873,7 @@ fn a_streams_icon_survives_being_written() {
         .unwrap()
         .expect("stream exists");
     stream.icon = Some("briefcase".into());
-    let lww = e.lww_stamp(2);
-    db.with_tx(|tx| update_stream_row(tx, &stream, &lww))
-        .unwrap();
+    log_and_fold(&e, &mut db, &InnerOp::StreamUpdate(stream), &META_STREAM);
 
     let back = read_stream(db.conn(), created.entity.bytes())
         .unwrap()
@@ -13891,8 +13916,8 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     // on the entity and write it back through the normal update path.
     let mut task = read_task_t(&e, &db, created.entity);
     task.unknown = future_fields();
-    let lww = e.lww_stamp(2);
-    db.with_tx(|tx| update_task_row(tx, &task, &lww)).unwrap();
+    let stream = *task.stream_id.bytes();
+    log_and_fold(&e, &mut db, &InnerOp::TaskUpdate(task), &stream);
 
     let back = read_task_t(&e, &db, created.entity);
     assert_eq!(
@@ -13970,8 +13995,8 @@ fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
     // An entity with unknown fields of its own replaces them.
     let mut t = read_task_t(&e, &db, task);
     t.unknown = future_fields();
-    let lww = e.lww_stamp(9);
-    db.with_tx(|tx| update_task_row(tx, &t, &lww)).unwrap();
+    let stream = *t.stream_id.bytes();
+    log_and_fold(&e, &mut db, &InnerOp::TaskUpdate(t), &stream);
     assert_eq!(read_task_t(&e, &db, task).unknown, future_fields());
 }
 
@@ -14132,9 +14157,7 @@ fn unknown_stream_fields_survive_the_materialized_row() {
         .unwrap()
         .expect("stream exists");
     stream.unknown = future_fields();
-    let lww = e.lww_stamp(2);
-    db.with_tx(|tx| update_stream_row(tx, &stream, &lww))
-        .unwrap();
+    log_and_fold(&e, &mut db, &InnerOp::StreamUpdate(stream), &META_STREAM);
 
     let back = read_stream(db.conn(), created.entity.bytes())
         .unwrap()
@@ -14166,8 +14189,7 @@ fn unknown_context_fields_survive_the_materialized_row() {
         .unwrap()
         .expect("context exists");
     ctx.unknown = future_fields();
-    let lww = e.lww_stamp(2);
-    db.with_tx(|tx| update_context_row(tx, &ctx, &lww)).unwrap();
+    log_and_fold(&e, &mut db, &InnerOp::ContextUpdate(ctx), &META_STREAM);
 
     let back = read_context(db.conn(), created.entity.bytes())
         .unwrap()
@@ -14217,9 +14239,12 @@ fn unknown_routine_fields_survive_the_materialized_row() {
         .unwrap()
         .expect("routine exists");
     routine.unknown = future_fields();
-    let lww = e.lww_stamp(2);
-    db.with_tx(|tx| update_routine_row(tx, &routine, &lww))
-        .unwrap();
+    log_and_fold(
+        &e,
+        &mut db,
+        &InnerOp::RoutineUpdate(Box::new(routine)),
+        &META_STREAM,
+    );
 
     let back = read_routine(db.conn(), rid.bytes())
         .unwrap()
@@ -14934,11 +14959,12 @@ fn deterministic_routine_task_converges() {
     // Each replica holds the routine as a row no op wrote.
     crate::engine::rebuild::check::disable();
     for (e, d) in [(&ea, &mut dba), (&eb, &mut dbb)] {
-        d.with_tx(|tx| {
-            ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
-            insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
-        })
-        .unwrap();
+        fold_unlogged(
+            d,
+            &InnerOp::RoutineCreate(Box::new(r.clone())),
+            &e.lww_stamp(1),
+            META_STREAM,
+        );
         e.materialize_one_routine(d, &r, NOW as u64).unwrap();
     }
 
@@ -19310,3 +19336,6 @@ mod local_write;
 
 /// The Upcoming view's civil days, span and no-date lane (#351).
 mod upcoming;
+
+/// The version DAG: parents, frontiers and heads (ADR-0065 PR 4).
+mod versions;

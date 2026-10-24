@@ -22,7 +22,11 @@ impl crate::config::Clock for FakeClock {
     }
 }
 
+/// A config for a vault in `dir`. Every command and delivery on this test's
+/// thread then also checks that a rebuild of the log lands on the rows it
+/// left (ADR-0065 §5), as the engine's own tests do.
 fn cfg(dir: &std::path::Path) -> CoreConfig {
+    crate::engine::check_rebuild_after_every_write();
     CoreConfig::with_clock(
         dir.to_path_buf(),
         "0.1.0+test",
@@ -439,6 +443,172 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
         Err(CoreError::Engine(EngineError::Invalid(_)))
     ));
     assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
+    core.close().await.unwrap();
+}
+
+/// `Core::open` rebuilds the projection when the vault holds no record of a
+/// rebuild at this build's fold version, as the first open after migration
+/// 0039 finds it, and only then (ADR-0065 §7). The rebuilt vault reads as it
+/// did, and its version DAG is the one the live fold wrote.
+#[tokio::test]
+async fn open_rebuilds_the_projection_once_per_fold_version() {
+    use sunrise_domain::{TaskDraft, TaskPatch};
+    const MARKER: &str = "SELECT fold_v, done_at_ms FROM projection_rebuild";
+    const STATE: &str = "SELECT * FROM entity_versions
+         UNION ALL SELECT *, NULL, NULL, NULL, NULL, NULL FROM entity_frontier
+         UNION ALL SELECT id, title, state, lww_seq, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                          NULL, NULL, NULL FROM tasks
+         ORDER BY 1, 2, 3, 4";
+    let dir = tempfile::tempdir().unwrap();
+    let at = |ms: u64| {
+        crate::engine::check_rebuild_after_every_write();
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            Arc::new(FakeClock(PLMutex::new(ms))),
+            Arc::new(SystemRng),
+        )
+    };
+    let read = |core: &Core, sql: &str| -> Vec<String> {
+        let db = core.db.lock();
+        let mut stmt = db.conn().prepare(sql).unwrap();
+        let n = stmt.column_count();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| {
+                (0..n)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|c| c.join(" | "))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows
+    };
+    let fold_v = crate::engine::FOLD_V;
+
+    let core = Core::open(at(1_700_000_000_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000000000)")],
+        "a new vault is rebuilt, from its empty log, by its first open"
+    );
+    let task = core
+        .submit(Command::CreateTask(TaskDraft {
+            title: "kept".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    core.submit(Command::UpdateTask {
+        id: task,
+        patch: TaskPatch {
+            title: Some("kept, renamed".into()),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let live = read(&core, STATE);
+    core.close().await.unwrap();
+
+    // What an open after migration 0039 finds: no versions, no record.
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM entity_versions; DELETE FROM entity_frontier;
+                 DELETE FROM projection_rebuild;",
+            )
+            .unwrap();
+    }
+    let core = Core::open(at(1_700_000_005_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000005000)")]
+    );
+    assert_eq!(
+        read(&core, STATE),
+        live,
+        "the rebuild lands on the live fold"
+    );
+    core.close().await.unwrap();
+
+    let core = Core::open(at(1_700_000_009_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000005000)")],
+        "an open at the same fold version does not rebuild"
+    );
+    core.close().await.unwrap();
+}
+
+/// A rebuild at open that fails does not fail the open: the vault opens on
+/// the projection it had, and the record stays unwritten for the next open.
+#[tokio::test]
+async fn a_failed_rebuild_never_fails_the_open() {
+    use sunrise_domain::TaskDraft;
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let task = core
+        .submit(Command::CreateTask(TaskDraft {
+            title: "kept".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    core.close().await.unwrap();
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        // A damaged op: its envelope no longer decodes, and no rebuild of
+        // this log can succeed, the after-every-write check's included.
+        crate::engine::stop_checking_the_rebuild();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM projection_rebuild;
+                 UPDATE ops SET envelope = substr(envelope, 1, length(envelope) - 1)
+                 WHERE inner_kind = 'task.create';",
+            )
+            .unwrap();
+    }
+    let damaged = CoreConfig::with_clock(
+        dir.path().to_path_buf(),
+        "0.1.0+test",
+        Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
+        Arc::new(SystemRng),
+    );
+    let core = Core::open(damaged, unlock()).await.unwrap();
+    let (marker, title): (i64, String) = {
+        let db = core.db.lock();
+        let marker = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM projection_rebuild", [], |r| r.get(0))
+            .unwrap();
+        let title = db
+            .conn()
+            .query_row(
+                "SELECT title FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (marker, title)
+    };
+    assert_eq!(marker, 0, "the next open tries again");
+    assert_eq!(title, "kept", "the projection it had");
     core.close().await.unwrap();
 }
 

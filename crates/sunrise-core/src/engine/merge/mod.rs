@@ -39,43 +39,42 @@
 //!
 //! So a history made only of legacy ops projects exactly as entity-level
 //! last-writer-wins did, whatever order its ops arrive in, and only `L`
-//! matters. That second property is what makes seeding from a row exact: see
-//! below.
+//! matters.
 //!
 //! The OR-set rule removes *every* add below `L`, including an add of an
 //! element `L` itself carries, where ADR-0044 §7 removes only the adds of
 //! elements `L` does not carry. The value is the same either way, because `L`
 //! re-adds its own elements. What differs is what a later `remove` that
 //! observed only `L`'s tag does, and only under this rule is a replica that
-//! seeded from its row (and so never saw the older tags) in agreement with
-//! one that replayed every op. `docs/05-sync/crdt-design.md` records it.
+//! never saw the older tags (one that seeded an entity from its row, before
+//! the rebuild at open replaced that) in agreement with one that replayed
+//! every op. `docs/05-sync/crdt-design.md` records it.
 //!
 //! What the floor makes unreadable is deleted when the floor rises: the adds
 //! below it, the removes that named them, and the counter deltas at or below
 //! it (`state::prune_below_floor`). A set written only by full-state ops so
 //! holds one add per element, not one per element per op.
 //!
-//! # Local writes, and seeding from a row
+//! # Local writes, and rows written another way
 //!
 //! A command appends its op to the log and folds it here, through the call a
 //! received op takes (`Engine::append_and_fold`), so a writer and its peers
 //! derive the row from one function of the same ops.
 //!
-//! Two kinds of row were written another way, and [`sync_from_row`] folds
-//! them in the first time an op touches the entity:
+//! Two kinds of row were written another way: an entity a vault held before
+//! migration 0033 has a row and no field state, and a build before ADR-0065
+//! PR 3 wrote a command's row directly and left folding it to the next op.
+//! Neither is read back here. A vault that may hold one is rebuilt from its
+//! op log before anything folds into it (`Engine::rebuild_if_stale`, which
+//! `Core::open` runs whenever the vault was last rebuilt at a [`FOLD_V`]
+//! other than this build's), and the log holds the op behind every such row.
 //!
-//! - an entity a vault held before migration 0033 has a row and no field
-//!   state;
-//! - a build before ADR-0065 PR 3 wrote a command's row directly and left
-//!   folding it to the next op, so a vault it wrote can hold a row with a
-//!   stamp the merge did not write.
+//! # Versions
 //!
-//! Either row is read back as the legacy op that wrote it, at the row's
-//! stamp. By the rule above that is exactly what replaying every earlier op
-//! would have produced, up to what the row cannot represent, and the row then
-//! projects identically. A row this build wrote is always the merge's, so
-//! the check finds nothing to fold. ADR-0065 PR 4 retires the seed, by
-//! rebuilding such a vault from its log once.
+//! Every op folded here is first admitted as a version of its entity
+//! ([`versions`], ADR-0065 §1–§2): its parents, its causal frontier, and the
+//! entity's heads. The register fold does not read them yet; it still keeps
+//! the greatest stamp, as ADR-0044 does.
 //!
 //! # Visibility, delete, and derived fields
 //!
@@ -94,13 +93,23 @@ mod project;
 mod rows;
 mod snapshot;
 mod state;
+mod versions;
 
 pub(super) use patch::{check_patch, PatchProblem};
 #[cfg(test)]
 pub(super) use project::map_over_whole;
+pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
+pub(super) use versions::recompute as recompute_versions;
 #[cfg(test)]
-pub(super) use rows::legacy_rows;
-pub(super) use snapshot::{dump_compacted_base, dump_stream_state, fold_rows, join_stream_state};
+pub(super) use versions::{heads, precedes};
+
+/// The version of the fold: what a projection rebuilt from the log holds.
+///
+/// It moves when a build folds the same ops into different rows or merge
+/// state, and a vault last rebuilt at another version is rebuilt once, at
+/// open (`Engine::rebuild_if_stale`). `1` adds the version DAG (ADR-0065
+/// §1–§2), whose tables a vault before migration 0039 does not have.
+pub(crate) const FOLD_V: u32 = 1;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;
@@ -108,15 +117,17 @@ use super::EngineError;
 use crate::inner_op::InnerOp;
 use ciborium::value::Value;
 use patch::FieldOp;
-use project::{logged_op, project, read_row_state, row_stamp, write_projection};
+use project::{project, write_projection};
 use rusqlite::Transaction;
 use state::{
     add_delta, add_element, prune_below_floor, read_meta, remove_element, write_map_entry,
     write_meta, write_register, Meta,
 };
+use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::EntityRef;
+use versions::{admit_version, Version, VersionKind};
 
 // ---- stamps and op-refs ----
 
@@ -188,7 +199,6 @@ impl OpRef {
     }
 
     /// The CBOR form [`Self::from_value`] reads.
-    #[cfg(test)]
     pub(super) fn to_value(self) -> Value {
         Value::Array(vec![
             Value::Bytes(self.stream.to_vec()),
@@ -206,8 +216,7 @@ const GENERATED: &str = "generated";
 /// The origin of a legacy full-state op, from its op-log `inner_kind` and its
 /// payload's CBOR map. ADR-0044 §3: a legacy op is a user write, except the
 /// routine engine's own occurrence creates, a `task.create` that names its
-/// routine. The receive path and [`sync_from_row`] both read it here, so a
-/// replica that folded its own row and one that replayed the op agree.
+/// routine.
 fn legacy_origin(inner_kind: &str, state: &[(Value, Value)]) -> &'static str {
     let names_routine = state
         .iter()
@@ -347,74 +356,10 @@ fn fold_patch(
     Ok(())
 }
 
-/// Fold the row in as a legacy op when it was written by something other
-/// than this merge: by a vault older than migration 0033, or by a local
-/// command of a build before ADR-0065 PR 3. See the module docs.
-fn sync_from_row(
-    tx: &Transaction<'_>,
-    spec: &'static EntitySpec,
-    target: EntityRef,
-) -> Result<Option<Meta>, EngineError> {
-    let id = target.bytes();
-    let mut meta = read_meta(tx, id)?;
-    let Some(row) = row_stamp(tx, spec, id)? else {
-        return Ok(meta);
-    };
-    // A placeholder stream row no op has stamped is not an op.
-    let Some(device) = row.device.as_deref() else {
-        return Ok(meta);
-    };
-    let seen = (row.hlc, blob16(device), row.seq);
-    if meta.as_ref().and_then(|m| m.row) == Some(seen) {
-        return Ok(meta);
-    }
-    let Some(state) = read_row_state(tx, target.kind(), id)? else {
-        return Ok(meta);
-    };
-    let (stream, kind) = logged_op(tx, spec, id, device, row.seq, &state)?;
-    let at = Stamp {
-        hlc: row.hlc,
-        device: blob16(device),
-        seq: row.seq,
-        stream,
-    };
-    let mut m = meta.take().unwrap_or_else(|| Meta::fresh(at));
-    let entries = state.as_map().map_or(&[][..], Vec::as_slice);
-    // The origin of the logged op that wrote the row, by the rule the receive
-    // path reads it with, so this replica and a peer that replayed the op
-    // store the same one.
-    let origin = kind.map_or(USER, |k| legacy_origin(&k, entries));
-    fold_legacy(tx, spec, id, entries, at, origin, &mut m)?;
-    m.row = Some(seen);
-    Ok(Some(m))
-}
-
-/// Fold each task's row into its field state, before a context is purged
-/// from the tasks' membership rows.
-///
-/// A task with no field state yet, or with an older build's local write the
-/// merge has not folded, is seeded from its row (see [`sync_from_row`]). Once a tombstoned
-/// context has been purged from `task_contexts`, the row no longer says the
-/// task's set holds it, and a seed taken then would lose the add a restore
-/// needs. So the row is folded while it still does.
-pub(super) fn seed_tasks_before_purge(
-    tx: &Transaction<'_>,
-    tasks: &[[u8; 16]],
-) -> rusqlite::Result<()> {
-    let spec = sunrise_id::EntityKind::Task.spec();
-    for id in tasks {
-        let task = EntityRef::new(sunrise_id::EntityKind::Task, *id);
-        if let Some(meta) = sync_from_row(tx, spec, task).map_err(to_sql)? {
-            write_meta(tx, id, spec.tag, &meta)?;
-        }
-    }
-    Ok(())
-}
-
 /// Re-project one entity from its state, folding nothing new.
 fn refresh(tx: &Transaction<'_>, target: EntityRef) -> Result<(), EngineError> {
     let spec = target.kind().spec();
-    let Some(mut meta) = sync_from_row(tx, spec, target)? else {
+    let Some(mut meta) = read_meta(tx, target.bytes())? else {
         return Ok(());
     };
     project_and_write(tx, spec, target, &mut meta)?;
@@ -431,10 +376,7 @@ fn project_and_write(
     let Some(value) = project(tx, spec, target, meta)? else {
         return Ok(());
     };
-    let head = meta.head.lww();
-    if write_projection(tx, spec, target, value, &head)? {
-        meta.row = Some((head.hlc, head.device, head.seq));
-    }
+    write_projection(tx, spec, target, value, &meta.head.lww())?;
     Ok(())
 }
 
@@ -500,7 +442,7 @@ fn merge_op_inner(
     let spec = target.kind().spec();
     let id = target.bytes();
     let at = Stamp::of(lww, stream);
-    let mut meta = sync_from_row(tx, spec, target)?.unwrap_or_else(|| Meta::fresh(at));
+    let mut meta = read_meta(tx, id)?.unwrap_or_else(|| Meta::fresh(at));
     match inner {
         InnerOp::Patch(p) => {
             // Checked before the transaction opened (`apply_remote_all`), and
@@ -511,6 +453,26 @@ fn merge_op_inner(
                 return Ok(());
             };
             let origin = if p.is_generated() { GENERATED } else { USER };
+            let parents = p.parents.as_ref().map(|parents| {
+                parents
+                    .iter()
+                    .map(|w| OpRef {
+                        stream: w.0,
+                        device: w.1,
+                        seq: w.2,
+                    })
+                    .collect()
+            });
+            let version = Version {
+                at,
+                kind: VersionKind::Patch,
+                origin,
+                create: p.create,
+                parents,
+                group: p.group.as_ref().map(|g| (g.id, g.size)),
+                fields: ops.iter().map(|(name, _)| name.clone()).collect(),
+            };
+            admit_version(tx, id, &version)?;
             fold_patch(tx, id, p.create, &ops, at, origin, &mut meta)?;
         }
         other => {
@@ -521,10 +483,37 @@ fn merge_op_inner(
             let state = state.map_err(|e| EngineError::Cbor(e.to_string()))?;
             let entries = state.as_map().map_or(&[][..], Vec::as_slice);
             let origin = legacy_origin(other.inner_kind(), entries);
+            let version = Version {
+                at,
+                kind: VersionKind::Legacy,
+                origin,
+                create: other.inner_kind().ends_with(".create"),
+                parents: None,
+                group: None,
+                fields: legacy_fields(spec, entries),
+            };
+            admit_version(tx, id, &version)?;
             fold_legacy(tx, spec, id, entries, at, origin, &mut meta)?;
         }
     }
     project_and_write(tx, spec, target, &mut meta)?;
     write_meta(tx, id, spec.tag, &meta)?;
     Ok(())
+}
+
+/// The fields a legacy full-state op writes: every field this build
+/// registers for the entity, whether the op carried it or left it out, and
+/// every other key it carried (ADR-0044 §7).
+fn legacy_fields(spec: &'static EntitySpec, state: &[(Value, Value)]) -> BTreeSet<String> {
+    let mut fields: BTreeSet<String> = spec
+        .records
+        .first()
+        .map(|r| r.fields.iter().map(|f| f.name.to_owned()).collect())
+        .unwrap_or_default();
+    fields.extend(
+        state
+            .iter()
+            .filter_map(|(k, _)| k.as_text().map(str::to_owned)),
+    );
+    fields
 }

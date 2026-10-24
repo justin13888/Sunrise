@@ -121,7 +121,13 @@ pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
+#[cfg(test)]
+pub(crate) use self::merge::FOLD_V;
 pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
+#[cfg(test)]
+pub(crate) use self::rebuild::check::{
+    disable as stop_checking_the_rebuild, enable as check_rebuild_after_every_write,
+};
 pub use self::rebuild::RebuildReport;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
 pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
