@@ -52,6 +52,8 @@ capture and triage
   sunrise show <id>            one task's fields, each time with its kind
   sunrise undo | redo          reverse or replay this vault's last write
   sunrise today | inbox        list today's tasks / the inbox
+  sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then
+                               each stream's undated tasks
   sunrise next                 the focus planner's top picks
   sunrise search <query>...    full-text search
 
@@ -186,6 +188,7 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 |---|---|
 | `today`, `inbox`, `search`, `stream`, `context`, `views apply` (task views) | array of tasks |
 | `show <id>` | one task |
+| `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` and `tasks` arrays of tasks |
 | `next` | array of `{task, unblocks}` |
 | `streams` | array of `{id, name, color, open_tasks, archived, paused, sort_order}` |
 | `contexts` | array of `{id, name, description, tasks, archived}` |

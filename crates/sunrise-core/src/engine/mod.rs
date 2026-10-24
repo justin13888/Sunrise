@@ -108,6 +108,7 @@ mod sync;
 mod task;
 #[cfg(test)]
 mod tests;
+mod upcoming;
 mod write;
 
 // `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
@@ -706,6 +707,11 @@ impl Engine {
             Query::TaskAttachments(task) => self.query_task_attachments(db, task),
             Query::MorningSummary { now_ms } => self.query_morning_summary(db, now_ms),
             Query::EndOfDayPlan { now_ms } => self.query_end_of_day_plan(db, now_ms),
+            Query::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            } => self.query_upcoming(db, now_ms, span_days, &contexts),
             Query::ReminderIntents {
                 now_ms,
                 horizon_ms,

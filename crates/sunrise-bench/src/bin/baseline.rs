@@ -249,6 +249,12 @@ const BENCHES: &[Bench] = &[
         unit: Unit::Ms,
     },
     Bench {
+        dir: "query_upcoming",
+        p50: None,
+        p99: "query_upcoming_30d_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
         dir: "fts",
         p50: None,
         p99: "fts_query_10k_p99_ms",

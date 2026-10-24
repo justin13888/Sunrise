@@ -82,6 +82,23 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 - **Surfaces:** a sidebar entry on desktop, an entry in Browse on phone and
   tablet, and `sunrise upcoming [7|14|30]` on the CLI.
 
+> **Today's build** has the query and the CLI. `Query::Upcoming { now_ms,
+> span_days, contexts }` (`crates/sunrise-core/src/engine/upcoming.rs`) folds
+> through the pure `crates/sunrise-domain/src/upcoming.rs#build_upcoming`: days
+> are civil days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
+> than a `zone` argument), each carrying its own `[start, end)` so a DST day
+> is 23 or 25 hours; a task is on the day `SunriseTime::day_in` puts it,
+> keeping its kind. Until [#334](https://github.com/justin13888/Sunrise/issues/334)
+> the plan is `scheduled_at` and a day's deadlines are one `due` list over
+> `due_at`; until [#338](https://github.com/justin13888/Sunrise/issues/338) a
+> day starts at civil midnight; and until
+> [ADR-0046](../11-adr/0046-optional-stream.md) lands, "No stream" is the
+> Inbox, listed last. `span_days: None` reads `views.upcoming.span_days`; any
+> span but 7, 14 or 30 is refused. Blocks overlap a day as on the calendar
+> grid. The seam carries it as `CoreQuery.upcoming` / `UpcomingReport`, and
+> `sunrise upcoming` prints it. Drag rescheduling (`plan_preview`, #343/#344)
+> and the Apple surfaces are not built.
+
 ## Needs decision (triage)
 
 The triage tray from [ADR-0047](../11-adr/0047-deadlines-and-lateness.md): every

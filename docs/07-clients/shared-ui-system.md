@@ -254,6 +254,9 @@ user-visible), is the likeliest place both come back together.
 | View | Empty copy | Empty action |
 |---|---|---|
 | Today | "Nothing scheduled for today. Add a task or take it easy." | "Add a task" |
+| Upcoming, nothing at all | "Nothing coming up in the next <span> days, and nothing undated." | "Add a task" |
+| Upcoming, only undated | "Nothing scheduled in the next <span> days. Your undated tasks are below." | "Plan a task" |
+| Upcoming, a filter hides everything | "Nothing in those contexts in the next <span> days." | "Clear filter" |
 | Inbox | "Inbox zero. Capture something quickly with ⌘N." | "Capture" |
 | Stream | "No tasks in <stream> yet." | "Add task" |
 | Calendar | "No blocks for this week." | "Add block" |

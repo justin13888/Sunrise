@@ -149,6 +149,51 @@ pub fn block(b: &Block, title: Option<&str>, reader: &TimeZone) -> Value {
     })
 }
 
+/// The Upcoming view: `{today, span_days, days, no_date}`.
+///
+/// Each day is `{date, start_ms, end_ms, blocks, planned, due}`, its bounds
+/// in the reader's zone (23 or 25 hours apart on a DST day); each no-date
+/// group is `{stream, no_stream, tasks, total}`.
+#[must_use]
+pub fn upcoming(u: &sunrise_core::queries::Upcoming, reader: &TimeZone) -> Value {
+    let days: Vec<Value> = u
+        .days
+        .iter()
+        .map(|d| {
+            json!({
+                "date": d.date.to_string(),
+                "start_ms": d.start.as_millisecond(),
+                "end_ms": d.end.as_millisecond(),
+                "blocks": d
+                    .blocks
+                    .iter()
+                    .map(|r| block(&r.block, r.title.as_deref(), reader))
+                    .collect::<Vec<_>>(),
+                "planned": tasks(&d.planned, reader),
+                "due": tasks(&d.due, reader),
+            })
+        })
+        .collect();
+    let no_date: Vec<Value> = u
+        .no_date
+        .iter()
+        .map(|g| {
+            json!({
+                "stream": g.stream.to_str(),
+                "no_stream": g.no_stream,
+                "tasks": tasks(&g.tasks, reader),
+                "total": g.total,
+            })
+        })
+        .collect();
+    json!({
+        "today": u.today.to_string(),
+        "span_days": u.span_days,
+        "days": days,
+        "no_date": no_date,
+    })
+}
+
 /// Print `v` as one line on stdout: the whole of a `--json` command's output.
 #[allow(clippy::print_stdout)]
 pub fn print(v: &Value) {

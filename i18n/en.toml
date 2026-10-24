@@ -1690,6 +1690,8 @@ USAGE:
     sunrise show <id>            one task's fields, each time with its kind
     sunrise undo | redo          reverse or replay this vault's last write
     sunrise today                list today's tasks
+    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then
+                                 the undated tasks of each stream
     sunrise inbox                list inbox tasks
     sunrise next                 the focus planner's top picks
     sunrise search <query>...    full-text search
@@ -2138,6 +2140,21 @@ unknown = "unknown time zone `{zone}` (from {source}); times are never read in U
 flag_needs_zone = "--tz needs an IANA zone name, e.g. --tz Asia/Kolkata"
 # stderr, as a note, when no zone is known and times read in UTC.
 unknown_note = "this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz"
+
+[cli.upcoming]
+usage = "usage: upcoming [7|14|30]"
+# {span} is what the user typed.
+unknown_span = "an Upcoming span is 7, 14 or 30 days, not {span}"
+# A day's header line ends with this when nothing is on the day.
+empty_day = "nothing planned"
+# Marks a task listed on its deadline's day rather than its plan's.
+due = "due"
+# The heading above the undated tasks, grouped by stream.
+no_date = "No date"
+# The group of undated tasks that have no stream (still in the Inbox).
+no_stream = "No stream"
+# Under a stream's undated tasks, when more exist than are listed.
+more = "{count, plural, one {… # more} other {… # more}}"
 
 [cli.export]
 usage = "usage: export <trends|activity|focus|streaks> [json|csv] [path]"

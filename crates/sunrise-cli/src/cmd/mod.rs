@@ -20,6 +20,7 @@ mod plumbing;
 mod reports;
 mod settings;
 mod tasks;
+mod upcoming;
 
 pub(crate) use account::recover;
 
@@ -90,6 +91,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
 
         "capture" => tasks::capture(ctx, rest).await,
         "today" => tasks::today(ctx).await,
+        "upcoming" => upcoming::upcoming(ctx, rest).await,
         "inbox" => {
             tasks::list(ctx, ctx.core.query(Query::Inbox).await?);
             Ok(())

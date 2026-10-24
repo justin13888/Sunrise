@@ -55,6 +55,10 @@ name = "query_today"
 harness = false
 
 [[bench]]
+name = "query_upcoming"
+harness = false
+
+[[bench]]
 name = "fts"
 harness = false
 
