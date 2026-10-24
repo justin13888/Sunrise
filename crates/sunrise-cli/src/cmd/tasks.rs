@@ -3,7 +3,7 @@
 use sunrise_cli::i18n::strings;
 use sunrise_cli::when::{self, When};
 use sunrise_core::commands::FocusStartDraft;
-use sunrise_core::{Command, Core, Query, QueryResult};
+use sunrise_core::{BulkTaskAction, BulkTaskItem, Command, Core, Query, QueryResult};
 use sunrise_domain::{NoteBlock, NoteBody, Task, TaskPatch};
 use sunrise_id::EntityRef;
 
@@ -140,18 +140,42 @@ pub(super) async fn show(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 }
 
 /// `done <id>...` — complete tasks by id.
+///
+/// Several ids are one [`Command::BulkTasks`]: every task is checked before
+/// any is written, one that cannot be completed refuses them all, and a peer
+/// sees all of them done or none (ADR-0065 §6). One `undo` takes them all
+/// back.
 pub(super) async fn done(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     if rest.is_empty() {
         return Err(strings::done::needs_id().into());
     }
+    let mut items = Vec::with_capacity(rest.len());
+    let mut titles = Vec::with_capacity(rest.len());
     for raw in rest {
         let id = task_id(raw)?;
-        let title = read_task(ctx.core, id).await?.title;
-        ctx.submit(Command::CompleteTask(id), strings::undo::complete(&title))
-            .await?;
+        titles.push(read_task(ctx.core, id).await?.title);
+        items.push(BulkTaskItem {
+            id,
+            action: BulkTaskAction::Complete,
+        });
+    }
+    let label = strings::undo::complete(&titles.join(", "));
+    ctx.submit(one_or_bulk(items), label).await?;
+    for raw in rest {
         println!("done  {raw}");
     }
     Ok(())
+}
+
+/// The single command `items` is when it holds one, and the bulk command
+/// that writes all of them as one commit otherwise.
+fn one_or_bulk(mut items: Vec<BulkTaskItem>) -> Command {
+    if items.len() == 1 {
+        if let Some(item) = items.pop() {
+            return item.as_command();
+        }
+    }
+    Command::BulkTasks(items)
 }
 
 /// `edit <id>... <tokens>...` — change a task's facets with the annotate
@@ -321,6 +345,10 @@ pub(super) async fn defer(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     let now = ctx.now();
     let plan = when::read(&phrase, now, &reader)
         .ok_or_else(|| strings::capture::unreadable_date(&phrase))?;
+    // Every target first, then one commit: several tasks are deferred
+    // together or not at all.
+    let mut items = Vec::with_capacity(ids.len());
+    let mut titles = Vec::with_capacity(ids.len());
     for id in ids {
         let task = read_task(ctx.core, id).await?;
         let cmd = match &plan {
@@ -333,11 +361,25 @@ pub(super) async fn defer(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             )?,
             When::At(to) => Command::DeferTaskTo { id, to: to.clone() },
         };
-        let Command::DeferTaskTo { to, .. } = &cmd else {
+        let Command::DeferTaskTo { to, .. } = cmd else {
             unreachable!("both arms build a DeferTaskTo");
         };
-        let shown = when::describe(to, &reader);
-        ctx.submit(cmd, strings::undo::defer(&task.title)).await?;
+        titles.push(task.title);
+        items.push(BulkTaskItem {
+            id,
+            action: BulkTaskAction::DeferTo(to),
+        });
+    }
+    let shown: Vec<(EntityRef, String)> = items
+        .iter()
+        .map(|item| match &item.action {
+            BulkTaskAction::DeferTo(to) => (item.id, when::describe(to, &reader)),
+            _ => unreachable!("every item is a defer"),
+        })
+        .collect();
+    ctx.submit(one_or_bulk(items), strings::undo::defer(&titles.join(", ")))
+        .await?;
+    for (id, shown) in shown {
         println!("{}  deferred to {shown}", id.to_str());
     }
     Ok(())
@@ -401,10 +443,18 @@ pub(super) async fn drop_tasks(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     if rest.is_empty() {
         return Err(strings::drop::needs_id().into());
     }
+    let items = rest
+        .iter()
+        .map(|raw| {
+            Ok(BulkTaskItem {
+                id: task_id(raw)?,
+                action: BulkTaskAction::Delete,
+            })
+        })
+        .collect::<CmdResult<Vec<_>>>()?;
+    ctx.submit(one_or_bulk(items), strings::undo::drop(&rest.join(", ")))
+        .await?;
     for raw in rest {
-        let id = task_id(raw)?;
-        ctx.submit(Command::DeleteTask(id), strings::undo::drop(raw))
-            .await?;
         println!("dropped  {raw}");
     }
     Ok(())

@@ -28,7 +28,9 @@
 //! The body is `{1: doc_state, 2: [* retained envelope]}`: the merge state of
 //! [`super::merge::dump_stream_state`], and every op of the stream at or below
 //! the frontier whose effect is not in that state, verbatim (control ops,
-//! focus and review records, parked ops of kinds this build does not know).
+//! focus and review records, parked ops of kinds this build does not know,
+//! and the members of a group still waiting for the rest of it, ADR-0065
+//! §6).
 //! The AEAD key is the stream key at `epoch` run through the BLAKE3 KDF under
 //! [`KEY_CONTEXT`]; the AAD is [`AAD_CONTEXT`], the five magic bytes and the
 //! canonical encoding of fields 1 to 8. The signature covers [`SIG_CONTEXT`],
@@ -65,6 +67,7 @@ use sunrise_storage::{Db, DbError};
 
 use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_floor};
 use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
+use super::groups::event_of;
 use super::ids::hex_short;
 use super::merge::{dump_stream_state, join_stream_state};
 use super::oplog::upsert_sync_cursor;
@@ -398,7 +401,8 @@ impl Engine {
                 "SELECT envelope FROM ops
                  WHERE stream_id = ?1
                    AND (inner_kind NOT IN ({in_list})
-                        OR op_id IN (SELECT op_id FROM parked_ops))
+                        OR op_id IN (SELECT op_id FROM parked_ops)
+                        OR op_id IN (SELECT op_id FROM pending_groups WHERE applied = 0))
                  ORDER BY ts_ms, device_id, seq"
             ))?;
             let rows = stmt.query_map(params![&stream_id[..]], |r| r.get::<_, Vec<u8>>(0))?;
@@ -665,6 +669,13 @@ impl Engine {
                 record,
             )?;
             events.extend(entities.iter().map(|t| DomainEvent::Updated(*t)));
+            // The join can bring the last members a held group was waiting
+            // for, as versions whose ops were compacted away.
+            events.extend(
+                self.complete_ready_groups(tx)?
+                    .into_iter()
+                    .map(|(t, e)| event_of(t, e)),
+            );
             Ok(entities.len())
         })?;
         tracing::info!(

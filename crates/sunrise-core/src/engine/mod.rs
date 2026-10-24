@@ -92,6 +92,7 @@ mod day_schedule;
 mod export;
 mod features;
 mod focus;
+mod groups;
 mod identity;
 mod ids;
 mod lww;
@@ -611,6 +612,7 @@ impl Engine {
             }
             Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
+            Command::BulkTasks(items) => self.bulk_tasks(db, items),
             Command::Restore(id) => self.restore(db, id),
             Command::ResolveConflict {
                 entity,
@@ -636,6 +638,7 @@ impl Engine {
             }
             Command::UpdateBlock { id, patch } => self.update_block(db, id, patch),
             Command::DeleteBlock(id) => self.delete_block(db, id),
+            Command::MergeBlocks { a, b } => self.merge_blocks(db, a, b),
             Command::BindTask { block, task } => self.bind_task(db, block, task),
             Command::UnbindTask { block, task } => self.unbind_task(db, block, task),
             Command::AttachFile(d) => self.attach_file(db, d),

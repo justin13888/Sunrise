@@ -161,29 +161,42 @@ counter delta whose stamp (an add's and a remove's tag) names the stream. Each
 entity lists its distinct stamps once and its rows name them by index.
 
 ```cddl
-doc-state = { "v": 1, "entities": [* entity] }       ; sorted by id
+doc-state = { "v": 2, "entities": [* entity] }       ; sorted by id
 entity = {
   "id": bstr .size 16, "kind": tstr,                  ; registry tag
   "stamps": [* stamp],                                ; distinct, ascending
   "created": bool, "create": s / null, "legacy": s / null,
   "patch_ms": uint / null, "head": s,
-  "registers": [* [field, bstr / null, origin, s]],
+  "registers": [* [field, bstr / null, origin, s]],   ; each register's winner
+  "losers":    [* [field, bstr / null, origin, s]],   ; the rest of its antichain
   "maps":      [* [field, key, bstr, origin, s]],
   "adds":      [* [field, bstr, s]],
   "removes":   [* [field, bstr, bstr .size 16, bstr .size 16, uint]],
   "deltas":    [* [field, int, s]],
+  "versions":  [* version],                           ; in stamp order
+  "frontier":  [* [v, s]],                            ; F(versions[v]) reaches s
 }
+version = [s, kind: "legacy" / "patch", origin, create: bool,
+           parents: bstr / null, group: [bstr .size 16, uint] / null,
+           fields: bstr, head: bool]
 s = uint                                              ; index into "stamps"
+v = uint                                              ; index into "versions"
 stamp = [hlc_ms, hlc_logical, device: bstr .size 16, seq, stream: bstr .size 16]
 ```
 
-Values are the canonical CBOR bytes the merge tables hold.
+Values are the canonical CBOR bytes the merge tables hold. Version 2 adds the
+register losers, the versions (ADR-0065 §1) and their causal frontiers (§2),
+so a version above the snapshot whose parents it compacted away still orders
+against them, and a conflict outlives the ops that caused it (§8). A version-1
+document is still joined: its registers join as writes that reach only
+themselves.
 
 ### Retained envelopes
 
 Every op of the stream at or below the frontier whose effect is not in
 `doc_state`, verbatim and in stamp order: control ops, focus and review
-records, and parked ops. A writer refuses to write a snapshot while it holds an
+records, parked ops, and the members of a group still waiting for the rest of
+it (ADR-0065 §6), which compaction never deletes either. A writer refuses to write a snapshot while it holds an
 op above its device's contiguous prefix, since no frontier could state it.
 
 ## Applying a snapshot
@@ -211,7 +224,12 @@ the local merge state, every entity it names is re-projected, and each frontier
 device's floor rises to its entry.
 
 The join folds each row in through the write an op carrying it would have
-used. Every such write is idempotent and order-independent, so a replica that
+used. Versions join first, keyed by op-ref; each frontier entry keeps the
+greater of the held and the joined stamp, and the entity's frontiers and heads
+are recomputed with the joined ones as their floor. Registers and losers then
+join through the register fold, which reads the order through them. A version
+of a group records its member as present, so a member this replica holds back
+completes once the snapshot brings the rest. Every such write is idempotent and order-independent, so a replica that
 joins a snapshot and then applies the ops above its frontier holds what a
 replica that replayed every op holds, whatever it held before. Applying a
 record twice, or one older than the replica, changes nothing.

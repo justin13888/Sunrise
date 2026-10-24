@@ -320,11 +320,11 @@ pub(crate) enum OpEffect {
 /// `{"map": {k: {"set": v}, ..}}`, so a build can merge a field it has never
 /// heard of (§8).
 ///
-/// `parents` and `group` are carried and checked, and nothing reads them yet:
-/// this build orders versions by stamp alone, as ADR-0044 does. No `parents`
-/// key and `"parents": []` are different statements (a version that names no
-/// heads, and one whose writer had applied none), so both survive a round
-/// trip.
+/// `parents` orders the entity's versions (`engine::merge::versions`), and
+/// `group` holds the op until every member of its commit has arrived
+/// (`engine::groups`). No `parents` key and `"parents": []` are different
+/// statements (a version that names no heads, and one whose writer had
+/// applied none), so both survive a round trip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PatchPayload {
     /// The entity written.
@@ -404,6 +404,55 @@ impl PatchPayload {
         } else {
             OpEffect::Update
         }
+    }
+}
+
+/// The top-level key that marks a full-state entity op as one member of a
+/// group (ADR-0065 §6, clarification D13):
+///
+/// ```cddl
+/// op-group = { "id": bstr .size 16, "size": uint .ge 2, "op": op-ref }
+/// ```
+///
+/// `op` is the member's own op-ref, so a copy of the mark that an older
+/// build kept on the entity and wrote back in a later op of its own names
+/// another op, and marks nothing. The fold never reads the key as a field.
+pub(crate) const FULL_STATE_GROUP_KEY: &str = "op_group";
+
+impl InnerOp {
+    /// The top-level keys a full-state entity op carries beyond what its
+    /// record declares (ADR-0045 §Unknown maps), or `None` for an op that is
+    /// not a full-state entity write.
+    ///
+    /// A local group of full-state ops marks its members here
+    /// (`engine::groups`, ADR-0065 clarification D13).
+    pub(crate) fn full_state_unknowns(&self) -> Option<&Unknowns> {
+        Some(match self {
+            Self::TaskCreate(t) | Self::TaskUpdate(t) | Self::TaskDelete(t) => &t.unknown,
+            Self::StreamCreate(s) | Self::StreamUpdate(s) | Self::StreamDelete(s) => &s.unknown,
+            Self::ContextCreate(c) | Self::ContextUpdate(c) | Self::ContextDelete(c) => &c.unknown,
+            Self::RoutineCreate(r) | Self::RoutineUpdate(r) | Self::RoutineDelete(r) => &r.unknown,
+            Self::BlockCreate(b) | Self::BlockUpdate(b) | Self::BlockDelete(b) => &b.unknown,
+            Self::AttachmentCreate(a) | Self::AttachmentDelete(a) => &a.unknown,
+            _ => return None,
+        })
+    }
+
+    /// [`Self::full_state_unknowns`], to write.
+    pub(crate) fn full_state_unknowns_mut(&mut self) -> Option<&mut Unknowns> {
+        Some(match self {
+            Self::TaskCreate(t) | Self::TaskUpdate(t) | Self::TaskDelete(t) => &mut t.unknown,
+            Self::StreamCreate(s) | Self::StreamUpdate(s) | Self::StreamDelete(s) => &mut s.unknown,
+            Self::ContextCreate(c) | Self::ContextUpdate(c) | Self::ContextDelete(c) => {
+                &mut c.unknown
+            }
+            Self::RoutineCreate(r) | Self::RoutineUpdate(r) | Self::RoutineDelete(r) => {
+                &mut r.unknown
+            }
+            Self::BlockCreate(b) | Self::BlockUpdate(b) | Self::BlockDelete(b) => &mut b.unknown,
+            Self::AttachmentCreate(a) | Self::AttachmentDelete(a) => &mut a.unknown,
+            _ => return None,
+        })
     }
 }
 

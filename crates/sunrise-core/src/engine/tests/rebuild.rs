@@ -336,11 +336,11 @@ fn rebuild_after_compaction_keeps_the_compacted_state() {
 }
 
 /// Compaction deletes the ops below its floor, and the register losers they
-/// wrote stay: the base a rebuild joins is a `doc_state` v1, which carries
-/// winners only, so a rebuild keeps the compacted ops' losers as the fold
-/// left them (ADR-0065 §8, until PR 6 carries them in the snapshot).
+/// wrote stay: the base a rebuild joins is a `doc_state` v2, which carries
+/// them with the versions that order them (ADR-0065 §8), so a conflict
+/// outlives the ops that caused it.
 #[test]
-fn a_rebuild_after_compaction_keeps_the_losers_the_compacted_ops_wrote() {
+fn a_conflict_outlives_the_ops_that_caused_it() {
     use super::field_merge::{emit_patch, patch, set, text};
     let c = Arc::new(FakeClock(PLMutex::new(T0)));
     let ((ea, mut dba), (eb, mut dbb)) = pair(&c);

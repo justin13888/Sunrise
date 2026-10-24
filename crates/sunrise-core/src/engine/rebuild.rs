@@ -17,12 +17,12 @@
 //!    them by stamp, so it is dumped first ([`dump_compacted_base`]).
 //! 2. **Clear** every table [`TABLE_CLASSES`] classifies as a projection,
 //!    keeping the rows named below.
-//! 3. **Join the base back.** Recompute the frontiers and heads of every
-//!    entity whose compacted versions were kept, then join the base with
-//!    [`join_stream_state`], the snapshot join.
+//! 3. **Join the base back** with [`join_stream_state`], the snapshot join,
+//!    which brings the compacted versions and their frontiers back first.
 //! 4. **Refold the log.** Every applied entity op still in `ops` is read,
 //!    sorted by its merge stamp `(hlc, device, seq, stream)`, opened, and
-//!    folded through [`materialize_remote`], the step the receive path takes.
+//!    folded through [`Engine::fold_received`], the step the receive path
+//!    takes, which holds a group member until its group is complete.
 //!    Parked ops are not entity ops here: this build cannot read them, so the
 //!    live projection never held them either, and their replay after an
 //!    upgrade is [`Engine::replay_parked_ops`]'s.
@@ -45,7 +45,7 @@
 //! tokenizer the rebuild keeps. A background re-index of the word index for a
 //! new content language (`engine::search`) is abandoned, since the docs it
 //! copied are rewritten, and starts again the next time it is asked for.
-//! Inside the cleared tables four things survive, because no op still in
+//! Inside the cleared tables three things survive, because no op still in
 //! the log derives them:
 //!
 //! - a placeholder `streams` row no op has stamped (`lww_device IS NULL`),
@@ -53,14 +53,15 @@
 //!   create; the lazily seeded Inbox is one;
 //! - each routine's `materialized_until_ms`, how far this device has
 //!   generated its occurrences, which is never on the wire;
-//! - every `entity_versions` row of a compacted op. Compaction keeps them
-//!   (ADR-0065 D10) and the merge state's base carries no versions, so they
-//!   are kept here as compaction kept them, and their frontiers recomputed;
-//! - every `register_losers` row a compacted op wrote. The base is a
-//!   `doc_state` v1, which carries each register's winner and not its
-//!   losers (ADR-0065 §8 adds them to `doc_state` with PR 6), so the losers
-//!   are kept as the fold left them, and the base's winners and the refold
-//!   are folded in beside them.
+//! - every `pending_groups` row whose op is no longer in the log. Compaction
+//!   deletes a group member only once its group has folded, and the row is
+//!   what tells the refold that the member is present, so the members still
+//!   in the log complete the group again.
+//!
+//! The versions and the register losers of compacted ops are not kept here:
+//! compaction keeps them (ADR-0065 D10), and the base, a `doc_state` v2,
+//! carries them with their frontiers beside the merge state (§8), so they
+//! come back with the join.
 //!
 //! # When a rebuild runs on its own
 //!
@@ -83,10 +84,9 @@
 //! [ADR-0065]: ../../../../docs/11-adr/0065-copy-on-write-entity-versions.md
 
 use super::ids::{blob16, hex_short};
-use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
+use super::lww::{remap_legacy_inbox, LwwStamp};
 use super::merge::{
-    check_patch, dump_compacted_base, join_stream_state, recompute_versions, PatchProblem, Stamp,
-    FOLD_V,
+    check_patch, dump_compacted_base, join_stream_state, PatchProblem, Stamp, FOLD_V,
 };
 use super::snapshot::in_tx;
 use super::{Engine, EngineError};
@@ -232,6 +232,8 @@ const DIGEST_KIND: &str = "stream.digest";
 struct Pending {
     at: Stamp,
     rowid: i64,
+    /// When this replica logged it, which a held group member records.
+    received_at_ms: u64,
 }
 
 /// How many ops a rebuild folds between two `core.rebuild.progress` events.
@@ -269,19 +271,9 @@ impl Kept {
     }
 }
 
-/// Whether the op-ref in columns `stream`, `device`, `seq` of `table` is at or
-/// below a compaction floor: its op has been folded and deleted.
-fn compacted(table: &str, stream: &str, device: &str, seq: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM compaction_floor f
-                 WHERE f.stream_id = {table}.{stream} AND f.device_id = {table}.{device}
-                   AND {table}.{seq} <= f.seq)"
-    )
-}
-
 /// Clear every [`TableClass::Projection`] table, keeping the rows the module
-/// docs name: placeholder stream rows, and the versions and register losers
-/// of compacted ops. A background re-index of the word index is abandoned.
+/// docs name: placeholder stream rows, and the group members whose ops
+/// compaction deleted. A background re-index of the word index is abandoned.
 fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     // Rows reference each other (a task its stream, a stream its parent).
     // Every reference is whole again once the refold has run, which is
@@ -297,14 +289,10 @@ fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         }
         let sql = match *table {
             "streams" => "DELETE FROM streams WHERE lww_device IS NOT NULL".to_owned(),
-            "entity_versions" => format!(
-                "DELETE FROM entity_versions WHERE NOT {}",
-                compacted("entity_versions", "stream", "device", "seq")
-            ),
-            "register_losers" => format!(
-                "DELETE FROM register_losers WHERE NOT {}",
-                compacted("register_losers", "stream", "device", "seq")
-            ),
+            "pending_groups" => "DELETE FROM pending_groups WHERE EXISTS (
+                     SELECT 1 FROM ops o WHERE o.stream_id = pending_groups.stream
+                       AND o.device_id = pending_groups.device AND o.seq = pending_groups.seq)"
+                .to_owned(),
             other => format!("DELETE FROM {other}"),
         };
         tx.execute(&sql, [])?;
@@ -424,9 +412,6 @@ impl Engine {
         let kept = Kept::save(tx)?;
         let pending = pending_ops(tx)?;
         clear(tx)?;
-        // The frontiers first: the join folds the base's registers into the
-        // losers kept beside them, which reads the order between them.
-        recompute_kept_versions(tx)?;
         let compacted = join_stream_state(tx, &base)?;
         let mut report = RebuildReport {
             compacted_entities: compacted.len() as u64,
@@ -499,26 +484,11 @@ impl Engine {
                 device: env.device_id,
                 seq: env.seq,
             };
-            materialize_remote(tx, &inner, &lww, &env.stream_id)?;
+            self.fold_received(tx, &inner, &lww, &env.stream_id, op.received_at_ms)?;
             report.ops_replayed += 1;
         }
         Ok(())
     }
-}
-
-/// Recompute the frontiers and heads of every entity whose compacted versions
-/// [`clear`] kept, from those versions alone. The refold then admits the rest
-/// onto them as the live fold admitted them, late arrivals included.
-fn recompute_kept_versions(tx: &Transaction<'_>) -> rusqlite::Result<()> {
-    let ids: Vec<Vec<u8>> = {
-        let mut stmt = tx.prepare("SELECT DISTINCT entity_id FROM entity_versions ORDER BY 1")?;
-        let rows = stmt.query_map([], |r| r.get(0))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    for id in ids {
-        recompute_versions(tx, &blob16(&id))?;
-    }
-    Ok(())
 }
 
 /// Every applied entity op in the log, by merge stamp. Only each envelope's
@@ -531,7 +501,7 @@ fn pending_ops(tx: &Transaction<'_>) -> Result<Vec<Pending>, EngineError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = tx.prepare(&format!(
-        "SELECT rowid, stream_id, device_id, seq, envelope FROM ops
+        "SELECT rowid, stream_id, device_id, seq, envelope, received_at FROM ops
          WHERE target_kind IN ({tags}) AND inner_kind <> '{DIGEST_KIND}'
            AND applied_at IS NOT NULL
            AND op_id NOT IN (SELECT op_id FROM parked_ops)"
@@ -553,6 +523,7 @@ fn pending_ops(tx: &Transaction<'_>) -> Result<Vec<Pending>, EngineError> {
                 stream: env.stream_id,
             },
             rowid,
+            received_at_ms: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
         });
     }
     pending.sort_by_key(|p| p.at);

@@ -416,8 +416,10 @@ pub(super) fn admit_version(
 ///
 /// One pass in stamp order is exact: every edge points to a smaller stamp, so
 /// each version's parents and previous version are final when it is reached.
-/// Called when a version arrived late, and by a projection rebuild for an
-/// entity some of whose versions it kept rather than refolded.
+/// Each frontier starts from the one stored, which is never more than the
+/// exact one and may reach versions this replica does not hold, when a
+/// snapshot carried it. Called when a version arrived late, and after a
+/// snapshot join brought versions in.
 pub(in crate::engine) fn recompute(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<()> {
     struct Row {
         at: Stamp,
@@ -454,10 +456,19 @@ pub(in crate::engine) fn recompute(tx: &Transaction<'_>, id: &[u8; 16]) -> rusql
         .enumerate()
         .map(|(i, r)| (r.at.op_ref(), i))
         .collect();
+    // What is stored already is a floor: a frontier only ever grows, and
+    // one a joined snapshot carried reaches versions this replica may not
+    // hold (ADR-0065 §8).
+    let mut stored: BTreeMap<OpRef, Frontier> = BTreeMap::new();
+    for row in &rows {
+        let op = row.at.op_ref();
+        stored.insert(op, frontier_of(tx, id, op)?);
+    }
     let mut frontiers: Vec<Frontier> = Vec::with_capacity(rows.len());
     let mut latest: BTreeMap<[u8; 16], usize> = BTreeMap::new();
     for (i, row) in rows.iter().enumerate() {
-        let mut f = Frontier::from([(row.at.device, row.at)]);
+        let mut f = stored.remove(&row.at.op_ref()).unwrap_or_default();
+        join(&mut f, &Frontier::from([(row.at.device, row.at)]));
         for parent in &row.parents {
             if let Some(&p) = index.get(parent) {
                 if rows[p].at < row.at {

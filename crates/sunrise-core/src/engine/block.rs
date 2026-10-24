@@ -34,13 +34,21 @@ impl Engine {
         db: &mut Db,
         d: BlockDraft,
     ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let block = self.new_block(db, d, now_ms)?;
+        let done = self.emit_block(db, &block, now_ms, "block.create")?;
+        Ok(CommandResult::new(block.id, None, done.op_id, done.seq))
+    }
+
+    /// The Block a create of `d` writes, validated and given a fresh id, and
+    /// not yet logged.
+    fn new_block(&self, db: &Db, d: BlockDraft, now_ms: u64) -> Result<Block, EngineError> {
         let tz = self.device_zone();
         d.validate(&tz)?;
         require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
-        let now_ms = self.clock.now_ms();
         let block_id = self.fresh_id(EntityKind::Block, now_ms);
         let tasks: BTreeSet<EntityRef> = d.tasks.iter().copied().collect();
         // Shadow copy: a Block created around exactly one Task and given no
@@ -64,8 +72,53 @@ impl Engine {
             unknown: Unknowns::new(),
         };
         block.validate_invariants(&tz)?;
-        let done = self.emit_block(db, &block, now_ms, "block.create")?;
-        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
+        Ok(block)
+    }
+
+    /// [`Command::MergeBlocks`](crate::commands::Command::MergeBlocks): the
+    /// union's create and both tombstones, appended as one group (ADR-0065
+    /// §6), each in its block's own stream.
+    pub(super) fn merge_blocks(
+        &self,
+        db: &mut Db,
+        a: EntityRef,
+        b: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(a, EntityKind::Block)?;
+        require_kind(b, EntityKind::Block)?;
+        if a == b {
+            return Err(EngineError::Invalid(format!(
+                "block {a} cannot be merged with itself"
+            )));
+        }
+        let now_ms = self.clock.now_ms();
+        let live = |id: EntityRef| -> Result<Block, EngineError> {
+            let block = read_block(db.conn(), id.bytes())?
+                .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+            if block.deleted {
+                return Err(EngineError::Invalid(format!("block {id} is deleted")));
+            }
+            Ok(block)
+        };
+        let (first, second) = (live(a)?, live(b)?);
+        let draft = sunrise_domain::merge_blocks(&first, &second, &self.device_zone())?;
+        let union = self.new_block(db, draft, now_ms)?;
+        let id = union.id;
+        let mut members = vec![(
+            InnerOp::BlockCreate(Box::new(union.clone())),
+            *union.stream_id.bytes(),
+        )];
+        for mut original in [first, second] {
+            original.deleted = true;
+            original.updated_at = ms_to_ts(now_ms as i64);
+            let stream = *original.stream_id.bytes();
+            members.push((InnerOp::BlockDelete(Box::new(original)), stream));
+        }
+        let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
+        let created = done
+            .first()
+            .ok_or_else(|| EngineError::Invalid("a merge wrote nothing".into()))?;
+        Ok(CommandResult::new(id, None, created.op_id, created.seq))
     }
 
     /// Write the Block one external calendar item maps onto, at the id

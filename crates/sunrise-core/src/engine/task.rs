@@ -14,16 +14,18 @@ use super::ids::{
     blob16, decode_unknowns, ms_to_ts, parse_energy, parse_task_state, require_kind,
     require_writable_stream, time_from_parts,
 };
+use super::routine::read_routine;
 use super::write::Appended;
 use super::{Engine, EngineError, META_STREAM};
-use crate::commands::CommandResult;
+use crate::commands::{BulkTaskAction, BulkTaskItem, CommandResult};
 use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension};
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, violations_by_severity, DependencyGraph, NoteBody, ScheduleConstraint,
-    SunriseTime, Task, TaskDraft, TaskPatch, TaskState, ValidationError,
+    inbox_stream_ref, violations_by_severity, DependencyGraph, NoteBody, Routine,
+    ScheduleConstraint, SunriseTime, Task, TaskDraft, TaskPatch, TaskState, ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -87,13 +89,49 @@ impl Engine {
         id: EntityRef,
         patch: TaskPatch,
     ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let write = self.plan_update(db.conn(), id, patch, now_ms)?;
+        // Routine streak: the *first* pending -> done transition of an
+        // occurrence moves the counter. `record_occurrence_completion` owns the
+        // grace-window / forgiveness / idempotency rules and reports
+        // `Duplicate` when this occurrence was already counted, in which case
+        // no routine op is emitted at all.
+        let streak_op = if write.completes {
+            self.streak_advance(db, &write.task, now_ms)?
+        } else {
+            None
+        };
+        let (op, stream) = write.op();
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
+            // The streak advance is a routine.update op in the SAME
+            // transaction, so the counter can never diverge from the
+            // completion that caused it, and it converges on every other
+            // replica through the ordinary full-state routine merge. Each op
+            // is folded with its own stamp, the one every peer folds it with.
+            if let Some(routine) = streak_op {
+                self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+            }
+            Ok(done)
+        })?;
+        Ok(write.result(done))
+    }
+
+    /// The write [`Self::update_task`] makes of `patch`, validated against
+    /// the task as `conn` holds it, and not yet logged.
+    pub(super) fn plan_update(
+        &self,
+        conn: &rusqlite::Connection,
+        id: EntityRef,
+        patch: TaskPatch,
+        now_ms: u64,
+    ) -> Result<TaskWrite, EngineError> {
         require_kind(id, EntityKind::Task)?;
         if let Some(s) = patch.stream_id {
             require_writable_stream(s)?;
         }
         patch.validate()?;
-        let now_ms = self.clock.now_ms();
-        let mut task = read_task(db.conn(), id.bytes())?
+        let mut task = read_task(conn, id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         let prev_state = task.state.clone();
         let sets_done = patch.state == Some(TaskState::Done);
@@ -173,47 +211,23 @@ impl Engine {
             // docs/02-domain/tasks.md §Validation. Deliberately local: a cycle
             // formed concurrently on two devices is broken by the merge
             // tie-breaker, not here.
-            let graph = read_dependency_graph(db.conn())?;
+            let graph = read_dependency_graph(conn)?;
             if graph.would_cycle(task.id, &task.blocked_by) {
                 return Err(ValidationError::BlockedByCycle.into());
             }
         }
-        let soft_violations = if touches_schedule {
+        let soft = if touches_schedule {
             self.check_schedule_constraints(&task)?
         } else {
             Vec::new()
         };
         task.updated_at = ms_to_ts(now_ms as i64);
-
-        // Routine streak: the *first* pending -> done transition of an
-        // occurrence moves the counter. `record_occurrence_completion` owns the
-        // grace-window / forgiveness / idempotency rules and reports
-        // `Duplicate` when this occurrence was already counted, in which case
-        // no routine op is emitted at all.
-        let streak_op = if sets_done && prev_state != TaskState::Done {
-            self.streak_advance(db, &task, now_ms)?
-        } else {
-            None
-        };
-
-        let state = task.state.clone();
-        let stream = *task.stream_id.bytes();
-        let op = InnerOp::TaskUpdate(task);
-        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
-            let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
-            // The streak advance is a routine.update op in the SAME
-            // transaction, so the counter can never diverge from the
-            // completion that caused it, and it converges on every other
-            // replica through the ordinary full-state routine merge. Each op
-            // is folded with its own stamp, the one every peer folds it with.
-            if let Some(routine) = streak_op {
-                self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
-            }
-            Ok(done)
-        })?;
-        let (op_id, seq) = (done.op_id, done.seq);
-
-        Ok(CommandResult::new(id, Some(state), op_id, seq).with_soft_violations(soft_violations))
+        Ok(TaskWrite {
+            task,
+            delete: false,
+            completes: sets_done && prev_state != TaskState::Done,
+            soft,
+        })
     }
 
     /// Evaluate a Task's `scheduled_at` against its scheduling constraints.
@@ -289,9 +303,21 @@ impl Engine {
         id: EntityRef,
         to: SunriseTime,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Task)?;
         let now_ms = self.clock.now_ms();
-        let mut task = read_task(db.conn(), id.bytes())?
+        let write = self.plan_defer(db.conn(), id, to, now_ms)?;
+        self.emit_task_write(db, write, now_ms)
+    }
+
+    /// The write [`Self::defer_task`] makes, not yet logged.
+    pub(super) fn plan_defer(
+        &self,
+        conn: &rusqlite::Connection,
+        id: EntityRef,
+        to: SunriseTime,
+        now_ms: u64,
+    ) -> Result<TaskWrite, EngineError> {
+        require_kind(id, EntityKind::Task)?;
+        let mut task = read_task(conn, id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.scheduled_at = Some(to);
         // TODO(ADR-0065 PR7, #447, #334): a read-increment-write inside a
@@ -303,16 +329,16 @@ impl Engine {
         task.deferred_count = task.deferred_count.saturating_add(1);
         task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
-        let soft_violations = self.check_schedule_constraints(&task)?;
+        let soft = self.check_schedule_constraints(&task)?;
         task.updated_at = ms_to_ts(now_ms as i64);
-
         // Logged as the `task.update` it is, the kind a peer logs it under,
         // so compaction and the history readers see one kind on every replica.
-        let (state, stream) = (task.state.clone(), *task.stream_id.bytes());
-        let op = InnerOp::TaskUpdate(task);
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
-        Ok(CommandResult::new(id, Some(state), done.op_id, done.seq)
-            .with_soft_violations(soft_violations))
+        Ok(TaskWrite {
+            task,
+            delete: false,
+            completes: false,
+            soft,
+        })
     }
 
     pub(super) fn delete_task(
@@ -320,17 +346,129 @@ impl Engine {
         db: &mut Db,
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Task)?;
         let now_ms = self.clock.now_ms();
-        let mut task = read_task(db.conn(), id.bytes())?
-            .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        task.deleted = true;
-        task.updated_at = ms_to_ts(now_ms as i64);
+        let write = self.plan_tombstone(db.conn(), id, true, now_ms)?;
+        self.emit_task_write(db, write, now_ms)
+    }
 
-        let (state, stream) = (task.state.clone(), *task.stream_id.bytes());
-        let op = InnerOp::TaskDelete(task);
+    /// The write that sets `deleted` on task `id` to `deleted`, not yet
+    /// logged: a delete, or (for `false`) the restore a bulk command makes,
+    /// as `Command::Restore` makes it (clarification D11). A restore of a
+    /// task that is not deleted is refused, as `Command::Restore` refuses it.
+    pub(super) fn plan_tombstone(
+        &self,
+        conn: &rusqlite::Connection,
+        id: EntityRef,
+        deleted: bool,
+        now_ms: u64,
+    ) -> Result<TaskWrite, EngineError> {
+        require_kind(id, EntityKind::Task)?;
+        let mut task = read_task(conn, id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
+        if !deleted && !task.deleted {
+            return Err(EngineError::Invalid(format!("{id} is not deleted")));
+        }
+        task.deleted = deleted;
+        task.updated_at = ms_to_ts(now_ms as i64);
+        Ok(TaskWrite {
+            task,
+            delete: deleted,
+            completes: false,
+            soft: Vec::new(),
+        })
+    }
+
+    /// Log and fold one planned task write, alone.
+    fn emit_task_write(
+        &self,
+        db: &mut Db,
+        write: TaskWrite,
+        now_ms: u64,
+    ) -> Result<CommandResult, EngineError> {
+        let (op, stream) = write.op();
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
-        Ok(CommandResult::new(id, Some(state), done.op_id, done.seq))
+        Ok(write.result(done))
+    }
+
+    /// [`Command::BulkTasks`](crate::commands::Command::BulkTasks): plan
+    /// every item as its single command would, refuse the batch on the first
+    /// refusal, then append every write, and the streak advances they make,
+    /// as one group (ADR-0065 §6).
+    pub(super) fn bulk_tasks(
+        &self,
+        db: &mut Db,
+        items: Vec<BulkTaskItem>,
+    ) -> Result<CommandResult, EngineError> {
+        if items.is_empty() {
+            return Err(EngineError::Invalid(
+                "a bulk command needs at least one task".into(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for item in &items {
+            require_kind(item.id, EntityKind::Task)?;
+            if !seen.insert(item.id) {
+                return Err(EngineError::Invalid(format!(
+                    "{} appears twice in one bulk command",
+                    item.id
+                )));
+            }
+        }
+        let now_ms = self.clock.now_ms();
+        let mut writes = Vec::with_capacity(items.len());
+        for item in items {
+            let conn = db.conn();
+            writes.push(match item.action {
+                BulkTaskAction::Complete => {
+                    let patch = TaskPatch {
+                        state: Some(TaskState::Done),
+                        ..Default::default()
+                    };
+                    self.plan_update(conn, item.id, patch, now_ms)?
+                }
+                BulkTaskAction::DeferTo(to) => self.plan_defer(conn, item.id, to, now_ms)?,
+                BulkTaskAction::Update(patch) => self.plan_update(conn, item.id, *patch, now_ms)?,
+                BulkTaskAction::Delete => self.plan_tombstone(conn, item.id, true, now_ms)?,
+                BulkTaskAction::Restore => self.plan_tombstone(conn, item.id, false, now_ms)?,
+            });
+        }
+        // Two occurrences of one routine completed together each count: the
+        // routine is advanced in memory once per occurrence, in item order,
+        // and written once.
+        let mut routines: BTreeMap<EntityRef, (Routine, bool)> = BTreeMap::new();
+        for write in writes.iter().filter(|w| w.completes) {
+            let Some(rid) = write.task.routine_id else {
+                continue;
+            };
+            let (routine, moved) = match routines.entry(rid) {
+                Entry::Occupied(held) => held.into_mut(),
+                Entry::Vacant(slot) => {
+                    let Some(routine) = read_routine(db.conn(), rid.bytes())? else {
+                        continue;
+                    };
+                    slot.insert((routine, false))
+                }
+            };
+            *moved |= self.advance_streak_of(routine, &write.task, now_ms);
+        }
+        let mut members: Vec<(InnerOp, [u8; 16])> = writes.iter().map(TaskWrite::op).collect();
+        for (routine, moved) in routines.into_values() {
+            if moved {
+                let routine = self.routine_op_form(db, &routine)?;
+                members.push((InnerOp::RoutineUpdate(Box::new(routine)), META_STREAM));
+            }
+        }
+        let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
+        let soft: Vec<ScheduleConstraint> =
+            writes.iter().flat_map(|w| w.soft.iter().cloned()).collect();
+        let first = writes.into_iter().next().map(|mut w| {
+            w.soft = soft;
+            w
+        });
+        match (first, done.first()) {
+            (Some(write), Some(done)) => Ok(write.result(*done)),
+            _ => Err(EngineError::Invalid("a bulk command wrote nothing".into())),
+        }
     }
 
     pub(super) fn promote_task(
@@ -346,6 +484,38 @@ impl Engine {
             ..Default::default()
         };
         self.update_task(db, id, patch)
+    }
+}
+
+/// One task write a command has planned and validated, and not yet logged:
+/// the task as it will be written, and what the command reports of it.
+pub(super) struct TaskWrite {
+    /// The whole task, as the full-state op carries it.
+    pub(super) task: Task,
+    /// A `TaskDelete` rather than a `TaskUpdate`.
+    delete: bool,
+    /// The task's first move to `done`, which advances its routine's streak.
+    pub(super) completes: bool,
+    /// The `soft` scheduling constraints the write violates.
+    pub(super) soft: Vec<ScheduleConstraint>,
+}
+
+impl TaskWrite {
+    /// The op and the stream it is logged in: the task's own.
+    pub(super) fn op(&self) -> (InnerOp, [u8; 16]) {
+        let stream = *self.task.stream_id.bytes();
+        let op = if self.delete {
+            InnerOp::TaskDelete(self.task.clone())
+        } else {
+            InnerOp::TaskUpdate(self.task.clone())
+        };
+        (op, stream)
+    }
+
+    /// What the command returns, once the op is logged as `done`.
+    pub(super) fn result(self, done: Appended) -> CommandResult {
+        CommandResult::new(self.task.id, Some(self.task.state), done.op_id, done.seq)
+            .with_soft_violations(self.soft)
     }
 }
 

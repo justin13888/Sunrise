@@ -95,11 +95,31 @@ impl Engine {
         task: &Task,
         now_ms: u64,
     ) -> Result<Option<InnerOp>, EngineError> {
-        let (Some(rid), Some(occurrence_at)) = (task.routine_id, task.routine_occurrence) else {
+        let (Some(rid), Some(_)) = (task.routine_id, task.routine_occurrence) else {
             return Ok(None);
         };
         let Some(mut routine) = read_routine(db.conn(), rid.bytes())? else {
             return Ok(None);
+        };
+        if !self.advance_streak_of(&mut routine, task, now_ms) {
+            return Ok(None);
+        }
+        let routine = self.routine_op_form(db, &routine)?;
+        Ok(Some(InnerOp::RoutineUpdate(Box::new(routine))))
+    }
+
+    /// Record `task`'s completion in `routine`'s streak, in memory: what
+    /// [`Self::streak_advance`] writes, and what a bulk completion of several
+    /// occurrences of one routine applies to it once per occurrence. Returns
+    /// whether the streak moved; an occurrence already counted does not.
+    pub(super) fn advance_streak_of(
+        &self,
+        routine: &mut Routine,
+        task: &Task,
+        now_ms: u64,
+    ) -> bool {
+        let Some(occurrence_at) = task.routine_occurrence else {
+            return false;
         };
         // A key no expansion near the occurrence has (the rule was edited
         // since) falls back to the occurrence's wall clock in the routine's
@@ -108,7 +128,7 @@ impl Engine {
             .occurrence_key_of(&task.id, occurrence_at)
             .or_else(|| occurrence_key_at(&routine.timezone, occurrence_at).ok())
         else {
-            return Ok(None);
+            return false;
         };
         let reader = self.device_zone();
         let due = parse_occurrence_key(&key)
@@ -116,11 +136,10 @@ impl Engine {
             .unwrap_or(occurrence_at);
         let outcome = routine.record_occurrence_completion(&key, due, ms_to_ts(now_ms as i64));
         if outcome == StreakOutcome::Duplicate {
-            return Ok(None);
+            return false;
         }
         routine.updated_at = ms_to_ts(now_ms as i64);
-        let routine = self.routine_op_form(db, &routine)?;
-        Ok(Some(InnerOp::RoutineUpdate(Box::new(routine))))
+        true
     }
 
     pub(super) fn create_routine(

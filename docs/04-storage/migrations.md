@@ -326,16 +326,14 @@ vault already holds a copy from before the migration, which is from before
 the rebuild too, and takes no second one. The rebuild at the first open of a
 new vault takes none: the vault holds nothing yet.
 
-Four things inside the cleared tables are kept, because no op still in the log
-derives them: a placeholder `streams` row no op has stamped (the lazily seeded
-Inbox among them), each routine's `materialized_until_ms`, the
-`entity_versions` rows of compacted ops, which compaction keeps
-([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D10) and whose
-frontiers and heads the rebuild recomputes before it joins the base, and the
-`register_losers` rows compacted ops wrote. The base is a `doc_state` v1,
-which carries each register's winner and not its losers, so those losers are
-kept as the fold left them and the base and the refold fold in beside them
-(ADR-0065 §8 moves them into the snapshot with its sixth pull request).
+Three things inside the cleared tables are kept, because no op still in the
+log derives them: a placeholder `streams` row no op has stamped (the lazily
+seeded Inbox among them), each routine's `materialized_until_ms`, and the
+`pending_groups` rows whose ops compaction deleted, which tell the refold that
+those members of a group are present. The versions, frontiers and register
+losers of compacted ops come back with the base, a `doc_state` v2, which
+carries them ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8,
+D10).
 
 **It runs automatically at open when the fold changed.** A rebuild records the
 version of the fold it ran, `FOLD_V`, in `projection_rebuild`, a source table

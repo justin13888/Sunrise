@@ -19375,3 +19375,6 @@ mod search;
 /// The register fold by conflict class, the conflicts query, and resolve and
 /// restore (ADR-0065 PR 5).
 mod conflicts;
+
+/// Groups: a commit folded whole or not at all (ADR-0065 §6, PR 6).
+mod groups;

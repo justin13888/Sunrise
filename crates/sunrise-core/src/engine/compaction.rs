@@ -31,7 +31,8 @@
 //! tip, then deletes the ops under it whose whole effect is in the merge
 //! state: the entity writes and old digests. It never deletes a parked op, an
 //! op of a kind whose effect lives anywhere else (control ops, focus and
-//! review records), an op still waiting in the outbox, or an op that a
+//! review records), a member of a group still waiting for the rest of it
+//! (ADR-0065 §6), an op still waiting in the outbox, or an op that a
 //! missing op's expectation was named by.
 //!
 //! # Known devices and the compactor
@@ -527,12 +528,14 @@ impl Engine {
             // which keeps what it wrote: a row is the fold's output (ADR-0065
             // §5), and a vault holding a row no op of its log folded was
             // rebuilt at open (`Engine::rebuild_if_stale`). Its version rows
-            // are kept too (ADR-0065 D10).
+            // are kept too (ADR-0065 D10). A member of a group still waiting
+            // for the rest of it has not been folded, and is kept (§6, §8).
             let predicate = format!(
                 "stream_id = ?1 AND device_id = ?2 AND seq <= ?3
                  AND applied_at IS NOT NULL
                  AND inner_kind IN ({kinds})
                  AND op_id NOT IN (SELECT op_id FROM parked_ops)
+                 AND op_id NOT IN (SELECT op_id FROM pending_groups WHERE applied = 0)
                  AND op_id NOT IN (SELECT op_id FROM outbox WHERE acked_at_ms IS NULL)
                  AND op_id NOT IN (SELECT named_by FROM chain_expected)"
             );

@@ -14,21 +14,33 @@
 //! stamps.
 //!
 //! ```cddl
-//! doc-state = { "v": 1, "entities": [* entity] }       ; sorted by id
+//! doc-state = { "v": 2, "entities": [* entity] }       ; sorted by id
 //! entity = {
 //!   "id": bstr .size 16, "kind": tstr,                  ; registry tag
 //!   "stamps": [* stamp],                                ; distinct, ascending
 //!   "created": bool, "create": s / null, "legacy": s / null,
 //!   "patch_ms": uint / null, "head": s,
-//!   "registers": [* [field, bstr / null, origin, s]],
+//!   "registers": [* [field, bstr / null, origin, s]],   ; each register's winner
+//!   "losers":    [* [field, bstr / null, origin, s]],   ; the rest of its antichain
 //!   "maps":      [* [field, key, bstr, origin, s]],
 //!   "adds":      [* [field, bstr, s]],                  ; the tag's stamp
 //!   "removes":   [* [field, bstr, bstr .size 16, bstr .size 16, uint]],
 //!   "deltas":    [* [field, int, s]],
+//!   "versions":  [* version],                           ; in stamp order
+//!   "frontier":  [* [v, s]],                            ; F(versions[v]) reaches s
 //! }
+//! version = [s, kind: "legacy" / "patch", origin, create: bool,
+//!            parents: bstr / null, group: [bstr .size 16, uint] / null,
+//!            fields: bstr, head: bool]
 //! s = uint                                              ; index into "stamps"
+//! v = uint                                              ; index into "versions"
 //! stamp = [hlc_ms, hlc_logical, device: bstr .size 16, seq, stream: bstr .size 16]
 //! ```
+//!
+//! `parents` and `fields` are the canonical CBOR `entity_versions` stores:
+//! the op-refs the op carried, and the sorted names of the fields it wrote.
+//! Version 1 had no `losers`, `versions` or `frontier`, and is still read:
+//! its registers join as writes that reach only themselves.
 //!
 //! Values are the canonical CBOR bytes the state tables hold. A stamp is
 //! written once per entity and named by its index: one legacy op writes every
@@ -40,11 +52,13 @@
 //! Every write in [`super::state`] and [`super::register`] is idempotent and
 //! order-independent: a register keeps the antichain of its writes, a map
 //! entry the greatest stamp, an add, a remove and a delta are keyed by the op
-//! that made them, and the legacy floor only rises. `doc_state` v1 carries a
-//! register's winner and not its losers, nor the versions that order them, so
-//! a joined winner reaches only itself; a projection rebuild keeps the losers
-//! of the ops it joins (`engine::rebuild`), and `doc_state` v2 carries both
-//! (ADR-0065 §8). So the state of
+//! that made them, and the legacy floor only rises. The version DAG joins the
+//! same way (ADR-0065 §8): a version is keyed by its op-ref, a frontier only
+//! grows, so the larger of a held and a joined one is kept, and the heads are
+//! recomputed from the result. Versions and frontiers join before the
+//! registers and losers, whose antichains are read through them, so a
+//! version above the snapshot whose parents it compacted away still orders
+//! against them, and a conflict outlives the ops that caused it. So the state of
 //! a set of ops is the join of the states of any cover of it, and
 //! [`join_stream_state`] folds each snapshot row in through exactly the write
 //! an op carrying it would have used. A replica that joins a snapshot and then
@@ -56,7 +70,9 @@ use super::state::{
     add_delta, add_element, dec, prune_below_floor, read_meta, remove_element, write_map_entry,
     write_meta, Meta,
 };
+use super::versions::recompute;
 use super::{project_and_write, OpRef, Stamp};
+use crate::engine::groups::record_joined;
 use crate::engine::ids::blob16;
 use crate::engine::EngineError;
 use ciborium::value::Value;
@@ -66,8 +82,10 @@ use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{EntitySpec, Merge};
 use sunrise_id::{EntityKind, EntityRef};
 
-/// `doc_state`'s own format version.
-const DOC_STATE_V: u64 = 1;
+/// `doc_state`'s own format version: 2 adds the register losers, the
+/// versions and their frontiers (ADR-0065 §8). A version-1 document is still
+/// joined.
+const DOC_STATE_V: u64 = 2;
 
 /// The registry kind whose op-log tag is `tag`.
 fn kind_of_tag(tag: &str) -> Option<EntityKind> {
@@ -171,20 +189,32 @@ fn stamp_cols(ms: i64, logical: i64, device: &[u8], seq: i64, stream: &[u8]) -> 
 /// index once the entity's stamps are known.
 type Item = (Vec<Value>, Option<Stamp>);
 
-/// One entity's rows, gathered from the six state tables.
+/// One version as `entity_versions` holds it: its stamp, and the items
+/// after the stamp's index.
+struct VersionRow {
+    at: Stamp,
+    items: Vec<Value>,
+}
+
+/// One entity's rows, gathered from the state and version tables.
 #[derive(Default)]
 struct Rows {
     registers: Vec<Item>,
+    losers: Vec<Item>,
     maps: Vec<Item>,
     adds: Vec<Item>,
     removes: Vec<Item>,
     deltas: Vec<Item>,
+    versions: Vec<VersionRow>,
+    /// `(version, a stamp its frontier reaches)`.
+    frontier: Vec<(OpRef, Stamp)>,
 }
 
 impl Rows {
     fn stamps(&self) -> impl Iterator<Item = Stamp> + '_ {
         [
             &self.registers,
+            &self.losers,
             &self.maps,
             &self.adds,
             &self.removes,
@@ -193,6 +223,8 @@ impl Rows {
         .into_iter()
         .flatten()
         .filter_map(|(_, s)| *s)
+        .chain(self.versions.iter().map(|v| v.at))
+        .chain(self.frontier.iter().map(|(_, s)| *s))
     }
 }
 
@@ -221,6 +253,20 @@ fn gather(
     pick: fn(&mut Rows) -> &mut Vec<Item>,
     row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<Item>,
 ) -> rusqlite::Result<()> {
+    gather_with(tx, scope, sql, out, |rows, r| {
+        pick(rows).push(row(r)?);
+        Ok(())
+    })
+}
+
+/// [`gather`], with `push` filing each row into its entity's [`Rows`].
+fn gather_with(
+    tx: &Transaction<'_>,
+    scope: Scope<'_>,
+    sql: &str,
+    out: &mut BTreeMap<[u8; 16], Rows>,
+    push: impl Fn(&mut Rows, &rusqlite::Row<'_>) -> rusqlite::Result<()>,
+) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare(sql)?;
     let mut rows = match scope {
         Scope::Stream(stream) => stmt.query(params![&stream[..]])?,
@@ -228,10 +274,28 @@ fn gather(
     };
     while let Some(r) = rows.next()? {
         let id = blob16(&r.get::<_, Vec<u8>>(0)?);
-        let item = row(r)?;
-        pick(out.entry(id).or_default()).push(item);
+        push(out.entry(id).or_default(), r)?;
     }
     Ok(())
+}
+
+/// A register's row, winner or loser: `[field, value, origin]` and its stamp.
+fn register_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+    Ok((
+        vec![
+            Value::Text(r.get(1)?),
+            r.get::<_, Option<Vec<u8>>>(2)?
+                .map_or(Value::Null, Value::Bytes),
+            Value::Text(r.get(8)?),
+        ],
+        Some(stamp_cols(
+            r.get(3)?,
+            r.get(4)?,
+            &r.get::<_, Vec<u8>>(5)?,
+            r.get(6)?,
+            &r.get::<_, Vec<u8>>(7)?,
+        )),
+    ))
 }
 
 /// Which state rows a dump carries.
@@ -326,22 +390,89 @@ fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
         ),
         &mut rows,
         |r| &mut r.registers,
-        |r| {
-            Ok((
-                vec![
-                    Value::Text(r.get(1)?),
-                    r.get::<_, Option<Vec<u8>>>(2)?
+        register_item,
+    )?;
+    gather(
+        tx,
+        scope,
+        &format!(
+            "SELECT entity_id, field, value, hlc_ms, hlc_logical, device, seq, stream, origin
+             FROM register_losers m WHERE {}
+             ORDER BY entity_id, field, hlc_ms, hlc_logical, device, seq, stream",
+            scope.written_by("stream", "device", "seq")
+        ),
+        &mut rows,
+        |r| &mut r.losers,
+        register_item,
+    )?;
+    gather_with(
+        tx,
+        scope,
+        &format!(
+            "SELECT entity_id, hlc_ms, hlc_logical, device, seq, stream, kind, origin,
+                    is_create, parents, group_id, group_size, fields, is_head
+             FROM entity_versions m WHERE {}
+             ORDER BY entity_id, hlc_ms, hlc_logical, device, seq, stream",
+            scope.written_by("stream", "device", "seq")
+        ),
+        &mut rows,
+        |rows, r| {
+            let at = stamp_cols(
+                r.get(1)?,
+                r.get(2)?,
+                &r.get::<_, Vec<u8>>(3)?,
+                r.get(4)?,
+                &r.get::<_, Vec<u8>>(5)?,
+            );
+            let group = match (
+                r.get::<_, Option<Vec<u8>>>(10)?,
+                r.get::<_, Option<i64>>(11)?,
+            ) {
+                (Some(id), Some(size)) => Value::Array(vec![Value::Bytes(id), int(u64_col(size))]),
+                _ => Value::Null,
+            };
+            rows.versions.push(VersionRow {
+                at,
+                items: vec![
+                    Value::Text(r.get(6)?),
+                    Value::Text(r.get(7)?),
+                    Value::Bool(r.get::<_, i64>(8)? != 0),
+                    r.get::<_, Option<Vec<u8>>>(9)?
                         .map_or(Value::Null, Value::Bytes),
-                    Value::Text(r.get(8)?),
+                    group,
+                    Value::Bytes(r.get(12)?),
+                    Value::Bool(r.get::<_, i64>(13)? != 0),
                 ],
-                Some(stamp_cols(
-                    r.get(3)?,
-                    r.get(4)?,
-                    &r.get::<_, Vec<u8>>(5)?,
-                    r.get(6)?,
-                    &r.get::<_, Vec<u8>>(7)?,
-                )),
-            ))
+            });
+            Ok(())
+        },
+    )?;
+    gather_with(
+        tx,
+        scope,
+        &format!(
+            "SELECT entity_id, v_stream, v_device, v_seq,
+                    hlc_ms, hlc_logical, device, seq, stream
+             FROM entity_frontier m WHERE {}
+             ORDER BY entity_id, v_stream, v_device, v_seq, device",
+            scope.written_by("v_stream", "v_device", "v_seq")
+        ),
+        &mut rows,
+        |rows, r| {
+            let v = OpRef {
+                stream: blob16(&r.get::<_, Vec<u8>>(1)?),
+                device: blob16(&r.get::<_, Vec<u8>>(2)?),
+                seq: u64_col(r.get(3)?),
+            };
+            let reached = stamp_cols(
+                r.get(4)?,
+                r.get(5)?,
+                &r.get::<_, Vec<u8>>(6)?,
+                r.get(7)?,
+                &r.get::<_, Vec<u8>>(8)?,
+            );
+            rows.frontier.push((v, reached));
+            Ok(())
         },
     )?;
     gather(
@@ -478,6 +609,30 @@ fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
             .collect();
         let index: BTreeMap<Stamp, u64> = distinct.iter().copied().zip(0..).collect();
         let at = |s: Option<Stamp>| s.map_or(Value::Null, |s| int(index[&s]));
+        let version_index: BTreeMap<OpRef, u64> =
+            r.versions.iter().map(|v| v.at.op_ref()).zip(0..).collect();
+        let versions = Value::Array(
+            r.versions
+                .into_iter()
+                .map(|v| {
+                    let mut items = vec![int(index[&v.at])];
+                    items.extend(v.items);
+                    Value::Array(items)
+                })
+                .collect(),
+        );
+        // A frontier row names a version the same scope selected, so its
+        // index is always there; one that is not would be a damaged table,
+        // and is left out rather than written as a wrong index.
+        let frontier = Value::Array(
+            r.frontier
+                .into_iter()
+                .filter_map(|(v, reached)| {
+                    let v = version_index.get(&v)?;
+                    Some(Value::Array(vec![int(*v), int(index[&reached])]))
+                })
+                .collect(),
+        );
         entities.push(Value::Map(vec![
             (Value::Text("id".into()), bytes(&id)),
             (Value::Text("kind".into()), Value::Text(kind)),
@@ -497,10 +652,13 @@ fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
                 Value::Text("registers".into()),
                 indexed(r.registers, &index),
             ),
+            (Value::Text("losers".into()), indexed(r.losers, &index)),
             (Value::Text("maps".into()), indexed(r.maps, &index)),
             (Value::Text("adds".into()), indexed(r.adds, &index)),
             (Value::Text("removes".into()), indexed(r.removes, &index)),
             (Value::Text("deltas".into()), indexed(r.deltas, &index)),
+            (Value::Text("versions".into()), versions),
+            (Value::Text("frontier".into()), frontier),
         ]));
     }
     Ok(Value::Map(vec![
@@ -596,6 +754,119 @@ fn blob(v: Option<&Value>, what: &str) -> Result<Vec<u8>, EngineError> {
         .ok_or_else(|| malformed(what))
 }
 
+/// Join one entity's `versions` and `frontier` (version 2) into
+/// `entity_versions` and `entity_frontier`: a version keyed by its op-ref,
+/// each frontier entry the greater of the held and the joined one. The
+/// entity's frontiers and heads are then recomputed, keeping what was joined
+/// as their floor. A version of a group records the member as present
+/// (`engine::groups`). Returns whether any version was joined.
+fn join_versions(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    stamps: &[Stamp],
+    versions: &[Value],
+    frontier: &[Value],
+) -> Result<bool, EngineError> {
+    let stamp = |v: Option<&Value>, what: &str| stamp_at(stamps, v, what);
+    let mut joined: Vec<OpRef> = Vec::with_capacity(versions.len());
+    for v in versions {
+        let items = v.as_array().map_or(&[][..], Vec::as_slice);
+        let at = stamp(items.first(), "version stamp")?;
+        let kind = text(items.get(1), "version kind")?;
+        if !matches!(kind.as_str(), "legacy" | "patch") {
+            return Err(malformed("version kind"));
+        }
+        let origin = text(items.get(2), "version origin")?;
+        let create = items
+            .get(3)
+            .and_then(Value::as_bool)
+            .ok_or_else(|| malformed("version create"))?;
+        let parents = match items.get(4) {
+            Some(Value::Null) => None,
+            v => Some(blob(v, "version parents")?),
+        };
+        let group = match items.get(5) {
+            Some(Value::Null) => None,
+            Some(Value::Array(g)) => match g.as_slice() {
+                [gid, size] => Some((
+                    as_16(gid).ok_or_else(|| malformed("version group"))?,
+                    as_u64(size).ok_or_else(|| malformed("version group"))?,
+                )),
+                _ => return Err(malformed("version group")),
+            },
+            _ => return Err(malformed("version group")),
+        };
+        let fields = blob(items.get(6), "version fields")?;
+        let head = items
+            .get(7)
+            .and_then(Value::as_bool)
+            .ok_or_else(|| malformed("version head"))?;
+        tx.prepare(
+            "INSERT OR IGNORE INTO entity_versions
+             (entity_id, stream, device, seq, hlc_ms, hlc_logical, kind, origin, is_create,
+              parents, group_id, group_size, fields, is_head)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )?
+        .execute(params![
+            &id[..],
+            &at.stream[..],
+            &at.device[..],
+            at.seq,
+            at.hlc.physical_ms,
+            at.hlc.logical,
+            kind,
+            origin,
+            i64::from(create),
+            parents,
+            group.map(|(gid, _)| gid.to_vec()),
+            group.map(|(_, size)| size),
+            fields,
+            i64::from(head),
+        ])?;
+        if let Some(group) = group {
+            record_joined(tx, group, at.op_ref(), at.hlc)?;
+        }
+        joined.push(at.op_ref());
+    }
+    for f in frontier {
+        let items = f.as_array().map_or(&[][..], Vec::as_slice);
+        let v = items
+            .first()
+            .and_then(as_u64)
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| joined.get(i))
+            .ok_or_else(|| malformed("frontier version"))?;
+        let reached = stamp(items.get(1), "frontier stamp")?;
+        tx.prepare(
+            "INSERT INTO entity_frontier
+             (entity_id, v_stream, v_device, v_seq, device, hlc_ms, hlc_logical, seq, stream)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (entity_id, v_stream, v_device, v_seq, device) DO UPDATE SET
+                hlc_ms = excluded.hlc_ms, hlc_logical = excluded.hlc_logical,
+                seq = excluded.seq, stream = excluded.stream
+             WHERE (excluded.hlc_ms, excluded.hlc_logical, excluded.seq, excluded.stream)
+                 > (entity_frontier.hlc_ms, entity_frontier.hlc_logical,
+                    entity_frontier.seq, entity_frontier.stream)",
+        )?
+        .execute(params![
+            &id[..],
+            &v.stream[..],
+            &v.device[..],
+            v.seq,
+            &reached.device[..],
+            reached.hlc.physical_ms,
+            reached.hlc.logical,
+            reached.seq,
+            &reached.stream[..],
+        ])?;
+    }
+    if joined.is_empty() {
+        return Ok(false);
+    }
+    recompute(tx, id)?;
+    Ok(true)
+}
+
 /// `local` joined with `snap`: the bookkeeping of the union of the ops each
 /// covers.
 fn join_meta(local: Option<Meta>, snap: &Meta) -> Meta {
@@ -641,9 +912,12 @@ pub(in crate::engine) fn join_stream_state(
     doc: &Value,
 ) -> Result<Vec<EntityRef>, EngineError> {
     let top = doc.as_map().ok_or_else(|| malformed("not a map"))?;
-    if get(top, "v").and_then(as_u64) != Some(DOC_STATE_V) {
+    let version = get(top, "v").and_then(as_u64);
+    if !matches!(version, Some(1 | DOC_STATE_V)) {
         return Err(malformed("unknown version"));
     }
+    // Version 1 carried no losers and no version DAG.
+    let v2 = version == Some(DOC_STATE_V);
     let entities = list(top, "entities")?
         .iter()
         .map(read_entity)
@@ -652,14 +926,26 @@ pub(in crate::engine) fn join_stream_state(
     for e in &entities {
         let id = e.target.bytes();
         let stamp = |v: Option<&Value>, what: &str| stamp_at(&e.stamps, v, what);
+        let since = |name: &str| -> Result<&[Value], EngineError> {
+            if v2 {
+                list(e.entries, name)
+            } else {
+                Ok(&[])
+            }
+        };
+        // The DAG first: the registers below read the order through it.
+        let joined = join_versions(tx, id, &e.stamps, since("versions")?, since("frontier")?)?;
         let local = read_meta(tx, id)?;
         let before = local.as_ref().and_then(|m| m.legacy);
         let meta = join_meta(local, &e.meta);
         let mut regs = Registers::load(tx, e.spec, id, before)?;
+        if joined {
+            regs.refilter(tx)?;
+        }
         if let Some(floor) = meta.legacy.filter(|l| before.is_none_or(|b| *l > b)) {
             prune_below_floor(tx, id, floor, &mut regs)?;
         }
-        for r in list(e.entries, "registers")? {
+        for r in list(e.entries, "registers")?.iter().chain(since("losers")?) {
             let items = r.as_array().map_or(&[][..], Vec::as_slice);
             let value = match items.get(1) {
                 Some(Value::Null) => None,

@@ -12,6 +12,7 @@ use crate::engine::chain::digest_payload;
 use crate::engine::compaction::floor_of;
 use crate::engine::{CompactionPolicy, SnapshotApplied};
 use crate::ChainIntegrity;
+use ciborium::value::Value;
 use sunrise_crypto::decode_envelope;
 use sunrise_domain::INBOX_STREAM_BYTES;
 
@@ -1091,4 +1092,323 @@ fn a_bootstrapped_replica_primes_its_clock_from_the_floors() {
     let restarted = engine_seeded(ROOT, [2; 32], behind);
     restarted.prime_hlc(&dbb).unwrap();
     assert!(restarted.hlc.peek() >= floor.hlc);
+}
+
+// ---- groups and the version DAG under compaction (ADR-0065 §6, §8) ----
+
+/// The version DAG, the register losers and the group rows `db` holds, each
+/// table's rows sorted: what a snapshot join must reproduce. A group row's
+/// `received_at_ms` is this replica's own record and is left out.
+fn dag(db: &Db) -> Vec<String> {
+    let mut out = Vec::new();
+    for (table, cols) in [
+        ("entity_versions", "*"),
+        ("entity_frontier", "*"),
+        ("merge_registers", "*"),
+        ("register_losers", "*"),
+        (
+            "pending_groups",
+            "group_id, group_size, op_id, hlc_ms, hlc_logical, device, seq, stream, applied",
+        ),
+    ] {
+        let mut stmt = db
+            .conn()
+            .prepare(&format!("SELECT {cols} FROM {table}"))
+            .unwrap();
+        let n = stmt.column_count();
+        let mut rows: Vec<String> = stmt
+            .query_map([], |r| {
+                (0..n)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(|row| format!("{table}: {}", row.unwrap().join(" | ")))
+            .collect();
+        rows.sort();
+        out.extend(rows);
+    }
+    out
+}
+
+/// A `Patch` of `task`'s title on `e`, naming the heads `db` holds, sealed
+/// in the Inbox. Returns the envelope and the version.
+fn retitle_versioned(
+    e: &Engine,
+    db: &mut Db,
+    task: EntityRef,
+    title: &str,
+) -> (Vec<u8>, crate::engine::merge::OpRef) {
+    use super::conflicts::{heads_in, versioned};
+    use super::field_merge::{emit_patch, text};
+    let parents = heads_in(db, task);
+    emit_patch(
+        e,
+        db,
+        &INBOX,
+        &versioned(task, &[("title", text(title))], Some(&parents), false),
+    )
+}
+
+fn precedes_in(
+    db: &Db,
+    task: EntityRef,
+    a: crate::engine::merge::OpRef,
+    b: crate::engine::merge::OpRef,
+) -> bool {
+    let tx = db.conn().unchecked_transaction().unwrap();
+    let out = crate::engine::merge::precedes(&tx, task.bytes(), a, b).unwrap();
+    tx.rollback().unwrap();
+    out
+}
+
+/// Fold A's Inbox below its acknowledged floor on `e`: A acknowledges with a
+/// digest two days on, and `e` compacts.
+fn compact_after_ack(c: &Arc<FakeClock>, acker: (&Engine, &mut Db), e: &Engine, db: &mut Db) {
+    set_clock(c, T0 + 2 * DAY);
+    let (ea, dba) = acker;
+    let ack = digest_op(ea, dba, &INBOX);
+    e.apply_remote_all(db, &ack).unwrap();
+    ack_outbox(db);
+    let report = e.compact_op_log(db, &policy()).unwrap();
+    assert!(report.ops_removed > 0, "{report:?}");
+}
+
+/// A member still waiting for the rest of its group has not been folded,
+/// so compaction keeps it however far below the floor it is, and the group
+/// completes when the last member comes.
+#[test]
+fn compaction_keeps_pending_group_members() {
+    use super::field_merge::{emit_patch, set, text};
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let t1 = new_task(&ea, &mut dba, "one");
+    let t2 = new_task(&ea, &mut dba, "two");
+    let member = |task: EntityRef, title: &str| {
+        InnerOp::Patch(Box::new(crate::inner_op::PatchPayload {
+            target: task,
+            create: false,
+            origin: None,
+            parents: None,
+            group: Some(crate::inner_op::GroupWire {
+                id: [9u8; 16],
+                size: 2,
+                unknown: Unknowns::new(),
+            }),
+            fields: [(
+                "title".to_owned(),
+                sunrise_domain::CborValue(set(text(title))),
+            )]
+            .into_iter()
+            .collect(),
+            unknown: Unknowns::new(),
+        }))
+    };
+    // One member in the Inbox, below the tip; the other in the vault-meta
+    // stream, withheld. The writer seals them past its own group fold, so
+    // only the receiver's rebuild is checked.
+    crate::engine::rebuild::check::disable();
+    let (held, _) = emit_patch(&ea, &mut dba, &INBOX, &member(t1, "one, grouped"));
+    new_task(&ea, &mut dba, "three");
+    let (last, _) = emit_patch(&ea, &mut dba, &META_STREAM, &member(t2, "two, grouped"));
+    for env in all_envs(&dba) {
+        if env != last {
+            eb.apply_remote_all(&mut dbb, &env).unwrap();
+        }
+    }
+    let held_seq = decode_envelope(&held).unwrap().seq;
+    compact_after_ack(&c, (&ea, &mut dba), &eb, &mut dbb);
+    let a = ea.keychain.device_id();
+    assert!(floor_of(dbb.conn(), &INBOX, &a).unwrap().unwrap().seq >= held_seq);
+    let kept: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE stream_id = ? AND device_id = ? AND seq = ?",
+            params![&INBOX[..], &a[..], i64::try_from(held_seq).unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 1, "the held member stays in the log");
+    assert_eq!(read_task_t(&eb, &dbb, t1).title, "one");
+    eb.assert_rebuild_identity(&dbb);
+
+    eb.apply_remote_all(&mut dbb, &last).unwrap();
+    assert_eq!(read_task_t(&eb, &dbb, t1).title, "one, grouped");
+    assert_eq!(read_task_t(&eb, &dbb, t2).title, "two, grouped");
+    eb.assert_rebuild_identity(&dbb);
+}
+
+/// A version whose parent's op compaction deleted still descends from it:
+/// the version rows are kept (D10), and a rebuild joins them back from the
+/// compacted base (§8).
+#[test]
+fn ancestry_survives_compaction_of_the_parent_op() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let task = new_task(&ea, &mut dba, "t");
+    sync(&dba, &eb, &mut dbb);
+    let (first, v1) = retitle_versioned(&eb, &mut dbb, task, "from b");
+    ea.apply_remote_all(&mut dba, &first).unwrap();
+    // B's later op is what sits at the tip, so the first is below it.
+    new_task(&eb, &mut dbb, "tip");
+    sync(&dbb, &ea, &mut dba);
+    ack_outbox(&mut dba);
+    compact_after_ack(&c, (&eb, &mut dbb), &ea, &mut dba);
+    let gone: i64 = dba
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE device_id = ? AND seq = ? AND stream_id = ?",
+            params![
+                &v1.device[..],
+                i64::try_from(v1.seq).unwrap(),
+                &v1.stream[..]
+            ],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gone, 0, "the parent's op was compacted away");
+
+    let (second, v2) = retitle_versioned(&eb, &mut dbb, task, "from b, again");
+    ea.apply_remote_all(&mut dba, &second).unwrap();
+    assert!(precedes_in(&dba, task, v1, v2));
+    assert_eq!(read_task_t(&ea, &dba, task).title, "from b, again");
+    ea.assert_rebuild_identity(&dba);
+    ea.rebuild_projection(&mut dba).unwrap();
+    assert!(precedes_in(&dba, task, v1, v2), "and after a rebuild");
+    let losers: i64 = dba
+        .conn()
+        .query_row("SELECT COUNT(*) FROM register_losers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(losers, 0, "an ordered write is no conflict");
+}
+
+/// A device that joins a snapshot of a history with a conflict, a group
+/// and a version chain, then applies the tail, holds the version DAG, the
+/// register losers, the conflicts and the group rows a device that replayed
+/// every op holds (ADR-0065 §8).
+#[test]
+fn a_snapshot_join_then_ops_equals_a_full_replay() {
+    use super::conflicts::conflicts_of;
+    let c = clock();
+    let mut r = replicas(4, &c);
+    let (ed, mut dbd) = r.pop().unwrap();
+    let (ec, mut dbc) = r.pop().unwrap();
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let task = new_task(&ea, &mut dba, "t");
+    let other = new_task(&ea, &mut dba, "other");
+    let blocks: Vec<EntityRef> = [9, 10]
+        .iter()
+        .map(|h| {
+            ea.apply(
+                &mut dba,
+                Command::CreateBlock(block_draft(*h, 1, Some("b"))),
+            )
+            .unwrap()
+            .entity
+        })
+        .collect();
+    sync(&dba, &eb, &mut dbb);
+    // A conflict: two concurrent retitles naming the same head.
+    let (from_a, _) = retitle_versioned(&ea, &mut dba, task, "from a");
+    let (from_b, _) = retitle_versioned(&eb, &mut dbb, task, "from b");
+    ea.apply_remote_all(&mut dba, &from_b).unwrap();
+    eb.apply_remote_all(&mut dbb, &from_a).unwrap();
+    // A group.
+    ea.apply(
+        &mut dba,
+        Command::MergeBlocks {
+            a: blocks[0],
+            b: blocks[1],
+        },
+    )
+    .unwrap();
+    sync(&dba, &eb, &mut dbb);
+
+    let inbox = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
+    let (a, b) = (ea.keychain.device_id(), eb.keychain.device_id());
+    let at_snapshot: Vec<u64> = [a, b].iter().map(|d| cursor(&dba, &INBOX, d)).collect();
+    // The tail: a version above the snapshot, and an ordinary edit.
+    let (tail, _) = retitle_versioned(&eb, &mut dbb, other, "other, later");
+    ea.apply_remote_all(&mut dba, &tail).unwrap();
+    rename(&ea, &mut dba, other, "other, last");
+
+    let (outcome, _) = ec.apply_snapshot(&mut dbc, &inbox).unwrap();
+    assert!(
+        matches!(outcome, SnapshotApplied::Applied { .. }),
+        "{outcome:?}"
+    );
+    for (device, inbox_at) in [a, b].iter().zip(&at_snapshot) {
+        for env in envs_after(&dba, &INBOX, device, *inbox_at)
+            .into_iter()
+            .chain(envs_after(&dba, &META_STREAM, device, 0))
+        {
+            ec.apply_remote_all(&mut dbc, &env).unwrap();
+        }
+    }
+    sync(&dba, &ed, &mut dbd);
+
+    assert_eq!(dag(&dbc), dag(&dbd));
+    assert_eq!(projection(&dbc), projection(&dbd));
+    let conflicts = conflicts_of(&ec, &dbc, true);
+    assert_eq!(conflicts, conflicts_of(&ed, &dbd, true));
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| c.entity == task && c.field == "title"),
+        "the conflict crossed in the snapshot: {conflicts:?}"
+    );
+    assert!(ops_in(&dbc, &INBOX) < ops_in(&dbd, &INBOX));
+}
+
+/// A `doc_state` of version 1, which carried winners and no DAG, still
+/// joins: its registers are writes that reach only themselves.
+#[test]
+fn a_version_1_doc_state_still_joins() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let task = new_task(&ea, &mut dba, "t");
+    rename(&ea, &mut dba, task, "renamed");
+    let mut doc = dba
+        .with_tx(|tx| crate::engine::merge::dump_stream_state(tx, &INBOX))
+        .unwrap();
+    let Value::Map(top) = &mut doc else {
+        panic!("a map")
+    };
+    for (k, v) in top.iter_mut() {
+        match k.as_text() {
+            Some("v") => *v = Value::Integer(1.into()),
+            Some("entities") => {
+                for e in v.as_array_mut().unwrap() {
+                    let Value::Map(fields) = e else { panic!() };
+                    fields.retain(|(k, _)| {
+                        !matches!(k.as_text(), Some("losers" | "versions" | "frontier"))
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let joined = dbb
+        .with_tx(|tx| {
+            crate::engine::merge::join_stream_state(tx, &doc)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })
+        .unwrap();
+    assert!(joined.contains(&task));
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "renamed");
+    let versions: i64 = dbb
+        .conn()
+        .query_row("SELECT COUNT(*) FROM entity_versions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(versions, 0, "version 1 carried no versions");
 }

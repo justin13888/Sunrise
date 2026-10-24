@@ -9,7 +9,7 @@
 //! op variant is a build failure here until it is routed.
 
 use super::focus::materialize_focus_remote;
-use super::merge::merge_op;
+use super::merge::merge_member;
 use super::review::insert_review_snapshot_row;
 use super::META_STREAM;
 use crate::inner_op::InnerOp;
@@ -167,7 +167,7 @@ pub(super) fn remap_legacy_inbox(inner: &mut InnerOp) {
 /// `lww` is the sender's stamp and `stream` the stream the envelope was sealed
 /// under. An op on an entity that merges as [`Merge::Lww`], full-state or
 /// `Patch`, is folded into that entity's field state and the entity is
-/// re-projected ([`merge_op`]); a losing write is kept in the state and
+/// re-projected ([`merge_member`]); a losing write is kept in the state and
 /// changes nothing it shows. An append-only record is written once.
 //
 // The control arm below has an empty body and is spelled out rather than
@@ -179,6 +179,20 @@ pub(super) fn materialize_remote(
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: &[u8; 16],
+) -> rusqlite::Result<()> {
+    materialize_member(tx, inner, lww, stream, None)
+}
+
+/// [`materialize_remote`] for one member of a group (ADR-0065 §6), whose
+/// `group` the entity's version records. A `Patch` names its own group; a
+/// full-state member's mark was read off it before this
+/// (`engine::groups`, clarification D13), and is passed here.
+pub(super) fn materialize_member(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    lww: &LwwStamp,
+    stream: &[u8; 16],
+    group: Option<([u8; 16], u64)>,
 ) -> rusqlite::Result<()> {
     // A control op has no entity and must never reach the registry lookup
     // below: its `entity_kind` names what it is *about* — a KeyEnvelope says
@@ -227,7 +241,7 @@ pub(super) fn materialize_remote(
         | InnerOp::AttachmentCreate(_)
         | InnerOp::AttachmentDelete(_)
         | InnerOp::Patch(_) => {
-            return merge_op(tx, inner, lww, *stream);
+            return merge_member(tx, inner, lww, *stream, group);
         }
         // Focus ops never enter the LWW contest. Each writes one immutable record
         // keyed by the session's own id (start, end, and interruption in three

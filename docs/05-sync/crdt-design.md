@@ -244,6 +244,28 @@ a field's antichain clears it, which is what `Command::ResolveConflict` and
 `Command::Restore` write. `conflict-resolution.md` is the user-facing
 account.
 
+### Groups
+
+Some commands write several entities that are only correct together: merging
+two blocks (`Command::MergeBlocks`), and a batch of task actions
+(`Command::BulkTasks`). Each writes one op per entity, as one **group**
+(ADR-0065 §6): every member names the group's id and size, a `Patch` in its
+`group` key and a full-state op in a top-level `op_group` mark that names the
+member's own op-ref (D13). A receiver stores a member and counts it toward the
+cursor, but holds it out of the fold until at least `size` members of the
+group are present; then it folds every held member in one transaction, and a
+later member at once (D8). So no replica ever shows part of a group, and what
+it shows is still a function of the ops it holds, whatever order they came in.
+The writer folds its own group in the transaction that appends it.
+
+A build from before groups reads the mark as an unknown field and applies each
+member as it arrives. A copy of the mark it writes back names another op, and
+marks nothing.
+
+Compaction never deletes a member still held, and a snapshot retains it. A
+member whose op compaction deleted counts as present through the version a
+snapshot or a rebuild's base carries (D14).
+
 ### Visibility, timestamps and validation
 
 - An entity is projected once a create is applied: a `Patch` with `create`,
@@ -272,6 +294,7 @@ account.
 | Device A marks done; device B edits the title | Both apply; the task is done with the new title |
 | Device A deletes a task; device B edits it | As `Patch` versions: the task stays deleted, B's edit is applied inside the tombstone and reported as edited while deleted, and a restore shows it (ADR-0044 §5, ADR-0065 §3). As full-state ops: the later op wins whole, so a later edit brings the task back |
 | Two devices complete the same routine occurrence | Both add the same key to `streak_keys`; the set counts it once, and the derived streak advances once |
+| Device A merges two blocks; device B has received one of the three writes | B shows the two blocks as they were until it has all three, then the union alone |
 | Device A adds `x → y` to `blocked_by`; device B adds `y → x` | Both edges stay in the OR-sets. The edge whose earliest surviving add-tag is newer is suppressed at read time ([`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) §Dependencies) |
 
 ## Op encoding
@@ -286,7 +309,8 @@ forever, as writes to every field they carry (ADR-0044 §7).
 
 Every field type is a pure function of the set of applied ops, so a projection
 is rebuildable from `ops` in any order. A compaction snapshot carries that
-state, and applying one is a join of it into the local state
+state, the version DAG and the register losers with it (ADR-0065 §8), and
+applying one is a join of it into the local state
 ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Snapshot record,
 [ADR-0059](../11-adr/0059-client-op-log-compaction.md) §1).
 

@@ -274,6 +274,70 @@ pub enum CoreCommand {
         /// back, or one the client encoded.
         value: Vec<u8>,
     },
+    /// Merge two blocks into one, as one commit: the union is created and
+    /// both are tombstoned together. See
+    /// [`sunrise_core::Command::MergeBlocks`]; the result names the union.
+    MergeBlocks {
+        /// One block.
+        a: EntityRef,
+        /// The other.
+        b: EntityRef,
+    },
+    /// Apply one action to each of several tasks, all or nothing, as one
+    /// commit. See [`sunrise_core::Command::BulkTasks`].
+    BulkTasks {
+        /// The tasks and their actions; a task may appear once.
+        items: Vec<BulkTaskItemIn>,
+    },
+}
+
+/// One item of [`CoreCommand::BulkTasks`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BulkTaskItemIn {
+    /// The task.
+    pub id: EntityRef,
+    /// What to do to it.
+    pub action: BulkTaskActionIn,
+}
+
+/// What [`CoreCommand::BulkTasks`] does to one task: each is the single
+/// command of the same name.
+// UniFFI lifts an enum by value; a box would not cross the seam.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum BulkTaskActionIn {
+    /// `CompleteTask`.
+    Complete,
+    /// `DeferTaskTo`.
+    DeferTo {
+        /// New scheduled time.
+        to: TimeValue,
+    },
+    /// `UpdateTask`: a move, a drop to `cancelled`, or any other edit.
+    Update {
+        /// The edit.
+        edit: TaskEdit,
+    },
+    /// `DeleteTask`.
+    Delete,
+    /// `Restore`.
+    Restore,
+}
+
+impl From<BulkTaskItemIn> for sunrise_core::BulkTaskItem {
+    fn from(item: BulkTaskItemIn) -> Self {
+        use sunrise_core::BulkTaskAction;
+        Self {
+            id: item.id,
+            action: match item.action {
+                BulkTaskActionIn::Complete => BulkTaskAction::Complete,
+                BulkTaskActionIn::DeferTo { to } => BulkTaskAction::DeferTo(to.into()),
+                BulkTaskActionIn::Update { edit } => BulkTaskAction::Update(Box::new(edit.into())),
+                BulkTaskActionIn::Delete => BulkTaskAction::Delete,
+                BulkTaskActionIn::Restore => BulkTaskAction::Restore,
+            },
+        }
+    }
 }
 
 impl CoreCommand {
@@ -377,6 +441,10 @@ impl CoreCommand {
                 field,
                 value: crate::conflicts::value_in(&value)?,
             },
+            Self::MergeBlocks { a, b } => Command::MergeBlocks { a, b },
+            Self::BulkTasks { items } => {
+                Command::BulkTasks(items.into_iter().map(Into::into).collect())
+            }
         })
     }
 }

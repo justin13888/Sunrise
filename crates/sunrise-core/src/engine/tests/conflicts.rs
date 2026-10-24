@@ -18,7 +18,7 @@ use proptest::prelude::*;
 // ---- helpers ----
 
 /// A `Patch` of `task` setting `fields`, naming `parents`.
-fn versioned(
+pub(super) fn versioned(
     task: EntityRef,
     fields: &[(&str, Value)],
     parents: Option<&[OpRef]>,
@@ -42,7 +42,7 @@ fn versioned(
     }))
 }
 
-fn heads_in(db: &Db, task: EntityRef) -> Vec<OpRef> {
+pub(super) fn heads_in(db: &Db, task: EntityRef) -> Vec<OpRef> {
     let tx = db.conn().unchecked_transaction().unwrap();
     let out = heads(&tx, task.bytes()).unwrap();
     tx.rollback().unwrap();
@@ -73,7 +73,7 @@ fn write_on(
     )
 }
 
-fn conflicts_of(e: &Engine, db: &Db, quiet: bool) -> Vec<EntityConflict> {
+pub(super) fn conflicts_of(e: &Engine, db: &Db, quiet: bool) -> Vec<EntityConflict> {
     match e
         .query(
             db,
