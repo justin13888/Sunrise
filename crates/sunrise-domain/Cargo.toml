@@ -22,6 +22,7 @@ jiff = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

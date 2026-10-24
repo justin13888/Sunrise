@@ -206,6 +206,12 @@ icu_plurals = { version = "2.3", default-features = false, features = ["compiled
 icu_decimal = { version = "2.3", default-features = false, features = ["compiled_data"] }
 icu_locale_core = { version = "2.3", default-features = false }
 
+# --- text ---
+# NFKD decomposition and combining-mark detection, for the fold the search
+# trigram index is written in (ADR-0052 §2): the SQLite SQLCipher bundles has
+# no `remove_diacritics` for `trigram`, so the core folds before it writes.
+unicode-normalization = { version = "0.1", default-features = false, features = ["std"] }
+
 # --- random ---
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }

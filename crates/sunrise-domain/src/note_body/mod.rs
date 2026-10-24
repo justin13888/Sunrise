@@ -53,6 +53,7 @@ mod decode;
 mod encode;
 mod grammar;
 mod markdown;
+mod plain;
 
 pub use decode::decode;
 pub use encode::encode;
@@ -61,3 +62,4 @@ pub use grammar::{
     MAX_NEST_DEPTH, NOTE_BODY_MAX_BYTES, NOTE_BODY_SOFT_LIMIT_BYTES,
 };
 pub use markdown::to_markdown;
+pub use plain::to_plain_text;
