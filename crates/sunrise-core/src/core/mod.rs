@@ -529,6 +529,22 @@ impl Core {
         self.engine.device_zone()
     }
 
+    /// Every live record, for the full export (`crate::export`, issue #350).
+    ///
+    /// One read under one lock, so the records are one consistent state of
+    /// the vault. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Closed`] after close, and a storage read error.
+    pub fn export_records(&self) -> Result<crate::export::VaultRecords, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.export_records(&db)?)
+    }
+
     /// Run a read query.
     pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
         if *self.closed.lock() {

@@ -60,6 +60,7 @@ pub mod core;
 mod doc_schema;
 pub mod engine;
 pub mod events;
+pub mod export;
 pub mod feature;
 pub mod inner_op;
 pub mod keychain;

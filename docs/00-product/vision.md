@@ -27,7 +27,7 @@ These are **non-negotiable**. Any feature decision that conflicts with one of th
 - A user can do their morning planning entirely offline on a flight.
 - A user can lose their phone in a river, set up Sunrise on a new phone with their recovery code, and have their data within minutes — with the server having seen nothing but ciphertext throughout.
 - A user can `ssh` into a box, run `sunrise capture '…'`, and see the task on their other devices before they finish typing the disconnect. (Capture, triage, review and export are scriptable; there is no interactive terminal client — see [ADR-0019](../11-adr/0019-swiftui-macos-client.md).)
-- A user can export everything (decrypted) at any time, in a format that makes sense outside Sunrise.
+- A user can export everything (decrypted) at any time, in a format that makes sense outside Sunrise. ([`../04-storage/export-format.md`](../04-storage/export-format.md): `sunrise export all <dir>`.)
 
 ## What success does *not* look like
 

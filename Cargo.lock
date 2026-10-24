@@ -3223,6 +3223,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-integrations",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",

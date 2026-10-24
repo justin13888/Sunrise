@@ -44,7 +44,8 @@ draft-to-patch functions, the defer and schedule targets, the calendar grid's
 arithmetic, the command palette's ranking, a list's keyboard selection, the
 note editor's block model, print pagination, the account bootstrap, the
 recovery flow
-([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), and
+([recovery.md](../03-crypto/recovery.md) §Recovery flow steps 3 to 8), the full
+export's writer ([export-format.md](../04-storage/export-format.md)), and
 background sync. Every client links it, and a seam's own code lowers its
 records onto these functions and does nothing else:
 

@@ -89,6 +89,8 @@ review and reporting
   sunrise brief morning|evening
   sunrise reminders plan       this device's reminders for the next day
   sunrise export <trends|activity|focus|streaks> [json|csv] [path]
+  sunrise export all <dir> [--no-fetch]
+                               everything, decrypted, in the open export format
 
 views and preferences
   sunrise views [save <name> <view> [--query q] [--contexts a,b] | apply <name> | delete <name>]
@@ -206,8 +208,9 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 | `tz` | `{zone, source, zone_unknown}` |
 | `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |
 
-Write commands, `export` (which has its own `json` format) and the account
-commands print as they always have.
+Write commands, `export` (which has its own `json` format), `export all`
+(whose `manifest.json` is its document, [`../04-storage/export-format.md`](../04-storage/export-format.md))
+and the account commands print as they always have.
 
 ### Undo across processes
 

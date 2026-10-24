@@ -14,6 +14,8 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+# The full export's per-file digests (`src/export.rs`).
+blake3 = { workspace = true }
 ciborium = { workspace = true }
 jiff = { workspace = true }
 parking_lot = { workspace = true }
@@ -44,8 +46,8 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 # The canonical document schema (`src/doc_schema.rs`, ADR-0045 §2): rendered as
-# JSON, canonicalized by JCS, fingerprinted with BLAKE3 `derive_key`.
-blake3 = { workspace = true }
+# JSON, canonicalized by JCS, fingerprinted with BLAKE3 `derive_key` (the
+# `blake3` normal dependency).
 serde_jcs = { workspace = true }
 proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
