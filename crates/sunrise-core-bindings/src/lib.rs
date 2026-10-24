@@ -1062,14 +1062,10 @@ impl SunriseCore {
         &self,
         pairing: Arc<pairing::DevicePairing>,
     ) -> Result<String, BindingError> {
-        let offer = self
-            .inner
-            .export_pairing_offer()
-            .map_err(|e| BindingError::Core(e.to_string()))?;
-        let encoded = offer
-            .encode()
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        pairing.seal_pairing_offer(encoded)
+        Ok(sunrise_client_core::pairing::seal_offer(
+            &self.inner,
+            pairing.inner(),
+        )?)
     }
 
     /// Issue the joiner's `DeviceCert` and seal message 3, on the sponsor.
@@ -1093,20 +1089,14 @@ impl SunriseCore {
         pairing: Arc<pairing::DevicePairing>,
         sealed_request: String,
     ) -> Result<String, BindingError> {
-        let raw = pairing.open_cert_request(sealed_request)?;
-        let request = sunrise_pairing::decode_pairing_request(&raw)
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let grant = self
-            .inner
-            .issue_pairing_grant(&request)
-            .map_err(|e| BindingError::Core(e.to_string()))?;
-        // `grant` zeroizes itself on drop; the encoding is the same secret in
-        // serialized form, and `seal_pairing_grant` takes ownership of it and
-        // wipes it once the ciphertext exists.
-        let encoded = grant
-            .encode()
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        pairing.seal_pairing_grant(encoded)
+        // The request is opened by the pairing object, answered by the vault
+        // and the grant sealed straight back out, all in the client layer's
+        // `seal_grant`, which wipes the grant's encoding once sealed.
+        Ok(sunrise_client_core::pairing::seal_grant(
+            &self.inner,
+            pairing.inner(),
+            &sealed_request,
+        )?)
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.
@@ -1451,6 +1441,11 @@ impl SunriseCore {
 }
 
 impl SunriseCore {
+    /// The open vault, for the client-layer flows that take one.
+    pub(crate) fn core(&self) -> &Core {
+        &self.inner
+    }
+
     /// Hold an opened core.
     ///
     /// Only ever called from an async constructor, so a runtime is

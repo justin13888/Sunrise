@@ -1775,6 +1775,14 @@ USAGE:
                                  write .ics to stdout, or to a path
 
   devices and identity
+    sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+                                 (on the device being added) pair over the
+                                 relay: show a code, compare the six digits,
+                                 and open the vault here. Needs SUNRISE_SYNC_URL
+                                 and a sign-in
+    sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+                                 (on the device with the vault) pair with the
+                                 device showing <code>, over the relay
     sunrise pair offer --out <file>
                                  (on the device with the vault) write the
                                  account's public identity. Carries no key
@@ -2421,12 +2429,20 @@ code_retired = "your old recovery code no longer opens this account; run `sunris
 # line; the command lines are typed as written.
 usage = '''
 usage:
+  over the relay (SUNRISE_SYNC_URL, signed in on both devices):
+  sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+                                                     (on the device being added)
+  sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+                                                     (on the device with the vault)
+
+  by files, with no relay:
   sunrise pair offer    --out <file>                 (on the device with the vault)
   sunrise pair request  --offer <file> --out <file>  (on the device being added)
   sunrise pair issue    --request <file> --out <file>(on the device with the vault)
   sunrise pair accept   --response <file>            (on the device being added)
 
-Run them in that order, moving each file to the other machine as it is written.
+Run `join` first: it shows the code `add` takes. Run the four file steps in
+that order, moving each file to the other machine as it is written.
 '''
 # {flag} is the missing flag; {usage} is the text above.
 flag_required = "{flag} is required\n\n{usage}"
@@ -2443,6 +2459,41 @@ grant_written = "issued a certificate and wrote the grant -> {path}\nthis file c
 no_pending = "no pending pairing in {dir} ({error}); run `sunrise pair request` on this device first"
 # {device} is this device's new id.
 joined = "this device joined the account as {device}\nrun `sunrise sync --once` against the account's relay to pull its history"
+# --- Pairing over the relay: `sunrise pair join` and `sunrise pair add`. ---
+# {flag} is an option the user typed that the step does not take.
+unknown_flag = "unknown option {flag} for this pair step\n\n{usage}"
+both_answers = "--yes and --confirm-sas answer the same question; give one of them"
+needs_code = "`sunrise pair add` needs the code the other device shows: `sunrise pair add '<code>'`, or `sunrise pair add -` to read it from stdin"
+# {var} is the relay's environment variable.
+needs_relay = "pairing over the relay needs {var} set to this account's relay. With no relay, pair by files: `sunrise pair offer` on the device with your vault"
+# {var} is the bearer's environment variable.
+needs_sign_in = "pairing over the relay needs this account's sign-in: run `sunrise login`, or set {var}"
+# The device being added has no vault yet, so `sunrise login` cannot run on it.
+# {error} says why sign-in could not start; {issuer}, {client_id} and {var} are
+# environment variables.
+joiner_needs_sign_in = "pairing over the relay needs this account's sign-in ({error}): set {issuer} and {client_id} to sign in now, or set {var}"
+signing_in = "signing in to your account, so the relay can bring the two devices together"
+# On the device being added, above the code. The code follows on its own line,
+# exactly as `sunrise pair add` takes it.
+show_code = "On the device with your vault, run this within five minutes:\n  sunrise pair add '<the code below>'\n\nPairing code:"
+waiting = "waiting for the other device…"
+# {sas} is six digits in two groups of three, the same on both devices.
+compare = "Both devices now show six digits. Check they are the same on the other device:\n\n    {sas}\n"
+prompt = "Type the digits the other device shows to confirm they match (anything else cancels): "
+mismatch = "the digits did not match, so this pairing was thrown away and nothing was sent. Two devices talking directly always show the same digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust."
+# {error} is the relay's or the protocol's message.
+failed_code = "{error}. Check that the code was copied whole from a device that is pairing over the same relay, and start again from a new code."
+# {url} is the relay origin; {var} its environment variable.
+relay_did_not_answer = "the relay at {url} did not answer, so nothing was paired. Check {var}, or pair by files: `sunrise pair offer` on the device with your vault"
+# {error} is the relay's refusal.
+relay_refused = "the relay would not start this pairing ({error}). Try again later, or pair by files: `sunrise pair offer` on the device with your vault"
+cancelled = "pairing cancelled; nothing was sent"
+# On the device with the vault, once the other device has its certificate.
+sponsored = "paired: the other device now holds this account. It shows in `sunrise devices` here once it has synced"
+# {device} is the relay's id for this device, on stderr.
+registered = "registered this device with the relay as {device}"
+# {error} is the relay's refusal.
+unregistered = "paired, but the relay did not register this device ({error}); run `sunrise bootstrap` to register it"
 
 [cli.recover]
 # Printed above the 24 words, which follow in rows of four.

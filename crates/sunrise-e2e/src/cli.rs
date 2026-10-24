@@ -99,6 +99,27 @@ impl Device {
     /// does) while the relay serves on the runtime.
     #[must_use]
     pub fn run_blocking(&self, args: &[&str]) -> Output {
+        self.command(args).output().expect("run sunrise")
+    }
+
+    /// Start `sunrise <args>` as this device and leave it running, with
+    /// stdin, stdout and stderr piped: for a command that prints something
+    /// the other device needs while it waits (`sunrise pair join`'s code).
+    ///
+    /// # Panics
+    /// When the process cannot be started.
+    #[must_use]
+    pub fn spawn(&self, args: &[&str]) -> std::process::Child {
+        self.command(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start sunrise")
+    }
+
+    /// `sunrise <args>` as this device, not yet started.
+    fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(binary());
         cmd.args(args)
             .env("SUNRISE_VAULT", &self.vault)
@@ -121,7 +142,7 @@ impl Device {
             Some(b) => cmd.env("SUNRISE_SYNC_TOKEN", b),
             None => cmd.env_remove("SUNRISE_SYNC_TOKEN"),
         };
-        cmd.output().expect("run sunrise")
+        cmd
     }
 
     /// Run `sunrise <args>` off the runtime's worker threads.
@@ -236,9 +257,10 @@ pub fn sign_in(vault: &Path) {
 /// the 24 words A printed: two devices on one account, both level with the
 /// relay at `relay`, vaults under `root`.
 ///
-/// Recovery is how the CLI adds a device without moving files between
-/// machines today; `sunrise pair`'s four files are the other way, and the
-/// relay-mediated pairing state machine replaces both later.
+/// Recovery is one way the CLI adds a device without moving files between
+/// machines; `sunrise pair join` / `sunrise pair add` over the relay is the
+/// other (`tests/cli_pair_relay.rs`), and `sunrise pair`'s four files the way
+/// with no relay at all.
 pub async fn bootstrap_and_recover(root: &Path, relay: &str) -> (Device, Device) {
     let a = Device::new(&root.join("a"), relay);
     sign_in(&a.vault);

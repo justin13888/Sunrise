@@ -43,7 +43,7 @@ mod cmd;
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::i18n::strings;
-use sunrise_cli::{livesync, login, open_failure, pair, undo_file, vault, zone};
+use sunrise_cli::{livesync, login, open_failure, pair, pair_relay, undo_file, vault, zone};
 use sunrise_core::SystemRng;
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
@@ -178,6 +178,15 @@ async fn run(
         // account identity the joiner could never replace, because the identity
         // a vault belongs to is decided when it is created. Each `pair` step
         // opens exactly what it needs, which for two of them is nothing.
+        // `join` and `add` are the same exchange over the relay
+        // (`sunrise_cli::pair_relay`), and `join` is the one with no vault.
+        "pair" if pair_relay::is_relay_step(rest) => {
+            let cmd = pair_relay::parse(rest)?;
+            let dir = vault_dir();
+            std::fs::create_dir_all(&dir).ok();
+            pair_relay::run(&dir, &cmd, global.json).await?;
+            return Ok(());
+        }
         "pair" => {
             let cmd = pair::parse(rest)?;
             let dir = vault_dir();

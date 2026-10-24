@@ -298,6 +298,33 @@ pub struct PairingFlow {
 /// The relay's progress line: code, digits, done.
 pub const RELAY_STEPS: u8 = 3;
 
+/// The six digits as a person reads them aloud: two groups of three.
+///
+/// Anything that is not six ASCII digits comes back as it was, so a screen
+/// never shows less than the seam produced.
+#[must_use]
+pub fn grouped_sas(sas: &str) -> String {
+    if sas.len() == 6 && sas.bytes().all(|b| b.is_ascii_digit()) {
+        format!("{} {}", &sas[..3], &sas[3..])
+    } else {
+        sas.to_owned()
+    }
+}
+
+/// Whether the digits a person typed are the digits this device shows.
+///
+/// Spaces and dashes are ignored, because [`grouped_sas`] puts one in and a
+/// person copying the other screen may type either; everything else must be
+/// the same digit in the same place. An empty answer is never a match.
+#[must_use]
+pub fn sas_matches(typed: &str, sas: &str) -> bool {
+    let typed: String = typed
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
+    !typed.is_empty() && typed == sas
+}
+
 impl PairingFlow {
     /// A pairing for `intent`, over the relay when this device has one and a
     /// signed-in account to present to it.

@@ -1,5 +1,10 @@
 //! `sunrise pair` — the four-command file exchange that adds a device.
 //!
+//! With a relay, `sunrise pair join` and `sunrise pair add` carry the same
+//! three messages through the relay's rendezvous instead, with the SAS
+//! confirmed on both devices ([`crate::pair_relay`]). This file exchange is
+//! the way that needs no relay, and what follows is about it.
+//!
 //! # The problem this shape solves
 //!
 //! Pairing is three messages since #105, because the account's signing key
@@ -194,7 +199,7 @@ pub async fn run(
 /// No sync driver: these commands run for milliseconds and a relay session
 /// opened for one would just churn. Pairing needs no network at all — the
 /// transport is the user carrying files.
-async fn open_sponsor(
+pub(crate) async fn open_sponsor(
     vault_dir: &Path,
 ) -> Result<std::sync::Arc<Core>, Box<dyn std::error::Error>> {
     let root = vault::resolve(vault_dir, &SystemRng)?;
@@ -315,21 +320,7 @@ async fn accept(
     // keys this device minted. A grant from anywhere else is refused here,
     // before a vault exists to be confused by it.
     let payload = joiner.accept(grant)?;
-
-    // The account's root, not one minted locally. This is the only path in the
-    // binary that keys a vault with a root it did not generate, and it is what
-    // makes the new directory a second *device* rather than a second account.
-    let root = payload.vault_root;
-    vault::adopt(vault_dir, &vault::keystore_dir(), root, &SystemRng)?;
-
-    let (core, _log) = livesync::open_with_plan(
-        vault_dir.to_path_buf(),
-        env!("CARGO_PKG_VERSION"),
-        root,
-        &livesync::SyncPlan::default(),
-        Some(Box::new(payload)),
-    )
-    .await?;
+    let core = adopt(vault_dir, payload).await?;
     let device = sunrise_client_core::ids::hex_id(&core.device_id());
     core.shutdown().await;
 
@@ -340,6 +331,35 @@ async fn accept(
     let _ = std::fs::remove_file(&pending_path);
     tracing::info!(ev = "ui.pair.accepted", result = "ok", "pairing accepted");
     Ok(vec![strings::pair::joined(&device)])
+}
+
+/// Key the empty `vault_dir` with the account's root a completed pairing
+/// handed over, and open it for the first time with the rest of `payload`.
+///
+/// Shared by `pair accept` and `pair join`: the two transports end in the
+/// same payload, and from here the vault cannot tell which carried it.
+///
+/// # Errors
+/// A directory that already holds a vault, a keystore that cannot be
+/// written, and a vault that will not open.
+pub async fn adopt(
+    vault_dir: &Path,
+    payload: sunrise_pairing::PairingPayload,
+) -> Result<std::sync::Arc<Core>, Box<dyn std::error::Error>> {
+    // The account's root, not one minted locally. This is the only path in the
+    // binary that keys a vault with a root it did not generate, and it is what
+    // makes the new directory a second *device* rather than a second account.
+    let root = payload.vault_root;
+    vault::adopt(vault_dir, &vault::keystore_dir(), root, &SystemRng)?;
+    let (core, _log) = livesync::open_with_plan(
+        vault_dir.to_path_buf(),
+        env!("CARGO_PKG_VERSION"),
+        root,
+        &livesync::SyncPlan::default(),
+        Some(Box::new(payload)),
+    )
+    .await?;
+    Ok(core)
 }
 
 #[cfg(test)]

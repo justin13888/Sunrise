@@ -87,8 +87,9 @@ replaced with a gate everywhere else.
 #### The CLI end to end
 
 The in-process scenarios above share one address space; these do not.
-`crates/sunrise-e2e/tests/cli_two_vaults.rs` and
-`crates/sunrise-e2e/tests/cli_traveller.rs` boot the real relay and drive two
+`crates/sunrise-e2e/tests/cli_two_vaults.rs`,
+`crates/sunrise-e2e/tests/cli_traveller.rs` and
+`crates/sunrise-e2e/tests/cli_pair_relay.rs` boot the real relay and drive two
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
 a host with no Apple tooling: everything a user at two terminals does, with
@@ -124,6 +125,14 @@ nothing shared between the devices but the relay.
   (`updated_at_ms` does not move), and B reads the same stored values in UTC.
   The zone precedence (`--tz`, `SUNRISE_TZ`, `sunrise tz set`, the OS) and the
   refusal of an unknown zone are asserted through the binary too.
+- **Pairing over the relay** (`cli_pair_relay.rs`): the path the Apple apps
+  pair by. B has no vault; `sunrise pair join` on it prints a code,
+  `sunrise pair add` on A takes it, both print the same six digits and each
+  confirms them, B registers with the relay, and a task written on either
+  device then shows on the other after sync. Digits declined on either side —
+  typed wrong at A's prompt, or named wrong with `--confirm-sas` on B — end
+  the pairing on both: no vault on B and one device on the account. With no
+  relay or no sign-in the command says so, and which way still works.
 
 Run them with `mise run e2e-cli`, which builds the binary first. The harness
 also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)

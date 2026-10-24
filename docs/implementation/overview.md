@@ -577,8 +577,10 @@ cargo deny check      # advisories, bans, licences, sources
 > **Sync from the CLI:** setting `SUNRISE_SYNC_URL`
 > (e.g. `http://127.0.0.1:8443` — the relay's origin, not a path) starts the
 > sync driver over `SseTransport`;
-> `sunrise pair offer` / `request` / `issue` / `accept` perform the four-step
-> pairing exchange (see the README's live sync demo). The
+> `sunrise pair join` / `sunrise pair add <code>` pair over the relay with the
+> SAS confirmed on both devices, and `sunrise pair offer` / `request` /
+> `issue` / `accept` perform the four-step file exchange (see the README's
+> live sync demo). The
 > `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` variables that used to
 > do it in two files are gone: the one file they moved was the whole account
 > including `ID_S_priv`, which is exactly what stopped travelling.

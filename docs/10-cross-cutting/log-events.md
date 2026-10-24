@@ -148,6 +148,9 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `ui.pair.request_written` | info | `sunrise pair request` minted this device's `D_S`/`D_D` and wrote message 2; `result`. |
 | `ui.pair.grant_written` | info | `sunrise pair issue` certified a joining device and wrote message 3; `result`. The file it names carries the vault root and every Stream key; the event names neither. |
 | `ui.pair.accepted` | info | `sunrise pair accept` adopted a certificate and opened this device's vault for the first time; `result`. |
+| `ui.pair.relay_joined` | info | `sunrise pair join` paired over the relay and opened this device's vault for the first time; `result`. Never the code, the digits or the device id — the command prints those, and they are not log records. |
+| `ui.pair.relay_sponsored` | info | `sunrise pair add` certified a joining device over the relay; `result`. |
+| `ui.pair.relay_stopped` | info | A relay pairing ended without pairing; `result` is `mismatch` (the user declined the digits), `failed`, `no_relay` (the relay did not answer or would not open a session) or `cancelled` (Ctrl-C). |
 
 ---
 

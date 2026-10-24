@@ -233,8 +233,11 @@ menu item flickering as tasks come and go would explain less.
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
 `whoami` (OIDC + PKCE, token stored mode-0600 and device-bound), `review`,
 `export` as an *analytics* export, `vaults`, and **pairing** — `sunrise pair
-offer | request | issue | accept`, the four-command file exchange that makes a
-second vault a second device. The last is security-relevant and unrowed.
+join` / `sunrise pair add <code>`, over the relay with the SAS printed and
+confirmed on both devices through the same client-layer `PairingFlow` and
+`RelayPairing` the Apple apps drive, and `sunrise pair offer | request | issue
+| accept`, the four-command file exchange for a device with no relay. Both make
+a second vault a second device. The last is security-relevant and unrowed.
 
 It replaced `SUNRISE_PAIRING_FILE` and `SUNRISE_EXPORT_PAIRING_FILE`, which are
 **gone**. They moved one file, read before `Core::open` on every subcommand,

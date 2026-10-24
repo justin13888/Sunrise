@@ -115,6 +115,14 @@ pub mod usage {
     ///                                  write .ics to stdout, or to a path
     ///
     ///   devices and identity
+    ///     sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+    ///                                  (on the device being added) pair over the
+    ///                                  relay: show a code, compare the six digits,
+    ///                                  and open the vault here. Needs SUNRISE_SYNC_URL
+    ///                                  and a sign-in
+    ///     sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+    ///                                  (on the device with the vault) pair with the
+    ///                                  device showing <code>, over the relay
     ///     sunrise pair offer --out <file>
     ///                                  (on the device with the vault) write the
     ///                                  account's public identity. Carries no key
@@ -242,7 +250,7 @@ pub mod usage {
     #[must_use]
     pub fn text() -> String {
         let mut out = String::new();
-        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise restore <id>...      bring back deleted tasks, streams, contexts,\n                                 routines or blocks\n    sunrise conflicts [list] [<id>] [--all]\n                                 the fields two devices wrote without seeing\n                                 each other, with every write kept; --all adds\n                                 the quiet ones (priority, energy, ...)\n    sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)\n                                 settle one field on a kept write, or on a new\n                                 value (JSON, or plain text)\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then\n                                 the undated tasks of each stream\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search [--kind <k>] [--all] <query>...\n                                 search everything, grouped by kind; the\n                                 query takes #stream, @context, !1, state:,\n                                 kind:, is:, has: and due<fri-style dates\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n    sunrise export all <dir> [--no-fetch]\n                                 write everything, decrypted, into an empty\n                                 directory: every record as JSON, notes as\n                                 Markdown, blocks as .ics, attachment bytes,\n                                 and a manifest of BLAKE3 digests\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction, under a copy of the vault taken\n                                 first; nothing is sent\n    sunrise rebuild --repair     the same, for a vault that failed its\n                                 integrity check and will not open\n    sunrise backups [restore <file>]\n                                 the copies of this vault kept beside it, or\n                                 put one back in its place\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
+        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise restore <id>...      bring back deleted tasks, streams, contexts,\n                                 routines or blocks\n    sunrise conflicts [list] [<id>] [--all]\n                                 the fields two devices wrote without seeing\n                                 each other, with every write kept; --all adds\n                                 the quiet ones (priority, energy, ...)\n    sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)\n                                 settle one field on a kept write, or on a new\n                                 value (JSON, or plain text)\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then\n                                 the undated tasks of each stream\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search [--kind <k>] [--all] <query>...\n                                 search everything, grouped by kind; the\n                                 query takes #stream, @context, !1, state:,\n                                 kind:, is:, has: and due<fri-style dates\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n    sunrise export all <dir> [--no-fetch]\n                                 write everything, decrypted, into an empty\n                                 directory: every record as JSON, notes as\n                                 Markdown, blocks as .ics, attachment bytes,\n                                 and a manifest of BLAKE3 digests\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]\n                                 (on the device being added) pair over the\n                                 relay: show a code, compare the six digits,\n                                 and open the vault here. Needs SUNRISE_SYNC_URL\n                                 and a sign-in\n    sunrise pair add <code|-> [--yes | --confirm-sas <digits>]\n                                 (on the device with the vault) pair with the\n                                 device showing <code>, over the relay\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction, under a copy of the vault taken\n                                 first; nothing is sent\n    sunrise rebuild --repair     the same, for a vault that failed its\n                                 integrity check and will not open\n    sunrise backups [restore <file>]\n                                 the copies of this vault kept beside it, or\n                                 put one back in its place\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
         out
     }
 }
@@ -3520,18 +3528,26 @@ pub mod identity {
 pub mod pair {
     /// ```text
     /// usage:
+    ///   over the relay (SUNRISE_SYNC_URL, signed in on both devices):
+    ///   sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+    ///                                                      (on the device being added)
+    ///   sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+    ///                                                      (on the device with the vault)
+    ///
+    ///   by files, with no relay:
     ///   sunrise pair offer    --out <file>                 (on the device with the vault)
     ///   sunrise pair request  --offer <file> --out <file>  (on the device being added)
     ///   sunrise pair issue    --request <file> --out <file>(on the device with the vault)
     ///   sunrise pair accept   --response <file>            (on the device being added)
     ///
-    /// Run them in that order, moving each file to the other machine as it is written.
+    /// Run `join` first: it shows the code `add` takes. Run the four file steps in
+    /// that order, moving each file to the other machine as it is written.
     ///
     /// ```
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
-        out.push_str("usage:\n  sunrise pair offer    --out <file>                 (on the device with the vault)\n  sunrise pair request  --offer <file> --out <file>  (on the device being added)\n  sunrise pair issue    --request <file> --out <file>(on the device with the vault)\n  sunrise pair accept   --response <file>            (on the device being added)\n\nRun them in that order, moving each file to the other machine as it is written.\n");
+        out.push_str("usage:\n  over the relay (SUNRISE_SYNC_URL, signed in on both devices):\n  sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]\n                                                     (on the device being added)\n  sunrise pair add <code|-> [--yes | --confirm-sas <digits>]\n                                                     (on the device with the vault)\n\n  by files, with no relay:\n  sunrise pair offer    --out <file>                 (on the device with the vault)\n  sunrise pair request  --offer <file> --out <file>  (on the device being added)\n  sunrise pair issue    --request <file> --out <file>(on the device with the vault)\n  sunrise pair accept   --response <file>            (on the device being added)\n\nRun `join` first: it shows the code `add` takes. Run the four file steps in\nthat order, moving each file to the other machine as it is written.\n");
         out
     }
 
@@ -3645,6 +3661,199 @@ pub mod pair {
         out.push_str("this device joined the account as ");
         out.push_str(device);
         out.push_str("\nrun `sunrise sync --once` against the account's relay to pull its history");
+        out
+    }
+
+    /// ```text
+    /// unknown option {flag} for this pair step
+    ///
+    /// {usage}
+    /// ```
+    #[must_use]
+    pub fn unknown_flag(flag: &str, usage: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown option ");
+        out.push_str(flag);
+        out.push_str(" for this pair step\n\n");
+        out.push_str(usage);
+        out
+    }
+
+    /// --yes and --confirm-sas answer the same question; give one of them
+    #[must_use]
+    pub fn both_answers() -> String {
+        let mut out = String::new();
+        out.push_str("--yes and --confirm-sas answer the same question; give one of them");
+        out
+    }
+
+    /// ```text
+    /// `sunrise pair add` needs the code the other device shows: `sunrise pair add <code>`, or `sunrise pair add -` to read it from stdin
+    /// ```
+    #[must_use]
+    pub fn needs_code() -> String {
+        let mut out = String::new();
+        out.push_str("`sunrise pair add` needs the code the other device shows: `sunrise pair add <code>`, or `sunrise pair add -` to read it from stdin");
+        out
+    }
+
+    /// pairing over the relay needs {var} set to this account's relay. With no relay, pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn needs_relay(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs ");
+        out.push_str(var);
+        out.push_str(" set to this account's relay. With no relay, pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// pairing over the relay needs this account's sign-in: run `sunrise login`, or set {var}
+    #[must_use]
+    pub fn needs_sign_in(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs this account's sign-in: run `sunrise login`, or set ");
+        out.push_str(var);
+        out
+    }
+
+    /// pairing over the relay needs this account's sign-in ({error}): set {issuer} and {client_id} to sign in now, or set {var}
+    #[must_use]
+    pub fn joiner_needs_sign_in(error: &str, issuer: &str, client_id: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs this account's sign-in (");
+        out.push_str(error);
+        out.push_str("): set ");
+        out.push_str(issuer);
+        out.push_str(" and ");
+        out.push_str(client_id);
+        out.push_str(" to sign in now, or set ");
+        out.push_str(var);
+        out
+    }
+
+    /// signing in to your account, so the relay can bring the two devices together
+    #[must_use]
+    pub fn signing_in() -> String {
+        let mut out = String::new();
+        out.push_str("signing in to your account, so the relay can bring the two devices together");
+        out
+    }
+
+    /// ```text
+    /// On the device with your vault, run this within five minutes:
+    ///   sunrise pair add <the code below>
+    ///
+    /// Pairing code:
+    /// ```
+    #[must_use]
+    pub fn show_code() -> String {
+        let mut out = String::new();
+        out.push_str("On the device with your vault, run this within five minutes:\n  sunrise pair add <the code below>\n\nPairing code:");
+        out
+    }
+
+    /// waiting for the other device…
+    #[must_use]
+    pub fn waiting() -> String {
+        let mut out = String::new();
+        out.push_str("waiting for the other device…");
+        out
+    }
+
+    /// ```text
+    /// Both devices now show six digits. Check they are the same on the other device:
+    ///
+    ///     {sas}
+    ///
+    /// ```
+    #[must_use]
+    pub fn compare(sas: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Both devices now show six digits. Check they are the same on the other device:\n\n    ");
+        out.push_str(sas);
+        out.push('\n');
+        out
+    }
+
+    /// Type the digits the other device shows to confirm they match (anything else cancels):
+    #[must_use]
+    pub fn prompt() -> String {
+        let mut out = String::new();
+        out.push_str("Type the digits the other device shows to confirm they match (anything else cancels): ");
+        out
+    }
+
+    /// the digits did not match, so this pairing was thrown away and nothing was sent. Two devices talking directly always show the same digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust.
+    #[must_use]
+    pub fn mismatch() -> String {
+        let mut out = String::new();
+        out.push_str("the digits did not match, so this pairing was thrown away and nothing was sent. Two devices talking directly always show the same digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust.");
+        out
+    }
+
+    /// {error}. Check that the code was copied whole from a device that is pairing over the same relay, and start again from a new code.
+    #[must_use]
+    pub fn failed_code(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str(error);
+        out.push_str(". Check that the code was copied whole from a device that is pairing over the same relay, and start again from a new code.");
+        out
+    }
+
+    /// the relay at {url} did not answer, so nothing was paired. Check {var}, or pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn relay_did_not_answer(url: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay at ");
+        out.push_str(url);
+        out.push_str(" did not answer, so nothing was paired. Check ");
+        out.push_str(var);
+        out.push_str(", or pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// the relay would not start this pairing ({error}). Try again later, or pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn relay_refused(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay would not start this pairing (");
+        out.push_str(error);
+        out.push_str("). Try again later, or pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// pairing cancelled; nothing was sent
+    #[must_use]
+    pub fn cancelled() -> String {
+        let mut out = String::new();
+        out.push_str("pairing cancelled; nothing was sent");
+        out
+    }
+
+    /// paired: the other device now holds this account. It shows in `sunrise devices` here once it has synced
+    #[must_use]
+    pub fn sponsored() -> String {
+        let mut out = String::new();
+        out.push_str("paired: the other device now holds this account. It shows in `sunrise devices` here once it has synced");
+        out
+    }
+
+    /// registered this device with the relay as {device}
+    #[must_use]
+    pub fn registered(device: &str) -> String {
+        let mut out = String::new();
+        out.push_str("registered this device with the relay as ");
+        out.push_str(device);
+        out
+    }
+
+    /// paired, but the relay did not register this device ({error}); run `sunrise bootstrap` to register it
+    #[must_use]
+    pub fn unregistered(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("paired, but the relay did not register this device (");
+        out.push_str(error);
+        out.push_str("); run `sunrise bootstrap` to register it");
         out
     }
 }

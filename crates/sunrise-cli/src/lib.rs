@@ -9,7 +9,8 @@
 //! exists, and [`pair`], which runs before the vault is opened because the
 //! usual path would create one the joiner could never replace, and whose
 //! four-step exchange across two machines is worth driving end to end in one
-//! process. [`i18n`] is here because both halves print prose: it is the
+//! process, and [`pair_relay`], the same pairing with the relay carrying the
+//! messages and the six digits compared on both devices. [`i18n`] is here because both halves print prose: it is the
 //! generated binding of the string catalog `i18n/en.toml`.
 //!
 //! The rest is the decisions a subcommand makes that are worth a unit test
@@ -35,6 +36,7 @@ pub mod livesync;
 pub mod login;
 pub mod open_failure;
 pub mod pair;
+pub mod pair_relay;
 pub mod prefs_text;
 pub mod recover;
 pub mod undo_file;

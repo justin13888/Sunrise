@@ -24,6 +24,7 @@ workspace = true
 default = ["relay"]
 relay = [
     "dep:async-trait",
+    "dep:base64",
     "dep:sunrise-auth",
     "dep:sunrise-pairing",
     "dep:sunrise-relay-client",
@@ -61,6 +62,9 @@ url = { workspace = true }
 # driver dials so a bounded sync can end a session that was up before the app
 # was suspended (`src/sync.rs`).
 async-trait = { workspace = true, optional = true }
+# A pairing's messages cross as base64url text (`pairing::PairingDevice`),
+# whoever carries them.
+base64 = { workspace = true, optional = true }
 # The OIDC credential and its renewal point (`account_session`): the 75% rule
 # is `sunrise-auth`'s, and the account flow reads it rather than restating it.
 sunrise-auth = { workspace = true, optional = true }

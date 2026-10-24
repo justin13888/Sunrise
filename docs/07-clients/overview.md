@@ -111,6 +111,13 @@ attachments
 account
   sunrise vaults               list this machine's vaults, marking the open one
   sunrise login | logout | whoami
+  sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+                               on the device being added: show a code, compare
+                               the six digits, open the vault here (§Pairing)
+  sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+                               on the device with the vault: pair with it
+  sunrise pair offer | request | issue | accept
+                               the same pairing by files, with no relay
 
 plumbing
   sunrise focus <id>           open a focus session on a task
@@ -218,6 +225,15 @@ note, updated_at_ms}`, its times as above and `note` as Markdown text or
 | `sync status` | `{badge, pending, known_incomplete}`, `badge` one of `synced`, `sending`, `catching_up`, `offline`, `changes_missing`, `stopped` (the client layer's `sync_status::sync_badge`) |
 | `conflicts [list] [<id>] [--all]` | array of `{entity, field, class, winner, losers, edited_while_deleted}`: `class` one of `tracked`, `state`, `tombstone`, and with `--all` `quiet` or `merge`; `winner` and each of `losers` a write `{version, device, origin, at_ms, value}`, `origin` `user` or `generated`, `value` the written value as JSON (`null` for a write that left the field unset); `edited_while_deleted` an array of `{version, device, fields}`. Empty when nothing is in conflict |
 
+`pair join` and `pair add` wait on the other device, so with `--json` each
+prints one JSON object per line as it happens rather than one document at the
+end: `{event: "code", code}` (on `join`: the code, exactly as `pair add`
+takes it), `{event: "sas", sas}` (the six digits, ungrouped), and on success
+`{event: "paired"}`, which on `join` also carries `device` (this device's id,
+hex) and `relay_device` (the relay's id for it, `null` if registration
+failed). A pairing that does not pair prints no outcome event and exits
+non-zero with the reason on stderr.
+
 Write commands, `export` (which has its own `json` format), `export all`
 (whose `manifest.json` is its document, [`../04-storage/export-format.md`](../04-storage/export-format.md))
 and the account commands print as they always have.
@@ -238,6 +254,46 @@ both need no quoting and `--value '"3"'` is the text. `sunrise restore <id>`
 undeletes a task, stream, context, routine or block. Both write a full-state
 op until the vault requires `core.field_ops`, which settles every field of
 the entity on the values this device shows (ADR-0065 D4, D9).
+
+### Pairing
+
+`sunrise pair join` and `sunrise pair add` add a device over the relay the
+way the Apple apps do, through the same client-layer code: `PairingFlow`'s
+transitions, run to the end by `PairingRun` against `RelaySeam`, whose calls
+are the `RelayPairing` the UniFFI seam wraps
+(`crates/sunrise-client-core/src/pairing/run.rs`;
+[`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)).
+The CLI's own part (`crates/sunrise-cli/src/pair_relay.rs`) is the arguments,
+the printing, the answer to the digits and the vault directory.
+
+```
+  device being added                    device with the vault
+  sunrise pair join
+    prints the pairing code      -->    sunrise pair add '<code>'
+    both print the same six digits, and each user confirms them
+    opens the vault it was handed       certifies the new device's keys
+```
+
+The device **being added** shows the code, as in the apps: it starts the
+Noise handshake, and the code carries the static key the other device checks
+the handshake against. `join` needs `SUNRISE_SYNC_URL` and a bearer —
+`SUNRISE_SYNC_TOKEN`, a stored sign-in in its vault directory, or, with
+`SUNRISE_OIDC_ISSUER` and `SUNRISE_OIDC_CLIENT_ID` set, a sign-in it runs
+then, because a device with no vault cannot run `sunrise login`. It refuses a
+directory that already holds a vault, and once paired it registers itself with
+the relay and records the id, as `sunrise bootstrap` would. `add` needs the
+vault that created the account (`identity status` says whether this one
+`can_sponsor`), and a sign-in like any relay command. `--email` hashes the
+account's address into the code as the four-byte tag the apps show.
+
+Nothing is sent until the digits are confirmed. `--yes` accepts them;
+`--confirm-sas <digits>` accepts only the digits this device shows (spaces and
+dashes ignored); with neither, the command asks on stderr for the digits the
+other device shows and reads them from stdin. Anything else declines, which
+ends the pairing on both devices with no vault and no certificate. A relay
+that does not answer, or will not open a session, is reported with the file
+exchange — `pair offer`, `request`, `issue`, `accept` — as the way that still
+works; Ctrl-C cancels and drops the relay session.
 
 ### Undo across processes
 
