@@ -1,7 +1,7 @@
 //! Per-field merge (ADR-0044): every field of an entity merges by its own CRDT
 //! type, and the entity row is the read projection of that state.
 //!
-//! [`merge_op`] is the one entry point. It folds one op into the entity's
+//! [`merge_member`] is the one entry point. It folds one op into the entity's
 //! field state (migration 0033's `merge_*` tables) and then writes the merged
 //! entity back to its row. The row writers are private to this module
 //! (`rows`): a row is only ever the fold's output, for a local command's op
@@ -437,14 +437,7 @@ fn legacy_state(inner: &InnerOp) -> Option<Result<Value, ciborium::value::Error>
     })
 }
 
-/// Fold one entity op into its entity's field state and project the entity
-/// to its row (ADR-0044).
-///
-/// `inner` is a legacy full-state op of an entity that merges as
-/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
-/// accepted. `lww` is the
-/// sender's stamp and `stream` the stream the op was sealed under, which
-/// together are the op's merge stamp and its OR-set tag.
+/// [`merge_member`] for an op of no group, as the tests fold one.
 #[cfg(test)]
 pub(super) fn merge_op(
     tx: &Transaction<'_>,
@@ -455,10 +448,18 @@ pub(super) fn merge_op(
     merge_member(tx, inner, lww, stream, None)
 }
 
-/// [`merge_op`] for an op that may be one member of a group (ADR-0065 §6).
-/// A `Patch` names its group itself; `group` is the group of a full-state
-/// member, whose mark `engine::groups` read off it (clarification D13). The
-/// version records it.
+/// Fold one entity op into its entity's field state and project the entity
+/// to its row (ADR-0044).
+///
+/// `inner` is a legacy full-state op of an entity that merges as
+/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
+/// accepted. `lww` is the sender's stamp and `stream` the stream the op was
+/// sealed under, which together are the op's merge stamp and its OR-set tag.
+///
+/// The op may be one member of a group (ADR-0065 §6), which its version
+/// records: a `Patch` names its group itself, and `group` is the group of a
+/// full-state member, whose mark `engine::groups` read off it
+/// (clarification D13).
 pub(super) fn merge_member(
     tx: &Transaction<'_>,
     inner: &InnerOp,
