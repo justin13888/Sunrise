@@ -110,6 +110,7 @@ pub static ALLOWED: &[&str] = &[
     "n_ops",
     "n_retained",
     "n_streams",
+    "n_total",
     "note_h",
     "op_kind",
     "person_h",

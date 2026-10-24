@@ -51,7 +51,6 @@ use sunrise_id::registry::Merge;
 
 use super::chain::{fold_chain, held_op_hash, root_at};
 use super::ids::hex_short;
-use super::merge::fold_rows;
 use super::{Engine, EngineError};
 use sunrise_storage::Db;
 
@@ -524,12 +523,11 @@ impl Engine {
                 |env| env.hlc,
             );
 
-            // Fold every entity row the deleted ops wrote into its field
-            // state first, where the merge has not: an older build's local
-            // command wrote its row and logged its op, and the merge folds
-            // that row the next time an op touches the entity, reading the
-            // op's stream and kind back from the log. Once the op is gone it
-            // could not. A row this build wrote is already folded.
+            // Every op deleted here has been folded into the merge state,
+            // which keeps what it wrote: a row is the fold's output (ADR-0065
+            // §5), and a vault holding a row no op of its log folded was
+            // rebuilt at open (`Engine::rebuild_if_stale`). Its version rows
+            // are kept too (ADR-0065 D10).
             let predicate = format!(
                 "stream_id = ?1 AND device_id = ?2 AND seq <= ?3
                  AND applied_at IS NOT NULL
@@ -539,16 +537,6 @@ impl Engine {
                  AND op_id NOT IN (SELECT named_by FROM chain_expected)"
             );
             let key = params![&stream_id[..], &device[..], i64_of(target)];
-            let targets: Vec<(String, Vec<u8>)> = {
-                let mut stmt = tx.prepare(&format!(
-                    "SELECT DISTINCT target_kind, target_id FROM ops
-                     WHERE {predicate} AND target_id IS NOT NULL
-                       AND inner_kind <> '{DIGEST_KIND}'"
-                ))?;
-                let rows = stmt.query_map(key, |r| Ok((r.get(0)?, r.get(1)?)))?;
-                rows.collect::<rusqlite::Result<_>>()?
-            };
-            fold_rows(tx, &targets)?;
 
             raise_floor(
                 tx,

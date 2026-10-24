@@ -264,10 +264,45 @@ is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
   offer it on a failed open, are still
   [#441](https://github.com/justin13888/Sunrise/issues/441).
 
-Three things inside the cleared tables are kept, because no op derives them:
-a placeholder `streams` row no op has stamped (the lazily seeded Inbox among
-them), each routine's `materialized_until_ms`, and every `search_idx` row
-whose `kind` is not `task`.
+Four things inside the cleared tables are kept, because no op still in the log
+derives them: a placeholder `streams` row no op has stamped (the lazily seeded
+Inbox among them), each routine's `materialized_until_ms`, every `search_idx`
+row whose `kind` is not `task`, and the `entity_versions` rows of compacted
+ops, which compaction keeps
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D10) and whose
+frontiers and heads the rebuild recomputes.
+
+**It runs automatically at open when the fold changed.** A rebuild records the
+version of the fold it ran, `FOLD_V`, in `projection_rebuild`, a source table
+migration 0039 adds empty. `Core::open` calls `Engine::rebuild_if_stale`
+after the base epochs are ensured and before parked ops are replayed or
+routines materialized, and it rebuilds when that row is missing or names
+another `FOLD_V`. So the first open after migration 0039 rebuilds once,
+under the rule-2 backup that migration's open took, and so does the first
+open of any later build whose fold differs; a `STORAGE_V` bump alone does
+not. Migration 0039 relies on it: the version DAG's tables start empty, and
+the rows an older build wrote without folding (before migration 0033, or
+before ADR-0065's third pull request) are folded from their ops rather than
+read back from the row.
+
+How it behaves on a large vault, decided for ADR-0065's fourth pull request:
+
+- **One transaction, in the open, before the vault is reachable.** The vault
+  shows the projection it had or the rebuilt one, never a mix. A rebuild in
+  chunks would commit a half-rebuilt projection that a later chunk's failure
+  or a killed process leaves behind, and one in the background would let
+  reads and folds meet a half-rebuilt projection.
+- **Progress is logged**, as `core.rebuild.progress` every 5,000 ops, after
+  `core.rebuild.stale` names the fold version it replaces. Nothing reaches a
+  client yet, since no subscriber exists before `Core::open` returns.
+- **A failure is not fatal.** The transaction rolls back, `core.rebuild.on_open_failed`
+  is logged, the vault opens on the projection it had, and the next open
+  tries again.
+- **Cost.** A rebuild decrypts and refolds every entity op once per fold
+  change; `crates/sunrise-bench/benches/rebuild.rs` measures it. Should that
+  prove too slow on a device, the change to make is to the rebuild's own
+  cost, for instance by deriving an entity whose history is legacy only from
+  its envelope headers without decrypting, and not to its atomicity.
 
 `rebuild_projection_reproduces_every_projection_table` rebuilds a vault
 written by every command family on two replicas and compares every projection

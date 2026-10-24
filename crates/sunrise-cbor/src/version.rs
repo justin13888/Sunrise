@@ -499,4 +499,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// `blob_cache_backfill`, the record that the one pass indexing blobs from
 /// before the index has run. Schema-only: every new column is NULL and both
 /// tables start empty.
-pub const STORAGE_V: u16 = 38;
+///
+/// `39` is migration `0039_entity_versions.sql` (ADR-0065, issue #447): the
+/// version DAG of every mergeable entity (`entity_versions` and each
+/// version's causal frontier, `entity_frontier`), the concurrent writes a
+/// register keeps (`register_losers`), the members of a group waiting for the
+/// rest (`pending_groups`), and `projection_rebuild`, the record of the last
+/// full rebuild of the projection. Schema-only: every table starts empty, and
+/// the first `Core::open` after it fills them by rebuilding the projection
+/// from the op log, because `projection_rebuild` holds no row.
+pub const STORAGE_V: u16 = 39;

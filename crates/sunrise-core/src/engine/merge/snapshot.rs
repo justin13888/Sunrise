@@ -50,7 +50,7 @@ use super::state::{
     add_delta, add_element, dec, prune_below_floor, read_meta, remove_element, write_map_entry,
     write_meta, write_register, Meta,
 };
-use super::{project_and_write, sync_from_row, to_sql, OpRef, Stamp};
+use super::{project_and_write, OpRef, Stamp};
 use crate::engine::ids::blob16;
 use crate::engine::EngineError;
 use ciborium::value::Value;
@@ -73,33 +73,6 @@ fn kind_of_tag(tag: &str) -> Option<EntityKind> {
 fn merged_spec(kind: EntityKind) -> Option<&'static EntitySpec> {
     let spec = kind.spec();
     (spec.merge == Merge::Lww && spec.storage().is_some()).then_some(spec)
-}
-
-/// Fold each of `targets`' rows into its field state, where the merge has not
-/// folded the row yet: a row from before migration 0033, or one an older
-/// build's local command wrote directly.
-///
-/// `targets` are `(target_kind, target_id)` pairs as the op log stores them;
-/// one whose kind does not merge into a row is skipped. The fold is the one
-/// the merge makes before any op touches an entity: see the merge module's
-/// docs on local writes and seeding from a row. A row this build wrote is
-/// already folded, and is left as it is.
-pub(in crate::engine) fn fold_rows(
-    tx: &Transaction<'_>,
-    targets: &[(String, Vec<u8>)],
-) -> rusqlite::Result<()> {
-    for (tag, raw) in targets {
-        let (Some(kind), Ok(id)) = (kind_of_tag(tag), <[u8; 16]>::try_from(raw.as_slice())) else {
-            continue;
-        };
-        let Some(spec) = merged_spec(kind) else {
-            continue;
-        };
-        if let Some(meta) = sync_from_row(tx, spec, EntityRef::new(kind, id)).map_err(to_sql)? {
-            write_meta(tx, &id, spec.tag, &meta)?;
-        }
-    }
-    Ok(())
 }
 
 // ---- CBOR shapes ----
@@ -311,9 +284,6 @@ impl Scope<'_> {
 
 /// `doc_state` for `stream`: every entity a row of the stream's ops wrote, in
 /// id order, with only the rows those ops wrote. See the module docs.
-///
-/// The caller folds pending rows first ([`fold_rows`]), so that a row an
-/// older build wrote and the merge has not seen yet is in the state dumped.
 pub(in crate::engine) fn dump_stream_state(
     tx: &Transaction<'_>,
     stream: &[u8; 16],
@@ -591,7 +561,6 @@ fn read_entity(v: &Value) -> Result<Entity<'_>, EngineError> {
             v => Some(as_u64(v).ok_or_else(|| malformed("patch_ms"))?),
         },
         head: stamp_at(&stamps, Some(field("head")?), "head")?,
-        row: None,
     };
     Ok(Entity {
         target: EntityRef::new(kind, id),
@@ -622,7 +591,7 @@ fn blob(v: Option<&Value>, what: &str) -> Result<Vec<u8>, EngineError> {
 }
 
 /// `local` joined with `snap`: the bookkeeping of the union of the ops each
-/// covers. `row` stays local: it is this replica's own projection mark.
+/// covers.
 fn join_meta(local: Option<Meta>, snap: &Meta) -> Meta {
     let Some(mut m) = local else {
         return snap.clone();
@@ -655,9 +624,8 @@ fn projection_rank(kind: EntityKind) -> u8 {
 /// Join `doc_state` into this replica's merge state and re-project every
 /// entity it names. Returns those entities, in the order they were projected.
 ///
-/// Each entity's pending row (one an older build wrote) is folded first, so
-/// the join is with everything this replica holds. The whole document is read before anything
-/// is written, so a malformed one writes nothing.
+/// The whole document is read before anything is written, so a malformed one
+/// writes nothing.
 ///
 /// # Errors
 /// [`EngineError::Invalid`] for a document that does not parse, or names an
@@ -678,7 +646,7 @@ pub(in crate::engine) fn join_stream_state(
     for e in &entities {
         let id = e.target.bytes();
         let stamp = |v: Option<&Value>, what: &str| stamp_at(&e.stamps, v, what);
-        let local = sync_from_row(tx, e.spec, e.target)?;
+        let local = read_meta(tx, id)?;
         let before = local.as_ref().and_then(|m| m.legacy);
         let meta = join_meta(local, &e.meta);
         if let Some(floor) = meta.legacy.filter(|l| before.is_none_or(|b| *l > b)) {

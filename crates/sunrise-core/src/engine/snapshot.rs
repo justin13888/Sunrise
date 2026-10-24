@@ -66,7 +66,7 @@ use sunrise_storage::{Db, DbError};
 use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_floor};
 use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
 use super::ids::hex_short;
-use super::merge::{dump_stream_state, fold_rows, join_stream_state};
+use super::merge::{dump_stream_state, join_stream_state};
 use super::oplog::upsert_sync_cursor;
 use super::{Engine, EngineError};
 use crate::events::DomainEvent;
@@ -392,15 +392,6 @@ impl Engine {
             .map(|k| format!("'{k}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        let targets: Vec<(String, Vec<u8>)> = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT DISTINCT target_kind, target_id FROM ops
-                 WHERE stream_id = ?1 AND target_id IS NOT NULL AND inner_kind IN ({in_list})"
-            ))?;
-            let rows = stmt.query_map(params![&stream_id[..]], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        fold_rows(tx, &targets)?;
         let doc_state = dump_stream_state(tx, stream_id)?;
         let retained: Vec<Value> = {
             let mut stmt = tx.prepare(&format!(

@@ -699,8 +699,9 @@ fn a_generated_occurrence_is_generated_on_every_replica() {
 }
 
 /// An entity the vault held before migration 0033 has a row and no field
-/// state. The first `Patch` to reach it seeds the state from the row, so the
-/// fields the patch does not name keep the values the row held.
+/// state. The open rebuilds such a vault from its log before any op reaches
+/// it (`Engine::rebuild_if_stale`), so the fields a later `Patch` does not
+/// name keep the values the row held.
 #[test]
 fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
     let mut p = pair();
@@ -712,7 +713,8 @@ fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
             ..Default::default()
         },
     );
-    // What a vault that took migration 0033 looks like: rows, no state.
+    // What a vault that took migrations 0033 and 0039 looks like: rows, no
+    // state, no versions, and no record of a rebuild.
     for table in [
         "merge_entities",
         "merge_registers",
@@ -720,12 +722,16 @@ fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
         "merge_orset_removes",
         "merge_counter_deltas",
         "merge_map_entries",
+        "entity_versions",
+        "entity_frontier",
+        "projection_rebuild",
     ] {
         p.dbb
             .conn()
             .execute(&format!("DELETE FROM {table}"), [])
             .unwrap();
     }
+    assert!(p.eb.rebuild_if_stale(&mut p.dbb).unwrap().is_some());
     let (energy, _) = emit_patch(
         &p.ea,
         &mut p.dba,

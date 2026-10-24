@@ -4,10 +4,11 @@
 //! # What a rebuild re-derives
 //!
 //! The entity rows, their side tables (`task_contexts`, `task_blockers`,
-//! `block_tasks`), the task rows of the full-text index, and the per-field
-//! merge state they are projected from ([ADR-0044]), are all a function of the
-//! entity ops this replica applied. [`Engine::rebuild_projection`] clears them
-//! and folds those ops again, in one transaction:
+//! `block_tasks`), the task rows of the full-text index, the per-field merge
+//! state they are projected from ([ADR-0044]), and the version DAG beside it
+//! ([ADR-0065] §1–§2), are all a function of the entity ops this replica
+//! applied. [`Engine::rebuild_projection`] clears them and folds those ops
+//! again, in one transaction:
 //!
 //! 1. **The compacted base.** An op below a `compaction_floor` has been folded
 //!    and deleted ([ADR-0059]); a replica that joined a snapshot never held
@@ -15,7 +16,9 @@
 //!    them by stamp, so it is dumped first ([`dump_compacted_base`]).
 //! 2. **Clear** every table [`TABLE_CLASSES`] classifies as a projection,
 //!    keeping the rows named below.
-//! 3. **Join the base back** with [`join_stream_state`], the snapshot join.
+//! 3. **Join the base back** with [`join_stream_state`], the snapshot join,
+//!    and recompute the frontiers and heads of every entity whose compacted
+//!    versions were kept.
 //! 4. **Refold the log.** Every applied entity op still in `ops` is read,
 //!    sorted by its merge stamp `(hlc, device, seq, stream)`, opened, and
 //!    folded through [`materialize_remote`], the step the receive path takes.
@@ -23,6 +26,9 @@
 //!    live projection never held them either, and their replay after an
 //!    upgrade is [`Engine::replay_parked_ops`]'s.
 //! 5. Put back the local columns named below.
+//!
+//! [`Engine::rebuild_projection`] then records the fold version it ran at,
+//! [`FOLD_V`], in `projection_rebuild`.
 //!
 //! The merge is order-independent ([ADR-0044]), so the canonical order is
 //! not what makes the result right. It is what makes the side effects of a
@@ -34,7 +40,8 @@
 //! derives, and is not touched: the op log, keys, identity and devices, sync
 //! cursors and floors, the control-op folds (revocations, features), and
 //! local-only tables such as `device_preferences` and `blob_cache`. Inside
-//! the cleared tables three things survive, because no op derives them:
+//! the cleared tables four things survive, because no op still in the log
+//! derives them:
 //!
 //! - a placeholder `streams` row no op has stamped (`lww_device IS NULL`),
 //!   which `ensure_stream_row` wrote when an op named a stream before its
@@ -42,7 +49,21 @@
 //! - each routine's `materialized_until_ms`, how far this device has
 //!   generated its occurrences, which is never on the wire;
 //! - every `search_idx` row whose `kind` is not `task`, since only task rows
-//!   are projected.
+//!   are projected;
+//! - every `entity_versions` row of a compacted op. Compaction keeps them
+//!   (ADR-0065 D10) and the merge state's base carries no versions, so they
+//!   are kept here as compaction kept them, and their frontiers recomputed.
+//!
+//! # When a rebuild runs on its own
+//!
+//! [`Engine::rebuild_if_stale`], which `Core::open` calls before anything
+//! reads or folds into the projection, rebuilds a vault whose
+//! `projection_rebuild` row is missing or names another [`FOLD_V`]: the first
+//! open after migration 0039, and the first open of a build whose fold
+//! differs. It is the same one-transaction rebuild, so a vault shows either
+//! the projection it had or the rebuilt one, never a mix, and one that fails
+//! is rolled back and tried again at the next open. Its progress is logged
+//! every [`PROGRESS_EVERY`] ops.
 //!
 //! [`TABLE_CLASSES`] classifies every table in the schema. A test fails when
 //! a migration adds a table it does not classify, or when the registry
@@ -50,14 +71,18 @@
 //!
 //! [ADR-0044]: ../../../../docs/11-adr/0044-per-field-ops.md
 //! [ADR-0059]: ../../../../docs/11-adr/0059-client-op-log-compaction.md
+//! [ADR-0065]: ../../../../docs/11-adr/0065-copy-on-write-entity-versions.md
 
 use super::ids::{blob16, hex_short};
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
-use super::merge::{check_patch, dump_compacted_base, join_stream_state, PatchProblem, Stamp};
+use super::merge::{
+    check_patch, dump_compacted_base, join_stream_state, recompute_versions, PatchProblem, Stamp,
+    FOLD_V,
+};
 use super::snapshot::in_tx;
 use super::{Engine, EngineError};
 use crate::inner_op::{decode_inner_op, InnerOp};
-use rusqlite::{params, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_crypto::decode_envelope;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_id::registry::{Merge, ENTITIES};
@@ -106,6 +131,11 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("merge_orset_adds", Projection),
         ("merge_orset_removes", Projection),
         ("merge_counter_deltas", Projection),
+        // The version DAG (ADR-0065).
+        ("entity_versions", Projection),
+        ("entity_frontier", Projection),
+        ("register_losers", Projection),
+        ("pending_groups", Projection),
         // Entity rows.
         ("tasks", Projection),
         ("contexts", Projection),
@@ -156,6 +186,8 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("blob_fetches", Source),
         ("blob_cache", Source),
         ("blob_cache_backfill", Source),
+        // The record of the last rebuild, which the rebuild writes.
+        ("projection_rebuild", Source),
     ]
 };
 
@@ -186,6 +218,9 @@ struct Pending {
     at: Stamp,
     rowid: i64,
 }
+
+/// How many ops a rebuild folds between two `core.rebuild.progress` events.
+const PROGRESS_EVERY: u64 = 5_000;
 
 /// The page cache a rebuild runs with, as `PRAGMA cache_size` takes it: a
 /// negative number is KiB, so 128 MiB. See [`Engine::rebuild_projection`].
@@ -219,8 +254,19 @@ impl Kept {
     }
 }
 
+/// Whether the op-ref in columns `stream`, `device`, `seq` of `table` is at or
+/// below a compaction floor: its op has been folded and deleted.
+fn compacted(table: &str, stream: &str, device: &str, seq: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM compaction_floor f
+                 WHERE f.stream_id = {table}.{stream} AND f.device_id = {table}.{device}
+                   AND {table}.{seq} <= f.seq)"
+    )
+}
+
 /// Clear every [`TableClass::Projection`] table, keeping the rows the module
-/// docs name: placeholder stream rows, and search rows of other kinds.
+/// docs name: placeholder stream rows, search rows of other kinds, and the
+/// versions of compacted ops.
 fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     // Rows reference each other (a task its stream, a stream its parent).
     // Every reference is whole again once the refold has run, which is
@@ -233,6 +279,10 @@ fn clear(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         let sql = match *table {
             "streams" => "DELETE FROM streams WHERE lww_device IS NOT NULL".to_owned(),
             "search_idx" => "DELETE FROM search_idx WHERE kind = 'task'".to_owned(),
+            "entity_versions" => format!(
+                "DELETE FROM entity_versions WHERE NOT {}",
+                compacted("entity_versions", "stream", "device", "seq")
+            ),
             other => format!("DELETE FROM {other}"),
         };
         tx.execute(&sql, [])?;
@@ -285,10 +335,11 @@ impl Engine {
     /// entity ops are folded into and fold them again, in one transaction.
     /// The `engine::rebuild` module docs give the steps and what is kept.
     ///
-    /// Nothing is sent and no clock is read: the result is a function of the
-    /// vault's op log, its compacted merge state and the local rows it keeps.
-    /// No [`DomainEvent`](crate::events::DomainEvent) is produced; a client
-    /// re-reads what it shows.
+    /// Nothing is sent, and the projection is a function of the vault's op
+    /// log, its compacted merge state and the local rows it keeps. The clock
+    /// is read once, for when `projection_rebuild` records the rebuild
+    /// finished. No [`DomainEvent`](crate::events::DomainEvent) is produced; a
+    /// client re-reads what it shows.
     ///
     /// # Errors
     /// [`EngineError::Invalid`] when an applied op in the log cannot be
@@ -305,7 +356,17 @@ impl Engine {
         let cache: i64 = db.conn().query_row("PRAGMA cache_size", [], |r| r.get(0))?;
         db.conn()
             .execute_batch(&format!("PRAGMA cache_size = {REBUILD_CACHE_KIB}"))?;
-        let result = in_tx(db, |tx| self.rebuild_in(tx));
+        let now_ms = self.clock.now_ms();
+        let result = in_tx(db, |tx| {
+            let report = self.rebuild_in(tx)?;
+            tx.execute(
+                "INSERT INTO projection_rebuild (id, fold_v, done_at_ms) VALUES (1, ?1, ?2)
+                 ON CONFLICT (id) DO UPDATE SET
+                    fold_v = excluded.fold_v, done_at_ms = excluded.done_at_ms",
+                params![FOLD_V, now_ms],
+            )?;
+            Ok(report)
+        });
         db.conn()
             .execute_batch(&format!("PRAGMA cache_size = {cache}"))?;
         let report = result.inspect_err(|_| {
@@ -324,6 +385,41 @@ impl Engine {
         Ok(report)
     }
 
+    /// Rebuild the projection when the vault was last rebuilt at another
+    /// [`FOLD_V`] than this build's, or never: the first open after
+    /// migration 0039, or the first open of a build whose fold differs. See
+    /// the [module docs](self#when-a-rebuild-runs-on-its-own).
+    ///
+    /// Returns what the rebuild did, or `None` when the projection was
+    /// current and nothing ran.
+    ///
+    /// # Errors
+    /// As [`Self::rebuild_projection`], which leaves the projection as it was
+    /// and `projection_rebuild` unwritten, so the next call tries again.
+    pub(crate) fn rebuild_if_stale(
+        &self,
+        db: &mut Db,
+    ) -> Result<Option<RebuildReport>, EngineError> {
+        let at: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT fold_v FROM projection_rebuild WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if at == Some(i64::from(FOLD_V)) {
+            return Ok(None);
+        }
+        tracing::info!(
+            ev = "core.rebuild.stale",
+            from_v = at,
+            to_v = FOLD_V,
+            "the projection was built by another fold, and is rebuilt from the op log"
+        );
+        self.rebuild_projection(db).map(Some)
+    }
+
     /// [`Self::rebuild_projection`] inside the caller's transaction.
     pub(super) fn rebuild_in(&self, tx: &Transaction<'_>) -> Result<RebuildReport, EngineError> {
         let base = dump_compacted_base(tx)?;
@@ -332,6 +428,7 @@ impl Engine {
         clear(tx)?;
         shadow_search(tx)?;
         let compacted = join_stream_state(tx, &base)?;
+        recompute_kept_versions(tx)?;
         let mut report = RebuildReport {
             compacted_entities: compacted.len() as u64,
             ..RebuildReport::default()
@@ -351,7 +448,16 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let signers = self.device_signing_keys(tx)?;
         let mut stmt = tx.prepare("SELECT envelope FROM ops WHERE rowid = ?1")?;
-        for op in pending {
+        let total = pending.len() as u64;
+        for (done, op) in (0u64..).zip(pending) {
+            if done > 0 && done % PROGRESS_EVERY == 0 {
+                tracing::info!(
+                    ev = "core.rebuild.progress",
+                    n_ops = done,
+                    n_total = total,
+                    "the projection rebuild is part way through the op log"
+                );
+            }
             let (stream, device, seq) = (op.at.stream, op.at.device, op.at.seq);
             let bytes: Vec<u8> = stmt.query_row(params![op.rowid], |r| r.get(0))?;
             let env = decode_envelope(&bytes)
@@ -400,6 +506,21 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Recompute the frontiers and heads of every entity whose compacted versions
+/// [`clear`] kept, from those versions alone. The refold then admits the rest
+/// onto them as the live fold admitted them, late arrivals included.
+fn recompute_kept_versions(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    let ids: Vec<Vec<u8>> = {
+        let mut stmt = tx.prepare("SELECT DISTINCT entity_id FROM entity_versions ORDER BY 1")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for id in ids {
+        recompute_versions(tx, &blob16(&id))?;
+    }
+    Ok(())
 }
 
 /// Every applied entity op in the log, by merge stamp. Only each envelope's
@@ -466,14 +587,14 @@ pub(super) mod check {
     }
 
     /// Check the rebuild after every command and delivery on this thread.
-    pub(in crate::engine) fn enable() {
+    pub(crate) fn enable() {
         AFTER_EVERY_WRITE.with(|c| c.set(true));
     }
 
     /// Stop the after-every-write check on this thread for the rest of the
     /// test: it built rows no op wrote, as a vault older than the merge holds
     /// them, and no rebuild of the log can reproduce those.
-    pub(in crate::engine) fn disable() {
+    pub(crate) fn disable() {
         AFTER_EVERY_WRITE.with(|c| c.set(false));
     }
 

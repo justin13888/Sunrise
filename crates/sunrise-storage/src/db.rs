@@ -1391,6 +1391,47 @@ mod tests {
         assert!(count >= 1);
     }
 
+    /// Migration 0039 adds the version DAG's tables empty, with no
+    /// `projection_rebuild` row, which is what makes the next open rebuild
+    /// the projection, and leaves the merge state it will be rebuilt from,
+    /// `merge_entities.row_*` included, as it was.
+    #[test]
+    fn migration_0039_adds_the_version_tables_empty_and_keeps_the_merge_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        let db = Db::create_at_storage_v(&path, &vault_key(), 38).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO merge_entities
+                 (entity_id, kind, created, head_hlc_ms, head_hlc_logical, head_device,
+                  head_seq, head_stream, row_hlc_ms, row_hlc_logical, row_device, row_seq)
+                 VALUES (X'01', 'task', 1, 5, 0, X'02', 3, X'03', 5, 0, X'02', 3)",
+                [],
+            )
+            .unwrap();
+        drop(db);
+
+        let db = Db::open(&path, &vault_key()).unwrap();
+        for table in [
+            "entity_versions",
+            "entity_frontier",
+            "register_losers",
+            "pending_groups",
+            "projection_rebuild",
+        ] {
+            let n: i64 = db
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("`{table}` after 0039: {e}"));
+            assert_eq!(n, 0, "`{table}` starts empty");
+        }
+        let row_seq: i64 = db
+            .conn()
+            .query_row("SELECT row_seq FROM merge_entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(row_seq, 3, "the merge state is left for the rebuild");
+    }
+
     // --- pre-migration backup (§Migration rigor rule 2) -------------------
 
     /// The version one migration behind this build, so every open below has

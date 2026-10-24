@@ -42,6 +42,24 @@ const OP_DEP: [u8; 16] = [0x0c; 16];
 const DEFERRED_OP: [u8; 16] = [0x0d; 16];
 const PARKED_OP: [u8; 16] = [0x0e; 16];
 const NEXT_IDENTITY: [u8; 16] = [0x2a; 16];
+const GROUP_ID: [u8; 16] = [0x2b; 16];
+
+/// CBOR `[[h'01' * 16, h'02' * 16, 7]]`: a version's one parent op-ref.
+const VERSION_PARENTS: [u8; 37] = {
+    let mut b = [0u8; 37];
+    b[0] = 0x81;
+    b[1] = 0x83;
+    b[2] = 0x50;
+    b[19] = 0x50;
+    b[36] = 0x07;
+    let mut i = 0;
+    while i < 16 {
+        b[3 + i] = 0x01;
+        b[20 + i] = 0x02;
+        i += 1;
+    }
+    b
+};
 
 /// A stamp one millisecond into each row's own range, so no two columns
 /// share a value by accident.
@@ -802,6 +820,81 @@ pub(super) const SEED: &[SeedRow] = &[
     SeedRow {
         table: "blob_cache_backfill",
         values: &[("id", I(1)), ("done_at_ms", I(277))],
+    },
+    // One version of the seed task: a generated create in a group, naming
+    // one parent, and the entity's head.
+    SeedRow {
+        table: "entity_versions",
+        values: &[
+            ("entity_id", B(&TASK_IN_ALPHA)),
+            ("stream", B(&STREAM_ALPHA)),
+            ("device", B(&DEVICE_LAPTOP)),
+            ("seq", I(278)),
+            ("hlc_ms", I(HLC_MS + 50)),
+            ("hlc_logical", I(279)),
+            ("kind", T(b"patch")),
+            ("origin", T(b"generated")),
+            ("is_create", I(1)),
+            ("parents", B(&VERSION_PARENTS)),
+            ("group_id", B(&GROUP_ID)),
+            ("group_size", I(2)),
+            // CBOR `["title"]`.
+            ("fields", B(b"\x81\x65title")),
+            ("is_head", I(1)),
+        ],
+    },
+    // One entry of that version's causal frontier.
+    SeedRow {
+        table: "entity_frontier",
+        values: &[
+            ("entity_id", B(&TASK_IN_ALPHA)),
+            ("v_stream", B(&STREAM_ALPHA)),
+            ("v_device", B(&DEVICE_LAPTOP)),
+            ("v_seq", I(278)),
+            ("device", B(&DEVICE_RETIRED)),
+            ("hlc_ms", I(HLC_MS + 51)),
+            ("hlc_logical", I(280)),
+            ("seq", I(281)),
+            ("stream", B(&STREAM_BETA)),
+        ],
+    },
+    // A concurrent title the register keeps beside its winner.
+    SeedRow {
+        table: "register_losers",
+        values: &[
+            ("entity_id", B(&TASK_IN_ALPHA)),
+            ("field", T(b"title")),
+            ("stream", B(&STREAM_ALPHA)),
+            ("device", B(&DEVICE_RETIRED)),
+            ("seq", I(282)),
+            ("hlc_ms", I(HLC_MS + 52)),
+            ("hlc_logical", I(283)),
+            // CBOR text "lost".
+            ("value", B(b"\x64lost")),
+            ("origin", T(b"user")),
+            ("legacy", I(1)),
+        ],
+    },
+    // A group member, applied.
+    SeedRow {
+        table: "pending_groups",
+        values: &[
+            ("group_id", B(&GROUP_ID)),
+            ("group_size", I(3)),
+            ("op_id", B(&OP_ID)),
+            ("hlc_ms", I(HLC_MS + 53)),
+            ("hlc_logical", I(284)),
+            ("device", B(&DEVICE_LAPTOP)),
+            ("seq", I(285)),
+            ("stream", B(&STREAM_ALPHA)),
+            ("applied", I(1)),
+            ("received_at_ms", I(286)),
+        ],
+    },
+    // The last projection rebuild.
+    SeedRow {
+        table: "projection_rebuild",
+        values: &[("id", I(1)), ("fold_v", I(287)), ("done_at_ms", I(288))],
     },
 ];
 

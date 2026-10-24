@@ -15,23 +15,16 @@ use super::rows::{
 };
 use super::state::{dec, enc, hlc_of, Meta};
 use super::{refresh, to_sql, OpRef, Stamp};
-use crate::engine::attachment::read_attachment;
-use crate::engine::block::read_block;
-use crate::engine::context::read_context;
 use crate::engine::ids::{blob16, ms_to_ts};
 use crate::engine::lww::{read_row_lww, LwwStamp, RowLww};
-use crate::engine::preferences::read_preferences;
-use crate::engine::routine::read_routine;
-use crate::engine::stream::{ensure_stream_row, read_stream};
-use crate::engine::task::read_task;
-use crate::engine::{EngineError, META_STREAM};
+use crate::engine::stream::ensure_stream_row;
 use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::{
     inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, Stream, Task, TaskState,
 };
-use sunrise_id::registry::{Crdt, EntitySpec, Owner};
+use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// What a field reads as when no write has reached it, for the fields whose
@@ -383,7 +376,7 @@ pub(in crate::engine) fn map_over_whole(
 // ---- row I/O ----
 
 /// The row stamp of `id` in its table, `None` when there is no row.
-pub(super) fn row_stamp(
+fn row_stamp(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
     id: &[u8; 16],
@@ -392,67 +385,6 @@ pub(super) fn row_stamp(
         return Ok(None);
     };
     read_row_lww(tx, storage.table, storage.key, id)
-}
-
-/// The entity's row read back as the full-state value a legacy op would
-/// carry.
-pub(super) fn read_row_state(
-    tx: &Transaction<'_>,
-    kind: EntityKind,
-    id: &[u8; 16],
-) -> Result<Option<Value>, EngineError> {
-    let value = match kind {
-        EntityKind::Task => read_task(tx, id)?.map(|t| Value::serialized(&t)),
-        EntityKind::Stream => read_stream(tx, id)?.map(|s| Value::serialized(&s)),
-        EntityKind::Context => read_context(tx, id)?.map(|c| Value::serialized(&c)),
-        EntityKind::Routine => read_routine(tx, id)?.map(|r| Value::serialized(&r)),
-        EntityKind::Block => read_block(tx, id)?.map(|b| Value::serialized(&b)),
-        EntityKind::Attachment => read_attachment(tx, id)?.map(|a| Value::serialized(&a)),
-        EntityKind::Preferences => read_preferences(tx, id)?.map(|p| Value::serialized(&p)),
-        _ => None,
-    };
-    value
-        .transpose()
-        .map_err(|e| EngineError::Cbor(e.to_string()))
-}
-
-/// The stream an op on this entity was sealed under, and its op-log
-/// `inner_kind`, for an op this replica logged: read from `ops` by the op's
-/// device and `seq`. An op this replica has no log row for has no kind, and
-/// its stream falls back to the entity's owning stream as the registry
-/// declares it.
-pub(super) fn logged_op(
-    tx: &Transaction<'_>,
-    spec: &'static EntitySpec,
-    id: &[u8; 16],
-    device: &[u8],
-    seq: u64,
-    state: &Value,
-) -> rusqlite::Result<([u8; 16], Option<String>)> {
-    let found: Option<(Vec<u8>, String)> = tx
-        .query_row(
-            "SELECT stream_id, inner_kind FROM ops
-             WHERE target_id = ? AND device_id = ? AND seq = ?
-             ORDER BY rowid DESC LIMIT 1",
-            params![&id[..], device, seq],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if let Some((stream, kind)) = found {
-        return Ok((blob16(&stream), Some(kind)));
-    }
-    let owned_by = |field: &str| -> Option<[u8; 16]> {
-        let entries = state.as_map()?;
-        let v = entries.iter().find(|(k, _)| k.as_text() == Some(field))?;
-        EntityRef::parse_any(v.1.as_text()?)
-            .ok()
-            .map(|r| *r.bytes())
-    };
-    let stream = match spec.owner {
-        Owner::Field(field) => owned_by(field).unwrap_or(META_STREAM),
-        Owner::Meta | Owner::Parent | Owner::Unowned => META_STREAM,
-    };
-    Ok((stream, None))
 }
 
 /// Whether `table` holds a row for `id`.

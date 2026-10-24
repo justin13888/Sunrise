@@ -201,6 +201,27 @@ impl Core {
         // device arriving by pairing has already imported the account's epochs
         // in `Keychain::open` above, so this finds them and mints nothing.
         engine.ensure_base_epochs(&mut db)?;
+        // Rebuild the projection from the op log when it was folded by
+        // another version of the fold, or never: the first open after
+        // migration 0039, which adds the version DAG's tables empty, and the
+        // first open of a build whose fold differs (ADR-0065 §7,
+        // `migrations.md` §Migration rigor rule 4). Before anything below
+        // reads the projection or folds an op into it: a parked op's replay
+        // and routine materialization both do.
+        //
+        // One transaction, synchronously, here: a vault shows the projection
+        // it had or the rebuilt one, never a mix, and nothing is reachable
+        // until the open returns. Its progress is logged. A rebuild that
+        // fails is rolled back, so the vault opens on the projection it had,
+        // and the next open tries again: an op the rebuild cannot read is
+        // damage to report, not a reason to refuse the vault.
+        if let Err(e) = engine.rebuild_if_stale(&mut db) {
+            tracing::warn!(
+                ev = "core.rebuild.on_open_failed",
+                cause = %e,
+                "the projection could not be rebuilt at open; the vault opens on the one it had"
+            );
+        }
         // Replay what an earlier build parked because it did not know the
         // op's kind (issue #320, ADR-0045 §4). This is the upgrade the parking
         // was waiting for, and nothing else would bring those ops back: they

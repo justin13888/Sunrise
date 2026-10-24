@@ -5,9 +5,8 @@
 //! rows, because a Task's contexts live in a join table the Task does not own
 //! (ADR-0044 §5).
 
-use crate::engine::ids::{blob16, encode_unknowns, extra_over_opaque, ExtraTable};
+use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
-use crate::engine::merge::seed_tasks_before_purge;
 use rusqlite::{params, Transaction};
 use sunrise_domain::Context;
 use sunrise_id::{EntityKind, EntityRef};
@@ -86,11 +85,8 @@ pub(in crate::engine::merge) fn purge_context_from_tasks(
         let rows = stmt.query_map(params![&ctx[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    // The membership rows are what an unseeded task's field state is seeded
-    // from. Fold them in while they still name the context, so a restore of
-    // it can show it again (ADR-0044 §5).
-    let tasks: Vec<[u8; 16]> = task_ids.iter().map(|raw| blob16(raw)).collect();
-    seed_tasks_before_purge(tx, &tasks)?;
+    // Only the rows go: each task's `contexts` set keeps the context, so a
+    // restore of it shows it again (ADR-0044 §5).
     tx.execute(
         "DELETE FROM task_contexts WHERE context_id = ?",
         params![&ctx[..]],
