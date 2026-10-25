@@ -246,6 +246,20 @@ pub struct Routine {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// The root of the series this routine continues, when an edit of
+    /// another routine "this and future" created it
+    /// (`docs/02-domain/routines-and-recurrence.md` §Edit scope, #331).
+    /// `None` for a routine that was never split off: it is its own root.
+    ///
+    /// It names the series' root, the first routine of the chain, not the
+    /// routine split: the root keys every occurrence's task id
+    /// ([`Routine::series_root`]), and naming it directly means no reader has
+    /// to walk a chain whose links may not have arrived yet. Written once, at
+    /// the split. Absent on the wire when `None`, so every routine that was
+    /// never split encodes as it did before `DOC_SCHEMA_V` 22; an op carrying
+    /// it uses the feature `routine.series`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_from: Option<EntityRef>,
     /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
     /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
     /// `docs/10-cross-cutting/protocol-versioning.md` §7.

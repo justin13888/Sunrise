@@ -370,6 +370,8 @@ What is left, each tracked:
 - **Pending groups are not surfaced** (plan risk R10): a member whose stream
   key a replica never gets holds its group pending, and no query reports it.
   It belongs with shared streams (§What would force revisiting this, 2).
-- **#331, #333 and #334** keep the boxes of theirs this record does not
-  cover: edit scopes, template propagation and catch-up (#331), the plan and
-  deadline split and lateness (#334).
+- **#333 and #334** keep the boxes of theirs this record does not cover:
+  the plan and deadline split and lateness (#334). #331's (edit scopes,
+  template propagation and catch-up) were delivered on this record: a split is
+  one group (§6), and an occurrence is untouched while every version of it is
+  `"origin": "generated"` (§1, §3).

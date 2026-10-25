@@ -446,6 +446,11 @@ pub struct TaskItem {
     /// When the user last kept the task in the triage queue, or none.
     #[uniffi(default = None)]
     pub late_acknowledged_at: Option<jiff::Timestamp>,
+    /// A routine occurrence generated planned where it breaks a `hard`
+    /// scheduling constraint (#331): generated all the same, and flagged
+    /// until it is re-planned.
+    #[uniffi(default = false)]
+    pub hard_constraint_violated: bool,
 }
 
 impl From<&Task> for TaskItem {
@@ -473,6 +478,7 @@ impl From<&Task> for TaskItem {
             assignee,
             routine_id,
             routine_occurrence,
+            hard_constraint_violated,
             reminder_lead_s,
             sort_order,
             triaged_at,
@@ -517,6 +523,7 @@ impl From<&Task> for TaskItem {
             target_at: target_at.as_ref().map(TimeValue::from),
             cancel_reason: t.drop_reason().map(str::to_owned),
             late_acknowledged_at: *late_acknowledged_at,
+            hard_constraint_violated: *hard_constraint_violated,
         }
     }
 }
@@ -1150,6 +1157,10 @@ pub struct RoutineItem {
     /// The last completion, with its kind (an instant).
     #[uniffi(default = None)]
     pub last_completed_at_time: Option<TimeValue>,
+    /// The root of the series this routine continues, when an edit "this
+    /// and future" split it off (#331); none for a routine never split off.
+    #[uniffi(default = None)]
+    pub split_from: Option<EntityRef>,
 }
 
 impl From<&Routine> for RoutineItem {
@@ -1179,6 +1190,7 @@ impl From<&Routine> for RoutineItem {
             paused_until,
             archived,
             deleted,
+            split_from,
             unknown: _,
         } = r;
         Self {
@@ -1213,6 +1225,7 @@ impl From<&Routine> for RoutineItem {
             ends_at_time: ends_at.as_ref().map(TimeValue::from),
             paused_until_time: paused_until.as_ref().map(TimeValue::from),
             last_completed_at_time: last_completed_at.as_ref().map(TimeValue::from),
+            split_from: *split_from,
         }
     }
 }
@@ -1266,6 +1279,7 @@ impl From<RoutineItem> for Routine {
                 .or_else(|| r.paused_until.map(Into::into)),
             archived: r.archived,
             deleted: r.deleted,
+            split_from: r.split_from,
             unknown: sunrise_domain::Unknowns::new(),
         }
         .normalized()
@@ -1396,6 +1410,37 @@ pub struct RoutineEdit {
     /// over `set_paused_until`.
     #[uniffi(default = None)]
     pub set_paused_until_time: Option<TimeValue>,
+    /// How far the edit reaches (#331); the whole series when absent.
+    #[uniffi(default = None)]
+    pub scope: Option<EditScopeIn>,
+}
+
+/// How far a routine edit reaches; see [`sunrise_domain::EditScope`]. Each
+/// occurrence is named by its key, `YYYY-MM-DDTHH:MM`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum EditScopeIn {
+    /// That occurrence's task only.
+    This {
+        /// The occurrence.
+        key: String,
+    },
+    /// The occurrence and every one after it: the series is split there.
+    ThisAndFuture {
+        /// The first occurrence the edit applies to.
+        key: String,
+    },
+    /// The whole series.
+    All,
+}
+
+impl From<EditScopeIn> for sunrise_domain::EditScope {
+    fn from(s: EditScopeIn) -> Self {
+        match s {
+            EditScopeIn::This { key } => Self::This { key },
+            EditScopeIn::ThisAndFuture { key } => Self::ThisAndFuture { key },
+            EditScopeIn::All => Self::All,
+        }
+    }
 }
 
 impl From<RoutineEdit> for sunrise_domain::RoutinePatch {

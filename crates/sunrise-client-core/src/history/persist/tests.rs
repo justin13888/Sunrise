@@ -91,6 +91,9 @@ fn every_patch_family_and_both_stacks_round_trip() {
             },
         }],
         vec![Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::ThisAndFuture {
+                key: "2026-03-06T09:00".into(),
+            },
             id: routine,
             patch: RoutinePatch {
                 paused: Some(false),

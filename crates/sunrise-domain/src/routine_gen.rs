@@ -541,6 +541,12 @@ pub fn occurrence_key_at(tz: &str, at: Timestamp) -> Result<String, ExpandError>
     Ok(format_key(dt.date(), dt.time()))
 }
 
+mod edit;
 mod series;
+
+pub use edit::{
+    catchup_title, catchup_view, split_routine_id, CatchupView, EditScope, PatchEffect,
+    SeriesSplit, SplitError,
+};
 
 pub use series::{parse_occurrence_key, routine_rows, RoutineRow};

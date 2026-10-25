@@ -639,7 +639,9 @@ impl Engine {
             Command::UpdateContext { id, patch } => self.update_context(db, id, patch),
             Command::DeleteContext(id) => self.delete_context(db, id),
             Command::CreateRoutine(d) => self.create_routine(db, d),
-            Command::UpdateRoutine { id, patch } => self.update_routine(db, id, patch),
+            Command::UpdateRoutine { id, scope, patch } => {
+                self.update_routine(db, id, scope, patch)
+            }
             Command::DeleteRoutine(id) => self.delete_routine(db, id),
             Command::SkipRoutineOccurrence { id, occurrence_key } => {
                 self.skip_routine_occurrence(db, id, occurrence_key)
@@ -772,6 +774,7 @@ impl Engine {
             Query::TodayView { now_ms, contexts } => self.query_today_view(db, now_ms, &contexts),
             Query::Lateness { ids } => self.query_lateness(db, &ids),
             Query::Triage => self.query_triage(db),
+            Query::LapsedOccurrences { now_ms } => self.query_lapsed_occurrences(db, now_ms),
             Query::Conflicts {
                 entity,
                 include_quiet,

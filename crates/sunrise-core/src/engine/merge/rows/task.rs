@@ -38,9 +38,9 @@ pub(in crate::engine::merge) fn insert_task_row(
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
           planned_at_civil, hard_due_at_civil, completed_at_civil, sort_order, triaged_at_ms,
           target_at_ms, target_at_kind, target_at_tz, target_at_civil,
-          cancel_reason, late_acknowledged_at_ms)
+          cancel_reason, late_acknowledged_at_ms, hard_constraint_violated)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -87,6 +87,7 @@ pub(in crate::engine::merge) fn insert_task_row(
             target_civil,
             t.cancel_reason,
             t.late_acknowledged_at.map(|at| at.as_millisecond()),
+            i64::from(t.hard_constraint_violated),
         ],
     )?;
     Ok(())
@@ -123,7 +124,8 @@ pub(in crate::engine::merge) fn update_task_row(
             cancel_reason = ?, late_acknowledged_at_ms = ?,
             deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?, extra = ?, sort_order = ?,
-            triaged_at_ms = ?, updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+            routine_id = ?, routine_occurrence = ?,
+            triaged_at_ms = ?, hard_constraint_violated = ?, updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -159,7 +161,10 @@ pub(in crate::engine::merge) fn update_task_row(
             constraints_blob,
             extra_blob,
             t.sort_order,
+            t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
+            t.routine_occurrence.map(|d| d.as_millisecond()),
             t.triaged_at.map(|at| at.as_millisecond()),
+            i64::from(t.hard_constraint_violated),
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
             lww.hlc.logical,

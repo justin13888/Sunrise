@@ -297,6 +297,7 @@ mod tests {
                 assignee: None,
                 routine_id: None,
                 routine_occurrence: None,
+                hard_constraint_violated: false,
                 reminder_lead_s: None,
                 sort_order: None,
                 triaged_at: None,
@@ -313,6 +314,7 @@ mod tests {
                 "triaged_at",
                 "cancel_reason",
                 "late_acknowledged_at",
+                "hard_constraint_violated",
             ],
         );
         assert_wire_names(
@@ -385,6 +387,7 @@ mod tests {
                 forgiveness_enabled: true,
                 streak_started_at: None,
                 forgivenesses_in_window: 0,
+                split_from: None,
                 streak_keys: Vec::new(),
                 paused: false,
                 paused_until: None,
@@ -400,6 +403,7 @@ mod tests {
                 "streak_started_at",
                 "forgivenesses_in_window",
                 "streak_keys",
+                "split_from",
             ],
         );
         assert_wire_names("TaskTemplate", &template(), &[]);

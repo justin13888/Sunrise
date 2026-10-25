@@ -229,7 +229,19 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// build keeps the two new fields as unknown fields and writes them back
 /// unchanged, so neither needs a feature. Every v1..v20 payload shape is
 /// unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 21;
+///
+/// `22` gives a routine a series (issue #331,
+/// `docs/02-domain/routines-and-recurrence.md` §Edit scope): `Routine`
+/// gains `split_from`, the series root a routine split off by an edit "this
+/// and future" continues, absent when unset, and its feature,
+/// `routine.series`, which an op carrying it uses: a build that did not read
+/// it would key the continuation's occurrences on the wrong id and generate
+/// them twice, so no split is written until every device has advertised it.
+/// `Task` gains `hard_constraint_violated`, absent when false, which a v21
+/// build keeps as an unknown field and writes back unchanged, so it needs no
+/// feature. Every v1..v21 payload shape is unchanged, so the floor does not
+/// move.
+pub const DOC_SCHEMA_V: u16 = 22;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -318,6 +330,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         21,
         hex32("35b2c6020668ba962d8f799f533beebf2c3ee14d0237a05734b6cad8bb50cebe"),
+    ),
+    (
+        22,
+        hex32("878b79742cd6b1884edbbdc4977f89c29391aebff25cb005d9e1cfcaae9a9454"),
     ),
 ];
 
@@ -658,4 +674,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// `tasks.cancel_reason` and `tasks.late_acknowledged_at_ms`, NULL for every
 /// task. The first `Core::open` after it rebuilds the projection, because the
 /// fold's version moved with it.
-pub const STORAGE_V: u16 = 46;
+///
+/// `47` is migration `0047_routine_series.sql` (issue #331): `routines` gains
+/// `split_from`, the series root a split routine continues, NULL for every
+/// existing routine, and `tasks` gains `hard_constraint_violated`, 0 for
+/// every existing task. Schema-only in what it writes; the first
+/// `Core::open` after it rebuilds the projection, because the fold's version
+/// moved with it, which moves either value a build before it kept as an
+/// unknown field into its column.
+pub const STORAGE_V: u16 = 47;

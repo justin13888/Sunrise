@@ -388,6 +388,7 @@ fn rezoning_a_routine_keeps_its_wall_clock_and_its_occurrences() {
     e.apply(
         &mut db,
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: rid,
             patch: RoutinePatch {
                 timezone: Some("America/New_York".into()),

@@ -1052,6 +1052,7 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
         .apply(
             &mut d.dbs[0],
             Command::UpdateRoutine {
+                scope: sunrise_domain::EditScope::All,
                 id: rid,
                 patch: RoutinePatch {
                     grace_window_s: Some(Some(7_200)),

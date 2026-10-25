@@ -288,6 +288,7 @@ async fn routine_delete_vs_update_converges() {
         id,
         Command::DeleteRoutine(id),
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id,
             patch: RoutinePatch {
                 timezone: Some("Europe/London".into()),

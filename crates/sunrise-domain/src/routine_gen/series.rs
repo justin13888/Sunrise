@@ -128,7 +128,7 @@ impl Routine {
         expand(&r.rrule, anchor, &utc, window)
             .ok()?
             .into_iter()
-            .find(|o| occurrence_task_id(&self.id, &o.key) == *task)
+            .find(|o| occurrence_task_id(&self.series_root(), &o.key) == *task)
             .map(|o| o.key)
     }
 
@@ -271,6 +271,7 @@ mod row_tests {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,

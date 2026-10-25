@@ -1,0 +1,34 @@
+-- 0047: a routine's series, and an occurrence's hard-constraint flag (issue
+-- #331, docs/02-domain/routines-and-recurrence.md §Edit scope and
+-- §Scheduling constraints on occurrences).
+--
+-- Why
+-- ---
+--
+-- An edit of a routine "this and future" splits its series: the old routine
+-- ends before the occurrence the edit starts at, and a new routine continues
+-- the series from it. `routines.split_from` holds `Routine.split_from`, the
+-- id of the series' root (the first routine of the chain), which keys every
+-- occurrence's task id, so the continuation adopts the occurrences its
+-- predecessor already generated instead of generating them twice. NULL for
+-- every existing routine: none has been split, and a routine with no
+-- `split_from` is its own root.
+--
+-- A routine never drops an occurrence that breaks a `hard` scheduling
+-- constraint it carries; it generates it and flags it.
+-- `tasks.hard_constraint_violated` holds `Task.hard_constraint_violated`, 0
+-- for every existing task: none was generated with the flag.
+--
+-- How
+-- ---
+--
+-- Two columns appended with `ALTER TABLE … ADD COLUMN`; no row is rewritten.
+-- These tables are projections of the op log (ADR-0065 §5). A row a build
+-- before this one folded from an op that already carried either field (a
+-- newer device's write) holds it in `extra`, as an unknown field, which SQL
+-- cannot move out of the CBOR blob. This build's FOLD_V differs from the one
+-- `projection_rebuild` records, so the first `Core::open` after this
+-- migration rebuilds every row from the ops, which puts each in its column.
+
+ALTER TABLE routines ADD COLUMN split_from BLOB;
+ALTER TABLE tasks ADD COLUMN hard_constraint_violated INTEGER NOT NULL DEFAULT 0;

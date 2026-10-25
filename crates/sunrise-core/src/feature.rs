@@ -134,6 +134,20 @@ pub static FEATURES: &[Feature] = &[
         ],
         since: 15,
     },
+    // A routine that continues a split series (issue #331,
+    // `docs/02-domain/routines-and-recurrence.md` §Edit scope). Its
+    // occurrences' task ids are keyed on the series root it names in
+    // `split_from`; a build that does not read the field would key them on
+    // the routine's own id and generate every occurrence of the continuation
+    // a second time. Only an op carrying `split_from` uses it.
+    Feature {
+        id: "routine.series",
+        op_kinds: &[],
+        fields: &["split_from"],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 22,
+    },
     // The whole model of ADR-0065: every entity write is a `Patch` naming its
     // writer's heads in `parents`, a multi-entity commit carries `group`, and
     // the fold applies the conflict classes and precedence of §3 (§7). It is

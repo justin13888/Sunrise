@@ -1739,12 +1739,40 @@ pub mod routines {
     }
 
     /// ```text
-    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]
+    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>] [--scope this|future|all --at <YYYY-MM-DDTHH:MM>]
     /// ```
     #[must_use]
     pub fn edit_usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]");
+        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>] [--scope this|future|all --at <YYYY-MM-DDTHH:MM>]");
+        out
+    }
+
+    /// unknown edit scope `{scope}`; use this, future or all
+    #[must_use]
+    pub fn bad_scope(scope: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown edit scope `");
+        out.push_str(scope);
+        out.push_str("`; use this, future or all");
+        out
+    }
+
+    /// ```text
+    /// an edit of this occurrence or this and future ones names the occurrence with --at <YYYY-MM-DDTHH:MM>
+    /// ```
+    #[must_use]
+    pub fn scope_needs_at() -> String {
+        let mut out = String::new();
+        out.push_str("an edit of this occurrence or this and future ones names the occurrence with --at <YYYY-MM-DDTHH:MM>");
+        out
+    }
+
+    /// split; this routine continues the series
+    #[must_use]
+    pub fn split() -> String {
+        let mut out = String::new();
+        out.push_str("split; this routine continues the series");
         out
     }
 

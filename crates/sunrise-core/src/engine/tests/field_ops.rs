@@ -493,6 +493,7 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
     apply(
         &mut db,
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: rid,
             patch: sunrise_domain::RoutinePatch {
                 rrule: Some(sunrise_domain::RRule::parse("FREQ=WEEKLY").unwrap()),
@@ -788,6 +789,7 @@ fn every_command_writes_only_the_fields_it_changed() {
         (
             "tune a routine",
             |f| Command::UpdateRoutine {
+                scope: sunrise_domain::EditScope::All,
                 id: f.rid,
                 patch: sunrise_domain::RoutinePatch {
                     grace_window_s: Some(Some(600)),
@@ -984,6 +986,7 @@ fn clearing_a_field_writes_what_its_absence_reads_as() {
 
     let (rid, _) = seed_routine(&e, &mut db);
     let forgiveness = |on: bool| Command::UpdateRoutine {
+        scope: sunrise_domain::EditScope::All,
         id: rid,
         patch: sunrise_domain::RoutinePatch {
             forgiveness_enabled: Some(on),
@@ -1368,6 +1371,7 @@ fn a_re_key_and_its_tombstones_are_one_group_of_generated_writes() {
     e.apply(
         &mut db,
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: rid,
             patch: sunrise_domain::RoutinePatch {
                 rrule: Some(sunrise_domain::RRule::parse("FREQ=WEEKLY").unwrap()),

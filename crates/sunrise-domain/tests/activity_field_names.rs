@@ -55,6 +55,7 @@ fn task() -> Task {
         assignee: None,
         routine_id: None,
         routine_occurrence: None,
+        hard_constraint_violated: false,
         sort_order: None,
         triaged_at: None,
         cancel_reason: None,

@@ -150,8 +150,9 @@ pub use routine::{
     RoutinePatch, RoutineReviewCadence, TaskTemplate,
 };
 pub use routine_gen::{
-    expand, occurrence_key_at, occurrence_task_id, parse_occurrence_key, routine_rows, ExpandError,
-    Occurrence, RoutineRow,
+    catchup_title, catchup_view, expand, occurrence_key_at, occurrence_task_id,
+    parse_occurrence_key, routine_rows, split_routine_id, CatchupView, EditScope, ExpandError,
+    Occurrence, PatchEffect, RoutineRow, SeriesSplit, SplitError,
 };
 pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use saved_view::{

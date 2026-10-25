@@ -544,7 +544,7 @@ fn a_routine_command_under_a_task_lock_writes_no_routine_op() {
     assert!(matches!(
         e.apply(
             &mut db,
-            Command::UpdateRoutine {
+            Command::UpdateRoutine { scope: sunrise_domain::EditScope::All,
                 id: rid,
                 patch: RoutinePatch {
                     rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
