@@ -223,6 +223,27 @@ fn duration_trailing_number_without_unit_is_rejected() {
     assert!(c.draft.title.contains("~1h30"));
 }
 
+/// A duration whose seconds do not fit a `u64` is not a duration. It used to
+/// overflow: a panic in a debug build, a wrapped estimate in a release one.
+/// `307445734561825861` minutes is the first bare count whose seconds
+/// overflow; the second token overflows only when its two parts are added.
+#[test]
+fn a_duration_too_large_to_hold_is_reported_not_wrapped() {
+    for tok in ["~307445734561825861", "~5124095576030431h5124095576030431h"] {
+        let c = run(&format!("t {tok}"));
+        assert_eq!(c.draft.estimated_duration_s, None, "for {tok}");
+        assert!(
+            matches!(
+                c.unresolved.as_slice(),
+                [Unresolved::UnparseableDuration(_)]
+            ),
+            "for {tok}: {:?}",
+            c.unresolved
+        );
+        assert!(c.draft.title.contains(tok), "for {tok}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dates.
 // ---------------------------------------------------------------------------
