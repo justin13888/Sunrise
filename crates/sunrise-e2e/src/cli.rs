@@ -345,7 +345,21 @@ impl Running {
         .await
         .expect("join the reader");
         self.events = Some(rx);
-        let event = got.unwrap_or_else(|e| panic!("no {name:?} event ({e})"));
+        let event = match got {
+            Ok(event) => event,
+            // The process closed its stdout: say how it ended, which is the
+            // only account of why the event never came.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = self.child.kill();
+                let mut stderr = String::new();
+                if let Some(mut pipe) = self.child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+                }
+                let status = self.child.wait().ok();
+                panic!("no {name:?} event: the process ended ({status:?}); stderr:\n{stderr}")
+            }
+            Err(e) => panic!("no {name:?} event ({e})"),
+        };
         assert_eq!(event["event"], name, "{event}");
         event
     }

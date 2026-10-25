@@ -27,12 +27,14 @@
 
 #![allow(clippy::missing_panics_doc)]
 
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sunrise_e2e::cli::{pair_over_relay, recovery_words, sign_in, Device, SELF_HOST_BEARER};
 use sunrise_e2e::spawn_relay_with;
 use sunrise_server::relay_log::{account_key, DurableCaps};
-use sunrise_server::ServerConfig;
+use sunrise_server::{MetadataStore, Metrics, ServerConfig};
 
 /// Tasks A writes before C joins.
 const HISTORY: usize = 12;
@@ -50,9 +52,17 @@ const RETENTION: Duration = Duration::from_secs(30);
 /// devices (`Engine::is_stream_compactor`) and writes its snapshot record at
 /// most once a day, so a C below A would write its one record before the
 /// rotation, and the record the trimmed relay must serve would predate the
-/// keys the test is about. Device ids are random, so each try succeeds with
-/// probability one half.
+/// keys the test is about. Device ids are random, and A's is in the lower
+/// half of the id space (`A_TRIES`), so each try succeeds with probability at
+/// least one half: all twelve fail about once in 4096 runs.
 const PAIRING_TRIES: usize = 12;
+
+/// How many accounts to create for an A whose id is in the lower half of the
+/// id space. Without it the chance a random C sorts above A is A's distance
+/// from the top, so the twelve tries above all fail once in 13 runs (the mean
+/// of `a^12` over A's id `a`). Each round is a fresh relay, because the relay
+/// must hold exactly one account. All sixteen fail once in 65536 runs.
+const A_TRIES: usize = 16;
 
 /// This device's id, as `sunrise --json devices` prints it.
 async fn device_id(device: &Device) -> String {
@@ -62,6 +72,59 @@ async fn device_id(device: &Device) -> String {
         .and_then(|r| r["id"].as_str())
         .expect("this device is listed")
         .to_owned()
+}
+
+/// A relay, and the account A created on it, with A's id in the lower half
+/// of the id space.
+struct Setup {
+    relay: tokio::task::JoinHandle<()>,
+    url: String,
+    metrics: Metrics,
+    store: Arc<dyn MetadataStore>,
+    a: Device,
+    words: Vec<String>,
+    a_id: String,
+}
+
+/// Create accounts, each on a fresh relay, until A's id is in the lower half
+/// of the id space (see `A_TRIES`).
+async fn account_with_a_low_id(dir: &Path) -> Setup {
+    for round in 0..A_TRIES {
+        let mut metrics = None;
+        let mut store = None;
+        // The relay admits 10 pair attempts an hour per account, and step 2
+        // may pair up to `PAIRING_TRIES` devices to the one account.
+        let mut config = ServerConfig::default();
+        config.limits.enabled = false;
+        let (addr, relay) = spawn_relay_with(config, |s| {
+            metrics = Some(s.metrics.clone());
+            store = Some(s.store.clone());
+            s.with_durable_caps(DurableCaps {
+                max_bytes: u64::MAX,
+                max_age_ms: RETENTION.as_millis().try_into().unwrap(),
+            })
+        })
+        .await;
+        let url = format!("http://{addr}");
+        let a = Device::new(&dir.join(format!("a{round}")), &url);
+        sign_in(&a.vault);
+        let words = recovery_words(&a.ok(&["bootstrap", "a@example.com"]).await);
+        let a_id = device_id(&a).await;
+        if a_id.as_str() >= "8" {
+            relay.abort();
+            continue;
+        }
+        return Setup {
+            relay,
+            url,
+            metrics: metrics.expect("the relay's registry"),
+            store: store.expect("the relay's store"),
+            a,
+            words,
+            a_id,
+        };
+    }
+    panic!("an A in the lower half of the id space in {A_TRIES} accounts");
 }
 
 /// The sync and key events `device` logged, for a failure message.
@@ -76,31 +139,22 @@ fn sync_log(device: &Device) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_from_the_code_reads_every_task_after_the_relay_trimmed_the_keys() {
-    let mut metrics = None;
-    let mut store = None;
-    let (addr, relay) = spawn_relay_with(ServerConfig::default(), |s| {
-        metrics = Some(s.metrics.clone());
-        store = Some(s.store.clone());
-        s.with_durable_caps(DurableCaps {
-            max_bytes: u64::MAX,
-            max_age_ms: RETENTION.as_millis().try_into().unwrap(),
-        })
-    })
-    .await;
-    let metrics = metrics.expect("the relay's registry");
-    let store = store.expect("the relay's store");
-    let url = format!("http://{addr}");
     let dir = tempfile::tempdir().unwrap();
 
-    // 1. The account, and its history.
-    let a = Device::new(&dir.path().join("a"), &url);
-    sign_in(&a.vault);
-    let words = recovery_words(&a.ok(&["bootstrap", "a@example.com"]).await);
+    // 1. The account, on a relay of its own, and its history.
+    let Setup {
+        relay,
+        url,
+        metrics,
+        store,
+        a,
+        words,
+        a_id,
+    } = account_with_a_low_id(dir.path()).await;
     for i in 0..HISTORY {
         a.ok(&["capture", &format!("history {i}")]).await;
     }
     a.sync().await;
-    let a_id = device_id(&a).await;
 
     // 2. C joins, and revokes A.
     let mut c = None;
