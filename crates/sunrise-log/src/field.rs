@@ -113,6 +113,8 @@ pub static ALLOWED: &[&str] = &[
     "n_retained",
     "n_streams",
     "n_total",
+    // A count of version rows compaction pruned (ADR-0065 D25), never which.
+    "n_versions",
     "note_h",
     "op_kind",
     "person_h",

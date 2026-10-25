@@ -14,7 +14,9 @@
 //! stamps.
 //!
 //! ```cddl
-//! doc-state = { "v": 2, "entities": [* entity] }       ; sorted by id
+//! doc-state = { "v": 2, "entities": [* entity],        ; sorted by id
+//!               ? "members": [* member] }              ; in stamp order
+//! member = [group: bstr .size 16, size: uint, stamp]
 //! entity = {
 //!   "id": bstr .size 16, "kind": tstr,                  ; registry tag
 //!   "stamps": [* stamp],                                ; distinct, ascending
@@ -42,6 +44,13 @@
 //! Version 1 had no `losers`, `versions` or `frontier`, and is still read:
 //! its registers join as writes that reach only themselves.
 //!
+//! `versions` carries the versions the writer still holds. One it pruned
+//! (ADR-0065 D25, [`super::prune`]) is read by no version a joiner can still
+//! fold, except as a member of a group: `members` names each group member of
+//! the stream whose version was pruned, so a joiner that holds the rest of
+//! the group counts it present (D14). The key is absent when there is none,
+//! and a build that does not read it ignores it.
+//!
 //! Values are the canonical CBOR bytes the state tables hold. A stamp is
 //! written once per entity and named by its index: one legacy op writes every
 //! field of an entity at one stamp, and repeating it on each register made a
@@ -65,6 +74,7 @@
 //! applies the ops above its frontier holds the state a replica that replayed
 //! every op holds, whatever it held before.
 
+use super::prune::pruned_members;
 use super::register::Registers;
 use super::state::{
     add_delta, add_element, dec, prune_below_floor, read_meta, remove_element, write_map_entry,
@@ -661,10 +671,30 @@ fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
             (Value::Text("frontier".into()), frontier),
         ]));
     }
-    Ok(Value::Map(vec![
+    let mut top = vec![
         (Value::Text("v".into()), int(DOC_STATE_V)),
         (Value::Text("entities".into()), Value::Array(entities)),
-    ]))
+    ];
+    // A group member whose version was pruned (ADR-0065 D25) is still
+    // present to a joiner holding the rest of its group (D14). A rebuild's
+    // base needs none: it keeps those `pending_groups` rows.
+    if let Scope::Stream(stream) = scope {
+        let members = pruned_members(tx, stream)?;
+        if !members.is_empty() {
+            top.push((
+                Value::Text("members".into()),
+                Value::Array(
+                    members
+                        .into_iter()
+                        .map(|(id, size, at)| {
+                            Value::Array(vec![bytes(&id), int(size), stamp_value(at)])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+    }
+    Ok(Value::Map(top))
 }
 
 fn read_meta_with_kind(
@@ -867,6 +897,19 @@ fn join_versions(
     Ok(true)
 }
 
+/// One `[group id, size, stamp]` of `members`: a group member whose version
+/// the writer pruned.
+fn read_member(v: &Value) -> Result<(([u8; 16], u64), Stamp), EngineError> {
+    let bad = || malformed("member");
+    let [id, size, at] = v.as_array().map(Vec::as_slice).ok_or_else(bad)? else {
+        return Err(bad());
+    };
+    Ok((
+        (as_16(id).ok_or_else(bad)?, as_u64(size).ok_or_else(bad)?),
+        read_stamp(at).ok_or_else(bad)?,
+    ))
+}
+
 /// `local` joined with `snap`: the bookkeeping of the union of the ops each
 /// covers.
 fn join_meta(local: Option<Meta>, snap: &Meta) -> Meta {
@@ -922,6 +965,18 @@ pub(in crate::engine) fn join_stream_state(
         .iter()
         .map(read_entity)
         .collect::<Result<Vec<_>, _>>()?;
+    let members = match get(top, "members") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .ok_or_else(|| malformed("members"))?
+            .iter()
+            .map(read_member)
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    for (group, at) in members {
+        record_joined(tx, group, at.op_ref(), at.hlc)?;
+    }
 
     for e in &entities {
         let id = e.target.bytes();

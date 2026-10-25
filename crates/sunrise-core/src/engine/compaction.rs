@@ -35,6 +35,12 @@
 //! (ADR-0065 §6), an op still waiting in the outbox, or an op that a
 //! missing op's expectation was named by.
 //!
+//! Once every stream is folded, the version rows no op can still read are
+//! pruned (ADR-0065 D25, `merge::prune`): a version whose op is gone, that no
+//! register, head or projection reads, whose readers went with it, and that
+//! every device that can still write has passed. [`Engine::passage`] gathers
+//! what that rule reads of the other devices.
+//!
 //! # Known devices and the compactor
 //!
 //! A device is known in a stream when it is not revoked, was heard from within
@@ -52,6 +58,7 @@ use sunrise_id::registry::Merge;
 
 use super::chain::{fold_chain, held_op_hash, root_at};
 use super::ids::hex_short;
+use super::merge::{prune_versions, Passage};
 use super::{Engine, EngineError};
 use sunrise_storage::Db;
 
@@ -282,6 +289,9 @@ pub struct CompactionReport {
     pub ops_removed: u64,
     /// Snapshots this replica wrote as a stream's compactor.
     pub snapshots_written: u64,
+    /// Version rows pruned because every device that can still write has
+    /// passed them (ADR-0065 D25).
+    pub versions_pruned: u64,
 }
 
 /// When `device` was last heard from: the newest stamp among its tips, its
@@ -400,32 +410,135 @@ impl Engine {
                 .collect()
         };
         let mut report = CompactionReport::default();
+        let mut compacts = Vec::new();
         for stream_id in streams {
             let (raised, removed, compactor) =
                 db.with_tx(|tx| self.compact_stream(tx, &stream_id, policy, now_ms))?;
             report.floors_raised += raised;
             report.ops_removed += removed;
-            if compactor
-                && self.snapshot_due(db, &stream_id, policy, now_ms)?
+            if compactor {
+                compacts.push(stream_id);
+            }
+        }
+        // After every stream's floor has risen, since an entity's versions
+        // can be in more than one stream, and before the snapshots, which
+        // then carry only what is left (ADR-0065 D25).
+        report.versions_pruned = db.with_tx(|tx| {
+            let passage = self.passage(tx, now_ms, policy)?;
+            prune_versions(tx, &passage)
+        })?;
+        for stream_id in compacts {
+            if self.snapshot_due(db, &stream_id, policy, now_ms)?
                 && self.write_stream_snapshot(db, &stream_id)?.is_some()
             {
                 report.snapshots_written += 1;
             }
         }
-        if report.ops_removed > 0 {
+        if report.ops_removed > 0 || report.versions_pruned > 0 {
             // Every stream's deletes have committed; hand the pages they
             // freed back to the filesystem so the file shrinks (#461).
             db.incremental_vacuum()?;
         }
-        if report.ops_removed > 0 || report.snapshots_written > 0 {
+        if report.ops_removed > 0 || report.versions_pruned > 0 || report.snapshots_written > 0 {
             tracing::info!(
                 ev = "core.compaction.done",
                 n_devices = report.floors_raised,
                 n_ops = report.ops_removed,
+                n_versions = report.versions_pruned,
                 "the op log was folded below its acknowledged floors"
             );
         }
         Ok(report)
+    }
+
+    /// What [`prune_versions`] reads of the log and of the other devices
+    /// (ADR-0065 D25, rule (a), (d) and (e)): every floor, cursor and
+    /// published frontier, the devices that can still write, and those
+    /// with an op this replica holds unapplied.
+    ///
+    /// A device can still write when it is not revoked, or was revoked
+    /// less than `policy.retention_ms` ago: the relay refuses a revoked
+    /// device's uploads, and keeps what it took before for no longer than
+    /// that. Silence does not stop a device writing, so unlike the known
+    /// devices of the op-log floor, a device silent for any time holds
+    /// pruning back until it is heard from again or revoked.
+    pub(super) fn passage(
+        &self,
+        tx: &Transaction<'_>,
+        now_ms: u64,
+        policy: &CompactionPolicy,
+    ) -> rusqlite::Result<Passage> {
+        let me = self.keychain.device_id();
+        let id16 = |raw: Vec<u8>| <[u8; 16]>::try_from(raw.as_slice()).ok();
+        let mut passage = Passage::default();
+        {
+            let mut stmt = tx.prepare("SELECT stream_id, device_id, seq FROM compaction_floor")?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                if let (Some(s), Some(d)) = (id16(r.get(0)?), id16(r.get(1)?)) {
+                    passage.floors.insert((s, d), u64_of(r.get(2)?));
+                }
+            }
+        }
+        {
+            let mut stmt =
+                tx.prepare("SELECT stream_id, device_id, last_applied_seq FROM sync_cursors")?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                if let (Some(s), Some(d)) = (id16(r.get(0)?), id16(r.get(1)?)) {
+                    passage.cursors.insert((s, d), u64_of(r.get(2)?));
+                }
+            }
+        }
+        {
+            let mut stmt =
+                tx.prepare("SELECT stream_id, peer_device_id, device_id, seq FROM peer_frontiers")?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                if let (Some(s), Some(p), Some(d)) =
+                    (id16(r.get(0)?), id16(r.get(1)?), id16(r.get(2)?))
+                {
+                    passage.acks.insert((s, p, d), u64_of(r.get(3)?));
+                }
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "SELECT d.device_id FROM devices d
+                 WHERE NOT EXISTS (SELECT 1 FROM device_revocations r
+                                   WHERE r.device_id = d.device_id AND r.recorded_at_ms <= ?1)",
+            )?;
+            let horizon = i64_of(now_ms.saturating_sub(policy.retention_ms));
+            let mut rows = stmt.query(params![horizon])?;
+            while let Some(r) = rows.next()? {
+                if let Some(d) = id16(r.get(0)?) {
+                    passage.writers.insert(d);
+                }
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "SELECT o.device_id FROM ops o JOIN parked_ops p ON p.op_id = o.op_id
+                 UNION SELECT device FROM pending_groups WHERE applied = 0",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                if let Some(d) = id16(r.get(0)?) {
+                    passage.stuck.insert(d);
+                }
+            }
+            let mut stmt = tx.prepare("SELECT envelope FROM deferred_ops")?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                if let Ok(env) = decode_envelope(&r.get::<_, Vec<u8>>(0)?) {
+                    passage.stuck.insert(env.device_id);
+                }
+            }
+        }
+        // A device with an op held here can still write whatever it was.
+        passage.writers.extend(passage.stuck.iter().copied());
+        passage.writers.remove(&me);
+        Ok(passage)
     }
 
     /// Whether this replica is `stream_id`'s compactor now: the known device
@@ -551,7 +664,8 @@ impl Engine {
             // which keeps what it wrote: a row is the fold's output (ADR-0065
             // §5), and a vault holding a row no op of its log folded was
             // rebuilt at open (`Engine::rebuild_if_stale`). Its version rows
-            // are kept too (ADR-0065 D10). A member of a group still waiting
+            // stay until `prune_versions` finds them passed (ADR-0065 D25),
+            // after every stream has been folded. A member of a group still waiting
             // for the rest of it has not been folded, and is kept (§6, §8).
             let predicate = format!(
                 "stream_id = ?1 AND device_id = ?2 AND seq <= ?3

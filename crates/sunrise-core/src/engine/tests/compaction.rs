@@ -16,12 +16,12 @@ use ciborium::value::Value;
 use sunrise_crypto::decode_envelope;
 use sunrise_domain::INBOX_STREAM_BYTES;
 
-const INBOX: [u8; 16] = INBOX_STREAM_BYTES;
+pub(super) const INBOX: [u8; 16] = INBOX_STREAM_BYTES;
 
-const DAY: u64 = 24 * 60 * 60 * 1000;
+pub(super) const DAY: u64 = 24 * 60 * 60 * 1000;
 
 /// A one-day retention, so a test reaches past it by moving the clock two.
-fn policy() -> CompactionPolicy {
+pub(super) fn policy() -> CompactionPolicy {
     CompactionPolicy {
         retention_ms: DAY,
         ..CompactionPolicy::default()
@@ -29,7 +29,7 @@ fn policy() -> CompactionPolicy {
 }
 
 /// Replicas of one account that trust each other, on one clock.
-fn replicas(n: u8, clock: &Arc<FakeClock>) -> Vec<(Engine, Db)> {
+pub(super) fn replicas(n: u8, clock: &Arc<FakeClock>) -> Vec<(Engine, Db)> {
     let engines: Vec<Engine> = (1..=n)
         .map(|i| engine_seeded(ROOT, [i; 32], Arc::clone(clock)))
         .collect();
@@ -47,13 +47,13 @@ fn replicas(n: u8, clock: &Arc<FakeClock>) -> Vec<(Engine, Db)> {
         .collect()
 }
 
-fn clock() -> Arc<FakeClock> {
+pub(super) fn clock() -> Arc<FakeClock> {
     Arc::new(FakeClock(PLMutex::new(T0)))
 }
 
 /// Every envelope `db` holds, in the order a relay would hand them over:
 /// by stream, device and seq.
-fn all_envs(db: &Db) -> Vec<Vec<u8>> {
+pub(super) fn all_envs(db: &Db) -> Vec<Vec<u8>> {
     let mut stmt = db
         .conn()
         .prepare("SELECT envelope FROM ops ORDER BY stream_id, device_id, seq")
@@ -65,7 +65,12 @@ fn all_envs(db: &Db) -> Vec<Vec<u8>> {
 }
 
 /// `device`'s envelopes in `stream` with seq above `after`.
-fn envs_after(db: &Db, stream: &[u8; 16], device: &[u8; 16], after: u64) -> Vec<Vec<u8>> {
+pub(super) fn envs_after(
+    db: &Db,
+    stream: &[u8; 16],
+    device: &[u8; 16],
+    after: u64,
+) -> Vec<Vec<u8>> {
     let mut stmt = db
         .conn()
         .prepare(
@@ -84,7 +89,7 @@ fn envs_after(db: &Db, stream: &[u8; 16], device: &[u8; 16], after: u64) -> Vec<
 
 /// Deliver every envelope of `from` to `to`, in relay order, except the
 /// ones `to` wrote itself, which a relay does not echo back.
-fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
+pub(super) fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
     let me = to.keychain.device_id();
     for env in all_envs(from) {
         if decode_envelope(&env).unwrap().device_id != me {
@@ -94,7 +99,7 @@ fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
 }
 
 /// Have `e` publish its digest of `stream`, and return the digest op.
-fn digest_op(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> Vec<u8> {
+pub(super) fn digest_op(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> Vec<u8> {
     assert!(e.publish_stream_digest(db, stream).unwrap());
     let me = e.keychain.device_id();
     db.conn()
@@ -117,7 +122,7 @@ fn ops_in(db: &Db, stream: &[u8; 16]) -> i64 {
         .unwrap()
 }
 
-fn cursor(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
+pub(super) fn cursor(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
     db.conn()
         .query_row(
             "SELECT last_applied_seq FROM sync_cursors WHERE stream_id = ? AND device_id = ?",
@@ -137,7 +142,7 @@ fn digest(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> [u8; 32] {
 
 /// Every projected row a user can see, with its stamp: what two replicas
 /// that hold the same ops must agree on byte for byte.
-fn projection(db: &Db) -> Vec<String> {
+pub(super) fn projection(db: &Db) -> Vec<String> {
     let mut out = Vec::new();
     for (table, key) in [
         ("tasks", "id"),
@@ -758,7 +763,7 @@ fn kinds(db: &Db, stream: &[u8; 16]) -> Vec<String> {
 
 /// Mark every op this replica wrote as acknowledged by the relay, as a sync
 /// session's acks would.
-fn ack_outbox(db: &mut Db) {
+pub(super) fn ack_outbox(db: &mut Db) {
     db.conn()
         .execute("UPDATE outbox SET acked_at_ms = 1", [])
         .unwrap();
@@ -1244,8 +1249,8 @@ fn compaction_keeps_pending_group_members() {
 }
 
 /// A version whose parent's op compaction deleted still descends from it:
-/// the version rows are kept (D10), and a rebuild joins them back from the
-/// compacted base (§8).
+/// the version rows are kept while a version may read them (D25), and a
+/// rebuild joins them back from the compacted base (§8).
 #[test]
 fn ancestry_survives_compaction_of_the_parent_op() {
     let c = clock();

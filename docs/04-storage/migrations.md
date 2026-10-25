@@ -332,8 +332,8 @@ seeded Inbox among them), each routine's `materialized_until_ms`, and the
 `pending_groups` rows whose ops compaction deleted, which tell the refold that
 those members of a group are present. The versions, frontiers and register
 losers of compacted ops come back with the base, a `doc_state` v2, which
-carries them ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8,
-D10).
+carries every one compaction has not pruned
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8, D25).
 
 **It runs automatically at open when the fold changed.** A rebuild records the
 version of the fold it ran, `FOLD_V`, in `projection_rebuild`, a source table
