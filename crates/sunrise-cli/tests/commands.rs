@@ -272,6 +272,79 @@ fn the_daily_reports_run_on_a_fresh_vault() {
     ok(v, &["reminders", "plan"]);
 }
 
+/// Every kind of the catalog is listed with its state; a kind is turned off
+/// and back on; a security kind refuses; the plan shows the catalog kinds
+/// beside the reminders and keeps its ledger beside the vault.
+#[test]
+fn notification_kinds_are_listed_toggled_and_planned() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let kinds = json_of(v, &["reminders", "kinds"]);
+    let kinds = kinds.as_array().unwrap();
+    assert_eq!(kinds.len(), 18);
+    let state = |kinds: &[serde_json::Value], tag: &str| {
+        kinds
+            .iter()
+            .find(|k| k["kind"] == tag)
+            .map(|k| (k["enabled"].as_bool(), k["always"].as_bool()))
+    };
+    assert_eq!(
+        state(kinds, "timezone_changed"),
+        Some((Some(false), Some(false)))
+    );
+    assert_eq!(
+        state(kinds, "device_paired"),
+        Some((Some(true), Some(true)))
+    );
+    assert!(ok(v, &["reminders", "kinds"]).contains("device_revoked"));
+
+    let plan = json_of(v, &["reminders", "plan"]);
+    let catalog: Vec<_> = plan["catalog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["kind"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(catalog.iter().any(|k| k == "evening_plan"), "{catalog:?}");
+    assert!(plan["alerts"].as_array().unwrap().is_empty());
+    assert!(v.join("notification-ledger.json").exists());
+
+    ok(
+        v,
+        &[
+            "reminders",
+            "off",
+            "evening_plan",
+            "morning_brief",
+            "--device",
+        ],
+    );
+    let after = json_of(v, &["reminders", "kinds"]);
+    assert_eq!(
+        state(after.as_array().unwrap(), "evening_plan"),
+        Some((Some(false), Some(false)))
+    );
+    let plan = json_of(v, &["reminders", "plan"]);
+    assert!(plan["catalog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|n| n["kind"] != "evening_plan" && n["kind"] != "morning_brief"));
+    ok(v, &["reminders", "on", "evening_plan"]);
+    assert_eq!(
+        json_of(v, &["prefs", "get", "notifications.evening_plan.enabled"])["source"],
+        "device",
+        "the device override from --device still wins"
+    );
+    assert!(!run_in(v, &["reminders", "off", "device_paired"])
+        .status
+        .success());
+    assert!(!run_in(v, &["reminders", "off", "no_such_kind"])
+        .status
+        .success());
+    assert!(!run_in(v, &["reminders", "off"]).status.success());
+}
+
 #[test]
 fn a_file_is_attached_and_removed() {
     let dir = tempfile::tempdir().unwrap();

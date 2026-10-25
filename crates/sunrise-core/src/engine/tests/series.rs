@@ -643,6 +643,22 @@ fn catch_up_skip_lapses_past_open_occurrences_generated_earlier() {
     for id in &lapsed {
         assert!(rows.iter().all(|r| r.task.id != *id), "{id} is lapsed");
     }
+    // Nor do they plan a reminder (#347): the planner reads the open tasks
+    // as Today does, even from a window that would still reach them.
+    let plan = e
+        .reminder_plan(
+            &db,
+            late() - 6 * DAY_MS as u64,
+            late() + DAY_MS as u64,
+            &sunrise_domain::ReminderSettings::default(),
+        )
+        .unwrap();
+    for id in &lapsed {
+        assert!(
+            plan.intents.iter().all(|i| i.entity != *id),
+            "{id} is lapsed"
+        );
+    }
     let listed = titles(&e, &db, Query::StreamTasks(stream_ref(5)));
     assert_eq!(listed.len(), keys.len() - 4);
     // Nothing was written: the read derived it.

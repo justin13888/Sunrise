@@ -1,4 +1,4 @@
-//! Reviews, briefs, reminders and the two interchange formats.
+//! Reviews, briefs and the two interchange formats.
 //!
 //! Each report is one core query; what a client decides around it — the daily
 //! glance's window, a brief's sections, the reminder schedule's cap and order —
@@ -7,9 +7,8 @@
 //! CLI says the same thing about the same morning as the apps do.
 
 use sunrise_cli::i18n::strings;
-use sunrise_client_core::reminders::{self, ClockStyle, ScheduleRequest};
 use sunrise_core::{Command, Core, Query, QueryResult};
-use sunrise_domain::{ReminderKind, Task};
+use sunrise_domain::Task;
 use sunrise_id::{EntityKind, EntityRef};
 
 use super::{CmdResult, Ctx};
@@ -199,123 +198,6 @@ pub(super) async fn brief(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     for s in sections {
         println!();
         section(s.title, s.empty_message, &s.tasks);
-    }
-    Ok(())
-}
-
-/// The name a reminder kind is printed under. A kind name, not prose.
-pub(super) const fn kind_name(kind: ReminderKind) -> &'static str {
-    match kind {
-        ReminderKind::Task => "task",
-        ReminderKind::Block => "block",
-        ReminderKind::Routine => "routine",
-    }
-}
-
-/// The plan for this device: what it would hand the OS over the next day.
-pub(super) async fn plan(ctx: &Ctx<'_>) -> CmdResult<reminders::Schedule> {
-    let QueryResult::Preferences(prefs) = ctx.core.query(Query::Preferences).await? else {
-        return Err(strings::general::unexpected_result().into());
-    };
-    let time_format = prefs
-        .iter()
-        .find(|p| p.key == "time_format")
-        .and_then(|p| match &p.value {
-            Some(sunrise_domain::PrefValue::Text(t)) => Some(t.clone()),
-            _ => None,
-        });
-    let req = ScheduleRequest {
-        now_ms: ctx.core.now_ms(),
-        // A terminal has no notification permission to refuse.
-        authorized: true,
-        focus_scope: None,
-        // Nothing is held by an OS on this surface, so the reconciliation
-        // against it is everything desired.
-        pending: Vec::new(),
-        // `locale` reads as 24-hour on a terminal: there is no OS locale
-        // setting to ask, and 24-hour is what every other time here prints.
-        clock: ClockStyle::from_time_format(time_format.as_deref(), true),
-    };
-    Ok(reminders::schedule(ctx.core, req).await?)
-}
-
-/// `reminders [plan]` — this device's reminder schedule for the next day,
-/// as the client layer plans it for an OS: capped, earliest first, with the
-/// body each would show, and the ones it could not place with why.
-pub(super) async fn reminders(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
-    match rest.first().map(String::as_str) {
-        None | Some("plan") => {}
-        Some(other) => return Err(strings::reminders::usage(other).into()),
-    }
-    let s = plan(ctx).await?;
-    let reader = ctx.reader();
-    if ctx.json {
-        sunrise_cli::json::print(&serde_json::json!({
-            "enabled": s.policy.enabled,
-            "zone_unknown": s.zone_unknown,
-            "planned": s.desired.iter().map(|n| serde_json::json!({
-                "identifier": n.identifier,
-                "fire_at_ms": n.fire_at_ms,
-                "kind": kind_name(n.kind),
-                "entity": n.entity.to_str(),
-                "title": n.title,
-                "body": n.body,
-            })).collect::<Vec<_>>(),
-            "unscheduled": s.unscheduled.iter().map(|u| serde_json::json!({
-                "entity": u.entity.to_str(),
-                "kind": kind_name(u.kind),
-                "reason": u.reason.to_string(),
-            })).collect::<Vec<_>>(),
-            "wind_down": s.wind_down.as_ref().map(|w| serde_json::json!({
-                "identifier": w.identifier,
-                "date": w.date.to_string(),
-                "fire_at_ms": w.fire_at_ms,
-                "sleep_at_ms": w.sleep_at_ms,
-            })),
-        }));
-        return Ok(());
-    }
-    if !s.policy.enabled {
-        eprintln!(
-            "{}",
-            strings::general::note(&strings::reminders::disabled())
-        );
-    }
-    if s.zone_unknown {
-        eprintln!("{}", strings::general::note(&strings::tz::unknown_note()));
-    }
-    for n in &s.desired {
-        let at = sunrise_client_core::vocab::instant_at(u64::try_from(n.fire_at_ms).unwrap_or(0));
-        println!(
-            "{}  {:<7} {}  {}  {}",
-            at.to_zoned(reader.clone()).strftime("%Y-%m-%d %H:%M"),
-            kind_name(n.kind),
-            n.entity.to_str(),
-            n.title,
-            n.body
-        );
-    }
-    if let Some(w) = &s.wind_down {
-        let at = |ms: i64| {
-            sunrise_client_core::vocab::instant_at(u64::try_from(ms).unwrap_or(0))
-                .to_zoned(reader.clone())
-        };
-        println!(
-            "{}  {:<7} {}  {}",
-            at(w.fire_at_ms).strftime("%Y-%m-%d %H:%M"),
-            "wind-down",
-            w.identifier,
-            strings::reminders::wind_down(&at(w.sleep_at_ms).strftime("%H:%M").to_string())
-        );
-    }
-    for u in &s.unscheduled {
-        eprintln!(
-            "{}",
-            strings::general::note(&strings::reminders::unscheduled(
-                &u.entity.to_str(),
-                &u.reason.to_string()
-            ))
-        );
     }
     Ok(())
 }

@@ -348,6 +348,10 @@ impl SunriseCore {
                 focus_scope: sunrise_client_core::focus::scope(focus_scope),
                 pending: pending.into_iter().map(Into::into).collect(),
                 clock: clock.into(),
+                // This call returns no alert, so it keeps no ledger:
+                // [`SunriseCore::schedule_notifications`] is the one that does.
+                ledger: plan::NotificationLedger::new(),
+                network_available: true,
             },
         )
         .await?;

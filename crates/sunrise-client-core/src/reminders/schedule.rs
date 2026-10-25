@@ -1,15 +1,21 @@
-//! One re-plan against a live vault: preferences, plan, Focus, reconcile.
+//! One re-plan against a live vault: preferences, plan, Focus, reconcile,
+//! and the rest of the catalog beside them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sunrise_core::{Core, CoreError, Query, QueryResult};
-use sunrise_domain::{ReminderIntent, UnscheduledReminder};
+use sunrise_core::{Core, CoreError, DeadlineCandidate, Query, QueryResult};
+use sunrise_domain::{
+    apply_quiet_hours, focus_hold, FocusWindow, NotificationKind, QuietHoursPolicy, ReminderIntent,
+    ResolvedPref, UnscheduledReminder,
+};
 use sunrise_id::{EntityKind, EntityRef};
 
 use super::{
-    plan, read_day_schedule, reconcile, reconcile_wind_down, reminder_policy,
-    wind_down_notification, ClockStyle, PendingNotification, PlannedNotification, Reconciliation,
-    ReminderPolicy, WindDownChange, WindDownNotification, HORIZON_MS, MAX_SCHEDULED,
+    catalog_policy, identifier_of, plan_catalog, plan_noted, raise_alerts, read_day_schedule,
+    reconcile, reconcile_catalog, reconcile_wind_down, reminder_policy, wind_down_notification,
+    AlertInputs, CatalogChanges, CatalogInputs, CatalogNotification, CatalogPolicy, ClockStyle,
+    NotificationLedger, PendingNotification, PlannedNotification, Reconciliation, ReminderPolicy,
+    SyncHealth, WindDownChange, WindDownNotification, HORIZON_MS, MAX_SCHEDULED,
 };
 
 /// What a client knows that the vault does not.
@@ -26,6 +32,11 @@ pub struct ScheduleRequest {
     pub pending: Vec<PendingNotification>,
     /// How wall-clock times are written in a body.
     pub clock: ClockStyle,
+    /// What this device has already shown; see [`super::NotificationLedger`].
+    /// The updated one comes back in [`Schedule::ledger`], to be kept.
+    pub ledger: NotificationLedger,
+    /// Whether the OS says the device has a network, for the stall rule.
+    pub network_available: bool,
 }
 
 /// One re-plan's answer.
@@ -41,6 +52,8 @@ pub struct Schedule {
     pub unscheduled: Vec<UnscheduledReminder>,
     /// The preferences the plan was made under.
     pub policy: ReminderPolicy,
+    /// The catalog preferences it was made under.
+    pub catalog_policy: CatalogPolicy,
     /// Whether the reader's zone is a stand-in, so floating reminders were
     /// placed in UTC; the client reports the OS zone and re-plans.
     pub zone_unknown: bool,
@@ -51,6 +64,17 @@ pub struct Schedule {
     /// What to do with the wind-down the OS holds. [`Self::reconciliation`]
     /// never names it.
     pub wind_down_change: WindDownChange,
+    /// The scheduled catalog kinds the OS should hold, earliest first:
+    /// deadlines, the morning brief or the triage nudge, the evening plan.
+    pub catalog: Vec<CatalogNotification>,
+    /// What to do to make it so; names only [`super::CATALOG_PREFIX`].
+    pub catalog_changes: CatalogChanges,
+    /// On-event alerts to post now, each once: hand each to the OS (at its
+    /// `fire_at_ms`, which quiet hours may have moved) and never cancel it.
+    pub alerts: Vec<CatalogNotification>,
+    /// The ledger after this plan. Keep it once the alerts are posted, and
+    /// pass it to the next plan.
+    pub ledger: NotificationLedger,
 }
 
 /// Re-plan this device's reminders against `core` and say what the OS must
@@ -64,16 +88,32 @@ pub struct Schedule {
 /// Three ways it ends with nothing desired are not failures: the OS refused
 /// permission, the master switch is off, or this is not the primary device.
 /// Each withdraws whatever is held, which is the point — a device demoted
-/// from primary must go quiet, not merely stop adding.
+/// from primary must go quiet, not merely stop adding. Security alerts are
+/// the exception to the third: every device posts them.
+///
+/// At most [`MAX_SCHEDULED`] reminders and scheduled catalog notifications
+/// together are left pending, the earliest kept.
 ///
 /// # Errors
 ///
 /// A failed read of the vault.
 pub async fn schedule(core: &Core, req: ScheduleRequest) -> Result<Schedule, CoreError> {
-    let policy = read_policy(core).await?;
+    let prefs = read_prefs(core).await?;
+    let policy = policy_of(core, &prefs).await?;
+    let catalog_policy = catalog_policy(&prefs);
     let zone = core.reader_zone();
+    let now = crate::vocab::instant_at(req.now_ms);
+    let horizon = crate::vocab::instant_at(req.now_ms.saturating_add(HORIZON_MS));
+    let delivering = req.authorized && policy.enabled;
+    let sessions = if delivering {
+        focus_windows(core).await?
+    } else {
+        Vec::new()
+    };
+    let day = read_day_schedule(core, req.now_ms).await?;
+    let mut ledger = req.ledger;
 
-    let (desired, unscheduled) = if req.authorized && policy.enabled {
+    let (desired, unscheduled, catalog) = if delivering {
         let planned = core.reminder_plan(
             req.now_ms,
             req.now_ms.saturating_add(HORIZON_MS),
@@ -84,39 +124,221 @@ pub async fn schedule(core: &Core, req: ScheduleRequest) -> Result<Schedule, Cor
             .into_iter()
             .filter(|i| policy.kind_enabled(i.kind))
             .collect();
-        let streams = match &req.focus_scope {
-            Some(_) => streams_of(core, &intents).await,
-            None => BTreeMap::new(),
-        };
-        let audible = crate::focus::muting(intents, req.focus_scope.as_ref(), &streams);
-        (
-            plan(&audible, &zone, req.clock, MAX_SCHEDULED),
-            planned.unscheduled,
+        let (audible, deadlines) = under_focus_filter(
+            core,
+            req.focus_scope.as_ref(),
+            intents,
+            core.deadline_candidates()?,
         )
+        .await;
+        let (held, focus_held) = hold_for_focus(audible, &sessions, &policy, &zone);
+        let triage = triage_queue(core).await?;
+        let catalog = plan_catalog(
+            &policy,
+            &catalog_policy,
+            &CatalogInputs {
+                now,
+                horizon,
+                tz: &zone,
+                schedule: &day,
+                deadlines: &deadlines,
+                triage: &triage,
+                sessions: &sessions,
+                clock: req.clock,
+            },
+            &mut ledger,
+        );
+        let reminders = plan_noted(&held, &zone, req.clock, MAX_SCHEDULED, &focus_held);
+        let (reminders, catalog) = cap(reminders, catalog, MAX_SCHEDULED);
+        (reminders, planned.unscheduled, catalog)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
     let wind_down = if req.authorized {
-        let schedule = read_day_schedule(core, req.now_ms).await?;
-        wind_down_notification(
-            &policy,
-            &schedule,
-            crate::vocab::instant_at(req.now_ms),
-            &zone,
-        )
+        wind_down_notification(&policy, &day, now, &zone)
     } else {
         None
+    };
+    let alerts = if req.authorized {
+        let events = core.security_events()?;
+        let sync = sync_health(core, req.network_available).await?;
+        let zone_name = if core.zone_unknown() {
+            None
+        } else {
+            zone.iana_name()
+        };
+        raise_alerts(
+            &policy,
+            &catalog_policy,
+            &AlertInputs {
+                now,
+                tz: &zone,
+                zone: zone_name,
+                events: &events,
+                sync: Some(sync),
+                sessions: &sessions,
+            },
+            &mut ledger,
+        )
+    } else {
+        Vec::new()
     };
 
     Ok(Schedule {
         reconciliation: reconcile(&desired, &req.pending),
         wind_down_change: reconcile_wind_down(wind_down.as_ref(), &req.pending),
+        catalog_changes: reconcile_catalog(&catalog, &req.pending),
         wind_down,
         desired,
         unscheduled,
         policy,
+        catalog_policy,
         zone_unknown: core.zone_unknown(),
+        catalog,
+        alerts,
+        ledger,
     })
+}
+
+/// What the OS Focus filter `scope` leaves audible: the reminders and the
+/// deadlines whose entity is filed in a picked stream.
+async fn under_focus_filter(
+    core: &Core,
+    scope: Option<&BTreeSet<EntityRef>>,
+    intents: Vec<ReminderIntent>,
+    deadlines: Vec<DeadlineCandidate>,
+) -> (Vec<ReminderIntent>, Vec<DeadlineCandidate>) {
+    if scope.is_none() {
+        return (intents, deadlines);
+    }
+    let mut entities: BTreeSet<EntityRef> = intents.iter().map(|i| i.entity).collect();
+    entities.extend(deadlines.iter().map(|d| d.task));
+    let streams = streams_of(core, entities).await;
+    let deadlines = deadlines
+        .into_iter()
+        .filter(|d| crate::focus::allows(streams.get(&d.task).copied(), scope))
+        .collect();
+    (crate::focus::muting(intents, scope, &streams), deadlines)
+}
+
+/// The earliest `limit` of both lists together, ties broken on the
+/// identifier, split back into the two.
+fn cap(
+    reminders: Vec<PlannedNotification>,
+    catalog: Vec<CatalogNotification>,
+    limit: usize,
+) -> (Vec<PlannedNotification>, Vec<CatalogNotification>) {
+    let mut keys: Vec<(i64, String)> = reminders
+        .iter()
+        .map(|n| (n.fire_at_ms, n.identifier.clone()))
+        .chain(catalog.iter().map(|n| (n.fire_at_ms, n.identifier.clone())))
+        .collect();
+    if keys.len() <= limit {
+        return (reminders, catalog);
+    }
+    keys.sort_unstable();
+    keys.truncate(limit);
+    let kept: BTreeSet<(i64, String)> = keys.into_iter().collect();
+    let keep = |ms: i64, id: &str| kept.contains(&(ms, id.to_owned()));
+    (
+        reminders
+            .into_iter()
+            .filter(|n| keep(n.fire_at_ms, &n.identifier))
+            .collect(),
+        catalog
+            .into_iter()
+            .filter(|n| keep(n.fire_at_ms, &n.identifier))
+            .collect(),
+    )
+}
+
+/// The reminders a focus session holds, moved to 30 s after it under the
+/// quiet-hours rule and then through quiet hours again, and the identifiers
+/// of those it moved. One it drops is left out.
+fn hold_for_focus(
+    intents: Vec<ReminderIntent>,
+    sessions: &[FocusWindow],
+    policy: &ReminderPolicy,
+    tz: &jiff::tz::TimeZone,
+) -> (Vec<ReminderIntent>, BTreeSet<String>) {
+    let quiet = policy.settings.quiet_hours.as_ref();
+    let rule = quiet.map_or(QuietHoursPolicy::Queue, |q| q.policy);
+    let mut held = BTreeSet::new();
+    let kept = intents
+        .into_iter()
+        .filter_map(|mut i| {
+            let kind = NotificationKind::of_reminder(i.kind);
+            let at = focus_hold(i.fire_at, kind, sessions, rule)?;
+            if at == i.fire_at {
+                return Some(i);
+            }
+            let at = apply_quiet_hours(&at.to_zoned(tz.clone()), quiet)?;
+            i.deferred_from = Some(i.deferred_from.unwrap_or(i.fire_at));
+            i.fire_at = at;
+            held.insert(identifier_of(&i));
+            Some(i)
+        })
+        .collect();
+    (kept, held)
+}
+
+/// The focus sessions running, as the notification rules read them.
+async fn focus_windows(core: &Core) -> Result<Vec<FocusWindow>, CoreError> {
+    let QueryResult::FocusSessions(rows) = core.query(Query::RunningFocusSessions).await? else {
+        return Err(unexpected("running focus sessions"));
+    };
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let start = r.session.start.started_at;
+            FocusWindow {
+                start,
+                end: r.session.start.planned_ms.map(|ms| {
+                    start + jiff::SignedDuration::from_millis(i64::try_from(ms).unwrap_or(0))
+                }),
+            }
+        })
+        .collect())
+}
+
+/// The triage queue's task ids, in its order.
+async fn triage_queue(core: &Core) -> Result<Vec<EntityRef>, CoreError> {
+    let QueryResult::Triage(rows) = core.query(Query::Triage).await? else {
+        return Err(unexpected("triage"));
+    };
+    Ok(rows.iter().map(|r| r.task.id).collect())
+}
+
+/// Sync on this device, for the stall rule.
+async fn sync_health(core: &Core, network_available: bool) -> Result<SyncHealth, CoreError> {
+    let QueryResult::SyncStatus(status) = core.query(Query::SyncStatus).await? else {
+        return Err(unexpected("sync status"));
+    };
+    Ok(SyncHealth {
+        state: status.state,
+        oldest_unacked_ms: core.oldest_unacked_ms()?,
+        network_available,
+    })
+}
+
+async fn read_prefs(core: &Core) -> Result<Vec<ResolvedPref>, CoreError> {
+    let QueryResult::Preferences(prefs) = core.query(Query::Preferences).await? else {
+        return Err(unexpected("preferences"));
+    };
+    Ok(prefs)
+}
+
+async fn policy_of(core: &Core, prefs: &[ResolvedPref]) -> Result<ReminderPolicy, CoreError> {
+    let this_device = EntityRef::new(EntityKind::Device, core.device_id());
+    let QueryResult::Devices(devices) = core.query(Query::DeviceList).await? else {
+        return Err(unexpected("device list"));
+    };
+    let revoked: Vec<EntityRef> = devices
+        .iter()
+        .filter(|d| d.revoked)
+        .map(|d| EntityRef::new(EntityKind::Device, d.device_id))
+        .collect();
+    Ok(reminder_policy(prefs, this_device, &revoked))
 }
 
 /// This device's [`ReminderPolicy`], from the vault's preferences and the
@@ -126,29 +348,27 @@ pub async fn schedule(core: &Core, req: ScheduleRequest) -> Result<Schedule, Cor
 ///
 /// A failed read of the vault.
 pub async fn read_policy(core: &Core) -> Result<ReminderPolicy, CoreError> {
-    let this_device = EntityRef::new(EntityKind::Device, core.device_id());
-    let QueryResult::Preferences(prefs) = core.query(Query::Preferences).await? else {
-        return Err(unexpected("preferences"));
-    };
-    let QueryResult::Devices(devices) = core.query(Query::DeviceList).await? else {
-        return Err(unexpected("device list"));
-    };
-    let revoked: Vec<EntityRef> = devices
-        .iter()
-        .filter(|d| d.revoked)
-        .map(|d| EntityRef::new(EntityKind::Device, d.device_id))
-        .collect();
-    Ok(reminder_policy(&prefs, this_device, &revoked))
+    let prefs = read_prefs(core).await?;
+    policy_of(core, &prefs).await
 }
 
-/// The stream each reminder's entity is filed in: a task's own, a routine's
-/// template's, a block's own, and the legacy Inbox reference for none
-/// ([`sunrise_domain::stream_key`]). A read that fails leaves the entity out, which
-/// [`crate::focus::allows`] lets through. Read only while a Focus filter is
-/// on, and at most a day's reminders.
-async fn streams_of(core: &Core, intents: &[ReminderIntent]) -> BTreeMap<EntityRef, EntityRef> {
+/// The catalog's preferences on this device: each kind's toggle, the
+/// deadline's lead and the briefs' offsets.
+///
+/// # Errors
+///
+/// A failed read of the vault.
+pub async fn read_catalog_policy(core: &Core) -> Result<CatalogPolicy, CoreError> {
+    Ok(catalog_policy(&read_prefs(core).await?))
+}
+
+/// The stream each entity is filed in: a task's own, a routine's template's,
+/// a block's own, and the legacy Inbox reference for none
+/// ([`sunrise_domain::stream_key`]). A read that fails leaves the entity
+/// out, which [`crate::focus::allows`] lets through. Read only while a Focus
+/// filter is on, for a day's reminders and the open deadlines.
+async fn streams_of(core: &Core, entities: BTreeSet<EntityRef>) -> BTreeMap<EntityRef, EntityRef> {
     let mut streams = BTreeMap::new();
-    let entities: BTreeSet<EntityRef> = intents.iter().map(|i| i.entity).collect();
     for entity in entities {
         let stream = match core.query(Query::EntityById(entity)).await {
             Ok(QueryResult::Task(t)) => Some(t.stream_id),
@@ -173,241 +393,4 @@ pub(super) fn unexpected(what: &str) -> CoreError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::reminders::{identifier, primary_claim};
-    use std::sync::Arc;
-    use sunrise_core::{Command, CoreConfig, Unlock};
-    use sunrise_domain::{
-        PrefTarget, PrefValue, ReminderKind, StreamDraft, SunriseTime, TaskDraft,
-    };
-
-    /// 2026-06-01T12:00:00Z.
-    const NOW: u64 = 1_780_315_200_000;
-
-    fn now() -> u64 {
-        NOW
-    }
-
-    async fn vault(dir: &std::path::Path) -> Core {
-        Core::open(
-            CoreConfig::with_clock(
-                dir.to_path_buf(),
-                "test",
-                Arc::new(crate::host::HostClock::new(now, "America/Toronto")),
-                Arc::new(sunrise_core::SystemRng),
-            ),
-            Unlock::DevicePaired {
-                root: sunrise_crypto::keys::VaultRootKey::from_bytes([4; 32]),
-                paired: None,
-            },
-        )
-        .await
-        .unwrap()
-    }
-
-    async fn task_in(core: &Core, name: &str, minutes: i64) -> (EntityRef, EntityRef) {
-        let stream = core
-            .submit(Command::CreateStream(StreamDraft {
-                name: name.into(),
-                ..StreamDraft::default()
-            }))
-            .await
-            .unwrap()
-            .entity;
-        let at = jiff::Timestamp::from_millisecond(i64::try_from(NOW).unwrap() + minutes * 60_000)
-            .unwrap();
-        let task = core
-            .submit(Command::CreateTask(TaskDraft {
-                title: format!("{name} task"),
-                stream_id: Some(stream),
-                planned_at: Some(SunriseTime::instant(at)),
-                ..TaskDraft::default()
-            }))
-            .await
-            .unwrap()
-            .entity;
-        (stream, task)
-    }
-
-    fn request(pending: Vec<PendingNotification>) -> ScheduleRequest {
-        ScheduleRequest {
-            now_ms: NOW,
-            authorized: true,
-            focus_scope: None,
-            pending,
-            clock: ClockStyle::H24,
-        }
-    }
-
-    fn held(s: &Schedule) -> Vec<PendingNotification> {
-        s.desired
-            .iter()
-            .map(|n| PendingNotification {
-                identifier: n.identifier.clone(),
-                revision: Some(n.revision.clone()),
-            })
-            .collect()
-    }
-
-    /// The whole loop against a vault: plan, hold, re-plan to nothing, mute a
-    /// stream under a Focus, and go quiet when the switch or the OS says so.
-    #[tokio::test]
-    async fn a_vaults_reminders_are_planned_muted_and_withdrawn() {
-        let dir = tempfile::tempdir().unwrap();
-        let core = vault(dir.path()).await;
-        let (work, _) = task_in(&core, "Work", 10).await;
-        let (_, home_task) = task_in(&core, "Home", 20).await;
-
-        let first = schedule(&core, request(Vec::new())).await.unwrap();
-        assert_eq!(first.desired.len(), 2);
-        assert_eq!(first.reconciliation.add.len(), 2);
-        assert!(first.policy.claim_primary);
-        assert!(!first.zone_unknown);
-
-        let again = schedule(&core, request(held(&first))).await.unwrap();
-        assert!(
-            again.reconciliation.is_empty(),
-            "{:?}",
-            again.reconciliation
-        );
-
-        let focused = schedule(
-            &core,
-            ScheduleRequest {
-                focus_scope: crate::focus::scope([work]),
-                ..request(held(&first))
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(focused.desired.len(), 1);
-        assert_eq!(
-            focused.reconciliation.cancel,
-            [identifier(home_task, ReminderKind::Task)],
-            "a muted reminder is withdrawn, not merely not added"
-        );
-
-        let refused = schedule(
-            &core,
-            ScheduleRequest {
-                authorized: false,
-                ..request(held(&first))
-            },
-        )
-        .await
-        .unwrap();
-        assert!(refused.desired.is_empty());
-        assert_eq!(refused.reconciliation.cancel.len(), 2);
-
-        core.submit(Command::SetPreference {
-            key: "notifications.enabled".into(),
-            value: PrefValue::Bool(false),
-            target: PrefTarget::Device,
-        })
-        .await
-        .unwrap();
-        let off = schedule(&core, request(held(&first))).await.unwrap();
-        assert!(off.desired.is_empty() && !off.policy.enabled);
-        assert_eq!(off.reconciliation.cancel.len(), 2);
-        core.shutdown().await;
-    }
-
-    /// Another device holding the register silences this one.
-    #[tokio::test]
-    async fn a_device_that_is_not_primary_plans_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let core = vault(dir.path()).await;
-        task_in(&core, "Work", 10).await;
-        let (key, value, target) = primary_claim(EntityRef::new(EntityKind::Device, [9; 16]));
-        core.submit(Command::SetPreference {
-            key: key.into(),
-            value,
-            target,
-        })
-        .await
-        .unwrap();
-        let s = schedule(&core, request(Vec::new())).await.unwrap();
-        assert!(!s.policy.settings.is_primary_device);
-        assert!(s.desired.is_empty());
-        assert!(
-            s.wind_down.is_none(),
-            "a device that is not primary is silent"
-        );
-        core.shutdown().await;
-    }
-
-    /// #301's trigger against a vault: once a sleep time is set the plan
-    /// carries a wind-down an hour before it, and a zone change re-plans it to
-    /// the same wall clock in the new zone under the same identifier.
-    #[tokio::test]
-    async fn a_sleep_time_plans_a_wind_down_that_follows_the_zone() {
-        let dir = tempfile::tempdir().unwrap();
-        let core = vault(dir.path()).await;
-        let none = schedule(&core, request(Vec::new())).await.unwrap();
-        assert!(none.wind_down.is_none(), "no sleep time, no wind-down");
-        assert_eq!(none.wind_down_change, WindDownChange::Keep);
-
-        core.submit(Command::SetPreference {
-            key: "day_schedule.weekday.MO".into(),
-            value: PrefValue::DayWindow {
-                wake: jiff::civil::time(7, 0, 0, 0),
-                sleep: jiff::civil::time(23, 0, 0, 0),
-            },
-            target: PrefTarget::Vault,
-        })
-        .await
-        .unwrap();
-        // 2026-06-01 is a Monday: 23:00 EDT in Toronto is 03:00Z the next day.
-        let toronto = schedule(&core, request(Vec::new())).await.unwrap();
-        let w = toronto.wind_down.clone().unwrap();
-        assert_eq!(w.fire_at_ms, 1_780_365_600_000, "22:00 EDT");
-        assert!(matches!(toronto.wind_down_change, WindDownChange::Add(_)));
-        assert!(
-            toronto
-                .reconciliation
-                .add
-                .iter()
-                .all(|n| n.identifier != w.identifier),
-            "the reminder reconcile never names it"
-        );
-
-        let held = vec![PendingNotification {
-            identifier: w.identifier.clone(),
-            revision: Some(w.revision.clone()),
-        }];
-        let again = schedule(&core, request(held.clone())).await.unwrap();
-        assert_eq!(again.wind_down_change, WindDownChange::Keep);
-        assert!(
-            again.reconciliation.cancel.is_empty(),
-            "a held wind-down is not one of the reminders to withdraw"
-        );
-
-        core.on_time_zone_changed("America/Vancouver").unwrap();
-        let moved = schedule(&core, request(held)).await.unwrap();
-        let m = moved.wind_down.clone().unwrap();
-        assert_eq!(m.identifier, w.identifier);
-        assert_eq!(m.fire_at_ms, 1_780_376_400_000, "22:00 PDT");
-        assert!(matches!(moved.wind_down_change, WindDownChange::Replace(_)));
-
-        core.submit(Command::SetPreference {
-            key: "notifications.wind_down.enabled".into(),
-            value: PrefValue::Bool(false),
-            target: PrefTarget::Device,
-        })
-        .await
-        .unwrap();
-        let off = schedule(
-            &core,
-            request(vec![PendingNotification {
-                identifier: m.identifier.clone(),
-                revision: Some(m.revision),
-            }]),
-        )
-        .await
-        .unwrap();
-        assert!(off.wind_down.is_none());
-        assert_eq!(off.wind_down_change, WindDownChange::Cancel);
-        core.shutdown().await;
-    }
-}
+mod tests;

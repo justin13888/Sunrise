@@ -454,3 +454,78 @@ fn the_override_type_reads_none_and_refuses_a_false_none() {
     };
     assert_eq!(PrefType::DayWindow.decode(&same.encode()), None);
 }
+
+/// The morning brief is wake plus its offset and the evening plan sleep less
+/// its offset, the sleep resolved on the next date when it crosses midnight;
+/// a date with no schedule fires at 08:00 and 20:00, whatever the offset.
+#[test]
+fn briefs_count_from_wake_and_sleep_and_fall_back_to_eight_and_twenty() {
+    let s = daily(w((7, 0), (1, 0)));
+    let z = tz("America/New_York");
+    let d = date(2026, 3, 2);
+    let at = |which, off| brief_at(&s, d, &z, which, off).unwrap().unwrap();
+    assert_eq!(at(Brief::Morning, 900), ts("2026-03-02T12:15Z"));
+    assert_eq!(at(Brief::Morning, -600), ts("2026-03-02T11:50Z"));
+    assert_eq!(
+        at(Brief::Evening, 7200),
+        ts("2026-03-03T04:00Z"),
+        "23:00 Monday"
+    );
+    let none = DaySchedule::default();
+    assert_eq!(
+        brief_at(&none, d, &z, Brief::Morning, 900).unwrap(),
+        Some(ts("2026-03-02T13:00Z"))
+    );
+    assert_eq!(
+        brief_at(&none, d, &z, Brief::Evening, 7200).unwrap(),
+        Some(ts("2026-03-03T01:00Z"))
+    );
+    // A date the zone skips has no brief.
+    assert_eq!(
+        brief_at(
+            &none,
+            date(2011, 12, 30),
+            &tz("Pacific/Apia"),
+            Brief::Morning,
+            0
+        )
+        .unwrap(),
+        None
+    );
+}
+
+/// On the spring-forward day a 02:30 wake does not exist: the brief lands
+/// at the shifted wake, 03:30 EDT, plus its offset.
+#[test]
+fn a_brief_on_a_dst_day_follows_the_shifted_wake() {
+    let s = daily(w((2, 30), (22, 0)));
+    let z = tz("America/New_York");
+    assert_eq!(
+        brief_at(&s, date(2026, 3, 8), &z, Brief::Morning, 900).unwrap(),
+        Some(ts("2026-03-08T07:45Z"))
+    );
+}
+
+#[test]
+fn the_next_brief_is_todays_until_it_fires_then_tomorrows() {
+    let s = daily(w((7, 0), (23, 0)));
+    let z = tz("America/New_York");
+    let next = |at: &str, which| next_brief(&s, ts(at), &z, which, 900).unwrap().unwrap();
+    assert_eq!(
+        next("2026-03-02T12:00Z", Brief::Morning),
+        (date(2026, 3, 2), ts("2026-03-02T12:15Z"))
+    );
+    assert_eq!(
+        next("2026-03-02T12:15:01Z", Brief::Morning),
+        (date(2026, 3, 3), ts("2026-03-03T12:15Z"))
+    );
+    assert_eq!(
+        next("2026-03-02T12:00Z", Brief::Evening),
+        (date(2026, 3, 2), ts("2026-03-03T03:45Z")),
+        "22:45 EST"
+    );
+    assert_eq!(
+        next("2026-03-03T03:45:01Z", Brief::Evening),
+        (date(2026, 3, 3), ts("2026-03-04T03:45Z"))
+    );
+}

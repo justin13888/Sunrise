@@ -19608,3 +19608,7 @@ mod triage;
 /// catch-up over occurrences generated earlier, and the hard-constraint flag
 /// (#331).
 mod series;
+
+/// The notification catalog's reads: security events, deadlines, the
+/// outbox's age, routine reminders (#347).
+mod security_events;
