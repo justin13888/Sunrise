@@ -246,6 +246,65 @@ pub enum SaveError {
     /// The directory or the file could not be written.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// A view holds text the file's subset cannot carry, so a later
+    /// [`load`] would drop it or read it back as something else. Nothing was
+    /// written.
+    #[error("saved view {name:?} cannot be written to the views file: {reason}")]
+    Unencodable {
+        /// The view's name.
+        name: String,
+        /// What in it the file cannot carry.
+        reason: &'static str,
+    },
+}
+
+/// Why `v` cannot be written as one line that [`load`] reads back as `v`, or
+/// `None` when it can.
+///
+/// The subset splits a spec on `;` and `=`, a context list on `,`, and the
+/// file on lines; it trims every part, drops a leading `@` from a context,
+/// and reads an unquoted `#` as the start of a comment. A view is refused
+/// when any of those would change it.
+fn unencodable(v: &SavedView) -> Option<&'static str> {
+    let breaks = |s: &str| s.contains(['\n', '\r']);
+    let padded = |s: &str| s.trim() != s;
+    if v.name.is_empty() {
+        return Some("the name is empty");
+    }
+    if breaks(&v.name) || breaks(&v.query) || v.contexts.iter().any(|c| breaks(c)) {
+        return Some("it holds a line break");
+    }
+    if padded(&v.name) {
+        return Some("the name starts or ends with whitespace");
+    }
+    if v.name.contains(['=', '"']) {
+        return Some("the name holds `=` or `\"`");
+    }
+    if v.name.starts_with('[') {
+        return Some("the name starts with `[`, which reads as a table header");
+    }
+    if v.query.contains(';') {
+        return Some("the query holds `;`");
+    }
+    if padded(&v.query) {
+        return Some("the query starts or ends with whitespace");
+    }
+    for c in &v.contexts {
+        if c.is_empty() || padded(c) {
+            return Some("a context name is empty or starts or ends with whitespace");
+        }
+        if c.contains([',', ';']) {
+            return Some("a context name holds `,` or `;`");
+        }
+        if c.starts_with('@') {
+            return Some("a context name starts with `@`");
+        }
+    }
+    let line = v.to_line();
+    if strip_comment(&line).len() != line.len() {
+        return Some("a `#` in it would be read as the start of a comment");
+    }
+    None
 }
 
 /// The saved-view file at one path, read and written whole.
@@ -282,10 +341,18 @@ impl SavedViewStore {
     /// the store disagreeing with what the picker just showed.
     ///
     /// # Errors
-    /// [`SaveError::NoPath`] for a store with no path, and
-    /// [`SaveError::Io`] when the directory or the file cannot be written.
+    /// [`SaveError::NoPath`] for a store with no path,
+    /// [`SaveError::Unencodable`] for a view the file cannot carry (nothing
+    /// is written), and [`SaveError::Io`] when the directory or the file
+    /// cannot be written.
     pub fn save(&self, views: &[SavedView]) -> Result<(), SaveError> {
         let path = self.path.as_ref().ok_or(SaveError::NoPath)?;
+        if let Some((v, reason)) = views.iter().find_map(|v| Some((v, unencodable(v)?))) {
+            return Err(SaveError::Unencodable {
+                name: v.name.clone(),
+                reason,
+            });
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
