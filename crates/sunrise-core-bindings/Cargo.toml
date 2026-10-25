@@ -57,5 +57,7 @@ zeroize = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 
 [dev-dependencies]
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

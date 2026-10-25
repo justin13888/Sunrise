@@ -46,10 +46,12 @@ pub fn read(phrase: &str, now: Timestamp, reader: &TimeZone) -> Option<When> {
     }
 }
 
-/// `+Nd` and `+Nw`: civil days, not 24-hour spans.
+/// `+Nd` and `+Nw`: civil days, not 24-hour spans. The unit is the last
+/// character, not the last byte, so `+3日` is not a date rather than a panic.
 fn relative_days(p: &str) -> Option<i32> {
     let rest = p.strip_prefix('+')?;
-    let (num, unit) = rest.split_at(rest.len().checked_sub(1)?);
+    let (unit_at, _) = rest.char_indices().next_back()?;
+    let (num, unit) = rest.split_at(unit_at);
     let n: i32 = num.parse().ok()?;
     match unit {
         "d" => Some(n),
@@ -120,6 +122,38 @@ mod tests {
     fn something_that_is_not_a_date_is_none() {
         assert_eq!(read("whenever", at("2026-10-24T03:00:00Z"), &ny()), None);
         assert_eq!(read("+3x", at("2026-10-24T03:00:00Z"), &ny()), None);
+    }
+
+    /// A unit wider than one byte is not a date, rather than a panic on a
+    /// byte slice inside the character.
+    #[test]
+    fn a_relative_phrase_with_a_non_ascii_unit_is_none() {
+        let now = at("2026-10-24T03:00:00Z");
+        for bad in ["+3\u{65e5}", "+3\u{e9}", "+\u{1f600}"] {
+            assert_eq!(read(bad, now, &ny()), None, "{bad:?}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Any phrase is read as a date or as none, never a panic.
+        #[test]
+        fn any_phrase_is_read_without_panicking(s in proptest::prelude::any::<String>()) {
+            let _ = read(&s, at("2026-10-24T03:00:00Z"), &ny());
+        }
+
+        /// The relative shape, with any character as its unit.
+        #[test]
+        fn a_relative_phrase_with_any_unit_is_read_without_panicking(
+            n in 0u32..1000,
+            unit in proptest::prelude::any::<char>(),
+        ) {
+            let _ = read(&format!("+{n}{unit}"), at("2026-10-24T03:00:00Z"), &ny());
+        }
     }
 
     #[test]

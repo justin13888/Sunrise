@@ -3187,6 +3187,7 @@ dependencies = [
  "icu_locale_core",
  "icu_plurals",
  "jiff",
+ "proptest",
  "serde_json",
  "sunrise-auth",
  "sunrise-cbor",
@@ -3203,6 +3204,7 @@ dependencies = [
  "sunrise-server",
  "sunrise-storage",
  "sunrise-sync",
+ "sunrise-test-seed",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3281,6 +3283,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "jiff",
+ "proptest",
  "sunrise-auth",
  "sunrise-cbor",
  "sunrise-client-core",
@@ -3292,6 +3295,7 @@ dependencies = [
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",
+ "sunrise-test-seed",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3439,8 +3443,10 @@ dependencies = [
 name = "sunrise-id"
 version = "0.2.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "zeroize",
 ]

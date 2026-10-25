@@ -482,8 +482,12 @@ fn civil_to_ts(dt: DateTime, tz: &TimeZone) -> Option<Timestamp> {
 /// day is 23 or 25 hours, so "+3d" must mean the same wall-clock time three
 /// days later, not exactly 72 hours. jiff enforces this by refusing to add
 /// calendar units to a `Timestamp` at all, which is what surfaced the bug.
+///
+/// The unit is the last *character*, not the last byte: a byte offset lands
+/// inside a multi-byte character (`+3é`) and slicing there panics.
 fn parse_relative(rest: &str, now: Timestamp, tz: &TimeZone) -> Option<Timestamp> {
-    let (num, unit) = rest.split_at(rest.len().checked_sub(1)?);
+    let (unit_at, _) = rest.char_indices().next_back()?;
+    let (num, unit) = rest.split_at(unit_at);
     let n: i64 = num.parse().ok()?;
     let span = match unit {
         "d" => Span::new().try_days(n).ok()?,
