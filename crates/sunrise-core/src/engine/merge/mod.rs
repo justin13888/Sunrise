@@ -119,6 +119,8 @@ pub(super) use versions::Node;
 // The search indexes' rows are the row writers'; `engine::search` builds them
 // from the rows when the layout changes.
 pub(super) use register::{class_of, kept_registers, Member};
+#[cfg(test)]
+pub(super) use rows::reindex_tasks_of;
 pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
 pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
