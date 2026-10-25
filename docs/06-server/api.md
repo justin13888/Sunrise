@@ -470,6 +470,44 @@ lifts the tombstone, because the attachment is back.
 | 403 | `ACCOUNT_PENDING_DELETION` | `init`, a chunk `PUT` or `finalize` for an account whose deletion is confirmed. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
 
+### Stream snapshots
+
+Each stream's latest snapshot record, pinned
+([ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md)).
+A record (ADR-0059 §4) is what a device past the relay's op retention, or a new
+device joining an old account, catches up from. It outgrows a 4 MiB frame past
+a few thousand tasks, so it travels as a blob: the compactor uploads it through
+the three blob steps above and then pins it here.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/snapshots/<stream_id>` | `{ blob_id }` | `200 { stream_id, blob_id, size_bytes, published_at_ms }` |
+| GET | `/api/v1/snapshots/<stream_id>` | — | `200 { stream_id, blob_id, size_bytes, published_at_ms }`, or `404` |
+
+`stream_id` is 32 lowercase hex characters. Both routes are signed like the
+blob routes (`Signed` for the `PUT`, `SignedParts` for the `GET`) and are in
+the `blob` rate-limit group. Implemented in `api/snapshots.rs`, over
+`store/snapshots.rs` (relay migration 0006).
+
+- **One per stream, the last one pinned.** The relay cannot order two records
+  it cannot open, so a pin replaces the one before it. It then deletes the
+  blob the old pin named, unless another of the account's pins names it. Pins
+  are not touched by op retention, and go only with the account. The
+  maintenance pass never collects a pinned blob, even one with a tombstone.
+- **The blob must be a committed snapshot record of this account.** A blob
+  this account has not committed is the fetch route's `404 BLOB_NOT_FOUND`.
+  The relay reads the blob's cleartext magic prefix and refuses any kind but
+  the snapshot record's (`0x04`) with `400 VALIDATION_INVALID`, so a replaced
+  pin can never delete an attachment. It reads nothing else of the record.
+- **A stream with no pin** is `404 BLOB_NOT_FOUND`, the same answer an account
+  that is not the caller's gets.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed, like the upload steps.
+
+The client is `sunrise_sync::Transport::snapshot_latest` and
+`Transport::snapshot_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/snapshot_sync.rs`.
+
 ### Sharing — NOT IMPLEMENTED
 
 No `api/shares.rs` exists, no `shares` table is in `store/`'s schema, and
@@ -653,7 +691,7 @@ refills continuously.
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
 | `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
-| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
@@ -746,6 +784,7 @@ that have not been built.
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
+| `/api/v1/snapshots/*` | yes | yes | **yes — built; the record is a local-disk blob** |
 | `/api/v1/shares/*` | yes | yes | **no route** |
 | `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |

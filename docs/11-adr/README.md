@@ -85,6 +85,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0065 | [Entities are copy-on-write version DAGs; rows are a fold, and every conflict is kept and named](./0065-copy-on-write-entity-versions.md) | accepted (amends 0044; clarified 2026-10 by its own D1–D18, of which D10 keeps the version rows through compaction for now, D13 marks a group of full-state ops and D16 writes defers and streak keys as `Patch`es between devices that all fold them) |
 | 0066 | [Routines follow the traveller by default, and no stored time is ever re-derived from a zone](./0066-times-survive-travel.md) | accepted (amends `time.md` §1's anchor default) |
 | 0067 | [Windows secret files get a protected, one-entry DACL, set by the workspace's one `unsafe` module](./0067-windows-owner-only-files.md) | accepted (the one exception to the workspace's `unsafe_code = "forbid"`; built by #486) |
+| 0068 | [A stream's snapshot record travels as a blob the relay pins per stream, and a cursor gap is answered by applying it](./0068-a-streams-snapshot-travels-as-a-pinned-blob.md) | accepted (answers 0059 §7; depends on 0059 §4 and §5; built by #462) |
 
 ## When to write a new ADR
 

@@ -501,23 +501,34 @@ Filtering is one-sided: a frame is skipped only when *every* device head in it i
 Replay is served from the relay's **durable** op log, bounded per channel by age (30 days) and size (256 MiB) — see [`../06-server/relay-and-blob-storage.md`](../06-server/relay-and-blob-storage.md). The in-memory ring in front of it is live fan-out only, so passing *its* bound costs nothing and a relay restart loses no history. When durable retention deletes a frame, the channel raises an `evicted_through` watermark for each device it carried. A subscriber whose cursor for such a device is **below** that watermark is missing ops the relay can no longer produce, and receives:
 
 ```
-Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…" }
+Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…", stream_id }
 ```
 
-before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client resyncs from a peer.
+before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client catches the stream up from its snapshot record instead (below).
+
+`stream_id` is optional on `ErrorPayload` (key 9 in canonical order, after
+`code` and `reason`): written only when set, and read as absent when missing, so
+an `Error` that names no stream is the payload it always was. The relay's SSE
+`gap` event already names the stream, and the SSE transport carries it into the
+frame the driver reads.
 
 Being caught up past everything evicted is **not** a gap — otherwise every healthy long-lived session would be told to resync each time retention turned over. Watermarks are durable, so a restart no longer resets them: a fresh relay reports exactly the gaps that are real. (While they lived only in memory, a restart cleared frames and watermarks together and the relay reported *no* gap at all — telling a returning device it was complete when it was not.)
 
-A client that receives this must not treat the following `CaughtUp` as completeness. The reference client latches a degraded sync state for the rest of the session and never reports `Live`, because no retry on that connection can produce the missing ops.
+A client that receives this must not treat the following `CaughtUp` as completeness. The reference client first fetches the stream's pinned snapshot record and applies it, then re-subscribes from the cursors it set; only if no record covers the gap does it latch a degraded sync state for the rest of the session and never report `Live`, because no retry on that connection can produce the missing ops.
 
-## Backfill from snapshot — target state
+## Backfill from snapshot
 
-*Not implemented.* `SnapshotReq`/`SnapshotResp` have discriminators and nothing
-else — no payload types, no handler — and a device whose cursor has fallen below
-the relay's `evicted_through` watermark gets `SYNC_CURSOR_GAP` and resyncs from
-a peer instead (see [Cursor gaps](#cursor-gaps)). The intent: if a device's
-cursor is older than the most recent snapshot for a Stream, the server sends
-`SnapshotResp` first, then ops since the snapshot.
+Built, and not over the frame protocol
+([ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md)). A
+stream's snapshot record outgrows a 4 MiB frame past a few thousand tasks, so the
+compactor uploads it as a blob and pins it with
+`PUT /api/v1/snapshots/{stream_id}`, and a device told `SYNC_CURSOR_GAP` reads
+it with `GET /api/v1/snapshots/{stream_id}` and `GET /api/v1/blobs/{blob_id}`
+([`../06-server/api.md`](../06-server/api.md) §Stream snapshots;
+[`../04-storage/compaction.md`](../04-storage/compaction.md) §Transport). Applying
+it raises the stream's cursors to the record's frontier, and the re-subscribe
+that follows replays only what lies above it. `SnapshotReq`/`SnapshotResp`
+(`0x08`/`0x09`) keep their discriminators and nothing else.
 
 ## Atomic batches
 

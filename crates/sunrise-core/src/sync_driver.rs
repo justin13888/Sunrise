@@ -1278,6 +1278,10 @@ async fn session(
     // Subscribe already asks for everything past the cursors, so only growth
     // from here on is new evidence.
     let mut chain_wanted = core.sync_chain_wanted();
+    // Streams the relay reported a cursor gap on, and what catching each up
+    // from its snapshot record came to this session (ADR-0068).
+    let mut gaps: Vec<[u8; 16]> = Vec::new();
+    let mut recovery = GapRecovery::default();
 
     // Initial outbox drain (fresh session: everything unacked is (re)sent —
     // idempotent apply on the peer tolerates replays).
@@ -1307,7 +1311,7 @@ async fn session(
     // fetched. Both directions run here for the same reason the revocation
     // does: reconnect backoff is the retry schedule.
     drain_blob_transfers(core, transport.as_mut()).await;
-    maybe_live(core, shared, &subscribed, &caught_up);
+    maybe_live(core, shared, transport.as_mut(), &subscribed, &caught_up).await;
 
     // ---- Main pump ----
     //
@@ -1406,6 +1410,9 @@ async fn session(
                     // §5): the cadence is a day or 256 ops, so checking it
                     // every interval is what makes either bound hold.
                     core.sync_publish_due_digests();
+                    // The compactor's daily record rides the same tick as the
+                    // compaction that wrote it (ADR-0068).
+                    crate::snapshot_sync::publish(core, transport.as_mut()).await;
                     match encode_subscribe_all(core) {
                         Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
                         Err(()) => return SessionEnd::Disconnected,
@@ -1435,10 +1442,26 @@ async fn session(
                     &mut inflight_ops,
                     &mut pending_sends,
                     &mut deadlines,
+                    &mut gaps,
                 )
                 .await
                 {
                     return end;
+                }
+                // A gap the relay named a stream for is caught up from that
+                // stream's snapshot record before the next frame is read, so
+                // the replay behind the gap lands on the floors it raised.
+                if !gaps.is_empty() {
+                    recover_gaps(
+                        core,
+                        shared,
+                        transport.as_mut(),
+                        &mut gaps,
+                        &mut recovery,
+                        &mut pending_sends,
+                        &mut subscribed,
+                    )
+                    .await;
                 }
                 // A frame that told this vault of an op it does not hold is
                 // loss evidence that names the loss: re-subscribe now rather
@@ -1456,7 +1479,7 @@ async fn session(
                 // long-lived session is the ordinary case rather than the
                 // exception.
                 drain_blob_transfers(core, transport.as_mut()).await;
-                maybe_live(core, shared, &subscribed, &caught_up);
+                maybe_live(core, shared, transport.as_mut(), &subscribed, &caught_up).await;
             }
             SessionEvent::Recv(Ok(None)) => return SessionEnd::Disconnected,
             SessionEvent::Recv(Err(e)) => return SessionEnd::from_recv_error(e),
@@ -1621,6 +1644,7 @@ async fn handle_frame(
     inflight_ops: &mut HashSet<[u8; 16]>,
     pending_sends: &mut Vec<Outgoing>,
     deadlines: &mut Deadlines,
+    gaps: &mut Vec<[u8; 16]>,
 ) -> Result<(), SessionEnd> {
     let Ok((header, payload)) = decode_frame(bytes) else {
         // Junk frame: keep the session, but a frame that will not decode means
@@ -1709,35 +1733,7 @@ async fn handle_frame(
                 deadlines.note_loss(LossEvidence::UndecodableFrame);
                 return Ok(());
             };
-            // A cursor gap is the one error the session cannot recover from by
-            // trying harder: the relay has said the ops between our cursor and
-            // its watermark are gone, so neither a retransmit nor a resync can
-            // produce them. Ignoring it — which is what this arm used to do —
-            // meant accepting the `CaughtUp` that follows and reporting `Live`
-            // while permanently missing data. Latch a degraded state instead;
-            // it outlives the session because the loss does.
-            if err.code == ErrorCode::SyncCursorGap {
-                tracing::warn!(
-                    ev = "sync.gap",
-                    err_code = %err.code,
-                    err_kind = "permanent",
-                    retryable = false,
-                    result = "degraded",
-                    cause = %err.reason,
-                    "relay cannot supply ops this device never received"
-                );
-                shared.mark_degraded();
-            } else {
-                tracing::warn!(
-                    ev = "sync.session.error",
-                    err_code = %err.code,
-                    err_kind = "transient",
-                    retryable = true,
-                    result = "failed",
-                    cause = %err.reason,
-                    "relay reported an error"
-                );
-            }
+            on_error(shared, &err, gaps);
         }
         MsgKind::RefreshTokenAck => note_refresh_ack(&payload),
         // Nack and every other kind are non-fatal in the self-host build: they fall
@@ -1745,6 +1741,47 @@ async fn handle_frame(
         _ => {}
     }
     Ok(())
+}
+
+/// An `Error` frame from the relay: logged, and a cursor gap handed on.
+fn on_error(shared: &SyncShared, err: &ErrorPayload, gaps: &mut Vec<[u8; 16]>) {
+    // A cursor gap is the one error the session cannot recover from by
+    // trying harder: the relay has said the ops between our cursor and
+    // its watermark are gone, so neither a retransmit nor a resync can
+    // produce them. Ignoring it — which is what the driver used to do —
+    // meant accepting the `CaughtUp` that follows and reporting `Live`
+    // while permanently missing data. Latch a degraded state instead;
+    // it outlives the session because the loss does.
+    //
+    // Unless the stream's snapshot record covers the hole (ADR-0068):
+    // a gap that names its stream is handed to `recover_gaps`, which
+    // latches the same state only if the record cannot be applied.
+    if err.code == ErrorCode::SyncCursorGap {
+        if let Some(stream) = err.stream_id {
+            gaps.push(stream);
+            return;
+        }
+        tracing::warn!(
+            ev = "sync.gap",
+            err_code = %err.code,
+            err_kind = "permanent",
+            retryable = false,
+            result = "degraded",
+            cause = %err.reason,
+            "relay cannot supply ops this device never received"
+        );
+        shared.mark_degraded();
+    } else {
+        tracing::warn!(
+            ev = "sync.session.error",
+            err_code = %err.code,
+            err_kind = "transient",
+            retryable = true,
+            result = "failed",
+            cause = %err.reason,
+            "relay reported an error"
+        );
+    }
 }
 
 /// Drain the persistent outbox (skipping already-in-flight ops), grouping by
@@ -2093,11 +2130,111 @@ async fn fetch_missing_blobs<T: Transport + ?Sized>(core: &Core, transport: &mut
     }
 }
 
-/// Transition to `Live` once every subscribed stream is caught up and the
-/// outbox is empty (all local ops acked).
-fn maybe_live(
+/// What catching gapped streams up from their snapshot records came to in
+/// one session (ADR-0068).
+#[derive(Debug, Default)]
+struct GapRecovery {
+    /// Streams a record was applied for this session. A second gap on one of
+    /// them means the record's frontier is below what the relay still holds.
+    applied: HashSet<[u8; 16]>,
+    /// Streams whose record could not be applied yet; retried after any
+    /// other record applies, and on the next gap the relay reports.
+    deferred: HashSet<[u8; 16]>,
+    /// Streams nothing in this session can catch up.
+    failed: HashSet<[u8; 16]>,
+}
+
+/// Catch each stream in `gaps` up from its snapshot record, and re-subscribe
+/// from the cursors the records set.
+///
+/// A stream that cannot be caught up latches [`SyncState::Degraded`], exactly
+/// as a gap did before snapshots travelled: the device is missing ops and
+/// must not claim otherwise. A deferred one latches it too, and the state
+/// goes back to catching up once every gapped stream of the session has been
+/// recovered.
+async fn recover_gaps<T: Transport + ?Sized>(
     core: &Core,
     shared: &SyncShared,
+    transport: &mut T,
+    gaps: &mut Vec<[u8; 16]>,
+    recovery: &mut GapRecovery,
+    pending_sends: &mut Vec<Outgoing>,
+    subscribed: &mut HashSet<[u8; 16]>,
+) {
+    let mut resubscribe = false;
+    while let Some(stream) = gaps.pop() {
+        let outcome = if recovery.applied.contains(&stream) {
+            crate::snapshot_sync::Recovery::Failed("below_snapshot")
+        } else if recovery.failed.contains(&stream) {
+            // Already reported and latched; asking the relay again cannot
+            // change the answer inside this session.
+            shared.mark_degraded();
+            continue;
+        } else {
+            crate::snapshot_sync::recover(core, transport, stream).await
+        };
+        match outcome {
+            crate::snapshot_sync::Recovery::Applied => {
+                recovery.applied.insert(stream);
+                recovery.deferred.remove(&stream);
+                resubscribe = true;
+                // What the record carried — keys, certs, streams — may be
+                // what a deferred stream was waiting for.
+                gaps.extend(recovery.deferred.drain());
+            }
+            crate::snapshot_sync::Recovery::Deferred(_) => {
+                recovery.deferred.insert(stream);
+                shared.mark_degraded();
+            }
+            crate::snapshot_sync::Recovery::Failed(reason) => {
+                recovery.failed.insert(stream);
+                tracing::warn!(
+                    ev = "sync.gap",
+                    err_code = %ErrorCode::SyncCursorGap,
+                    err_kind = "permanent",
+                    retryable = false,
+                    result = "degraded",
+                    stream_h = hex_short(&stream),
+                    reason,
+                    "relay cannot supply ops this device never received, and no snapshot covers them"
+                );
+                shared.mark_degraded();
+            }
+        }
+    }
+    if !resubscribe {
+        return;
+    }
+    if recovery.failed.is_empty()
+        && recovery.deferred.is_empty()
+        && shared.current_state() == SyncState::Degraded
+    {
+        shared.set_state(SyncState::CatchingUp);
+    }
+    // Every stream, with the cursors the records raised. A record of the
+    // vault-meta stream can name streams this device never subscribed to.
+    if let Ok(entries) = core.sync_subscribe_entries() {
+        subscribed.extend(entries.iter().map(|e| e.stream_id));
+    }
+    match encode_subscribe_all(core) {
+        Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
+        Err(()) => shared.mark_degraded(),
+    }
+}
+
+/// Transition to `Live` once every subscribed stream is caught up and the
+/// outbox is empty (all local ops acked).
+///
+/// A session that is about to be `Live` first does its snapshot duty
+/// (ADR-0068): compaction if it is due, and the publish of any snapshot record
+/// this replica is the compactor for and the relay does not pin. Both are
+/// nothing at all on almost every session; on the one that has a record to
+/// upload, `Live` waits for it, so a sync that ends at `Live` — the CLI's,
+/// an OS background window's — has left the record on the relay.
+async fn maybe_live<T: Transport + ?Sized>(
+    core: &Core,
+    shared: &SyncShared,
+    transport: &mut T,
     subscribed: &HashSet<[u8; 16]>,
     caught_up: &HashSet<[u8; 16]>,
 ) {
@@ -2106,6 +2243,11 @@ fn maybe_live(
     }
     let pending = core.sync_pending().unwrap_or(0);
     if pending == 0 && subscribed.iter().all(|s| caught_up.contains(s)) {
+        core.sync_compact_if_due();
+        crate::snapshot_sync::publish(core, transport).await;
+        if shared.current_state() != SyncState::CatchingUp {
+            return;
+        }
         shared.set_state(SyncState::Live);
         // `Live` is the state a user cares about ("am I synced?"), and it is
         // the only one the driver reaches by *inference* rather than by a
@@ -3220,10 +3362,35 @@ mod tests {
         /// transport's shape: the send is a `POST` whose reply is the ack, so
         /// the ack is already queued by the time the send returns.
         batch_send_hold: Duration,
+        /// Whether this transport has the snapshot routes, and the record its
+        /// relay pins, if any (ADR-0068).
+        serves_snapshots: bool,
+        pinned: Option<Vec<u8>>,
     }
 
     #[async_trait]
     impl Transport for ChannelTransport {
+        async fn snapshot_latest(
+            &mut self,
+            _stream_id: &[u8; 16],
+        ) -> Result<Option<sunrise_sync::SnapshotPin>, TransportError> {
+            if !self.serves_snapshots {
+                return Err(TransportError::Unsupported);
+            }
+            Ok(self.pinned.as_ref().map(|r| sunrise_sync::SnapshotPin {
+                blob_id: crate::snapshot_sync::blob_id_of(r),
+                size_bytes: r.len() as u64,
+            }))
+        }
+        async fn blob_fetch(
+            &mut self,
+            _blob_id: &[u8; 16],
+        ) -> Result<Option<Vec<u8>>, TransportError> {
+            if !self.serves_snapshots {
+                return Err(TransportError::Unsupported);
+            }
+            Ok(self.pinned.clone())
+        }
         async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
             let is_batch = !self.batch_send_hold.is_zero()
                 && decode_frame(&frame).is_ok_and(|(h, _)| h.msg_kind == MsgKind::OpBatch);
@@ -3252,11 +3419,15 @@ mod tests {
                 tx: a_tx,
                 rx: a_rx,
                 batch_send_hold: Duration::ZERO,
+                serves_snapshots: false,
+                pinned: None,
             },
             ChannelTransport {
                 tx: b_tx,
                 rx: b_rx,
                 batch_send_hold: Duration::ZERO,
+                serves_snapshots: false,
+                pinned: None,
             },
         )
     }
@@ -3278,9 +3449,22 @@ mod tests {
         /// Send a `SYNC_CURSOR_GAP` Error before `CaughtUp`, exactly as the
         /// relay does when a subscriber's cursor predates the retained ring.
         gap_on_subscribe: bool,
+        /// Whether that gap names its stream, as the SSE transport's does, and
+        /// the client transport has the snapshot routes (ADR-0068).
+        snapshots: SnapshotRoutes,
         /// Hold every client `OpBatch` send this long after the relay has it,
         /// as a `POST` over a link with this round trip does.
         client_batch_send_hold: Duration,
+    }
+
+    /// The snapshot routes a fake relay serves.
+    #[derive(Clone, Default)]
+    enum SnapshotRoutes {
+        /// None: a gap names no stream and the transport has no routes.
+        #[default]
+        Absent,
+        /// The routes, pinning this record, if any.
+        Pinned(Option<Vec<u8>>),
     }
 
     struct ServerInner {
@@ -3372,6 +3556,10 @@ mod tests {
             let fut = async move {
                 let (mut client_end, server_end) = duplex();
                 client_end.batch_send_hold = script.client_batch_send_hold;
+                if let SnapshotRoutes::Pinned(record) = &script.snapshots {
+                    client_end.serves_snapshots = true;
+                    client_end.pinned.clone_from(record);
+                }
                 tokio::spawn(run_fake_server(
                     server_end,
                     script,
@@ -3436,6 +3624,8 @@ mod tests {
                         let e = ErrorPayload {
                             code: ErrorCode::SyncCursorGap,
                             reason: "retained ring no longer covers stream".into(),
+                            stream_id: matches!(script.snapshots, SnapshotRoutes::Pinned(_))
+                                .then_some(entry.stream_id),
                         };
                         let bytes = e.encode().unwrap();
                         let f = encode_frame(MsgKind::Error, FrameFlags::EMPTY, &bytes).unwrap();
@@ -5101,6 +5291,47 @@ mod tests {
                 SyncState::Degraded,
                 "a gap the relay cannot fill must not resolve to Live"
             );
+        }
+    }
+
+    /// A gap that names its stream sends the driver to the stream's
+    /// snapshot record (ADR-0068). With none pinned there is nothing to
+    /// catch up from, and the session latches exactly as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gap_with_no_snapshot_pinned_still_degrades() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc_with_resync(dir.path(), Duration::from_millis(100)).await;
+        let script = Script {
+            gap_on_subscribe: true,
+            snapshots: SnapshotRoutes::Pinned(None),
+            ..Default::default()
+        };
+        let (factory, _server, _batch_rx) = harness(vec![script]);
+        core.start_sync(factory).unwrap();
+        wait_state(&core, SyncState::Degraded).await;
+        for _ in 0..5u32 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(sync_state(&core).await, SyncState::Degraded);
+        }
+    }
+
+    /// A pinned record that is not one this vault can apply — forged, junk,
+    /// of another history — is refused by the engine, and the gap stands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pinned_record_the_engine_refuses_leaves_the_gap_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc_with_resync(dir.path(), Duration::from_millis(100)).await;
+        let script = Script {
+            gap_on_subscribe: true,
+            snapshots: SnapshotRoutes::Pinned(Some(b"SR\x04\x00\x01not a record".to_vec())),
+            ..Default::default()
+        };
+        let (factory, _server, _batch_rx) = harness(vec![script]);
+        core.start_sync(factory).unwrap();
+        wait_state(&core, SyncState::Degraded).await;
+        for _ in 0..5u32 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(sync_state(&core).await, SyncState::Degraded);
         }
     }
 

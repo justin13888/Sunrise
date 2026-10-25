@@ -169,10 +169,14 @@ compares the bootstrapped replica's roots with its own.
 
 How a snapshot reaches a device that needs one. The record is written, stored
 and applied by the core, and `Core::stream_snapshot` and
-`Core::apply_stream_snapshot` hand it in and out, but no transport carries it
-between devices yet: neither the relay, nor the blob store, nor pairing. That
-is [#462](https://github.com/justin13888/Sunrise/issues/462). The relay's own
-retention is unchanged.
+`Core::apply_stream_snapshot` hand it in and out. The relay's own retention is
+unchanged.
+
+**Answered by [ADR-0068](./0068-a-streams-snapshot-travels-as-a-pinned-blob.md)**
+([#462](https://github.com/justin13888/Sunrise/issues/462)): the compactor
+uploads its latest record through the blob store and the relay pins one per
+stream, outside op retention; a device told `SYNC_CURSOR_GAP` fetches and
+applies the stream's record and re-subscribes from the cursors it set.
 
 ADR-0043's global-order fold (`stream_root_init`, `stream_root_step`) is not
 the snapshot's commitment format: the frontier's per-device chain roots are.
@@ -206,7 +210,9 @@ The fold stays test-only and pinned.
 
 - A transport carries snapshots between devices: the record format here is
   what it carries, and a relay that pins the newest snapshot per channel would
-  need to tell one apart without reading it.
+  need to tell one apart without reading it. ADR-0068 is that transport: the
+  compactor names the stream when it pins a record, and the relay reads only
+  the record's cleartext magic prefix.
 - An op kind other than an entity write comes to have its whole effect in the
   merge state: it becomes compactable by the registry rule, not by a list.
 - A peer channel arrives (ADR-0043 resolved question 5): a replica could then

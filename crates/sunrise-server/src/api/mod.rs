@@ -40,6 +40,7 @@ pub mod observe;
 pub mod pairing;
 pub mod ratelimit;
 pub mod signed;
+pub mod snapshots;
 pub mod sync;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -127,6 +128,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             blobs::fetch,
             blobs::delete
         ])
+        .mount(kynos::routes![snapshots::pin, snapshots::latest])
         .mount(kynos::routes![
             sync::session,
             sync::subscribe,

@@ -246,22 +246,58 @@ frontier, which the relay replays from the cursor the snapshot set. A device's
 own old ops can be folded too: its floor covers them, it never reuses their
 seqs, and no receiver treats the hole as a gap.
 
-**Not built yet: transport.** Nothing carries a snapshot record between devices.
-`Core::stream_snapshot` hands out the stored record and
-`Core::apply_stream_snapshot` takes one in, but neither the relay, the blob
-store nor pairing moves it. That is
-[#462](https://github.com/justin13888/Sunrise/issues/462).
+### Transport
+
+[ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md) is
+the decision record; the code is `crates/sunrise-core/src/snapshot_sync.rs`
+(both legs), `crates/sunrise-server/src/api/snapshots.rs` (the pin) and
+`crates/sunrise-server/src/store/snapshots.rs` (relay migration 0006).
+
+**Publish.** A record is a blob, not a frame: past about five thousand tasks it
+outgrows the 4 MiB frame cap. The stream's compactor uploads its latest record
+through the blob routes, in chunks of at most 1 MiB, then pins it with
+`PUT /api/v1/snapshots/{stream_id}` ([`../06-server/api.md`](../06-server/api.md)
+§Stream snapshots). A replica publishes only a record it wrote, and only while
+it is the stream's compactor, so a device the election has moved past never
+pins its older record over its successor's. The driver publishes before a
+session reports `Live` and on every resync tick, after compaction; what it
+published is remembered per process, and the first publish after a restart asks
+the relay what it pins before uploading.
+
+**What the relay keeps.** One record per stream, the last one pinned: a new pin
+deletes the blob the old one named. Pins are not op retention's, so a record
+outlives every op it covers, and they go only with the account. The relay
+reads one thing from the record, its cleartext magic prefix, and refuses to
+pin a blob of any other kind.
+
+**Recover.** The relay's gap event names its stream. The driver asks for the
+stream's pin, fetches the blob, checks it hashes to the pinned id, and applies
+it (§Applying a snapshot), which raises the stream's floors and cursors to the
+record's frontier. It then re-subscribes every stream from its cursors, before
+reading another frame. A record that cannot be applied yet (`NoKey`,
+`Pending`, a writer whose cert has not arrived) is retried after any other
+record applies and on the next gap; one that is missing, adds nothing or is
+refused leaves the session `Degraded`, as does a second gap on a stream whose
+record was applied. A new device needs nothing extra: its empty cursors draw a
+gap on every stream whose early ops were trimmed.
+
+**What it does not cover.** A record is as fresh as the compactor's cadence,
+one day. Under the relay's age bound that is always enough; under its size
+bound a stream busy enough to evict 256 MiB in a day can outrun its record. A
+returning device that is itself the compactor finds only its own last record.
+Both leave the device `Degraded`, as before.
 
 ## What stays forever
 
 Nothing that is not an entity write: device certs, key envelopes,
 revocations, identity transitions, focus and review records, and parked ops.
-Each device's tip. The latest snapshot per stream, on its compactor and on any
-replica that applied it.
+Each device's tip. The latest snapshot per stream, on its compactor, on any
+replica that applied it, and pinned on the relay.
 
 ## Server side
 
-The relay does not compact and cannot: it never reads an op. Its retention is
+The relay does not compact and cannot: it never reads an op. It pins each
+stream's latest snapshot record (§Transport). Its op retention is
 unchanged, 30 days or 256 MiB per channel
 (`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
 `crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`). Compaction makes

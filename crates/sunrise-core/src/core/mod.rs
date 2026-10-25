@@ -137,6 +137,11 @@ pub struct Core {
     /// When the sync driver's tick last ran compaction, so it runs at most
     /// once per [`COMPACT_EVERY_MS`] rather than on every tick.
     last_compaction_ms: Mutex<Option<u64>>,
+    /// The snapshot record this process last saw pinned on the relay for each
+    /// stream, by its blob id (ADR-0068), so a record is uploaded once rather
+    /// than on every tick. Memory only: after a restart the first publish
+    /// asks the relay what it pins before uploading anything.
+    published_snapshots: Mutex<std::collections::HashMap<[u8; 16], [u8; 16]>>,
     /// The clock the engine reads, holding the zone a client last reported
     /// through [`Core::on_time_zone_changed`].
     reader_clock: Arc<crate::config::ReportedZoneClock>,
@@ -353,6 +358,7 @@ impl Core {
             cache: crate::blob_cache::CacheSignals::default(),
             compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
             last_compaction_ms: Mutex::new(None),
+            published_snapshots: Mutex::new(std::collections::HashMap::new()),
             reader_clock,
             closed: Mutex::new(false),
         };
@@ -1428,7 +1434,7 @@ impl Core {
     /// Run op-log compaction from the sync driver's tick, at most once per
     /// [`COMPACT_EVERY_MS`]. A failure is logged and retried on the next
     /// day's tick; nothing it would have folded is lost by waiting.
-    fn sync_compact_if_due(&self) {
+    pub(crate) fn sync_compact_if_due(&self) {
         let now_ms = self.cfg.clock.now_ms();
         {
             let mut last = self.last_compaction_ms.lock();
@@ -1572,6 +1578,47 @@ impl Core {
             let _ = self.changes_tx.send(ev);
         }
         Ok(outcome)
+    }
+}
+
+impl Core {
+    /// The snapshot records this replica should publish now (ADR-0068): each
+    /// stream's latest record held here that this replica wrote, while it is
+    /// that stream's compactor, unless this process already saw the relay pin
+    /// it.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub(crate) fn snapshots_to_publish(
+        &self,
+    ) -> Result<Vec<crate::snapshot_sync::Publishable>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        let own = self.engine.own_stream_snapshots(&db)?;
+        let published = self.published_snapshots.lock().clone();
+        let mut out = Vec::new();
+        for (stream, record) in own {
+            let blob_id = crate::snapshot_sync::blob_id_of(&record);
+            if published.get(&stream) == Some(&blob_id) {
+                continue;
+            }
+            if self.engine.is_stream_compactor(&mut db, &stream, &policy)? {
+                out.push(crate::snapshot_sync::Publishable {
+                    stream,
+                    blob_id,
+                    record,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remember that the relay pins `blob_id` as `stream`'s snapshot record.
+    pub(crate) fn note_snapshot_published(&self, stream: [u8; 16], blob_id: [u8; 16]) {
+        self.published_snapshots.lock().insert(stream, blob_id);
     }
 }
 

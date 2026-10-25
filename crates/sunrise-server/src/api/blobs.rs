@@ -111,7 +111,10 @@ pub struct FinalizeRequest {
 ///
 /// Anonymous — no `name()` — so each one inlines where it is used rather than
 /// becoming a `$ref` to a component that is only a regex.
-fn hex_pattern(registry: &mut kynos::schema::registry::Registry, pattern: &str) -> OpenApiSchema {
+pub(crate) fn hex_pattern(
+    registry: &mut kynos::schema::registry::Registry,
+    pattern: &str,
+) -> OpenApiSchema {
     // `Constraints` is `#[non_exhaustive]`, so it grows without breaking this
     // — which also means starting from `default` and assigning rather than
     // naming every field in a struct expression.
@@ -748,7 +751,7 @@ fn chunk_stream(
 /// segment they were parsed out of: `up_AB…` and `up_ab…` would otherwise be
 /// one upload with two spellings, and a backend that stored them apart would
 /// hide chunks PUT under one from a `finalize` using the other.
-fn account(caller: &Caller) -> AccountKey {
+pub(crate) fn account(caller: &Caller) -> AccountKey {
     crate::relay_log::account_key(&caller.principal.account.account_id)
 }
 
@@ -779,7 +782,7 @@ fn parse_upload_id(s: &str) -> Result<[u8; 16], ApiError> {
 }
 
 /// `blb_` + 32 lowercase hex characters.
-fn parse_blob_id(s: &str) -> Result<[u8; 16], ApiError> {
+pub(crate) fn parse_blob_id(s: &str) -> Result<[u8; 16], ApiError> {
     let hexpart = s
         .strip_prefix("blb_")
         .ok_or_else(|| ApiError::validation("blob id must start with blb_"))?;
@@ -798,7 +801,7 @@ fn is_lowercase_hex(s: &str) -> bool {
     s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn parse_hex16(s: &str, field: &str) -> Result<[u8; 16], ApiError> {
+pub(crate) fn parse_hex16(s: &str, field: &str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
         return Err(ApiError::validation(format!(
@@ -841,14 +844,17 @@ fn hash_mismatch(message: impl Into<String>) -> ApiError {
 /// One 404 for "no such blob" and for "not this account's blob" alike: a
 /// distinguishable response would turn `GET /blobs/<hash>` into an oracle for
 /// whether another account holds that ciphertext.
-fn not_found() -> ApiError {
+pub(crate) fn not_found() -> ApiError {
     ApiError::not_found(codes::BLOB_NOT_FOUND, "blob not found")
 }
 
 /// `403 ACCOUNT_PENDING_DELETION` for every upload step of an account whose
 /// deletion is confirmed: an upload finished after the mark would write files
 /// the erasure then has to chase.
-async fn refuse_if_pending(state: &ServerState, caller: &Caller) -> Result<(), ApiError> {
+pub(crate) async fn refuse_if_pending(
+    state: &ServerState,
+    caller: &Caller,
+) -> Result<(), ApiError> {
     crate::api::account_deletion::refuse_if_pending_deletion(
         state,
         &caller.principal.account.account_id,

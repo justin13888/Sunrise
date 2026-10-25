@@ -1,8 +1,8 @@
 //! The metadata seam ADR-0062 §1 puts every relay table behind.
 //!
 //! [`MetadataStore`] covers accounts, devices, push tokens, cursors, blob
-//! tombstones, the committed-blob ledger, deletion tokens and the durable
-//! relay log. Each method is one
+//! tombstones, the committed-blob ledger, the pinned stream snapshots,
+//! deletion tokens and the durable relay log. Each method is one
 //! unit of work that commits or rolls back whole, which is the shape [`Store`]
 //! already had: revocation, account erasure and a relay append each touch
 //! several tables, and keeping each inside one method keeps its atomicity
@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, NewDevice, NewTombstone, Store,
-    StoreError, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, NewDevice, NewTombstone,
+    PinnedSnapshot, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -235,6 +235,18 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         cursors: &[DeclaredCursor],
         now_ms: u64,
     ) -> Result<(), MetadataError>;
+    /// [`Store::pin_snapshot`].
+    async fn pin_snapshot(
+        &self,
+        account_id: &str,
+        pin: &PinnedSnapshot,
+    ) -> Result<Option<[u8; 16]>, MetadataError>;
+    /// [`Store::pinned_snapshot`].
+    async fn pinned_snapshot(
+        &self,
+        account_id: &str,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<PinnedSnapshot>, MetadataError>;
     /// [`Store::collectable_blobs`].
     async fn collectable_blobs(
         &self,
@@ -512,6 +524,20 @@ impl MetadataStore for Store {
         now_ms: u64,
     ) -> Result<(), MetadataError> {
         Ok(Self::record_cursors(self, device_id, cursors, now_ms)?)
+    }
+    async fn pin_snapshot(
+        &self,
+        account_id: &str,
+        pin: &PinnedSnapshot,
+    ) -> Result<Option<[u8; 16]>, MetadataError> {
+        Ok(Self::pin_snapshot(self, account_id, pin)?)
+    }
+    async fn pinned_snapshot(
+        &self,
+        account_id: &str,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<PinnedSnapshot>, MetadataError> {
+        Ok(Self::pinned_snapshot(self, account_id, stream_id)?)
     }
     async fn collectable_blobs(
         &self,

@@ -428,6 +428,29 @@ impl Engine {
         Ok(report)
     }
 
+    /// Whether this replica is `stream_id`'s compactor now: the known device
+    /// with the least id (ADR-0059 §5). Only the compactor publishes the
+    /// stream's snapshot record (ADR-0068), so a device the election has
+    /// moved past never pins its older record over its successor's.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn is_stream_compactor(
+        &self,
+        db: &mut Db,
+        stream_id: &[u8; 16],
+        policy: &CompactionPolicy,
+    ) -> Result<bool, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let me = self.keychain.device_id();
+        Ok(db.with_tx(|tx| {
+            Ok(self
+                .known_devices(tx, stream_id, now_ms, policy.known_device_window_ms)?
+                .first()
+                == Some(&me))
+        })?)
+    }
+
     /// Whether this replica's stored snapshot of `stream_id` is missing or
     /// older than the policy allows.
     fn snapshot_due(

@@ -295,6 +295,8 @@ fn open_composes_each_tenants_ddl_in_dependency_order() {
             "device_cursors",
             // migration 0005 — the committed-blob ledger
             "committed_blobs",
+            // migration 0006 — each stream's pinned snapshot record
+            "stream_snapshots",
         ],
         "the DDL `open` composes, in the order it ran"
     );

@@ -56,6 +56,7 @@ mod lifecycle;
 mod metadata;
 mod migrations;
 mod pragmas;
+mod snapshots;
 mod tx;
 
 use std::path::{Path, PathBuf};
@@ -77,6 +78,7 @@ pub use error::{busy_total, StoreError};
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
 pub use metadata::{MetadataError, MetadataStore};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
+pub use snapshots::PinnedSnapshot;
 pub use tx::{metered, StoreTime};
 
 /// The main database file plus its write-ahead log, in bytes.
