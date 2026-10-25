@@ -91,8 +91,9 @@ The in-process scenarios above share one address space; these do not.
 `crates/sunrise-e2e/tests/cli_traveller.rs`,
 `crates/sunrise-e2e/tests/cli_day_schedule.rs`,
 `crates/sunrise-e2e/tests/cli_pair_relay.rs`,
-`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs` and
-`crates/sunrise-e2e/tests/cli_recover_trimmed.rs` boot the real relay and drive two or more
+`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs`,
+`crates/sunrise-e2e/tests/cli_recover_trimmed.rs` and
+`crates/sunrise-e2e/tests/cli_recover_rotated.rs` boot the real relay and drive two or more
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
 a host with no Apple tooling: everything a user at two terminals does, with
@@ -151,6 +152,16 @@ nothing shared between the devices but the relay.
   recover` with A's 24 words, takes its keys from the account's key bundle,
   applies the snapshot records sealed under them, and reports `live` holding
   every task. With the bundle route removed it ends `Degraded` holding none.
+- **Recovering across an identity rotation** (`cli_recover_rotated.rs`,
+  ADR-0070, #583): A writes, runs `identity rotate --keep-code`, writes again,
+  and syncs once; a write past the relay's thirty-second window leaves no frame
+  that carried the rotation. B recovers with the words A was given before the
+  rotation, walks the identity chain record to the identity in force, takes the
+  keys from the bundle sealed to it, and reports `live` holding every task as a
+  current device. Then a plain `identity rotate` on another account: the new
+  words recover a current device holding every task, the old words fail with
+  "this recovery code was retired on …" and write no vault, and a stranger's
+  words still fail as a code.
 
 Run them with `mise run e2e-cli`, which builds the binary first. The harness
 also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)

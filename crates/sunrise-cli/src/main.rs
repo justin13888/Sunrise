@@ -286,7 +286,14 @@ async fn run(
     // `sunrise attachment get` with no `SUNRISE_SYNC_URL` reports it instead of
     // waiting; an attachment whose bytes are already here still works offline,
     // because locality is checked before the relay is.
-    if !matches!(sub, "sync" | "attachment") {
+    // `identity rotate` and `identity new-code` are the third: a rotation has
+    // to reach the relay before the code it issues is worth showing, and the
+    // new code's blob goes to the relay before the words do (ADR-0070).
+    let pushes_identity = sub == "identity"
+        && rest
+            .first()
+            .is_some_and(|v| v == "rotate" || v == "new-code");
+    if !matches!(sub, "sync" | "attachment") && !pushes_identity {
         env.url = None;
     }
     let plan = livesync::plan_from_env(
@@ -327,6 +334,7 @@ async fn run(
     }
     let ctx = cmd::Ctx {
         core: &core,
+        shared: &core,
         vault_dir: &dir_for_store,
         history: loaded.history,
         dirty: std::cell::Cell::new(false),

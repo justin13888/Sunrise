@@ -153,9 +153,8 @@ impl From<RestoreError> for BindingError {
             return Self::RecoveryIncomplete(message);
         }
         match e {
-            RestoreError::Code(RecoveryFlowError::Code(_) | RecoveryFlowError::Crypto(_)) => {
-                Self::RecoveryCode(message)
-            }
+            RestoreError::Code(RecoveryFlowError::Code(_) | RecoveryFlowError::Crypto(_))
+            | RestoreError::CodeRetired { .. } => Self::RecoveryCode(message),
             RestoreError::StepUpRequired(_) => Self::StepUpRequired(message),
             _ => Self::RecoveryRefused(message),
         }

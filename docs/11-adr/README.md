@@ -87,6 +87,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0067 | [Windows secret files get a protected, one-entry DACL, set by the workspace's one `unsafe` module](./0067-windows-owner-only-files.md) | accepted (the one exception to the workspace's `unsafe_code = "forbid"`; built by #486) |
 | 0068 | [A stream's snapshot record travels as a blob the relay pins per stream, and a cursor gap is answered by applying it](./0068-a-streams-snapshot-travels-as-a-pinned-blob.md) | accepted (answers 0059 §7; depends on 0059 §4 and §5; built by #462) |
 | 0069 | [The account's Stream keys travel as one identity-sealed bundle the relay pins, so a recovery does not depend on op retention](./0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md) | accepted (amends 0024 decision 4 and `recovery.md` §Recovery flow step 8; depends on 0068 and 0041 §4; built by #580) |
+| 0070 | [A recovery code survives a rotation that carries it, and a rotation that does not issues the next one](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md) | accepted (amends 0024 decision 4, 0037, 0069 and `recovery.md` §Recovery code rotation; built by #583) |
 
 ## When to write a new ADR
 

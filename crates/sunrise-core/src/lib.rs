@@ -63,6 +63,7 @@ pub mod engine;
 pub mod events;
 pub mod export;
 pub mod feature;
+mod identity_chain_sync;
 pub mod inner_op;
 mod key_bundle_sync;
 pub mod keychain;

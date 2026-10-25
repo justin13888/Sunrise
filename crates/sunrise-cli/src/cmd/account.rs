@@ -179,7 +179,7 @@ pub(crate) async fn recover(dir: &std::path::Path, rest: &[String]) -> CmdResult
 /// feature added later, and a copy this process saved would be a copy an
 /// attacker who reaches the machine also has, while doing nothing for the user
 /// who loses the machine.
-fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
+pub(super) fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
     println!();
     println!("{}", strings::recover::code_heading());
     println!();

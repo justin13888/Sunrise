@@ -42,6 +42,7 @@ pub mod blob_chunk;
 pub mod device_cert;
 pub mod hpke_seal;
 pub mod identity;
+pub mod identity_chain;
 pub mod identity_transition;
 pub mod key_bundle;
 pub mod keys;
@@ -70,6 +71,9 @@ pub use hpke_seal::{
     key_envelope_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
 };
 pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityId};
+pub use identity_chain::{
+    CarryWalk, ChainLink, IdentityChain, IdentityChainError, IDENTITY_CHAIN_FORMAT_V,
+};
 // `body_hash` is deliberately not re-exported at the crate root: `device_cert`
 // hashes a body too, and `sunrise_crypto::body_hash` would name neither. It is
 // reachable as `identity_transition::body_hash`.
@@ -97,7 +101,8 @@ pub use op_envelope::{
     OpEnvelopeError, MAX_CHAIN_HEADS,
 };
 pub use recovery::{
-    seal_recovery_blob, unseal_recovery_blob, RecoveryError, RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN,
+    retired_check_matches, seal_recovery_blob, unseal_recovery_blob, RecoveryError,
+    RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN, RETIRED_CHECK_LEN,
 };
 pub use stream_key::{
     stream_key_id, unwrap_stream_key, wrap_stream_key, StreamKeyWrapError, STREAM_KEY_ID_LEN,

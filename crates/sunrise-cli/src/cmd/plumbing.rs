@@ -25,7 +25,7 @@ pub(super) fn rebuild(core: &Core, rest: &[String]) -> CmdResult {
 }
 
 /// How long `sync --once` waits for the outbox to empty before giving up.
-const DEADLINE_MS: u64 = 30_000;
+pub(super) const DEADLINE_MS: u64 = 30_000;
 
 /// `sync [--once] | sync --watch [--rounds <n>]`.
 ///

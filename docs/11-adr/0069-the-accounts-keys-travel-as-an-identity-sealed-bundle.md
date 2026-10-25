@@ -187,15 +187,19 @@ is replaced by the next honest device to reach `Live`.
 - **One request per process** for a device whose keys have not changed: the
   pin's digest answers it. A device whose keys changed fetches and judges the
   pinned bundle once.
-- **A recovery after an identity rotation is not covered.** The bundle is
-  sealed to the identity in force, and a code carried across a rotation opens
-  the genesis identity. With every op retained the carry share does reach the
-  successor, but the recovered device is in no roster and does not adopt it
-  (`Engine::recompute_identity_head`), which predates this ADR.
+- **A recovery after an identity rotation is covered by
+  [ADR-0070](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md).** The bundle is
+  sealed to the identity in force; a code carried across a rotation reaches it
+  by walking the carry shares of an identity chain record the relay keeps
+  beside the blob, and a rotation that did not carry the code issues a new one
+  sealed to the successor.
 
 ## Revisit if
 
-- A recovery after an identity rotation is built: the bundle header gains the
-  carry chain from the recovery identity to the identity in force.
+- ~~A recovery after an identity rotation is built: the bundle header gains the
+  carry chain from the recovery identity to the identity in force.~~ Built by
+  ADR-0070 as a separate record rather than in the header: this bundle's
+  decoder refuses unknown fields, so every earlier build would have replaced a
+  bundle that carried it.
 - A shared blob backend lands (ADR-0062): as for ADR-0068's pins, deleting a
   replaced blob becomes a cross-service write.

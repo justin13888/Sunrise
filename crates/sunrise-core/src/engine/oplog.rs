@@ -23,6 +23,17 @@ use super::ids::hex_short;
 use super::lww::LwwStamp;
 use super::{Engine, EngineError, META_STREAM};
 
+/// Which recipients [`Engine::emit_key_envelopes_to`] seals a key to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EnvelopeRecipients {
+    /// Every current device and the identity: the ordinary case.
+    All,
+    /// Every current device, and not the identity.
+    DevicesOnly,
+    /// The identity in force on this keychain, and no device.
+    IdentityOnly,
+}
+
 impl Engine {
     /// Seal `inner_op` into a real [`sunrise_crypto::OpEnvelope`] under the routing stream's
     /// **live** epoch and append it to the op log, enqueueing it in the outbox
@@ -270,10 +281,42 @@ impl Engine {
         now_ms: u64,
         seal_under: Option<&(u32, StreamKey)>,
     ) -> rusqlite::Result<()> {
+        self.emit_key_envelopes_to(
+            tx,
+            stream_id,
+            epoch,
+            key,
+            now_ms,
+            seal_under,
+            EnvelopeRecipients::All,
+        )
+    }
+
+    /// [`Self::emit_key_envelopes`], to one of the two recipient classes or
+    /// both.
+    ///
+    /// The split exists for one caller. A rotation that retires the recovery
+    /// code (ADR-0070) mints the vault-meta epoch its transition is sealed
+    /// under **before** the identity moves, and the identity copy of that
+    /// key must not be sealed to the outgoing `ID_D_pub`: its holders are
+    /// exactly who the rotation evicts, and an outgoing holder with the new
+    /// epoch could seal a competing transition at it. So the devices get it
+    /// first and the successor identity after.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn emit_key_envelopes_to(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        epoch: u32,
+        key: &StreamKey,
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+        to: EnvelopeRecipients,
+    ) -> rusqlite::Result<()> {
         let key_id = stream_key_id(key);
         let head = self.current_identity(tx)?;
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
-        {
+        if to != EnvelopeRecipients::IdentityOnly {
             let mut stmt = tx.prepare(
                 // The anti-join against `device_read_bounds` is the read half
                 // of revocation. A device the bound names gets no envelope for
@@ -351,10 +394,12 @@ impl Engine {
                 recipients.push((Recipient::Device(id), pk));
             }
         }
-        recipients.push((
-            Recipient::Identity(self.keychain.identity_id()),
-            self.keychain.identity_dh_pub(),
-        ));
+        if to != EnvelopeRecipients::DevicesOnly {
+            recipients.push((
+                Recipient::Identity(self.keychain.identity_id()),
+                self.keychain.identity_dh_pub(),
+            ));
+        }
 
         for (recipient, recipient_pub) in recipients {
             let Ok(hpke_ciphertext) = self.keychain.seal_key_envelope(
@@ -744,7 +789,7 @@ pub(super) fn ops_run_end(
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
 /// dispatched out of `crates/sunrise-core/src/engine/sync.rs:415#apply_remote_all_unchecked`
-/// reaches `crates/sunrise-core/src/engine/oplog.rs:428#backfill_key_envelopes`,
+/// reaches `crates/sunrise-core/src/engine/oplog.rs:473#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on
@@ -923,9 +968,9 @@ pub(super) fn ops_run_end(
 /// asks for it there —
 /// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor` is where the
 /// start is computed;
-/// `crates/sunrise-core/src/engine/oplog.rs:694#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:739#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:700#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:745#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no

@@ -85,4 +85,4 @@ pub use account::{
 };
 pub use bootstrap::{bootstrap, register_device, BootstrapError, BootstrapOutcome, DeviceIdentity};
 pub use push::{register_push_token, PushTokenError, PushTokenRegistration};
-pub use recovery::{RelayRecovery, RelayRefusal};
+pub use recovery::{RecoveryMaterial, RelayRecovery, RelayRefusal, RetiredCode};

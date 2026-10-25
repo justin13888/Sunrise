@@ -1311,7 +1311,21 @@ async fn session(
     // fetched. Both directions run here for the same reason the revocation
     // does: reconnect backoff is the retry schedule.
     drain_blob_transfers(core, transport.as_mut()).await;
-    maybe_live(core, shared, transport.as_mut(), &subscribed, &caught_up).await;
+    // A vault restored from a recovery code takes the account's keys before
+    // the first frame is applied (ADR-0070 §4): what it would otherwise refuse
+    // is an op under an epoch it minted a key of its own for.
+    if core.wants_key_bundle_before_replay() {
+        crate::key_bundle_sync::recover_if_pinned(core, transport.as_mut()).await;
+    }
+    maybe_live(
+        core,
+        shared,
+        transport.as_mut(),
+        &subscribed,
+        &caught_up,
+        &mut recovery.key_bundle_tried,
+    )
+    .await;
 
     // ---- Main pump ----
     //
@@ -1416,6 +1430,9 @@ async fn session(
                     // And the account's key bundle, when this device holds
                     // keys the pinned one lacks (ADR-0069).
                     crate::key_bundle_sync::publish(core, transport.as_mut()).await;
+                    // And the account's identity chain, when this device folds
+                    // further than the relay's record (ADR-0070).
+                    crate::identity_chain_sync::publish(core, transport.as_mut()).await;
                     match encode_subscribe_all(core) {
                         Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
                         Err(()) => return SessionEnd::Disconnected,
@@ -1482,7 +1499,15 @@ async fn session(
                 // long-lived session is the ordinary case rather than the
                 // exception.
                 drain_blob_transfers(core, transport.as_mut()).await;
-                maybe_live(core, shared, transport.as_mut(), &subscribed, &caught_up).await;
+                maybe_live(
+                    core,
+                    shared,
+                    transport.as_mut(),
+                    &subscribed,
+                    &caught_up,
+                    &mut recovery.key_bundle_tried,
+                )
+                .await;
             }
             SessionEvent::Recv(Ok(None)) => return SessionEnd::Disconnected,
             SessionEvent::Recv(Err(e)) => return SessionEnd::from_recv_error(e),
@@ -2265,15 +2290,26 @@ async fn maybe_live<T: Transport + ?Sized>(
     transport: &mut T,
     subscribed: &HashSet<[u8; 16]>,
     caught_up: &HashSet<[u8; 16]>,
+    key_bundle_tried: &mut bool,
 ) {
     if shared.current_state() != SyncState::CatchingUp {
         return;
     }
     let pending = core.sync_pending().unwrap_or(0);
     if pending == 0 && subscribed.iter().all(|s| caught_up.contains(s)) {
+        // Caught up with ops still waiting for a key, on a vault restored
+        // from a recovery code in this process: the identity copies of the
+        // epochs before a rotation are sealed to an identity it does not
+        // hold, and the account's key bundle, sealed to the identity in
+        // force, carries them (ADR-0070 §4). Once a session, as for a gap.
+        if !*key_bundle_tried && core.wants_key_bundle_for_parked_ops() {
+            *key_bundle_tried = true;
+            crate::key_bundle_sync::recover_if_pinned(core, transport).await;
+        }
         core.sync_compact_if_due();
         crate::snapshot_sync::publish(core, transport).await;
         crate::key_bundle_sync::publish(core, transport).await;
+        crate::identity_chain_sync::publish(core, transport).await;
         if shared.current_state() != SyncState::CatchingUp {
             return;
         }

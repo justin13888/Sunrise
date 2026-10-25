@@ -87,16 +87,33 @@ impl RelayRecovery {
             .map_err(|e| refusal(Route::Account, &e, status_of(&e)))
     }
 
-    /// The sealed recovery blob, base64url as the relay serves it.
+    /// The sealed recovery blob, base64url as the relay serves it, with what
+    /// the relay keeps beside it for a recovery across an identity rotation
+    /// (ADR-0070).
     ///
     /// # Errors
     /// [`RelayRefusal::StepUpRequired`] for a bearer without a fresh sign-in,
     /// [`RelayRefusal::NoBlob`] for an account that stored none.
-    pub async fn recovery_blob(&self) -> Result<String, RelayRefusal> {
+    pub async fn recovery_blob(&self) -> Result<RecoveryMaterial, RelayRefusal> {
         self.client
             .get_recovery_blob(None)
             .await
-            .map(|r| r.into_inner().recovery_blob)
+            .map(|r| {
+                let r = r.into_inner();
+                RecoveryMaterial {
+                    blob: r.recovery_blob,
+                    identity_chain: r.identity_chain,
+                    retired: r
+                        .retired
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| RetiredCode {
+                            check: c.check,
+                            retired_at_ms: u64::try_from(c.retired_at_ms).unwrap_or(0),
+                        })
+                        .collect(),
+                }
+            })
             .map_err(|e| refusal(Route::Blob, &e, status_of(&e)))
     }
 
@@ -110,6 +127,27 @@ impl RelayRecovery {
             .await
             .map_err(|e| RelayRefusal::Other(e.to_string()))
     }
+}
+
+/// What `GET /accounts/me/recovery_blob` serves, all base64url as sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryMaterial {
+    /// The sealed blob.
+    pub blob: String,
+    /// The account's identity chain record, where a device pinned one: what
+    /// takes a code made before an identity rotation to the identity in force.
+    pub identity_chain: Option<String>,
+    /// What is left of each blob a replacement retired, newest first.
+    pub retired: Vec<RetiredCode>,
+}
+
+/// One retired recovery code, as the relay keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetiredCode {
+    /// The replaced blob's first bytes, base64url.
+    pub check: String,
+    /// When it was replaced, ms since the epoch, by the relay's clock.
+    pub retired_at_ms: u64,
 }
 
 /// The HTTP status a failed call carried, where it carried one.

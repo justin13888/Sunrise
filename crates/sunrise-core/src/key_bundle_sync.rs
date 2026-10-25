@@ -147,6 +147,14 @@ pub(crate) enum Recovery {
     Nothing(&'static str),
 }
 
+/// [`recover`], saying nothing when the relay pins no bundle or has no route
+/// for one: the account may simply never have published one.
+pub(crate) async fn recover_if_pinned<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    if matches!(transport.key_bundle_latest().await, Ok(Some(_))) {
+        recover(core, transport).await;
+    }
+}
+
 /// Fetch the account's pinned key bundle and absorb it.
 pub(crate) async fn recover<T: Transport + ?Sized>(core: &Core, transport: &mut T) -> Recovery {
     let pin = match transport.key_bundle_latest().await {

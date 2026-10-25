@@ -4,7 +4,10 @@
 //! share nothing with the rest of it.
 
 use super::{subject, NOW};
-use crate::store::{KeyBundlePinned, MetadataStore, PinnedKeyBundle, PinnedSnapshot};
+use crate::store::{
+    IdentityChainPinned, KeyBundlePinned, MetadataStore, PinnedIdentityChain, PinnedKeyBundle,
+    PinnedSnapshot,
+};
 
 /// A pin replaces its stream's last one and hands back the blob it released;
 /// a blob another of the account's streams still names is not released, and
@@ -177,4 +180,130 @@ pub(super) async fn a_key_bundle_goes_with_its_account(store: &dyn MetadataStore
         store.pinned_key_bundle(&kept.account_id).await.unwrap(),
         Some(pin)
     );
+}
+
+/// An account's identity chain record is replaced only over the record the
+/// publisher read, is the account's own, and goes with the account
+/// (ADR-0070).
+pub(super) async fn one_identity_chain_is_pinned_per_account(store: &dyn MetadataStore) {
+    let pin = |chain: &[u8]| PinnedIdentityChain {
+        chain: chain.to_vec(),
+        digest: *blake3::hash(chain).as_bytes(),
+        published_by: None,
+        published_at_ms: NOW,
+    };
+    let alice = store
+        .resolve_account(&subject("chain-alice"), true, NOW)
+        .await
+        .unwrap();
+    let bob = store
+        .resolve_account(&subject("chain-bob"), true, NOW)
+        .await
+        .unwrap();
+    let first = pin(b"first");
+    let second = pin(b"second");
+    assert_eq!(
+        store
+            .pin_identity_chain(&alice.account_id, &first, Some([7; 32]))
+            .await
+            .unwrap(),
+        IdentityChainPinned::Superseded,
+        "nothing is in place, so naming a record to replace is stale"
+    );
+    assert_eq!(
+        store
+            .pin_identity_chain(&alice.account_id, &first, None)
+            .await
+            .unwrap(),
+        IdentityChainPinned::Pinned
+    );
+    assert_eq!(
+        store
+            .pin_identity_chain(&alice.account_id, &second, None)
+            .await
+            .unwrap(),
+        IdentityChainPinned::Superseded,
+        "a publisher that read no record does not replace one"
+    );
+    assert_eq!(
+        store
+            .pin_identity_chain(&alice.account_id, &second, Some(first.digest))
+            .await
+            .unwrap(),
+        IdentityChainPinned::Pinned
+    );
+    assert_eq!(
+        store
+            .pinned_identity_chain(&alice.account_id)
+            .await
+            .unwrap(),
+        Some(second)
+    );
+    assert_eq!(
+        store.pinned_identity_chain(&bob.account_id).await.unwrap(),
+        None,
+        "a record is the account's own"
+    );
+    assert!(store.erase_account(&alice.account_id).await.unwrap());
+    assert_eq!(
+        store
+            .pinned_identity_chain(&alice.account_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// Replacing a recovery blob keeps a check of the one it replaced, newest
+/// first and no more than the bound, and the checks go with the account.
+pub(super) async fn a_replaced_recovery_blob_leaves_a_bounded_check(store: &dyn MetadataStore) {
+    let carol = store
+        .resolve_account(&subject("retire-carol"), true, NOW)
+        .await
+        .unwrap();
+    store
+        .set_identity(&carol.account_id, "PUB_S", "PUB_D", Some("blob-0"), NOW)
+        .await
+        .unwrap();
+    for i in 1..=12u8 {
+        store
+            .replace_recovery_blob(
+                &carol.account_id,
+                &format!("blob-{i}"),
+                Some(&[i; 3]),
+                NOW + u64::from(i),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .recovery_blob(&carol.account_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("blob-12")
+    );
+    let retired = store
+        .retired_recovery_blobs(&carol.account_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        usize::try_from(crate::store::recovery::MAX_RETIRED).unwrap(),
+        retired.len()
+    );
+    assert_eq!(retired[0].check, vec![12; 3], "newest first");
+    assert_eq!(retired[0].retired_at_ms, NOW + 12);
+    assert!(matches!(
+        store
+            .replace_recovery_blob("no-such-account", "x", None, NOW)
+            .await,
+        Err(crate::store::MetadataError::NotFound)
+    ));
+    assert!(store.erase_account(&carol.account_id).await.unwrap());
+    assert!(store
+        .retired_recovery_blobs(&carol.account_id)
+        .await
+        .unwrap()
+        .is_empty());
 }

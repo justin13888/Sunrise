@@ -74,8 +74,8 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 |---|---|---|---|---|
 | POST | `/api/v1/accounts` | `AccountCreateRequest` = `{ email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }` | `201` + `AccountInfo` | implemented |
 | GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
-| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
-| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
+| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | `200 { retired }` | implemented, device-bound ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)) |
+| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob, identity_chain?, retired? }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
 | POST | `/api/v1/accounts/me/delete/initiate` | — | `202 { confirm_phrase, expires_at_ms }`: a single-use confirmation phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) | implemented, behind an OIDC step-up |
 | DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | `202 { requested_at_ms, erase_after_ms }`; erased by the first maintenance pass after `[storage] account_delete_grace_days` (default 30) | implemented, behind an OIDC step-up |
 
@@ -107,11 +107,28 @@ idempotent by construction — `Store::set_identity` writes each field under
 `recovery_blob`, which is write-once and *reports* the conflict rather than
 coalescing it; see below.
 
-**The `GET` is built; the `PUT` is not.** `Store::recovery_blob` reads the
-column and `getRecoveryBlob` serves it, so a fresh device can fetch the
-ciphertext it must decrypt — which is what
-[ADR-0024](../11-adr/0024-key-hierarchy.md)'s recovery path depends on, since it
-opens identity-sealed `key_envelope` ops with the `ID_D_priv` this blob carries.
+**Both are built.** `Store::recovery_blob` reads the column and
+`getRecoveryBlob` serves it, so a fresh device can fetch the ciphertext it must
+decrypt — which is what [ADR-0024](../11-adr/0024-key-hierarchy.md)'s recovery
+path depends on, since it opens identity-sealed `key_envelope` ops with the
+`ID_D_priv` this blob carries. Beside the blob it serves, when the account has
+them, the account's **identity chain record** (`identity_chain`, base64url) and
+the **retired checks** of the blobs a replacement retired (`retired`, newest
+first, each `{ check, retired_at_ms }`): what a code made before an identity
+rotation needs to reach the identity in force, and what tells a retired code
+from a mistyped one ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+This route is where they are served because it is the one a recovering device
+can call: it holds a stepped-up bearer and no device binding yet.
+
+`replaceRecoveryBlob` (`PUT`) replaces the blob for a **registered device of the
+account**: a request with no device binding is `401 AUTH_DEVICE_SIG_INVALID`
+whatever `require_device_sig` says. The new blob must start with the recovery
+blob's magic (kind `0x03`) and be longer than 49 bytes, or it is
+`400 VALIDATION_INVALID`. The blob in place is not kept; its first 49 bytes are,
+as a retired check, the newest eight per account (`store/recovery.rs`, relay
+migration 0008). Re-sending the blob in place answers `{ "retired": false }` and
+retires nothing. It answers `403 ACCOUNT_PENDING_DELETION` for an account whose
+deletion is confirmed, and is in the `account` rate-limit group.
 
 Two things gate it.
 
@@ -127,9 +144,9 @@ Two things gate it.
   answer `201` and discard it under the `COALESCE` below — after which a client
   had shown its user a recovery code for a blob the relay does not hold.
   Re-sending identical bytes still succeeds, so the dropped-response retry is
-  unchanged. Rotation therefore has no route yet; it needs the `PUT`.
+  unchanged. A replacement goes through the `PUT`, never through this.
 
-The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
+The `recovery_blob` is stored opaquely. The server validates nothing of it but the magic prefix's kind, and only on the `PUT`. On the `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature; the `PUT` needs a device binding and is bounded by the same body cap. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
 #### Account deletion
 
@@ -200,7 +217,9 @@ and so does `sunrise recover` (`sunrise_relay_client::register_device`).
 | 403 | `AUTH_SIGNUP_DISABLED` | First-login attempt for unknown account when `auth.allow_signup = false`. | No. |
 | 403 | `AUTH_STEP_UP_REQUIRED` | `GET /accounts/me/recovery_blob` with a bearer whose authentication is not recent or strong enough. | After a fresh OIDC authorization request (`max_age=0` / `prompt=login`), **not** after a token refresh — a refresh does not move `auth_time`. |
 | 404 | `RECOVERY_BLOB_NOT_FOUND` | The account has no recovery blob. Only reachable *after* the step-up, so it is not an oracle for which accounts have one. | No. |
-| 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; rotation needs the unbuilt `PUT`. |
+| 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; a replacement goes through `PUT /accounts/me/recovery_blob`. |
+| 409 | `IDENTITY_CHAIN_SUPERSEDED` | `PUT /accounts/me/identity_chain` named a record that is not the one in place. | After reading the record again. |
+| 404 | `IDENTITY_CHAIN_NOT_FOUND` | The account has no identity chain record pinned: it never rotated, or no device has published the rotation yet. | No. |
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
 | 403 | `ACCOUNT_PENDING_DELETION` | The account's deletion is confirmed: `POST /sync/session`, `POST /sync/ops` and every blob upload step are refused. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
@@ -549,6 +568,42 @@ rate-limit group. Implemented in `api/key_bundle.rs`, over
 The client is `sunrise_sync::Transport::key_bundle_latest` and
 `Transport::key_bundle_pin`, implemented by `SseTransport` and driven by
 `crates/sunrise-core/src/key_bundle_sync.rs`.
+
+### Identity chain
+
+The account's identity chain record, pinned
+([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+A recovery code opens the identity it was sealed under; after an identity
+rotation, what leads from it to the identity in force is the transitions, which
+travel as vault-meta ops and are trimmed. The record is those links: each
+transition's signed body and both signatures, the fold's ranking inputs, and
+the carry share sealed to the identity before it, or `null`. It carries no
+roster. Magic kind `0x09`; the format is
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+§Identity chain record.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/accounts/me/identity_chain` | `{ chain, replaces? }` | `200 { chain, digest, published_at_ms }` |
+| GET | `/api/v1/accounts/me/identity_chain` | — | `200 { chain, digest, published_at_ms }`, or `404 IDENTITY_CHAIN_NOT_FOUND` |
+
+Signed like the key bundle routes, no step-up, `blob` rate-limit group.
+Implemented in `api/identity_chain.rs`, over `store/recovery.rs` (relay
+migration 0008).
+
+- **One per account, replaced only by a publisher that read it.** `replaces`
+  is the BLAKE3 digest (64 lowercase hex) of the record the publisher last read,
+  absent or `null` when it read none; `digest` is the relay's BLAKE3 of the
+  record it holds. Anything else in place is `409 IDENTITY_CHAIN_SUPERSEDED`.
+- **The record must be one.** The relay reads its magic prefix and refuses any
+  kind but `0x09`, or a record over 2 MiB, with `400 VALIDATION_INVALID`.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed. The record goes with the account.
+
+The client is `sunrise_sync::Transport::identity_chain_latest` and
+`Transport::identity_chain_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/identity_chain_sync.rs`; a recovery reads the record
+from `getRecoveryBlob` instead.
 
 ### Sharing — NOT IMPLEMENTED
 

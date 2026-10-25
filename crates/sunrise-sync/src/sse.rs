@@ -48,8 +48,8 @@
 
 use crate::signer::DeviceSigner;
 use crate::transport::{
-    BlobCommit, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin, Transport,
-    TransportError,
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
+    Transport, TransportError,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -1398,6 +1398,86 @@ impl Transport for SseTransport {
         }
         Ok(KeyBundlePinned::Pinned)
     }
+
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        let reply = self
+            .call("GET", "/api/v1/accounts/me/identity_chain", None)
+            .await?;
+        // No record is `404 IDENTITY_CHAIN_NOT_FOUND`. Any other 404 is a
+        // relay that predates the route, as for the key bundle.
+        if reply.status.as_u16() == 404 {
+            return match problem_code(&reply.bytes).as_deref() {
+                Some("IDENTITY_CHAIN_NOT_FOUND") => Ok(None),
+                _ => Err(TransportError::Unsupported),
+            };
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
+        body.get("chain")
+            .and_then(|c| c.as_str())
+            .and_then(|c| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(c)
+                    .ok()
+            })
+            .map(Some)
+            .ok_or_else(|| TransportError::Protocol("an identity chain is malformed".to_owned()))
+    }
+
+    async fn identity_chain_pin(
+        &mut self,
+        chain: &[u8],
+        replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        let reply = self
+            .call(
+                "PUT",
+                "/api/v1/accounts/me/identity_chain",
+                Some(serde_json::json!({
+                    "chain": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(chain),
+                    "replaces": replaces.map(hex::encode),
+                })),
+            )
+            .await?;
+        // `409 IDENTITY_CHAIN_SUPERSEDED`: another device pinned since this
+        // one read. The caller reads again.
+        if reply.status.as_u16() == 409 {
+            return Ok(IdentityChainPinned::Superseded);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        Ok(IdentityChainPinned::Pinned)
+    }
+
+    async fn recovery_blob_replace(&mut self, blob: &[u8]) -> Result<(), TransportError> {
+        let reply = self
+            .call(
+                "PUT",
+                "/api/v1/accounts/me/recovery_blob",
+                Some(serde_json::json!({
+                    "recovery_blob": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(blob),
+                })),
+            )
+            .await?;
+        if reply.status.as_u16() == 404 || reply.status.as_u16() == 405 {
+            return Err(TransportError::Unsupported);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        Ok(())
+    }
+}
+
+/// The `code` member of a problem document, if the body is one.
+fn problem_code(bytes: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_owned))
 }
 
 /// A `KeyBundlePin` document's blob id and manifest digest.

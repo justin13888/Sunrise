@@ -299,6 +299,10 @@ fn open_composes_each_tenants_ddl_in_dependency_order() {
             "stream_snapshots",
             // migration 0007 — each account's pinned key bundle
             "key_bundles",
+            // migration 0008 — the identity chain and retired recovery checks
+            "identity_chains",
+            "retired_recovery_blobs",
+            "retired_recovery_blobs_by_account",
         ],
         "the DDL `open` composes, in the order it ran"
     );

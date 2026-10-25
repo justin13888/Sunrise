@@ -83,6 +83,13 @@ pub mod codes {
     /// another device pinned a key bundle since this one read it. Nothing was
     /// written; the publisher reads the pin again (ADR-0069).
     pub const KEY_BUNDLE_SUPERSEDED: &str = "KEY_BUNDLE_SUPERSEDED";
+    /// `PUT /accounts/me/identity_chain` named a record that is not the one in
+    /// place: another device pinned the account's identity chain since this
+    /// one read it. Nothing was written; the publisher reads again (ADR-0070).
+    pub const IDENTITY_CHAIN_SUPERSEDED: &str = "IDENTITY_CHAIN_SUPERSEDED";
+    /// The account has no identity chain record pinned: it never rotated its
+    /// identity, or no device has published the rotation yet.
+    pub const IDENTITY_CHAIN_NOT_FOUND: &str = "IDENTITY_CHAIN_NOT_FOUND";
     /// The bearer is valid and the authentication behind it is not recent or
     /// strong enough for the operation. The client re-runs its OIDC
     /// authorization request with `max_age=0` (or `prompt=login`, or the

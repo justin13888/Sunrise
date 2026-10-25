@@ -1812,11 +1812,15 @@ USAGE:
     sunrise identity status      the account's identity chain: its stable name,
                                  the identity in force, and whether this device
                                  still speaks for it
-    sunrise identity rotate [--new-recovery-code]
+    sunrise identity rotate [--keep-code]
                                  replace the account identity, keeping every
-                                 current device. --new-recovery-code refuses to
-                                 carry the old code forward, which is what to
-                                 use when the code itself is suspected
+                                 current device, and print a new recovery code:
+                                 the old one stops opening the account. Needs
+                                 SUNRISE_SYNC_URL. --keep-code carries the old
+                                 code forward instead; never use it when the
+                                 code itself may be in someone else's hands
+    sunrise identity new-code    print a new recovery code for the identity in
+                                 force and retire the old one
 
   views and preferences
     sunrise views                list saved views
@@ -2476,8 +2480,15 @@ unknown_subcommand = "unknown identity subcommand `{verb}`"
 # {id} is the account's stable identity id.
 rotated = "Rotated. The account is still {id}."
 current_now = "current identity is now {id}"
-code_kept = "your existing recovery code still works"
-code_retired = "your old recovery code no longer opens this account; run `sunrise bootstrap` to mint a new one"
+code_kept = "your existing recovery code still works: it follows the account to this identity. If the code itself may be in someone else's hands, rotate again without --keep-code"
+code_retired = "your old recovery code is retired: it no longer opens this account, and a recovery with it says so. This is the new one:"
+# `identity rotate` without --keep-code, and `identity new-code`, on a device
+# that holds no ID_D_priv.
+cannot_seal_code = "this device does not hold the account's recovery key, so it cannot issue a recovery code; run this on the device the account was created on or restored to, or pass --keep-code"
+# {var} is the relay URL environment variable.
+needs_relay = "a new recovery code is stored on the relay: set {var}, sign in, and register this device with `sunrise bootstrap`, or pass --keep-code to keep the current code"
+# {cause} is why the new code did not reach the relay.
+reissue_failed = "the new recovery code did not reach the relay ({cause}). If the identity rotated, your old code no longer opens the account: run `sunrise identity new-code` once the relay is reachable, before you rely on any code"
 
 [cli.pair]
 # `sunrise pair` with no step. Translate the parenthesised notes and the last

@@ -18,7 +18,7 @@ use crate::events::{DomainEvent, SyncStatus};
 use crate::keychain::{to16, Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
 use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
-use crate::unlock::Unlock;
+use crate::unlock::{IdentitySeed, Unlock};
 use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -146,6 +146,13 @@ pub struct Core {
     /// hold at least as much as (ADR-0069). Memory only, as
     /// `published_snapshots` is.
     published_key_bundle: Mutex<Option<[u8; 32]>>,
+    /// The BLAKE3 digest of the identity chain record this process last saw
+    /// the relay hold (ADR-0070). Memory only, as `published_key_bundle` is.
+    published_identity_chain: Mutex<Option<[u8; 32]>>,
+    /// Whether this process opened the vault from a recovery code
+    /// (`Unlock::RecoveryCode`). Such a vault asks for the account's key
+    /// bundle before its first replay (ADR-0070 §4).
+    restored_from_code: bool,
     /// The clock the engine reads, holding the zone a client last reported
     /// through [`Core::on_time_zone_changed`].
     reader_clock: Arc<crate::config::ReportedZoneClock>,
@@ -184,6 +191,7 @@ impl Core {
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let (vault_root, identity_seed) = unlock.into_parts();
+        let restored_from_code = matches!(identity_seed, IdentitySeed::Recovered(_));
         let db_path = cfg.vault_dir.join("vault.db");
         let mut db = match mode {
             OpenMode::Ordinary => Db::open(&db_path, &vault_root)?,
@@ -364,6 +372,8 @@ impl Core {
             last_compaction_ms: Mutex::new(None),
             published_snapshots: Mutex::new(std::collections::HashMap::new()),
             published_key_bundle: Mutex::new(None),
+            published_identity_chain: Mutex::new(None),
+            restored_from_code,
             reader_clock,
             closed: Mutex::new(false),
         };
@@ -1180,10 +1190,8 @@ impl Core {
     /// [`crate::keychain::KeychainError::IdentitySecretAbsent`] on a device
     /// admitted by pairing, which holds no `ID_D_priv` to seal.
     pub fn seal_recovery_blob(&self, seed: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
-        Ok(self
-            .engine
-            .keychain()
-            .seal_recovery_blob(seed, self.rng())?)
+        let db = self.db.lock();
+        Ok(self.engine.seal_recovery_blob(&db, seed)?)
     }
 
     /// This device's stable id.
@@ -1701,6 +1709,7 @@ fn format_iso8601(ms: u64) -> String {
     format!("{ms}")
 }
 
+mod identity_chain;
 mod key_bundle;
 mod repair;
 

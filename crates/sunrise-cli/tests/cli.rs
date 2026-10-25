@@ -1597,11 +1597,11 @@ fn identity_rotate_moves_the_key_and_keeps_the_account() {
         .expect("an account line")
         .to_owned();
 
-    let out = run(dir.path(), &["identity", "rotate"]);
+    let out = run(dir.path(), &["identity", "rotate", "--keep-code"]);
     assert!(out.status.success(), "rotate failed: {out:?}");
     assert!(
         stdout(&out).contains("your existing recovery code still works"),
-        "the default carries the code forward, got {:?}",
+        "--keep-code carries the code forward, got {:?}",
         stdout(&out)
     );
 
@@ -1626,21 +1626,28 @@ fn identity_rotate_moves_the_key_and_keeps_the_account() {
     );
 }
 
-/// `--new-recovery-code` refuses to carry the old code and says so on stderr.
+/// A rotation that retires the code issues the next one on the relay, so with
+/// no relay it refuses before anything moves: rotating anyway would leave the
+/// account with no working code at all (ADR-0070).
 #[test]
-fn identity_rotate_can_refuse_to_carry_the_recovery_code() {
+fn identity_rotate_without_keep_code_needs_the_relay_and_moves_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let out = run(dir.path(), &["identity", "rotate", "--new-recovery-code"]);
-    assert!(out.status.success(), "rotate failed: {out:?}");
+    for args in [
+        &["identity", "rotate"][..],
+        &["identity", "rotate", "--new-recovery-code"][..],
+    ] {
+        let out = run(dir.path(), args);
+        assert!(!out.status.success(), "{args:?} must refuse: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--keep-code") && err.contains("SUNRISE_SYNC_URL"),
+            "the refusal names both ways forward, got {err:?}"
+        );
+    }
+    let after = stdout(&run(dir.path(), &["identity", "status"]));
     assert!(
-        !stdout(&out).contains("still works"),
-        "it must not claim the old code survives, got {:?}",
-        stdout(&out)
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("no longer opens this account"),
-        "the user has to be told, got {err:?}"
+        after.contains("rotations 0"),
+        "nothing moved, got {after:?}"
     );
 }
 

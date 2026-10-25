@@ -343,6 +343,10 @@ impl Engine {
         }
         let now_ms = self.clock.now_ms();
         let op_id = self.fresh_op_id(now_ms);
+        // Read before the rotation moves anything: whether this device holds
+        // the outgoing `ID_D_priv`, and so whether it should hold the
+        // successor's. See the end of the transaction below.
+        let held_unwrapping_key = self.keychain.holds_only_copy_of_identity_key();
         let mut outcome = RotationOutcome {
             to_identity_id: [0u8; 16],
             carried_recovery_code: false,
@@ -432,6 +436,7 @@ impl Engine {
 
             let mut roster: Vec<RosterEntry> = Vec::with_capacity(survivors.len());
             let mut device_shares: Vec<KeyShare> = Vec::with_capacity(survivors.len());
+            let mut my_cert: Option<Vec<u8>> = None;
             for sv in &survivors {
                 let cert = Keychain::issue_roster_cert(
                     &successor,
@@ -443,6 +448,9 @@ impl Engine {
                     now_ms,
                 )
                 .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+                if sv.device_id == self.keychain.device_id() {
+                    my_cert = Some(cert.clone());
+                }
                 roster.push(RosterEntry { cert });
                 device_shares.push(KeyShare {
                     device_id: sv.device_id,
@@ -580,6 +588,26 @@ impl Engine {
                 now_ms,
                 seal_under.0,
             )?;
+            // **The minting device keeps the successor's `ID_D_priv`.** The
+            // local apply above adopts through this device's own share, which
+            // carries `ID_S_priv` and never `ID_D_priv` (#76), and through the
+            // carry share only when there is one. A rotation that retired the
+            // code has none, so the successor's unwrapping key used to exist
+            // nowhere once this transaction ended: every identity copy sealed
+            // from then on was unopenable, and no new recovery code could be
+            // sealed for the account (ADR-0070). The device that held the
+            // outgoing key holds the incoming one, exactly as the creator held
+            // the genesis.
+            if held_unwrapping_key
+                && !self.keychain.holds_only_copy_of_identity_key()
+                && self.keychain.identity_id() == body.to_identity_id
+            {
+                if let Some(cert) = my_cert {
+                    self.keychain
+                        .adopt_successor_identity(tx, successor, cert, self.rng.as_ref())
+                        .map_err(crate::keychain::sqlite_from)?;
+                }
+            }
             Ok(())
         })
         .map_err(|e| match e {
@@ -1003,11 +1031,35 @@ impl Engine {
     /// this file then reads it as not-current. **That is the fix for #105
     /// arriving, not failing.**
     ///
-    /// Two shares are tried, carry first. The carry copy is sealed to the
-    /// outgoing `ID_D_pub` and carries `ID_D_priv` as well, so a device that
-    /// can open it keeps the account's unwrapping key across the rotation;
-    /// preferring it is what stops the creator silently demoting itself to a
-    /// device that can seal to the identity and not open what it sealed.
+    /// # One link at a time
+    ///
+    /// The walk starts at this device's own identity and adopts each successor
+    /// in turn. A carry share is sealed to its **predecessor's** `ID_D_pub`, so
+    /// a device restored from a code made two rotations ago can open the first
+    /// link's carry and only then the second's (ADR-0070); reading the head's
+    /// row alone, as this used to, found a share sealed to a key the device
+    /// did not hold yet. Where a link does not adopt, the head's row is tried
+    /// directly, which is the case of a device that was left out of one
+    /// rotation and certified back in before the next.
+    ///
+    /// Two shares are tried at each link, carry first. The carry copy is sealed
+    /// to the outgoing `ID_D_pub` and carries `ID_D_priv` as well, so a device
+    /// that can open it keeps the account's unwrapping key across the
+    /// rotation; preferring it is what stops the creator silently demoting
+    /// itself to a device that can seal to the identity and not open what it
+    /// sealed.
+    ///
+    /// # A device the roster does not name
+    ///
+    /// A device restored from the recovery code is in no roster: it did not
+    /// exist when the rotation ran. It opens the carry share, which carries the
+    /// successor's `ID_S_priv`, and so it certifies itself under the successor
+    /// and publishes that cert, exactly as it certified itself under the
+    /// identity its code opened (`docs/03-crypto/recovery.md` §Recovery flow
+    /// step 6). A device this replica holds as revoked or read-bounded does not:
+    /// the carry reaches every holder of the outgoing `ID_D_priv`, which is why
+    /// a rotation done to evict one must retire the code, and an unmodified
+    /// build that knows it was cut does not write itself back into the list.
     ///
     /// Idempotent and safe to call on every open: it returns immediately when
     /// this device already signs under the head, which is the ordinary case.
@@ -1017,26 +1069,54 @@ impl Engine {
     /// not decode and a successor this device is not in the roster of are all
     /// the same non-error outcome — no adoption — and are logged rather than
     /// returned, for the reason `apply_control_op`'s other arms give.
-    /// Takes no clock reading: adoption no longer stamps anything. The cert
-    /// this device ends up holding is the roster's, whose `created_at_ms` is
-    /// the rotation's, so a second reading here could only disagree with it.
     pub(crate) fn recompute_identity_head(&self, tx: &Transaction<'_>) -> rusqlite::Result<()> {
-        let head = self.current_identity(tx)?;
-        if head.identity_id == self.keychain.identity_id() {
+        let chain = self.chain_identities(tx)?;
+        let head = *chain
+            .last()
+            .expect("chain_identities always returns at least the genesis link");
+        if head.0 == self.keychain.identity_id() {
             return Ok(());
         }
+        if let Some(pos) = chain
+            .iter()
+            .position(|(id, _)| *id == self.keychain.identity_id())
+        {
+            for (next, _) in &chain[pos + 1..] {
+                if !self.adopt_link(tx, next, false)? {
+                    break;
+                }
+            }
+        }
+        if self.keychain.identity_id() != head.0 {
+            self.adopt_link(tx, &head.0, true)?;
+        }
+        Ok(())
+    }
+
+    /// Adopt the successor `to_identity_id` names, from the transition row
+    /// that reaches it. `true` when this device now signs under it.
+    ///
+    /// `report` is whether a failure is this device's final answer, and so
+    /// worth `core.identity.not_in_roster`: an intermediate link of the walk
+    /// that does not open is followed by a try at the head.
+    fn adopt_link(
+        &self,
+        tx: &Transaction<'_>,
+        to_identity_id: &[u8; 16],
+        report: bool,
+    ) -> rusqlite::Result<bool> {
         let row: Option<Vec<u8>> = tx
             .query_row(
                 "SELECT payload FROM identity_transitions WHERE to_identity_id = ?",
-                params![&head.identity_id[..]],
+                params![&to_identity_id[..]],
                 |r| r.get(0),
             )
             .optional()?;
         let Some(payload) = row else {
-            return Ok(());
+            return Ok(false);
         };
         let Ok(InnerOp::IdentityTransition(p)) = decode_inner_op(&payload) else {
-            return Ok(());
+            return Ok(false);
         };
         let publics = SuccessorPublics {
             identity_id: p.to_identity_id,
@@ -1063,58 +1143,98 @@ impl Engine {
                     })
             });
         let Some(successor) = successor else {
-            tracing::warn!(
-                ev = "core.identity.not_in_roster",
-                head_h = hex_short(&head.identity_id),
-                "this device holds no share of the account's current identity and no \
-                 longer speaks for it"
-            );
-            return Ok(());
+            if report {
+                tracing::warn!(
+                    ev = "core.identity.not_in_roster",
+                    head_h = hex_short(to_identity_id),
+                    "this device holds no share of the account's current identity and no \
+                     longer speaks for it"
+                );
+            }
+            return Ok(false);
         };
         // This device's cert under the successor, taken from the roster rather
         // than re-issued locally. Since `#105` most devices hold no `ID_S_priv`
         // and could not re-issue it; they do not need to, because the roster is
         // the successor's own signed statement about who survives and every
         // entry in it has already been verified against `to_id_s_pub`.
-        //
-        // A device with a share but no roster entry is a malformed transition:
-        // `rotate_identity` builds both lists from the same survivor set. It
-        // lands in the same non-adoption as having no share at all.
         let mine = p.roster.iter().find_map(|e| {
             DeviceCert::from_cbor(&e.cert)
                 .ok()
                 .filter(|c| c.body.device_id == me)
                 .map(|_| e.cert.clone())
         });
-        let Some(roster_cert) = mine else {
-            tracing::warn!(
-                ev = "core.identity.not_in_roster",
-                head_h = hex_short(&head.identity_id),
-                "this device holds a share of the account's successor identity but no cert \
-                 in its roster, so there is nothing to adopt under"
-            );
-            return Ok(());
+        // Not named, and holding the successor's signing key: the device a
+        // recovery restored, certifying itself (see the doc above).
+        let (cert, self_issued) = match mine {
+            Some(cert) => (cert, false),
+            None if successor.holds_signing_key()
+                && !self.is_revoked(tx, &me)?
+                && !self.is_read_bounded(tx, &me)? =>
+            {
+                let (nickname, platform) = Keychain::device_labels_tx(tx, &me)?;
+                match Keychain::issue_roster_cert(
+                    &successor,
+                    me,
+                    self.keychain.device_signing_pub(),
+                    self.keychain.device_dh_pub(),
+                    &nickname,
+                    &platform,
+                    self.clock.now_ms(),
+                ) {
+                    Ok(cert) => (cert, true),
+                    Err(_) => return Ok(false),
+                }
+            }
+            None => {
+                if report {
+                    tracing::warn!(
+                        ev = "core.identity.not_in_roster",
+                        head_h = hex_short(to_identity_id),
+                        "this device holds a share of the account's successor identity but no \
+                         cert in its roster, so there is nothing to adopt under"
+                    );
+                }
+                return Ok(false);
+            }
         };
         match self
             .keychain
-            .adopt_successor_identity(tx, successor, roster_cert, self.rng.as_ref())
+            .adopt_successor_identity(tx, successor, cert.clone(), self.rng.as_ref())
         {
             Ok(_) => {
                 tracing::info!(
                     ev = "core.identity.adopted",
-                    head_h = hex_short(&head.identity_id),
+                    head_h = hex_short(to_identity_id),
                     "this device adopted the account's successor identity"
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     ev = "core.identity.adopt_failed",
-                    head_h = hex_short(&head.identity_id),
+                    head_h = hex_short(to_identity_id),
                     cause = %e,
                     "could not adopt the account's successor identity"
                 );
+                return Ok(false);
             }
         }
-        Ok(())
+        if self_issued {
+            // Peers learn this device under the successor the way they learned
+            // it under its first identity: from its own published cert.
+            self.emit_control_op(
+                tx,
+                &InnerOp::DeviceCertPublish(cert),
+                self.clock.now_ms(),
+                None,
+            )?;
+            tracing::info!(
+                ev = "core.identity.self_certified",
+                head_h = hex_short(to_identity_id),
+                "this device opened the carry share of a rotation it was not in the roster of \
+                 and certified itself under the successor"
+            );
+        }
+        Ok(true)
     }
 }

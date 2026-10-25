@@ -41,6 +41,9 @@ pub enum MagicKind {
     /// An account's identity-sealed key bundle (versioned by key bundle
     /// format version, currently 1; ADR-0069).
     KeyBundle = 8,
+    /// An account's identity chain, pinned beside its recovery blob
+    /// (versioned by identity chain format version, currently 1; ADR-0070).
+    IdentityChain = 9,
 }
 
 impl MagicKind {
@@ -62,6 +65,7 @@ impl MagicKind {
             6 => Some(Self::DiagBundle),
             7 => Some(Self::PairingPayload),
             8 => Some(Self::KeyBundle),
+            9 => Some(Self::IdentityChain),
             _ => None,
         }
     }
@@ -167,6 +171,7 @@ mod tests {
             MagicKind::DiagBundle,
             MagicKind::PairingPayload,
             MagicKind::KeyBundle,
+            MagicKind::IdentityChain,
         ];
         for k in kinds {
             for v in [0u16, 1, 0xff, 0x1234, 0xffff] {

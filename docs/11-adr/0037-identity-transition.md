@@ -9,6 +9,14 @@ analysis intact. **Amends**
 rotation, which is corrected rather than implemented: as drawn it is
 unimplementable.
 
+**Amended by:** [ADR-0070](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md) —
+`keep_recovery_code: false` now retires the code properly: the transition is
+sealed under a vault-meta epoch minted for it with no identity copy, every
+Stream rotates after it, the rotating device keeps the successor's `ID_D_priv`,
+and a new recovery blob is sealed. A device a rotation's roster does not name
+and that opens its carry share certifies itself under the successor, and
+adoption walks the chain one link at a time.
+
 Adds one op family (`identity_transition`), two migrations (0022, 0023), and
 moves `DOC_SCHEMA_V` 5 → 6, `STORAGE_V` 21 → 23. No primitive changes, so
 `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay where they are.

@@ -94,6 +94,7 @@ mod features;
 mod focus;
 mod groups;
 mod identity;
+mod identity_chain;
 mod ids;
 mod key_bundle;
 mod lww;
@@ -126,6 +127,7 @@ mod write;
 pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
+pub use self::identity_chain::ChainSeeded;
 pub(crate) use self::ids::hex_short;
 pub use self::key_bundle::KeyBundleApplied;
 pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
@@ -653,7 +655,11 @@ impl Engine {
                 self.revoke_device(db, device_id, reason)
             }
             Command::RotateIdentity { keep_recovery_code } => {
-                let out = self.rotate_identity(db, None, keep_recovery_code)?;
+                let out = if keep_recovery_code {
+                    self.rotate_identity(db, None, true)?
+                } else {
+                    self.rotate_identity_retiring_code(db)?
+                };
                 Ok(CommandResult::new(
                     EntityRef::new(EntityKind::Identity, out.to_identity_id),
                     None,

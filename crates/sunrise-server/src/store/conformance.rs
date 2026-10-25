@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, KeyBundlePinned, MetadataError,
-    MetadataStore, NewDevice, NewTombstone, PinnedKeyBundle, PinnedSnapshot, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
+    KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
+    PinnedKeyBundle, PinnedSnapshot, RetiredRecoveryBlob, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -61,6 +62,35 @@ impl MetadataStore for Unreachable {
         Err(down())
     }
     async fn recovery_blob(&self, _: &str) -> Result<Option<String>, MetadataError> {
+        Err(down())
+    }
+    async fn replace_recovery_blob(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&[u8]>,
+        _: u64,
+    ) -> Result<(), MetadataError> {
+        Err(down())
+    }
+    async fn retired_recovery_blobs(
+        &self,
+        _: &str,
+    ) -> Result<Vec<RetiredRecoveryBlob>, MetadataError> {
+        Err(down())
+    }
+    async fn pin_identity_chain(
+        &self,
+        _: &str,
+        _: &PinnedIdentityChain,
+        _: Option<[u8; 32]>,
+    ) -> Result<IdentityChainPinned, MetadataError> {
+        Err(down())
+    }
+    async fn pinned_identity_chain(
+        &self,
+        _: &str,
+    ) -> Result<Option<PinnedIdentityChain>, MetadataError> {
         Err(down())
     }
     async fn register_device(
@@ -290,6 +320,8 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     pins::one_snapshot_is_pinned_per_stream(store).await;
     pins::one_key_bundle_is_pinned_per_account(store).await;
     pins::a_key_bundle_goes_with_its_account(store).await;
+    pins::one_identity_chain_is_pinned_per_account(store).await;
+    pins::a_replaced_recovery_blob_leaves_a_bounded_check(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))

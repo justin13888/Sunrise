@@ -95,6 +95,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "key_bundles",
         apply: key_bundles,
     },
+    Migration {
+        id: 8,
+        name: "recovery_across_rotation",
+        apply: recovery_across_rotation,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -195,6 +200,13 @@ fn stream_snapshots(conn: &Connection) -> rusqlite::Result<()> {
 /// declares (ADR-0069). Created empty: no relay pinned one before it.
 fn key_bundles(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(super::key_bundles::SCHEMA)
+}
+
+/// 0008: each account's identity chain record and the checks left of its
+/// replaced recovery blobs, which `store::recovery` declares (ADR-0070).
+/// Created empty: no relay kept either before it.
+fn recovery_across_rotation(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::recovery::SCHEMA)
 }
 
 /// The database's `user_version`.

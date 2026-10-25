@@ -57,6 +57,7 @@ mod lifecycle;
 mod metadata;
 mod migrations;
 mod pragmas;
+pub(crate) mod recovery;
 mod snapshots;
 mod tx;
 
@@ -80,6 +81,10 @@ pub use key_bundles::{KeyBundlePinned, PinnedKeyBundle};
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
 pub use metadata::{MetadataError, MetadataStore};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
+pub use recovery::{
+    IdentityChainPinned, PinnedIdentityChain, RetiredRecoveryBlob, MAX_CHAIN_BYTES,
+    RETIRED_CHECK_LEN,
+};
 pub use snapshots::PinnedSnapshot;
 pub use tx::{metered, StoreTime};
 

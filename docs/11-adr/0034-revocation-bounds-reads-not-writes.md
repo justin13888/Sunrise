@@ -89,10 +89,10 @@ the code rather than from the issue:
   apply path reaches is the **bound**, twice, and both reads are on the
   **key-distribution** side: the anti-join is `emit_key_envelopes`'s
   `NOT EXISTS` against `device_read_bounds`
-  (`crates/sunrise-core/src/engine/oplog.rs:315-317#emit_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:358-360#emit_key_envelopes_to`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:428#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:473#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
@@ -176,7 +176,7 @@ Revocation today is a **register plus a read bound**:
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:317-324#revoke_device`), and
   `sync_driver::drain_relay_revocations` retries it on every session
-  (`crates/sunrise-core/src/sync_driver.rs:1893#drain_relay_revocations`). The
+  (`crates/sunrise-core/src/sync_driver.rs:1918#drain_relay_revocations`). The
   bound is real and **conditional**: the relay enforces only against a
   device-signed request, and `require_device_sig` defaults to false, so in the
   default deployment it is not in force

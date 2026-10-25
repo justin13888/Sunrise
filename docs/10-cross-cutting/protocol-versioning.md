@@ -302,6 +302,7 @@ magic prefix (`crates/sunrise-cbor/src/magic.rs#MagicKind`):
 | 6 | `0x06` | Diagnostic bundle | bundle version | 1 |
 | 7 | `0x07` | Pairing payload (QR contents, base64url JSON inside) | pairing version | 1 |
 | 8 | `0x08` | Key bundle ([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md); see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md) §Key bundle) | key bundle format version (`KEY_BUNDLE_FORMAT_V`) | 1 |
+| 9 | `0x09` | Identity chain record ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md); see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md) §Identity chain record) | identity chain format version (`IDENTITY_CHAIN_FORMAT_V`) | 1 |
 
 All version fields are written big-endian.
 

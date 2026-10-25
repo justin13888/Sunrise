@@ -205,6 +205,22 @@ impl Transport for KickableTransport {
     async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
         self.inner.blob_fetch(blob_id).await
     }
+
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.identity_chain_latest().await
+    }
+
+    async fn identity_chain_pin(
+        &mut self,
+        chain: &[u8],
+        replaces: Option<&[u8; 32]>,
+    ) -> Result<sunrise_sync::IdentityChainPinned, TransportError> {
+        self.inner.identity_chain_pin(chain, replaces).await
+    }
+
+    async fn recovery_blob_replace(&mut self, blob: &[u8]) -> Result<(), TransportError> {
+        self.inner.recovery_blob_replace(blob).await
+    }
 }
 
 /// Build the factory the sync driver dials with, once per connection attempt
