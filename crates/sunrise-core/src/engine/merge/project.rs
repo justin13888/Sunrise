@@ -584,6 +584,11 @@ pub(super) fn write_projection(
                     r.created_at.as_millisecond().max(0).unsigned_abs(),
                     head,
                 )?;
+                // The insert stamps `updated_at_ms` with the create's time.
+                // A routine first projected from a joined snapshot or a
+                // rebuild's compacted base has been edited since, so the
+                // projected value is written over it.
+                update_routine_row(tx, &r, head)?;
             }
         }
         EntityKind::Block => {

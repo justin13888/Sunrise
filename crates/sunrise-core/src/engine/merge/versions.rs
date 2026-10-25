@@ -539,6 +539,113 @@ pub(in crate::engine) fn precedes(
     Ok(frontier_at(tx, id, b, &a.device)?.is_some_and(|r| r >= at))
 }
 
+// ---- pruning (ADR-0065 D25, `super::prune`) ----
+
+/// One version as the pruning rule reads it: what its row and its frontier
+/// rows hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::engine) struct Node {
+    pub(in crate::engine) at: Stamp,
+    /// The `parents` it named, as stored; none for a version that named no
+    /// key.
+    pub(in crate::engine) parents: Vec<OpRef>,
+    /// `F(v)` as stored.
+    pub(in crate::engine) frontier: Frontier,
+    pub(in crate::engine) head: bool,
+    /// A `Patch` that wrote `streak_keys` or `skipped_keys`: what
+    /// `project::keys_written_by_a_patch` looks for.
+    pub(in crate::engine) keys: bool,
+}
+
+/// Every version of `id` with its frontier, in stamp order.
+pub(super) fn nodes(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<Vec<Node>> {
+    let mut frontiers: BTreeMap<OpRef, Frontier> = BTreeMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT v_stream, v_device, v_seq, device, hlc_ms, hlc_logical, seq, stream
+             FROM entity_frontier WHERE entity_id = ?",
+        )?;
+        let mut rows = stmt.query(params![&id[..]])?;
+        while let Some(r) = rows.next()? {
+            let v = OpRef {
+                stream: blob16(&r.get::<_, Vec<u8>>(0)?),
+                device: blob16(&r.get::<_, Vec<u8>>(1)?),
+                seq: u64::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+            };
+            let reached = OpRef {
+                device: blob16(&r.get::<_, Vec<u8>>(3)?),
+                seq: u64::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
+                stream: blob16(&r.get::<_, Vec<u8>>(7)?),
+            };
+            frontiers
+                .entry(v)
+                .or_default()
+                .insert(reached.device, load_stamp(r, 4, reached)?);
+        }
+    }
+    let mut stmt = tx.prepare(
+        "SELECT stream, device, seq, hlc_ms, hlc_logical, parents, is_head, kind, fields
+         FROM entity_versions WHERE entity_id = ?
+         ORDER BY hlc_ms, hlc_logical, device, seq, stream",
+    )?;
+    let rows = stmt.query_map(params![&id[..]], |r| {
+        let op = OpRef {
+            stream: blob16(&r.get::<_, Vec<u8>>(0)?),
+            device: blob16(&r.get::<_, Vec<u8>>(1)?),
+            seq: u64::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+        };
+        let kind: String = r.get(7)?;
+        let keys = kind == VersionKind::Patch.column()
+            && super::state::dec(&r.get::<_, Vec<u8>>(8)?)
+                .as_array()
+                .is_some_and(|names| {
+                    names
+                        .iter()
+                        .any(|n| matches!(n.as_text(), Some("streak_keys" | "skipped_keys")))
+                });
+        Ok(Node {
+            at: load_stamp(r, 3, op)?,
+            parents: r
+                .get::<_, Option<Vec<u8>>>(5)?
+                .as_deref()
+                .map(decode_parents)
+                .unwrap_or_default(),
+            frontier: BTreeMap::new(),
+            head: r.get::<_, i64>(6)? != 0,
+            keys,
+        })
+    })?;
+    let mut out: Vec<Node> = rows.collect::<rusqlite::Result<_>>()?;
+    for node in &mut out {
+        node.frontier = frontiers.remove(&node.at.op_ref()).unwrap_or_default();
+    }
+    Ok(out)
+}
+
+/// Delete the version rows of `id` named in `gone`, and their frontiers.
+/// Returns how many versions went.
+pub(super) fn forget(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    gone: &BTreeSet<OpRef>,
+) -> rusqlite::Result<u64> {
+    let mut versions = tx.prepare(
+        "DELETE FROM entity_versions
+         WHERE entity_id = ? AND stream = ? AND device = ? AND seq = ?",
+    )?;
+    let mut frontier = tx.prepare(
+        "DELETE FROM entity_frontier
+         WHERE entity_id = ? AND v_stream = ? AND v_device = ? AND v_seq = ?",
+    )?;
+    let mut n = 0;
+    for op in gone {
+        let key = params![&id[..], &op.stream[..], &op.device[..], op.seq];
+        n += versions.execute(key)? as u64;
+        frontier.execute(key)?;
+    }
+    Ok(n)
+}
+
 /// One head of an entity, as the conflicts query reports a branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::engine) struct HeadVersion {

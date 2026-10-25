@@ -114,6 +114,57 @@ revoked device never holds it back.
 `Core::set_compaction_policy` replaces it. The sync driver's anti-entropy tick
 runs compaction at most once a day; `Core::compact_op_log` runs it now.
 
+## Pruning version rows
+
+A fold deletes ops, not the version DAG they left
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §1–§2): one
+`entity_versions` row per version and one `entity_frontier` row per device it
+reaches. Once every stream is folded, `Engine::compact_op_log` prunes the rows
+no version can still read (clarification D25,
+`crates/sunrise-core/src/engine/merge/prune.rs`). A version is **passed**, and
+its rows go, when all of:
+
+1. **compacted:** its op is at or below its prefix's floor and gone from the
+   log, so it is never delivered again or refolded by a rebuild;
+2. **not read:** it is not a head, not its device's newest version of the
+   entity (the next version's previous one, D2), not a register's winner or
+   loser, and not the newest `Patch` that wrote `streak_keys` or
+   `skipped_keys` (what a routine's derived streak reads, D17);
+3. **its readers went with it:** every version that names it as a parent,
+   and its device's next version, is in its stream and compacted, so no
+   rebuild and no replica joining the stream's snapshot folds one again;
+4. **the entity is closed:** every parent a version of the entity names is a
+   version here or is at or below its floor, so no ancestor is still to come;
+5. **every device that can still write has passed it:** each device in
+   `devices` other than this one that is not revoked, or was revoked less
+   than `retention_ms` ago, has acknowledged a version that descends from it.
+   It wrote that version, or published a frontier in its stream that reaches
+   it, and this replica holds that device's own prefix in the stream as far
+   as that acknowledgement states. A device with an op held here unapplied
+   (waiting for its key, parked, or held in a group) passes nothing.
+
+So a version applied afterwards names no pruned version, has no pruned
+previous version and descends from no pruned ancestor: every frontier it
+reads is still stored, and is the one a replica that pruned nothing reads.
+The rows, registers, losers, heads and conflicts are the same, and so is a
+rebuild.
+
+Unlike the op-log floor, a device silent for any time holds pruning back,
+because its unsent versions may name anything it held. Revoking it releases
+it once the relay no longer holds what it uploaded. The rule cannot see a
+device paired elsewhere whose cert has not arrived, an op sealed in another
+stream before the acknowledgement it read and never received here, or a
+writer naming a parent that was not its head. A version of those that names
+a pruned parent folds it as a parent never applied: the parent adds nothing
+to its frontier, so its writes stay in the unresolved set beside the ones it
+had seen there, until the next write naming the heads. No write is lost.
+
+After a fold an entity keeps its heads, each device's newest version, its
+registers' winners and losers, and the versions not yet folded:
+`crates/sunrise-core/src/engine/tests/prune.rs` holds an entity to that bound
+however many edits it took. `CompactionReport::versions_pruned` counts the
+rows, and `core.compaction.done` logs it as `n_versions`.
+
 ## Who writes the snapshot (compactor election)
 
 The known device with the least `device_id`, in byte order, is the stream's
@@ -161,7 +212,9 @@ counter delta whose stamp (an add's and a remove's tag) names the stream. Each
 entity lists its distinct stamps once and its rows name them by index.
 
 ```cddl
-doc-state = { "v": 2, "entities": [* entity] }       ; sorted by id
+doc-state = { "v": 2, "entities": [* entity],        ; sorted by id
+              ? "members": [* member] }              ; in stamp order
+member = [group: bstr .size 16, size: uint, stamp]
 entity = {
   "id": bstr .size 16, "kind": tstr,                  ; registry tag
   "stamps": [* stamp],                                ; distinct, ascending
@@ -190,6 +243,13 @@ so a version above the snapshot whose parents it compacted away still orders
 against them, and a conflict outlives the ops that caused it (§8). A version-1
 document is still joined: its registers join as writes that reach only
 themselves.
+
+`versions` carries the versions the writer still holds; one it pruned is read
+by no version a joiner can still fold. A pruned version can still have been a
+group member (ADR-0065 §6), and a joiner holding the rest of its group needs
+it present, so `members` names every group member of the stream whose version
+the writer pruned (D14, D25). The key is absent when there is none, and a
+build that does not read it ignores it.
 
 ### Retained envelopes
 
@@ -228,8 +288,8 @@ used. Versions join first, keyed by op-ref; each frontier entry keeps the
 greater of the held and the joined stamp, and the entity's frontiers and heads
 are recomputed with the joined ones as their floor. Registers and losers then
 join through the register fold, which reads the order through them. A version
-of a group records its member as present, so a member this replica holds back
-completes once the snapshot brings the rest. Every such write is idempotent and order-independent, so a replica that
+of a group, and an entry of `members`, records its member as present, so a
+member this replica holds back completes once the snapshot brings the rest. Every such write is idempotent and order-independent, so a replica that
 joins a snapshot and then applies the ops above its frontier holds what a
 replica that replayed every op holds, whatever it held before. Applying a
 record twice, or one older than the replica, changes nothing.
@@ -291,6 +351,8 @@ Both leave the device `Degraded`, as before.
 
 Nothing that is not an entity write: device certs, key envelopes,
 revocations, identity transitions, focus and review records, and parked ops.
+The version rows a device that can still write has not passed (§Pruning
+version rows).
 Each device's tip. The latest snapshot per stream, on its compactor, on any
 replica that applied it, and pinned on the relay.
 
@@ -321,6 +383,16 @@ the op log, so they reach back as far as the retention window and no further.
   after a fold; parked ops carried by a snapshot; a covered snapshot; a
   forged, foreign or divergent one is refused; the clock primed from the
   floors.
+- `crates/sunrise-core/src/engine/tests/prune.rs`: each condition of the
+  pruning rule on hand-built versions; a property that devices editing,
+  syncing, acknowledging and compacting in any order hold what a replica that
+  never pruned holds; the bound on an entity's rows; a silent device holding
+  pruning back; the documented fold of a late version naming a pruned parent;
+  a rebuild after pruning; a joiner of a pruned replica's snapshot; and the
+  group members a snapshot names present.
 - `crates/sunrise-bench/benches/compaction.rs`: the op log at 10k and 100k
   tasks before and after a fold, the snapshot record that replaces it, and
-  what both cost.
+  what both cost; and a report of the version rows an entity keeps against
+  the versions it took and the devices that acknowledge them, held by a
+  silent device and pruned once every device has passed them, with what the
+  fold and a rebuild cost either way.

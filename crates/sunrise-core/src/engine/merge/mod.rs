@@ -79,6 +79,11 @@
 //! `Query::Conflicts` reports. Two full-state ops are concurrent, but only the
 //! newer survives the legacy floor, so a legacy-only history keeps no loser.
 //!
+//! Compaction prunes the versions no fold can read again ([`prune`],
+//! ADR-0065 D25): those every device that can still write has passed, whose
+//! ops and readers are folded away, and that no head, register or projection
+//! reads.
+//!
 //! # Visibility, delete, and derived fields
 //!
 //! An entity is projected only once a create has been applied: a `Patch` with
@@ -93,6 +98,7 @@
 
 mod patch;
 mod project;
+mod prune;
 mod register;
 mod rows;
 mod snapshot;
@@ -105,6 +111,11 @@ pub(super) use patch::{
 pub(super) use project::field_default;
 #[cfg(test)]
 pub(super) use project::map_over_whole;
+#[cfg(test)]
+pub(super) use prune::passed;
+pub(super) use prune::{prune_versions, Passage};
+#[cfg(test)]
+pub(super) use versions::Node;
 // The search indexes' rows are the row writers'; `engine::search` builds them
 // from the rows when the layout changes.
 pub(super) use register::{class_of, kept_registers, Member};

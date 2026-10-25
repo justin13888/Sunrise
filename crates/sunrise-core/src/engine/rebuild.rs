@@ -59,9 +59,11 @@
 //!   in the log complete the group again.
 //!
 //! The versions and the register losers of compacted ops are not kept here:
-//! compaction keeps them (ADR-0065 D10), and the base, a `doc_state` v2,
-//! carries them with their frontiers beside the merge state (§8), so they
-//! come back with the join.
+//! compaction keeps every one it has not pruned (ADR-0065 D25), and the
+//! base, a `doc_state` v2, carries them with their frontiers beside the
+//! merge state (§8), so they come back with the join. A version compaction
+//! pruned is read by no op still in the log, so the refold lands on the
+//! frontiers the live tables hold without it.
 //!
 //! # When a rebuild runs on its own
 //!

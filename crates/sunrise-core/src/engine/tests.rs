@@ -19452,6 +19452,10 @@ mod day_schedule;
 /// The version DAG: parents, frontiers and heads (ADR-0065 PR 4).
 mod versions;
 
+/// Pruning the version DAG below what every device has passed (ADR-0065
+/// D25, #581).
+mod prune;
+
 /// Search over every indexed kind, and the indexes' upkeep (issue #345,
 /// ADR-0052).
 mod search;
