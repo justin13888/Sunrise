@@ -5,9 +5,11 @@
 //! the vault's planner days (`sunrise_domain::lateness`), and groups Today
 //! from it. Every enum here is new, so no shipped Swift switches over one.
 
-use crate::dto::TaskItem;
-use sunrise_core::{TaskLateness, TodayRow};
-use sunrise_domain::{Lateness, LatenessState, TodayGroup, TodayRowDeadline};
+use crate::dto::{TaskItem, TimeValue};
+use sunrise_core::{TaskLateness, TodayRow, TriageRow};
+use sunrise_domain::{
+    DeferTarget, Lateness, LatenessState, SunriseTime, TodayGroup, TodayRowDeadline, TriageAction,
+};
 use sunrise_id::EntityRef;
 
 /// See [`sunrise_domain::Lateness`].
@@ -133,6 +135,66 @@ impl From<&TaskLateness> for TaskLatenessItem {
         Self {
             task: r.task,
             lateness: LatenessItem::from(&r.lateness),
+        }
+    }
+}
+
+/// One row of `CoreQuery.triage`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TriageRowItem {
+    /// The task.
+    pub task: TaskItem,
+    /// Why it needs a decision, and since when.
+    pub lateness: LatenessItem,
+}
+
+impl From<&TriageRow> for TriageRowItem {
+    fn from(r: &TriageRow) -> Self {
+        Self {
+            task: TaskItem::from(&r.task),
+            lateness: LatenessItem::from(&r.lateness),
+        }
+    }
+}
+
+/// See [`sunrise_domain::TriageAction`].
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum TriageActionIn {
+    /// Move the plan to `to`, of the kind given, and count the deferral.
+    DeferTo {
+        /// Where to.
+        to: TimeValue,
+    },
+    /// Move the plan to the next free slot, which the core resolves.
+    DeferToNextFreeSlot,
+    /// Done, at this past instant or on this past date.
+    AlreadyDone {
+        /// When the work was done.
+        completed_at: TimeValue,
+    },
+    /// Cancelled, with an optional reason (512 characters at most).
+    Drop {
+        /// Why.
+        reason: Option<String>,
+    },
+    /// Keep as it is until the next lateness transition.
+    Keep,
+}
+
+impl From<TriageActionIn> for TriageAction {
+    fn from(a: TriageActionIn) -> Self {
+        match a {
+            TriageActionIn::DeferTo { to } => Self::Defer {
+                to: DeferTarget::At(SunriseTime::from(to)),
+            },
+            TriageActionIn::DeferToNextFreeSlot => Self::Defer {
+                to: DeferTarget::NextFreeSlot,
+            },
+            TriageActionIn::AlreadyDone { completed_at } => Self::AlreadyDone {
+                completed_at: SunriseTime::from(completed_at),
+            },
+            TriageActionIn::Drop { reason } => Self::Drop { reason },
+            TriageActionIn::Keep => Self::Keep,
         }
     }
 }

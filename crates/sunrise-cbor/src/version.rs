@@ -221,7 +221,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// none needs a feature: an older device keeps writing tasks, and reads a
 /// target-only task as undated until it updates. Every v1..v19 payload shape
 /// is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 20;
+///
+/// `21` adds what the triage queue writes (ADR-0047 §3–§4, issue #335):
+/// `Task.cancel_reason`, a Drop's reason, and `Task.late_acknowledged_at`, a
+/// Keep, both absent when unset. A backdated completion is the
+/// `completed_at` field every build since `DOC_SCHEMA_V` 2 decodes. A v20
+/// build keeps the two new fields as unknown fields and writes them back
+/// unchanged, so neither needs a feature. Every v1..v20 payload shape is
+/// unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 21;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -306,6 +314,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         20,
         hex32("7f0c318d6bb81e2f7d2c755d5271f3c229854133bbe21c1dbcf0a0da24979fc9"),
+    ),
+    (
+        21,
+        hex32("35b2c6020668ba962d8f799f533beebf2c3ee14d0237a05734b6cad8bb50cebe"),
     ),
 ];
 
@@ -641,4 +653,9 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// first `Core::open` after it rebuilds the projection, because the fold's
 /// version moved with it, which moves a target a build before it kept as an
 /// unknown field into its column.
-pub const STORAGE_V: u16 = 45;
+///
+/// `46` is migration `0046_task_triage.sql` (issue #335, ADR-0047 §4):
+/// `tasks.cancel_reason` and `tasks.late_acknowledged_at_ms`, NULL for every
+/// task. The first `Core::open` after it rebuilds the projection, because the
+/// fold's version moved with it.
+pub const STORAGE_V: u16 = 46;

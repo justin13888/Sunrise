@@ -363,6 +363,9 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         // rows before it, as one bulk command when it moved more than one
         // task. An unplaced task goes back to unplaced.
         Command::MoveTasks { ids, .. } => invert_move(state, ids),
+        // A triage action is undone by putting back, per task, what the
+        // action is about to change, as one bulk command (ADR-0047 §4).
+        Command::Triage { ids, action } => invert_triage_action(state, ids, action),
         // Creates land here too, and `Unsupported` is the right answer *from
         // here*: a create is reversible, but the entity to delete does not
         // exist until the core has minted it. See [`invert_create`], which the
@@ -393,6 +396,42 @@ fn invert_move<S: EntityLookup + ?Sized>(
         [one] => one.as_command(),
         _ => Command::BulkTasks(back),
     })
+}
+
+/// The inverse of a triage action: per task, the field the action writes,
+/// as the task held it before. A Defer puts the plan back (the deferral
+/// count stays: it is a counter, and a counter only grows); an Already done
+/// or a Drop puts the state back, which clears the completion or the reason;
+/// a Keep puts the acknowledgement back.
+fn invert_triage_action<S: EntityLookup + ?Sized>(
+    state: &S,
+    ids: &[EntityRef],
+    action: &sunrise_domain::TriageAction,
+) -> Result<Command, NotUndoable> {
+    use sunrise_domain::TriageAction;
+    let mut back = Vec::with_capacity(ids.len());
+    for id in ids.iter().rev() {
+        let t = task(state, *id)?;
+        let patch = match action {
+            TriageAction::Defer { .. } => TaskPatch {
+                planned_at: Some(t.planned_at.clone()),
+                ..TaskPatch::default()
+            },
+            TriageAction::AlreadyDone { .. } | TriageAction::Drop { .. } => TaskPatch {
+                state: Some(restore_state(&t.state)),
+                ..TaskPatch::default()
+            },
+            TriageAction::Keep => TaskPatch {
+                late_acknowledged_at: Some(t.late_acknowledged_at),
+                ..TaskPatch::default()
+            },
+        };
+        back.push(BulkTaskItem {
+            id: *id,
+            action: sunrise_core::BulkTaskAction::Update(Box::new(patch)),
+        });
+    }
+    Ok(Command::BulkTasks(back))
 }
 
 /// The inverse of a saved-view edit: the fields it writes, as the view held
@@ -475,6 +514,7 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
         energy: patch.energy.as_ref().map(|_| t.energy.clone()),
         estimated_duration_s: patch.estimated_duration_s.map(|_| t.estimated_duration_s),
         planned_at: patch.planned_at.as_ref().map(|_| t.planned_at.clone()),
+        late_acknowledged_at: patch.late_acknowledged_at.map(|_| t.late_acknowledged_at),
         target_at: patch.target_at.as_ref().map(|_| t.target_at.clone()),
         hard_due_at: patch.hard_due_at.as_ref().map(|_| t.hard_due_at.clone()),
         scheduling_constraints: patch
@@ -589,6 +629,8 @@ mod tests {
             routine_occurrence: None,
             sort_order: None,
             triaged_at: None,
+            cancel_reason: None,
+            late_acknowledged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),

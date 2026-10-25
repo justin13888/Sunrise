@@ -130,3 +130,70 @@ async fn the_soft_deadline_and_lateness_cross_the_seam() {
     assert!(task(&core, id).await.target_at.is_none());
     assert_eq!(lateness(&core, id).await, LatenessKind::OnTrack);
 }
+
+async fn triage_queue(core: &SunriseCore) -> Vec<EntityRef> {
+    match core.query(CoreQuery::Triage).await.expect("triage") {
+        CoreQueryResult::Triage { rows } => rows.into_iter().map(|r| r.task.id).collect(),
+        other => panic!("expected Triage, got {other:?}"),
+    }
+}
+
+/// The triage queue and its actions across the seam (#335): a late task is
+/// in the queue, a batch with a bad id is refused whole, a drop carries its
+/// reason onto `TaskItem.cancelReason`, and a Keep takes a task out.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_triage_queue_and_its_actions_cross_the_seam() {
+    use sunrise_core_bindings::lateness::TriageActionIn;
+    let (_dir, core) = open_core().await;
+    let now = i64::try_from(core.now_ms()).unwrap();
+    let late = |title: &str| TaskDraftIn {
+        due_at: Some(instant(now - 3_600_000)),
+        ..draft(title)
+    };
+    let a = core
+        .submit(CoreCommand::CreateTask { draft: late("a") })
+        .await
+        .unwrap()
+        .entity;
+    let b = core
+        .submit(CoreCommand::CreateTask { draft: late("b") })
+        .await
+        .unwrap()
+        .entity;
+    let mut queued = triage_queue(&core).await;
+    queued.sort();
+    let mut both = vec![a, b];
+    both.sort();
+    assert_eq!(queued, both);
+
+    let unknown = EntityRef::new(sunrise_id::EntityKind::Task, [0x42; 16]);
+    assert!(core
+        .submit(CoreCommand::Triage {
+            ids: vec![a, unknown],
+            action: TriageActionIn::Keep,
+        })
+        .await
+        .is_err());
+    assert_eq!(triage_queue(&core).await.len(), 2, "nothing was kept");
+
+    core.submit(CoreCommand::Triage {
+        ids: vec![a],
+        action: TriageActionIn::Drop {
+            reason: Some("not mine".into()),
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        task(&core, a).await.cancel_reason.as_deref(),
+        Some("not mine")
+    );
+    core.submit(CoreCommand::Triage {
+        ids: vec![b],
+        action: TriageActionIn::Keep,
+    })
+    .await
+    .unwrap();
+    assert!(task(&core, b).await.late_acknowledged_at.is_some());
+    assert!(triage_queue(&core).await.is_empty());
+}

@@ -33,6 +33,8 @@ pub(crate) fn task(n: u8, stream: u8) -> Task {
         routine_occurrence: None,
         sort_order: None,
         triaged_at: None,
+        cancel_reason: None,
+        late_acknowledged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

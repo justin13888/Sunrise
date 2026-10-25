@@ -285,6 +285,13 @@ decision above.
 | C7 | Capture writes a target from `*target:when*`, and the annotate line from `target:when` and `target:-`, beside `*due:when*` and `due:when`. Upcoming lists a day's soft deadlines in `UpcomingDay.targets`, apart from its hard ones in `due`; a task whose two deadlines fall on one day is listed once, under `due`. The briefs land a task on its plan, else its earlier deadline, each at its start on its planner day (`notify.rs#lands_at`). | The deadline split reaches every view that lists deadlines, and an all-day value no longer lands at civil midnight inside a late night's planner day (#574's leftover). |
 | C8 | Reminders still count back from `planned_at` alone. A deadline reminder (`notifications.md` §2's row 2, `notifications.deadline.*`) is not built: the UniFFI `ReminderKind` is switched over exhaustively by the shipped Swift, so it waits for a Mac pass. | §Consequences: `reminder_lead_s` counts back from `planned_at`. |
 
+| C9 | The queue is `Query::Triage` (`crates/sunrise-core/src/engine/triage.rs`), its rule `sunrise_domain::in_triage` and its order `triage_order`, over every open task's `LatenessState` for the reader now. A stream is paused when `paused` is set and `paused_until` is absent or still ahead (an all-day expiry ends at the start of its planner day). §3's `lapsed_occurrence` clause is not applied: the catch-up rule for occurrences already materialized is not in the tree ([#331](https://github.com/justin13888/Sunrise/issues/331)), so a lapsed occurrence that is late is in the queue until it lands. | The queue must not depend on a rule the tree does not have; the clause joins with #331's catch-up. |
+| C10 | `Command::Triage { ids, action: TriageAction }`, with `DeferTarget::{At, NextFreeSlot}`. `NextFreeSlot` resolves, until the planner (#343) lands, to the next planner day as an **all-day** value of its date, which starts at that day's start (`starts_at`). Each id is checked (a task, present, not deleted, not repeated) and planned through the single command's own path (`plan_defer`, `plan_update`), then the writes and their streak advances are one group (`Engine::commit_task_writes`, shared with `BulkTasks`). `DeferTask`, `CompleteTask` and a cancel through `UpdateTask` stay their own commands rather than being rewritten as one-id triage. | An all-day value is the honest record of "sometime tomorrow" with no slot chosen, and it follows the traveller; an instant at the boundary would be a time nobody picked. Lowering the single commands onto triage would change what an older peer's undo history replays, for no change in what is written. |
+| C11 | Already done takes an `instant` or an `all_day` date (`check_completion`): an instant not after now and not before `created_at`; a date not after the reader's planner today and not before the planner day the task was created on. Any other kind is refused. The routine streak reads the completion's moment, an all-day date from the start of its planner day (`advance_streak_of`'s `done_ms`); the stats read `completed_at` as written. | §4's rules, in the reader's days, as every other time decision is. |
+| C12 | `cancel_reason` and `late_acknowledged_at` are **quiet** registers, absent on the wire when unset, so a peer before `DOC_SCHEMA_V` 21 keeps them as unknown fields and writes them back; no feature is needed. A Drop's reason is trimmed, blank is none, and at most 512 characters. A reader shows the reason only while the task is cancelled (`Task::drop_reason`; the UniFFI `TaskItem.cancelReason` and the CLI's `cancel_reason` are already filtered). `TaskPatch.late_acknowledged_at` exists only for the undo of a Keep. | Two devices dropping one task with two reasons is not a conflict worth surfacing; the drop is the decision. A newer field an older build cannot read is the case `triaged_at` and `target_at` already are. |
+| C13 | Undo of a triage action is one `BulkTasks` putting back, per task, the field the action wrote: the plan (the deferral count stays, as a counter only grows), the state (which clears the completion or the reason), or the acknowledgement. | One undo step per command, as atomic as the write (#575). |
+| C14 | "Nothing is automatic" is held by a test (`engine/tests/triage.rs#nothing_changes_a_task_without_a_command`): every read of the queue and the views, the clock passing 1, 15 and 40 days, a zone change, routine materialization and a rebuild write no task op and leave `state`, `planned_at`, `completed_at` and `late_acknowledged_at` as they were. | §4 asks for the test. |
+
 ## Delivered (2026-10)
 
 [#334](https://github.com/justin13888/Sunrise/issues/334), in one pull request:
@@ -301,7 +308,17 @@ the UniFFI surface (`TaskItem.targetAt`, `TaskDraftIn.targetAt`,
 ([ADR-0065](./0065-copy-on-write-entity-versions.md) §7, D20), and defer kept
 its kind already ([ADR-0066](./0066-times-survive-travel.md) §4).
 
-What is left: the triage queue and its actions (§3, §4,
-[#335](https://github.com/justin13888/Sunrise/issues/335)); a deadline
-reminder (C8); and the Apple client's Today on `CoreQuery.todayView`, its
-editor's target picker and its lateness badges, a Mac pass.
+[#335](https://github.com/justin13888/Sunrise/issues/335), in a second pull
+request: the triage queue (`Query::Triage`, C9) and `Command::Triage` with its
+four actions (C10–C13, `DOC_SCHEMA_V` 21, migration 0046 at `STORAGE_V` 46,
+`FOLD_V` 8), the backdated completion in the stats and the streak, the drop
+reason across sync and an older peer, the no-automation test (C14), the CLI
+(`sunrise triage [list|defer|done|drop|keep]`, `--json`) and the UniFFI
+surface (`CoreQuery.triage`, `CoreCommand.triage`, `TriageActionIn`,
+`TaskItem.cancelReason`/`lateAcknowledgedAt`).
+
+What is left: a deadline reminder (C8); the lapsed-occurrence clause of the
+queue (C9, with #331); `NextFreeSlot` from the planner (#343); and the Apple
+client's Today on `CoreQuery.todayView`, its editor's target picker, its
+lateness badges and its triage list with multi-select, the four actions and
+their key hints (#348), a Mac pass.

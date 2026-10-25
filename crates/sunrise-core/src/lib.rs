@@ -105,7 +105,7 @@ pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, Succe
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,
     PlannerDay, Query, QueryResult, SavedViewResult, SearchGroup, SearchHit, SearchNotice,
-    SearchResults, StreamRow, TaskLateness, TodayRow,
+    SearchResults, StreamRow, TaskLateness, TodayRow, TriageRow,
 };
 /// What [`CoreError::Db`] carries, and the copies of a vault kept beside it
 /// ([`Core::vault_backups`]): named here so a client that branches on why a

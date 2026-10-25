@@ -373,7 +373,8 @@ beside the `planned_at_*` and `hard_due_at_*` columns it renames from
 `scheduled_at_*` and `due_at_*`, where a build before it kept a newer
 device's target in `extra`. The survival check over the old-vault fixtures
 reads a renamed column under its new name (`RENAMED_COLUMNS` in
-`crates/sunrise-storage/src/vault_fixtures.rs`).
+`crates/sunrise-storage/src/vault_fixtures.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
+and `Task.late_acknowledged_at` into the columns migration 0046 adds.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

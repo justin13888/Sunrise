@@ -368,6 +368,11 @@ pub enum Query {
         /// The tasks.
         ids: Vec<EntityRef>,
     },
+    /// The triage queue (ADR-0047 §3): every open task that is `LateHard`,
+    /// `LateSoft` or `Stale` for the reader now, not kept since that state
+    /// began and not in a paused stream, with its lateness, `LateHard` first,
+    /// then `LateSoft`, then `Stale`, each oldest first, then by id.
+    Triage,
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -463,6 +468,18 @@ pub enum QueryResult {
     TodayView(Vec<TodayRow>),
     /// `Lateness` returns one row per task asked for, in that order.
     Lateness(Vec<TaskLateness>),
+    /// `Triage` returns the queue, in its order.
+    Triage(Vec<TriageRow>),
+}
+
+/// One row of [`Query::Triage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TriageRow {
+    /// The task.
+    pub task: Task,
+    /// Its lateness for the reader now: why it needs a decision, and since
+    /// when.
+    pub lateness: sunrise_domain::LatenessState,
 }
 
 /// One row of [`Query::TodayView`].

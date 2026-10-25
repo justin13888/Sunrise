@@ -1225,6 +1225,12 @@
                         {
                             "conflict": "quiet",
                             "crdt": "register",
+                            "name": "cancel_reason",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
                             "name": "completed_at",
                             "type": "Option<SunriseTime>"
                         },
@@ -1275,6 +1281,12 @@
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "late_acknowledged_at",
+                            "type": "Option<Timestamp>"
                         },
                         {
                             "conflict": "quiet",

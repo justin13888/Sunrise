@@ -300,6 +300,8 @@ mod tests {
                 reminder_lead_s: None,
                 sort_order: None,
                 triaged_at: None,
+                cancel_reason: None,
+                late_acknowledged_at: None,
                 archived: false,
                 deleted: false,
                 unknown: Unknowns::new(),
@@ -309,6 +311,8 @@ mod tests {
                 "reminder_lead_s",
                 "sort_order",
                 "triaged_at",
+                "cancel_reason",
+                "late_acknowledged_at",
             ],
         );
         assert_wire_names(

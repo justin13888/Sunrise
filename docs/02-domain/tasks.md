@@ -301,9 +301,14 @@ shape, and each gap is tracked:
   it is given, of any kind (`crates/sunrise-core/src/engine/task.rs#defer_task`,
   [ADR-0066](../11-adr/0066-times-survive-travel.md) §4); `DeferTask` is kept
   beside it for the callers that send epoch milliseconds, the CLI and the
-  UniFFI command, and still writes an `Instant`. `completed_at` can only
-  be "now", and there is no triage queue yet:
-  [#335](https://github.com/justin13888/Sunrise/issues/335).
+  UniFFI command, and still writes an `Instant`. The triage queue is
+  `Query::Triage` and its actions `Command::Triage`
+  (`crates/sunrise-core/src/engine/triage.rs`, `DOC_SCHEMA_V` 21,
+  [#335](https://github.com/justin13888/Sunrise/issues/335)); the queue does
+  not yet leave out a lapsed routine occurrence, whose catch-up rule is
+  [#331](https://github.com/justin13888/Sunrise/issues/331)'s, and a
+  next-free-slot defer is the next planner day until the planner
+  ([#343](https://github.com/justin13888/Sunrise/issues/343)) lands.
 - The whole Task merges as one full-state LWW unit, so `contexts`, `blocked_by`
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).
 - Undo of a delete is `Command::Restore`, a later write of `deleted = false`

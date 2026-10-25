@@ -89,6 +89,8 @@ fn expected_task() -> Task {
         routine_occurrence: Some(ts(T_ROUTINE_OCC)),
         sort_order: None,
         triaged_at: None,
+        cancel_reason: None,
+        late_acknowledged_at: None,
         archived: true,
         deleted: false,
         unknown: Unknowns::new(),

@@ -99,9 +99,7 @@ pub enum Command {
     /// Apply one action to each of several Tasks, all or nothing: the
     /// "bulk is atomic" rule of ADR-0047 §Triage
     /// (`docs/11-adr/0047-deadlines-and-lateness.md`, #335), over the actions
-    /// this build has. ADR-0047's `Command::Triage`, whose backdated
-    /// completion, drop reason and acknowledgement need fields `Task` does
-    /// not have yet, is follow-up work.
+    /// this build has; [`Self::Triage`] is ADR-0047's own four actions.
     ///
     /// Every item is validated against the vault as it stands before any is
     /// written, exactly as the single command it names would be, and one
@@ -111,6 +109,26 @@ pub enum Command {
     /// once per occurrence completed, in the same commit. A task may appear
     /// once; an empty batch is refused.
     BulkTasks(Vec<BulkTaskItem>),
+    /// Apply one triage action to each of several tasks, all or nothing
+    /// (ADR-0047 §4, issue #335): Defer (`planned_at` and one more
+    /// `deferred_count`, to a time or to the next free slot), Already done
+    /// (`done` with a backdated `completed_at`, not after now and not before
+    /// the task was created), Drop (`cancelled`, with an optional reason) or
+    /// Keep (`late_acknowledged_at` set to now, so the task leaves the queue
+    /// until its next lateness transition).
+    ///
+    /// Any selection, not only the queue's. Every id is checked and every
+    /// write planned before any is logged: an empty batch, a repeated,
+    /// unknown or deleted id, or one task the action cannot apply to refuses
+    /// the whole command with nothing written. The writes are one commit
+    /// (ADR-0065 §6), each task with its own per-field ops, and the routine
+    /// streaks a completion advances are in it.
+    Triage {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+        /// What to do to each.
+        action: sunrise_domain::TriageAction,
+    },
     /// Move a Task between Streams. The legacy Inbox reference
     /// ([`sunrise_domain::inbox_stream_ref`]) moves it to no stream.
     PromoteToStream {

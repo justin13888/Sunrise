@@ -245,6 +245,9 @@ pub(super) const SEED: &[SeedRow] = &[
             ("target_at_kind", T(b"all_day")),
             ("target_at_tz", T(b"UTC")),
             ("target_at_civil", T(b"2023-11-15")),
+            // 0046's drop reason and triage Keep.
+            ("cancel_reason", T(b"no longer needed")),
+            ("late_acknowledged_at_ms", I(1_700_000_660_000)),
             ("deferred_count", I(5)),
             ("routine_id", B(&ROUTINE)),
             ("routine_occurrence", I(7)),

@@ -261,6 +261,8 @@ pub enum CoreQuery {
         /// The tasks.
         ids: Vec<EntityRef>,
     },
+    /// The triage queue (ADR-0047 §3), in its order.
+    Triage,
 }
 
 impl CoreQuery {
@@ -374,6 +376,7 @@ impl CoreQuery {
             Self::SavedView { id } => Query::SavedView(id),
             Self::TodayView { now_ms, contexts } => Query::TodayView { now_ms, contexts },
             Self::Lateness { ids } => Query::Lateness { ids },
+            Self::Triage => Query::Triage,
         }
     }
 }
@@ -591,6 +594,11 @@ pub enum CoreQueryResult {
         /// The rows.
         rows: Vec<crate::lateness::TaskLatenessItem>,
     },
+    /// The triage queue, in its order.
+    Triage {
+        /// The rows.
+        rows: Vec<crate::lateness::TriageRowItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -723,6 +731,12 @@ impl CoreQueryResult {
                 rows: rows
                     .iter()
                     .map(crate::lateness::TaskLatenessItem::from)
+                    .collect(),
+            },
+            QueryResult::Triage(rows) => Self::Triage {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TriageRowItem::from)
                     .collect(),
             },
         }

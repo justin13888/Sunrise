@@ -158,6 +158,9 @@ macro_rules! for_each_entity {
                         reminder_lead_s: Option<u32> => Register(Quiet);
                         sort_order: Option<String> => Register(Quiet);
                         triaged_at: Option<Timestamp> => Register(Quiet);
+                        // ADR-0047 §4: the drop reason and the triage Keep.
+                        cancel_reason: Option<String> => Register(Quiet);
+                        late_acknowledged_at: Option<Timestamp> => Register(Quiet);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
                         ..unknown

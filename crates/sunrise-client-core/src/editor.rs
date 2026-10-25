@@ -173,6 +173,7 @@ pub fn task_patch_is_empty(patch: &TaskPatch) -> bool {
         reminder_lead_s,
         archived,
         sort_order,
+        late_acknowledged_at,
     } = patch;
     title.is_none()
         && body.is_none()
@@ -191,6 +192,7 @@ pub fn task_patch_is_empty(patch: &TaskPatch) -> bool {
         && reminder_lead_s.is_none()
         && archived.is_none()
         && sort_order.is_none()
+        && late_acknowledged_at.is_none()
 }
 
 /// The kind a block editor's picker shows for a stored bound.

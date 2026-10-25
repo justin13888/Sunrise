@@ -37,9 +37,10 @@ pub(in crate::engine::merge) fn insert_task_row(
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
           planned_at_civil, hard_due_at_civil, completed_at_civil, sort_order, triaged_at_ms,
-          target_at_ms, target_at_kind, target_at_tz, target_at_civil)
+          target_at_ms, target_at_kind, target_at_tz, target_at_civil,
+          cancel_reason, late_acknowledged_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -84,6 +85,8 @@ pub(in crate::engine::merge) fn insert_task_row(
             target_kind,
             target_tz,
             target_civil,
+            t.cancel_reason,
+            t.late_acknowledged_at.map(|at| at.as_millisecond()),
         ],
     )?;
     Ok(())
@@ -117,6 +120,7 @@ pub(in crate::engine::merge) fn update_task_row(
             completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
             planned_at_civil = ?, hard_due_at_civil = ?, completed_at_civil = ?,
             target_at_ms = ?, target_at_kind = ?, target_at_tz = ?, target_at_civil = ?,
+            cancel_reason = ?, late_acknowledged_at_ms = ?,
             deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?, extra = ?, sort_order = ?,
             triaged_at_ms = ?, updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
@@ -145,6 +149,8 @@ pub(in crate::engine::merge) fn update_task_row(
             target_kind,
             target_tz,
             target_civil,
+            t.cancel_reason,
+            t.late_acknowledged_at.map(|at| at.as_millisecond()),
             t.deferred_count,
             t.reminder_lead_s,
             t.archived as i64,

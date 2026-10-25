@@ -35,6 +35,8 @@ fn task(hard_due_at: Option<SunriseTime>) -> TaskItem {
         reminder_lead_s: None,
         sort_order: None,
         triaged_at: None,
+        cancel_reason: None,
+        late_acknowledged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

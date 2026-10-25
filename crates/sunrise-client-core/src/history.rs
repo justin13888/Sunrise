@@ -167,7 +167,9 @@ fn wanted(cmds: &[Command]) -> Wanted {
             | Command::UpdateTask { id, .. }
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
             Command::BulkTasks(items) => wanted.tasks.extend(items.iter().map(|i| i.id)),
-            Command::MoveTasks { ids, .. } => wanted.tasks.extend(ids.iter().copied()),
+            Command::MoveTasks { ids, .. } | Command::Triage { ids, .. } => {
+                wanted.tasks.extend(ids.iter().copied());
+            }
             Command::UpdateSavedView { id, .. } => wanted.saved_views.push(*id),
             Command::UpdateStream { .. } => wanted.streams = true,
             Command::UpdateContext { .. } => wanted.contexts = true,

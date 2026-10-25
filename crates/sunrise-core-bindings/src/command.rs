@@ -344,6 +344,14 @@ pub enum CoreCommand {
         /// The tasks.
         ids: Vec<EntityRef>,
     },
+    /// One triage action over a selection, all or nothing, as one commit
+    /// (ADR-0047 §4). See [`sunrise_core::Command::Triage`].
+    Triage {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+        /// What to do to each.
+        action: crate::lateness::TriageActionIn,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -516,6 +524,10 @@ impl CoreCommand {
             },
             Self::MarkTriaged { ids } => Command::MarkTriaged { ids },
             Self::ReturnToInbox { ids } => Command::ReturnToInbox { ids },
+            Self::Triage { ids, action } => Command::Triage {
+                ids,
+                action: action.into(),
+            },
         })
     }
 }

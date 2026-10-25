@@ -172,7 +172,8 @@ impl Engine {
         let Some(mut routine) = read_routine(db.conn(), rid.bytes())? else {
             return Ok(None);
         };
-        let Some((key, outcome)) = self.advance_streak_of(&mut routine, task, now_ms) else {
+        let Some((key, outcome)) = self.advance_streak_of(&mut routine, task, now_ms, now_ms)
+        else {
             return Ok(None);
         };
         let on_time = (outcome == StreakOutcome::Incremented).then_some(key);
@@ -188,10 +189,16 @@ impl Engine {
     /// occurrences of one routine applies to it once per occurrence. Returns
     /// the occurrence's key and what the completion did, or `None` when the
     /// streak did not move: an occurrence already counted does not.
+    ///
+    /// `done_ms` is when the work was done, which the grace window reads: now
+    /// for an ordinary completion, the backdated moment for one made with
+    /// `Command::Triage`'s Already done (ADR-0047 §4), so a late click does
+    /// not break a streak the work did not break.
     pub(super) fn advance_streak_of(
         &self,
         routine: &mut Routine,
         task: &Task,
+        done_ms: u64,
         now_ms: u64,
     ) -> Option<(String, StreakOutcome)> {
         let occurrence_at = task.routine_occurrence?;
@@ -205,7 +212,7 @@ impl Engine {
         let due = parse_occurrence_key(&key)
             .and_then(|c| routine.occurrence_instant(c, &reader))
             .unwrap_or(occurrence_at);
-        let outcome = routine.record_occurrence_completion(&key, due, ms_to_ts(now_ms as i64));
+        let outcome = routine.record_occurrence_completion(&key, due, ms_to_ts(done_ms as i64));
         if outcome == StreakOutcome::Duplicate {
             return None;
         }
@@ -809,6 +816,8 @@ fn build_routine_task(
         routine_occurrence: Some(at),
         sort_order: None,
         triaged_at: None,
+        cancel_reason: None,
+        late_acknowledged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

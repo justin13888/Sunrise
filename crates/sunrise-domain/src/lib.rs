@@ -58,6 +58,7 @@ pub mod stream;
 pub mod task;
 pub mod task_order;
 pub mod time;
+pub mod triage;
 pub mod unknown;
 pub mod upcoming;
 pub mod validation;
@@ -176,6 +177,10 @@ pub use stream::{
 };
 pub use task::{OrderingWarning, Task, TaskDraft, TaskPatch, TaskState};
 pub use time::{first_day_of_week, shift_civil_days, CompatTime, SunriseTime, Unresolvable};
+pub use triage::{
+    cancel_reason, check_completion, in_triage, triage_order, CompletionError, DeferTarget,
+    TriageAction, MAX_CANCEL_REASON_LEN,
+};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use upcoming::{
     build_upcoming, is_upcoming_span, upcoming_days, upcoming_planner_days, NoDateGroup, Upcoming,
