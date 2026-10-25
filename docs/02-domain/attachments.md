@@ -211,7 +211,7 @@ until the preview closes. A row shows its thumbnail once it has arrived.
 Attachments are not pre-fetched on sync. Each device pulls on first view,
 verifies and keeps the sealed chunks in its local blob store.
 
-- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:166#AUTO_FETCH_MAX_BYTES`).
+- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:167#AUTO_FETCH_MAX_BYTES`).
   Smaller attachments fetch without asking on first view.
 - Larger attachments show an inline placeholder with file name, size and a
   **Download** button. **Cancel** during transfer aborts and marks the request
