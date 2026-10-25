@@ -34,12 +34,14 @@ pub mod blobs;
 pub mod devices;
 pub mod error;
 pub mod health;
+pub mod identity_chain;
 pub mod key_bundle;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
 pub mod pairing;
 pub mod ratelimit;
+pub mod recovery_blob;
 pub mod signed;
 pub mod snapshots;
 pub mod sync;
@@ -111,7 +113,8 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         .mount(kynos::routes![
             accounts::create,
             accounts::me,
-            accounts::recovery_blob,
+            recovery_blob::recovery_blob,
+            recovery_blob::replace_recovery_blob,
             account_deletion::initiate,
             account_deletion::delete
         ])
@@ -131,6 +134,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         ])
         .mount(kynos::routes![snapshots::pin, snapshots::latest])
         .mount(kynos::routes![key_bundle::pin, key_bundle::latest])
+        .mount(kynos::routes![identity_chain::pin, identity_chain::latest])
         .mount(kynos::routes![
             sync::session,
             sync::subscribe,
@@ -415,6 +419,7 @@ mod tests {
             "/api/v1/accounts",
             "/api/v1/accounts/me",
             "/api/v1/accounts/me/recovery_blob",
+            "/api/v1/accounts/me/identity_chain",
             "/api/v1/devices",
             "/api/v1/devices/{device_id}",
             "/api/v1/devices/push-tokens",

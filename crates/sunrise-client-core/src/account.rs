@@ -180,6 +180,68 @@ pub async fn register_relay_device(
     sunrise_relay_client::register_device(base_url, bearer, device_identity(core, device)).await
 }
 
+/// Why a [`reissue_recovery_code`] did not complete.
+#[derive(Debug, thiserror::Error)]
+pub enum ReissueError {
+    /// This device holds no `ID_D_priv`, so no blob it sealed could open the
+    /// account. Nothing was sent.
+    #[error(
+        "this device does not hold the account's recovery key, so it cannot issue a recovery \
+         code; run this on the device the account was created on or restored to"
+    )]
+    NoRecoveryKey,
+    /// This device no longer signs under the identity in force: a blob it
+    /// sealed would carry a retired identity. Nothing was sent.
+    #[error(
+        "this device no longer speaks for the account's current identity, so a recovery code it \
+         issued would open a retired one; run this on a device that does"
+    )]
+    NotCurrent,
+    /// The blob could not be sealed. Nothing was sent.
+    #[error(transparent)]
+    Seal(#[from] CoreError),
+    /// The relay refused the blob or could not be reached. The code was not
+    /// shown and is gone; the blob in place, if any, is unchanged.
+    #[error("the relay did not take the new recovery blob: {0}")]
+    Relay(sunrise_sync::TransportError),
+}
+
+/// Seal this account's identity under a freshly drawn code, replace the
+/// relay's recovery blob with it, and hand back the code (ADR-0070 §2).
+///
+/// What a rotation that retires the code runs next, and what
+/// `sunrise identity new-code` runs alone. The order is the bootstrap's: the
+/// code is returned only once the relay holds the blob it opens, so a code a
+/// caller shows is always one the relay can serve. The relay keeps a few
+/// bytes of the blob it replaces, so the code that opened that one fails a
+/// recovery with a reason rather than as a mistyped code.
+///
+/// `transport` must carry this device's binding: the relay replaces a blob
+/// only for a registered device of the account.
+///
+/// # Errors
+/// [`ReissueError`].
+pub async fn reissue_recovery_code(
+    core: &Core,
+    rng: &dyn Rng,
+    transport: &mut dyn sunrise_sync::Transport,
+) -> Result<RecoveryCode, ReissueError> {
+    // A device a rotation left behind still holds the identity it was left
+    // at, and a blob of that identity is a code that opens nothing current.
+    match core.query(sunrise_core::Query::IdentityStatus).await? {
+        sunrise_core::QueryResult::Identity(st) if st.this_device_is_current => {}
+        _ => return Err(ReissueError::NotCurrent),
+    }
+    let Some(SealedRecovery { blob, code }) = seal_fresh_recovery(core, rng)? else {
+        return Err(ReissueError::NoRecoveryKey);
+    };
+    transport
+        .recovery_blob_replace(&blob)
+        .await
+        .map_err(ReissueError::Relay)?;
+    Ok(code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

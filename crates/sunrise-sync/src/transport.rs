@@ -106,6 +106,16 @@ pub enum KeyBundlePinned {
     Superseded,
 }
 
+/// What [`Transport::identity_chain_pin`] came to (ADR-0070).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityChainPinned {
+    /// The chain is pinned.
+    Pinned,
+    /// The chain named as replaced is not the one in place: another device
+    /// pinned since it was read. Nothing was written.
+    Superseded,
+}
+
 /// Async wire transport. Both client and server sides implement this.
 ///
 /// Each call sends or receives a complete *frame* — the framing layer in
@@ -263,6 +273,31 @@ pub trait Transport: Send + Sync {
         _manifest_digest: &[u8; 32],
         _replaces: Option<&[u8; 16]>,
     ) -> Result<KeyBundlePinned, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/accounts/me/identity_chain`: the account's pinned identity
+    /// chain record, or `Ok(None)` when the relay holds none (ADR-0070).
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/identity_chain`: pin `chain`, provided the
+    /// record in place is the one whose BLAKE3 digest `replaces` names
+    /// (`None`: no record in place).
+    async fn identity_chain_pin(
+        &mut self,
+        _chain: &[u8],
+        _replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/recovery_blob`: replace the account's sealed
+    /// recovery blob with `blob`. The relay keeps a few bytes of the one it
+    /// replaces, so the code that opened it fails with a reason rather than
+    /// as a mistyped code (ADR-0070).
+    async fn recovery_blob_replace(&mut self, _blob: &[u8]) -> Result<(), TransportError> {
         Err(TransportError::Unsupported)
     }
 }

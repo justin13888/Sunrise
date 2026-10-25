@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use sunrise_client_core::recovery::{
     check_recovery_code, identity_id_from_account, is_recovery_word, recover_account,
-    rejoin_account, restore_identity, DeviceLabel, RecoveringDevice, RecoveryProgress,
-    RecoveryRelay, RelayRefusal, RestoreError,
+    rejoin_account, restore_identity, DeviceLabel, RecoveringDevice, RecoveryMaterial,
+    RecoveryProgress, RecoveryRelay, RelayRefusal, RestoreError, RetiredCode,
 };
 use sunrise_core::{Core, CoreConfig, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
@@ -28,6 +28,7 @@ const SEED: [u8; 32] = [0x5a; 32];
 struct FakeRelay {
     identity_key: Option<String>,
     blob: Result<String, RelayRefusal>,
+    retired: Vec<RetiredCode>,
     register: Result<String, RelayRefusal>,
     calls: AtomicUsize,
     registered: Mutex<Option<RecoveringDevice>>,
@@ -38,6 +39,7 @@ impl FakeRelay {
         Self {
             identity_key: Some(identity_key),
             blob: Ok(blob),
+            retired: Vec::new(),
             register: Ok("01RELAYDEVICE".to_owned()),
             calls: AtomicUsize::new(0),
             registered: Mutex::new(None),
@@ -54,10 +56,14 @@ impl RecoveryRelay for FakeRelay {
         async move { Ok(key) }
     }
 
-    fn recovery_blob(&self) -> impl Future<Output = Result<String, RelayRefusal>> + Send {
+    fn recovery_blob(&self) -> impl Future<Output = Result<RecoveryMaterial, RelayRefusal>> + Send {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let blob = self.blob.clone();
-        async move { blob }
+        let served = self.blob.clone().map(|blob| RecoveryMaterial {
+            blob,
+            identity_chain: None,
+            retired: self.retired.clone(),
+        });
+        async move { served }
     }
 
     fn register_device(
@@ -186,7 +192,8 @@ async fn the_words_restore_the_identity_and_say_so_in_order() {
     let identity = restore_identity(&relay, &code, &mut |p| seen.push(p))
         .await
         .expect("the code opens the blob");
-    assert_eq!(identity.identity_id, identity_id);
+    assert_eq!(identity.payload.identity_id, identity_id);
+    assert!(identity.identity_chain.is_none());
     assert_eq!(
         seen,
         vec![
@@ -362,4 +369,58 @@ fn words_are_checked_one_at_a_time_and_codes_whole() {
     let code = sunrise_crypto::bip39::encode_recovery_code(&SEED);
     check_recovery_code(code.reveal()).expect("a real code");
     assert!(check_recovery_code("abandon abandon").is_err());
+}
+
+/// A code whose blob a rotation replaced fails as retired, with the date the
+/// relay replaced it, and not as a mistyped code; any other well-formed code
+/// still fails as a code (ADR-0070).
+#[tokio::test]
+async fn a_retired_code_is_told_so_and_no_other_code_is() {
+    let (key, blob, code, _) = founded().await;
+    let old_seed = [0x5b; 32];
+    let old_code = sunrise_crypto::bip39::encode_recovery_code(&old_seed);
+    let payload = sunrise_crypto::recovery::RecoveryPayload {
+        id_s_priv: [1; 32],
+        id_d_priv: [2; 32],
+        id_s_pub: [3; 32],
+        id_d_pub: [4; 32],
+        identity_id: [5; 16],
+        created_at_ms: 1,
+        account_id_s_pub: None,
+        meta_genesis_keys: Vec::new(),
+    };
+    let mut rng = <rand_chacha::ChaCha20Rng as rand_core::SeedableRng>::seed_from_u64(3);
+    let old_blob = sunrise_crypto::seal_recovery_blob(&old_seed, &payload, &mut rng).unwrap();
+    let mut relay = FakeRelay::serving(key, blob);
+    relay.retired = vec![RetiredCode {
+        check: sunrise_relay_client::encode_recovery_blob(
+            &old_blob[..sunrise_crypto::RETIRED_CHECK_LEN],
+        ),
+        retired_at_ms: 1_793_000_000_000,
+    }];
+
+    let err = restore_identity(&relay, old_code.reveal(), &mut |_| {})
+        .await
+        .expect_err("a retired code opens nothing");
+    assert!(
+        matches!(
+            err,
+            RestoreError::CodeRetired {
+                retired_at_ms: Some(1_793_000_000_000)
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("retired on 2026-10-26"), "{err}");
+    assert!(!err.vault_written());
+
+    let stranger = sunrise_crypto::bip39::encode_recovery_code(&[0x5c; 32]);
+    let err = restore_identity(&relay, stranger.reveal(), &mut |_| {})
+        .await
+        .expect_err("a stranger's code opens nothing");
+    assert!(matches!(err, RestoreError::Code(_)), "{err:?}");
+
+    restore_identity(&relay, &code, &mut |_| {})
+        .await
+        .expect("the current code still opens the blob");
 }

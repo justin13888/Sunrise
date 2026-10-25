@@ -311,6 +311,8 @@ fn the_frozen_recovery_blob_opens() {
             id_d_pub: r::ID_D_PUB,
             identity_id: r::IDENTITY_ID,
             created_at_ms: r::CREATED_AT_MS,
+            account_id_s_pub: None,
+            meta_genesis_keys: Vec::new(),
         }
     );
 

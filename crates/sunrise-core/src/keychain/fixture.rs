@@ -189,6 +189,8 @@ fn fixture_identity_seed() -> IdentitySeed {
         id_d_pub: id_d.public_bytes(),
         identity_id: identity_id_from_pub(&id_s.public_bytes()),
         created_at_ms: FIXTURE_NOW_MS,
+        account_id_s_pub: None,
+        meta_genesis_keys: Vec::new(),
     }))
 }
 

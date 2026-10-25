@@ -56,19 +56,6 @@ pub struct AccountCreateRequest {
     pub terms_at_ms: u64,
 }
 
-/// `GET /api/v1/accounts/me/recovery_blob` response body.
-///
-/// One field, deliberately: the blob is the whole answer, and the salt and
-/// nonce the client needs to open it are inside it — `magic(5) || salt(16) ||
-/// nonce(24) || ct`, per `docs/03-crypto/recovery.md`. Reporting them
-/// separately would be the server describing a format it does not parse.
-#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryBlobResponse {
-    /// The sealed blob, base64url no-pad, exactly as it was uploaded.
-    pub recovery_blob: String,
-}
-
 /// An account, as this surface reports it.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
@@ -176,71 +163,6 @@ pub async fn me(
     SignedParts(caller): SignedParts,
 ) -> Result<Json<AccountInfo>, ApiError> {
     Ok(Json(info(&state, &caller.principal.account).await?))
-}
-
-/// The calling account's sealed recovery blob.
-///
-/// # Why this route exists
-///
-/// It is the one thing missing between a user who has lost every device and
-/// their data. `POST /api/v1/accounts` stored `recovery_blob` and nothing read
-/// it back — `docs/03-crypto/recovery.md` §Implementation status called it "a
-/// write-only column" — so the recovery flow's step 2 had no route to call and
-/// a recovery code was not usable even once one existed.
-///
-/// # The step-up, and why it is not the email OTP the spec asked for
-///
-/// `recovery.md`:103 specifies a 6-digit email OTP in front of this fetch, and
-/// `docs/00-product/non-goals.md` forbids implementing OTP delivery. #56
-/// resolves the contradiction the way the rest of the product resolves every
-/// authentication question: the IdP performs the ceremony and this server reads
-/// the claims that describe it. The client re-runs its authorization request
-/// with `max_age=0` — or `prompt=login`, or an operator-configured
-/// `acr_values` — and the resulting token carries an `auth_time` this route
-/// checks. [`crate::auth::step_up`] carries the full reasoning, including why
-/// `exp` cannot stand in for `auth_time`.
-///
-/// **An ordinary bearer is refused.** That is the whole point: a stolen session
-/// is exactly an ordinary bearer, and the blob plus a guessable recovery code
-/// is the account.
-///
-/// # `403` rather than `401`
-///
-/// The credential is not wrong; a stronger one is required. A `401` drives a
-/// client's token-refresh path, and a refresh mints a token with the same
-/// `auth_time` — so the client would refresh into the identical refusal
-/// forever, which is precisely the failure `AUTH_DEVICE_SIG_INVALID` exists to
-/// avoid one route away. RFC 9470 defines a `401` with
-/// `insufficient_user_authentication` for this, and this surface's error type
-/// carries no `WWW-Authenticate` parameters to make that answer actionable, so
-/// the code says it instead.
-#[kynos::get("/api/v1/accounts/me/recovery_blob", operation_id = "getRecoveryBlob")]
-pub async fn recovery_blob(
-    Inject(state): Inject<ServerState>,
-    SignedParts(caller): SignedParts,
-) -> Result<Json<RecoveryBlobResponse>, ApiError> {
-    let principal = &caller.principal;
-
-    if let Err(refused) = require_step_up(&state, principal, "the recovery blob") {
-        state.metrics.incr("sunrise_recovery_step_up_refused_total");
-        return Err(refused);
-    }
-
-    let blob = state
-        .store
-        .recovery_blob(&principal.account.account_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                crate::api::error::codes::RECOVERY_BLOB_NOT_FOUND,
-                "this account has no recovery blob".to_owned(),
-            )
-        })?;
-
-    state.metrics.incr("sunrise_recovery_blob_fetch_total");
-    Ok(Json(RecoveryBlobResponse {
-        recovery_blob: blob,
-    }))
 }
 
 /// Refuse a caller whose token does not carry a fresh enough authentication,
@@ -746,5 +668,65 @@ mod tests {
         );
         assert_eq!(res.status, StatusCode::FORBIDDEN);
         let _ = BEARER;
+    }
+
+    /// A device replaces the blob (ADR-0070). The one it replaced comes back
+    /// only as its first 49 bytes, a retired check, on the stepped-up fetch; a
+    /// bearer with no device binding cannot replace it; something that is not
+    /// a sealed blob is refused; and a retry of the blob in place retires
+    /// nothing.
+    #[tokio::test]
+    async fn a_device_replaces_the_blob_and_the_old_one_survives_only_as_a_check() {
+        use base64::Engine as _;
+        const ROUTE: &str = "/api/v1/accounts/me/recovery_blob";
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let sealed = |tag: u8| {
+            let mut b = b"SR\x03\x00\x01".to_vec();
+            b.extend(std::iter::repeat_n(tag, 96));
+            b
+        };
+        let client = client_with_login_age(0);
+        let old = sealed(1);
+        create_account(&client, &b64(&old))
+            .await
+            .assert_status(StatusCode::CREATED);
+        let (device, key) = register_device(&client, 50, "laptop", None).await;
+        let new = sealed(2);
+        let body = serde_json::json!({ "recovery_blob": b64(&new) });
+
+        let res = client.send(Method::PUT, ROUTE, Some(&body)).await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED, "a bearer alone");
+
+        let res = send_signed(&client, "PUT", ROUTE, &device, &key, Some(&body)).await;
+        res.assert_status(StatusCode::OK);
+        assert_eq!(res.json()["retired"], serde_json::json!(true));
+
+        let res = client.send(Method::GET, ROUTE, None).await;
+        res.assert_status(StatusCode::OK);
+        let served = res.json();
+        assert_eq!(served["recovery_blob"], serde_json::json!(b64(&new)));
+        assert_eq!(
+            served["retired"][0]["check"],
+            serde_json::json!(b64(&old[..crate::store::RETIRED_CHECK_LEN])),
+            "the relay keeps the header and four ciphertext bytes, and no more"
+        );
+        assert_eq!(
+            served["retired"][0]["retired_at_ms"],
+            serde_json::json!(T0_MS)
+        );
+        assert!(served.get("identity_chain").is_none());
+
+        let res = send_signed(&client, "PUT", ROUTE, &device, &key, Some(&body)).await;
+        res.assert_status(StatusCode::OK);
+        assert_eq!(
+            res.json()["retired"],
+            serde_json::json!(false),
+            "a retry is not a second replacement"
+        );
+
+        let junk = serde_json::json!({ "recovery_blob": b64(b"SR\x08\x00\x01not a recovery blob, but long enough to pass the length check") });
+        let res = send_signed(&client, "PUT", ROUTE, &device, &key, Some(&junk)).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST);
+        assert_eq!(code_of(&res), VALIDATION_INVALID);
     }
 }

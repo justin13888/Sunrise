@@ -41,7 +41,6 @@ use std::sync::Arc;
 use sunrise_client_core::recovery::{RecoveryProgress, RestoreError};
 use sunrise_core::{Core, CoreConfig, SystemRng};
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_crypto::recovery::RecoveryPayload;
 use sunrise_relay_client::RelayRecovery;
 
 use crate::i18n::strings;
@@ -163,7 +162,7 @@ pub async fn restore_identity(
     base_url: &str,
     bearer: &str,
     code: &str,
-) -> Result<RecoveryPayload, RecoverError> {
+) -> Result<sunrise_client_core::recovery::RestoredIdentity, RecoverError> {
     let relay = relay(base_url, bearer)?;
     Ok(sunrise_client_core::recovery::restore_identity(&relay, code, &mut |_| {}).await?)
 }
@@ -205,7 +204,7 @@ struct Rejoining {
 /// device could not be recorded.
 pub async fn rejoin_account(
     vault_dir: &Path,
-    identity: RecoveryPayload,
+    identity: sunrise_client_core::recovery::RestoredIdentity,
     base_url: &str,
     bearer: &str,
     app: &str,

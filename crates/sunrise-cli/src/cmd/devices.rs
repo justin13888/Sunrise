@@ -248,7 +248,7 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
     Ok(())
 }
 
-/// `identity [status|rotate [--new-recovery-code]]`.
+/// `identity [status|rotate [--keep-code]|new-code]`.
 pub(super) async fn identity(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     let core = ctx.core;
     let verb = rest.first().map_or("status", String::as_str);
@@ -306,11 +306,22 @@ pub(super) async fn identity(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             Ok(())
         }
         "rotate" => {
-            // The flag is phrased as what the user wants to happen — a new
-            // code — rather than as the internal `keep_recovery_code`, which
-            // is a double negative at the one moment a user must not misread
-            // it.
-            let keep = !rest.iter().any(|a| a == "--new-recovery-code");
+            // A new code is the default, because both reasons to rotate — the
+            // code may be in someone else's hands, or `ID_S_priv` was taken
+            // from the device that also holds `ID_D_priv` — are reasons the
+            // old code's holder must not follow the account to the successor
+            // (ADR-0070 §1). `--keep-code` is the deliberate exception, and
+            // `--new-recovery-code` is the default's old explicit spelling.
+            let keep = rest.iter().any(|a| a == "--keep-code");
+            if !keep {
+                // Checked before anything moves: a rotation that retires the
+                // code and cannot issue the next one leaves the account with
+                // no code at all.
+                if !core.holds_identity_key() {
+                    return Err(strings::identity::cannot_seal_code().into());
+                }
+                relay_transport(ctx).await?;
+            }
             core.submit(Command::RotateIdentity {
                 keep_recovery_code: keep,
             })
@@ -328,11 +339,76 @@ pub(super) async fn identity(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             );
             if keep {
                 println!("  {}", strings::identity::code_kept());
-            } else {
-                eprintln!("  {}", strings::identity::code_retired());
+                if std::env::var(sunrise_cli::livesync::ENV_SYNC_URL).is_ok() {
+                    push_rotation(core).await?;
+                }
+                return Ok(());
             }
-            Ok(())
+            // The rotation reaches the relay first, with the chain record and
+            // the key bundle a session publishes before it is `Live`; only
+            // then is the new code's blob worth replacing the old one with.
+            if let Err(e) = push_rotation(core).await {
+                return Err(strings::identity::reissue_failed(&e.to_string()).into());
+            }
+            issue_code(ctx).await
+        }
+        "new-code" => {
+            if !core.holds_identity_key() {
+                return Err(strings::identity::cannot_seal_code().into());
+            }
+            push_rotation(core).await?;
+            issue_code(ctx).await
         }
         other => Err(strings::identity::unknown_subcommand(other).into()),
+    }
+}
+
+/// Wait until this vault's outbox is on the relay and the session is `Live`.
+async fn push_rotation(core: &sunrise_core::Core) -> CmdResult {
+    let waited = sunrise_client_core::sync::wait_until_caught_up(
+        core,
+        super::plumbing::DEADLINE_MS,
+        &mut |_| {},
+    )
+    .await?;
+    waited.map_err(|_| {
+        strings::sync::timed_out(
+            i64::try_from(super::plumbing::DEADLINE_MS / 1000).unwrap_or(i64::MAX),
+        )
+        .into()
+    })
+}
+
+/// A transport to the relay bound to this device, for one account call
+/// outside the sync driver.
+async fn relay_transport(ctx: &Ctx<'_>) -> CmdResult<sunrise_core::BoxTransport> {
+    let needs = || strings::identity::needs_relay(sunrise_cli::livesync::ENV_SYNC_URL);
+    let url = std::env::var(sunrise_cli::livesync::ENV_SYNC_URL).map_err(|_| needs())?;
+    let url = sunrise_cli::livesync::relay_origin(&url)?;
+    let device = std::env::var(sunrise_cli::livesync::ENV_SYNC_DEVICE_ID)
+        .ok()
+        .or_else(|| sunrise_cli::livesync::load_relay_device_id(ctx.vault_dir))
+        .ok_or_else(needs)?;
+    let signer = ctx.shared.device_signer(device);
+    let factory = sunrise_cli::livesync::ws_factory(&url, Some(signer));
+    Ok(factory(ctx.core.sync_credential().read()).await?)
+}
+
+/// Seal a new recovery code, put its blob on the relay, and show the words.
+async fn issue_code(ctx: &Ctx<'_>) -> CmdResult {
+    let mut transport = relay_transport(ctx).await?;
+    match sunrise_client_core::account::reissue_recovery_code(
+        ctx.core,
+        &sunrise_core::SystemRng,
+        transport.as_mut(),
+    )
+    .await
+    {
+        Ok(code) => {
+            eprintln!("  {}", strings::identity::code_retired());
+            super::account::print_recovery_code(&code);
+            Ok(())
+        }
+        Err(e) => Err(strings::identity::reissue_failed(&e.to_string()).into()),
     }
 }

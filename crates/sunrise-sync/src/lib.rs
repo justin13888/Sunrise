@@ -38,6 +38,6 @@ pub use signer::DeviceSigner;
 pub use sse::SseTransport;
 pub use state::SyncState;
 pub use transport::{
-    BlobCommit, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin, Transport,
-    TransportError,
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
+    Transport, TransportError,
 };

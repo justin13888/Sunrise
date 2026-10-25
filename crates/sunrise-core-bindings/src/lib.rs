@@ -261,11 +261,13 @@ pub enum BindingError {
         /// The feature id.
         feature: String,
     },
-    /// A recovery code that is mistyped, or is not this account's.
+    /// A recovery code that is mistyped, or is not this account's, or that an
+    /// identity rotation retired (ADR-0070).
     ///
     /// Raised before anything is written. The client puts the user back in
     /// the 24-word field. The message names a bad word's position and never
-    /// the word.
+    /// the word; for a retired code it says the code was retired and when,
+    /// which is what tells the user to look for the newer one.
     #[error("recovery code: {0}")]
     RecoveryCode(String),
     /// The relay will release the recovery blob only to a fresh sign-in, and

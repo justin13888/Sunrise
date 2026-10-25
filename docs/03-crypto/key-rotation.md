@@ -264,13 +264,23 @@ devices compare to decide they belong together. It lives in
    `identity` row under the new id and re-issues its own cert. It does **not**
    touch `D_S`/`D_D`: those are unchanged by a rotation and their at-rest AAD
    binds to `device_id`, not to `identity_id`.
-6. The recovery code is carried forward by default: the successor's
-   `ID_S_priv || ID_D_priv` is sealed to the **outgoing** `ID_D_pub`, so the
-   user's existing BIP-39 code keeps working. `keep_recovery_code: false` skips
-   it, which is what to use when the *code* is the thing suspected. Revoking the
-   device that holds `ID_D_priv` forces no-carry regardless — the carry share is
-   sealed to the very key being excluded — and the user must be told
-   (`core.identity.recovery_code_invalidated`).
+6. What happens to the recovery code is the one choice
+   ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+   `keep_recovery_code: true` (`sunrise identity rotate --keep-code`, and every
+   revocation) seals the successor's `ID_S_priv || ID_D_priv` to the
+   **outgoing** `ID_D_pub` as well, so the user's existing BIP-39 code keeps
+   working: a vault restored from it walks each rotation's carry share to the
+   identity in force and certifies itself there. That carry reaches every
+   holder of the outgoing `ID_D_priv`, so it is never what to use when one of
+   them is the reason for rotating. `keep_recovery_code: false` (the CLI's
+   default) retires the code: the transition is sealed under a vault-meta epoch
+   minted for it with no identity copy, every Stream then rotates, the rotating
+   device keeps the successor's `ID_D_priv`, and it seals a new recovery blob and
+   replaces the relay's. Revoking the device that holds `ID_D_priv` forces
+   no-carry regardless — the carry share is sealed to the very key being
+   excluded — and the user must be told
+   (`core.identity.recovery_code_invalidated`); `sunrise identity new-code` is
+   how they get a working code back.
 7. When sharing exists, a fresh `share_grant` to every shared peer for every
    Stream. The peer's `ID_D_pub` is unchanged; only the granting identity has
    new keys, so the share signature changes. Nothing implements sharing yet.

@@ -25,8 +25,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, KeyBundlePinned, NewDevice,
-    NewTombstone, PinnedKeyBundle, PinnedSnapshot, Store, StoreError, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, IdentityChainPinned,
+    KeyBundlePinned, NewDevice, NewTombstone, PinnedIdentityChain, PinnedKeyBundle, PinnedSnapshot,
+    RetiredRecoveryBlob, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -108,6 +109,31 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
     ) -> Result<Account, MetadataError>;
     /// [`Store::recovery_blob`].
     async fn recovery_blob(&self, account_id: &str) -> Result<Option<String>, MetadataError>;
+    /// [`Store::replace_recovery_blob`].
+    async fn replace_recovery_blob(
+        &self,
+        account_id: &str,
+        blob: &str,
+        check: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<(), MetadataError>;
+    /// [`Store::retired_recovery_blobs`].
+    async fn retired_recovery_blobs(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<RetiredRecoveryBlob>, MetadataError>;
+    /// [`Store::pin_identity_chain`].
+    async fn pin_identity_chain(
+        &self,
+        account_id: &str,
+        pin: &PinnedIdentityChain,
+        replaces: Option<[u8; 32]>,
+    ) -> Result<IdentityChainPinned, MetadataError>;
+    /// [`Store::pinned_identity_chain`].
+    async fn pinned_identity_chain(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<PinnedIdentityChain>, MetadataError>;
 
     // --- devices and push tokens --------------------------------------------
 
@@ -372,6 +398,37 @@ impl MetadataStore for Store {
     }
     async fn recovery_blob(&self, account_id: &str) -> Result<Option<String>, MetadataError> {
         Ok(Self::recovery_blob(self, account_id)?)
+    }
+    async fn replace_recovery_blob(
+        &self,
+        account_id: &str,
+        blob: &str,
+        check: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<(), MetadataError> {
+        Ok(Self::replace_recovery_blob(
+            self, account_id, blob, check, now_ms,
+        )?)
+    }
+    async fn retired_recovery_blobs(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<RetiredRecoveryBlob>, MetadataError> {
+        Ok(Self::retired_recovery_blobs(self, account_id)?)
+    }
+    async fn pin_identity_chain(
+        &self,
+        account_id: &str,
+        pin: &PinnedIdentityChain,
+        replaces: Option<[u8; 32]>,
+    ) -> Result<IdentityChainPinned, MetadataError> {
+        Ok(Self::pin_identity_chain(self, account_id, pin, replaces)?)
+    }
+    async fn pinned_identity_chain(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<PinnedIdentityChain>, MetadataError> {
+        Ok(Self::pinned_identity_chain(self, account_id)?)
     }
 
     async fn register_device(

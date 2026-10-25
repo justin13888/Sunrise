@@ -14,6 +14,16 @@ same recipient, `ID_D_pub` of the identity in force, which the relay pins
 outside op retention and a recovering device opens with the restored
 `ID_D_priv`. Same recipient, so it reaches nobody the envelopes did not.
 
+**Amended by:** [ADR-0070](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md)
+— after an identity rotation the identity copies sealed before it are sealed
+to an identity the account no longer signs under. A recovery code made before
+the rotation reaches the identity in force only if the rotation carried it
+(the carry share, walked link by link from a chain record the relay keeps
+beside the blob), and then takes those keys from the key bundle sealed to the
+identity in force. A rotation that does not carry the code mints its
+vault-meta epoch and every Stream's next epoch with no copy for the outgoing
+identity, and issues a new code.
+
 **Amends** [`docs/03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md),
 [`key-rotation.md`](../03-crypto/key-rotation.md) and
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this

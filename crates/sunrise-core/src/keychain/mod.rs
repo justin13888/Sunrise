@@ -241,6 +241,10 @@ pub enum KeySource {
     /// Recomputed from the pre-ADR-0024 derivation while adopting a legacy
     /// vault.
     Legacy,
+    /// Carried by a recovery blob re-issued after an identity rotation: the
+    /// vault-meta genesis key, which the successor identity cannot derive
+    /// (ADR-0070). No device delivered it; the code did.
+    Recovery,
 }
 
 impl KeySource {
@@ -251,6 +255,7 @@ impl KeySource {
             Self::Pairing => "pairing",
             Self::Bundle { .. } => "bundle",
             Self::Legacy => "legacy",
+            Self::Recovery => "recovery",
         }
     }
 }
@@ -469,6 +474,48 @@ impl std::fmt::Debug for IdentitySigningKey {
 /// asked for", it carries a boxed source error, and it is not feature-gated.
 pub(crate) fn sqlite_from(err: KeychainError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(err))
+}
+
+/// The fold anchor a vault being created records, and the vault-meta genesis
+/// keys it is handed rather than derives.
+///
+/// A device being paired takes the sponsor's anchor, which is the account's; a
+/// founding, adopting or recovering vault *is* the genesis and says so.
+/// Inferring it from `identity` would be wrong on exactly one path and
+/// silently — a device paired into an account that has already rotated would
+/// record the identity it joined at and fold from a point no peer shares.
+///
+/// A blob re-issued after a rotation carries a successor and names the genesis
+/// beside it (ADR-0070). The genesis is what every other replica folds from,
+/// so it is what this one folds from too; taking the successor as the anchor
+/// would leave every cert issued before the rotation verifying under nothing
+/// on this chain. Such a blob also carries the vault-meta genesis keys,
+/// because the successor's `ID_D_priv` derives a different one, and a vault
+/// that minted its own on its first write would seal that write under a key
+/// no peer holds.
+fn create_anchor(
+    seed: &IdentitySeed,
+    identity: &Identity,
+) -> (([u8; 16], [u8; 32]), Vec<StreamKey>) {
+    match seed {
+        IdentitySeed::Paired(p) => ((p.genesis_identity_id, p.genesis_id_s_pub), Vec::new()),
+        IdentitySeed::Recovered(r) => {
+            let anchor = r.account_id_s_pub.map_or(
+                (identity.identity_id, identity.signing.public_bytes()),
+                |pk| (identity_id_from_pub(&pk), pk),
+            );
+            let meta = r
+                .meta_genesis_keys
+                .iter()
+                .map(|k| StreamKey::from_bytes(*k))
+                .collect();
+            (anchor, meta)
+        }
+        IdentitySeed::Own => (
+            (identity.identity_id, identity.signing.public_bytes()),
+            Vec::new(),
+        ),
+    }
 }
 
 /// [`sqlite_from`] for the common case: a row that exists and does not decode.
@@ -980,18 +1027,8 @@ impl Keychain {
         // was deliberately not given. See [`insert_identity_row`].
         let holds_identity_secret = !matches!(seed, IdentitySeed::Paired(_));
         let minted_by = (holds_identity_secret && write_identity).then_some(&device_id);
-        // The anchor. A device being paired takes the sponsor's, which is the
-        // account's; a founding, adopting or recovering vault *is* the genesis
-        // and says so. Inferring it from `identity` would be wrong on exactly
-        // one path and silently — a device paired into an account that has
-        // already rotated would record the identity it joined at and fold from
-        // a point no peer shares.
-        let genesis = match seed {
-            IdentitySeed::Paired(p) => (p.genesis_identity_id, p.genesis_id_s_pub),
-            IdentitySeed::Own | IdentitySeed::Recovered(_) => {
-                (identity.identity_id, identity.signing.public_bytes())
-            }
-        };
+        // The anchor, and what a re-issued blob hands over: see `create_anchor`.
+        let (genesis, recovered_meta) = create_anchor(seed, &identity);
 
         db.with_tx(|tx| {
             if write_identity {
@@ -1028,6 +1065,18 @@ impl Keychain {
                         now_ms,
                     )?;
                 }
+            }
+            for key in &recovered_meta {
+                insert_stream_key_row(
+                    tx,
+                    &vault_root,
+                    &crate::engine::META_STREAM,
+                    GENESIS_EPOCH,
+                    key,
+                    KeySource::Recovery,
+                    rng,
+                    now_ms,
+                )?;
             }
             // The sponsor's read bound, in the transaction that creates the
             // vault, so no paired vault is ever open without it. Without it a
@@ -1505,6 +1554,28 @@ impl Keychain {
         seed: &[u8; 32],
         rng: &dyn Rng,
     ) -> Result<Vec<u8>, KeychainError> {
+        self.seal_recovery_blob_for(seed, None, rng)
+    }
+
+    /// [`Self::seal_recovery_blob`], for an identity that may not be the
+    /// account's genesis (ADR-0070).
+    ///
+    /// `account` is `Some` when this keychain holds a **successor**: the
+    /// genesis `ID_S_pub`, which the blob's AAD then binds because it is what
+    /// the account record names, and the vault-meta genesis keys, which a
+    /// vault restored from this blob cannot derive from the successor's
+    /// `ID_D_priv`. Without them it would mint a vault-meta genesis of its own
+    /// on its first write, and every peer would park that write for a key
+    /// nobody else holds.
+    ///
+    /// # Errors
+    /// As [`Self::seal_recovery_blob`].
+    pub fn seal_recovery_blob_for(
+        &self,
+        seed: &[u8; 32],
+        account: Option<(&[u8; 32], &[StreamKey])>,
+        rng: &dyn Rng,
+    ) -> Result<Vec<u8>, KeychainError> {
         let state = self.identity.lock();
         let identity = &state.identity;
         let dh = identity
@@ -1525,6 +1596,10 @@ impl Keychain {
             id_d_pub: identity.dh_pub,
             identity_id: identity.identity_id,
             created_at_ms: identity.created_at_ms,
+            account_id_s_pub: account.map(|(pk, _)| *pk),
+            meta_genesis_keys: account
+                .map(|(_, keys)| keys.iter().map(|k| *k.as_bytes()).collect())
+                .unwrap_or_default(),
         };
         // The salt and the nonce come from the core's injected `Rng`, through
         // the same adapter every other seal in this module uses, so the whole
@@ -5666,6 +5741,8 @@ mod tests {
             id_d_pub: id_d.public_bytes(),
             identity_id: identity_id_from_pub(&id_s.public_bytes()),
             created_at_ms: 1_700_000_000_000,
+            account_id_s_pub: None,
+            meta_genesis_keys: Vec::new(),
         };
         assert_eq!(
             payload.identity_id,

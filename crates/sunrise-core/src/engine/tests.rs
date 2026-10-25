@@ -19395,6 +19395,9 @@ mod saved_views;
 /// (ADR-0069, #580).
 mod key_bundle;
 
+/// A recovery code across an identity rotation (ADR-0070, #583).
+mod recovery_rotation;
+
 /// Values `project` derives, the read-time cycle rules, and the history
 /// readers that understand `Patch` (ADR-0065 PR 7).
 mod derived;

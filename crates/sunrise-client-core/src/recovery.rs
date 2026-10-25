@@ -55,13 +55,16 @@ use sunrise_core::{Core, CoreConfig, CoreError, SyncStatus, Unlock};
 use sunrise_crypto::bip39::{decode_recovery_code, Bip39Error};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_crypto::recovery::RecoveryPayload;
-use sunrise_crypto::{unseal_recovery_blob, RecoveryError};
+use sunrise_crypto::{
+    retired_check_matches, unseal_recovery_blob, CarryWalk, IdentityChain, RecoveryError,
+};
 use thiserror::Error;
+use zeroize::Zeroize as _;
 
-pub use sunrise_relay_client::RelayRefusal;
 use sunrise_relay_client::{
     decode_public_key, decode_recovery_blob, DeviceIdentity, PublicKeyError, RelayRecovery,
 };
+pub use sunrise_relay_client::{RecoveryMaterial, RelayRefusal, RetiredCode};
 
 /// Recovery flow errors.
 #[derive(Debug, Error)]
@@ -176,8 +179,9 @@ pub trait RecoveryRelay: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<Option<String>, RelayRefusal>> + Send;
 
-    /// The sealed recovery blob, base64url as the relay serves it.
-    fn recovery_blob(&self) -> impl Future<Output = Result<String, RelayRefusal>> + Send;
+    /// The sealed recovery blob, base64url as the relay serves it, with the
+    /// account's identity chain record and its retired codes (ADR-0070).
+    fn recovery_blob(&self) -> impl Future<Output = Result<RecoveryMaterial, RelayRefusal>> + Send;
 
     /// Register this device on the account and return the id the relay
     /// minted for it.
@@ -192,7 +196,7 @@ impl RecoveryRelay for RelayRecovery {
         RelayRecovery::account_identity_key(self).await
     }
 
-    async fn recovery_blob(&self) -> Result<String, RelayRefusal> {
+    async fn recovery_blob(&self) -> Result<RecoveryMaterial, RelayRefusal> {
         RelayRecovery::recovery_blob(self).await
     }
 
@@ -293,6 +297,26 @@ pub enum RestoreError {
     /// The words are mistyped, or are not this account's code.
     #[error(transparent)]
     Code(#[from] RecoveryFlowError),
+    /// The words were this account's code, and an identity rotation retired
+    /// them (ADR-0070): either the account was given a new code, or a
+    /// rotation it went through could not carry the old one forward.
+    ///
+    /// Distinct from [`RestoreError::Code`] because the advice is: these
+    /// words were right once, there is a newer code, and nothing about them
+    /// can be fixed by retyping. Nothing was restored.
+    #[error(
+        "this recovery code was retired{}: the account's identity was rotated without carrying \
+         it forward, so these words no longer open the account. Use the newer code that rotation \
+         issued, or have a device that still holds the account issue one \
+         (`sunrise identity new-code`)",
+        retired_on(*.retired_at_ms)
+    )]
+    CodeRetired {
+        /// When the relay replaced the blob this code opened, ms since the
+        /// epoch; `None` when the code still opens a blob and a rotation
+        /// after it carried nothing forward.
+        retired_at_ms: Option<u64>,
+    },
     /// The vault could not be opened from the restored identity.
     ///
     /// Not [`RestoreError::vault_written`], even though the open may have
@@ -314,6 +338,37 @@ pub enum RestoreError {
         /// The id the relay minted, which the caller still has to record.
         relay_device_id: String,
     },
+}
+
+/// " on 2026-10-24", or nothing, for [`RestoreError::CodeRetired`].
+fn retired_on(at_ms: Option<u64>) -> String {
+    at_ms
+        .and_then(|ms| jiff::Timestamp::from_millisecond(i64::try_from(ms).ok()?).ok())
+        .map(|t| format!(" on {}", t.strftime("%Y-%m-%d")))
+        .unwrap_or_default()
+}
+
+/// What the 24 words opened, and what the relay keeps that takes it to the
+/// identity in force.
+pub struct RestoredIdentity {
+    /// The identity the blob carried, `ID_D_priv` included.
+    pub payload: RecoveryPayload,
+    /// The account's identity chain record, when the relay holds one that
+    /// verifies from this account's genesis (ADR-0070). [`rejoin_account`]
+    /// seeds the vault with it before anything else reads the relay.
+    pub identity_chain: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for RestoredIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoredIdentity")
+            .field("payload", &self.payload)
+            .field(
+                "identity_chain",
+                &self.identity_chain.as_ref().map(Vec::len),
+            )
+            .finish()
+    }
 }
 
 impl RestoreError {
@@ -389,20 +444,71 @@ pub async fn restore_identity<R: RecoveryRelay>(
     relay: &R,
     code: &str,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
-) -> Result<RecoveryPayload, RestoreError> {
-    let seed = decode_recovery_code(code).map_err(RecoveryFlowError::from)?;
+) -> Result<RestoredIdentity, RestoreError> {
+    let mut seed = decode_recovery_code(code).map_err(RecoveryFlowError::from)?;
 
     let key = relay.account_identity_key().await.map_err(relay_error)?;
     let identity_id = identity_id_from_account(key.as_deref())?;
 
     let served = relay.recovery_blob().await.map_err(relay_error)?;
-    let blob =
-        decode_recovery_blob(&served).map_err(|e| RestoreError::MalformedBlob(e.to_string()))?;
+    let blob = decode_recovery_blob(&served.blob)
+        .map_err(|e| RestoreError::MalformedBlob(e.to_string()))?;
     progress(RecoveryProgress::BlobFetched);
 
-    let identity = recover_identity(&blob, &seed, &identity_id)?;
+    let opened = recover_identity(&blob, &seed, &identity_id);
+    // A code that does not open the blob in place may be one a rotation
+    // replaced. The relay kept a few bytes of each blob it replaced, enough to
+    // say so and too few to open anything.
+    let retired = match &opened {
+        Err(RecoveryFlowError::Crypto(RecoveryError::AuthFailed)) => {
+            retired_at(&served.retired, &seed)
+        }
+        _ => None,
+    };
+    seed.zeroize();
+    if let Some(at) = retired {
+        return Err(RestoreError::CodeRetired {
+            retired_at_ms: Some(at),
+        });
+    }
+    let mut payload = opened?;
+    let identity_chain = served
+        .identity_chain
+        .as_deref()
+        .and_then(|c| decode_recovery_blob(c).ok())
+        .filter(|c| IdentityChain::decode(c).is_ok_and(|chain| chain.verify(&identity_id).is_ok()));
+    // The words opened the blob. Whether they still reach the account is the
+    // chain's to say: a rotation after the blob's identity that carried no
+    // share retired them, and a vault restored from them would be a vault of
+    // an identity nothing the account writes is sealed to.
+    if let Some(chain) = identity_chain
+        .as_deref()
+        .and_then(|c| IdentityChain::decode(c).ok())
+    {
+        if let CarryWalk::Retired { .. } =
+            chain.carry_walk(&payload.identity_id, &payload.id_d_priv)
+        {
+            payload.zeroize();
+            return Err(RestoreError::CodeRetired {
+                retired_at_ms: None,
+            });
+        }
+    }
     progress(RecoveryProgress::IdentityOpened);
-    Ok(identity)
+    Ok(RestoredIdentity {
+        payload,
+        identity_chain,
+    })
+}
+
+/// When the blob `seed` opened was retired, if one of `retired` is its.
+fn retired_at(retired: &[RetiredCode], seed: &[u8; 32]) -> Option<u64> {
+    retired.iter().find_map(|r| {
+        let check = decode_recovery_blob(&r.check).ok()?;
+        retired_check_matches(&check, seed)
+            .ok()?
+            .then_some(r.retired_at_ms)
+    })
 }
 
 /// §Recovery flow steps 6 and 8: open a vault from the restored identity,
@@ -437,23 +543,38 @@ pub async fn rejoin_account<R: RecoveryRelay>(
     relay: &R,
     cfg: CoreConfig,
     root: VaultRootKey,
-    identity: RecoveryPayload,
+    identity: RestoredIdentity,
     device: DeviceLabel,
     start_sync: SyncStarter<'_>,
     catch_up_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<Recovered, RestoreError> {
-    let identity_id = crate::ids::hex_id(&identity.identity_id);
+    let RestoredIdentity {
+        payload,
+        identity_chain,
+    } = identity;
+    let identity_id = crate::ids::hex_id(&payload.account_identity_id());
     let core = Arc::new(
         Core::open(
             cfg,
             Unlock::RecoveryCode {
                 root,
-                identity: Box::new(identity),
+                identity: Box::new(payload),
             },
         )
         .await?,
     );
+    // Before the registration and before sync: the device this vault registers
+    // and publishes is the one certified under the identity the chain ends at,
+    // and every cert, record and bundle the replay brings verifies only under
+    // an identity this vault can reach (ADR-0070). The record already
+    // verified from this account's genesis, so a refusal here is storage.
+    if let Some(chain) = identity_chain {
+        if let Err(e) = core.seed_identity_chain(&chain) {
+            core.shutdown().await;
+            return Err(RestoreError::Core(e));
+        }
+    }
 
     // Step 6, second half: publish this device to the account. A registration
     // and not an account creation: the account exists, its identity keys are
@@ -586,140 +707,4 @@ async fn wait_until_live(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rand_chacha::ChaCha20Rng;
-    use rand_core::SeedableRng;
-    use sunrise_crypto::seal_recovery_blob;
-
-    /// The registration a recovery sends names the vault id in Crockford
-    /// base-32 and carries the cert, so a sibling can revoke and inspect it.
-    #[test]
-    fn a_recovering_device_registers_its_vault_id_and_cert() {
-        let id = recovering_identity(RecoveringDevice {
-            device_pub_s: [7u8; 32],
-            device_cert: vec![1, 2, 3],
-            vault_device_id: [0u8; 16],
-            nickname: "n".into(),
-            platform: "linux".into(),
-            app_version: Some("1".into()),
-        });
-        assert_eq!(id.device_pub_s, [7u8; 32]);
-        assert_eq!(id.device_cert.as_deref(), Some("AQID"));
-        assert_eq!(
-            id.vault_device_id.as_deref(),
-            Some("00000000000000000000000000")
-        );
-        assert!(id.device_pub_d.is_none());
-        assert_eq!((id.nickname.as_str(), id.platform.as_str()), ("n", "linux"));
-    }
-
-    fn status(applied: u64, remaining: Option<u64>) -> SyncStatus {
-        SyncStatus {
-            state: sunrise_sync::SyncState::CatchingUp,
-            outbox_pending: 0,
-            peer_devices: 0,
-            last_sync_ms: None,
-            replay_applied: applied,
-            replay_remaining: remaining,
-        }
-    }
-
-    /// #459: n of N where the relay states what is left, n alone where it
-    /// does not.
-    #[test]
-    fn a_replay_reports_a_total_only_where_the_relay_states_one() {
-        assert_eq!(
-            replay_progress(&status(3, Some(7))),
-            RecoveryProgress::Replaying {
-                applied: 3,
-                total: Some(10)
-            }
-        );
-        assert_eq!(
-            replay_progress(&status(10, Some(0))),
-            RecoveryProgress::Replaying {
-                applied: 10,
-                total: Some(10)
-            }
-        );
-        assert_eq!(
-            replay_progress(&status(3, None)),
-            RecoveryProgress::Replaying {
-                applied: 3,
-                total: None
-            }
-        );
-    }
-
-    #[test]
-    fn round_trip() {
-        let mut rng = ChaCha20Rng::seed_from_u64(7);
-        let seed = [9u8; 32];
-        let payload = RecoveryPayload {
-            id_s_priv: [1u8; 32],
-            id_d_priv: [2u8; 32],
-            id_s_pub: [3u8; 32],
-            id_d_pub: [4u8; 32],
-            identity_id: [5u8; 16],
-            created_at_ms: 1,
-        };
-        let blob = seal_recovery_blob(&seed, &payload, &mut rng).unwrap();
-        let back = recover_identity(&blob, &seed, &payload.identity_id).unwrap();
-        assert_eq!(back, payload);
-    }
-
-    /// The flow a user actually runs: twenty-four words in, identity out.
-    #[test]
-    fn a_typed_recovery_code_restores_the_identity() {
-        let mut rng = ChaCha20Rng::seed_from_u64(11);
-        let seed = [0x2bu8; 32];
-        let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-        let payload = RecoveryPayload {
-            id_s_priv: [1u8; 32],
-            id_d_priv: [2u8; 32],
-            id_s_pub: [3u8; 32],
-            id_d_pub: [4u8; 32],
-            identity_id: [5u8; 16],
-            created_at_ms: 1,
-        };
-        let blob = seal_recovery_blob(&seed, &payload, &mut rng).unwrap();
-
-        let back = recover_identity_from_code(&blob, code.reveal(), &payload.identity_id).unwrap();
-        assert_eq!(back, payload);
-    }
-
-    /// A mistyped word is refused before Argon2id runs, and is reported as a
-    /// code failure rather than as a decryption failure — the user's next
-    /// action is "check what you typed", not "find another code".
-    #[test]
-    fn a_mistyped_code_is_refused_as_a_code() {
-        let mut rng = ChaCha20Rng::seed_from_u64(12);
-        let seed = [0x2cu8; 32];
-        let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-        let payload = RecoveryPayload {
-            id_s_priv: [1u8; 32],
-            id_d_priv: [2u8; 32],
-            id_s_pub: [3u8; 32],
-            id_d_pub: [4u8; 32],
-            identity_id: [6u8; 16],
-            created_at_ms: 1,
-        };
-        let blob = seal_recovery_blob(&seed, &payload, &mut rng).unwrap();
-
-        let mut words: Vec<&str> = code.reveal().split(' ').collect();
-        words.pop();
-        assert!(matches!(
-            recover_identity_from_code(&blob, &words.join(" "), &payload.identity_id),
-            Err(RecoveryFlowError::Code(_))
-        ));
-
-        // And a well-formed code for another account fails the AEAD, which is
-        // the other half: the two errors must not collapse.
-        let other = sunrise_crypto::bip39::encode_recovery_code(&[0x2du8; 32]);
-        assert!(matches!(
-            recover_identity_from_code(&blob, other.reveal(), &payload.identity_id),
-            Err(RecoveryFlowError::Crypto(_))
-        ));
-    }
-}
+mod tests;

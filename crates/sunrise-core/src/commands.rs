@@ -328,17 +328,25 @@ pub enum Command {
     /// Every current, unrevoked device is in the new roster and receives a
     /// share, so nobody is excluded and nothing needs re-pairing.
     ///
-    /// Stream keys are **not** rotated by this. An attacker holding the
-    /// identity key can forge ops going forward; they cannot read content
-    /// unless they also hold a Stream key. A user who wants both runs this and
-    /// then rotates the streams.
+    /// What it does to the recovery code is the one choice, and ADR-0070
+    /// records it:
     ///
-    /// `keep_recovery_code` asks for the successor to be sealed to the outgoing
-    /// `ID_D_pub`, so the user's existing BIP-39 code keeps working. Pass
-    /// `false` when the reason for rotating is that the *recovery code* is the
-    /// thing suspected — carrying the successor forward under a compromised key
-    /// would hand the attacker the new identity, which is the one way this
-    /// command can be worse than doing nothing.
+    /// - **`keep_recovery_code: true`** seals the successor to the outgoing
+    ///   `ID_D_pub` as well (the carry share), so the user's existing BIP-39
+    ///   code keeps working: a vault restored from it walks each rotation's
+    ///   carry share to the identity in force and certifies itself there.
+    ///   Stream keys are **not** rotated. The carry reaches **every** holder
+    ///   of the outgoing `ID_D_priv` — the creator, every device restored from
+    ///   the code, whoever else holds the code — so it is never what to use
+    ///   when one of them is the reason for rotating.
+    /// - **`keep_recovery_code: false`** retires the code. No carry share; the
+    ///   vault-meta epoch the transition is sealed under is minted first and
+    ///   sealed to the devices alone, so no holder of the old code can seal a
+    ///   competing transition above it; then every Stream rotates, so the
+    ///   epochs written from now on are not ones the old identity holds. The
+    ///   rotating device keeps the successor's `ID_D_priv` and is expected to
+    ///   seal a new recovery blob (`Core::seal_recovery_blob`) and replace the
+    ///   relay's, which is what `sunrise identity rotate` does.
     RotateIdentity {
         /// Seal the successor to the outgoing `ID_D_pub` so the existing
         /// recovery code still opens the account.

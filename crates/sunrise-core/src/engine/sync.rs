@@ -1519,6 +1519,43 @@ impl Engine {
                         &shares_digest[..],
                     ],
                 )?;
+                // A row seeded from the account's identity chain (ADR-0070)
+                // carries no roster and a rank the relay could have restated.
+                // The op is the transition itself, so it replaces both — on
+                // the same signed body only, which the digests and signatures
+                // in the `WHERE` pin.
+                let stored: Option<Vec<u8>> = tx
+                    .query_row(
+                        "SELECT payload FROM identity_transitions WHERE to_identity_id = ?",
+                        params![&p.to_identity_id[..]],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if !p.roster.is_empty()
+                    && stored
+                        .as_deref()
+                        .is_some_and(super::identity_chain::is_seeded_payload)
+                {
+                    tx.execute(
+                        "UPDATE identity_transitions
+                         SET payload = ?, meta_epoch = ?, hlc_physical_ms = ?,
+                             hlc_logical = ?, emitter_device_id = ?
+                         WHERE to_identity_id = ? AND roster_digest = ?
+                           AND shares_digest = ? AND prev_sig = ? AND next_sig = ?",
+                        params![
+                            payload,
+                            meta_epoch,
+                            hlc_physical_ms_i64,
+                            hlc.logical,
+                            &sender[..],
+                            &p.to_identity_id[..],
+                            &roster_digest[..],
+                            &shares_digest[..],
+                            &p.prev_sig[..],
+                            &p.next_sig[..],
+                        ],
+                    )?;
+                }
                 // This row may have established identities the chain could not
                 // reach a moment ago — the ordinary shape of a replica catching
                 // up, and the one that has to converge: every successor stored

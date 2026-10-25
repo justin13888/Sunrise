@@ -423,6 +423,52 @@ plaintext = [* [bstr .size 16, uint, bstr .size 32]]  ; (stream_id, epoch, key),
   manifest entry for entry.
 - **Bounds**: at most 65,536 keys and 8 MiB; an absorbed epoch at most 2^24.
 
+## Identity chain record
+
+The account's identity chain, as the relay keeps it beside the recovery blob
+([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)): what takes a
+recovery code made before an identity rotation to the identity in force once the
+relay has trimmed the transition ops. Implemented in
+`crates/sunrise-crypto/src/identity_chain.rs`.
+
+```cddl
+IdentityChain = magic("SR", 0x09, u16be 1) || canonical-CBOR {
+    1: bstr .size 32,          ; genesis_id_s_pub
+    2: [* Link],               ; genesis first; a link's predecessor is the one before it
+}
+
+Link = [
+    bstr .size 16,             ; to_identity_id
+    bstr .size 32,             ; to_id_s_pub
+    bstr .size 32,             ; to_id_d_pub
+    bstr .size 32,             ; roster_digest
+    bstr .size 32,             ; shares_digest
+    bstr .size 64,             ; prev_sig
+    bstr .size 64,             ; next_sig
+    uint,                      ; meta_epoch       (the op's; unsigned here)
+    uint,                      ; hlc_physical_ms  (the op's; unsigned here)
+    uint,                      ; hlc_logical      (the op's; unsigned here)
+    bstr .size 16,             ; emitter_device_id (the op's; unsigned here)
+    bstr .size 112 / null,     ; the carry share, HPKE to the predecessor's ID_D_pub
+]
+```
+
+- **A link verifies as the transition does**: the body is
+  `{from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
+  shares_digest}` with `from_identity_id` the predecessor's id, under
+  [`key-rotation.md`](./key-rotation.md) §Identity rotation's two signatures.
+- **A carry share** is the transition's `identity_share`, unchanged:
+  `info = "sunrise.identity_carry.v1" || to_identity_id`, plaintext
+  `ID_S_priv || ID_D_priv` of the successor, checked against `to_id_s_pub` and
+  `to_id_d_pub` once opened.
+- **No roster.** The relay reads this record; a roster names devices.
+- **Bounds**: at most 4,096 links and 2 MiB. Every field present, none unknown.
+
+A recovery blob of a successor identity carries, within format version 1, two
+more payload fields: `7: bstr .size 32` (the genesis `ID_S_pub`, whose id the
+AAD then binds) and `8: [* bstr .size 32]` (the vault-meta genesis keys). See
+[`recovery.md`](./recovery.md) §Versioning and previous-blob retention.
+
 ## Maximum sizes
 
 - Inner Op (post-CBOR): 1 MiB. Larger user content goes through the blob path.

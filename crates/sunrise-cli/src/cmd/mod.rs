@@ -46,6 +46,9 @@ pub(crate) type CmdResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 pub(crate) struct Ctx<'a> {
     /// The open vault.
     pub(crate) core: &'a Core,
+    /// The same vault, shared: what a signed relay call outside the sync
+    /// driver binds to (`identity rotate`, `identity new-code`).
+    pub(crate) shared: &'a std::sync::Arc<Core>,
     /// Its directory.
     pub(crate) vault_dir: &'a Path,
     /// This vault's undo history, read at open and written back at exit.
