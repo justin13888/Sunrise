@@ -100,8 +100,8 @@ dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
 `split_from` are additive in the same way.
 
 **Status in the tree.** None of the eight exists yet: `Block` has the base
-fields only (`crates/sunrise-domain/src/block.rs#Block`), and `stream_id` is
-still required. [#342](https://github.com/justin13888/Sunrise/issues/342) and [#332](https://github.com/justin13888/Sunrise/issues/332) track them.
+fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
+optional ([#332](https://github.com/justin13888/Sunrise/issues/332)). [#342](https://github.com/justin13888/Sunrise/issues/342) tracks them.
 
 Two notes against earlier revisions of this spec:
 

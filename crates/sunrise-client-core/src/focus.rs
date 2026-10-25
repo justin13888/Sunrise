@@ -28,7 +28,9 @@ pub fn scope(picked: impl IntoIterator<Item = EntityRef>) -> Option<BTreeSet<Ent
     (!set.is_empty()).then_some(set)
 }
 
-/// Whether a row filed in `stream` is shown, or its reminder fires.
+/// Whether a row filed in `stream` is shown, or its reminder fires. A row
+/// that belongs to no stream is filed under the legacy Inbox reference
+/// ([`sunrise_domain::stream_key`]), so a scope that picks it shows them.
 ///
 /// An unknown stream is let through: a reminder whose entity could not be
 /// read would otherwise be dropped over a failed read, and a reminder that
@@ -49,7 +51,7 @@ pub fn scoping(tasks: Vec<Task>, scope: Option<&BTreeSet<EntityRef>>) -> Vec<Tas
     }
     tasks
         .into_iter()
-        .filter(|t| allows(Some(t.stream_id), scope))
+        .filter(|t| allows(Some(sunrise_domain::stream_key(t.stream_id)), scope))
         .collect()
 }
 

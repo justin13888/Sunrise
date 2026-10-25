@@ -15,7 +15,7 @@ use super::META_STREAM;
 use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
-use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_domain::PRIVATE_DOMAIN_BYTES;
 use sunrise_id::registry::Merge;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -118,7 +118,7 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 }
 
 /// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
-/// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
+/// shared with the vault-meta stream — at [`PRIVATE_DOMAIN_BYTES`].
 ///
 /// Migration 0017 does exactly this to the local tables of a vault that
 /// upgrades. It cannot do it to the already-signed envelopes in `ops`, which
@@ -141,24 +141,16 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// stream at `[0u8; 16]` is naming it correctly and is left alone.
 ///
 /// Delete at 1.0, with the rest of the 0017 legacy path.
+///
+/// A task, block or routine template's `stream_id` needs nothing here: the
+/// zero id is a spelling of "no stream" its decoder already reads as `None`
+/// ([`sunrise_domain::inbox::wire`], ADR-0046 §5). A focus session's stream is
+/// a routing record, not a home, and is re-pointed at the private domain.
 pub(super) fn remap_legacy_inbox(inner: &mut InnerOp) {
-    fn fix(r: &mut EntityRef) {
-        if r.bytes() == &META_STREAM {
-            *r = EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES);
+    if let InnerOp::FocusStart(f) = inner {
+        if f.stream_id.bytes() == &META_STREAM {
+            f.stream_id = EntityRef::new(EntityKind::Stream, PRIVATE_DOMAIN_BYTES);
         }
-    }
-    match inner {
-        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) | InnerOp::TaskDelete(t) => {
-            fix(&mut t.stream_id);
-        }
-        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) | InnerOp::RoutineDelete(r) => {
-            fix(&mut r.template.stream_id);
-        }
-        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
-            fix(&mut b.stream_id);
-        }
-        InnerOp::FocusStart(f) => fix(&mut f.stream_id),
-        _ => {}
     }
 }
 

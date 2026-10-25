@@ -407,7 +407,7 @@ mod tests {
             updated_at: ts(T0),
             template: TaskTemplate {
                 title: "Stretch".into(),
-                stream_id: EntityRef::new(EntityKind::Stream, [2u8; 16]),
+                stream_id: Some(EntityRef::new(EntityKind::Stream, [2u8; 16])),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,

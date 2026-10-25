@@ -202,7 +202,7 @@ pub fn routine_editor_form(routine: RoutineItem) -> RoutineEditorForm {
     let form = editor::routine_form(&routine_fields(routine));
     RoutineEditorForm {
         title: form.title,
-        stream_id: form.stream_id,
+        stream_id: sunrise_domain::stream_key(form.stream_id),
         priority: form.priority,
         energy: form.energy,
         estimated_duration_s: form.estimated_duration_s,
@@ -243,7 +243,8 @@ pub fn routine_editor_edit(
     };
     let form = editor::RoutineForm {
         title: form.title,
-        stream_id: form.stream_id,
+        // The legacy Inbox id means no stream (ADR-0046 §5).
+        stream_id: sunrise_domain::home_stream(Some(form.stream_id)),
         priority: form.priority,
         energy: form.energy,
         estimated_duration_s: form.estimated_duration_s,
@@ -423,7 +424,7 @@ pub(crate) fn block_edit(patch: BlockPatch) -> BlockEdit {
         set_title,
         clear_title,
         title_track_task: patch.title_track_task,
-        stream_id: patch.stream_id,
+        stream_id: patch.stream_id.map(sunrise_domain::stream_key),
     }
 }
 

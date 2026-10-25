@@ -197,7 +197,20 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// this one does. A v17 build lacks the feature, so it stops writing entities
 /// in a vault that requires it and goes on applying what it receives. Every
 /// v1..v17 payload shape is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 18;
+///
+/// `19` makes a stream optional (ADR-0046, issue #332). `Task.stream_id`,
+/// `Block.stream_id` and `TaskTemplate.stream_id` become `Option`s; "no
+/// stream" is still written as the legacy Inbox reference every older build
+/// reads as its Inbox, and that reference reads back as no stream, so the
+/// wire shape of the three fields does not change. `Task` gains `triaged_at`
+/// and `Stream` gains `rehomed_to`, both optional and absent when unset, and
+/// `ViewFilter` gains `no_stream`, absent when false. A v18 build keeps all
+/// three as unknown fields and writes them back unchanged, so none needs a
+/// feature: an older device keeps writing tasks, reads a stream-less task as
+/// an Inbox task, and reads a re-homed stream's late dependents in the
+/// deleted stream until it updates. Every v1..v18 payload shape is
+/// unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 19;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -274,6 +287,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         18,
         hex32("4093cc32794e193cf86235c9d79e31437b4e46f694f9b419e7f9414845617015"),
+    ),
+    (
+        19,
+        hex32("46ee3fe735d8a27674e96e7ea8962031c544c790aba22921c260dca4afee084e"),
     ),
 ];
 
@@ -592,4 +609,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// projection of the `SavedView` entity, empty. Schema-only: no build before
 /// it folded a saved-view op, and one it parked replays through the full
 /// apply path at the first open of this build, which changes `DOC_SCHEMA_V`.
-pub const STORAGE_V: u16 = 43;
+///
+/// `44` is migration `0044_optional_stream.sql` (issue #332, ADR-0046): the
+/// `stream_id` of `tasks`, `blocks` and `routines` becomes nullable, without
+/// its foreign key, and every value naming the old Inbox sentinel becomes
+/// NULL; the sentinel's synthetic `streams` row is deleted; `tasks` gains
+/// `triaged_at_ms` and `streams` gains `rehomed_to`. The three tables are
+/// rebuilt to drop the constraints, their bindings carried across. The first
+/// `Core::open` after it rebuilds the projection, because the fold's version
+/// moved with it.
+pub const STORAGE_V: u16 = 44;

@@ -324,7 +324,7 @@ mod tests {
             id: eref(sunrise_id::EntityKind::Block, n),
             created_at: Timestamp::UNIX_EPOCH,
             updated_at: Timestamp::UNIX_EPOCH,
-            stream_id: sunrise_domain::inbox_stream_ref(),
+            stream_id: None,
             starts_at: SunriseTime::Instant {
                 at: instant_at(from_ms),
             },

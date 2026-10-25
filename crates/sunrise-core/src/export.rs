@@ -147,8 +147,9 @@ pub struct Manifest {
     /// The reader's zone the export was taken in. Informational: no file
     /// depends on it, because every time keeps its own kind.
     pub zone: String,
-    /// The Inbox's stream id: a task whose `stream_id` is this one is in the
-    /// Inbox, which has no row of its own in `entities/stream.jsonl`.
+    /// The id a record's `stream_id` holds when it belongs to no stream
+    /// (ADR-0046 §5): the private key domain's, once the Inbox sentinel's. It
+    /// has no row in `entities/stream.jsonl`, since it is not a stream.
     pub inbox_stream: String,
     /// Every file written except this one, by path.
     pub files: Vec<ManifestFile>,

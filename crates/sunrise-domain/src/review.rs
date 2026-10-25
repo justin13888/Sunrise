@@ -154,7 +154,9 @@ pub struct ReviewTotals {
 pub struct WeeklyReview {
     /// The window under review.
     pub window: ReviewWindow,
-    /// Step 1 — per-Stream summaries, ordered by stream id.
+    /// Step 1 — per-Stream summaries, ordered by stream id. The work that
+    /// belongs to no stream is one more, unnamed, under the legacy Inbox
+    /// reference ([`crate::inbox::stream_key`]), which sorts first.
     pub streams: Vec<StreamReview>,
     /// Step 2 — untriaged inbox items, oldest first.
     pub inbox: Vec<Task>,
@@ -272,15 +274,21 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
     let focus_by_stream: BTreeMap<EntityRef, &StreamFocus> =
         focus.per_stream.iter().map(|f| (f.stream, f)).collect();
 
-    let mut stream_reviews: Vec<StreamReview> = streams
+    // Each live stream, and the work that belongs to no stream as a bucket
+    // of its own (ADR-0046 §Consequences), keyed by the legacy Inbox
+    // reference and unnamed: a client labels it.
+    let buckets = streams
         .iter()
         .filter(|s| !s.archived && !s.paused)
-        .map(|s| {
+        .map(|s| (Some(s.id), s.id, s.name.clone()))
+        .chain(std::iter::once((None, inbox_stream_ref(), String::new())));
+    let mut stream_reviews: Vec<StreamReview> = buckets
+        .map(|(home, key, name)| {
             let pick = |ids: &BTreeSet<EntityRef>| -> Vec<Task> {
                 let mut v: Vec<Task> = ids
                     .iter()
                     .filter_map(|id| by_id.get(id).copied())
-                    .filter(|t| t.stream_id == s.id && !t.deleted)
+                    .filter(|t| t.stream_id == home && !t.deleted)
                     .cloned()
                     .collect();
                 v.sort_by_key(|t| (t.created_at, t.id));
@@ -289,8 +297,8 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
             let created_untouched: BTreeSet<EntityRef> =
                 created_ids.difference(&touched_ids).copied().collect();
             StreamReview {
-                stream: s.id,
-                name: s.name.clone(),
+                stream: key,
+                name,
                 completed: pick(&completed_ids),
                 // "Deferred ≥ 1 time" — the event says it happened this week,
                 // the counter confirms the task still carries the deferral.
@@ -299,22 +307,26 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
                     .filter(|t| t.deferred_count >= 1)
                     .collect(),
                 created_untouched: pick(&created_untouched),
-                focus: focus_by_stream.get(&s.id).map(|f| (*f).clone()),
-                trend: trends.for_stream(s.id).unwrap_or_default().to_vec(),
+                focus: focus_by_stream.get(&key).map(|f| (*f).clone()),
+                trend: trends.for_stream(key).unwrap_or_default().to_vec(),
             }
+        })
+        // The no-stream bucket is reviewed when it holds something to say.
+        .filter(|r| {
+            r.stream != inbox_stream_ref()
+                || !(r.completed.is_empty()
+                    && r.deferred.is_empty()
+                    && r.created_untouched.is_empty()
+                    && r.focus.is_none()
+                    && r.trend.is_empty())
         })
         .collect();
     stream_reviews.sort_by_key(|s| s.stream);
 
-    let inbox_id = inbox_stream_ref();
+    // The Inbox view (ADR-0046 §3), less what is already under way.
     let mut inbox: Vec<Task> = tasks
         .iter()
-        .filter(|t| {
-            t.stream_id == inbox_id
-                && !t.deleted
-                && !t.archived
-                && t.state.effective() == TaskState::Todo
-        })
+        .filter(|t| t.in_inbox() && t.state.effective() == TaskState::Todo)
         .cloned()
         .collect();
     inbox.sort_by_key(|t| (t.created_at, t.id));
@@ -595,7 +607,7 @@ mod tests {
             updated_at: ts(created_ms),
             title: title.into(),
             body: None,
-            stream_id: stream,
+            stream_id: crate::home_stream(Some(stream)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -612,6 +624,7 @@ mod tests {
             routine_id: None,
             routine_occurrence: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -635,6 +648,7 @@ mod tests {
             paused_until: None,
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         }
@@ -885,6 +899,7 @@ mod tests {
 
     #[test]
     fn step_two_lists_only_untriaged_inbox_items() {
+        use crate::inbox::inbox_stream_ref;
         let inbox = inbox_stream_ref();
         let mut f = fixture();
         let capture = task(9, inbox, "idea from the shower", MON + DAY);
@@ -905,7 +920,7 @@ mod tests {
     /// as `todo`, its fallback, so it is still offered for triage.
     #[test]
     fn step_two_reads_an_unknown_state_as_untriaged() {
-        let inbox = inbox_stream_ref();
+        let inbox = crate::inbox::inbox_stream_ref();
         let mut f = fixture();
         let mut unknown = task(9, inbox, "in a newer build's state", MON + DAY);
         unknown.state = TaskState::from_raw("snoozed");
@@ -916,6 +931,104 @@ mod tests {
             r.inbox.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
             vec!["in a newer build's state"]
         );
+    }
+
+    /// The no-stream bucket (ADR-0046) is reviewed when any one of its five
+    /// parts holds something, and dropped when all are empty; a named stream
+    /// is reviewed even when it has nothing to say.
+    #[test]
+    fn the_no_stream_bucket_is_reviewed_when_any_part_holds_something() {
+        let none = inbox_stream_ref();
+        let build = |tasks: Vec<Task>, ops: Vec<OpRecord>, focus: FocusStats| {
+            let grid = WeekGrid::trailing(
+                MON + 6 * DAY,
+                3,
+                &jiff::tz::TimeZone::UTC,
+                &crate::Weekday::Mo,
+            )
+            .unwrap();
+            build_weekly_review(WeeklyReviewInput {
+                window: window(),
+                streams: vec![ReviewStream::from(&stream(3, "Empty"))],
+                tasks,
+                activity: fold_activity(&ops),
+                routines: Vec::new(),
+                drift: Vec::new(),
+                focus,
+                trends: fold_trends(&ops, &grid),
+                zone: grid.zone().clone(),
+            })
+        };
+        let keys = |r: &WeeklyReview| r.streams.iter().map(|s| s.stream).collect::<Vec<_>>();
+        let named = eref(EntityKind::Stream, 3);
+
+        let r = build(Vec::new(), Vec::new(), empty_focus());
+        assert_eq!(keys(&r), vec![named], "an empty named stream stays");
+
+        let t = task(1, none, "done", MON + DAY);
+        let mut done = t.clone();
+        done.state = TaskState::Done;
+        done.completed_at = Some(ts(MON + 2 * DAY).into());
+        let r = build(
+            vec![done.clone()],
+            vec![
+                op(1, MON + DAY, OpPayload::TaskCreated(Box::new(t))),
+                op(2, MON + 2 * DAY, OpPayload::TaskUpdated(Box::new(done))),
+            ],
+            empty_focus(),
+        );
+        let b = r.streams.iter().find(|s| s.stream == none).expect("kept");
+        assert_eq!(b.completed.len(), 1, "completed only");
+        assert!(b.deferred.is_empty() && b.created_untouched.is_empty());
+
+        let t = task(2, none, "deferred", MON + DAY);
+        let mut def = t.clone();
+        def.deferred_count = 1;
+        def.scheduled_at = Some(ts(MON + 5 * DAY).into());
+        let r = build(
+            vec![def.clone()],
+            vec![
+                op(1, MON + DAY, OpPayload::TaskCreated(Box::new(t))),
+                op(2, MON + 2 * DAY, OpPayload::TaskUpdated(Box::new(def))),
+            ],
+            empty_focus(),
+        );
+        let b = r.streams.iter().find(|s| s.stream == none).expect("kept");
+        assert_eq!(b.deferred.len(), 1, "deferred only");
+        assert!(b.completed.is_empty() && b.created_untouched.is_empty());
+
+        let t = task(3, none, "untouched", MON + DAY);
+        let r = build(
+            vec![t.clone()],
+            vec![op(1, MON + DAY, OpPayload::TaskCreated(Box::new(t)))],
+            empty_focus(),
+        );
+        let b = r.streams.iter().find(|s| s.stream == none).expect("kept");
+        assert_eq!(b.created_untouched.len(), 1, "untouched only");
+        assert!(b.completed.is_empty() && b.deferred.is_empty());
+
+        let mut focus = empty_focus();
+        focus.per_stream.push(StreamFocus {
+            stream: none,
+            sessions: 1,
+            focused_ms: 60_000,
+            calibration: None,
+        });
+        let r = build(Vec::new(), Vec::new(), focus);
+        let b = r.streams.iter().find(|s| s.stream == none).expect("kept");
+        assert!(b.focus.is_some(), "focus only");
+        assert!(b.completed.is_empty() && b.trend.is_empty());
+
+        // Created the week before: a trend, and nothing in this window.
+        let t = task(4, none, "last week", MON - 3 * DAY);
+        let r = build(
+            vec![t.clone()],
+            vec![op(1, MON - 3 * DAY, OpPayload::TaskCreated(Box::new(t)))],
+            empty_focus(),
+        );
+        let b = r.streams.iter().find(|s| s.stream == none).expect("kept");
+        assert!(!b.trend.is_empty(), "trend only");
+        assert!(b.completed.is_empty() && b.created_untouched.is_empty() && b.focus.is_none());
     }
 
     #[test]
@@ -956,7 +1069,7 @@ mod tests {
                 updated_at: ts(MON),
                 template: TaskTemplate {
                     title: title.into(),
-                    stream_id: eref(EntityKind::Stream, 3),
+                    stream_id: Some(eref(EntityKind::Stream, 3)),
                     contexts: Vec::new(),
                     energy: None,
                     priority: None,
@@ -1062,7 +1175,7 @@ mod tests {
 
     #[test]
     fn daily_review_shows_recent_captures_and_the_blocked_subset_of_today() {
-        let inbox = inbox_stream_ref();
+        let inbox = crate::inbox::inbox_stream_ref();
         let s = eref(EntityKind::Stream, 3);
         let last_night = task(30, inbox, "captured at 22:04", MON + 20 * 3_600_000);
         let old = task(31, inbox, "captured last week", MON - 3 * DAY);

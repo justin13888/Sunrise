@@ -20,7 +20,7 @@ fn task(n: u8) -> Task {
         updated_at: Timestamp::from_second(100 - i64::from(n)).unwrap(),
         title: format!("Task {n}"),
         body: None,
-        stream_id: stream(1),
+        stream_id: Some(stream(1)),
         contexts: BTreeSet::new(),
         state: TaskState::Todo,
         priority: None,
@@ -38,6 +38,7 @@ fn task(n: u8) -> Task {
         routine_occurrence: None,
         reminder_lead_s: None,
         sort_order: None,
+        triaged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),
@@ -74,8 +75,43 @@ fn streams_are_any_of() {
         ..ViewFilter::default()
     };
     let mut other = task(2);
-    other.stream_id = stream(3);
+    other.stream_id = Some(stream(3));
     table(&[(f.clone(), task(1), true), (f, other, false)], &utc());
+}
+
+/// "Work or no stream" (ADR-0046): `no_stream` ORs with `streams`, and the
+/// legacy Inbox reference in `streams` means it too.
+#[test]
+fn no_stream_is_one_more_choice_beside_the_streams() {
+    let mut loose = task(3);
+    loose.stream_id = None;
+    let mut other = task(2);
+    other.stream_id = Some(stream(3));
+    let either = ViewFilter {
+        streams: vec![stream(1)],
+        no_stream: true,
+        ..ViewFilter::default()
+    };
+    let only = ViewFilter {
+        no_stream: true,
+        ..ViewFilter::default()
+    };
+    let legacy = ViewFilter {
+        streams: vec![crate::inbox_stream_ref()],
+        ..ViewFilter::default()
+    };
+    table(
+        &[
+            (either.clone(), task(1), true),
+            (either.clone(), loose.clone(), true),
+            (either, other.clone(), false),
+            (only.clone(), loose.clone(), true),
+            (only, task(1), false),
+            (legacy.clone(), loose, true),
+            (legacy, other, false),
+        ],
+        &utc(),
+    );
 }
 
 #[test]

@@ -301,7 +301,7 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
                     grid,
                     &mut overall,
                     &mut per_stream,
-                    task.stream_id,
+                    crate::stream_key(task.stream_id),
                     i,
                     |b| {
                         b.created += 1;
@@ -332,14 +332,14 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
                     grid,
                     &mut overall,
                     &mut per_stream,
-                    task.stream_id,
+                    crate::stream_key(task.stream_id),
                     i,
                     |b| {
                         b.completed += 1;
                     },
                 );
             }
-            counted = Some((done_at, task.stream_id));
+            counted = Some((done_at, crate::stream_key(task.stream_id)));
         } else if transitioned_from_done {
             if let Some((at, stream)) = counted {
                 if let Some(i) = grid.index_of(at) {
@@ -359,7 +359,7 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
                         grid,
                         &mut overall,
                         &mut per_stream,
-                        task.stream_id,
+                        crate::stream_key(task.stream_id),
                         i,
                         |b| {
                             b.deferred += delta;
@@ -556,7 +556,7 @@ mod tests {
             updated_at: ts(MON),
             title: "t".into(),
             body: None,
-            stream_id: eref(EntityKind::Stream, stream),
+            stream_id: Some(eref(EntityKind::Stream, stream)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -573,6 +573,7 @@ mod tests {
             routine_id: None,
             routine_occurrence: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -913,7 +914,7 @@ mod tests {
             updated_at: ts(MON),
             template: TaskTemplate {
                 title: "Stretch".into(),
-                stream_id: eref(EntityKind::Stream, 9),
+                stream_id: Some(eref(EntityKind::Stream, 9)),
                 contexts: Vec::new(),
                 energy: Some(Energy::Low),
                 priority: None,

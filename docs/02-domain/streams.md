@@ -97,8 +97,10 @@ no `stream_id` belongs to no stream, and its ops are sealed under the vault's
 - The **Inbox** is a view over stream-less, untriaged tasks
   ([`tasks.md` §Inbox](./tasks.md#inbox)), not a stream.
 
-Until [#332](https://github.com/justin13888/Sunrise/issues/332) lands, the tree still models this as a fixed-id Stream,
-`str_0000076XBEE9MQ6S9ED5Q64VVR`, that commands refuse to delete.
+In the tree it is `sunrise_domain::KeyDomain::Private`
+(`crates/sunrise-domain/src/key_domain.rs`); a stream command that names its
+id is refused with `ReservedStream`, and a share carries only `StreamId`s
+(`Keychain::stream_grant_keys`), which cannot name it.
 
 ## Why one-level nesting only
 
@@ -261,6 +263,10 @@ value. So no reader ever sees a live entity in a deleted stream.
 A child whose parent is deleted concurrently with a re-parent on another device
 also resolves at read time: a `parent_id` naming a tombstone reads as top-level.
 
-Until [#332](https://github.com/justin13888/Sunrise/issues/332) lands, `delete_stream` tombstones the stream row only
-(`crates/sunrise-core/src/engine/stream.rs#delete_stream`), and its dependents
-keep naming it.
+In the tree, `delete_stream` writes every member of the command as one group
+(`crates/sunrise-core/src/engine/stream.rs#delete_stream`, ADR-0065 §6), and
+the fold projects each task's, block's and routine's effective stream into its
+row, re-projecting a stream's dependents when its tombstone or `rehomed_to`
+changes (`crates/sunrise-core/src/engine/merge/project.rs#rehome_dependents`,
+ADR-0046 clarification C3). A device on a build before ADR-0046 that deletes a
+stream writes a tombstone with no `rehomed_to`, which reads as a detach.

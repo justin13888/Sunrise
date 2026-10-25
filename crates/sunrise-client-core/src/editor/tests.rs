@@ -152,7 +152,7 @@ fn block(starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         id: eref(EntityKind::Block, 1),
         created_at: jiff::Timestamp::UNIX_EPOCH,
         updated_at: jiff::Timestamp::UNIX_EPOCH,
-        stream_id: sunrise_domain::inbox_stream_ref(),
+        stream_id: None,
         starts_at,
         ends_at,
         title: Some("Deep work".into()),
@@ -297,7 +297,7 @@ fn routine() -> RoutineFields {
     RoutineFields {
         template: TaskTemplate {
             title: "Water the plants".into(),
-            stream_id: sunrise_domain::inbox_stream_ref(),
+            stream_id: None,
             contexts: vec![eref(EntityKind::Context, 4)],
             energy: None,
             priority: Some(3),

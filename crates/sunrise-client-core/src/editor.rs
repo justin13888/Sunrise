@@ -323,8 +323,8 @@ impl From<&Routine> for RoutineFields {
 pub struct RoutineForm {
     /// Title of each generated task; trimmed.
     pub title: String,
-    /// Stream each generated task lands in.
-    pub stream_id: EntityRef,
+    /// Stream each generated task lands in, or `None` for no stream.
+    pub stream_id: Option<EntityRef>,
     /// Priority 1..=5, or `None`.
     pub priority: Option<u8>,
     /// Energy facet, or `None`.

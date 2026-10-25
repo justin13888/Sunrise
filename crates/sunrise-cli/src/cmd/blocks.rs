@@ -15,7 +15,7 @@ use sunrise_core::{Command, Query, QueryResult};
 use sunrise_domain::Block;
 use sunrise_id::{EntityKind, EntityRef};
 
-use super::{flag_value, id_of, positionals, resolve_stream, task_id, Archived, CmdResult, Ctx};
+use super::{flag_value, id_of, positionals, resolve_home, task_id, Archived, CmdResult, Ctx};
 
 /// A `--from` / `--to` phrase as epoch milliseconds, read in the reader's
 /// zone.
@@ -170,8 +170,8 @@ async fn create(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         return Err(strings::blocks::end_before_start().into());
     }
     let stream = match flag_value(args, "--stream") {
-        Some(s) => resolve_stream(ctx.core, &s, Archived::Exclude).await?,
-        None => sunrise_domain::inbox_stream_ref(),
+        Some(s) => resolve_home(ctx.core, &s, Archived::Exclude).await?,
+        None => None,
     };
     let mut tasks = Vec::new();
     let mut it = args.iter();

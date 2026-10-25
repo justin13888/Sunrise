@@ -53,7 +53,8 @@ pub enum CoreQuery {
     IdentityStatus,
     /// Sync health.
     SyncStatus,
-    /// Streams, with open counts, Inbox first.
+    /// Streams, with open counts, and a synthetic Inbox row first, counting
+    /// the Inbox view, for a client that predates the Inbox being one.
     StreamList,
     /// Contexts, with task counts, by name.
     Contexts,

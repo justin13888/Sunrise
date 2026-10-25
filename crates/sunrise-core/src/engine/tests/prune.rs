@@ -656,7 +656,9 @@ fn the_property_prunes() {
     d.sync_all();
     d.compact(0);
     d.compact(1);
-    assert!(d.pruned >= 16, "{}", d.pruned);
+    // Not 16: the create always writes `stream_id` (ADR-0046 C1), so it is
+    // that register's winner and is kept.
+    assert!(d.pruned >= 15, "{}", d.pruned);
 }
 
 /// After `n` edits of one task, alternating between `devices` devices that

@@ -404,7 +404,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             updated_at: at,
             title: String::new(),
             body: None,
-            stream_id: id(EntityKind::Stream),
+            stream_id: Some(id(EntityKind::Stream)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -422,6 +422,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             routine_occurrence: None,
             reminder_lead_s: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -442,6 +443,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
             reminder_lead_s: None,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         }),
@@ -461,7 +463,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             updated_at: at,
             template: TaskTemplate {
                 title: String::new(),
-                stream_id: id(EntityKind::Stream),
+                stream_id: Some(id(EntityKind::Stream)),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -505,7 +507,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             id: id(EntityKind::Block),
             created_at: at,
             updated_at: at,
-            stream_id: id(EntityKind::Stream),
+            stream_id: Some(id(EntityKind::Stream)),
             starts_at: SunriseTime::Instant { at },
             ends_at: SunriseTime::Instant { at },
             title: None,
@@ -560,4 +562,29 @@ fn probe(kind: EntityKind) -> Option<Value> {
         _ => return None,
     };
     value.ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each kind's probe is a record of that kind: a value its field holds
+    /// fits, and one it cannot hold is refused.
+    #[test]
+    fn a_register_set_is_checked_against_the_kinds_own_record() {
+        let text = |s: &str| Value::Text(s.into());
+        let number = Value::Integer(5.into());
+        for (kind, field, good) in [
+            (EntityKind::Task, "title", text("t")),
+            (EntityKind::Stream, "name", text("s")),
+            (EntityKind::Routine, "timezone", text("UTC")),
+            (EntityKind::Block, "title", text("b")),
+        ] {
+            assert!(value_fits(kind, field, &good), "{kind:?}.{field} fits");
+            assert!(
+                !value_fits(kind, field, &number),
+                "{kind:?}.{field} cannot hold a number"
+            );
+        }
+    }
 }

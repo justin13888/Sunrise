@@ -25,7 +25,8 @@ pub struct WebTask {
     /// The state as the core writes it: a known one (`todo`, `in_progress`,
     /// `done`, `cancelled`) or a newer build's, verbatim (ADR-0045 §6).
     pub state: String,
-    /// The owning stream, `str_…`.
+    /// The owning stream, `str_…`, or the private domain's id for a task
+    /// that belongs to no stream (ADR-0046 §5).
     pub stream_id: String,
 }
 
@@ -202,7 +203,10 @@ mod tests {
         core.today(fixed_now()).await.unwrap();
 
         core.complete_task(&id).await.unwrap();
-        assert_eq!(core.inbox().await.unwrap()[0].state, "done");
+        assert!(
+            core.inbox().await.unwrap().is_empty(),
+            "a done task leaves the Inbox view"
+        );
     }
 
     #[tokio::test]

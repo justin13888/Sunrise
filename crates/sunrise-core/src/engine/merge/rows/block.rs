@@ -50,7 +50,7 @@ pub(in crate::engine::merge) fn upsert_block_row(
             lww_device = excluded.lww_device",
         params![
             &b.id.bytes()[..],
-            &b.stream_id.bytes()[..],
+            b.stream_id.map(|s| s.bytes().to_vec()),
             start_ms,
             start_kind,
             start_tz,

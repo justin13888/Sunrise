@@ -131,7 +131,7 @@ async fn a_merge_leaves_only_the_union() {
             from,
             to,
             NEW_BLOCK_KIND,
-            sunrise_domain::inbox_stream_ref(),
+            None,
             Some(title.into()),
             vec![],
             &tz,

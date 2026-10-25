@@ -50,12 +50,13 @@ impl Engine {
         let mut views = super::saved_view::read_saved_views(conn)?;
         views.sort_by_key(|v| v.id);
         out.saved_views = views;
-        let inbox = sunrise_domain::inbox_stream_ref();
         for id in ids(
             conn,
             "SELECT stream_id FROM streams WHERE deleted = 0 ORDER BY stream_id ASC",
         )? {
-            if id == *inbox.bytes() {
+            // The private domain is not a stream; a vault a build before
+            // ADR-0046 folded may hold its placeholder until it is rebuilt.
+            if id == sunrise_domain::PRIVATE_DOMAIN_BYTES {
                 continue;
             }
             if let Some(s) = read_stream(conn, &id)? {

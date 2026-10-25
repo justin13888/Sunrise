@@ -442,8 +442,7 @@ impl Engine {
         since_ms: u64,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let QueryResult::StreamTasks(inbox) = self.query_stream_tasks(db, &inbox_stream_ref())?
-        else {
+        let QueryResult::StreamTasks(inbox) = self.query_inbox(db)? else {
             return Err(EngineError::Invalid("inbox shape".into()));
         };
         let QueryResult::Tasks(today) = self.query_today(db, now_ms, &[])? else {

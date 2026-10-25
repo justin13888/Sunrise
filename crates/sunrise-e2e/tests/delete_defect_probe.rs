@@ -85,9 +85,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{
-    inbox_stream_ref, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Frequency, RRule,
-    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, SunriseTime,
-    TaskTemplate,
+    BlockDraft, BlockPatch, ContextDraft, ContextPatch, Frequency, RRule, RoutineCatchupPolicy,
+    RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, SunriseTime, TaskTemplate,
 };
 use sunrise_e2e::{open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero};
 use sunrise_id::EntityRef;
@@ -183,7 +182,10 @@ async fn stream_delete_vs_update_converges() {
         &a,
         &b,
         id,
-        Command::DeleteStream(id),
+        Command::DeleteStream {
+            id,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
         Command::UpdateStream {
             id,
             patch: StreamPatch {
@@ -246,7 +248,7 @@ async fn routine_delete_vs_update_converges() {
         .submit(Command::CreateRoutine(RoutineDraft {
             template: TaskTemplate {
                 title: "occurrence".into(),
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 contexts: vec![],
                 energy: None,
                 priority: None,
@@ -308,7 +310,7 @@ async fn block_delete_vs_update_converges() {
 
     let id = a
         .submit(Command::CreateBlock(BlockDraft {
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             starts_at: SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(9, 0, 0, 0)),
             ends_at: SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(10, 0, 0, 0)),
             title: Some("contested".into()),

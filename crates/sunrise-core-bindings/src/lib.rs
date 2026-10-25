@@ -599,8 +599,26 @@ impl SunriseCore {
 
     /// Run one read query.
     pub async fn query(&self, q: CoreQuery) -> Result<CoreQueryResult, BindingError> {
+        let stream_list = matches!(q, CoreQuery::StreamList);
         let res = self.inner.query(q.into_core()).await?;
-        Ok(CoreQueryResult::from_core(res))
+        let mut out = CoreQueryResult::from_core(res);
+        // The Inbox is a view, not a stream (ADR-0046 §3), so the core's
+        // stream list has no row for it. A client that predates that reads
+        // its sidebar's Inbox off the first row, so the seam puts a synthetic
+        // one back, under the legacy Inbox id, counting the view.
+        if let (true, CoreQueryResult::Streams { streams }) = (stream_list, &mut out) {
+            let open = match self.inner.query(sunrise_core::Query::Inbox).await? {
+                sunrise_core::QueryResult::StreamTasks(t) | sunrise_core::QueryResult::Tasks(t) => {
+                    t.len()
+                }
+                _ => 0,
+            };
+            streams.insert(
+                0,
+                crate::dto::StreamListRow::inbox(u64::try_from(open).unwrap_or(u64::MAX)),
+            );
+        }
+        Ok(out)
     }
 
     /// Submit one command **and record how to reverse it**.
@@ -741,8 +759,8 @@ impl SunriseCore {
                     cause: "a calendar imports into a stream".into(),
                 })
             }
-            Some(id) => id,
-            None => sunrise_domain::inbox_stream_ref(),
+            // None, or the legacy Inbox id, imports into no stream.
+            other => sunrise_domain::home_stream(other),
         };
         let source = source
             .as_deref()

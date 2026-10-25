@@ -26,6 +26,9 @@ pub struct ViewFilterItem {
     /// Tasks in any of these streams.
     #[uniffi(default = [])]
     pub streams: Vec<EntityRef>,
+    /// Tasks that belong to no stream, ORed with `streams` (ADR-0046).
+    #[uniffi(default = false)]
+    pub no_stream: bool,
     /// Tasks carrying any of these contexts, by id.
     #[uniffi(default = [])]
     pub contexts: Vec<EntityRef>,
@@ -64,6 +67,7 @@ impl From<&ViewFilter> for ViewFilterItem {
         let whole_is_known = f.is_complete();
         Self {
             streams: f.streams.clone(),
+            no_stream: f.no_stream,
             contexts: f.contexts.clone(),
             context_names: f.context_names.clone(),
             priority_min: f.priority.as_ref().map(|p| p.min),
@@ -113,6 +117,7 @@ impl From<ViewFilterItem> for ViewFilter {
         });
         Self {
             streams: i.streams,
+            no_stream: i.no_stream,
             contexts: i.contexts,
             context_names: i.context_names,
             priority,

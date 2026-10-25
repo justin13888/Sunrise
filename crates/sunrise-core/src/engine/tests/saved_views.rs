@@ -453,6 +453,53 @@ fn a_search_view_runs_the_search_and_other_views_filter() {
     );
 }
 
+/// A Today view starts from Today and an Inbox view from the Inbox view
+/// (ADR-0046 §3): the planned task is in one and not the other.
+#[test]
+fn a_today_view_and_an_inbox_view_start_from_their_screens() {
+    let mut p = pair();
+    tagged(&p.ea, &mut p.dba, "loose", vec![]);
+    p.ea.apply(
+        &mut p.dba,
+        Command::CreateTask(TaskDraft {
+            title: "planned".into(),
+            scheduled_at: Some(SunriseTime::instant(crate::engine::ids::ms_to_ts(
+                i64::try_from(T0).unwrap() + 3_600_000,
+            ))),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let today = save(
+        &p.ea,
+        &mut p.dba,
+        draft("t", ViewKind::Today, ViewFilter::default()),
+    );
+    let inbox = save(
+        &p.ea,
+        &mut p.dba,
+        draft("i", ViewKind::Inbox, ViewFilter::default()),
+    );
+    assert_eq!(titles(&run(&p.ea, &p.dba, today)), ["planned"]);
+    assert_eq!(titles(&run(&p.ea, &p.dba, inbox)), ["loose"]);
+    // Naming no stream twice, as the flag and as the legacy reference,
+    // lists its tasks once.
+    let twice = save(
+        &p.ea,
+        &mut p.dba,
+        draft(
+            "n",
+            ViewKind::Stream,
+            ViewFilter {
+                streams: vec![sunrise_domain::inbox_stream_ref()],
+                no_stream: true,
+                ..ViewFilter::default()
+            },
+        ),
+    );
+    assert_eq!(titles(&run(&p.ea, &p.dba, twice)), ["loose", "planned"]);
+}
+
 /// A filter part a newer build added survives this build's edit of another
 /// field, and the view says it is incomplete.
 #[test]

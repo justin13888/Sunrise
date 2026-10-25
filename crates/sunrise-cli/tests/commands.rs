@@ -311,10 +311,14 @@ fn every_query_command_prints_one_json_document_with_the_documented_fields() {
         .as_str()
         .is_some_and(|s| s.ends_with("T09:00:00")));
 
-    // The flag is recognised anywhere on the line.
+    // The flag is recognised anywhere on the line. The Inbox is a view
+    // over tasks with no stream and no date (ADR-0046 §3), so the planned
+    // capture is not in it and an undated one is.
+    let undated = first_id(&ok(v, &["capture", "Find the passport"]));
     let inbox: serde_json::Value =
         serde_json::from_str(ok(v, &["inbox", "--json"]).trim()).unwrap();
-    assert_eq!(inbox[0]["id"], id.as_str());
+    assert_eq!(inbox[0]["id"], undated.as_str());
+    assert_eq!(inbox.as_array().map(Vec::len), Some(1));
 
     for args in [
         &["today"][..],
@@ -480,4 +484,72 @@ fn export_all_writes_a_directory_whose_manifest_matches_its_files() {
         "a non-empty directory is refused"
     );
     assert!(!run_in(v, &["export", "all"]).status.success());
+}
+
+/// The ids a `--json` listing prints.
+fn ids_of(vault: &Path, args: &[&str]) -> Vec<String> {
+    json_of(vault, args)
+        .as_array()
+        .map(|ts| {
+            ts.iter()
+                .filter_map(|t| t["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A task belongs to no stream until it is given one (ADR-0046): `stream
+/// none` lists the tasks of no stream, `triage` takes one out of the Inbox
+/// without giving it a home, `#inbox` sends one back to no stream, and
+/// deleting a stream moves what it held, `--move-to` another stream or to
+/// no stream without it.
+#[test]
+fn a_task_can_belong_to_no_stream_and_a_stream_delete_rehomes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    ok(v, &["streams", "create", "Old"]);
+    ok(v, &["streams", "create", "New"]);
+    let loose = first_id(&ok(v, &["capture", "Call mum"]));
+    let filed = first_id(&ok(v, &["capture", "Pack the boxes #old"]));
+    assert_eq!(
+        json_of(v, &["show", &loose])["stream"],
+        serde_json::Value::Null
+    );
+    for none in ["none", "inbox", "-"] {
+        assert_eq!(ids_of(v, &["stream", none]), [loose.as_str()], "{none}");
+    }
+    assert_eq!(ids_of(v, &["inbox"]), [loose.as_str()]);
+
+    ok(v, &["triage", &loose]);
+    assert!(
+        ids_of(v, &["inbox"]).is_empty(),
+        "triaged, it leaves the Inbox"
+    );
+    assert_eq!(ids_of(v, &["stream", "none"]), [loose.as_str()]);
+    ok(v, &["untriage", &loose]);
+    assert_eq!(ids_of(v, &["inbox"]), [loose.as_str()]);
+
+    ok(v, &["streams", "delete", "Old", "--move-to", "New"]);
+    let new = json_of(v, &["streams"])
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["name"] == "New").cloned())
+        .expect("New is listed")["id"]
+        .clone();
+    assert_eq!(json_of(v, &["show", &filed])["stream"], new);
+    assert_eq!(json_of(v, &["streams"]).as_array().map(Vec::len), Some(1));
+
+    ok(v, &["edit", &filed, "#inbox"]);
+    assert_eq!(
+        json_of(v, &["show", &filed])["stream"],
+        serde_json::Value::Null
+    );
+    ok(v, &["edit", &filed, "#new"]);
+    ok(v, &["streams", "delete", "New"]);
+    assert_eq!(
+        json_of(v, &["show", &filed])["stream"],
+        serde_json::Value::Null
+    );
+    assert!(json_of(v, &["streams"])
+        .as_array()
+        .is_some_and(Vec::is_empty));
 }

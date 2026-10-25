@@ -44,7 +44,10 @@ status: accepted
 >   that a tombstoned context is not shown on a task, and the two cycle rules
 >   of ADR-0065 §5: a `blocked_by` edge that closes a cycle, newest first, and
 >   the newest `parent_id` of a stream nesting loop read as absent, and are
->   reported as `dependency_cycle` conflicts (D18). A merged state that breaks
+>   reported as `dependency_cycle` conflicts (D18); and a task's, block's or
+>   routine template's `stream_id` naming a deleted stream reads as where its
+>   deletion re-homed it, and a `parent_id` naming one as absent
+>   ([ADR-0046](../11-adr/0046-optional-stream.md) §4, C3, C8). A merged state that breaks
 >   another invariant is stored and read as it is, and
 >   `core.merge.invariant_derived` is not emitted.
 > - **A field's default is not declared in the registry** (ADR-0044 §2). The

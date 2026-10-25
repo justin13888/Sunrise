@@ -126,7 +126,7 @@ pub fn new_block_draft(
     from_ms: i64,
     to_ms: i64,
     kind: TimeKind,
-    stream_id: EntityRef,
+    stream_id: Option<EntityRef>,
     title: Option<String>,
     tasks: Vec<EntityRef>,
     reader: &TimeZone,

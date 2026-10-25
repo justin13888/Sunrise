@@ -26,7 +26,7 @@
 //! requires `routine.civil_times` ([`Engine::routine_op_form`]).
 
 use super::ids::time_from_parts;
-use super::ids::{decode_unknowns, ms_to_ts, require_kind, require_writable_stream};
+use super::ids::{decode_unknowns, domain_bytes, home_of, ms_to_ts, require_kind};
 use super::snapshot::in_tx;
 use super::task::{decode_constraints, read_task};
 use super::write::{Appended, PatchBuilder, WriteMode};
@@ -110,7 +110,7 @@ fn generated_tombstone(
     mode: WriteMode,
     task: &Task,
 ) -> rusqlite::Result<Option<(InnerOp, [u8; 16])>> {
-    let stream = *task.stream_id.bytes();
+    let stream = domain_bytes(task.stream_id);
     if mode == WriteMode::Legacy {
         return Ok(Some((InnerOp::TaskDelete(task.clone()), stream)));
     }
@@ -216,10 +216,10 @@ impl Engine {
     pub(super) fn create_routine(
         &self,
         db: &mut Db,
-        d: RoutineDraft,
+        mut d: RoutineDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
-        require_writable_stream(d.template.stream_id)?;
+        d.template.stream_id = home_of(d.template.stream_id)?;
         // The routine op commits before its occurrences are materialized in
         // a second transaction, so a task lock is checked here, up front.
         self.ensure_unlocked(db.conn(), &[EntityKind::Routine, EntityKind::Task])?;
@@ -292,11 +292,11 @@ impl Engine {
         &self,
         db: &mut Db,
         id: EntityRef,
-        patch: RoutinePatch,
+        mut patch: RoutinePatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Routine)?;
-        if let Some(t) = patch.template.as_ref() {
-            require_writable_stream(t.stream_id)?;
+        if let Some(t) = patch.template.as_mut() {
+            t.stream_id = home_of(t.stream_id)?;
         }
         patch.validate()?;
         // As in `create_routine`: tasks are regenerated and materialized
@@ -421,7 +421,7 @@ impl Engine {
             }
             t.scheduled_at = Some(SunriseTime::zoned(civil, new.clone()));
             t.updated_at = now;
-            let stream = *t.stream_id.bytes();
+            let stream = domain_bytes(t.stream_id);
             // The routine engine's own write: in a field-ops vault a
             // generated `Patch` of the plan, which a concurrent user edit of
             // the occurrence beats (ADR-0065 §3).
@@ -503,7 +503,7 @@ impl Engine {
             if let Some(mut t) = drop_task {
                 t.deleted = true;
                 t.updated_at = ms_to_ts(now_ms as i64);
-                let stream = *t.stream_id.bytes();
+                let stream = domain_bytes(t.stream_id);
                 members.push((InnerOp::TaskDelete(t), stream));
             }
             let done = self.append_and_fold_together(tx, members, now_ms)?;
@@ -629,7 +629,7 @@ impl Engine {
                 if occurrence_exists(tx, task.id.bytes())? {
                     continue;
                 }
-                let stream = *task.stream_id.bytes();
+                let stream = domain_bytes(task.stream_id);
                 self.append_and_fold(tx, &InnerOp::TaskCreate(task), &stream, now_ms)?;
             }
             set_materialized_until(tx, routine.id.bytes(), window_end_ms)?;
@@ -807,6 +807,7 @@ fn build_routine_task(
         routine_id: Some(routine.id),
         routine_occurrence: Some(at),
         sort_order: None,
+        triaged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),

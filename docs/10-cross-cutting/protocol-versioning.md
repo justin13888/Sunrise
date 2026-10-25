@@ -253,7 +253,15 @@ From now on:
   `Patch` ([#341](https://github.com/justin13888/Sunrise/issues/341)), with
   its value types and three lossless enums. A v16 build cannot decode a
   `Patch` naming a prefix it does not know, so no such op is written until
-  every device has advertised `saved_view.entity`.
+  every device has advertised `saved_view.entity`. `DOC_SCHEMA_V` 19 made a
+  task's, block's and routine template's stream optional
+  ([#332](https://github.com/justin13888/Sunrise/issues/332),
+  [ADR-0046](../11-adr/0046-optional-stream.md)) and added `Task.triaged_at`,
+  `Stream.rehomed_to` and `ViewFilter.no_stream`, each absent when unset. No
+  stream is still written as the legacy Inbox reference, which every older
+  build reads as its Inbox, so the stream fields keep their wire shape; the
+  three new fields are unknown fields to a v18 build, which writes them back
+  unchanged. None needs a feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

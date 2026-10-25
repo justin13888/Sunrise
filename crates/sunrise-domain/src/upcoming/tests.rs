@@ -28,7 +28,7 @@ fn task(n: u8, title: &str) -> Task {
         updated_at: at,
         title: title.into(),
         body: None,
-        stream_id: stream(1),
+        stream_id: Some(stream(1)),
         contexts: BTreeSet::new(),
         state: TaskState::Todo,
         priority: None,
@@ -46,6 +46,7 @@ fn task(n: u8, title: &str) -> Task {
         routine_occurrence: None,
         reminder_lead_s: None,
         sort_order: None,
+        triaged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),
@@ -72,7 +73,7 @@ fn block(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         id: EntityRef::new(EntityKind::Block, [n; 16]),
         created_at: at,
         updated_at: at,
-        stream_id: stream(1),
+        stream_id: Some(stream(1)),
         starts_at,
         ends_at,
         title: Some(format!("block {n}")),
@@ -99,7 +100,6 @@ fn view(
         blocks,
         block_of: same,
         stream_order: &[stream(1), stream(2), stream(3)],
-        no_stream: inbox_stream_ref(),
         contexts: &[],
         today,
         span_days,
@@ -372,7 +372,6 @@ fn closed_archived_and_deleted_tasks_are_not_upcoming_and_contexts_filter() {
         blocks: &[],
         block_of: same,
         stream_order: &[],
-        no_stream: inbox_stream_ref(),
         contexts: &[errands],
         today: date(2026, 3, 9),
         span_days: 7,
@@ -437,7 +436,7 @@ fn blocks_are_on_every_day_they_overlap_in_start_order() {
 fn the_no_date_lane_is_grouped_capped_and_ordered_the_same_whatever_the_input_order() {
     let ny = tz(NEW_YORK);
     let in_stream = |n: u8, s: EntityRef, p: Option<u8>, due_on: Option<Date>| Task {
-        stream_id: s,
+        stream_id: crate::home_stream(Some(s)),
         priority: p,
         due_at: due_on.map(SunriseTime::all_day),
         ..task(n, &format!("t{n}"))

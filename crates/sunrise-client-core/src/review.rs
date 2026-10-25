@@ -206,7 +206,7 @@ mod tests {
     /// from the review itself.
     #[test]
     fn the_snapshot_records_the_counts_the_screen_showed() {
-        let stream = task(1, 7).stream_id;
+        let stream = task(1, 7).stream_id.expect("a stream");
         let review = WeeklyReview {
             window: ReviewWindow::new(1_000, 2_000),
             streams: vec![StreamReview {

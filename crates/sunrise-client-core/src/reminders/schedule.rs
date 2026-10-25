@@ -142,7 +142,8 @@ pub async fn read_policy(core: &Core) -> Result<ReminderPolicy, CoreError> {
 }
 
 /// The stream each reminder's entity is filed in: a task's own, a routine's
-/// template's, a block's own. A read that fails leaves the entity out, which
+/// template's, a block's own, and the legacy Inbox reference for none
+/// ([`sunrise_domain::stream_key`]). A read that fails leaves the entity out, which
 /// [`crate::focus::allows`] lets through. Read only while a Focus filter is
 /// on, and at most a day's reminders.
 async fn streams_of(core: &Core, intents: &[ReminderIntent]) -> BTreeMap<EntityRef, EntityRef> {
@@ -154,7 +155,10 @@ async fn streams_of(core: &Core, intents: &[ReminderIntent]) -> BTreeMap<EntityR
             Ok(QueryResult::Routine(r)) => Some(r.template.stream_id),
             Ok(QueryResult::Blocks(rows)) => rows.first().map(|r| r.block.stream_id),
             _ => None,
-        };
+        }
+        // No stream is filed under the legacy Inbox reference, which a
+        // Focus filter picks to mean "no stream".
+        .map(sunrise_domain::stream_key);
         if let Some(stream) = stream {
             streams.insert(entity, stream);
         }

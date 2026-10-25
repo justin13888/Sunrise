@@ -202,7 +202,10 @@ pub const fn is_create(cmd: &Command) -> bool {
 pub fn invert_create(cmd: &Command, created: EntityRef) -> Result<Command, NotUndoable> {
     match cmd {
         Command::CreateTask(_) => Ok(Command::DeleteTask(created)),
-        Command::CreateStream(_) => Ok(Command::DeleteStream(created)),
+        Command::CreateStream(_) => Ok(Command::DeleteStream {
+            id: created,
+            disposition: sunrise_domain::Disposition::Detach,
+        }),
         Command::CreateContext(_) => Ok(Command::DeleteContext(created)),
         // Undoing a routine removes the routine, not the occurrences it has
         // already materialized — `DeleteRoutine` stops generation and leaves
@@ -274,7 +277,8 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
             patch: inverse_task_patch(task(state, *id)?, patch),
         }),
         Command::PromoteToStream { id, .. } => {
-            let prev = task(state, *id)?.stream_id;
+            // No stream is spelled as the legacy Inbox reference.
+            let prev = sunrise_domain::stream_key(task(state, *id)?.stream_id);
             Ok(Command::PromoteToStream {
                 id: *id,
                 stream: prev,
@@ -333,12 +337,16 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         }
         // A delete is undone by a later write of `deleted = false`, which
         // brings the entity back as it was (ADR-0065 §3).
+        // A stream's restore brings the stream back, and what its deletion
+        // re-homed stays where it went: each was its own write (ADR-0046 §4).
         Command::DeleteTask(id)
-        | Command::DeleteStream(id)
+        | Command::DeleteStream { id, .. }
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
         | Command::DeleteBlock(id)
         | Command::DeleteSavedView(id) => Ok(Command::Restore(*id)),
+        Command::MarkTriaged { ids } => invert_triage(state, ids, true),
+        Command::ReturnToInbox { ids } => invert_triage(state, ids, false),
         Command::UpdateSavedView { id, patch } => invert_view_edit(state, *id, patch),
         Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
         // A bulk command is undone by one bulk command, so the undo is as
@@ -407,11 +415,39 @@ fn invert_view_edit<S: EntityLookup + ?Sized>(
     })
 }
 
+/// The inverse of a triage (`triaged`) or of its undo: the opposite command,
+/// over the tasks it changed, the ones that did not already hold the value it
+/// writes.
+fn invert_triage<S: EntityLookup + ?Sized>(
+    state: &S,
+    ids: &[EntityRef],
+    triaged: bool,
+) -> Result<Command, NotUndoable> {
+    let mut back = Vec::new();
+    for id in ids {
+        let task = state.task(*id).ok_or(NotUndoable::Unsupported)?;
+        if task.triaged_at.is_some() != triaged {
+            back.push(*id);
+        }
+    }
+    if back.is_empty() {
+        return Err(NotUndoable::Unsupported);
+    }
+    Ok(if triaged {
+        Command::ReturnToInbox { ids: back }
+    } else {
+        Command::MarkTriaged { ids: back }
+    })
+}
+
 /// The delete of `id`, for the kinds [`Command::Restore`] brings back.
 const fn delete_of(id: EntityRef) -> Option<Command> {
     Some(match id.kind() {
         EntityKind::Task => Command::DeleteTask(id),
-        EntityKind::Stream => Command::DeleteStream(id),
+        EntityKind::Stream => Command::DeleteStream {
+            id,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
         EntityKind::Context => Command::DeleteContext(id),
         EntityKind::Routine => Command::DeleteRoutine(id),
         EntityKind::Block => Command::DeleteBlock(id),
@@ -533,7 +569,7 @@ mod tests {
             updated_at: jiff::Timestamp::UNIX_EPOCH,
             title: format!("task {n}"),
             body: None,
-            stream_id: sid(1),
+            stream_id: Some(sid(1)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -550,6 +586,7 @@ mod tests {
             routine_id: None,
             routine_occurrence: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -924,7 +961,7 @@ mod tests {
                 paused: false,
                 template: TaskTemplate {
                     title: "Water plants".into(),
-                    stream_id: sid(1),
+                    stream_id: Some(sid(1)),
                     contexts: Vec::new(),
                     energy: None,
                     priority: None,
@@ -1048,7 +1085,7 @@ mod tests {
                 Command::CreateRoutine(RoutineDraft {
                     template: TaskTemplate {
                         title: "Water plants".into(),
-                        stream_id: sid(1),
+                        stream_id: Some(sid(1)),
                         contexts: Vec::new(),
                         energy: None,
                         priority: None,
@@ -1067,7 +1104,7 @@ mod tests {
             ),
             (
                 Command::CreateBlock(BlockDraft {
-                    stream_id: sid(1),
+                    stream_id: Some(sid(1)),
                     starts_at: SunriseTime::Instant {
                         at: jiff::Timestamp::UNIX_EPOCH,
                     },
@@ -1104,7 +1141,7 @@ mod tests {
     fn deletes(cmd: &Command) -> Option<EntityRef> {
         match cmd {
             Command::DeleteTask(id)
-            | Command::DeleteStream(id)
+            | Command::DeleteStream { id, .. }
             | Command::DeleteContext(id)
             | Command::DeleteRoutine(id)
             | Command::DeleteBlock(id)

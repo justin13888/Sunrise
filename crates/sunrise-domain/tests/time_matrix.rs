@@ -266,7 +266,7 @@ fn block(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         id: EntityRef::new(EntityKind::Block, [n; 16]),
         created_at: Timestamp::UNIX_EPOCH,
         updated_at: Timestamp::UNIX_EPOCH,
-        stream_id: EntityRef::new(EntityKind::Stream, [1u8; 16]),
+        stream_id: Some(EntityRef::new(EntityKind::Stream, [1u8; 16])),
         starts_at,
         ends_at,
         title: None,

@@ -44,6 +44,11 @@ const PARKED_OP: [u8; 16] = [0x0e; 16];
 const NEXT_IDENTITY: [u8; 16] = [0x2a; 16];
 const GROUP_ID: [u8; 16] = [0x2b; 16];
 const SAVED_VIEW: [u8; 16] = [0x2c; 16];
+/// The old Inbox sentinel's id, which 0044 reads as "no stream".
+pub(super) const INBOX_SENTINEL: [u8; 16] = *b"\x00\x00\x00sunrise.inbox";
+/// A task, and a block, in the Inbox sentinel.
+pub(super) const TASK_NO_STREAM: [u8; 16] = [0x2d; 16];
+pub(super) const BLOCK_NO_STREAM: [u8; 16] = [0x2e; 16];
 
 /// CBOR `[[h'01' * 16, h'02' * 16, 7]]`: a version's one parent op-ref.
 const VERSION_PARENTS: [u8; 37] = {
@@ -104,6 +109,21 @@ pub(super) const SEED: &[SeedRow] = &[
             ("extra", B(b"\xa1\x01\x41s")),
             ("description", B(b"\x82\x01\x64desc")),
             ("default_context", B(&CONTEXT_ERRANDS)),
+            // 0044's re-home target.
+            ("rehomed_to", B(&STREAM_BETA)),
+        ],
+    },
+    // The Inbox sentinel's synthetic row, as 0017 and `ensure_stream_row`
+    // wrote it, which 0044 deletes.
+    SeedRow {
+        table: "streams",
+        values: &[
+            ("stream_id", B(&INBOX_SENTINEL)),
+            ("head_root", B(b"\x00")),
+            ("last_op_seq", I(0)),
+            ("name", T(b"")),
+            ("created_at_ms", I(15)),
+            ("updated_at_ms", I(16)),
         ],
     },
     SeedRow {
@@ -215,6 +235,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("reminder_lead_s", I(300)),
             // 0042's manual-order key.
             ("sort_order", T(b"BN")),
+            // 0044's triage acknowledgement.
+            ("triaged_at_ms", I(1_700_000_650_000)),
             ("archived", I(1)),
             ("deleted", I(0)),
             ("body", B(ALPHA_TASK_BODY)),
@@ -233,6 +255,28 @@ pub(super) const SEED: &[SeedRow] = &[
         table: "task_contexts",
         values: &[
             ("task_id", B(&TASK_IN_ALPHA)),
+            ("context_id", B(&CONTEXT_ERRANDS)),
+        ],
+    },
+    // A task in the Inbox sentinel, which 0044 moves to no stream, and its
+    // context membership, which 0044's table rebuild must carry across.
+    SeedRow {
+        table: "tasks",
+        values: &[
+            ("id", B(&TASK_NO_STREAM)),
+            ("stream_id", B(&INBOX_SENTINEL)),
+            ("title", T(b"Call the plumber")),
+            ("state", T(b"todo")),
+            ("created_at_ms", I(45)),
+            ("updated_at_ms", I(46)),
+            ("lww_hlc_ms", I(HLC_MS + 6)),
+            ("lww_device", B(&DEVICE_LAPTOP)),
+        ],
+    },
+    SeedRow {
+        table: "task_contexts",
+        values: &[
+            ("task_id", B(&TASK_NO_STREAM)),
             ("context_id", B(&CONTEXT_ERRANDS)),
         ],
     },
@@ -271,6 +315,25 @@ pub(super) const SEED: &[SeedRow] = &[
     SeedRow {
         table: "block_tasks",
         values: &[("block_id", B(&BLOCK)), ("task_id", B(&TASK_IN_ALPHA))],
+    },
+    // A block in the Inbox sentinel and its binding, as for the task above.
+    SeedRow {
+        table: "blocks",
+        values: &[
+            ("id", B(&BLOCK_NO_STREAM)),
+            ("stream_id", B(&INBOX_SENTINEL)),
+            ("starts_at_ms", I(1_700_002_000_000)),
+            ("ends_at_ms", I(1_700_002_600_000)),
+            ("created_at_ms", I(55)),
+            ("updated_at_ms", I(56)),
+        ],
+    },
+    SeedRow {
+        table: "block_tasks",
+        values: &[
+            ("block_id", B(&BLOCK_NO_STREAM)),
+            ("task_id", B(&TASK_NO_STREAM)),
+        ],
     },
     SeedRow {
         table: "focus_sessions",

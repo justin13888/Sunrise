@@ -35,10 +35,10 @@
 use serde::{Deserialize, Serialize};
 use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
-    BlockDraft, ContextDraft, ContextPatch, Energy, NoteBody, RRule, RoutineCatchupPolicy,
-    RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch, ScheduleConstraint, StreamColor,
-    StreamDraft, StreamPatch, StreamReviewCadence, SunriseTime, TaskDraft, TaskPatch, TaskState,
-    TaskTemplate,
+    BlockDraft, ContextDraft, ContextPatch, Disposition, Energy, NoteBody, RRule,
+    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch,
+    ScheduleConstraint, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, SunriseTime,
+    TaskDraft, TaskPatch, TaskState, TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -172,7 +172,16 @@ enum Cmd {
         #[serde(with = "StreamPatchDef")]
         patch: StreamPatch,
     },
+    /// A delete that detaches what the stream held: the only form a file
+    /// written before ADR-0046 holds.
     DeleteStream(EntityRef),
+    /// A delete that moves what the stream held `into` another stream.
+    DeleteStreamInto {
+        id: EntityRef,
+        into: EntityRef,
+    },
+    MarkTriaged(Vec<EntityRef>),
+    ReturnToInbox(Vec<EntityRef>),
     CreateContext(ContextDraft),
     UpdateContext {
         id: EntityRef,
@@ -255,7 +264,16 @@ impl Cmd {
             Command::PromoteToStream { id, stream } => Self::PromoteToStream { id, stream },
             Command::CreateStream(d) => Self::CreateStream(d),
             Command::UpdateStream { id, patch } => Self::UpdateStream { id, patch },
-            Command::DeleteStream(id) => Self::DeleteStream(id),
+            Command::DeleteStream {
+                id,
+                disposition: Disposition::Detach,
+            } => Self::DeleteStream(id),
+            Command::DeleteStream {
+                id,
+                disposition: Disposition::MoveTo(into),
+            } => Self::DeleteStreamInto { id, into },
+            Command::MarkTriaged { ids } => Self::MarkTriaged(ids),
+            Command::ReturnToInbox { ids } => Self::ReturnToInbox(ids),
             Command::CreateContext(d) => Self::CreateContext(d),
             Command::UpdateContext { id, patch } => Self::UpdateContext { id, patch },
             Command::DeleteContext(id) => Self::DeleteContext(id),
@@ -291,7 +309,16 @@ impl Cmd {
             Self::PromoteToStream { id, stream } => Command::PromoteToStream { id, stream },
             Self::CreateStream(d) => Command::CreateStream(d),
             Self::UpdateStream { id, patch } => Command::UpdateStream { id, patch },
-            Self::DeleteStream(id) => Command::DeleteStream(id),
+            Self::DeleteStream(id) => Command::DeleteStream {
+                id,
+                disposition: Disposition::Detach,
+            },
+            Self::DeleteStreamInto { id, into } => Command::DeleteStream {
+                id,
+                disposition: Disposition::MoveTo(into),
+            },
+            Self::MarkTriaged(ids) => Command::MarkTriaged { ids },
+            Self::ReturnToInbox(ids) => Command::ReturnToInbox { ids },
             Self::CreateContext(d) => Command::CreateContext(d),
             Self::UpdateContext { id, patch } => Command::UpdateContext { id, patch },
             Self::DeleteContext(id) => Command::DeleteContext(id),
@@ -391,8 +418,8 @@ struct TaskPatchDef {
     title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
     body: Option<Option<NoteBody>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    stream_id: Option<EntityRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
+    stream_id: Option<Option<EntityRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contexts: Option<Vec<EntityRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

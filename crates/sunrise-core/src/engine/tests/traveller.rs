@@ -105,7 +105,7 @@ fn routine(e: &Engine, db: &mut Db, title: &str, anchor: SunriseTime, tz: &str) 
     let draft = RoutineDraft {
         template: TaskTemplate {
             title: title.into(),
-            stream_id: sunrise_domain::inbox_stream_ref(),
+            stream_id: None,
             contexts: Vec::new(),
             energy: None,
             priority: None,

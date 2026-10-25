@@ -405,8 +405,8 @@ pub struct EndOfDayPlan {
     pub unscheduled: Vec<Task>,
 }
 
-/// Build the morning summary from every live task, the civil bounds the caller
-/// resolved, and the Inbox's id.
+/// Build the morning summary from every live task and the civil bounds the
+/// caller resolved. The triage queue is the Inbox view ([`Task::in_inbox`]).
 ///
 /// `tz` is the reader's zone: every task time is resolved in it before it is
 /// compared with the bounds (`docs/10-cross-cutting/time.md` §2).
@@ -416,7 +416,6 @@ pub fn build_morning_summary(
     since: Timestamp,
     today_start: Timestamp,
     today_end: Timestamp,
-    inbox: EntityRef,
     tz: &TimeZone,
 ) -> MorningSummary {
     let mut completed: Vec<Task> = tasks
@@ -434,11 +433,7 @@ pub fn build_morning_summary(
             .then_with(|| a.id.cmp(&b.id))
     });
 
-    let mut to_triage: Vec<Task> = tasks
-        .iter()
-        .filter(|t| is_open(t) && t.stream_id == inbox)
-        .cloned()
-        .collect();
+    let mut to_triage: Vec<Task> = tasks.iter().filter(|t| t.in_inbox()).cloned().collect();
     to_triage.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)
@@ -565,7 +560,6 @@ fn plan_order(a: &Task, b: &Task, tz: &TimeZone) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inbox::inbox_stream_ref;
     use crate::unknown::Unknowns;
     use std::collections::BTreeSet;
     use sunrise_id::EntityKind;
@@ -583,7 +577,7 @@ mod tests {
             updated_at: ts(0),
             title: format!("task {n}"),
             body: None,
-            stream_id: EntityRef::new(EntityKind::Stream, [9u8; 16]),
+            stream_id: Some(EntityRef::new(EntityKind::Stream, [9u8; 16])),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -601,6 +595,7 @@ mod tests {
             routine_occurrence: None,
             reminder_lead_s: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -935,7 +930,7 @@ mod tests {
         done_last_week.completed_at = Some(SunriseTime::instant(ts(since - 5 * DAY_MS)));
 
         let mut inbox_item = task(3);
-        inbox_item.stream_id = inbox_stream_ref();
+        inbox_item.stream_id = None;
 
         let mut due_today = task(4);
         due_today.due_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
@@ -957,7 +952,6 @@ mod tests {
             ts(since),
             ts(day),
             ts(day + DAY_MS),
-            inbox_stream_ref(),
             &TimeZone::UTC,
         );
         assert_eq!(
@@ -1001,7 +995,6 @@ mod tests {
             ts(day - DAY_MS),
             ts(day),
             ts(day + DAY_MS),
-            inbox_stream_ref(),
             &TimeZone::UTC,
         );
         assert_eq!(
@@ -1134,7 +1127,6 @@ mod tests {
             ts(day - DAY_MS),
             ts(day),
             ts(day + DAY_MS),
-            inbox_stream_ref(),
             &TimeZone::UTC,
         );
         assert_eq!(
@@ -1176,14 +1168,13 @@ mod tests {
     fn a_cancelled_task_is_not_offered_for_triage() {
         let day = 1_772_064_000_000i64;
         let mut cancelled = task(1);
-        cancelled.stream_id = inbox_stream_ref();
+        cancelled.stream_id = None;
         cancelled.state = TaskState::Cancelled;
         let s = build_morning_summary(
             &[cancelled],
             ts(day - DAY_MS),
             ts(day),
             ts(day + DAY_MS),
-            inbox_stream_ref(),
             &TimeZone::UTC,
         );
         assert!(s.to_triage.is_empty());

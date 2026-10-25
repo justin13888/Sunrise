@@ -33,6 +33,7 @@ pub mod export;
 pub mod focus;
 pub mod import;
 pub mod inbox;
+pub mod key_domain;
 pub mod note;
 pub mod note_body;
 pub mod notify;
@@ -100,7 +101,13 @@ pub use focus::{
     CYCLES_BEFORE_LONG_BREAK, LONG_BREAK_MS, POMODORO_MS, SHORT_BREAK_MS,
 };
 pub use import::{block_uid, imported_block_id, uid_to_block, SUNRISE_UID_HOST};
-pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
+pub use inbox::{
+    home_stream, inbox_stream_ref, names_no_stream, stream_key, INBOX_STREAM_BYTES,
+    INBOX_STREAM_ID, META_DOMAIN_BYTES, PRIVATE_DOMAIN_BYTES,
+};
+pub use key_domain::{
+    effective_stream, Disposition, KeyDomain, StreamFate, StreamId, MAX_REHOME_CHAIN,
+};
 pub use note::Note;
 pub use note_body::{
     decode as decode_note_body, encode as encode_note_body, to_markdown as note_body_to_markdown,

@@ -229,7 +229,7 @@
                             "conflict": "tracked",
                             "crdt": "register",
                             "name": "stream_id",
-                            "type": "EntityRef"
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "merge",
@@ -934,7 +934,7 @@
                             "conflict": "tracked",
                             "crdt": "register",
                             "name": "stream_id",
-                            "type": "EntityRef"
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "tracked",
@@ -1121,6 +1121,12 @@
                             "crdt": "register",
                             "name": "paused_until",
                             "type": "Option<CompatTime>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "rehomed_to",
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "quiet",
@@ -1324,7 +1330,7 @@
                             "crdt": "register",
                             "default": "str_0000076XBEE9MQ6S9ED5Q64VVR",
                             "name": "stream_id",
-                            "type": "EntityRef"
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "tracked",
@@ -1332,6 +1338,12 @@
                             "default": "",
                             "name": "title",
                             "type": "String"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "triaged_at",
+                            "type": "Option<Timestamp>"
                         },
                         {
                             "conflict": "quiet",
@@ -2166,6 +2178,10 @@
                 {
                     "name": "energy",
                     "type": "Vec<Energy>"
+                },
+                {
+                    "name": "no_stream",
+                    "type": "bool"
                 },
                 {
                     "name": "priority",

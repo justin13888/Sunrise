@@ -118,6 +118,76 @@ fn rich_history(e: &Engine, db: &mut Db) {
         },
     )
     .unwrap();
+    optional_streams(e, db);
+}
+
+/// What ADR-0046 adds to a history (#332): a task triaged out of the Inbox,
+/// a stream deleted into another one and one deleted to no stream, each with
+/// a task, and a task named into a stream whose create never arrives, with a
+/// focus session, which leaves the placeholder row a rebuild must keep.
+fn optional_streams(e: &Engine, db: &mut Db) {
+    let kept = new_task(e, db, "personal, no date");
+    e.apply(db, Command::MarkTriaged { ids: vec![kept] })
+        .unwrap();
+    let stream = |e: &Engine, db: &mut Db, name: &str| {
+        e.apply(
+            db,
+            Command::CreateStream(StreamDraft {
+                name: name.into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity
+    };
+    let into = stream(e, db, "Errands");
+    let moved = stream(e, db, "Shopping");
+    let gone = stream(e, db, "Old project");
+    for (title, s) in [("buy bread", moved), ("archive the repo", gone)] {
+        e.apply(
+            db,
+            Command::CreateTask(TaskDraft {
+                title: title.into(),
+                stream_id: Some(s),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    }
+    e.apply(
+        db,
+        Command::DeleteStream {
+            id: moved,
+            disposition: sunrise_domain::Disposition::MoveTo(into),
+        },
+    )
+    .unwrap();
+    e.apply(
+        db,
+        Command::DeleteStream {
+            id: gone,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+    .unwrap();
+    let waiting = e
+        .apply(
+            db,
+            Command::CreateTask(TaskDraft {
+                title: "in a stream that has not arrived".into(),
+                stream_id: Some(EntityRef::new(EntityKind::Stream, [0x5a; 16])),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    // A focus session in that stream: the one record that still leaves a
+    // placeholder `streams` row (ADR-0046 clarification C12).
+    let session = open_session(e, db, waiting);
+    end_session(e, db, session, false);
+    // And one on a task of no stream, which leaves none.
+    let session = open_session(e, db, kept);
+    end_session(e, db, session, false);
 }
 
 /// [`rich_history`] without the vault preference, the one entity this build

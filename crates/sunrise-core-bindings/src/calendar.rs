@@ -170,10 +170,11 @@ pub fn grid_block_draft(
     tasks: Vec<EntityRef>,
     tz: String,
 ) -> Result<BlockDraftIn, BindingError> {
-    let d = calendar::new_block_draft(from_ms, to_ms, kind, stream_id, title, tasks, &zone(&tz)?)
+    let home = sunrise_domain::home_stream(Some(stream_id));
+    let d = calendar::new_block_draft(from_ms, to_ms, kind, home, title, tasks, &zone(&tz)?)
         .map_err(civil_error)?;
     Ok(BlockDraftIn {
-        stream_id: d.stream_id,
+        stream_id: sunrise_domain::stream_key(d.stream_id),
         starts_at: TimeValue::from(&d.starts_at),
         ends_at: TimeValue::from(&d.ends_at),
         title: d.title,

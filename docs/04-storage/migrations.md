@@ -327,8 +327,10 @@ the rebuild too, and takes no second one. The rebuild at the first open of a
 new vault takes none: the vault holds nothing yet.
 
 Three things inside the cleared tables are kept, because no op still in the
-log derives them: a placeholder `streams` row no op has stamped (the lazily
-seeded Inbox among them), each routine's `materialized_until_ms`, and the
+log derives them: a placeholder `streams` row no op has stamped (one a focus
+session named before the stream's create arrived; a task, block or routine
+no longer makes one, ADR-0046 clarification C12), each routine's
+`materialized_until_ms`, and the
 `pending_groups` rows whose ops compaction deleted, which tell the refold that
 those members of a group are present. The versions, frontiers and register
 losers of compacted ops come back with the base, a `doc_state` v2, which
@@ -361,7 +363,11 @@ in `tasks.extra`, as an unknown field, and SQL cannot move it out of the CBOR
 blob, so the migration adds the column empty and this rebuild moves the key. `FOLD_V` 5 (ADR-0065's seventh pull request) derives
 a routine's streak fields from its `streak_keys` and `skipped_keys` once a
 `Patch` has written one of them (#331), with no migration; a routine only
-full-state ops wrote projects as it did at 4.
+full-state ops wrote projects as it did at 4. `FOLD_V` 6 (#332, ADR-0046)
+projects each task's, block's and routine template's effective stream, NULL
+for no stream, into the `stream_id` columns migration 0044 makes nullable,
+and `Task.triaged_at` and `Stream.rehomed_to` into the columns it adds, where
+a build before it kept the last two in `extra`.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

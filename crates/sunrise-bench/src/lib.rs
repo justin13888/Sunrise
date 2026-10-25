@@ -317,7 +317,7 @@ pub fn seed_search_vault(vault: &mut BenchVault, n_tasks: usize, content_seed: u
                 .apply(
                     &mut vault.db,
                     Command::CreateBlock(BlockDraft {
-                        stream_id: streams[i % n_streams],
+                        stream_id: Some(streams[i % n_streams]),
                         starts_at: SunriseTime::from(start),
                         ends_at: SunriseTime::from(end),
                         title: Some(format!("{} {} session {i}", word(&mut rng), word(&mut rng))),

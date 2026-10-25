@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use sunrise_core::{Clock, Core, CoreConfig, Query, QueryResult, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_domain::{inbox_stream_ref, SunriseTime};
+use sunrise_domain::SunriseTime;
 use sunrise_integrations::ical;
 use sunrise_integrations::ical_vault::{export, import, ExportWindow, ICS_SOURCE};
 
@@ -78,7 +78,7 @@ async fn re_importing_the_same_file_updates_rather_than_duplicates() {
     let core = open(dir.path()).await;
     let text = fixture("google");
 
-    let first = import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    let first = import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("first import");
     assert_eq!(first.created(), 3, "three VEVENTs: {first:?}");
@@ -87,7 +87,7 @@ async fn re_importing_the_same_file_updates_rather_than_duplicates() {
     let after_first = week_blocks(&core).await.len();
     assert_eq!(after_first, 3);
 
-    let second = import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    let second = import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("second import");
     assert_eq!(second.created(), 0, "nothing is new the second time");
@@ -114,10 +114,10 @@ async fn the_same_file_under_two_sources_is_two_calendars() {
     let core = open(dir.path()).await;
     let text = fixture("google");
 
-    import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("import");
-    let other = import(&core, &text, inbox_stream_ref(), "team-calendar")
+    let other = import(&core, &text, None, "team-calendar")
         .await
         .expect("import");
     assert_eq!(
@@ -137,7 +137,7 @@ async fn an_edited_event_moves_the_block_it_already_made() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
     let text = fixture("google");
-    let first = import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    let first = import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("import");
 
@@ -148,7 +148,7 @@ async fn an_edited_event_moves_the_block_it_already_made() {
         )
         .replace("DTSTART:20260306T140000Z", "DTSTART:20260306T160000Z")
         .replace("DTEND:20260306T150000Z", "DTEND:20260306T170000Z");
-    let again = import(&core, &edited, inbox_stream_ref(), ICS_SOURCE)
+    let again = import(&core, &edited, None, ICS_SOURCE)
         .await
         .expect("re-import");
     assert_eq!(again.created(), 0);
@@ -180,7 +180,7 @@ async fn an_edited_event_moves_the_block_it_already_made() {
 async fn the_time_kinds_survive_a_round_trip_through_the_vault() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    import(&core, &fixture("google"), inbox_stream_ref(), ICS_SOURCE)
+    import(&core, &fixture("google"), None, ICS_SOURCE)
         .await
         .expect("import");
 
@@ -220,7 +220,7 @@ async fn the_time_kinds_survive_a_round_trip_through_the_vault() {
 async fn exporting_and_re_importing_is_the_identity() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    import(&core, &fixture("google"), inbox_stream_ref(), ICS_SOURCE)
+    import(&core, &fixture("google"), None, ICS_SOURCE)
         .await
         .expect("import");
     let before = week_blocks(&core).await;
@@ -231,7 +231,7 @@ async fn exporting_and_re_importing_is_the_identity() {
     assert!(doc.starts_with("BEGIN:VCALENDAR\r\n"));
     assert_eq!(ical::parse(&doc).unwrap().events.len(), before.len());
 
-    let back = import(&core, &doc, inbox_stream_ref(), ICS_SOURCE)
+    let back = import(&core, &doc, None, ICS_SOURCE)
         .await
         .expect("re-import");
     assert_eq!(
@@ -258,7 +258,7 @@ async fn exporting_and_re_importing_is_the_identity() {
 async fn a_day_export_covers_only_that_day() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    import(&core, &fixture("google"), inbox_stream_ref(), ICS_SOURCE)
+    import(&core, &fixture("google"), None, ICS_SOURCE)
         .await
         .expect("import");
 
@@ -276,7 +276,7 @@ async fn a_day_export_covers_only_that_day() {
 async fn an_apple_export_with_vtimezone_and_valarm_imports_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    let report = import(&core, &fixture("apple"), inbox_stream_ref(), ICS_SOURCE)
+    let report = import(&core, &fixture("apple"), None, ICS_SOURCE)
         .await
         .expect("import");
     assert_eq!(report.created(), 2, "{report:?}");
@@ -328,7 +328,7 @@ async fn an_apple_export_with_vtimezone_and_valarm_imports_cleanly() {
 async fn a_vtodo_is_reported_as_unmodelled_rather_than_silently_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    let report = import(&core, &fixture("fastmail"), inbox_stream_ref(), ICS_SOURCE)
+    let report = import(&core, &fixture("fastmail"), None, ICS_SOURCE)
         .await
         .expect("import");
     assert_eq!(report.created(), 1, "one VEVENT: {report:?}");
@@ -361,7 +361,7 @@ async fn a_vtodo_is_reported_as_unmodelled_rather_than_silently_dropped() {
 async fn an_unknown_timezone_falls_back_to_utc_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();
     let core = open(dir.path()).await;
-    let report = import(&core, &fixture("outlook"), inbox_stream_ref(), ICS_SOURCE)
+    let report = import(&core, &fixture("outlook"), None, ICS_SOURCE)
         .await
         .expect("import");
     assert_eq!(report.created(), 2, "{report:?}");
@@ -394,14 +394,14 @@ async fn dedup_survives_closing_and_reopening_the_vault() {
     let text = fixture("google");
 
     let core = open(dir.path()).await;
-    let first = import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    let first = import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("import");
     core.shutdown().await;
     drop(core);
 
     let core = open(dir.path()).await;
-    let second = import(&core, &text, inbox_stream_ref(), ICS_SOURCE)
+    let second = import(&core, &text, None, ICS_SOURCE)
         .await
         .expect("import");
     assert_eq!(second.created(), 0);
@@ -427,7 +427,7 @@ async fn an_inverted_mixed_kind_event_fails_alone() {
         BEGIN:VEVENT\r\nUID:good\r\nSUMMARY:Fine\r\n\
         DTSTART:20260302T140000Z\r\nDTEND:20260302T150000Z\r\nEND:VEVENT\r\n\
         END:VCALENDAR\r\n";
-    let report = import(&core, text, inbox_stream_ref(), ICS_SOURCE)
+    let report = import(&core, text, None, ICS_SOURCE)
         .await
         .expect("one bad event does not fail the import");
     assert_eq!(report.failed, 2);

@@ -84,10 +84,12 @@ pub struct UpcomingDay<B> {
 /// One Stream's group in the no-date lane.
 #[derive(Debug, Clone, Serialize)]
 pub struct NoDateGroup {
-    /// The Stream. The Inbox when `no_stream` is set.
+    /// The Stream, or the legacy Inbox reference
+    /// ([`crate::inbox::stream_key`]) when `no_stream` is set.
     pub stream: EntityRef,
     /// Whether this is the "No stream" group
-    /// (`docs/11-adr/0046-optional-stream.md`): the tasks still in the Inbox.
+    /// (`docs/11-adr/0046-optional-stream.md`): the tasks that belong to no
+    /// stream.
     pub no_stream: bool,
     /// The first [`NO_DATE_LANE_CAP`] tasks: by deadline (none last), then
     /// priority (none last), then id.
@@ -125,8 +127,6 @@ pub struct UpcomingInput<'a, B> {
     /// day's all-day tasks follow it. A Stream not in it sorts after every
     /// one that is, by id.
     pub stream_order: &'a [EntityRef],
-    /// The Stream that means "no stream": the Inbox.
-    pub no_stream: EntityRef,
     /// Keep only tasks carrying at least one of these; empty keeps all. Blocks
     /// carry no contexts and are never filtered.
     pub contexts: &'a [EntityRef],
@@ -232,7 +232,7 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
         .map(|(i, &(d, _, _))| (d, i))
         .collect();
 
-    let mut no_date: BTreeMap<EntityRef, Vec<Task>> = BTreeMap::new();
+    let mut no_date: BTreeMap<Option<EntityRef>, Vec<Task>> = BTreeMap::new();
     for t in open {
         let day_of = |v: &SunriseTime| planner_day_of(input.schedule, v, tz);
         let planned_day = t.scheduled_at.as_ref().and_then(day_of);
@@ -263,8 +263,8 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
             let total = u32::try_from(tasks.len()).unwrap_or(u32::MAX);
             tasks.truncate(NO_DATE_LANE_CAP);
             NoDateGroup {
-                stream,
-                no_stream: stream == input.no_stream,
+                stream: crate::stream_key(stream),
+                no_stream: stream.is_none(),
                 tasks,
                 total,
             }
@@ -305,7 +305,10 @@ fn planned_order(a: &Task, b: &Task, tz: &TimeZone, rank: &StreamRank) -> Orderi
         .cmp(&all_day(b))
         .then_with(|| {
             if all_day(a) {
-                rank.cmp(a.stream_id, b.stream_id)
+                rank.cmp(
+                    crate::stream_key(a.stream_id),
+                    crate::stream_key(b.stream_id),
+                )
             } else {
                 cmp_time(a.scheduled_at.as_ref(), b.scheduled_at.as_ref(), tz)
             }

@@ -442,15 +442,18 @@ async fn ical_import(core: &Core, rest: &[String]) -> CmdResult {
     use sunrise_integrations::ical_vault::{import, ICS_SOURCE};
 
     let mut path: Option<&str> = None;
-    let mut stream = sunrise_domain::inbox_stream_ref();
+    // No stream unless `--stream` names one (ADR-0046).
+    let mut stream = None;
     let mut source = ICS_SOURCE.to_string();
     let mut args = rest.iter();
     while let Some(w) = args.next() {
         match w.as_str() {
             "--stream" => {
                 let v = args.next().ok_or_else(strings::ical::stream_needs_id)?;
-                stream = EntityRef::parse(v, EntityKind::Stream)
-                    .map_err(|e| strings::general::not_a_stream_id(v, &e.to_string()))?;
+                stream = sunrise_domain::home_stream(Some(
+                    EntityRef::parse(v, EntityKind::Stream)
+                        .map_err(|e| strings::general::not_a_stream_id(v, &e.to_string()))?,
+                ));
             }
             "--source" => {
                 let v = args.next().ok_or_else(strings::ical::source_needs_name)?;

@@ -8,7 +8,7 @@
 
 use super::{Engine, EngineError, META_STREAM};
 use sunrise_domain::time::SunriseTime;
-use sunrise_domain::TaskState;
+use sunrise_domain::{TaskState, PRIVATE_DOMAIN_BYTES};
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 
 impl Engine {
@@ -205,9 +205,11 @@ pub(super) fn time_from_parts(
 /// it refused the vault-meta id before anything else did — and this
 /// generalises it from "you may not delete it" to "you may not name it".
 ///
-/// **The Inbox is not on this list.** It is a real Stream with a real key that
-/// Tasks legitimately live in, and it is reserved against *deletion* only;
-/// `delete_stream` keeps that check of its own.
+/// **The private key domain is on this list too** (ADR-0046 §2). Its id is
+/// the old Inbox sentinel's, and it is not a Stream: no stream command may
+/// rename, re-parent, delete or nest under it. A command that gives a task or
+/// block a home takes it through [`home_of`] instead, which reads it as "no
+/// stream".
 ///
 /// **`Command::RotateStreamKey` deliberately does not call this.** Rotating the
 /// vault-meta key is a real operation — it is half of what a device revocation
@@ -217,13 +219,36 @@ pub(super) fn time_from_parts(
 ///
 /// # Errors
 /// [`EngineError::Invalid`] if `r` is not a Stream at all;
-/// [`EngineError::ReservedStream`] if it is the vault-meta stream.
+/// [`EngineError::ReservedStream`] if it is the vault-meta stream or the
+/// private domain.
 pub(super) fn require_writable_stream(r: EntityRef) -> Result<(), EngineError> {
     require_kind(r, EntityKind::Stream)?;
-    if r.bytes() == &META_STREAM {
+    if r.bytes() == &META_STREAM || r.bytes() == &PRIVATE_DOMAIN_BYTES {
         return Err(EngineError::ReservedStream);
     }
     Ok(())
+}
+
+/// The home a caller-supplied stream names for a task, block or routine
+/// template: `None` for no stream, which the legacy Inbox reference also
+/// spells (ADR-0046 §5), and otherwise a stream [`require_writable_stream`]
+/// accepts.
+///
+/// # Errors
+/// As [`require_writable_stream`], for the vault-meta stream or a reference
+/// that is not a Stream.
+pub(super) fn home_of(r: Option<EntityRef>) -> Result<Option<EntityRef>, EngineError> {
+    match r {
+        Some(r) if r.kind() == EntityKind::Stream && r.bytes() == &PRIVATE_DOMAIN_BYTES => Ok(None),
+        Some(r) => require_writable_stream(r).map(|()| Some(r)),
+        None => Ok(None),
+    }
+}
+
+/// The key domain whose 16-byte id seals a task or block op whose stream is
+/// `home` (ADR-0046 §2): the stream's own, or the private domain's.
+pub(super) fn domain_bytes(home: Option<EntityRef>) -> [u8; 16] {
+    sunrise_domain::KeyDomain::of_home(home).bytes()
 }
 
 pub(super) fn require_kind(r: EntityRef, k: EntityKind) -> Result<(), EngineError> {

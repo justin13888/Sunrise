@@ -41,7 +41,7 @@
 //! [`Command::ResolveConflict`]: crate::Command::ResolveConflict
 //! [`Command::Restore`]: crate::Command::Restore
 
-use super::ids::{ms_to_ts, require_writable_stream};
+use super::ids::{domain_bytes, home_of, ms_to_ts};
 use super::merge::Stamp;
 use super::merge::{
     check_register_set, class_of, kept_registers, legacy_floor, projected, set_field,
@@ -277,8 +277,8 @@ fn full_state_update(
     Ok(match kind {
         EntityKind::Task => {
             let t: Task = value.deserialized().map_err(unfit)?;
-            require_writable_stream(t.stream_id)?;
-            let stream = *t.stream_id.bytes();
+            home_of(t.stream_id)?;
+            let stream = domain_bytes(t.stream_id);
             (InnerOp::TaskUpdate(t), stream)
         }
         EntityKind::Stream => {
@@ -295,7 +295,7 @@ fn full_state_update(
         }
         EntityKind::Block => {
             let b: Block = value.deserialized().map_err(unfit)?;
-            let stream = *b.stream_id.bytes();
+            let stream = domain_bytes(b.stream_id);
             (InnerOp::BlockUpdate(Box::new(b)), stream)
         }
         other => {
@@ -328,12 +328,12 @@ impl Engine {
             EntityKind::Task => {
                 let t = super::task::read_task(tx, entity.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("task {entity}")))?;
-                *t.stream_id.bytes()
+                domain_bytes(t.stream_id)
             }
             EntityKind::Block => {
                 let b = super::block::read_block(tx, entity.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("block {entity}")))?;
-                *b.stream_id.bytes()
+                domain_bytes(b.stream_id)
             }
             EntityKind::Stream | EntityKind::Context | EntityKind::Routine => META_STREAM,
             other => {

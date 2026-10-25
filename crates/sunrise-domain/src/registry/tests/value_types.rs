@@ -176,6 +176,7 @@ fn the_saved_view_filter_writes_its_described_names() {
         "ViewFilter",
         &ViewFilter {
             streams: vec![EntityRef::new(sunrise_id::EntityKind::Stream, [2; 16])],
+            no_stream: true,
             contexts: vec![id],
             context_names: vec!["ghost".into()],
             priority: Some(PriorityRange {
@@ -200,6 +201,7 @@ fn the_saved_view_filter_writes_its_described_names() {
         &ViewFilter::default(),
         &[
             "streams",
+            "no_stream",
             "contexts",
             "context_names",
             "priority",

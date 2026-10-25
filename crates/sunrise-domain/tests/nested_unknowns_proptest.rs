@@ -158,7 +158,7 @@ fn task() -> Task {
 fn routine() -> Routine {
     let template = TaskTemplate {
         title: "r".into(),
-        stream_id: eref(EntityKind::Stream, 2),
+        stream_id: Some(eref(EntityKind::Stream, 2)),
         contexts: vec![eref(EntityKind::Context, 3)],
         energy: None,
         priority: Some(2),
@@ -186,7 +186,7 @@ fn block() -> Block {
         id: eref(EntityKind::Block, 5),
         created_at: ts(0),
         updated_at: ts(0),
-        stream_id: eref(EntityKind::Stream, 2),
+        stream_id: Some(eref(EntityKind::Stream, 2)),
         starts_at: SunriseTime::floating(date(2026, 3, 1).at(9, 0, 0, 0)),
         ends_at: SunriseTime::floating(date(2026, 3, 1).at(10, 0, 0, 0)),
         title: Some("b".into()),

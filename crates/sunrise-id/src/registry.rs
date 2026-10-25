@@ -133,8 +133,9 @@ macro_rules! for_each_entity {
                         updated_at: Timestamp => Register(Quiet);
                         title: String => Register(Tracked) = "\"\"";
                         body: Option<NoteBody> => Register(Tracked);
-                        // The Inbox (`sunrise_domain::INBOX_STREAM_ID`).
-                        stream_id: EntityRef => Register(Tracked) = "\"str_0000076XBEE9MQ6S9ED5Q64VVR\"";
+                        // No stream (ADR-0046), spelled as the legacy Inbox
+                        // reference (`sunrise_domain::INBOX_STREAM_ID`).
+                        stream_id: Option<EntityRef> => Register(Tracked) = "\"str_0000076XBEE9MQ6S9ED5Q64VVR\"";
                         contexts: BTreeSet<EntityRef> => OrSet;
                         state: TaskState => Register(State) = "\"todo\"";
                         priority: Option<u8> => Register(Quiet);
@@ -152,6 +153,7 @@ macro_rules! for_each_entity {
                         routine_occurrence: Option<Timestamp> => Register(Quiet);
                         reminder_lead_s: Option<u32> => Register(Quiet);
                         sort_order: Option<String> => Register(Quiet);
+                        triaged_at: Option<Timestamp> => Register(Quiet);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
                         ..unknown
@@ -192,6 +194,7 @@ macro_rules! for_each_entity {
                         default_context: Option<EntityRef> => Register(Quiet);
                         reminder_lead_s: Option<u32> => Register(Quiet);
                         deleted: bool => Register(Tombstone);
+                        rehomed_to: Option<EntityRef> => Register(Tracked);
                         ..unknown
                     }
                 ],
@@ -274,7 +277,7 @@ macro_rules! for_each_entity {
                     }
                     TaskTemplate @ none {
                         title: String => Register(Tracked);
-                        stream_id: EntityRef => Register(Tracked);
+                        stream_id: Option<EntityRef> => Register(Tracked);
                         contexts: Vec<EntityRef> => Register(Tracked);
                         energy: Option<Energy> => Register(Tracked);
                         priority: Option<u8> => Register(Tracked);
@@ -306,7 +309,7 @@ macro_rules! for_each_entity {
                         id: EntityRef => Register(Quiet);
                         created_at: Timestamp => Register(Quiet);
                         updated_at: Timestamp => Register(Quiet);
-                        stream_id: EntityRef => Register(Tracked);
+                        stream_id: Option<EntityRef> => Register(Tracked);
                         starts_at: SunriseTime => Register(Tracked);
                         ends_at: SunriseTime => Register(Tracked);
                         title: Option<String> => Register(Tracked);

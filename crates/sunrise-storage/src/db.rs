@@ -1763,7 +1763,9 @@ mod tests {
         let path = dir.path().join("vault.db");
         {
             let db = Db::open(&path, &vault_key()).unwrap();
-            for i in 0..200u32 {
+            // Enough rows that the file's last page is theirs, past the
+            // pages migration 0044's table rebuilds free.
+            for i in 0..1000u32 {
                 db.conn()
                     .execute(
                         "INSERT INTO streams

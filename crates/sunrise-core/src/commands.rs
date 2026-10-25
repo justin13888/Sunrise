@@ -3,7 +3,7 @@
 use crate::control_op::RevokeReason;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
+    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, Energy,
     InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
     SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch,
     SunriseTime, TaskDraft, TaskPatch, TaskState,
@@ -14,7 +14,8 @@ use sunrise_id::EntityRef;
 /// expand the surface in follow-up phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
-    /// Create a Task in a Stream (Inbox if `stream_id` is `None`).
+    /// Create a Task in a Stream, or in no stream when `stream_id` is `None`
+    /// (ADR-0046 §1).
     CreateTask(TaskDraft),
     /// Mutate an existing Task.
     UpdateTask {
@@ -107,12 +108,27 @@ pub enum Command {
     /// once per occurrence completed, in the same commit. A task may appear
     /// once; an empty batch is refused.
     BulkTasks(Vec<BulkTaskItem>),
-    /// Move a Task between Streams.
+    /// Move a Task between Streams. The legacy Inbox reference
+    /// ([`sunrise_domain::inbox_stream_ref`]) moves it to no stream.
     PromoteToStream {
         /// Task to move.
         id: EntityRef,
         /// New owning stream.
         stream: EntityRef,
+    },
+    /// Acknowledge tasks that have no stream and no date, so they leave the
+    /// Inbox (ADR-0046 §3): `triaged_at` is set to now on each. One commit;
+    /// a task already triaged is left as it is, and the batch is refused
+    /// whole on an unknown or repeated id.
+    MarkTriaged {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// Undo [`Self::MarkTriaged`]: clear `triaged_at` on each task. A task
+    /// re-enters the Inbox only if it also has no stream and no date.
+    ReturnToInbox {
+        /// The tasks.
+        ids: Vec<EntityRef>,
     },
     /// Create a Stream.
     CreateStream(StreamDraft),
@@ -123,8 +139,18 @@ pub enum Command {
         /// Patch.
         patch: StreamPatch,
     },
-    /// Soft-delete a Stream.
-    DeleteStream(EntityRef),
+    /// Soft-delete a Stream, and re-home everything it held, in one commit
+    /// (ADR-0046 §4): every live Task, Block and routine template that names
+    /// it goes to `disposition`'s target, every child Stream becomes
+    /// top-level, and the tombstone records the target as `rehomed_to`. The
+    /// dependents are re-homed, never deleted, and a dependent written on
+    /// another device after the delete reads as re-homed too.
+    DeleteStream {
+        /// The Stream.
+        id: EntityRef,
+        /// Where its dependents go.
+        disposition: Disposition,
+    },
     /// Create a Context (cross-cutting tag). Rejected if a live Context
     /// already carries the same name, compared case-insensitively.
     CreateContext(ContextDraft),
@@ -556,7 +582,7 @@ impl BulkTaskItem {
             Command::PromoteToStream { id, stream } => (
                 *id,
                 BulkTaskAction::Update(Box::new(TaskPatch {
-                    stream_id: Some(*stream),
+                    stream_id: Some(sunrise_domain::home_stream(Some(*stream))),
                     ..TaskPatch::default()
                 })),
             ),

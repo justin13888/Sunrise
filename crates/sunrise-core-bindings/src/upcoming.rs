@@ -122,7 +122,6 @@ mod tests {
             blocks: &[],
             block_of: |r: &sunrise_core::queries::BlockRow| &r.block,
             stream_order: &[],
-            no_stream: sunrise_domain::inbox_stream_ref(),
             contexts: &[],
             today,
             span_days: 7,

@@ -10,7 +10,8 @@
 //! unit: a read here folds rows into a session rather than loading one.
 
 use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, require_kind,
+    decode_unknowns, domain_bytes, encode_unknowns, energy_str, ms_to_ts, parse_energy,
+    require_kind,
 };
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
@@ -71,7 +72,7 @@ impl Engine {
         let start = FocusStart {
             id: session_id,
             task_id: d.task_id,
-            stream_id: task.stream_id,
+            stream_id: sunrise_domain::stream_key(task.stream_id),
             started_at: sunrise_domain::epoch_ms::from_u64(now_ms),
             planned_ms,
             // The declared budget wins; the Task's own facet is the fallback.
@@ -137,7 +138,7 @@ impl Engine {
             let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
             if let Some(c) = completion {
                 let mode = self.write_mode(tx, now_ms)?;
-                let task_stream = *c.task.stream_id.bytes();
+                let task_stream = domain_bytes(c.task.stream_id);
                 let mut members = vec![(InnerOp::TaskUpdate(c.task), task_stream)];
                 // Same rule as a hand-completed occurrence: the streak advance
                 // rides in the same transaction as the completion that caused
@@ -458,8 +459,11 @@ pub(super) fn materialize_focus_remote(
     match inner {
         InnerOp::FocusStart(f) => {
             // The owning stream row must exist (the session's stream is also
-            // its op-log routing stream).
-            ensure_stream_row(tx, &f.stream_id, ts_ms)?;
+            // its op-log routing stream), unless it is no stream: the
+            // private domain has no row (ADR-0046 §2).
+            if !sunrise_domain::names_no_stream(&f.stream_id) {
+                ensure_stream_row(tx, &f.stream_id, ts_ms)?;
+            }
             insert_focus_start_row(tx, f, lww)
         }
         InnerOp::FocusEnd(f) => {

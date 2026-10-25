@@ -301,3 +301,42 @@ removes is the stream.
 2. **More than one private domain per vault** (for example a per-device
    scratch space). The `KeyDomain` enum would grow a variant, and the
    single-id argument in §2 would need restating.
+
+## Clarified by implementation (2026-10)
+
+Building this record raised questions it leaves open. Each answer below is
+binding on the implementation. C1 changes §5's wire rule and its consequence
+for older builds, C4 defers §2's departure marker and re-seal, and C5 names
+how the tree's two times stand in for ADR-0047's three; none changes another
+decision above.
+
+| # | Clarification | Why |
+|---|---|---|
+| C1 | "No stream" is written on the wire as the private domain's id, the legacy Inbox reference `str_0000076XBEE9MQ6S9ED5Q64VVR`, not as an absent key. A decoded `stream_id` that is absent, `null`, that reference or the pre-0017 sixteen zero bytes reads as `None` (`sunrise_domain::inbox::wire`). No feature id is added: `task.optional_stream` is not declared, and no build is locked out of writing tasks, blocks or routines. A create always writes its `stream_id`, even no stream. | Every build before this one reads that reference as its Inbox, which is exactly "no stream" to it, and every Inbox task it writes arrives here as no stream, so the two spellings agree on both sides and an older device keeps writing without overwriting anything it cannot represent. §5's absent key would have made an older build fail to decode every stream-less task and block, and would have needed a feature to keep it from writing. A Block has no registry default for `stream_id` on an older build, so a create that left it out would wait there unprojected. |
+| C2 | The three fields are `Option<EntityRef>`. `StreamId` (`sunrise_domain::key_domain`) is the type a `KeyDomain::Stream` and a share take; it cannot be built from the meta or private id. | `EntityRef` is the type every reader, binding and query already carries; the guarantee §2 wants, that the private domain cannot be named where a Stream is shared, is held by `StreamId` and by `require_writable_stream`, which refuses the private id with `ReservedStream` in every stream command. |
+| C3 | `effective_stream` is applied by the fold: a task's, block's and routine template's row holds its effective stream, and a stream whose tombstone or `rehomed_to` changes re-projects every entity whose `stream_id` register names a stream that resolves through it (`merge::project#rehome_dependents`), as a context delete re-projects its tasks. The register keeps what was written. A command reads the row, so the next write seals under the effective stream; in legacy mode its full-state op persists the resolved value, and a `Patch` writes the field only if the command changes it. | Every query, the domain a write seals under and routine generation then read one column, and the rows stay a function of the merged registers and tombstones, so a rebuild lands on them (ADR-0065 §5). |
+| C4 | A move between domains writes the `stream_id` change sealed under the **destination** domain, as before; the departure marker under the source and the stamp-preserving re-seal of §2 are not built. | Every device of one account holds every domain's key, so nothing is unreadable without them. They exist for a reader that holds only the source key, which is a share, and sharing (`../03-crypto/sharing-with-others.md`) is not built. They belong with it. |
+| C5 | The Inbox predicate reads `scheduled_at` and `due_at`, the two times the tree has, for `planned_at`, `target_at` and `hard_due_at` (`Task::in_inbox`). `triaged_at` is a quiet register; `Stream.rehomed_to` is a tracked one, so two concurrent deletes of one stream into different targets surface as a conflict. | ADR-0047's split is #334; the predicate gains the third time with it. |
+| C6 | `Query::Inbox` is the view. `Query::StreamTasks` given the private domain's id lists every task of no stream, triaged or not: the set a manual order is kept within (#340) and a saved view's `no_stream` part reads. `Query::StreamList` has no Inbox row; the UniFFI seam's `stream_list` keeps a synthetic first row under the private domain's id, counting the view, for the Apple client, whose sidebar reads it. | The CLI and every core caller read the view; a client built before this record keeps working until its Mac pass. |
+| C7 | `DeleteStream` refuses a `MoveTo` that names the stream itself, a stream this replica holds no live row of, or the private domain (spelled `Detach`). It re-homes the *live* dependents; a tombstoned task keeps its register and resolves through the rule when restored. | A target that is not live would re-home into a tombstone, and a deleted task is not shown anywhere a re-home changes. |
+| C8 | A `parent_id` that names a tombstone reads as top-level (`stream::read_stream`), so a child nested under a deleted stream on another device after the delete is promoted too. | The same read-time reason as §4's late tasks, for §4.2's children. |
+| C9 | Per-stream tallies (trends, focus stats, the weekly review, Upcoming's no-date lane, a Focus filter's scope) file stream-less work under the private domain's id (`sunrise_domain::stream_key`), as a bucket of its own. The weekly review shows it as one more, unnamed, stream review when it holds something. | §Consequences asks for the bucket; the id is the one every client already compares against. |
+| C10 | Search's `stream:Inbox` names the tasks of no stream, and `is:inbox` is the view. A capture's `#inbox`, and the CLI's `none`, `no-stream` and `-`, name no stream. | The names users already type keep meaning what they did. |
+| C11 | Undo of a `DeleteStream` restores the stream; what it re-homed stays where it went, since each was its own write. | The client's undo is built from the rows it holds (`client-core::undo`), and it does not hold the stream's dependents. |
+| C12 | A task, block or routine no longer makes a placeholder `streams` row for a stream it names before that stream's create arrives (ADR-0065 D23); with migration 0044 nothing references `streams` from those tables. A focus session still makes one, and never for the private domain. | A placeholder made for every stream an entity's register passed through depends on the order its versions were folded in, so a rebuild in stamp order made placeholders a live replica never had. A stream's row is the fold of its own ops. |
+
+## Delivered (2026-10)
+
+[#332](https://github.com/justin13888/Sunrise/issues/332), in one pull request:
+the optional stream on Task, Block and the routine template; the private key
+domain (`KeyDomain`, `StreamId`, `Keychain::stream_grant_keys`); the Inbox
+view, `triaged_at`, `MarkTriaged` and `ReturnToInbox`; `DeleteStream` with a
+`Disposition`, `Stream.rehomed_to` and the read-time rule. `DOC_SCHEMA_V` 19,
+`STORAGE_V` 44 (migration `0044_optional_stream.sql`), `FOLD_V` 6.
+
+What is left:
+
+- C4's departure marker and re-seal, with sharing.
+- The Apple client: a "No stream" choice in its pickers, a disposition prompt
+  on stream delete, the Inbox as a view in its sidebar (dropping the seam's
+  synthetic row), and triage actions. A Mac pass.

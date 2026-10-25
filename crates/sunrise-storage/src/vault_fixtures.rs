@@ -588,6 +588,30 @@ const DELIBERATE_CHANGES: &[DeliberateChange] = &[
         table: "search_idx",
         column: None,
     },
+    // The Inbox sentinel becomes no stream, and its synthetic `streams` row
+    // goes (ADR-0046 §5). Pinned by
+    // `a_v43_vaults_inbox_rows_have_no_stream_after_0044` and, from 13, by
+    // `a_v13_vault_keeps_its_tasks_and_0017_repoints_the_legacy_inbox`.
+    DeliberateChange {
+        migration: 44,
+        table: "tasks",
+        column: Some("stream_id"),
+    },
+    DeliberateChange {
+        migration: 44,
+        table: "blocks",
+        column: Some("stream_id"),
+    },
+    DeliberateChange {
+        migration: 44,
+        table: "routines",
+        column: Some("stream_id"),
+    },
+    DeliberateChange {
+        migration: 44,
+        table: "streams",
+        column: None,
+    },
 ];
 
 /// Every row of every table, as `table -> (columns, rows)`.
@@ -889,9 +913,8 @@ fn a_v13_vault_keeps_its_streams_and_gains_the_sort_keys_0014_backfills() {
     assert_eq!(
         rows,
         vec![
-            // 0017's Inbox row is created after 0014 has run, so it takes the
-            // "never ordered" sentinel rather than a backfilled key.
-            (String::new(), String::new()),
+            // 0017's Inbox row, created after 0014 had run, is gone: 0044
+            // deletes it, since the private domain has no stream row.
             (String::new(), "AAAN".to_string()),
             ("Alpha".to_string(), "AABN".to_string()),
             ("beta".to_string(), "AACN".to_string()),
@@ -902,13 +925,14 @@ fn a_v13_vault_keeps_its_streams_and_gains_the_sort_keys_0014_backfills() {
 }
 
 /// The task rows survive, and 0017 re-points the one parked in the legacy
-/// Inbox rather than orphaning or dropping it.
+/// Inbox rather than orphaning or dropping it, which 0044 then reads as no
+/// stream (ADR-0046 §5).
 #[test]
 fn a_v13_vault_keeps_its_tasks_and_0017_repoints_the_legacy_inbox() {
     let (_dir, db) = open_migrated(V13_FIXTURE);
     assert_eq!(row_count(&db, "tasks"), 2, "no task may be lost");
 
-    let (stream, title): (Vec<u8>, String) = db
+    let (stream, title): (Option<Vec<u8>>, String) = db
         .conn()
         .query_row(
             "SELECT stream_id, title FROM tasks WHERE id = ?",
@@ -917,9 +941,8 @@ fn a_v13_vault_keeps_its_tasks_and_0017_repoints_the_legacy_inbox() {
         )
         .expect("the inbox task");
     assert_eq!(
-        stream,
-        REMAPPED_INBOX.to_vec(),
-        "0017 moves the Inbox off the vault-meta stream id"
+        stream, None,
+        "0017 moves the Inbox off the vault-meta stream id, and 0044 reads it as no stream"
     );
     assert_eq!(
         title, INBOX_TASK_TITLE,
@@ -1686,4 +1709,105 @@ fn a_v42_vault_gains_an_empty_saved_views_table() {
         )
         .unwrap();
     assert_eq!(index, 1);
+}
+
+/// Migration 0044 (#332, ADR-0046) over a real v43 vault: a task and a block
+/// in the Inbox sentinel belong to no stream after it, their bindings survive
+/// the table rebuild, the sentinel's synthetic `streams` row is gone, every
+/// other row keeps its stream, and the two new columns start NULL. Every
+/// index the rebuilt tables had is back.
+#[test]
+fn a_v43_vaults_inbox_rows_have_no_stream_after_0044() {
+    use seed::{BLOCK_NO_STREAM, INBOX_SENTINEL, TASK_NO_STREAM};
+    let (_dir, db) = open_migrated(&fixture_name(43));
+    let stream_of = |table: &str, id: &[u8; 16]| -> Option<Vec<u8>> {
+        db.conn()
+            .query_row(
+                &format!("SELECT stream_id FROM {table} WHERE id = ?"),
+                rusqlite::params![id.to_vec()],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("`{table}` row: {e}"))
+    };
+    assert_eq!(stream_of("tasks", &TASK_NO_STREAM), None);
+    assert_eq!(stream_of("blocks", &BLOCK_NO_STREAM), None);
+    assert_eq!(
+        stream_of("tasks", &TASK_IN_ALPHA),
+        Some(STREAM_ALPHA.to_vec()),
+        "a task in a real stream keeps it"
+    );
+    let sentinel_rows: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM streams WHERE stream_id = ?",
+            rusqlite::params![INBOX_SENTINEL.to_vec()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sentinel_rows, 0, "the private domain has no stream row");
+    let alpha_rows: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM streams WHERE stream_id = ? AND rehomed_to IS NULL",
+            rusqlite::params![STREAM_ALPHA.to_vec()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(alpha_rows, 1, "a stream keeps its row, re-homing nothing");
+    let memberships: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM task_contexts WHERE task_id IN (?, ?)",
+            rusqlite::params![TASK_NO_STREAM.to_vec(), TASK_IN_ALPHA.to_vec()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        memberships, 2,
+        "the rebuild carries every membership across"
+    );
+    let bindings: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM block_tasks WHERE block_id = ?",
+            rusqlite::params![BLOCK_NO_STREAM.to_vec()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 1, "and every binding");
+    let triaged: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tasks WHERE triaged_at_ms IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(triaged, 0, "no task is triaged by the migration");
+    for index in [
+        "tasks_by_stream",
+        "tasks_by_due",
+        "tasks_by_stream_sort_order",
+        "blocks_by_time",
+        "blocks_by_end",
+    ] {
+        let n: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "`{index}` is rebuilt");
+    }
+    let leftovers: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '%_0044'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftovers, 0, "no scratch table outlives the migration");
 }

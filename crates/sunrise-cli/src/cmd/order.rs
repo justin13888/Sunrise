@@ -43,11 +43,13 @@ pub(super) async fn move_tasks(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         Drop::Before(a) | Drop::After(a) => a,
         Drop::Top | Drop::Bottom => ids[0],
     };
-    let stream = read_task(ctx.core, anchor).await?.stream_id;
+    // One order per stream, and one for the tasks of no stream, which the
+    // legacy Inbox reference names (`Query::StreamTasks`).
+    let stream = sunrise_domain::stream_key(read_task(ctx.core, anchor).await?.stream_id);
     let mut titles = Vec::with_capacity(ids.len());
     for id in &ids {
         let t = read_task(ctx.core, *id).await?;
-        if t.stream_id != stream {
+        if sunrise_domain::stream_key(t.stream_id) != stream {
             return Err(strings::reorder::other_stream(&id.to_str(), &anchor.to_str()).into());
         }
         titles.push(t.title);

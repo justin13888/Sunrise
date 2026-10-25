@@ -9,9 +9,7 @@ use jiff::civil::{date, DateTime};
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use sunrise_domain::routine::{Routine, RoutineCatchupPolicy, TaskTemplate};
-use sunrise_domain::{
-    inbox_stream_ref, occurrence_task_id, parse_occurrence_key, RRule, SunriseTime, Unknowns,
-};
+use sunrise_domain::{occurrence_task_id, parse_occurrence_key, RRule, SunriseTime, Unknowns};
 use sunrise_id::{EntityKind, EntityRef};
 
 fn zone(name: &str) -> TimeZone {
@@ -26,7 +24,7 @@ fn routine(anchor: SunriseTime, tz: &str, rule: &str) -> Routine {
         updated_at: Timestamp::UNIX_EPOCH,
         template: TaskTemplate {
             title: "Stretch".into(),
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             contexts: Vec::new(),
             energy: None,
             priority: None,

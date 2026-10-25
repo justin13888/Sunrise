@@ -281,7 +281,13 @@ fn stream_and_context_lists_order_in_the_readers_zone() {
         QueryResult::StreamTasks(v) => v.into_iter().map(|t| t.title).collect::<Vec<_>>(),
         other => panic!("expected tasks, got {other:?}"),
     };
-    assert_eq!(titles(Query::Inbox), ["unplanned", "pinned", "floats"]);
+    // The tasks of no stream, the list the Inbox was before it became a
+    // view (ADR-0046 §3), which leaves the planned two out.
+    assert_eq!(
+        titles(Query::StreamTasks(sunrise_domain::inbox_stream_ref())),
+        ["unplanned", "pinned", "floats"]
+    );
+    assert_eq!(titles(Query::Inbox), ["unplanned"]);
     assert_eq!(
         titles(Query::ContextTasks(ctx)),
         ["unplanned", "pinned", "floats"]

@@ -27,7 +27,7 @@ Task = {
     updated_at:    timestamp,         ; merge-derived: the latest stamp of any field op
     title:         text<512>,         ; required, 1..512 chars after trim
     body?:         NoteBody,          ; opaque bytes; see notes.md
-    stream_id?:    entity-ref,        ; str_ ref; absent = no stream (private key domain)
+    stream_id?:    entity-ref,        ; str_ ref; absent, or the private domain's id, = no stream
     contexts:      [* entity-ref],    ; ctx_ refs; OR-set; may be empty
     state:         TaskState,
     priority?:     1..5,              ; 1 = highest, 5 = lowest; absent = unset
@@ -281,9 +281,13 @@ Per [ADR-0044](../11-adr/0044-per-field-ops.md):
 The fields above are the design of record. The tree still ships the previous
 shape, and each gap is tracked:
 
-- `stream_id` is required, and "no stream" is the Inbox sentinel stream
-  (`crates/sunrise-domain/src/task.rs#Task`,
-  `crates/sunrise-domain/src/inbox.rs`): [#332](https://github.com/justin13888/Sunrise/issues/332).
+- "No stream" is written as the private domain's id, the reference every
+  build before [ADR-0046](../11-adr/0046-optional-stream.md) reads as its
+  Inbox, rather than as an absent key, and both read as no stream
+  (`crates/sunrise-domain/src/inbox.rs#home_stream`, ADR-0046 clarification C1). The
+  Inbox predicate reads `scheduled_at` and `due_at`, the two times the tree
+  has, for `planned_at`, `target_at` and `hard_due_at`
+  (`crates/sunrise-domain/src/task.rs#in_inbox`).
 - The two times are `scheduled_at` and `due_at`. `DeferTaskTo` writes the
   `SunriseTime` it is given, of any kind, through the same
   `validate_invariants` as an edit (`crates/sunrise-core/src/engine/task.rs#defer_task`,

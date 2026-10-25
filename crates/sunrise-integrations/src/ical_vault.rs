@@ -75,7 +75,8 @@ pub enum ExportWindow {
     Week,
 }
 
-/// Import every `VEVENT` in `text` as a Block in `stream_id`.
+/// Import every `VEVENT` in `text` as a Block in `stream_id`, or in no
+/// stream for `None` (ADR-0046).
 ///
 /// # Errors
 ///
@@ -85,7 +86,7 @@ pub enum ExportWindow {
 pub async fn import(
     core: &Core,
     text: &str,
-    stream_id: EntityRef,
+    stream_id: Option<EntityRef>,
     source: &str,
 ) -> Result<ImportReport, IntegrationError> {
     let calendar = ical::parse(text)?;

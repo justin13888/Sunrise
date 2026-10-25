@@ -357,7 +357,13 @@ fn diff(
             Crdt::Register => {
                 if create {
                     if let Some(a) = a {
-                        if default_value(kind, after, name).as_ref() != Some(a) {
+                        // A create always writes its stream, even no stream
+                        // (the legacy Inbox reference): a build before
+                        // ADR-0046 has no default for a block's, and would
+                        // hold the block unprojected for want of it.
+                        if name == "stream_id"
+                            || default_value(kind, after, name).as_ref() != Some(a)
+                        {
                             out = out.set(name, a.clone());
                         }
                     }
