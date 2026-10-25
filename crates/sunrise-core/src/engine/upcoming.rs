@@ -106,9 +106,10 @@ fn read_upcoming_tasks(
         "SELECT id FROM tasks
          WHERE deleted = 0 AND archived = 0
            AND state != 'done' AND state != 'cancelled'
-           AND (scheduled_at_ms IS NULL
-             OR (scheduled_at_ms >= ?1 AND scheduled_at_ms < ?2)
-             OR (due_at_ms IS NOT NULL AND due_at_ms >= ?1 AND due_at_ms < ?2))
+           AND (planned_at_ms IS NULL
+             OR (planned_at_ms >= ?1 AND planned_at_ms < ?2)
+             OR (target_at_ms IS NOT NULL AND target_at_ms >= ?1 AND target_at_ms < ?2)
+             OR (hard_due_at_ms IS NOT NULL AND hard_due_at_ms >= ?1 AND hard_due_at_ms < ?2))
          ORDER BY id ASC",
     )?;
     let ids = stmt

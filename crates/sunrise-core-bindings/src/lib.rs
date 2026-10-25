@@ -70,6 +70,7 @@ pub mod flows;
 pub mod full_export;
 pub mod ical;
 pub mod keyboard;
+pub mod lateness;
 pub mod links;
 pub mod note_editing;
 pub mod notes;

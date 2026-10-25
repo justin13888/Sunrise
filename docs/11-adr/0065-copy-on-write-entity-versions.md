@@ -322,8 +322,10 @@ legacy mode D9 defines (D22).
 
 The conflict classes are declared on each field in the registry's
 `for_each_entity!` (`crates/sunrise-id/src/registry.rs`), with the names the
-code uses: the ADR's `planned_at`, `target_at`, `estimate_minutes` and `sort_key`
-are `scheduled_at`, `due_at`, `estimated_duration_s` and `Stream.sort_order`.
+code uses: the ADR's `estimate_minutes` and `sort_key` are
+`estimated_duration_s` and `Stream.sort_order`, and `planned_at` and
+`hard_due_at` keep the wire names `scheduled_at` and `due_at` (ADR-0047 C1);
+`target_at` is its own tracked register from `DOC_SCHEMA_V` 20.
 The terminal states, the D7 precedence and the yield rule are hashed into the
 schema fingerprint beside the classes, from `DOC_SCHEMA_V` 14.
 

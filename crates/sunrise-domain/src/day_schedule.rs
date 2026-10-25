@@ -22,6 +22,9 @@
 //! - [`plannable`]: the wake-to-sleep window inside it.
 //! - [`planner_date`]: the planner day an instant belongs to.
 //! - [`wind_down_at`]: the sleep time less the lead, when there is one.
+//! - [`starts_at`] and [`deadline_at`]: when a stored time starts, and when
+//!   it is missed as a deadline, with an all-day value on its planner day
+//!   (`boundary(d)` and `boundary(d + 1)`, ADR-0047 §Due instant).
 
 use crate::preferences::PrefValue;
 use crate::rrule::Weekday;
@@ -402,6 +405,52 @@ pub fn planner_day_of(schedule: &DaySchedule, value: &SunriseTime, tz: &TimeZone
     match value {
         SunriseTime::AllDay { date } => Some(*date),
         _ => planner_date(schedule, value.resolve_in(tz)?, tz).ok(),
+    }
+}
+
+/// The instant a stored time **starts** at for a reader in `tz` whose days
+/// are `schedule`'s planner days: the start of an all-day value's planner
+/// day, `boundary(d)`, and the resolved instant of every other kind
+/// (`docs/10-cross-cutting/time.md` §2 rule 1, §4).
+///
+/// With an empty schedule an all-day value starts at civil midnight, which
+/// is [`SunriseTime::resolve_in`]. `None` for a value with no instant
+/// (`docs/11-adr/0066-times-survive-travel.md` §3), which is compared with
+/// nothing.
+#[must_use]
+pub fn starts_at(schedule: &DaySchedule, value: &SunriseTime, tz: &TimeZone) -> Option<Timestamp> {
+    match value {
+        SunriseTime::AllDay { date } => {
+            day_bounds(schedule, *date, tz).ok().map(|(start, _)| start)
+        }
+        _ => value.resolve_in(tz),
+    }
+}
+
+/// The instant a stored time is **missed** at, read as a deadline by a
+/// reader in `tz` whose days are `schedule`'s planner days: `due()` in
+/// ADR-0047 §Due instant.
+///
+/// | Kind | Missed at |
+/// |---|---|
+/// | `instant` | the instant |
+/// | `zoned` | the civil time in its own zone |
+/// | `floating` | the civil time in the reader's zone |
+/// | `all_day(d)` | `boundary(d + 1)`, the end of planner day `d` |
+///
+/// So an all-day deadline of Friday is not missed at 00:30 on Saturday for
+/// someone whose Friday runs until 01:00. With an empty schedule it is the
+/// next civil midnight, which is [`SunriseTime::due_in`]. `None` for a value
+/// with no instant, which is never missed.
+#[must_use]
+pub fn deadline_at(
+    schedule: &DaySchedule,
+    value: &SunriseTime,
+    tz: &TimeZone,
+) -> Option<Timestamp> {
+    match value {
+        SunriseTime::AllDay { date } => day_bounds(schedule, *date, tz).ok().map(|(_, end)| end),
+        _ => value.resolve_in(tz),
     }
 }
 

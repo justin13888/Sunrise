@@ -69,6 +69,10 @@ Field-level rationale:
 - **Three times, three owners.** `planned_at` is a plan, `target_at` is a
   goal, `hard_due_at` is a fact about the world. Defer and the planner write
   only `planned_at` ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §1).
+  On the wire `planned_at` is the key `scheduled_at` and `hard_due_at` the
+  key `due_at`, the names those two meanings always had, so a build before
+  `DOC_SCHEMA_V` 20 reads them right; `target_at` is its own key, absent when
+  unset ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) C1).
 - `priority` is 1..5, not a free integer, to keep UI affordances finite.
 - `energy` is a Sunrise-specific facet: multi-stream operators choose work by
   energy, not just priority.
@@ -284,20 +288,24 @@ shape, and each gap is tracked:
 - "No stream" is written as the private domain's id, the reference every
   build before [ADR-0046](../11-adr/0046-optional-stream.md) reads as its
   Inbox, rather than as an absent key, and both read as no stream
-  (`crates/sunrise-domain/src/inbox.rs#home_stream`, ADR-0046 clarification C1). The
-  Inbox predicate reads `scheduled_at` and `due_at`, the two times the tree
-  has, for `planned_at`, `target_at` and `hard_due_at`
-  (`crates/sunrise-domain/src/task.rs#in_inbox`).
-- The two times are `scheduled_at` and `due_at`. `DeferTaskTo` writes the
-  `SunriseTime` it is given, of any kind, through the same
-  `validate_invariants` as an edit (`crates/sunrise-core/src/engine/task.rs#defer_task`,
+  (`crates/sunrise-domain/src/inbox.rs#home_stream`, ADR-0046 clarification C1).
+- The three times are on the Task from `DOC_SCHEMA_V` 20 (migration 0045,
+  [#334](https://github.com/justin13888/Sunrise/issues/334)). On the wire
+  `planned_at` and `hard_due_at` keep the keys `scheduled_at` and `due_at`,
+  which every older build reads with these meanings, and `target_at` is a key
+  of its own (ADR-0047 clarification C1); the UniFFI `TaskItem` keeps
+  `scheduledAt` and `dueAt` for the same two and adds `targetAt`. Lateness is
+  `crates/sunrise-domain/src/lateness.rs#lateness`, read by `Query::TodayView`,
+  `Query::Lateness`, search and saved views; the order of the three times is
+  `CommandResult::ordering_warnings`. `DeferTaskTo` writes the `SunriseTime`
+  it is given, of any kind (`crates/sunrise-core/src/engine/task.rs#defer_task`,
   [ADR-0066](../11-adr/0066-times-survive-travel.md) §4); `DeferTask` is kept
   beside it for the callers that send epoch milliseconds, the CLI and the
   UniFFI command, and still writes an `Instant`. `completed_at` can only
-  be "now": [#334](https://github.com/justin13888/Sunrise/issues/334), [#335](https://github.com/justin13888/Sunrise/issues/335).
+  be "now", and there is no triage queue yet:
+  [#335](https://github.com/justin13888/Sunrise/issues/335).
 - The whole Task merges as one full-state LWW unit, so `contexts`, `blocked_by`
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).
-- The `due ≥ scheduled` check compares storage index keys: [#336](https://github.com/justin13888/Sunrise/issues/336).
 - Undo of a delete is `Command::Restore`, a later write of `deleted = false`
   (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). In a vault that
   requires `core.field_ops` it is a `Patch` of `deleted` naming every head;

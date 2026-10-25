@@ -71,14 +71,18 @@ pub struct UpcomingDay<B> {
     /// Blocks overlapping `[start, end)`, by resolved start, then id. A block
     /// that runs past midnight is on both days, as on the calendar grid.
     pub blocks: Vec<B>,
-    /// Tasks whose `scheduled_at` falls on this day: timed ones in time
+    /// Tasks whose `planned_at` falls on this day: timed ones in time
     /// order, then all-day ones by Stream, each list then by id.
     pub planned: Vec<Task>,
-    /// Tasks whose `due_at` falls on this day and that are not planned for
-    /// it, by deadline, then priority, then id. #334 splits this list by
-    /// which deadline it is (`target_at`, `hard_due_at`); today a task has
-    /// one deadline.
+    /// Tasks whose hard deadline (`hard_due_at`) falls on this day and that
+    /// are not planned for it, by deadline, then priority, then id.
     pub due: Vec<Task>,
+    /// Tasks whose soft deadline (`target_at`) falls on this day, that are
+    /// not planned for it and whose hard deadline is not on it too (that
+    /// task is in [`Self::due`]), by target, then priority, then id. With
+    /// [`Self::due`], a day's deadlines "marked by which deadline it is"
+    /// (`planning-views.md` §Upcoming).
+    pub targets: Vec<Task>,
 }
 
 /// One Stream's group in the no-date lane.
@@ -91,8 +95,8 @@ pub struct NoDateGroup {
     /// (`docs/11-adr/0046-optional-stream.md`): the tasks that belong to no
     /// stream.
     pub no_stream: bool,
-    /// The first [`NO_DATE_LANE_CAP`] tasks: by deadline (none last), then
-    /// priority (none last), then id.
+    /// The first [`NO_DATE_LANE_CAP`] tasks: by target date, then hard
+    /// deadline (each none last), then priority (none last), then id.
     pub tasks: Vec<Task>,
     /// How many tasks the group holds in all; `total - tasks.len()` is the
     /// "N more".
@@ -108,7 +112,7 @@ pub struct Upcoming<B> {
     pub span_days: u32,
     /// One entry per planner day from today, `span_days` of them.
     pub days: Vec<UpcomingDay<B>>,
-    /// Open tasks with no `scheduled_at`, grouped by Stream in the stream
+    /// Open tasks with no `planned_at`, grouped by Stream in the stream
     /// list's order, the "No stream" group last.
     pub no_date: Vec<NoDateGroup>,
 }
@@ -224,6 +228,7 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
             blocks: Vec::new(),
             planned: Vec::new(),
             due: Vec::new(),
+            targets: Vec::new(),
         })
         .collect();
     let index: BTreeMap<Date, usize> = bounds
@@ -235,17 +240,23 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
     let mut no_date: BTreeMap<Option<EntityRef>, Vec<Task>> = BTreeMap::new();
     for t in open {
         let day_of = |v: &SunriseTime| planner_day_of(input.schedule, v, tz);
-        let planned_day = t.scheduled_at.as_ref().and_then(day_of);
+        let planned_day = t.planned_at.as_ref().and_then(day_of);
         if let Some(i) = planned_day.and_then(|d| index.get(&d)) {
             days[*i].planned.push(t.clone());
         }
-        let due_day = t.due_at.as_ref().and_then(day_of);
+        let due_day = t.hard_due_at.as_ref().and_then(day_of);
         if let Some(d) = due_day.filter(|d| Some(*d) != planned_day) {
             if let Some(i) = index.get(&d) {
                 days[*i].due.push(t.clone());
             }
         }
-        if t.scheduled_at.is_none() {
+        let target_day = t.target_at.as_ref().and_then(day_of);
+        if let Some(d) = target_day.filter(|d| Some(*d) != planned_day && Some(*d) != due_day) {
+            if let Some(i) = index.get(&d) {
+                days[*i].targets.push(t.clone());
+            }
+        }
+        if t.planned_at.is_none() {
             no_date.entry(t.stream_id).or_default().push(t.clone());
         }
     }
@@ -253,13 +264,17 @@ pub fn build_upcoming<B: Clone>(input: UpcomingInput<'_, B>) -> Result<Upcoming<
     for day in &mut days {
         day.planned.sort_by(|a, b| planned_order(a, b, tz, &rank));
         day.due.sort_by(|a, b| deadline_order(a, b, tz));
+        day.targets.sort_by(|a, b| target_order(a, b, tz));
         day.blocks = blocks_on(input.blocks, input.block_of, day.start, day.end, tz);
     }
 
     let mut groups: Vec<NoDateGroup> = no_date
         .into_iter()
         .map(|(stream, mut tasks)| {
-            tasks.sort_by(|a, b| deadline_order(a, b, tz));
+            tasks.sort_by(|a, b| {
+                cmp_time(a.target_at.as_ref(), b.target_at.as_ref(), tz)
+                    .then_with(|| deadline_order(a, b, tz))
+            });
             let total = u32::try_from(tasks.len()).unwrap_or(u32::MAX);
             tasks.truncate(NO_DATE_LANE_CAP);
             NoDateGroup {
@@ -300,7 +315,7 @@ fn carries_any(t: &Task, contexts: &[EntityRef]) -> bool {
 /// Timed plans in the reader's time order, then all-day ones by Stream, then
 /// id.
 fn planned_order(a: &Task, b: &Task, tz: &TimeZone, rank: &StreamRank) -> Ordering {
-    let all_day = |t: &Task| t.scheduled_at.as_ref().is_some_and(SunriseTime::is_all_day);
+    let all_day = |t: &Task| t.planned_at.as_ref().is_some_and(SunriseTime::is_all_day);
     all_day(a)
         .cmp(&all_day(b))
         .then_with(|| {
@@ -310,17 +325,29 @@ fn planned_order(a: &Task, b: &Task, tz: &TimeZone, rank: &StreamRank) -> Orderi
                     crate::stream_key(b.stream_id),
                 )
             } else {
-                cmp_time(a.scheduled_at.as_ref(), b.scheduled_at.as_ref(), tz)
+                cmp_time(a.planned_at.as_ref(), b.planned_at.as_ref(), tz)
             }
         })
         .then_with(|| a.id.cmp(&b.id))
 }
 
-/// By deadline (none last), then priority (none last), then id: the order
-/// `docs/08-features/planning-views.md` gives the no-date lane, and the one a
-/// day's deadlines use.
+/// By target (none last), then priority (none last), then id: the order of
+/// a day's soft deadlines.
+fn target_order(a: &Task, b: &Task, tz: &TimeZone) -> Ordering {
+    cmp_time(a.target_at.as_ref(), b.target_at.as_ref(), tz)
+        .then_with(|| {
+            a.priority
+                .unwrap_or(u8::MAX)
+                .cmp(&b.priority.unwrap_or(u8::MAX))
+        })
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// By hard deadline (none last), then priority (none last), then id: the
+/// order a day's hard deadlines use, and the no-date lane's after its target
+/// date (`docs/08-features/planning-views.md` §Upcoming).
 fn deadline_order(a: &Task, b: &Task, tz: &TimeZone) -> Ordering {
-    cmp_time(a.due_at.as_ref(), b.due_at.as_ref(), tz)
+    cmp_time(a.hard_due_at.as_ref(), b.hard_due_at.as_ref(), tz)
         .then_with(|| {
             a.priority
                 .unwrap_or(u8::MAX)

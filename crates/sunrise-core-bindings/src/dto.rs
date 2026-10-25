@@ -395,9 +395,11 @@ pub struct TaskItem {
     pub energy: Option<Energy>,
     /// Estimate, in seconds.
     pub estimated_duration_s: Option<u64>,
-    /// When the user intends to do it.
+    /// When the user intends to work on it: the task's `planned_at`
+    /// (ADR-0047 §1), under the name it has always had here.
     pub scheduled_at: Option<TimeValue>,
-    /// Hard deadline.
+    /// The hard deadline: the task's `hard_due_at` (ADR-0047 §1), under the
+    /// name it has always had here.
     pub due_at: Option<TimeValue>,
     /// Scheduling constraints.
     pub scheduling_constraints: Vec<Constraint>,
@@ -434,6 +436,9 @@ pub struct TaskItem {
     /// `CoreCommand::MarkTriaged` sets it, `ReturnToInbox` clears it.
     #[uniffi(default = None)]
     pub triaged_at: Option<jiff::Timestamp>,
+    /// The soft deadline (`target_at`, ADR-0047 §1), or none.
+    #[uniffi(default = None)]
+    pub target_at: Option<TimeValue>,
 }
 
 impl From<&Task> for TaskItem {
@@ -450,8 +455,9 @@ impl From<&Task> for TaskItem {
             priority,
             energy,
             estimated_duration_s,
-            scheduled_at,
-            due_at,
+            planned_at,
+            target_at,
+            hard_due_at,
             scheduling_constraints,
             completed_at,
             deferred_count,
@@ -480,8 +486,8 @@ impl From<&Task> for TaskItem {
             priority: *priority,
             energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
-            scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
-            due_at: due_at.as_ref().map(TimeValue::from),
+            scheduled_at: planned_at.as_ref().map(TimeValue::from),
+            due_at: hard_due_at.as_ref().map(TimeValue::from),
             scheduling_constraints: scheduling_constraints
                 .iter()
                 .map(Constraint::from)
@@ -499,6 +505,7 @@ impl From<&Task> for TaskItem {
             sort_order: sort_order.clone(),
             home_stream: *stream_id,
             triaged_at: *triaged_at,
+            target_at: target_at.as_ref().map(TimeValue::from),
         }
     }
 }
@@ -520,9 +527,9 @@ pub struct TaskDraftIn {
     pub energy: Option<Energy>,
     /// Estimate, in seconds.
     pub estimated_duration_s: Option<u64>,
-    /// When to do it.
+    /// When to do it: `planned_at`.
     pub scheduled_at: Option<TimeValue>,
-    /// Deadline.
+    /// The hard deadline: `hard_due_at`.
     pub due_at: Option<TimeValue>,
     /// Scheduling constraints.
     pub scheduling_constraints: Vec<Constraint>,
@@ -530,6 +537,9 @@ pub struct TaskDraftIn {
     pub assignee: Option<EntityRef>,
     /// Per-task reminder lead time in seconds.
     pub reminder_lead_s: Option<u32>,
+    /// The soft deadline: `target_at`.
+    #[uniffi(default = None)]
+    pub target_at: Option<TimeValue>,
 }
 
 impl From<TaskDraftIn> for sunrise_domain::TaskDraft {
@@ -542,8 +552,9 @@ impl From<TaskDraftIn> for sunrise_domain::TaskDraft {
             priority: d.priority,
             energy: d.energy,
             estimated_duration_s: d.estimated_duration_s,
-            scheduled_at: d.scheduled_at.map(SunriseTime::from),
-            due_at: d.due_at.map(SunriseTime::from),
+            planned_at: d.scheduled_at.map(SunriseTime::from),
+            target_at: d.target_at.map(SunriseTime::from),
+            hard_due_at: d.due_at.map(SunriseTime::from),
             scheduling_constraints: d
                 .scheduling_constraints
                 .into_iter()
@@ -609,16 +620,16 @@ pub struct TaskEdit {
     /// Clear the estimate.
     #[uniffi(default = false)]
     pub clear_estimated_duration: bool,
-    /// New scheduled time.
+    /// New plan (`planned_at`).
     #[uniffi(default = None)]
     pub set_scheduled_at: Option<TimeValue>,
-    /// Clear the scheduled time.
+    /// Clear the plan.
     #[uniffi(default = false)]
     pub clear_scheduled_at: bool,
-    /// New deadline.
+    /// New hard deadline (`hard_due_at`).
     #[uniffi(default = None)]
     pub set_due_at: Option<TimeValue>,
-    /// Clear the deadline.
+    /// Clear the hard deadline.
     #[uniffi(default = false)]
     pub clear_due_at: bool,
     /// Replace the whole constraint list.
@@ -642,6 +653,12 @@ pub struct TaskEdit {
     /// Archive or unarchive.
     #[uniffi(default = None)]
     pub archived: Option<bool>,
+    /// New soft deadline (`target_at`).
+    #[uniffi(default = None)]
+    pub set_target_at: Option<TimeValue>,
+    /// Clear the soft deadline.
+    #[uniffi(default = false)]
+    pub clear_target_at: bool,
 }
 
 /// `Some(None)` when `clear`, `Some(Some(v))` when set, `None` when neither.
@@ -672,11 +689,12 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
                 e.set_estimated_duration_s,
                 e.clear_estimated_duration,
             ),
-            scheduled_at: patch_field(
+            planned_at: patch_field(
                 e.set_scheduled_at.map(SunriseTime::from),
                 e.clear_scheduled_at,
             ),
-            due_at: patch_field(e.set_due_at.map(SunriseTime::from), e.clear_due_at),
+            target_at: patch_field(e.set_target_at.map(SunriseTime::from), e.clear_target_at),
+            hard_due_at: patch_field(e.set_due_at.map(SunriseTime::from), e.clear_due_at),
             scheduling_constraints: e
                 .scheduling_constraints
                 .map(|l| l.into_iter().map(ScheduleConstraint::from).collect()),
@@ -2841,6 +2859,12 @@ pub struct CommandOutcome {
     /// The standing set, not this command's delta: a user who missed it last
     /// time is entitled to be told again.
     pub revocation_unwound: Vec<String>,
+    /// The orderings of the task's three times the accepted write leaves
+    /// broken (ADR-0047 §1): `target_after_hard_due`,
+    /// `planned_after_hard_due`. A warning to show, never a refusal; empty
+    /// for every command that writes no task.
+    #[uniffi(default = [])]
+    pub ordering_warnings: Vec<String>,
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -2851,6 +2875,7 @@ impl From<&CommandResult> for CommandOutcome {
             op_id,
             seq,
             soft_violations,
+            ordering_warnings,
             unrotated_streams,
             revocation_gated,
             revocation_unwound,
@@ -2864,6 +2889,10 @@ impl From<&CommandResult> for CommandOutcome {
             unrotated_streams: unrotated_streams.clone(),
             revocation_gated: *revocation_gated,
             revocation_unwound: revocation_unwound.clone(),
+            ordering_warnings: ordering_warnings
+                .iter()
+                .map(|w| w.as_str().to_owned())
+                .collect(),
         }
     }
 }
@@ -3611,8 +3640,9 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
             priority,
             energy,
             estimated_duration_s,
-            scheduled_at,
-            due_at,
+            planned_at,
+            target_at,
+            hard_due_at,
             scheduling_constraints,
             assignee,
             reminder_lead_s,
@@ -3625,14 +3655,15 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
             priority: *priority,
             energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
-            scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
-            due_at: due_at.as_ref().map(TimeValue::from),
+            scheduled_at: planned_at.as_ref().map(TimeValue::from),
+            due_at: hard_due_at.as_ref().map(TimeValue::from),
             scheduling_constraints: scheduling_constraints
                 .iter()
                 .map(Constraint::from)
                 .collect(),
             assignee: *assignee,
             reminder_lead_s: *reminder_lead_s,
+            target_at: target_at.as_ref().map(TimeValue::from),
         }
     }
 }

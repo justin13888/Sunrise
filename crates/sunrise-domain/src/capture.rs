@@ -188,7 +188,7 @@ pub fn parse(
                 // so "next saturday" beats "next".
                 let (consumed, parsed) = take_date(&words, i, rest, now, tz);
                 if let Some(at) = parsed {
-                    draft.scheduled_at = Some(at);
+                    draft.planned_at = Some(at);
                 } else {
                     unresolved.push(Unresolved::UnparseableDate(
                         words[i..i + consumed].join(" "),
@@ -201,7 +201,15 @@ pub fn parse(
                 if let Some(body) = strip_due(w) {
                     // `*due:tomorrow*` — single-token form.
                     if let Some(at) = parse_when_time(body, now, tz) {
-                        draft.due_at = Some(at);
+                        draft.hard_due_at = Some(at);
+                    } else {
+                        unresolved.push(Unresolved::UnparseableDate(body.to_string()));
+                        title_words.push(w);
+                    }
+                } else if let Some(body) = strip_target(w) {
+                    // `*target:friday*` — the soft deadline (ADR-0047 §1).
+                    if let Some(at) = parse_when_time(body, now, tz) {
+                        draft.target_at = Some(at);
                     } else {
                         unresolved.push(Unresolved::UnparseableDate(body.to_string()));
                         title_words.push(w);
@@ -231,6 +239,12 @@ fn split_tag(w: &str) -> (Option<char>, &str) {
 /// `*due:tomorrow*` → `Some("tomorrow")`.
 fn strip_due(w: &str) -> Option<&str> {
     let inner = w.strip_prefix("*due:")?.strip_suffix('*')?;
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// `*target:friday*`, the soft deadline, as `*due:*` is the hard one.
+fn strip_target(w: &str) -> Option<&str> {
+    let inner = w.strip_prefix("*target:")?.strip_suffix('*')?;
     (!inner.is_empty()).then_some(inner)
 }
 

@@ -260,7 +260,8 @@ impl Engine {
     pub(super) fn query_inbox(&self, db: &Db) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
             "SELECT id FROM tasks
-             WHERE stream_id IS NULL AND scheduled_at_ms IS NULL AND due_at_ms IS NULL
+             WHERE stream_id IS NULL AND planned_at_ms IS NULL AND hard_due_at_ms IS NULL
+               AND target_at_ms IS NULL
                AND triaged_at_ms IS NULL AND deleted = 0 AND archived = 0",
         )?;
         let ids = stmt

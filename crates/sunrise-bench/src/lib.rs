@@ -164,14 +164,14 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
     };
 
     let base = i64::try_from(FIXED_NOW_MS).expect("fixed now fits i64");
-    // scheduled_at: present ~70% of the time, spread -30..=30 days.
+    // planned_at: present ~70% of the time, spread -30..=30 days.
     let scheduled_at = if rng.next_u32() % 10 < 7 {
         let off_days = i64::from(rng.next_u32() % 61) - 30;
         Some(ts(base + off_days * DAY_MS))
     } else {
         None
     };
-    // due_at: present ~40% of the time. When both are set, keep due >= scheduled
+    // hard_due_at: present ~40% of the time. When both are set, keep due >= scheduled
     // by anchoring it 0..=14 days after the scheduled instant.
     let due_at = if rng.next_u32() % 10 < 4 {
         let extra_days = i64::from(rng.next_u32() % 15);
@@ -192,8 +192,8 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 
     TaskDraft {
         title,
-        scheduled_at: scheduled_at.map(Into::into),
-        due_at: due_at.map(Into::into),
+        planned_at: scheduled_at.map(Into::into),
+        hard_due_at: due_at.map(Into::into),
         priority,
         ..Default::default()
     }
@@ -205,7 +205,7 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 pub fn submit_draft() -> TaskDraft {
     TaskDraft {
         title: "review budget report".to_string(),
-        scheduled_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS).into()),
+        planned_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS).into()),
         ..Default::default()
     }
 }

@@ -14,7 +14,7 @@ use crate::task::Task;
 /// (`blocks`, which is a Block-side fact) and pure bookkeeping (`updated_at`,
 /// `routine_occurrence`) are deliberately absent, because a feed that counted
 /// them would report edits the user never made.
-pub const TRACKED_TASK_FIELDS: [&str; 15] = [
+pub const TRACKED_TASK_FIELDS: [&str; 16] = [
     "title",
     "body",
     "stream_id",
@@ -25,6 +25,7 @@ pub const TRACKED_TASK_FIELDS: [&str; 15] = [
     "estimated_duration_s",
     "scheduled_at",
     "due_at",
+    "target_at",
     "scheduling_constraints",
     "blocked_by",
     "assignee",
@@ -51,8 +52,9 @@ pub fn changed_task_fields(prev: &Task, next: &Task) -> Vec<&'static str> {
         prev.priority != next.priority,
         prev.energy != next.energy,
         prev.estimated_duration_s != next.estimated_duration_s,
-        prev.scheduled_at != next.scheduled_at,
-        prev.due_at != next.due_at,
+        prev.planned_at != next.planned_at,
+        prev.hard_due_at != next.hard_due_at,
+        prev.target_at != next.target_at,
         prev.scheduling_constraints != next.scheduling_constraints,
         prev.blocked_by != next.blocked_by,
         prev.assignee != next.assignee,

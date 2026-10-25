@@ -146,11 +146,11 @@ fn task() -> Task {
         "state": "todo",
     }))
     .expect("a minimal task");
-    t.scheduled_at = Some(SunriseTime::zoned(
+    t.planned_at = Some(SunriseTime::zoned(
         date(2026, 3, 1).at(9, 0, 0, 0),
         "Europe/Berlin",
     ));
-    t.due_at = Some(SunriseTime::all_day(date(2026, 3, 2)));
+    t.hard_due_at = Some(SunriseTime::all_day(date(2026, 3, 2)));
     t.scheduling_constraints = vec![full_constraint(), full_constraint()];
     t
 }
@@ -334,8 +334,8 @@ proptest! {
         per_map in proptest::collection::vec(injection(), 0..12),
     ) {
         let mut t = task();
-        t.scheduled_at = Some(scheduled);
-        t.due_at = Some(due);
+        t.planned_at = Some(scheduled);
+        t.hard_due_at = Some(due);
         survives(&t, &per_map)?;
 
         let mut b = block();

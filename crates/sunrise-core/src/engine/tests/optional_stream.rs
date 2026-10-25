@@ -321,7 +321,7 @@ fn the_inbox_is_a_view_nothing_has_to_clear() {
         &mut db,
         t,
         TaskPatch {
-            scheduled_at: Some(Some(plan.clone())),
+            planned_at: Some(Some(plan.clone())),
             ..Default::default()
         },
     );
@@ -331,8 +331,8 @@ fn the_inbox_is_a_view_nothing_has_to_clear() {
         &mut db,
         t,
         TaskPatch {
-            scheduled_at: Some(None),
-            due_at: Some(Some(plan)),
+            planned_at: Some(None),
+            hard_due_at: Some(Some(plan)),
             ..Default::default()
         },
     );
@@ -342,7 +342,7 @@ fn the_inbox_is_a_view_nothing_has_to_clear() {
         &mut db,
         t,
         TaskPatch {
-            due_at: Some(None),
+            hard_due_at: Some(None),
             stream_id: Some(Some(work)),
             ..Default::default()
         },
@@ -900,10 +900,10 @@ fn a_saved_views_no_stream_part_keeps_the_tasks_of_no_stream() {
     let filed = read_task_t(&e, &db, filed);
     let other = task_in(&e, &mut db, "other", Some(home_));
     let other = read_task_t(&e, &db, other);
-    let reader = FilterReader {
-        tz: jiff::tz::TimeZone::UTC,
-        today: jiff::civil::date(2026, 1, 1),
-    };
+    let reader = FilterReader::civil(
+        jiff::tz::TimeZone::UTC,
+        "2026-01-01T12:00:00Z".parse().unwrap(),
+    );
     let keeps = |f: &ViewFilter| -> Vec<bool> {
         [&loose, &filed, &other]
             .iter()
@@ -935,7 +935,7 @@ fn today_and_upcoming_hold_tasks_of_no_stream() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "today".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOW + 3_600_000))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOW + 3_600_000))),
                 ..Default::default()
             }),
         )

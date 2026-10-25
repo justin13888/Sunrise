@@ -249,12 +249,7 @@ impl super::Engine {
         let view = self.live_saved_view(db, id)?;
         let tz = self.device_zone();
         let now_ms = self.clock.now_ms();
-        let schedule = self.day_schedule(db)?;
-        let (today, _, _) = self.planner_day_at(&schedule, now_ms)?;
-        let reader = FilterReader {
-            tz: tz.clone(),
-            today,
-        };
+        let reader: FilterReader = self.lateness_reader(db, now_ms)?.filter_reader();
         let filter = &view.filter;
         let tasks_of = |r: QueryResult| match r {
             QueryResult::Tasks(t) | QueryResult::StreamTasks(t) => t,

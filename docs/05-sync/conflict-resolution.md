@@ -117,7 +117,7 @@ D4), exactly as before.
 
 ### Concurrent deadline edits
 
-Both set `hard_due_at` (in the tree today, `due_at`). Each write is a `Patch`
+Both set `hard_due_at` (on the wire, `due_at`, ADR-0047 C1). Each write is a `Patch`
 of that one register, and it is a tracked field: the later stamp wins, the
 other is kept and reported as a conflict on it, and a concurrent edit to any
 *other* field on either side survives. In a vault still in legacy mode the

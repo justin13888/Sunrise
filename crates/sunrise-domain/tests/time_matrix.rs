@@ -15,9 +15,9 @@ use jiff::Timestamp;
 use std::collections::BTreeSet;
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::{
-    is_overdue, overlaps, plan_reminders, plan_reminders_reported, shift_civil_days, Block,
-    ReminderCandidate, ReminderIntent, ReminderKind, ReminderSettings, SunriseTime, TaskDraft,
-    Unresolvable, ValidationError,
+    is_overdue, lateness, overlaps, plan_reminders, plan_reminders_reported, shift_civil_days,
+    Block, DaySchedule, Lateness, OrderingWarning, ReminderCandidate, ReminderIntent, ReminderKind,
+    ReminderSettings, SunriseTime, Task, TaskDraft, Unresolvable,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -191,37 +191,44 @@ fn the_prefilter_admits_every_row_the_exact_filter_keeps() {
 // Tasks: validation and lateness.
 // ---------------------------------------------------------------------------
 
-fn draft(scheduled_at: SunriseTime, due_at: SunriseTime) -> TaskDraft {
-    TaskDraft {
-        title: "t".into(),
-        scheduled_at: Some(scheduled_at),
-        due_at: Some(due_at),
-        ..Default::default()
-    }
+fn planned_and_due(planned_at: SunriseTime, hard_due_at: SunriseTime) -> Task {
+    Task::from_draft(
+        EntityRef::new(EntityKind::Task, [1u8; 16]),
+        Timestamp::UNIX_EPOCH,
+        TaskDraft {
+            title: "t".into(),
+            planned_at: Some(planned_at),
+            hard_due_at: Some(hard_due_at),
+            ..Default::default()
+        },
+    )
 }
 
 /// A plan at 01:30 and a deadline at 01:40 on New York's fall-back night are
 /// both the first pass through the fold, so the plan is before the deadline.
 /// On a spring-forward night a floating 02:30 plan (03:30 EDT) is after a
-/// zoned 03:15 deadline, and refused.
+/// zoned 03:15 deadline, and warned about (ADR-0047 §1: never refused).
 #[test]
 fn due_after_scheduled_holds_across_a_fold_and_a_gap() {
     let ny = tz("America/New_York");
+    let none = DaySchedule::default();
     let fold = date(2026, 11, 1);
-    draft(
-        SunriseTime::floating(fold.at(1, 30, 0, 0)),
-        SunriseTime::floating(fold.at(1, 40, 0, 0)),
-    )
-    .validate(&ny)
-    .unwrap();
+    assert_eq!(
+        planned_and_due(
+            SunriseTime::floating(fold.at(1, 30, 0, 0)),
+            SunriseTime::floating(fold.at(1, 40, 0, 0)),
+        )
+        .ordering_warnings(&ny, &none),
+        []
+    );
     let gap = date(2026, 3, 8);
     assert_eq!(
-        draft(
+        planned_and_due(
             SunriseTime::floating(gap.at(2, 30, 0, 0)),
             SunriseTime::zoned(gap.at(3, 15, 0, 0), "America/New_York"),
         )
-        .validate(&ny),
-        Err(ValidationError::DueBeforeScheduled)
+        .ordering_warnings(&ny, &none),
+        [OrderingWarning::PlannedAfterHardDue]
     );
 }
 
@@ -235,6 +242,20 @@ fn an_all_day_deadline_is_late_in_one_zone_and_on_track_in_the_other() {
     let due = SunriseTime::all_day(date(2026, 6, 2));
     assert!(is_overdue(&due, now, &tz("Pacific/Apia")));
     assert!(!is_overdue(&due, now, &tz("Pacific/Pago_Pago")));
+    let mut t = planned_and_due(SunriseTime::all_day(date(2026, 6, 1)), due);
+    t.planned_at = None;
+    let read = |zone: &str| {
+        lateness(
+            &t,
+            at("2026-06-02T12:00:00Z"),
+            &tz(zone),
+            &DaySchedule::default(),
+            14,
+        )
+        .state
+    };
+    assert_eq!(read("Pacific/Apia"), Lateness::LateHard);
+    assert_eq!(read("Pacific/Pago_Pago"), Lateness::OnTrack);
 }
 
 /// New York to Kolkata mid-day: a floating 09:00 task moves to 09:00 IST, a

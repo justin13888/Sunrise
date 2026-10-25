@@ -39,8 +39,12 @@ export interface Task {
     /** A known `TaskState`, or a newer build's state kept verbatim. */
     state: string;
     stream_id: string;
+    /** The plan (`planned_at`, ADR-0047), under its wire name. */
     scheduled_at?: string | null;
+    /** The hard deadline (`hard_due_at`), under its wire name. */
     due_at?: string | null;
+    /** The soft deadline; absent when unset. */
+    target_at?: string | null;
 }
 
 export interface CoreApi {

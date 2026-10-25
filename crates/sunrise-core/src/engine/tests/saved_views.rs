@@ -463,7 +463,7 @@ fn a_today_view_and_an_inbox_view_start_from_their_screens() {
         &mut p.dba,
         Command::CreateTask(TaskDraft {
             title: "planned".into(),
-            scheduled_at: Some(SunriseTime::instant(crate::engine::ids::ms_to_ts(
+            planned_at: Some(SunriseTime::instant(crate::engine::ids::ms_to_ts(
                 i64::try_from(T0).unwrap() + 3_600_000,
             ))),
             ..Default::default()

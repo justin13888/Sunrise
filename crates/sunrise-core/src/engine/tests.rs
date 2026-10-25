@@ -245,7 +245,7 @@ mod testutil {
         db.conn()
             .query_row(
                 "SELECT count(*) FROM tasks
-                     WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
+                     WHERE routine_id = ? AND deleted = 0 AND planned_at_ms <= ?",
                 params![rid.bytes().to_vec(), NOW],
                 |r| r.get(0),
             )
@@ -1201,7 +1201,7 @@ mod testutil {
         let mut stmt = db
             .conn()
             .prepare(
-                "SELECT id, title, state, scheduled_at_ms, due_at_ms, stream_id,
+                "SELECT id, title, state, planned_at_ms, hard_due_at_ms, stream_id,
                             deleted, deferred_count, completed_at_ms
                      FROM tasks ORDER BY id ASC",
             )
@@ -1747,7 +1747,7 @@ fn defer_increments_count() {
         _ => panic!(),
     };
     assert_eq!(t.deferred_count, 1);
-    assert!(t.scheduled_at.is_some());
+    assert!(t.planned_at.is_some());
 }
 
 #[test]
@@ -3060,7 +3060,7 @@ fn today_query_returns_tasks_due_in_window() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "soon".into(),
-            due_at: Some(due_soon.into()),
+            hard_due_at: Some(due_soon.into()),
             ..Default::default()
         }),
     )
@@ -3070,7 +3070,7 @@ fn today_query_returns_tasks_due_in_window() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "far".into(),
-            due_at: Some(far.into()),
+            hard_due_at: Some(far.into()),
             ..Default::default()
         }),
     )
@@ -3112,7 +3112,7 @@ fn today_query_filters_by_context() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "at home".into(),
-            due_at: Some(due_soon.into()),
+            hard_due_at: Some(due_soon.into()),
             contexts: vec![home],
             ..Default::default()
         }),
@@ -3122,7 +3122,7 @@ fn today_query_filters_by_context() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "at work".into(),
-            due_at: Some(due_soon.into()),
+            hard_due_at: Some(due_soon.into()),
             contexts: vec![work],
             ..Default::default()
         }),
@@ -3132,7 +3132,7 @@ fn today_query_filters_by_context() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "anywhere".into(),
-            due_at: Some(due_soon.into()),
+            hard_due_at: Some(due_soon.into()),
             ..Default::default()
         }),
     )
@@ -3548,7 +3548,7 @@ fn update_task_replaces_whole_constraint_list() {
 }
 
 #[test]
-fn patch_due_before_scheduled_is_rejected() {
+fn a_deadline_patched_before_the_plan_is_kept_and_warned_about() {
     let mut db = db();
     let e = engine();
     let now = 1_700_000_000_000i64;
@@ -3558,31 +3558,70 @@ fn patch_due_before_scheduled_is_rejected() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "x".into(),
-                scheduled_at: Some(scheduled.into()),
+                planned_at: Some(scheduled.into()),
                 ..Default::default()
             }),
         )
         .unwrap();
-    // Patch sets ONLY due_at, earlier than the existing scheduled_at. This
-    // used to slip through silently; the invariant re-check must reject it.
+    // A patch that sets ONLY the hard deadline, earlier than the plan. The
+    // ordering is expected, not enforced (ADR-0047 §1): the write stands,
+    // and the result says which ordering it breaks.
     let earlier = ms_to_ts(now + 3_600_000);
     let patch = TaskPatch {
-        due_at: Some(Some(earlier.into())),
+        hard_due_at: Some(Some(earlier.into())),
         ..Default::default()
     };
-    let res = e.apply(
-        &mut db,
-        Command::UpdateTask {
-            id: r.entity,
-            patch,
-        },
+    let res = e
+        .apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch,
+            },
+        )
+        .expect("an ordering never rejects");
+    assert_eq!(
+        res.ordering_warnings,
+        [sunrise_domain::OrderingWarning::PlannedAfterHardDue]
     );
-    assert!(matches!(
-        res,
-        Err(EngineError::Validation(
-            sunrise_domain::ValidationError::DueBeforeScheduled
-        ))
-    ));
+    let QueryResult::Task(t) = e.query(&db, Query::EntityById(r.entity)).unwrap() else {
+        panic!("task");
+    };
+    assert_eq!(t.hard_due_at, Some(earlier.into()));
+    // A soft deadline after the hard one is the other ordering.
+    let res = e
+        .apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch: TaskPatch {
+                    target_at: Some(Some(scheduled.into())),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        res.ordering_warnings,
+        [
+            sunrise_domain::OrderingWarning::TargetAfterHardDue,
+            sunrise_domain::OrderingWarning::PlannedAfterHardDue
+        ]
+    );
+    // An edit that moves none of the three times re-raises nothing.
+    let res = e
+        .apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    assert!(res.ordering_warnings.is_empty());
 }
 
 #[test]
@@ -3714,8 +3753,8 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         assert_eq!(t.routine_occurrence, Some(o.at));
         // Planned at its civil key, of the anchor's kind: zoned in the
         // routine's zone, never an instant (ADR-0066 §1).
-        assert_eq!(t.scheduled_at, Some(routine.occurrence_time(o.civil)));
-        assert!(matches!(t.scheduled_at, Some(SunriseTime::Zoned { .. })));
+        assert_eq!(t.planned_at, Some(routine.occurrence_time(o.civil)));
+        assert!(matches!(t.planned_at, Some(SunriseTime::Zoned { .. })));
         assert_eq!(t.scheduling_constraints, vec![c.clone()]);
     }
 }
@@ -3856,7 +3895,7 @@ fn catchup_policies_skip_queue_merge() {
             .conn()
             .query_row(
                 "SELECT title FROM tasks
-                     WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
+                     WHERE routine_id = ? AND deleted = 0 AND planned_at_ms <= ?",
                 params![rid.bytes().to_vec(), NOW],
                 |r| r.get(0),
             )
@@ -5192,7 +5231,7 @@ fn the_morning_summary_reads_the_previous_calendar_date() {
             Command::CreateTask(TaskDraft {
                 title: "Renew passport".into(),
                 stream_id: Some(stream_ref(3)),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(
+                planned_at: Some(SunriseTime::instant(ms_to_ts(
                     NOTIFY_NOON + 30 * 86_400_000,
                 ))),
                 ..Default::default()
@@ -5226,7 +5265,7 @@ fn the_end_of_day_plan_covers_today_then_the_week() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "This evening".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 6 * 3_600_000))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 6 * 3_600_000))),
                 ..Default::default()
             }),
         )
@@ -5237,7 +5276,7 @@ fn the_end_of_day_plan_covers_today_then_the_week() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Thursday".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3 * day))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3 * day))),
                 ..Default::default()
             }),
         )
@@ -5248,7 +5287,7 @@ fn the_end_of_day_plan_covers_today_then_the_week() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Next month".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 30 * day))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 30 * day))),
                 ..Default::default()
             }),
         )
@@ -5282,7 +5321,7 @@ fn a_scheduled_task_and_a_block_both_produce_reminders() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Call the bank".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
                 ..Default::default()
             }),
         )
@@ -5342,7 +5381,7 @@ fn the_lead_time_hierarchy_resolves_against_real_rows() {
             Command::CreateTask(TaskDraft {
                 title: "Inherits the stream's".into(),
                 stream_id: Some(stream),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
                 ..Default::default()
             }),
         )
@@ -5354,7 +5393,7 @@ fn the_lead_time_hierarchy_resolves_against_real_rows() {
             Command::CreateTask(TaskDraft {
                 title: "Sets its own".into(),
                 stream_id: Some(stream),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
                 reminder_lead_s: Some(60),
                 ..Default::default()
             }),
@@ -5366,7 +5405,7 @@ fn the_lead_time_hierarchy_resolves_against_real_rows() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Falls all the way through".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
                 ..Default::default()
             }),
         )
@@ -5399,7 +5438,7 @@ fn a_completed_task_stops_producing_reminders() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Call the bank".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
                 ..Default::default()
             }),
         )
@@ -5435,7 +5474,7 @@ fn a_non_primary_device_is_handed_nothing_to_schedule() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "Call the bank".into(),
-            scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+            planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
             ..Default::default()
         }),
     )
@@ -14512,7 +14551,7 @@ fn zone_less_times_survive_a_device_timezone_change() {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "t".into(),
-                    scheduled_at: Some(want.clone()),
+                    planned_at: Some(want.clone()),
                     ..Default::default()
                 }),
             )
@@ -14524,7 +14563,7 @@ fn zone_less_times_survive_a_device_timezone_change() {
             Arc::new(SystemRng),
             kc,
         );
-        let got = read_task_t(&reader, &db, res.entity).scheduled_at;
+        let got = read_task_t(&reader, &db, res.entity).planned_at;
         assert_eq!(
             got,
             Some(want.clone()),
@@ -14569,7 +14608,7 @@ fn zone_less_times_round_trip_through_op_cbor() {
                 &mut dba,
                 Command::CreateTask(TaskDraft {
                     title: "t".into(),
-                    due_at: Some(want.clone()),
+                    hard_due_at: Some(want.clone()),
                     ..Default::default()
                 }),
             )
@@ -14578,7 +14617,7 @@ fn zone_less_times_round_trip_through_op_cbor() {
             .unwrap();
 
         assert_eq!(
-            read_task_t(&eb, &dbb, created.entity).due_at,
+            read_task_t(&eb, &dbb, created.entity).hard_due_at,
             Some(want.clone()),
             "kind lost in transit for {want:?}"
         );
@@ -15386,7 +15425,7 @@ fn scheduling_against_a_hard_constraint_is_rejected_on_create() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "deploy at 10pm".into(),
-                scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
+                planned_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
                 scheduling_constraints: vec![sample_constraint()],
                 ..Default::default()
             }),
@@ -15411,7 +15450,7 @@ fn scheduling_against_a_hard_constraint_is_rejected_on_create() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "deploy at noon".into(),
-            scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
+            planned_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
             scheduling_constraints: vec![sample_constraint()],
             ..Default::default()
         }),
@@ -15429,7 +15468,7 @@ fn a_soft_violation_is_surfaced_rather_than_blocking() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "deploy at 10pm".into(),
-                scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
+                planned_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
                 scheduling_constraints: vec![soft.clone()],
                 ..Default::default()
             }),
@@ -15447,7 +15486,7 @@ fn a_soft_violation_is_surfaced_rather_than_blocking() {
             Command::UpdateTask {
                 id: res.entity,
                 patch: TaskPatch {
-                    scheduled_at: Some(Some(ms_to_ts(INSIDE_WINDOW_MS).into())),
+                    planned_at: Some(Some(ms_to_ts(INSIDE_WINDOW_MS).into())),
                     ..Default::default()
                 },
             },
@@ -15465,7 +15504,7 @@ fn rescheduling_and_deferring_clear_the_same_hard_gate() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "deploy".into(),
-                scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
+                planned_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
                 scheduling_constraints: vec![sample_constraint()],
                 ..Default::default()
             }),
@@ -15480,7 +15519,7 @@ fn rescheduling_and_deferring_clear_the_same_hard_gate() {
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    scheduled_at: Some(Some(ms_to_ts(OUTSIDE_WINDOW_MS).into())),
+                    planned_at: Some(Some(ms_to_ts(OUTSIDE_WINDOW_MS).into())),
                     ..Default::default()
                 },
             },
@@ -15503,7 +15542,7 @@ fn rescheduling_and_deferring_clear_the_same_hard_gate() {
         ))
     ));
     assert_eq!(
-        read_task_t(&e, &db, id).scheduled_at,
+        read_task_t(&e, &db, id).planned_at,
         Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
         "both rejections left the schedule untouched"
     );
@@ -15521,7 +15560,7 @@ fn an_unrelated_edit_is_not_re_gated_by_constraints() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "deploy".into(),
-                scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
+                planned_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
                 ..Default::default()
             }),
         )
@@ -15532,7 +15571,7 @@ fn an_unrelated_edit_is_not_re_gated_by_constraints() {
     // instead rename a task whose stored list is violated.
     db.conn()
         .execute(
-            "UPDATE tasks SET scheduled_at_ms = ?, scheduling_constraints = ? WHERE id = ?",
+            "UPDATE tasks SET planned_at_ms = ?, scheduling_constraints = ? WHERE id = ?",
             params![
                 OUTSIDE_WINDOW_MS,
                 encode_constraints(&[sample_constraint()]).unwrap(),
@@ -16888,7 +16927,7 @@ fn the_weekly_review_lists_a_commitment_that_came_due_and_stayed_open() {
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    due_at: Some(Some(ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY) as i64).into())),
+                    hard_due_at: Some(Some(ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY) as i64).into())),
                     ..Default::default()
                 },
             },
@@ -17173,7 +17212,7 @@ fn the_daily_review_shows_last_nights_captures_and_the_blocked_subset() {
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    scheduled_at: Some(Some(ms_to_ts((REVIEW_MON + 25 * 3_600_000) as i64).into())),
+                    planned_at: Some(Some(ms_to_ts((REVIEW_MON + 25 * 3_600_000) as i64).into())),
                     blocked_by: if id == waiting {
                         Some(vec![blocker])
                     } else {
@@ -19047,7 +19086,7 @@ fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
         Command::UpdateTask {
             id: task,
             patch: TaskPatch {
-                scheduled_at: Some(Some(lunar.clone())),
+                planned_at: Some(Some(lunar.clone())),
                 scheduling_constraints: Some(vec![constraint.clone()]),
                 ..Default::default()
             },
@@ -19062,7 +19101,7 @@ fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
 
     // B's projection holds both, not an instant and a truncated constraint.
     let stored = task_of(&eb, &dbb, task);
-    assert_eq!(stored.scheduled_at.as_ref(), Some(&lunar));
+    assert_eq!(stored.planned_at.as_ref(), Some(&lunar));
     assert_eq!(stored.scheduling_constraints, vec![constraint.clone()]);
 
     eb.apply(
@@ -19077,7 +19116,7 @@ fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
     )
     .unwrap();
     let emitted = last_task_update(&eb, &dbb, task);
-    assert_eq!(emitted.scheduled_at, Some(lunar));
+    assert_eq!(emitted.planned_at, Some(lunar));
     assert_eq!(emitted.scheduling_constraints, vec![constraint]);
 }
 
@@ -19417,7 +19456,7 @@ fn a_task_in_an_unknown_state_still_produces_a_reminder() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "Call the bank".into(),
-                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
                 ..Default::default()
             }),
         )
@@ -19538,3 +19577,6 @@ mod field_ops;
 /// Optional streams, the private key domain, the Inbox view and stream
 /// deletion (ADR-0046, #332).
 mod optional_stream;
+
+/// A task's three times and its lateness (ADR-0047, #334).
+mod lateness;

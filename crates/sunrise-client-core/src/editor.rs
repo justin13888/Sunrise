@@ -59,8 +59,10 @@ pub struct TaskFields {
     pub energy: Option<Energy>,
     /// Estimate, in seconds.
     pub estimated_duration_s: Option<u64>,
-    /// Deadline.
-    pub due_at: Option<SunriseTime>,
+    /// The soft deadline (ADR-0047 §1).
+    pub target_at: Option<SunriseTime>,
+    /// The hard deadline.
+    pub hard_due_at: Option<SunriseTime>,
 }
 
 impl From<&Task> for TaskFields {
@@ -70,7 +72,8 @@ impl From<&Task> for TaskFields {
             priority: t.priority,
             energy: t.energy.clone(),
             estimated_duration_s: t.estimated_duration_s,
-            due_at: t.due_at.clone(),
+            target_at: t.target_at.clone(),
+            hard_due_at: t.hard_due_at.clone(),
         }
     }
 }
@@ -86,8 +89,10 @@ pub struct TaskForm {
     pub energy: Option<Energy>,
     /// Estimate in seconds, or `None` (a zero estimate is none).
     pub estimated_duration_s: Option<u64>,
-    /// The deadline picker, or `None` when the deadline is switched off.
-    pub due_at: Option<PickedTime>,
+    /// The soft-deadline picker, or `None` when it is switched off.
+    pub target_at: Option<PickedTime>,
+    /// The hard-deadline picker, or `None` when it is switched off.
+    pub hard_due_at: Option<PickedTime>,
 }
 
 /// The task editor's form, seeded from `stored`.
@@ -98,7 +103,11 @@ pub fn task_form(stored: &TaskFields, reader: &TimeZone) -> TaskForm {
         priority: stored.priority,
         energy: stored.energy.clone(),
         estimated_duration_s: stored.estimated_duration_s,
-        due_at: stored.due_at.as_ref().map(|v| PickedTime {
+        target_at: stored.target_at.as_ref().map(|v| PickedTime {
+            ms: seed_ms(v, reader),
+            kind: None,
+        }),
+        hard_due_at: stored.hard_due_at.as_ref().map(|v| PickedTime {
             ms: seed_ms(v, reader),
             kind: None,
         }),
@@ -106,7 +115,7 @@ pub fn task_form(stored: &TaskFields, reader: &TimeZone) -> TaskForm {
 }
 
 /// The patch the task editor's `form` makes to `stored`: only the fields
-/// that changed, and a deadline in the kind it already had.
+/// that changed, and each deadline in the kind it already had.
 ///
 /// # Errors
 /// [`EditorError::EmptyTitle`] for a blank title, and
@@ -126,9 +135,15 @@ pub fn task_patch(
         priority: changed(stored.priority.as_ref(), form.priority),
         energy: changed(stored.energy.as_ref(), form.energy.clone()),
         estimated_duration_s: changed(stored.estimated_duration_s.as_ref(), estimate),
-        due_at: field_edit(
-            stored.due_at.as_ref(),
-            form.due_at,
+        target_at: field_edit(
+            stored.target_at.as_ref(),
+            form.target_at,
+            NEW_DEADLINE_KIND,
+            reader,
+        )?,
+        hard_due_at: field_edit(
+            stored.hard_due_at.as_ref(),
+            form.hard_due_at,
             NEW_DEADLINE_KIND,
             reader,
         )?,
@@ -149,8 +164,9 @@ pub fn task_patch_is_empty(patch: &TaskPatch) -> bool {
         priority,
         energy,
         estimated_duration_s,
-        scheduled_at,
-        due_at,
+        planned_at,
+        target_at,
+        hard_due_at,
         scheduling_constraints,
         blocked_by,
         assignee,
@@ -166,8 +182,9 @@ pub fn task_patch_is_empty(patch: &TaskPatch) -> bool {
         && priority.is_none()
         && energy.is_none()
         && estimated_duration_s.is_none()
-        && scheduled_at.is_none()
-        && due_at.is_none()
+        && planned_at.is_none()
+        && target_at.is_none()
+        && hard_due_at.is_none()
         && scheduling_constraints.is_none()
         && blocked_by.is_none()
         && assignee.is_none()

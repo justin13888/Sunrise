@@ -239,12 +239,12 @@ fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
         let tid = occurrence_task_id(&stretch, &key(leg.day, 9, 0));
         let t = read_task_t(&ea, &dba, tid);
         assert_eq!(
-            t.scheduled_at,
+            t.planned_at,
             Some(SunriseTime::floating(leg.day.at(9, 0, 0, 0))),
             "{}: planned floating at its key",
             leg.day
         );
-        let at = t.scheduled_at.as_ref().unwrap().resolve_in(&tz).unwrap();
+        let at = t.planned_at.as_ref().unwrap().resolve_in(&tz).unwrap();
         assert_eq!(
             at.to_zoned(tz.clone()).datetime(),
             leg.day.at(9, 0, 0, 0),
@@ -268,7 +268,7 @@ fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
         // The pinned standup stays at 07:30 New York, whatever A's zone.
         let sid = occurrence_task_id(&standup, &key(leg.day, 7, 30));
         if let Some(s) = read_task(dba.conn(), sid.bytes()).unwrap() {
-            let at = s.scheduled_at.as_ref().unwrap().resolve_in(&tz).unwrap();
+            let at = s.planned_at.as_ref().unwrap().resolve_in(&tz).unwrap();
             assert_eq!(at.to_zoned(ny.clone()).datetime(), leg.day.at(7, 30, 0, 0));
         }
 
@@ -297,7 +297,7 @@ fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
         if leg.day == date(2026, 3, 8) {
             let nid = occurrence_task_id(&night, &key(leg.day, 2, 30));
             let n = read_task_t(&ea, &dba, nid);
-            let fired = n.scheduled_at.as_ref().unwrap().resolve_in(&tz).unwrap();
+            let fired = n.planned_at.as_ref().unwrap().resolve_in(&tz).unwrap();
             assert_eq!(
                 fired.to_zoned(ny.clone()).datetime(),
                 leg.day.at(3, 30, 0, 0)
@@ -349,7 +349,7 @@ fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
         .iter()
         .map(|id| {
             let t = read_task(dba.conn(), id).unwrap().unwrap();
-            match t.scheduled_at {
+            match t.planned_at {
                 Some(SunriseTime::Floating { civil }) => civil.date(),
                 other => panic!("an occurrence planned {other:?}"),
             }
@@ -409,7 +409,7 @@ fn rezoning_a_routine_keeps_its_wall_clock_and_its_occurrences() {
     let ny = TimeZone::get("America/New_York").unwrap();
     for id in &before {
         let t = read_task(db.conn(), id).unwrap().unwrap();
-        let at = t.scheduled_at.as_ref().unwrap();
+        let at = t.planned_at.as_ref().unwrap();
         if at
             .resolve_in(&ny)
             .is_some_and(|at| at.as_millisecond() > c.now_ms() as i64)
@@ -470,7 +470,7 @@ fn a_zone_change_flags_a_plan_that_breaks_a_hard_window() {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "call home".into(),
-                    scheduled_at: Some(scheduled),
+                    planned_at: Some(scheduled),
                     scheduling_constraints: vec![window.clone()],
                     ..Default::default()
                 }),

@@ -13,9 +13,11 @@ use sunrise_id::EntityRef;
 /// Read query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
-    /// Today view: every open task scheduled or due on or before the civil
-    /// day containing `now_ms` in the device's zone
-    /// (`docs/10-cross-cutting/time.md` §4), by resolved time.
+    /// Today view: every open task planned, or with a deadline of either
+    /// kind, on or before the planner day containing `now_ms` in the
+    /// device's zone (`docs/10-cross-cutting/time.md` §4), by resolved time.
+    /// [`Query::TodayView`] is the same set grouped as ADR-0047 composes
+    /// Today, with each task's lateness.
     Today {
         /// "Now" (ms since epoch).
         now_ms: u64,
@@ -347,6 +349,25 @@ pub enum Query {
     /// it is: the tasks it matches, in its order. The result is never stored
     /// (`docs/08-features/planning-views.md` §Saved views).
     SavedView(EntityRef),
+    /// Today as ADR-0047 composes it (`docs/08-features/planning-views.md`
+    /// §Today): each task in Today with its [`sunrise_domain::TodayGroup`]
+    /// (planned, carried over, due today, late) and its lateness for the
+    /// reader now, in group order. A client renders the groups; it never
+    /// decides them.
+    TodayView {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+        /// Filter to these contexts (empty means all).
+        contexts: Vec<EntityRef>,
+    },
+    /// Each named task's lateness for the reader now (ADR-0047 §2), in the
+    /// order asked: what a list that is not Today or the triage queue shows
+    /// a lateness badge from. Refused with `NotFound` for a task this
+    /// replica does not hold.
+    Lateness {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -438,6 +459,33 @@ pub enum QueryResult {
     /// `SavedView` returns the view and what it matches. Boxed to keep the
     /// enum small.
     SavedView(Box<SavedViewResult>),
+    /// `TodayView` returns Today's rows, in group order.
+    TodayView(Vec<TodayRow>),
+    /// `Lateness` returns one row per task asked for, in that order.
+    Lateness(Vec<TaskLateness>),
+}
+
+/// One row of [`Query::TodayView`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TodayRow {
+    /// The task.
+    pub task: Task,
+    /// Which group of Today it is in.
+    pub group: sunrise_domain::TodayGroup,
+    /// For [`sunrise_domain::TodayGroup::DueToday`], which deadline falls
+    /// today; `None` otherwise.
+    pub deadline: Option<sunrise_domain::TodayRowDeadline>,
+    /// Its lateness for the reader now.
+    pub lateness: sunrise_domain::LatenessState,
+}
+
+/// One row of [`Query::Lateness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TaskLateness {
+    /// The task.
+    pub task: EntityRef,
+    /// Its lateness for the reader now.
+    pub lateness: sunrise_domain::LatenessState,
 }
 
 /// What [`Query::SavedView`] returns: the view and the tasks it matches now.

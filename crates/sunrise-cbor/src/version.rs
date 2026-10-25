@@ -210,7 +210,18 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// an Inbox task, and reads a re-homed stream's late dependents in the
 /// deleted stream until it updates. Every v1..v18 payload shape is
 /// unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 19;
+///
+/// `20` gives a task a plan and two deadlines (ADR-0047, issue #334).
+/// `Task.planned_at` and `Task.hard_due_at` are the old `scheduled_at` and
+/// `due_at`, and keep those wire keys, which every older build reads with
+/// these meanings (ADR-0047 clarification C1); `Task.target_at`, the soft
+/// deadline, is new and absent when unset. `ViewFilter` gains `lateness`,
+/// absent when empty, and `WindowField` the spelling `target`. A v19 build
+/// keeps each as an unknown field or value and writes it back unchanged, so
+/// none needs a feature: an older device keeps writing tasks, and reads a
+/// target-only task as undated until it updates. Every v1..v19 payload shape
+/// is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 20;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -291,6 +302,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         19,
         hex32("46ee3fe735d8a27674e96e7ea8962031c544c790aba22921c260dca4afee084e"),
+    ),
+    (
+        20,
+        hex32("7f0c318d6bb81e2f7d2c755d5271f3c229854133bbe21c1dbcf0a0da24979fc9"),
     ),
 ];
 
@@ -618,4 +633,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// rebuilt to drop the constraints, their bindings carried across. The first
 /// `Core::open` after it rebuilds the projection, because the fold's version
 /// moved with it.
-pub const STORAGE_V: u16 = 44;
+///
+/// `45` is migration `0045_task_deadlines.sql` (issue #334, ADR-0047 §1):
+/// the `scheduled_at_*` columns of `tasks` become `planned_at_*` and the
+/// `due_at_*` ones `hard_due_at_*`, value and kind unchanged, and
+/// `target_at_*` columns are added, NULL for every task, with an index. The
+/// first `Core::open` after it rebuilds the projection, because the fold's
+/// version moved with it, which moves a target a build before it kept as an
+/// unknown field into its column.
+pub const STORAGE_V: u16 = 45;

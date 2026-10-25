@@ -34,8 +34,9 @@ fn task(n: u8, title: &str) -> Task {
         priority: None,
         energy: None,
         estimated_duration_s: None,
-        scheduled_at: None,
-        due_at: None,
+        planned_at: None,
+        target_at: None,
+        hard_due_at: None,
         scheduling_constraints: Vec::new(),
         completed_at: None,
         deferred_count: 0,
@@ -55,14 +56,14 @@ fn task(n: u8, title: &str) -> Task {
 
 fn planned(n: u8, title: &str, at: SunriseTime) -> Task {
     Task {
-        scheduled_at: Some(at),
+        planned_at: Some(at),
         ..task(n, title)
     }
 }
 
 fn due(n: u8, title: &str, at: SunriseTime) -> Task {
     Task {
-        due_at: Some(at),
+        hard_due_at: Some(at),
         ..task(n, title)
     }
 }
@@ -261,7 +262,7 @@ fn a_zone_change_mid_span_moves_only_what_is_pinned() {
     // Nothing was rewritten: each time keeps its kind.
     let kinds: Vec<&str> = tasks
         .iter()
-        .filter_map(|t| t.scheduled_at.as_ref().map(SunriseTime::kind_str))
+        .filter_map(|t| t.planned_at.as_ref().map(SunriseTime::kind_str))
         .collect();
     assert_eq!(kinds, ["floating", "zoned", "instant"]);
 }
@@ -296,7 +297,7 @@ fn a_deadline_is_listed_on_its_day_unless_the_task_is_planned_for_it() {
     let d = date(2026, 3, 10);
     let tasks = [
         Task {
-            due_at: Some(SunriseTime::all_day(d)),
+            hard_due_at: Some(SunriseTime::all_day(d)),
             ..planned(
                 1,
                 "planned and due",
@@ -304,7 +305,7 @@ fn a_deadline_is_listed_on_its_day_unless_the_task_is_planned_for_it() {
             )
         },
         Task {
-            due_at: Some(SunriseTime::all_day(d)),
+            hard_due_at: Some(SunriseTime::all_day(d)),
             ..planned(
                 2,
                 "planned earlier",
@@ -333,6 +334,61 @@ fn a_deadline_is_listed_on_its_day_unless_the_task_is_planned_for_it() {
         .map(|t| t.title.as_str())
         .collect();
     assert_eq!(lane, ["due, urgent", "due"]);
+}
+
+/// A soft deadline is listed on its day in `targets`, apart from the hard
+/// ones: not when the task is planned for that day, and not twice when both
+/// deadlines fall on it. The no-date lane leads with the nearest target.
+#[test]
+fn a_target_is_listed_on_its_day_apart_from_the_hard_deadlines() {
+    let ny = tz(NEW_YORK);
+    let d = date(2026, 3, 10);
+    let next = date(2026, 3, 12);
+    let target = |n: u8, title: &str, on: Date| Task {
+        target_at: Some(SunriseTime::all_day(on)),
+        ..task(n, title)
+    };
+    let tasks = [
+        target(1, "target only", d),
+        Task {
+            hard_due_at: Some(SunriseTime::all_day(next)),
+            ..target(2, "target, then hard", d)
+        },
+        Task {
+            hard_due_at: Some(SunriseTime::all_day(d)),
+            ..target(3, "both today", d)
+        },
+        Task {
+            planned_at: Some(SunriseTime::floating(d.at(9, 0, 0, 0))),
+            ..target(4, "planned on its target", d)
+        },
+        target(5, "target later", next),
+    ];
+    let v = view(&tasks, &[], date(2026, 3, 9), 7, &ny);
+    let day = |on: Date| v.days.iter().find(|x| x.date == on).unwrap();
+    let titles = |ts: &[Task]| ts.iter().map(|t| t.title.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        titles(&day(d).targets),
+        ["target only", "target, then hard"]
+    );
+    assert_eq!(titles(&day(d).due), ["both today"]);
+    assert_eq!(titles(&day(d).planned), ["planned on its target"]);
+    assert_eq!(titles(&day(next).targets), ["target later"]);
+    assert_eq!(titles(&day(next).due), ["target, then hard"]);
+    let lane: Vec<&str> = v.no_date[0]
+        .tasks
+        .iter()
+        .map(|t| t.title.as_str())
+        .collect();
+    assert_eq!(
+        lane,
+        [
+            "both today",
+            "target, then hard",
+            "target only",
+            "target later"
+        ]
+    );
 }
 
 #[test]
@@ -438,7 +494,7 @@ fn the_no_date_lane_is_grouped_capped_and_ordered_the_same_whatever_the_input_or
     let in_stream = |n: u8, s: EntityRef, p: Option<u8>, due_on: Option<Date>| Task {
         stream_id: crate::home_stream(Some(s)),
         priority: p,
-        due_at: due_on.map(SunriseTime::all_day),
+        hard_due_at: due_on.map(SunriseTime::all_day),
         ..task(n, &format!("t{n}"))
     };
     let mut tasks = vec![

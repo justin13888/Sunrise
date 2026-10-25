@@ -290,8 +290,8 @@ impl Engine {
                 unblocks,
                 open_blockers,
                 priority: task.priority,
-                due_at_ms: ms(task.due_at.as_ref().and_then(|t| t.due_in(&tz))),
-                scheduled_at_ms: ms(task.scheduled_at.as_ref().and_then(|t| t.resolve_in(&tz))),
+                due_at_ms: ms(task.hard_due_at.as_ref().and_then(|t| t.due_in(&tz))),
+                scheduled_at_ms: ms(task.planned_at.as_ref().and_then(|t| t.resolve_in(&tz))),
                 estimated_duration_s: task.estimated_duration_s,
             });
             tasks.insert(task.id, task);

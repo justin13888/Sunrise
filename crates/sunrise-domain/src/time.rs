@@ -279,12 +279,14 @@ impl SunriseTime {
     ///
     /// `due()` in ADR-0047 §Due instant, and the one exception
     /// `docs/10-cross-cutting/time.md` §2 rule 1 makes to start-of-day: a task
-    /// due "Friday" is on time all of Friday. With no day schedule yet (#338)
-    /// the day ends at the next civil midnight in `tz`.
+    /// due "Friday" is on time all of Friday. Here the day is the civil day,
+    /// ending at the next civil midnight in `tz`.
     ///
-    /// TODO(#334): with a day schedule, the end of the all-day value's
-    /// planner day, `boundary(d + 1)` of `crate::day_schedule::day_bounds`;
-    /// it lands with #334's lateness states, which read it.
+    /// A reader with a day schedule reads deadlines through
+    /// [`crate::deadline_at`], which ends an all-day value's day at the end
+    /// of its planner day, `boundary(d + 1)`, and reduces to this with an
+    /// empty schedule. Lateness, the briefs and the ordering warnings read
+    /// that one.
     #[must_use]
     pub fn due_in(&self, tz: &TimeZone) -> Option<Timestamp> {
         match self {

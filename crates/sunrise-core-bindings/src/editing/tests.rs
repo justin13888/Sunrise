@@ -8,7 +8,7 @@ use sunrise_id::EntityKind;
 
 const TZ: &str = "America/Toronto";
 
-fn task(due_at: Option<SunriseTime>) -> TaskItem {
+fn task(hard_due_at: Option<SunriseTime>) -> TaskItem {
     TaskItem::from(&Task {
         id: EntityRef::new(EntityKind::Task, [1; 16]),
         created_at: Timestamp::UNIX_EPOCH,
@@ -21,8 +21,9 @@ fn task(due_at: Option<SunriseTime>) -> TaskItem {
         priority: Some(2),
         energy: None,
         estimated_duration_s: None,
-        scheduled_at: None,
-        due_at,
+        planned_at: None,
+        target_at: None,
+        hard_due_at,
         scheduling_constraints: Vec::new(),
         completed_at: None,
         deferred_count: 0,

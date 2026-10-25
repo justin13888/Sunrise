@@ -115,7 +115,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7905-7907#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7944-7946#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -464,7 +464,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7905#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7944#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

@@ -27,7 +27,7 @@ pub enum Command {
     /// Set Task state to `Done`.
     CompleteTask(EntityRef),
     /// Defer a Task to an instant: [`Command::DeferTaskTo`] with
-    /// `to = instant(to_ms)`.
+    /// `to = instant(to_ms)`. Moves `planned_at` only.
     ///
     /// Kept so the callers that speak epoch milliseconds (the UniFFI
     /// `CoreCommand::DeferTask`, the CLI) keep working unchanged. An instant
@@ -37,20 +37,23 @@ pub enum Command {
     DeferTask {
         /// Target task.
         id: EntityRef,
-        /// New `scheduled_at`.
+        /// New `planned_at`.
         to_ms: u64,
     },
-    /// Defer a Task: set `scheduled_at` to `to`, keeping the kind it was
-    /// given, and bump `deferred_count`.
+    /// Defer a Task: set `planned_at` to `to`, keeping the kind it was
+    /// given, and add one to `deferred_count` (ADR-0047 §1). It never writes
+    /// either deadline.
     ///
-    /// Validated as any edit of `scheduled_at` is (the cross-field invariants
-    /// in the reader's zone, then the scheduling constraints).
+    /// Validated as any edit of `planned_at` is: the structural invariants,
+    /// then the `hard` scheduling constraints in the reader's zone, which
+    /// reject; the orderings against the deadlines ride back on the result
+    /// as warnings ([`CommandResult::ordering_warnings`]).
     /// [`sunrise_domain::shift_civil_days`] computes a "+N days" target that
     /// keeps the kind of the time it moves.
     DeferTaskTo {
         /// Target task.
         id: EntityRef,
-        /// New `scheduled_at`.
+        /// New `planned_at`.
         to: SunriseTime,
     },
     /// Soft-delete a Task.
@@ -662,7 +665,7 @@ pub struct CommandResult {
     pub op_id: [u8; 16],
     /// Sequence number assigned by the core.
     pub seq: u64,
-    /// `soft` scheduling constraints the accepted `scheduled_at` violates.
+    /// `soft` scheduling constraints the accepted `planned_at` violates.
     ///
     /// A `soft` violation never blocks the write (a `hard` one is rejected
     /// outright with [`sunrise_domain::ValidationError::HardScheduleConstraint`]),
@@ -672,6 +675,17 @@ pub struct CommandResult {
     /// every command that does not schedule.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub soft_violations: Vec<ScheduleConstraint>,
+    /// The orderings of the task's three times that ADR-0047 §1 expects and
+    /// the accepted write leaves broken (`target_at ≤ hard_due_at`,
+    /// `planned_at ≤ hard_due_at`), read in the reader's zone.
+    ///
+    /// An ordering is a warning and never a rejection: concurrent per-field
+    /// edits on two devices can produce any combination, and "I plan to do
+    /// it after the deadline, knowingly" is a real decision. Same rule as
+    /// `soft_violations`: it does not block the write and it must not
+    /// vanish. Empty for every command that writes no task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ordering_warnings: Vec<sunrise_domain::OrderingWarning>,
     /// Streams a `RevokeDevice` could **not** rotate, as lowercase hex.
     ///
     /// Empty for every command but `RevokeDevice`, and for almost every one of
@@ -757,6 +771,7 @@ impl CommandResult {
             op_id,
             seq,
             soft_violations: Vec::new(),
+            ordering_warnings: Vec::new(),
             unrotated_streams: Vec::new(),
             revocation_gated: false,
             revocation_unwound: Vec::new(),
@@ -789,6 +804,13 @@ impl CommandResult {
     #[must_use]
     pub fn with_soft_violations(mut self, v: Vec<ScheduleConstraint>) -> Self {
         self.soft_violations = v;
+        self
+    }
+
+    /// Attach the time orderings the written task breaks (ADR-0047 §1).
+    #[must_use]
+    pub fn with_ordering_warnings(mut self, v: Vec<sunrise_domain::OrderingWarning>) -> Self {
+        self.ordering_warnings = v;
         self
     }
 }

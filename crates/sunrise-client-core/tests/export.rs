@@ -70,8 +70,8 @@ async fn seed(core: &Core) {
         .submit(Command::CreateTask(TaskDraft {
             title: "Call the plumber".into(),
             stream_id: Some(stream),
-            scheduled_at: Some(SunriseTime::floating(day.at(9, 0, 0, 0))),
-            due_at: Some(SunriseTime::all_day(day)),
+            planned_at: Some(SunriseTime::floating(day.at(9, 0, 0, 0))),
+            hard_due_at: Some(SunriseTime::all_day(day)),
             body: Some(sunrise_domain::encode_note_body(&[NoteBlock::Paragraph {
                 inline: vec![Inline::text("Ask about the boiler.")],
             }])),
@@ -259,7 +259,7 @@ async fn every_record_reads_back_as_itself_with_its_kind() {
     let tasks: Vec<Task> = lines(&files, "task");
     assert_eq!(tasks, records.tasks);
     assert_eq!(
-        plumber(&tasks).scheduled_at,
+        plumber(&tasks).planned_at,
         Some(SunriseTime::floating(
             jiff::civil::date(2026, 1, 2).at(9, 0, 0, 0)
         )),

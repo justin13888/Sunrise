@@ -18,10 +18,14 @@
 //! says which bucket a row lands in. Classify, then stable-partition, and both
 //! facts stay owned by whoever owns them.
 
+use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 
 use crate::day_schedule::{planner_date, planner_day_of, DaySchedule};
+use crate::lateness::LatenessState;
+use crate::task::Task;
 use crate::time::SunriseTime;
 
 /// A section of the Today view, in the order the spec lists them.
@@ -127,6 +131,86 @@ pub fn is_overdue_in(
     // A deadline with no instant in `tz` is not evidence of lateness either
     // (`docs/11-adr/0066-times-survive-travel.md` §3).
     planner_day_of(schedule, due_at, tz).is_some_and(|due| due < today)
+}
+
+/// A group of the Today view as ADR-0047 composes it
+/// (`docs/08-features/planning-views.md` §Today), in the order it lists them.
+///
+/// The successor of [`TodaySection`], which stays for the clients that still
+/// classify on two times: this one reads all three times and the task's
+/// [`LatenessState`], so "late" means a missed deadline, soft or hard, from
+/// the moment it is missed, and a slipped plan is carried over, never late.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodayGroup {
+    /// `planned_at` falls on today.
+    Planned,
+    /// `planned_at` fell on an earlier planner day, and the task is not
+    /// late. Carried into Today without any write; nothing rolls the plan
+    /// forward.
+    CarriedOver,
+    /// `hard_due_at` or `target_at` falls on today, and the task is not
+    /// planned for today. [`TodayRowDeadline`] says which.
+    DueToday,
+    /// `LateHard` or `LateSoft`, whatever its plan says. Folded by default.
+    Late,
+}
+
+impl TodayGroup {
+    /// The stable spelling: `planned`, `carried_over`, `due_today`, `late`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Planned => "planned",
+            Self::CarriedOver => "carried_over",
+            Self::DueToday => "due_today",
+            Self::Late => "late",
+        }
+    }
+}
+
+/// Which deadline puts a [`TodayGroup::DueToday`] row in Today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodayRowDeadline {
+    /// The hard deadline falls today (it wins when both do).
+    Hard,
+    /// Only the soft deadline falls today.
+    Target,
+}
+
+/// Where `task` sits in the Today view of a reader whose planner today is
+/// `today`, in `tz`, with the day schedule `schedule`, given the task's
+/// `lateness` for that reader; `None` when it is not in Today at all.
+///
+/// First match wins: late, planned today, planned earlier, a deadline today.
+/// A task planned for a later day and with no deadline today is not in
+/// Today, and neither is a closed one (lateness is `OnTrack` for it, and the
+/// core reads only open tasks). A time this build cannot place is on no day.
+#[must_use]
+pub fn today_group(
+    task: &Task,
+    lateness: &LatenessState,
+    today: Date,
+    tz: &TimeZone,
+    schedule: &DaySchedule,
+) -> Option<(TodayGroup, Option<TodayRowDeadline>)> {
+    if lateness.state.is_late() {
+        return Some((TodayGroup::Late, None));
+    }
+    let day = |v: Option<&SunriseTime>| v.and_then(|v| planner_day_of(schedule, v, tz));
+    match day(task.planned_at.as_ref()) {
+        Some(d) if d == today => return Some((TodayGroup::Planned, None)),
+        Some(d) if d < today => return Some((TodayGroup::CarriedOver, None)),
+        _ => {}
+    }
+    if day(task.hard_due_at.as_ref()) == Some(today) {
+        return Some((TodayGroup::DueToday, Some(TodayRowDeadline::Hard)));
+    }
+    if day(task.target_at.as_ref()) == Some(today) {
+        return Some((TodayGroup::DueToday, Some(TodayRowDeadline::Target)));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -247,5 +331,121 @@ mod tests {
     fn an_unreadable_clock_does_not_make_everything_late() {
         let due = SunriseTime::all_day(civil::date(1999, 1, 1));
         assert!(!is_overdue(&due, u64::MAX, &ny()));
+    }
+
+    fn task(
+        planned: Option<SunriseTime>,
+        target: Option<SunriseTime>,
+        hard: Option<SunriseTime>,
+    ) -> Task {
+        Task {
+            id: sunrise_id::EntityRef::new(sunrise_id::EntityKind::Task, [1u8; 16]),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::from_millisecond(i64::try_from(now_ny()).unwrap()).unwrap(),
+            title: "t".into(),
+            body: None,
+            stream_id: None,
+            contexts: std::collections::BTreeSet::new(),
+            state: crate::TaskState::Todo,
+            priority: None,
+            energy: None,
+            estimated_duration_s: None,
+            planned_at: planned,
+            target_at: target,
+            hard_due_at: hard,
+            scheduling_constraints: Vec::new(),
+            completed_at: None,
+            deferred_count: 0,
+            blocks: std::collections::BTreeSet::new(),
+            blocked_by: std::collections::BTreeSet::new(),
+            assignee: None,
+            routine_id: None,
+            routine_occurrence: None,
+            reminder_lead_s: None,
+            sort_order: None,
+            triaged_at: None,
+            archived: false,
+            deleted: false,
+            unknown: crate::Unknowns::new(),
+        }
+    }
+
+    /// The ADR-0047 composition, row by row: late wins over every plan, a
+    /// plan today is planned, an earlier one is carried over (a slipped plan
+    /// is not lateness), and a deadline today, hard over soft, is due today.
+    #[test]
+    fn the_today_groups_in_their_order_of_precedence() {
+        use crate::lateness::{lateness, Lateness};
+        let now = Timestamp::from_millisecond(i64::try_from(now_ny()).unwrap()).unwrap();
+        let today = civil::date(2026, 3, 10);
+        let none = DaySchedule::default();
+        let at = |h: i8| SunriseTime::zoned(today.at(h, 0, 0, 0), "America/New_York");
+        let yesterday = SunriseTime::all_day(civil::date(2026, 3, 9));
+        let tomorrow = SunriseTime::all_day(civil::date(2026, 3, 11));
+        let group = |t: &Task| {
+            let l = lateness(t, now, &ny(), &none, 14);
+            today_group(t, &l, today, &ny(), &none)
+        };
+        let late = task(Some(at(9)), None, Some(at(16)));
+        assert_eq!(
+            lateness(&late, now, &ny(), &none, 14).state,
+            Lateness::LateHard
+        );
+        let rows = [
+            (
+                "a missed hard deadline today",
+                late,
+                Some((TodayGroup::Late, None)),
+            ),
+            (
+                "a missed target, planned earlier",
+                task(Some(yesterday.clone()), Some(yesterday.clone()), None),
+                Some((TodayGroup::Late, None)),
+            ),
+            (
+                "planned later today",
+                task(Some(at(20)), None, Some(tomorrow.clone())),
+                Some((TodayGroup::Planned, None)),
+            ),
+            (
+                "planned yesterday, no deadline",
+                task(Some(yesterday.clone()), None, None),
+                Some((TodayGroup::CarriedOver, None)),
+            ),
+            (
+                "hard deadline tonight, planned tomorrow",
+                task(Some(tomorrow.clone()), Some(at(21)), Some(at(22))),
+                Some((TodayGroup::DueToday, Some(TodayRowDeadline::Hard))),
+            ),
+            (
+                "only the target falls today",
+                task(
+                    None,
+                    Some(SunriseTime::all_day(today)),
+                    Some(tomorrow.clone()),
+                ),
+                Some((TodayGroup::DueToday, Some(TodayRowDeadline::Target))),
+            ),
+            (
+                "planned tomorrow, due tomorrow",
+                task(Some(tomorrow.clone()), None, Some(tomorrow)),
+                None,
+            ),
+            ("nothing at all", task(None, None, None), None),
+        ];
+        for (name, t, want) in rows {
+            assert_eq!(group(&t), want, "{name}");
+        }
+        let mut groups = [
+            TodayGroup::Late,
+            TodayGroup::DueToday,
+            TodayGroup::CarriedOver,
+            TodayGroup::Planned,
+        ];
+        groups.sort_unstable();
+        assert_eq!(
+            groups.map(TodayGroup::as_str),
+            ["planned", "carried_over", "due_today", "late"]
+        );
     }
 }

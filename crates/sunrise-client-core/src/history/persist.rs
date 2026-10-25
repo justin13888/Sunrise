@@ -430,10 +430,24 @@ struct TaskPatchDef {
     energy: Option<Option<Energy>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
     estimated_duration_s: Option<Option<u64>>,
+    // The plan and the hard deadline keep the names an older build wrote a
+    // persisted history under (ADR-0047 C1).
+    #[serde(
+        default,
+        rename = "scheduled_at",
+        skip_serializing_if = "Option::is_none",
+        with = "double"
+    )]
+    planned_at: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    scheduled_at: Option<Option<SunriseTime>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    due_at: Option<Option<SunriseTime>>,
+    target_at: Option<Option<SunriseTime>>,
+    #[serde(
+        default,
+        rename = "due_at",
+        skip_serializing_if = "Option::is_none",
+        with = "double"
+    )]
+    hard_due_at: Option<Option<SunriseTime>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scheduling_constraints: Option<Vec<ScheduleConstraint>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

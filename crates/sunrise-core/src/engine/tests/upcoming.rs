@@ -30,8 +30,8 @@ fn task(
         db,
         Command::CreateTask(TaskDraft {
             title: title.into(),
-            scheduled_at: scheduled,
-            due_at: due,
+            planned_at: scheduled,
+            hard_due_at: due,
             ..Default::default()
         }),
     )
@@ -167,7 +167,7 @@ fn a_zone_change_mid_span_moves_only_the_pinned_plan() {
         .days
         .iter()
         .flat_map(|day| day.planned.iter())
-        .filter_map(|t| t.scheduled_at.as_ref().map(|s| s.kind_str().to_owned()))
+        .filter_map(|t| t.planned_at.as_ref().map(|s| s.kind_str().to_owned()))
         .collect();
     assert_eq!(kinds, ["floating", "zoned"]);
 }

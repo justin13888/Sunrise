@@ -191,6 +191,7 @@ fn the_saved_view_filter_writes_its_described_names() {
                 to_days: Some(1),
                 unknown: Unknowns::new(),
             }),
+            lateness: vec![crate::LatenessPart::LateSoft],
             text: "milk".into(),
             unknown: Unknowns::new(),
         },
@@ -207,6 +208,7 @@ fn the_saved_view_filter_writes_its_described_names() {
             "priority",
             "energy",
             "window",
+            "lateness",
             "text",
         ],
     );

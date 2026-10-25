@@ -44,15 +44,19 @@ undated line `planned_at = today` so the row appears where it was typed
 ([`inbox-and-capture.md`](./inbox-and-capture.md) §Capture UX patterns, *Today
 default*).
 
-> **Today's build** composes Scheduled Blocks, tasks scheduled today, tasks due
-> today and an Overdue section from `scheduled_at` and `due_at`: every open task
-> scheduled or due on or before the reader's planner day
-> (`crates/sunrise-core/src/engine/query.rs#query_today`), with overdue meaning
-> `due_at` on a planner day before today's
-> (`sunrise_domain::today_section_in`). The day is bounded by the day schedule
+> **Today's build** has the composition above as `Query::TodayView { now_ms,
+> contexts }` (`crates/sunrise-core/src/engine/lateness.rs#query_today_view`,
+> #334): each open task planned, or with a deadline of either kind, on or
+> before the reader's planner day, with its group
+> (`sunrise_domain::today_group`: Planned, Carried over, Due today with which
+> deadline, Late) and its lateness, in that order; Late rows lead with the
+> hard ones, oldest first. The day is bounded by the day schedule
 > ([`../02-domain/day-schedule.md`](../02-domain/day-schedule.md), #338), and
-> is the civil day without one. [#334](https://github.com/justin13888/Sunrise/issues/334)
-> moves it to the composition above.
+> is the civil day without one. `sunrise today` prints it. `Query::Today`
+> returns the same set as a flat list, and `sunrise_domain::today_section_in`
+> still classifies it on the plan and the hard deadline into the Scheduled,
+> Due and Overdue sections the shipped Apple client draws, until its Mac pass
+> reads `CoreQuery.todayView`. Blocks in Today are the calendar's.
 
 ## Upcoming
 
@@ -90,12 +94,11 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > are planner days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
 > than a `zone` argument), each carrying its own `[start, end)` so a DST day
 > is 23 or 25 hours, and civil days with no day schedule; a task is on the day
-> `sunrise_domain::planner_day_of` puts it, keeping its kind. Until
-> [#334](https://github.com/justin13888/Sunrise/issues/334)
-> the plan is `scheduled_at` and a day's deadlines are one `due` list over
-> `due_at`; and until
-> [ADR-0046](../11-adr/0046-optional-stream.md) lands, "No stream" is the
-> Inbox, listed last. `span_days: None` reads `views.upcoming.span_days`; any
+> `sunrise_domain::planner_day_of` puts it, keeping its kind. A day's hard
+> deadlines are its `due` list and its soft ones its `targets` list, a task
+> whose two deadlines fall on one day listed once, under `due` (#334); the
+> no-date lane orders by target, then hard deadline, then priority, then id.
+> "No stream" is listed last. `span_days: None` reads `views.upcoming.span_days`; any
 > span but 7, 14 or 30 is refused. Blocks overlap a day as on the calendar
 > grid. The seam carries it as `CoreQuery.upcoming` / `UpcomingReport`, and
 > `sunrise upcoming` prints it. Drag rescheduling (`plan_preview`, #343/#344)
@@ -177,7 +180,8 @@ pub struct ViewFilter {                // every part optional, ANDed; values ins
     pub context_names: Vec<String>,    // names an import could not resolve: reported, matched by nothing
     pub priority: Option<PriorityRange>,
     pub energy: Vec<Energy>,
-    pub window: Option<DateWindow>,    // over scheduled_at or due_at, in civil days from the reader's today
+    pub window: Option<DateWindow>,    // over planned_at ("scheduled"), hard_due_at ("due") or target_at ("target"), in planner days from the reader's today
+    pub lateness: Vec<LatenessPart>,   // late_hard / late_soft / stale / on_track for the reader now
     pub text: String,                  // a Search view's query; a title match otherwise
     // + any part a newer build added, kept verbatim
 }
@@ -217,12 +221,12 @@ names resolve to ids, a name that resolves to nothing is reported and kept in
 marker beside the vault records the import. The CLI runs it the first time
 `sunrise views` meets a vault and no longer writes the file.
 
-> **Not built yet.** A lateness
-> predicate for lateness states ([#334](https://github.com/justin13888/Sunrise/issues/334)),
-> a place predicate for Place ([#339](https://github.com/justin13888/Sunrise/issues/339)),
-> and the window over `planned_at`, `target_at` and `hard_due_at` for those
-> fields ([#336](https://github.com/justin13888/Sunrise/issues/336)); each
-> arrives as a new part of `ViewFilter`, which older builds keep. The full
+> **Not built yet.** A place predicate for Place
+> ([#339](https://github.com/justin13888/Sunrise/issues/339)), which arrives
+> as a new part of `ViewFilter`, which older builds keep. The lateness part
+> and the window over all three times are built (#334): a build before
+> `DOC_SCHEMA_V` 20 keeps `lateness` and the `target` field as unknown and
+> reports the view incomplete. The full
 > search grammar as a filter over every view is [#345](https://github.com/justin13888/Sunrise/issues/345).
 > The Apple client still reads and writes `views.toml`; its import
 > (`plan_saved_views_import` across the seam) and its switch to the entity

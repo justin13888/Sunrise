@@ -87,7 +87,7 @@ fn spec_example_full_annotation() {
     assert_eq!(c.draft.estimated_duration_s, Some(3600));
     // Friday 2026-08-21; "next saturday" is the Saturday of the following
     // week, not tomorrow.
-    assert_eq!(civil(&c.draft.scheduled_at.unwrap()), "2026-08-29 00:00");
+    assert_eq!(civil(&c.draft.planned_at.unwrap()), "2026-08-29 00:00");
     assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
 }
 
@@ -100,7 +100,7 @@ fn spec_example_plain_text_goes_to_inbox() {
         "no #stream means Inbox, which the core resolves"
     );
     assert!(c.draft.priority.is_none());
-    assert!(c.draft.scheduled_at.is_none());
+    assert!(c.draft.planned_at.is_none());
     assert!(c.unresolved.is_empty());
 }
 
@@ -112,7 +112,7 @@ fn spec_example_weekday_recurrence_is_declined_not_guessed() {
     let c = run("Standup ^weekday 9:30 #work-acme");
     assert_eq!(c.draft.stream_id, Some(stream_ref(2)));
     assert!(
-        c.draft.scheduled_at.is_none(),
+        c.draft.planned_at.is_none(),
         "a recurrence rule must not be silently collapsed to one datetime"
     );
     assert!(c
@@ -332,8 +332,8 @@ fn dst_gap_is_resolved_compatibly() {
 #[test]
 fn due_token_sets_due_not_scheduled() {
     let c = run("File taxes *due:2026-04-15*");
-    assert_eq!(civil(&c.draft.due_at.unwrap()), "2026-04-15 00:00");
-    assert!(c.draft.scheduled_at.is_none());
+    assert_eq!(civil(&c.draft.hard_due_at.unwrap()), "2026-04-15 00:00");
+    assert!(c.draft.planned_at.is_none());
     assert_eq!(c.draft.title, "File taxes");
 }
 
@@ -395,7 +395,7 @@ fn parse_is_deterministic() {
     let b = run(input);
     assert_eq!(a.draft.title, b.draft.title);
     assert_eq!(a.draft.stream_id, b.draft.stream_id);
-    assert_eq!(a.draft.scheduled_at, b.draft.scheduled_at);
+    assert_eq!(a.draft.planned_at, b.draft.planned_at);
     assert_eq!(a.draft.priority, b.draft.priority);
     assert_eq!(a.unresolved, b.unresolved);
 }
@@ -471,14 +471,35 @@ fn a_relative_phrase_is_an_instant() {
 #[test]
 fn a_captured_time_follows_the_reader() {
     let c = run("Call mum ^tomorrow 9am");
-    let at = c.draft.scheduled_at.expect("scheduled");
+    let at = c.draft.planned_at.expect("scheduled");
     for zone in ["America/New_York", "Asia/Kolkata", "Pacific/Kiritimati"] {
         let tz = TimeZone::get(zone).unwrap();
         let z = at.to_instant(&tz).unwrap().to_zoned(tz);
         assert_eq!((z.hour(), z.minute()), (9, 0), "in {zone}");
     }
-    let due = run("File taxes *due:friday*").draft.due_at.expect("due");
+    let due = run("File taxes *due:friday*")
+        .draft
+        .hard_due_at
+        .expect("due");
     assert!(due.is_all_day());
+}
+
+/// `*target:when*` is the soft deadline, apart from the hard one, and an
+/// unreadable one stays in the title.
+#[test]
+fn a_target_is_captured_apart_from_the_hard_deadline() {
+    let c = run("File taxes *target:friday* *due:2026-04-15*");
+    assert!(c
+        .draft
+        .target_at
+        .as_ref()
+        .is_some_and(SunriseTime::is_all_day));
+    assert!(c.draft.hard_due_at.is_some());
+    assert_ne!(c.draft.target_at, c.draft.hard_due_at);
+    assert_eq!(c.draft.title, "File taxes");
+    let bad = run("File taxes *target:someday-ish*");
+    assert!(bad.draft.target_at.is_none());
+    assert!(bad.draft.title.contains("*target:someday-ish*"));
 }
 
 // ---------------------------------------------------------------------------

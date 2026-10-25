@@ -197,18 +197,23 @@ A **time** is `{kind, value, zone, at_ms}`: `kind` is `instant`, `zoned`,
 value's round-trippable rendering, `zone` a zoned value's own zone (else
 `null`), and `at_ms` where it falls for this reader (`null` when it cannot be
 placed). A **task** is `{id, title, state, stream, contexts, priority, energy,
-estimate_s, scheduled_at, due_at, completed_at, deferred_count, blocked_by,
-note, updated_at_ms, sort_order}`, its times as above, `note` as Markdown text
-or `null`, and `sort_order` the task's manual-order key or `null` when nobody
-placed it.
+estimate_s, scheduled_at, due_at, target_at, completed_at, deferred_count,
+blocked_by, note, updated_at_ms, sort_order}`, its times as above, `note` as
+Markdown text or `null`, and `sort_order` the task's manual-order key or `null`
+when nobody placed it. `scheduled_at` is the plan (`planned_at`) and `due_at`
+the hard deadline (`hard_due_at`), under the names they always had here;
+`target_at` is the soft deadline (ADR-0047). A **lateness** is `{state,
+since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
+`since_ms` when it began, `null` when on track.
 
 | Command | Document |
 |---|---|
-| `today`, `inbox`, `stream`, `context`, `views apply` (task views) | array of tasks; `inbox`, `stream` and `context` in manual order |
+| `today` | array of tasks in Today's group order, each with `today_group` (`planned`, `carried_over`, `due_today`, `late`), `deadline` (`hard` or `target` for a `due_today` row, else `null`) and `lateness` |
+| `inbox`, `stream`, `context`, `views apply` (task views) | array of tasks; `inbox`, `stream` and `context` in manual order |
 | `move <id>... before\|after <id>`, `move <id>... first\|last` | array of tasks: the stream's list in its new order |
 | `search [--kind <k>] [--all] <query>` | `{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: [{id, opens, title, snippet, task}]}]}`, groups in the core's fixed order; `title` and `snippet` are `{text, ranges}` with each range `[start, end]` in Unicode scalars, `snippet` `null` when the body did not match, and `task` the whole task for a task hit, else `null`. Before #345 this was an array of tasks; a script reads them as `.groups[] \| select(.kind == "task") \| .hits[].task` |
-| `show <id>` | one task |
-| `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` and `tasks` arrays of tasks |
+| `show <id>` | one task, with its `lateness` |
+| `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due, targets}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` (hard deadlines), `targets` (soft ones) and `tasks` arrays of tasks |
 | `next` | array of `{task, unblocks}` |
 | `streams` | array of `{id, name, color, open_tasks, archived, paused, sort_order}` |
 | `contexts` | array of `{id, name, description, tasks, archived}` |

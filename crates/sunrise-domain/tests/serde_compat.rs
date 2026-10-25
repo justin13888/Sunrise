@@ -74,8 +74,9 @@ fn expected_task() -> Task {
         priority: Some(3),
         energy: Some(Energy::High),
         estimated_duration_s: Some(5400),
-        scheduled_at: Some(ts(T_SCHEDULED).into()),
-        due_at: Some(ts(T_DUE).into()),
+        planned_at: Some(ts(T_SCHEDULED).into()),
+        target_at: None,
+        hard_due_at: Some(ts(T_DUE).into()),
         // New field defaults to empty and is skipped on the wire, so the
         // chrono-era fixtures still decode and re-encode byte-identically.
         scheduling_constraints: Vec::new(),
@@ -188,14 +189,14 @@ fn chrono_task_fixture_decodes_under_jiff() {
         Timestamp::from_millisecond(T_UPDATED).unwrap()
     );
     assert_eq!(
-        task.scheduled_at,
+        task.planned_at,
         Some(SunriseTime::instant(
             Timestamp::from_millisecond(T_SCHEDULED).unwrap()
         )),
         "a v1 bare instant reads back as an Instant, not a floating time"
     );
     assert_eq!(
-        task.due_at,
+        task.hard_due_at,
         Some(Timestamp::from_millisecond(T_DUE).unwrap().into())
     );
     assert_eq!(

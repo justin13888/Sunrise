@@ -390,8 +390,9 @@ mod tests {
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
@@ -519,7 +520,7 @@ mod tests {
 
         let mut deferred = moved.clone();
         deferred.deferred_count = 1;
-        deferred.scheduled_at = Some(ts(T0 + 86_400_000).into());
+        deferred.planned_at = Some(ts(T0 + 86_400_000).into());
 
         let mut done = deferred.clone();
         done.state = TaskState::Done;

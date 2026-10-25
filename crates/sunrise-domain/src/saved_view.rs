@@ -24,11 +24,7 @@
 //!
 //! # Not built yet
 //!
-//! * `TODO(#334)`: a lateness predicate. `Task` has no lateness state yet.
 //! * `TODO(#339)`: a place predicate. There is no Place entity yet.
-//! * `TODO(#336)`: the date window is over `scheduled_at` and `due_at`, the
-//!   two times `Task` has; ADR-0047's `planned_at`, `target_at` and
-//!   `hard_due_at` arrive with #334.
 //! * `TODO(#345)`: [`ViewFilter::text`] is the search grammar for a Search
 //!   view, run by the core's search; for every other view it is a plain
 //!   case-insensitive match on the title.
@@ -147,13 +143,20 @@ crate::unknown::lossy_enum!(ViewSort, fallback = Default, {
     Scheduled => "scheduled",
 });
 
-/// Which of a task's times a [`DateWindow`] reads.
+/// Which of a task's times a [`DateWindow`] reads (ADR-0047 §1).
+///
+/// The spellings `scheduled` and `due` predate the three-time split and
+/// keep their meaning: the plan, and the hard deadline. `target` is new in
+/// `DOC_SCHEMA_V` 20, and a build before it keeps it verbatim and reports
+/// the view incomplete.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum WindowField {
-    /// `scheduled_at`, the plan.
+    /// `planned_at`, the plan.
     Scheduled,
-    /// `due_at`, the deadline.
+    /// `hard_due_at`, the hard deadline.
     Due,
+    /// `target_at`, the soft deadline.
+    Target,
     /// A time this build does not know, kept verbatim.
     Unknown(UnknownVariant),
 }
@@ -161,7 +164,57 @@ pub enum WindowField {
 crate::unknown::lossy_enum!(WindowField, {
     Scheduled => "scheduled",
     Due => "due",
+    Target => "target",
 });
+
+/// A lateness state a [`ViewFilter`] keeps ([`crate::Lateness`]), on the
+/// wire as its stable spelling. Lossless (#321): a state a newer build added
+/// is kept and written back, and matches nothing here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LatenessPart {
+    /// `late_hard`.
+    LateHard,
+    /// `late_soft`.
+    LateSoft,
+    /// `stale`.
+    Stale,
+    /// `on_track`.
+    OnTrack,
+    /// A state this build does not know, kept verbatim.
+    Unknown(UnknownVariant),
+}
+
+crate::unknown::lossy_enum!(LatenessPart, {
+    LateHard => "late_hard",
+    LateSoft => "late_soft",
+    Stale => "stale",
+    OnTrack => "on_track",
+});
+
+impl LatenessPart {
+    /// The [`crate::Lateness`] it names, or `None` for an unknown one.
+    #[must_use]
+    pub const fn state(&self) -> Option<crate::Lateness> {
+        Some(match self {
+            Self::LateHard => crate::Lateness::LateHard,
+            Self::LateSoft => crate::Lateness::LateSoft,
+            Self::Stale => crate::Lateness::Stale,
+            Self::OnTrack => crate::Lateness::OnTrack,
+            Self::Unknown(_) => return None,
+        })
+    }
+}
+
+impl From<crate::Lateness> for LatenessPart {
+    fn from(l: crate::Lateness) -> Self {
+        match l {
+            crate::Lateness::LateHard => Self::LateHard,
+            crate::Lateness::LateSoft => Self::LateSoft,
+            crate::Lateness::Stale => Self::Stale,
+            crate::Lateness::OnTrack => Self::OnTrack,
+        }
+    }
+}
 
 /// An inclusive priority range, `1` the highest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,10 +228,13 @@ pub struct PriorityRange {
     pub unknown: Unknowns,
 }
 
-/// A window of civil days relative to the reader's today, both ends
+/// A window of planner days relative to the reader's today, both ends
 /// inclusive, over one of a task's times (`docs/10-cross-cutting/time.md`
-/// §2): the day a time falls on is the day a reader in their zone sees it
-/// on, so a floating 09:00 is on the same day for every reader.
+/// §2, §4): the day a time falls on is the planner day a reader in their
+/// zone sees it on ([`crate::planner_day_of`]), so a floating 09:00 is on the
+/// same day for every reader, and with no day schedule a planner day is the
+/// civil day. The offsets are civil days from today, never multiples of
+/// 86,400 seconds.
 ///
 /// `from_days: None` is open into the past, `to_days: None` open into the
 /// future. `{from_days: None, to_days: 0}` is "on or before today". A task
@@ -229,6 +285,12 @@ pub struct ViewFilter {
     /// Tasks one of whose times falls in this window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<DateWindow>,
+    /// Tasks whose lateness for the reader is any of these (ADR-0047 §2).
+    /// Empty is no filter. Absent on the wire when empty; a build before
+    /// `DOC_SCHEMA_V` 20 keeps it as an unknown part and reports the view
+    /// incomplete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lateness: Vec<LatenessPart>,
     /// Free text: the query of a Search view, and a title match otherwise.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
@@ -244,6 +306,27 @@ pub struct FilterReader {
     pub tz: TimeZone,
     /// The reader's today, the planner day holding now.
     pub today: Date,
+    /// The reader's now, which lateness is read at.
+    pub now: Timestamp,
+    /// The day schedule whose planner days the window counts.
+    pub schedule: crate::DaySchedule,
+    /// The `stale_after_days` preference.
+    pub stale_after_days: u16,
+}
+
+impl FilterReader {
+    /// A reader in `tz` at `now` with no day schedule and the default
+    /// `stale_after_days`: today is the civil date of `now`.
+    #[must_use]
+    pub fn civil(tz: TimeZone, now: Timestamp) -> Self {
+        Self {
+            today: now.to_zoned(tz.clone()).date(),
+            tz,
+            now,
+            schedule: crate::DaySchedule::default(),
+            stale_after_days: crate::DEFAULT_STALE_AFTER_DAYS,
+        }
+    }
 }
 
 impl ViewFilter {
@@ -256,6 +339,7 @@ impl ViewFilter {
                 .window
                 .as_ref()
                 .is_none_or(|w| w.unknown.is_empty() && !w.field.is_unknown())
+            && !self.lateness.iter().any(LatenessPart::is_unknown)
     }
 
     /// Whether a task in `stream` passes the stream part: any listed stream,
@@ -304,6 +388,27 @@ impl ViewFilter {
                 return false;
             }
         }
+        if !self.lateness.is_empty() {
+            let state = crate::lateness(
+                task,
+                reader.now,
+                &reader.tz,
+                &reader.schedule,
+                reader.stale_after_days,
+            )
+            .state;
+            // A state this build does not know matches nothing, unless it
+            // is the only part: then the filter passes, as an unknown part
+            // does (`is_complete`).
+            let known: Vec<crate::Lateness> = self
+                .lateness
+                .iter()
+                .filter_map(LatenessPart::state)
+                .collect();
+            if !known.is_empty() && !known.contains(&state) {
+                return false;
+            }
+        }
         if with_text && !self.text.trim().is_empty() {
             let needle = self.text.trim().to_lowercase();
             if !task.title.to_lowercase().contains(&needle) {
@@ -320,11 +425,13 @@ impl DateWindow {
     #[must_use]
     pub fn contains(&self, task: &Task, reader: &FilterReader) -> bool {
         let time: Option<&SunriseTime> = match self.field {
-            WindowField::Scheduled => task.scheduled_at.as_ref(),
-            WindowField::Due => task.due_at.as_ref(),
+            WindowField::Scheduled => task.planned_at.as_ref(),
+            WindowField::Due => task.hard_due_at.as_ref(),
+            WindowField::Target => task.target_at.as_ref(),
             WindowField::Unknown(_) => return true,
         };
-        let Some(day) = time.and_then(|t| t.day_in(&reader.tz)) else {
+        let Some(day) = time.and_then(|t| crate::planner_day_of(&reader.schedule, t, &reader.tz))
+        else {
             return false;
         };
         let offset = |n: i32| {
@@ -370,10 +477,11 @@ pub fn sort_tasks(tasks: &mut [Task], sort: &ViewSort, tz: &TimeZone) {
             let rank = |t: &Task| t.priority.unwrap_or(u8::MAX);
             rank(a).cmp(&rank(b)).then(a.id.cmp(&b.id))
         }),
-        ViewSort::Due => tasks
-            .sort_by(|a, b| by_time(a.due_at.as_ref(), b.due_at.as_ref()).then(a.id.cmp(&b.id))),
+        ViewSort::Due => tasks.sort_by(|a, b| {
+            by_time(a.hard_due_at.as_ref(), b.hard_due_at.as_ref()).then(a.id.cmp(&b.id))
+        }),
         ViewSort::Scheduled => tasks.sort_by(|a, b| {
-            by_time(a.scheduled_at.as_ref(), b.scheduled_at.as_ref()).then(a.id.cmp(&b.id))
+            by_time(a.planned_at.as_ref(), b.planned_at.as_ref()).then(a.id.cmp(&b.id))
         }),
         ViewSort::Default | ViewSort::Unknown(_) => {}
     }

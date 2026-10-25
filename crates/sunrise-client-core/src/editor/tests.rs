@@ -24,13 +24,14 @@ fn unknown_kind() -> SunriseTime {
     }
 }
 
-fn task(due_at: Option<SunriseTime>) -> TaskFields {
+fn task(hard_due_at: Option<SunriseTime>) -> TaskFields {
     TaskFields {
         title: "Renew passport".into(),
         priority: Some(2),
         energy: Some(Energy::Low),
         estimated_duration_s: Some(1_800),
-        due_at,
+        target_at: None,
+        hard_due_at,
     }
 }
 
@@ -52,7 +53,7 @@ fn a_title_edit_leaves_every_kind_of_deadline_alone() {
         form.title = "Renew passport today".into();
         let patch = task_patch(&stored, &form, &tz).unwrap();
         assert_eq!(patch.title.as_deref(), Some("Renew passport today"));
-        assert!(patch.due_at.is_none(), "{due:?} was rewritten");
+        assert!(patch.hard_due_at.is_none(), "{due:?} was rewritten");
         assert!(patch.priority.is_none() && patch.energy.is_none());
         assert!(patch.estimated_duration_s.is_none());
     }
@@ -71,18 +72,61 @@ fn an_untouched_form_is_an_empty_patch() {
     }
 }
 
+/// The soft deadline is its own picker (ADR-0047 §1): left alone it is not
+/// written, moved it keeps its kind, switched off it clears, and switched on
+/// it is floating; the hard deadline is untouched by all of it.
+#[test]
+fn the_target_is_edited_apart_from_the_hard_deadline() {
+    let tz = toronto();
+    let mut stored = task(Some(SunriseTime::all_day(date(2026, 3, 20))));
+    stored.target_at = Some(SunriseTime::all_day(date(2026, 3, 13)));
+    let form = task_form(&stored, &tz);
+    assert!(task_patch_is_empty(
+        &task_patch(&stored, &form, &tz).unwrap()
+    ));
+    let mut moved = form.clone();
+    moved.target_at = moved.target_at.map(|p| PickedTime {
+        ms: p.ms + 86_400_000,
+        kind: None,
+    });
+    let patch = task_patch(&stored, &moved, &tz).unwrap();
+    assert_eq!(
+        patch.target_at,
+        Some(Some(SunriseTime::all_day(date(2026, 3, 14))))
+    );
+    assert!(patch.hard_due_at.is_none());
+    let mut off = form.clone();
+    off.target_at = None;
+    assert_eq!(
+        task_patch(&stored, &off, &tz).unwrap().target_at,
+        Some(None)
+    );
+    stored.target_at = None;
+    let mut on = task_form(&stored, &tz);
+    on.target_at = Some(PickedTime {
+        ms: 1_773_435_600_000,
+        kind: None,
+    });
+    assert_eq!(
+        task_patch(&stored, &on, &tz).unwrap().target_at,
+        Some(Some(SunriseTime::floating(
+            date(2026, 3, 13).at(17, 0, 0, 0)
+        )))
+    );
+}
+
 #[test]
 fn a_moved_deadline_keeps_its_kind() {
     let tz = toronto();
     let stored = task(Some(SunriseTime::all_day(date(2026, 3, 13))));
     let mut form = task_form(&stored, &tz);
-    form.due_at = form.due_at.map(|p| PickedTime {
+    form.hard_due_at = form.hard_due_at.map(|p| PickedTime {
         ms: p.ms + 3 * 86_400_000,
         kind: None,
     });
     let patch = task_patch(&stored, &form, &tz).unwrap();
     assert_eq!(
-        patch.due_at,
+        patch.hard_due_at,
         Some(Some(SunriseTime::all_day(date(2026, 3, 16)))),
         "an all-day deadline stays a date"
     );
@@ -91,12 +135,12 @@ fn a_moved_deadline_keeps_its_kind() {
         date(2026, 3, 13).at(17, 0, 0, 0),
     )));
     let mut form = task_form(&floating, &tz);
-    form.due_at = form.due_at.map(|p| PickedTime {
+    form.hard_due_at = form.hard_due_at.map(|p| PickedTime {
         ms: p.ms + 3_600_000,
         kind: None,
     });
     assert_eq!(
-        task_patch(&floating, &form, &tz).unwrap().due_at,
+        task_patch(&floating, &form, &tz).unwrap().hard_due_at,
         Some(Some(SunriseTime::floating(
             date(2026, 3, 13).at(18, 0, 0, 0)
         )))
@@ -108,18 +152,21 @@ fn switching_the_deadline_off_clears_it_and_on_writes_a_floating_one() {
     let tz = toronto();
     let stored = task(Some(SunriseTime::all_day(date(2026, 3, 13))));
     let mut form = task_form(&stored, &tz);
-    form.due_at = None;
-    assert_eq!(task_patch(&stored, &form, &tz).unwrap().due_at, Some(None));
+    form.hard_due_at = None;
+    assert_eq!(
+        task_patch(&stored, &form, &tz).unwrap().hard_due_at,
+        Some(None)
+    );
 
     let none = task(None);
     let mut form = task_form(&none, &tz);
     // 2026-03-13T21:00:00Z is 17:00 in Toronto.
-    form.due_at = Some(PickedTime {
+    form.hard_due_at = Some(PickedTime {
         ms: 1_773_435_600_000,
         kind: None,
     });
     assert_eq!(
-        task_patch(&none, &form, &tz).unwrap().due_at,
+        task_patch(&none, &form, &tz).unwrap().hard_due_at,
         Some(Some(SunriseTime::floating(
             date(2026, 3, 13).at(17, 0, 0, 0)
         )))

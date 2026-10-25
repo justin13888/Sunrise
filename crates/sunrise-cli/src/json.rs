@@ -68,8 +68,9 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
         "priority": t.priority,
         "energy": t.energy.as_ref().map(sunrise_domain::Energy::as_str),
         "estimate_s": t.estimated_duration_s,
-        "scheduled_at": opt_time(t.scheduled_at.as_ref(), reader),
-        "due_at": opt_time(t.due_at.as_ref(), reader),
+        "scheduled_at": opt_time(t.planned_at.as_ref(), reader),
+        "due_at": opt_time(t.hard_due_at.as_ref(), reader),
+        "target_at": opt_time(t.target_at.as_ref(), reader),
         "completed_at": opt_time(t.completed_at.as_ref(), reader),
         "deferred_count": t.deferred_count,
         "blocked_by": ids(&t.blocked_by),
@@ -77,6 +78,36 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
         "updated_at_ms": t.updated_at.as_millisecond(),
         "sort_order": t.sort_order,
     })
+}
+
+/// A task's lateness for the reader: `{state, since_ms}`, `state` one of
+/// `late_hard`, `late_soft`, `stale`, `on_track` (ADR-0047 §2).
+#[must_use]
+pub fn lateness(l: &sunrise_domain::LatenessState) -> Value {
+    json!({
+        "state": l.state.as_str(),
+        "since_ms": l.since.map(jiff::Timestamp::as_millisecond),
+    })
+}
+
+/// A row of Today as ADR-0047 composes it: the task, with `today_group`
+/// (`planned`, `carried_over`, `due_today`, `late`), `deadline` (`hard` or
+/// `target` for a `due_today` row, else `null`) and `lateness`.
+#[must_use]
+pub fn today_row(r: &sunrise_core::TodayRow, reader: &TimeZone) -> Value {
+    let mut v = task(&r.task, reader);
+    if let Value::Object(map) = &mut v {
+        map.insert("today_group".into(), r.group.as_str().into());
+        map.insert(
+            "deadline".into(),
+            r.deadline.map_or(Value::Null, |d| match d {
+                sunrise_domain::TodayRowDeadline::Hard => "hard".into(),
+                sunrise_domain::TodayRowDeadline::Target => "target".into(),
+            }),
+        );
+        map.insert("lateness".into(), lateness(&r.lateness));
+    }
+    v
 }
 
 /// A list of tasks.
@@ -245,6 +276,7 @@ pub fn upcoming(u: &sunrise_core::queries::Upcoming, reader: &TimeZone) -> Value
                     .collect::<Vec<_>>(),
                 "planned": tasks(&d.planned, reader),
                 "due": tasks(&d.due, reader),
+                "targets": tasks(&d.targets, reader),
             })
         })
         .collect();
@@ -409,8 +441,9 @@ mod tests {
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,

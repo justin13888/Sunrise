@@ -63,7 +63,7 @@ async fn a_title_edit_keeps_an_all_day_deadline() {
     let id = core
         .submit(Command::CreateTask(TaskDraft {
             title: "Renew passport".into(),
-            due_at: Some(due.clone()),
+            hard_due_at: Some(due.clone()),
             ..TaskDraft::default()
         }))
         .await
@@ -81,7 +81,7 @@ async fn a_title_edit_keeps_an_all_day_deadline() {
 
     let after = task(&core, id).await;
     assert_eq!(after.title, "Renew passport this week");
-    assert_eq!(after.due_at, Some(due));
+    assert_eq!(after.hard_due_at, Some(due));
 }
 
 #[tokio::test]
@@ -92,7 +92,7 @@ async fn a_defer_keeps_a_floating_plan_floating_and_counts() {
     let id = core
         .submit(Command::CreateTask(TaskDraft {
             title: "Call the plumber".into(),
-            scheduled_at: Some(plan.clone()),
+            planned_at: Some(plan.clone()),
             ..TaskDraft::default()
         }))
         .await
@@ -107,7 +107,7 @@ async fn a_defer_keeps_a_floating_plan_floating_and_counts() {
 
     let after = task(&core, id).await;
     assert_eq!(
-        after.scheduled_at,
+        after.planned_at,
         Some(SunriseTime::floating(date(2026, 1, 2).at(9, 0, 0, 0)))
     );
     assert_eq!(after.deferred_count, 1);

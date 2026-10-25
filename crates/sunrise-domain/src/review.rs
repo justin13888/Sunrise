@@ -562,8 +562,8 @@ impl WeeklyReview {
 /// can place.
 fn commitment_at(t: &Task, tz: &jiff::tz::TimeZone) -> Option<u64> {
     let ms = |v: Option<jiff::Timestamp>| v.and_then(|v| u64::try_from(v.as_millisecond()).ok());
-    let due = t.due_at.as_ref().and_then(|v| ms(v.due_in(tz)));
-    let sched = t.scheduled_at.as_ref().and_then(|v| ms(v.resolve_in(tz)));
+    let due = t.hard_due_at.as_ref().and_then(|v| ms(v.due_in(tz)));
+    let sched = t.planned_at.as_ref().and_then(|v| ms(v.resolve_in(tz)));
     match (due, sched) {
         (Some(d), Some(s)) => Some(d.min(s)),
         (d, s) => d.or(s),
@@ -613,8 +613,9 @@ mod tests {
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
@@ -704,7 +705,7 @@ mod tests {
         let t2 = task(2, s, "call the bank", MON + DAY);
         let mut t2_def = t2.clone();
         t2_def.deferred_count = 1;
-        t2_def.scheduled_at = Some(ts(MON + 5 * DAY).into());
+        t2_def.planned_at = Some(ts(MON + 5 * DAY).into());
 
         let t3 = task(3, s, "read the RFC", MON + 3 * DAY);
 
@@ -984,7 +985,7 @@ mod tests {
         let t = task(2, none, "deferred", MON + DAY);
         let mut def = t.clone();
         def.deferred_count = 1;
-        def.scheduled_at = Some(ts(MON + 5 * DAY).into());
+        def.planned_at = Some(ts(MON + 5 * DAY).into());
         let r = build(
             vec![def.clone()],
             vec![
@@ -1035,14 +1036,14 @@ mod tests {
     fn step_four_lists_commitments_that_came_due_and_stayed_open() {
         let s = eref(EntityKind::Stream, 3);
         let mut due_and_open = task(20, s, "renew the domain", MON);
-        due_and_open.due_at = Some(ts(MON + 2 * DAY).into());
+        due_and_open.hard_due_at = Some(ts(MON + 2 * DAY).into());
         let mut due_and_done = task(21, s, "pay the invoice", MON);
-        due_and_done.due_at = Some(ts(MON + 2 * DAY).into());
+        due_and_done.hard_due_at = Some(ts(MON + 2 * DAY).into());
         due_and_done.state = TaskState::Done;
         let mut scheduled_open = task(22, s, "draft the memo", MON);
-        scheduled_open.scheduled_at = Some(ts(MON + 3 * DAY).into());
+        scheduled_open.planned_at = Some(ts(MON + 3 * DAY).into());
         let mut future = task(23, s, "next month's thing", MON);
-        future.due_at = Some(ts(MON + 40 * DAY).into());
+        future.hard_due_at = Some(ts(MON + 40 * DAY).into());
         let unscheduled = task(24, s, "someday", MON);
 
         let f = Fixture {

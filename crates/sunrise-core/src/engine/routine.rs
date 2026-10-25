@@ -409,17 +409,17 @@ impl Engine {
             let Some(mut t) = read_task(db.conn(), &raw)? else {
                 continue;
             };
-            let Some(SunriseTime::Zoned { civil, tz }) = t.scheduled_at.clone() else {
+            let Some(SunriseTime::Zoned { civil, tz }) = t.planned_at.clone() else {
                 continue;
             };
             let future = t
-                .scheduled_at
+                .planned_at
                 .as_ref()
                 .and_then(|s| s.resolve_in(&self.device_zone()));
             if tz != old || future.is_none_or(|at| at <= now) {
                 continue;
             }
-            t.scheduled_at = Some(SunriseTime::zoned(civil, new.clone()));
+            t.planned_at = Some(SunriseTime::zoned(civil, new.clone()));
             t.updated_at = now;
             let stream = domain_bytes(t.stream_id);
             // The routine engine's own write: in a field-ops vault a
@@ -427,7 +427,7 @@ impl Engine {
             // the occurrence beats (ADR-0065 §3).
             in_tx(db, |tx| {
                 let op = if self.write_mode(tx, now_ms)? == WriteMode::Patch {
-                    let plan = ciborium::value::Value::serialized(&t.scheduled_at)
+                    let plan = ciborium::value::Value::serialized(&t.planned_at)
                         .map_err(|e| EngineError::Cbor(e.to_string()))?;
                     match PatchBuilder::new(t.id)
                         .generated()
@@ -669,7 +669,7 @@ impl Engine {
                -- `todo`, spelled so an unknown state reads as it (ADR-0045 §6).
                AND state NOT IN ('in_progress', 'done', 'cancelled')
                AND deferred_count = 0
-               AND scheduled_at_ms IS NOT NULL AND scheduled_at_ms > ?",
+               AND planned_at_ms IS NOT NULL AND planned_at_ms > ?",
         )?;
         // The index key prefilters, widened (time.md §2 rule 2); whether a
         // task is in the future is decided on its resolved time below.
@@ -692,7 +692,7 @@ impl Engine {
                 continue;
             };
             let future = t
-                .scheduled_at
+                .planned_at
                 .as_ref()
                 .and_then(|s| s.resolve_in(&reader))
                 .is_some_and(|at| at > now_ts);
@@ -795,8 +795,9 @@ fn build_routine_task(
         priority: draft.priority,
         energy: draft.energy,
         estimated_duration_s: draft.estimated_duration_s,
-        scheduled_at: draft.scheduled_at,
-        due_at: None,
+        planned_at: draft.planned_at,
+        target_at: None,
+        hard_due_at: None,
         // Routine constraints are copied verbatim onto each occurrence.
         scheduling_constraints: routine.scheduling_constraints.clone(),
         completed_at: None,

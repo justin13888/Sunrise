@@ -253,7 +253,9 @@ enum DeferTarget {
 - A new feature id, `task.deadlines_v2`, is declared in `vault_requires`
   (ADR-0045), because an older build cannot write a Task without
   `scheduled_at`/`due_at` semantics and would otherwise overwrite the new
-  fields.
+  fields. *Retired by clarification C1:* the two old keys carry the plan and
+  the hard deadline, which is what an older build already reads them as, so
+  no feature is needed.
 
 ## What would force revisiting this
 
@@ -263,3 +265,43 @@ enum DeferTarget {
 2. **Shared tasks across identities.** Two people reading one `Floating`
    deadline in two zones get two answers. That is right for each of them, but a
    team view would need to pick a zone, which no field here records.
+
+## Clarified by implementation (2026-10)
+
+Building this record raised questions it leaves open. Each answer below is
+binding on the implementation. C1 retires the `task.deadlines_v2` feature
+§Consequences names, C2 says where the ordering warnings travel, and C3 adds
+the day schedule to §2's signature it already reads; none changes another
+decision above.
+
+| # | Clarification | Why |
+|---|---|---|
+| C1 | On the wire, `planned_at` is the key `scheduled_at` and `hard_due_at` the key `due_at` (`#[serde(rename)]` on `Task`, `TaskDraft` and `TaskPatch`, and `planned_at as "scheduled_at"` in the entity registry); `target_at` is a key of its own, absent when unset. No feature id is added: `task.deadlines_v2` is not declared, and no build is locked out of writing tasks. The CLI's `--json`, the persisted undo history, the web core's JSON and the UniFFI `TaskItem` keep the two old names too, beside a new `target_at`. Storage renames its columns (migration 0045, `planned_at_*`, `hard_due_at_*`, new `target_at_*`). | The migration's mapping is the identity on meaning (`scheduled_at → planned_at`, `due_at → hard_due_at`, value and kind unchanged), so an older build already reads both keys as exactly these fields: its Today, its reminders and its overdue rule read the plan and the hard deadline. `target_at` is an unknown field to it, written back unchanged in a full-state op and never written by its `Patch`es (ADR-0065 D20), the case `DOC_SCHEMA_V` 19's `triaged_at` already is. A rename on the wire would have parked every task on an older build and needed a feature to keep it from writing; the registry's rule is that a wire name is never renamed. |
+| C2 | Each violated ordering rides back on the accepted write as `CommandResult::ordering_warnings` (`sunrise_domain::OrderingWarning`: `target_after_hard_due`, `planned_after_hard_due`), computed by `Task::ordering_warnings` in the reader's zone on the vault's planner days, both deadlines at `due()` and the plan at its start. A create always reports them; an edit only when it moves one of the three times, so a retitle does not re-raise a warning the user has seen. `ValidationError::DueBeforeScheduled` is no longer returned; its error code stays reserved. | §1 says warnings, never rejections, and names `CommandResult` as where they go; the same function is what a reader calls for display. |
+| C3 | `lateness(task, now, zone, schedule, stale_after_days) -> LatenessState` (`crates/sunrise-domain/src/lateness.rs`). `due()` is `sunrise_domain::deadline_at`, and the start of a value (an all-day one at `boundary(d)`) `starts_at`, both in `day_schedule`. A deadline whose kind this build cannot place counts as set, so the task is never stale, and is never missed. Staleness compares planner dates with civil-day arithmetic (`Date + N days`), so a DST day is one day. The ADR's Friday-until-01:00 example reads, under `day-schedule.md`'s formula `boundary(d) = max(wake(d), end(d−1))`, as Friday's planner day running to Saturday's wake: an all-day Friday deadline is missed then. | §2's states read the day schedule (§Due instant), so the function takes it. An invented answer for an unknown kind is worse than none (ADR-0066 §3). |
+| C4 | Today as ADR-0047 composes it is `Query::TodayView { now_ms, contexts }`: each row the task, its `TodayGroup` (`planned`, `carried_over`, `due_today` with which deadline, `late`) from `sunrise_domain::today_group`, and its `LatenessState`, in group order, Late rows by state, then `since`, then id. `Query::Today` keeps returning the same set as a flat list (now including a task whose only time is a target), and `today_section_in` keeps the Scheduled, Due and Overdue sections on the plan and the hard deadline, for the shipped clients that classify with it. `Query::Lateness { ids }` returns each task's state for a badge anywhere else. | The UniFFI `TodaySection` is switched over exhaustively by the shipped Swift, so it cannot gain a case; a new query and enum leave it alone until the Mac pass moves to them. |
+| C5 | `stale_after_days` is read from the vault's `Preferences` for every lateness read (`Engine::stale_after_days`, default 14, `0` off). | §2 names it a preference; one reader keeps search, Today, saved views and the queue on one answer. |
+| C6 | Search: `target:` reads `target_at`, `hard:` `hard_due_at`, `due:` the earlier of the two deadlines' days; `is:late` is `LateSoft` or `LateHard`, `is:late-hard` `LateHard`, `is:stale` `Stale`, each from `lateness` at the query's `now_ms`; `has:deadline` is either deadline; `is:inbox` reads all three times. The date operators still compare civil days, as #574 decided. Saved views gain `ViewFilter.lateness` (a lossless list of state spellings) and the `WindowField` spelling `target`, and the window counts planner days. | `search.md` §Operators lists these names already; triage, Today and search read one function. |
+| C7 | Capture writes a target from `*target:when*`, and the annotate line from `target:when` and `target:-`, beside `*due:when*` and `due:when`. Upcoming lists a day's soft deadlines in `UpcomingDay.targets`, apart from its hard ones in `due`; a task whose two deadlines fall on one day is listed once, under `due`. The briefs land a task on its plan, else its earlier deadline, each at its start on its planner day (`notify.rs#lands_at`). | The deadline split reaches every view that lists deadlines, and an all-day value no longer lands at civil midnight inside a late night's planner day (#574's leftover). |
+| C8 | Reminders still count back from `planned_at` alone. A deadline reminder (`notifications.md` §2's row 2, `notifications.deadline.*`) is not built: the UniFFI `ReminderKind` is switched over exhaustively by the shipped Swift, so it waits for a Mac pass. | §Consequences: `reminder_lead_s` counts back from `planned_at`. |
+
+## Delivered (2026-10)
+
+[#334](https://github.com/justin13888/Sunrise/issues/334), in one pull request:
+the three times (`DOC_SCHEMA_V` 20, migration 0045 at `STORAGE_V` 45, `FOLD_V`
+7), defer moving only the plan of any kind, ordering warnings, `lateness` with
+the day schedule and `stale_after_days`, `Query::TodayView` and
+`Query::Lateness`, the search operators, the saved-view lateness part and
+target window, Upcoming's targets, the briefs on planner days, capture and
+annotate, the CLI (`today` grouped, `show` with `target` and `lateness`), and
+the UniFFI surface (`TaskItem.targetAt`, `TaskDraftIn.targetAt`,
+`TaskEdit.setTargetAt`/`clearTargetAt`, `CommandOutcome.orderingWarnings`,
+`CoreQuery.todayView`/`lateness`, `UpcomingDayRow.targets`,
+`ViewFilterItem.lateness`). Concurrent defers counted two already
+([ADR-0065](./0065-copy-on-write-entity-versions.md) §7, D20), and defer kept
+its kind already ([ADR-0066](./0066-times-survive-travel.md) §4).
+
+What is left: the triage queue and its actions (§3, §4,
+[#335](https://github.com/justin13888/Sunrise/issues/335)); a deadline
+reminder (C8); and the Apple client's Today on `CoreQuery.todayView`, its
+editor's target picker and its lateness badges, a Mac pass.

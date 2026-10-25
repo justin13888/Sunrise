@@ -26,8 +26,8 @@ fn task(
         db,
         Command::CreateTask(TaskDraft {
             title: title.into(),
-            scheduled_at: scheduled,
-            due_at: due,
+            planned_at: scheduled,
+            hard_due_at: due,
             ..Default::default()
         }),
     )
@@ -214,27 +214,26 @@ fn the_day_grid_drops_yesterday_evening_east_of_utc() {
 /// floating 11:00 deadline is consistent for a reader in New York and not
 /// for one in Kolkata.
 #[test]
-fn due_before_scheduled_is_decided_in_the_readers_zone() {
+fn the_ordering_warning_is_decided_in_the_readers_zone() {
     let d = date(2026, 6, 1);
     let draft = TaskDraft {
         title: "t".into(),
-        scheduled_at: Some(SunriseTime::zoned(d.at(9, 0, 0, 0), "America/New_York")),
-        due_at: Some(SunriseTime::floating(d.at(11, 0, 0, 0))),
+        planned_at: Some(SunriseTime::zoned(d.at(9, 0, 0, 0), "America/New_York")),
+        hard_due_at: Some(SunriseTime::floating(d.at(11, 0, 0, 0))),
         ..Default::default()
     };
     let (ny, _) = engine_at("America/New_York", d.at(8, 0, 0, 0));
-    ny.apply(&mut db(), Command::CreateTask(draft.clone()))
+    let in_ny = ny
+        .apply(&mut db(), Command::CreateTask(draft.clone()))
         .unwrap();
+    assert!(in_ny.ordering_warnings.is_empty());
     let (kolkata, _) = engine_at("Asia/Kolkata", d.at(8, 0, 0, 0));
-    let err = kolkata
+    let in_kolkata = kolkata
         .apply(&mut db(), Command::CreateTask(draft))
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            EngineError::Validation(ValidationError::DueBeforeScheduled)
-        ),
-        "{err:?}"
+        .expect("an ordering warns, and never refuses (ADR-0047 §1)");
+    assert_eq!(
+        in_kolkata.ordering_warnings,
+        [sunrise_domain::OrderingWarning::PlannedAfterHardDue]
     );
 }
 
@@ -270,7 +269,7 @@ fn stream_and_context_lists_order_in_the_readers_zone() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: title.into(),
-                scheduled_at: at,
+                planned_at: at,
                 contexts: vec![ctx],
                 ..Default::default()
             }),
@@ -330,8 +329,8 @@ fn task_id(
         db,
         Command::CreateTask(TaskDraft {
             title: title.into(),
-            scheduled_at: scheduled,
-            due_at: due,
+            planned_at: scheduled,
+            hard_due_at: due,
             ..Default::default()
         }),
     )
@@ -516,7 +515,7 @@ fn defer_keeps_the_kind_and_the_wall_clock_time() {
         .unwrap();
     let t = task_of(&e, &db, id);
     assert_eq!(
-        t.scheduled_at,
+        t.planned_at,
         Some(SunriseTime::floating(date(2026, 3, 8).at(2, 30, 0, 0)))
     );
     assert_eq!(t.deferred_count, 1);
@@ -531,7 +530,7 @@ fn defer_keeps_the_kind_and_the_wall_clock_time() {
     let to = sunrise_domain::shift_civil_days(&day, 2, &e.device_zone()).unwrap();
     e.apply(&mut db, Command::DeferTaskTo { id, to }).unwrap();
     assert_eq!(
-        task_of(&e, &db, id).scheduled_at,
+        task_of(&e, &db, id).planned_at,
         Some(SunriseTime::all_day(date(2026, 3, 9)))
     );
 }
@@ -548,25 +547,26 @@ fn the_millisecond_defer_still_writes_an_instant() {
     e.apply(&mut db, Command::DeferTask { id, to_ms }).unwrap();
     let t = task_of(&e, &db, id);
     assert_eq!(
-        t.scheduled_at,
+        t.planned_at,
         Some(SunriseTime::instant(ms_to_ts(to_ms as i64)))
     );
     assert_eq!(t.deferred_count, 1);
 }
 
-/// Defer passes the same validation as an edit of `scheduled_at`: past an
-/// all-day deadline it is refused, in the reader's zone, and nothing is
-/// written.
+/// Defer passes the same validation as an edit of `planned_at`: past an
+/// all-day deadline, read in the reader's zone, it is accepted and warned
+/// about, exactly as the edit is, and the deadline stays where it was
+/// (ADR-0047 §1: an ordering warns and never rejects).
 #[test]
-fn defer_past_the_deadline_is_refused_like_an_edit() {
+fn defer_past_the_deadline_is_kept_and_warned_like_an_edit() {
     let now = ms("2026-06-01T12:00:00Z");
     let (e, _) = traveller("Asia/Kolkata", now);
     let mut db = db();
     let due = SunriseTime::all_day(date(2026, 6, 2));
-    let id = task_id(&e, &mut db, "taxes", None, Some(due));
+    let id = task_id(&e, &mut db, "taxes", None, Some(due.clone()));
     let ops = op_count(&db);
     let late = SunriseTime::floating(date(2026, 6, 3).at(9, 0, 0, 0));
-    let err = e
+    let deferred = e
         .apply(
             &mut db,
             Command::DeferTaskTo {
@@ -574,27 +574,27 @@ fn defer_past_the_deadline_is_refused_like_an_edit() {
                 to: late.clone(),
             },
         )
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            EngineError::Validation(ValidationError::DueBeforeScheduled)
-        ),
-        "{err:?}"
+        .expect("a plan after the deadline is a decision, not an error");
+    assert_eq!(
+        deferred.ordering_warnings,
+        [sunrise_domain::OrderingWarning::PlannedAfterHardDue]
     );
+    let t = task_of(&e, &db, id);
+    assert_eq!(t.planned_at, Some(late.clone()), "kind kept");
+    assert_eq!(t.hard_due_at, Some(due), "defer never moves a deadline");
+    assert_eq!(t.deferred_count, 1);
     let edit = e
         .apply(
             &mut db,
             Command::UpdateTask {
                 id,
                 patch: TaskPatch {
-                    scheduled_at: Some(Some(late)),
+                    planned_at: Some(Some(late)),
                     ..Default::default()
                 },
             },
         )
-        .unwrap_err();
-    assert_eq!(format!("{edit:?}"), format!("{err:?}"));
-    assert_eq!(op_count(&db), ops, "nothing written");
-    assert_eq!(task_of(&e, &db, id).deferred_count, 0);
+        .unwrap();
+    assert_eq!(edit.ordering_warnings, deferred.ordering_warnings);
+    assert!(op_count(&db) > ops, "both writes are logged");
 }

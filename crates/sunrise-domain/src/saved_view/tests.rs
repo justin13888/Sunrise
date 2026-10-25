@@ -26,8 +26,9 @@ fn task(n: u8) -> Task {
         priority: None,
         energy: None,
         estimated_duration_s: None,
-        scheduled_at: None,
-        due_at: None,
+        planned_at: None,
+        target_at: None,
+        hard_due_at: None,
         scheduling_constraints: Vec::new(),
         completed_at: None,
         deferred_count: 0,
@@ -46,9 +47,13 @@ fn task(n: u8) -> Task {
 }
 
 fn reader(tz: &str, today: Date) -> FilterReader {
+    let zone = TimeZone::get(tz).unwrap();
     FilterReader {
-        tz: TimeZone::get(tz).unwrap(),
+        now: zone.to_zoned(today.at(12, 0, 0, 0)).unwrap().timestamp(),
+        tz: zone,
         today,
+        schedule: crate::DaySchedule::default(),
+        stale_after_days: crate::DEFAULT_STALE_AFTER_DAYS,
     }
 }
 
@@ -223,8 +228,9 @@ fn a_window_is_inclusive_relative_days_and_a_missing_time_is_outside() {
         let mut t = task(1);
         let v = Some(SunriseTime::all_day(day));
         match field {
-            WindowField::Scheduled => t.scheduled_at = v,
-            _ => t.due_at = v,
+            WindowField::Scheduled => t.planned_at = v,
+            WindowField::Target => t.target_at = v,
+            _ => t.hard_due_at = v,
         }
         t
     };
@@ -270,9 +276,74 @@ fn a_window_is_inclusive_relative_days_and_a_missing_time_is_outside() {
                 false,
             ),
             (window(WindowField::Due, None, None), task(1), false),
+            (
+                window(WindowField::Target, Some(0), Some(0)),
+                on(WindowField::Target, today),
+                true,
+            ),
+            (
+                window(WindowField::Target, Some(0), Some(0)),
+                on(WindowField::Due, today),
+                false,
+            ),
         ],
         &r,
     );
+}
+
+/// The lateness part keeps the tasks in any of its states for this reader,
+/// and a state a newer build added is kept verbatim, matches nothing, and
+/// marks the view incomplete.
+#[test]
+fn the_lateness_part_reads_each_tasks_lateness_for_the_reader() {
+    let r = utc();
+    let yesterday = SunriseTime::all_day(r.today.yesterday().unwrap());
+    let tomorrow = SunriseTime::all_day(r.today.tomorrow().unwrap());
+    let mut hard = task(1);
+    hard.hard_due_at = Some(yesterday.clone());
+    let mut soft = task(2);
+    soft.target_at = Some(yesterday);
+    soft.hard_due_at = Some(tomorrow.clone());
+    let mut on_track = task(3);
+    on_track.hard_due_at = Some(tomorrow);
+    // `task` was last touched in 1970: stale for any reader in 2026.
+    let stale = task(4);
+    let only = |parts: Vec<LatenessPart>| ViewFilter {
+        lateness: parts,
+        ..ViewFilter::default()
+    };
+    let late = only(vec![LatenessPart::LateHard, LatenessPart::LateSoft]);
+    table(
+        &[
+            (late.clone(), hard.clone(), true),
+            (late.clone(), soft.clone(), true),
+            (late.clone(), on_track.clone(), false),
+            (late, stale.clone(), false),
+            (only(vec![LatenessPart::Stale]), stale.clone(), true),
+            (only(vec![LatenessPart::OnTrack]), on_track, true),
+            (only(vec![LatenessPart::OnTrack]), hard.clone(), false),
+        ],
+        &r,
+    );
+    let newer = only(vec![
+        LatenessPart::from_raw("overdue_forever"),
+        LatenessPart::LateHard,
+    ]);
+    assert!(!newer.is_complete());
+    assert!(newer.matches(&hard, &r, true));
+    assert!(!newer.matches(&soft, &r, true));
+    let alone = only(vec![LatenessPart::from_raw("overdue_forever")]);
+    assert!(
+        alone.matches(&stale, &r, true),
+        "an unknown part alone passes"
+    );
+    // The wire spelling is the state's.
+    let json = serde_json::to_string(&only(vec![LatenessPart::LateSoft])).unwrap();
+    assert_eq!(json, r#"{"lateness":["late_soft"]}"#);
+    for l in crate::Lateness::ALL {
+        assert_eq!(LatenessPart::from(l).state(), Some(l));
+        assert_eq!(LatenessPart::from(l).as_str(), l.as_str());
+    }
 }
 
 /// The day a time falls on is the reader's: 23:30 UTC is today in London in
@@ -282,7 +353,7 @@ fn a_window_is_inclusive_relative_days_and_a_missing_time_is_outside() {
 fn a_window_reads_the_day_in_the_readers_zone() {
     let today = jiff::civil::date(2026, 1, 10);
     let mut instant = task(1);
-    instant.scheduled_at = Some(SunriseTime::instant(
+    instant.planned_at = Some(SunriseTime::instant(
         jiff::civil::date(2026, 1, 10)
             .at(23, 30, 0, 0)
             .to_zoned(TimeZone::UTC)
@@ -290,7 +361,7 @@ fn a_window_reads_the_day_in_the_readers_zone() {
             .timestamp(),
     ));
     let mut floating = task(2);
-    floating.scheduled_at = Some(SunriseTime::floating(today.at(9, 0, 0, 0)));
+    floating.planned_at = Some(SunriseTime::floating(today.at(9, 0, 0, 0)));
     let today_only = window(WindowField::Scheduled, Some(0), Some(0));
     for (zone, instant_today) in [
         ("Europe/London", true),
@@ -321,7 +392,7 @@ fn an_unknown_filter_part_round_trips_and_marks_the_filter_incomplete() {
     let bytes = sunrise_cbor::encode_canonical(&f).unwrap();
     let back: ViewFilter = sunrise_cbor::decode_canonical(&bytes).unwrap();
     assert_eq!(back, f);
-    let newer_field = window(WindowField::from_raw("target"), None, Some(0));
+    let newer_field = window(WindowField::from_raw("finish_by"), None, Some(0));
     assert!(!newer_field.is_complete());
     assert!(
         newer_field.matches(&task(1), &utc(), true),

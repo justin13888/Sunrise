@@ -261,7 +261,13 @@ From now on:
   stream is still written as the legacy Inbox reference, which every older
   build reads as its Inbox, so the stream fields keep their wire shape; the
   three new fields are unknown fields to a v18 build, which writes them back
-  unchanged. None needs a feature.
+  unchanged. None needs a feature. `DOC_SCHEMA_V` 20 gave a task a plan and
+  two deadlines ([#334](https://github.com/justin13888/Sunrise/issues/334),
+  [ADR-0047](../11-adr/0047-deadlines-and-lateness.md)): `planned_at` and
+  `hard_due_at` keep the wire keys `scheduled_at` and `due_at`, whose meaning
+  they are, and `target_at`, `ViewFilter.lateness` and the `WindowField`
+  spelling `target` are new and absent when unset. A v19 build keeps them as
+  unknown and writes them back unchanged, so none needs a feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

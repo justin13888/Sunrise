@@ -23,8 +23,7 @@ use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::{Db, OpLog};
 
-/// Where [`sort_by_landing`] puts a task with neither `scheduled_at` nor
-/// `due_at`.
+/// Where [`sort_by_landing`] puts a task with no plan and no deadline.
 #[derive(Clone, Copy)]
 pub(super) enum Unlanded {
     /// Before every task that has a time: a Stream or Context listing, which
@@ -34,9 +33,10 @@ pub(super) enum Unlanded {
     Last,
 }
 
-/// Order a task list by when each task lands (`scheduled_at`, else
-/// `due_at`) as a reader in `tz` sees it, with [`SunriseTime::cmp_in`]
-/// (`docs/10-cross-cutting/time.md` §2 rule 3), then by id.
+/// Order a task list by when each task lands ([`landing`]: its plan, else
+/// its earlier deadline) as a reader in `tz` sees it, with
+/// [`SunriseTime::cmp_in`] (`docs/10-cross-cutting/time.md` §2 rule 3), then
+/// by id.
 ///
 /// The one ordering every user-visible task list uses. The storage index
 /// cannot stand in for it: a floating or all-day value is indexed in UTC, so
@@ -47,7 +47,7 @@ pub(super) fn sort_by_landing(
     tz: &jiff::tz::TimeZone,
     unlanded: Unlanded,
 ) {
-    let lands = |t: &sunrise_domain::Task| t.scheduled_at.clone().or_else(|| t.due_at.clone());
+    let lands = |t: &sunrise_domain::Task| landing(t, tz).cloned();
     tasks.sort_by(|a, b| {
         match (lands(a), lands(b)) {
             (Some(x), Some(y)) => x.cmp_in(&y, tz),
@@ -58,6 +58,22 @@ pub(super) fn sort_by_landing(
         }
         .then_with(|| a.id.cmp(&b.id))
     });
+}
+
+/// The time a task lands on for a reader in `tz`: its plan, or, when it has
+/// none, the earlier of its two deadlines (ADR-0047 §1), compared with
+/// [`SunriseTime::cmp_in`]. `None` for a task with no time at all.
+pub(super) fn landing<'t>(
+    t: &'t sunrise_domain::Task,
+    tz: &jiff::tz::TimeZone,
+) -> Option<&'t SunriseTime> {
+    if t.planned_at.is_some() {
+        return t.planned_at.as_ref();
+    }
+    match (t.target_at.as_ref(), t.hard_due_at.as_ref()) {
+        (Some(a), Some(b)) => Some(if b.cmp_in(a, tz).is_lt() { b } else { a }),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Order a Stream or Context listing: manual order
@@ -122,8 +138,8 @@ impl Engine {
         ))))
     }
 
-    /// Today: every open task scheduled or due on or before the reader's
-    /// planner day (`docs/10-cross-cutting/time.md` §4,
+    /// Today: every open task planned, or with a deadline of either kind, on
+    /// or before the reader's planner day (`docs/10-cross-cutting/time.md` §4,
     /// `docs/02-domain/day-schedule.md`).
     ///
     /// Today is the planner day containing `now_ms` in the device zone, not a
@@ -136,8 +152,8 @@ impl Engine {
     ///
     /// The SQL reads the storage index up to the end of the day plus
     /// [`PREFILTER_SLACK_MS`], and membership is then decided in Rust on the
-    /// resolved value (§2 rule 2). Rows come back by their resolved time
-    /// (`scheduled_at`, else `due_at`) with [`SunriseTime::cmp_in`], then id.
+    /// resolved value (§2 rule 2). Rows come back by when they land
+    /// ([`landing`]) with [`SunriseTime::cmp_in`], then id.
     pub(super) fn query_today(
         &self,
         db: &Db,
@@ -170,13 +186,17 @@ impl Engine {
             "SELECT id FROM tasks
              WHERE deleted = 0 AND archived = 0
                AND state != 'done' AND state != 'cancelled'
-               AND ((scheduled_at_ms IS NOT NULL AND scheduled_at_ms <= ?)
-                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?)){ctx_clause}"
+               AND ((planned_at_ms IS NOT NULL AND planned_at_ms <= ?)
+                 OR (target_at_ms IS NOT NULL AND target_at_ms <= ?)
+                 OR (hard_due_at_ms IS NOT NULL AND hard_due_at_ms <= ?)){ctx_clause}"
         );
         let mut stmt = db.conn().prepare(&sql)?;
 
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(window_end), Box::new(window_end)];
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(window_end),
+            Box::new(window_end),
+            Box::new(window_end),
+        ];
         for c in contexts {
             bound.push(Box::new(c.bytes().to_vec()));
         }
@@ -200,7 +220,9 @@ impl Engine {
                 .is_some_and(|d| d <= today)
         };
         tasks.retain(|t| {
-            on_or_before_today(t.scheduled_at.as_ref()) || on_or_before_today(t.due_at.as_ref())
+            on_or_before_today(t.planned_at.as_ref())
+                || on_or_before_today(t.target_at.as_ref())
+                || on_or_before_today(t.hard_due_at.as_ref())
         });
         sort_by_landing(&mut tasks, &tz, Unlanded::Last);
         Ok(QueryResult::Tasks(tasks))
@@ -210,9 +232,10 @@ impl Engine {
     /// [`crate::Core::on_time_zone_changed`] (`docs/10-cross-cutting/time.md`
     /// §7). Reads only; nothing stored is rewritten.
     ///
-    /// Counts the open tasks whose `scheduled_at` or `due_at` resolves to a
-    /// different instant in the two zones, or whose deadline is overdue in
-    /// one and not the other, and reports whether the
+    /// Counts the open tasks one of whose three times resolves to a
+    /// different instant in the two zones, or whose lateness (ADR-0047 §2)
+    /// is another state or began at another instant in one than in the
+    /// other, and reports whether the
     /// `notifications.timezone_changed.enabled` preference asks for a
     /// notification.
     pub(crate) fn time_zone_impact(
@@ -225,11 +248,11 @@ impl Engine {
         let moved =
             |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
         let schedule = self.day_schedule(db)?;
-        let late_moved = |v: Option<&SunriseTime>| {
-            v.is_some_and(|v| {
-                sunrise_domain::is_overdue_in(v, now_ms, from, &schedule)
-                    != sunrise_domain::is_overdue_in(v, now_ms, to, &schedule)
-            })
+        let stale_after_days = self.stale_after_days(db)?;
+        let now = super::ids::ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
+        let late_moved = |t: &sunrise_domain::Task| {
+            sunrise_domain::lateness(t, now, from, &schedule, stale_after_days)
+                != sunrise_domain::lateness(t, now, to, &schedule, stale_after_days)
         };
         let affected = super::review::read_live_tasks(db.conn())?
             .iter()
@@ -241,9 +264,10 @@ impl Engine {
                     )
             })
             .filter(|t| {
-                moved(t.scheduled_at.as_ref())
-                    || moved(t.due_at.as_ref())
-                    || late_moved(t.due_at.as_ref())
+                moved(t.planned_at.as_ref())
+                    || moved(t.target_at.as_ref())
+                    || moved(t.hard_due_at.as_ref())
+                    || late_moved(t)
             })
             .count();
         let notify = matches!(

@@ -229,6 +229,22 @@ pub(super) const SEED: &[SeedRow] = &[
             ("scheduled_at_civil", T(b"2023-11-15T01:00:00")),
             ("due_at_civil", T(b"2023-11-16")),
             ("completed_at_civil", T(b"2023-11-15T02:30:00")),
+            // 0045 renames the two times above (ADR-0047 §1) and adds the
+            // soft deadline. A fixture is filled with the names its version
+            // has, so the old ones fill those written before 0045 and these
+            // the ones after it.
+            ("planned_at_ms", I(1_700_000_600_000)),
+            ("planned_at_kind", T(b"instant")),
+            ("planned_at_tz", T(b"Europe/Paris")),
+            ("planned_at_civil", T(b"2023-11-15T01:00:00")),
+            ("hard_due_at_ms", I(1_700_000_700_000)),
+            ("hard_due_at_kind", T(b"date")),
+            ("hard_due_at_tz", T(b"UTC")),
+            ("hard_due_at_civil", T(b"2023-11-16")),
+            ("target_at_ms", I(1_700_000_650_000)),
+            ("target_at_kind", T(b"all_day")),
+            ("target_at_tz", T(b"UTC")),
+            ("target_at_civil", T(b"2023-11-15")),
             ("deferred_count", I(5)),
             ("routine_id", B(&ROUTINE)),
             ("routine_occurrence", I(7)),
