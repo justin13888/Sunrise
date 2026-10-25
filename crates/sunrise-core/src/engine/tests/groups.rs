@@ -340,6 +340,7 @@ fn a_bulk_completion_counts_every_occurrence_of_one_routine() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
     let e = engine_seeded(ROOT, [1u8; 32], clock.clone());
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
     let (rid, occ) = seed_routine(&e, &mut db);
     set_clock(&clock, (occ[1].1 + 3_600_000) as u64);
     let before = routine_op_count(&db);

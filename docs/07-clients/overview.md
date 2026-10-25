@@ -254,9 +254,11 @@ as the writing device's first eight hex digits and its `seq`
 spelling; `--value <v>` on a new value, read as JSON when it parses as JSON
 and as plain text otherwise, so `--value 'Renew passport'` and `--value 3`
 both need no quoting and `--value '"3"'` is the text. `sunrise restore <id>`
-undeletes a task, stream, context, routine or block. Both write a full-state
-op until the vault requires `core.field_ops`, which settles every field of
-the entity on the values this device shows (ADR-0065 D4, D9).
+undeletes a task, stream, context, routine or block. In a vault that
+requires `core.field_ops` both write one `Patch` of the one field naming
+every head of the entity, which settles that field alone (ADR-0065 §4); in
+one still in legacy mode, a full-state op, which settles every field of the
+entity on the values this device shows (ADR-0065 D4, D9, D11).
 
 ### Pairing
 

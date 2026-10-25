@@ -186,9 +186,10 @@ pub const fn is_create(cmd: &Command) -> bool {
 /// delete [ADR-0014] fixed. The ADR is about ops: `InnerOp::TaskDelete` carries
 /// the whole `Task` with `deleted` set, because a tombstone that replaces only
 /// an id leaves the rest of the row at whatever each replica happened to hold.
-/// `Command::DeleteTask` is a *command*, and the engine builds that full-state
-/// op from the row it is about to tombstone. Commands name entities; ops carry
-/// state, and this returns a command.
+/// `Command::DeleteTask` is a *command*, and the engine builds the op from the
+/// row it is about to tombstone: a `Patch` of `deleted` in a vault that
+/// requires `core.field_ops`, and that full-state op in one that does not.
+/// Commands name entities; ops carry state, and this returns a command.
 ///
 /// # Errors
 ///

@@ -182,10 +182,13 @@ Each field has a CRDT type, declared in the entity registry
 - **A field's CRDT type never changes.** Changing it is a new field under a new
   name.
 
-*Today:* every entity merges by entity-level LWW over full-state ops
-([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A
+*Today:* every entity merges field by field, and every command writes the
+`Patch` of the fields it changed once the vault requires `core.field_ops`
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §7). A vault one
+of whose devices lacks the feature stays on full-state ops, under which a
 concurrent edit to a different field, a set addition or a counter increment
-can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
+can still be lost to a later full-state write
+([#319](https://github.com/justin13888/Sunrise/issues/319)).
 
 ## Compatibility rules
 

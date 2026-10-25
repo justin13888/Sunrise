@@ -34,8 +34,11 @@ async fn a_device_joining_after_the_relay_trimmed_catches_up_from_the_snapshot()
     let mut metrics = None;
     let (addr, relay) = spawn_relay_with(ServerConfig::default(), |s| {
         metrics = Some(s.metrics.clone());
+        // Small enough that the first frame overflows it on its own: a
+        // capture is a create `Patch` of its title alone (ADR-0065 §7), a
+        // few hundred bytes sealed.
         s.with_durable_caps(DurableCaps {
-            max_bytes: 8 * 1024,
+            max_bytes: 4 * 1024,
             max_age_ms: u64::MAX,
         })
     })

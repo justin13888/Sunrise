@@ -418,6 +418,23 @@ fn rezoning_a_routine_keeps_its_wall_clock_and_its_occurrences() {
                 matches!(at, SunriseTime::Zoned { tz, civil } if tz == "America/New_York" && civil.time() == jiff::civil::time(9, 0, 0, 0)),
                 "{at:?}"
             );
+            // The re-pin is the routine engine's write: a generated `Patch`
+            // of the plan alone, which a user's edit of the occurrence beats
+            // (ADR-0065 §3).
+            let env: Vec<u8> = db
+                .conn()
+                .query_row(
+                    "SELECT envelope FROM ops WHERE target_id = ? ORDER BY rowid DESC LIMIT 1",
+                    params![&id[..]],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let op = crate::inner_op::decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap();
+            assert!(
+                matches!(&op, InnerOp::Patch(patch) if patch.is_generated()
+                    && patch.fields.keys().map(String::as_str).eq(["scheduled_at"])),
+                "{op:?}"
+            );
         }
     }
 }

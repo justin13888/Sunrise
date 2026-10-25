@@ -355,14 +355,15 @@ must be reset by subtracting its current value is not convergent under
 concurrent completions. A set of keys is.
 
 **What the code does today** ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
-D16, D17). The streak fields are still stored, and two ways write them:
+§7, D17). The streak fields are still stored, and two ways write them:
 
 - A full-state routine op carries them, computed by the completion rule in
   `crates/sunrise-domain/src/streak.rs` (`record_occurrence_completion`),
   which anchors the forgiveness window at `streak_started_at`. Until a
   `Patch` writes a key, a routine shows exactly these.
-- Between devices that all fold field ops, an on-time completion is a
-  `Patch` adding its key, and a late one writes nothing. Once a `Patch` has
+- In a vault that requires `core.field_ops`, an on-time completion is a
+  `Patch` adding its key, in one group with the completion, and a late one
+  writes nothing. Once a `Patch` has
   written `streak_keys` or `skipped_keys`, `project` derives the four fields
   from the keys (`Routine::derived_streak`), oldest occurrence first up to the
   newest key: a keyed occurrence counts, a skipped one is neutral, and any

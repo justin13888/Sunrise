@@ -230,6 +230,12 @@ impl Replica for BaselineReplica {
         })
     }
 
+    async fn holds_field_ops_of(&mut self, _devices: &[[u8; 16]]) -> bool {
+        // A baseline predates `core.field_ops` and records no advertisement
+        // the harness could ask about. Its own writes are full-state.
+        true
+    }
+
     async fn take_events(&mut self) -> Vec<LoggedEvent> {
         self.call(&json!({ "op": "events" }))
             .ok()

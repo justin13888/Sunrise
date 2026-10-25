@@ -104,25 +104,19 @@ nothing shared between the devices but the relay.
   any bearer), and device B joins with `sunrise recover` from the 24 words A
   printed. Both then `sync --once` until level.
 - **Concurrent edits** to different fields of one task, made while apart:
-  both devices agree. Today they agree on the later write's whole task, so the
-  earlier device's field is lost — this build still emits full-state entity
-  writes, and ADR-0044 §9 holds back field-level `Patch` ops until a vault
-  requires `core.field_ops`. The test pins that and carries a
-  `TODO(ADR-0044 §9)` for the assertion that both survive.
+  both devices agree, and both edits survive. Both CLIs are this build and
+  have advertised `core.field_ops`, so their vault requires it and every
+  command writes a `Patch` of the fields it changed (ADR-0065 §7).
 - **Concurrent defers** converge on one plan, which keeps its floating wall
   clock and kind.
-- **Delete on one device, edit on the other**: the devices agree, and today
-  the later edit resurrects the task, with no conflict reported on either
-  side: both CLIs write full-state ops, and two of those never make one
-  (ADR-0065 D4, D9). A drop and a `sunrise restore` then bring it back on
-  both, with its fields. Once commands write `Patch` with parents, the
-  delete wins and the edit is kept as a conflict; those assertions are a
-  `TODO(ADR-0065 8/8)` in the test. The engine already folds and reports
-  them for `Patch` versions (`crates/sunrise-core/src/engine/tests/conflicts.rs`).
-- **Concurrent retitles**: the later title wins on both, no conflict is
-  reported (D4), and `sunrise conflicts resolve <id> title --value …`
-  settles the title on both. The surfaced conflict and its `--pick` are a
-  `TODO(ADR-0065 8/8)`, for the same reason.
+- **Delete on one device, edit on the other**: the delete wins on both, and
+  both report the edit as made while deleted, a conflict on `deleted`
+  (ADR-0065 §3). `sunrise restore` brings the task back on both, with the
+  edit, and clears the conflict.
+- **Concurrent retitles**: one title on both, and both report one `tracked`
+  conflict on `title` whose loser is the other title.
+  `sunrise conflicts resolve <id> title --pick <loser>` makes the loser the
+  title on both and empties the list.
 - **The traveller**: A writes in `America/New_York` (`SUNRISE_TZ`), then reads
   and edits in `Asia/Kolkata`. A floating 09:00 stays 09:00 at another instant,
   a zoned block keeps its own zone, a read or a zone change rewrites nothing

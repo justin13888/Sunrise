@@ -15,8 +15,10 @@
 //!   of their last values is acceptable.
 //!
 //! The control run (`HEAD` against `HEAD`) is what shows the reference is the
-//! one `HEAD` produces: the only violations it may show are #319's, which is
-//! `HEAD`'s own entity-level last-writer-wins.
+//! one `HEAD` produces: it may show no violation at all. Its devices write
+//! `Patch`es of the fields they change (ADR-0065 §7), so two concurrent writes
+//! to different fields both survive; #319, entity-level last-writer-wins, is
+//! left only to a baseline, against which `HEAD` writes full-state ops.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -42,10 +42,10 @@
 //!   self-describing field op, and every field merges by its own CRDT type.
 //!   See `PatchPayload` and [`crate::engine`]'s `merge` module.
 //!
-//! This build applies both and emits only the first. ADR-0044 §9 forbids a
-//! build from emitting its first `Patch` into a vault until the vault's
-//! `vault_requires` lists `core.field_ops`, and this build's feature registry
-//! (`crate::feature`) does not register that feature yet.
+//! This build applies both. It emits an entity `Patch` only into a vault
+//! whose `vault_requires` lists `core.field_ops` (ADR-0044 §9, ADR-0065 §7),
+//! and once one does, nothing else (`engine::write`); into any other it
+//! emits the full-state ops (clarification D9).
 
 use crate::control_op::{
     DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
@@ -94,7 +94,7 @@ macro_rules! define_inner_op {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))?;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))? $(= $default:literal)?;
                             )*
                             $(..$unknown:ident)?
                         }

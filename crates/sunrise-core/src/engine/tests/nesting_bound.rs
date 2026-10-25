@@ -58,7 +58,9 @@ fn an_op_nested_past_the_bound_is_parked_and_counted() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
     let a_id = ea.keychain.device_id();
 
@@ -96,7 +98,9 @@ fn an_op_at_the_bound_applies() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "t");

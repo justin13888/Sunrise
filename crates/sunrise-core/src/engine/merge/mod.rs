@@ -99,7 +99,10 @@ mod snapshot;
 mod state;
 mod versions;
 
-pub(super) use patch::{check_patch, check_register_set, set_field, FieldOp, PatchProblem};
+pub(super) use patch::{
+    check_patch, check_register_set, round_trip, set_field, FieldOp, PatchProblem,
+};
+pub(super) use project::field_default;
 #[cfg(test)]
 pub(super) use project::map_over_whole;
 // The search indexes' rows are the row writers'; `engine::search` builds them
@@ -116,8 +119,11 @@ pub(super) fn parents_of(
     tx: &Transaction<'_>,
     id: &[u8; 16],
 ) -> rusqlite::Result<Vec<crate::inner_op::OpRefWire>> {
+    // A head at seq 0 is no op (the chain's empty position): only a row
+    // folded without an op is one, and no `Patch` may name it.
     Ok(versions::heads(tx, id)?
         .into_iter()
+        .filter(|h| h.seq != 0)
         .map(|h| crate::inner_op::OpRefWire(h.stream, h.device, h.seq))
         .collect())
 }

@@ -67,6 +67,10 @@ pub struct Feature {
     pub since: u16,
 }
 
+/// The id of the feature that turns ADR-0065 on (§7): commands write
+/// `Patch` and nothing else once a vault requires it.
+pub const FIELD_OPS_FEATURE: &str = "core.field_ops";
+
 /// Every feature this build supports.
 pub static FEATURES: &[Feature] = &[
     // The vault's Preferences entity (ADR-0050, issue #337). It has no op
@@ -129,6 +133,22 @@ pub static FEATURES: &[Feature] = &[
             ("RoutineDelete", "rrule.until"),
         ],
         since: 15,
+    },
+    // The whole model of ADR-0065: every entity write is a `Patch` naming its
+    // writer's heads in `parents`, a multi-entity commit carries `group`, and
+    // the fold applies the conflict classes and precedence of §3 (§7). It is
+    // structural: a build without it can write no entity of a vault that
+    // requires it. It has no op kind or field of its own, since an older
+    // build decodes every key it adds; a `Patch` of an entity that has
+    // full-state ops uses it (`features_used`), which is what keeps a
+    // full-state writer from ever writing over a versioned entity.
+    Feature {
+        id: FIELD_OPS_FEATURE,
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 18,
     },
     // Saved views, a synced entity (issue #341). Like `preferences.entity`
     // it has no op kind or field of its own: every op on it is a `Patch`
@@ -231,6 +251,12 @@ pub fn is_feature_id(s: &str) -> bool {
 /// one of a feature's op kinds, or its payload carries one of a feature's
 /// fields with a value other than null.
 ///
+/// A `Patch` is read as the full-state op of its entity would be: the fields
+/// it writes are the fields it carries, each at the value its `set` writes,
+/// and its retyped fields are those of its entity's op variants. It also
+/// uses its entity's `<tag>.entity` feature, and `core.field_ops` when its
+/// entity has full-state ops.
+///
 /// Read from the encoded op rather than the typed one, so it sees exactly
 /// what goes on the wire, and so the seal path, which holds only the bytes,
 /// can ask. A blob that is not an externally tagged op uses nothing.
@@ -250,18 +276,55 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
     };
     // A `Patch` names its entity by the prefix of its `ref`; the entity's
     // `<tag>.entity` feature is used by every one of them.
-    let patched_entity: Option<String> = match (&*variant, &payload) {
+    let patched: Option<EntityKind> = match (&*variant, &payload) {
         ("Patch", Value::Map(fields)) => fields
             .iter()
             .find(|(k, _)| k.as_text() == Some("ref"))
             .and_then(|(_, v)| v.as_text())
             .and_then(|r| r.get(..4))
-            .and_then(EntityKind::from_prefix)
-            .map(|k| format!("{}.entity", k.tag())),
+            .and_then(EntityKind::from_prefix),
         _ => None,
     };
+    let patched_entity = patched.map(|k| format!("{}.entity", k.tag()));
+    // A `Patch` of an entity that also has full-state ops is a version of
+    // ADR-0065, which only a vault that requires `core.field_ops` takes
+    // (§7). An entity written only by `Patch` (preferences, saved views) has
+    // no full-state op to protect, and its own `<tag>.entity` gates it.
+    let versioned = patched.is_some_and(|k| !k.spec().ops.is_empty());
+    // What the op writes, field by field, as a full-state op of its entity
+    // would carry it: a `Patch`'s registers by the value each `set` writes,
+    // and its other field ops by their op. A field a newer build added to a
+    // record is used by the `Patch` that writes it, as by the full-state op
+    // that carries it, and a value of a retyped field is read where the
+    // full-state op would hold it.
+    let written: Value = match (patched, &payload) {
+        (Some(_), Value::Map(fields)) => Value::Map(
+            fields
+                .iter()
+                .find(|(k, _)| k.as_text() == Some("fields"))
+                .and_then(|(_, v)| v.as_map())
+                .into_iter()
+                .flatten()
+                .map(|(k, op)| {
+                    let set = op.as_map().and_then(|m| {
+                        m.iter()
+                            .find(|(k, _)| k.as_text() == Some("set"))
+                            .map(|(_, v)| v.clone())
+                    });
+                    (k.clone(), set.unwrap_or_else(|| op.clone()))
+                })
+                .collect(),
+        ),
+        _ => payload,
+    };
+    // The op variants whose retyped fields the op writes: its own, and for a
+    // `Patch` every full-state variant of its entity.
+    let variants: Vec<&str> = match patched {
+        Some(k) => k.spec().ops.iter().map(|o| o.variant).collect(),
+        None => vec![variant.as_str()],
+    };
     let retyped_as_map = |path: &str| -> bool {
-        let mut at = &payload;
+        let mut at = &written;
         for segment in path.split('.') {
             let Value::Map(fields) = at else {
                 return false;
@@ -278,18 +341,15 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
         .filter(|f| {
             f.retyped
                 .iter()
-                .any(|(v, path)| *v == variant && retyped_as_map(path))
+                .any(|(v, path)| variants.contains(v) && retyped_as_map(path))
         })
         .map(|f| f.id)
         .collect();
-    let carried: Vec<String> = match payload {
+    let carried: Vec<String> = match &written {
         Value::Map(fields) => fields
-            .into_iter()
+            .iter()
             .filter(|(_, v)| !matches!(v, Value::Null))
-            .filter_map(|(k, _)| match k {
-                Value::Text(name) => Some(name),
-                _ => None,
-            })
+            .filter_map(|(k, _)| k.as_text().map(str::to_owned))
             .collect(),
         _ => Vec::new(),
     };
@@ -301,6 +361,7 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
                     .iter()
                     .any(|name| carried.iter().any(|c| c == name))
                 || patched_entity.as_deref() == Some(f.id)
+                || (versioned && f.id == FIELD_OPS_FEATURE)
                 || uses.contains(&f.id)
         })
         .map(|f| f.id)
@@ -520,6 +581,73 @@ mod tests {
         assert!(features_used(REG, &op("TaskUpdate", vec![("title", Value::Null)])).is_empty());
         assert!(features_used(&[], &op("TaskSplit", vec![])).is_empty());
         assert!(features_used(REG, &[0xff]).is_empty());
+    }
+
+    /// A `Patch` is read as its entity's full-state op would be: the fields
+    /// it writes are the fields it carries, at the value each `set` writes,
+    /// and its entity's retyped fields are checked there; a `Patch` of an
+    /// entity with full-state ops uses `core.field_ops`, one of an entity
+    /// written only by `Patch` does not.
+    #[test]
+    fn features_used_reads_a_patch_as_its_full_state_op() {
+        use ciborium::value::Value;
+        let text = |s: &str| Value::Text(s.into());
+        let patch = |target: &str, fields: Vec<(&str, Value)>| {
+            let fields = Value::Map(
+                fields
+                    .into_iter()
+                    .map(|(k, v)| (text(k), Value::Map(vec![(text("set"), v)])))
+                    .collect(),
+            );
+            let payload = Value::Map(vec![(text("ref"), text(target)), (text("fields"), fields)]);
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&Value::Map(vec![(text("Patch"), payload)]), &mut buf)
+                .unwrap();
+            buf
+        };
+        let task = sunrise_id::EntityRef::new(EntityKind::Task, [1; 16]).to_str();
+        let att = sunrise_id::EntityRef::new(EntityKind::Attachment, [1; 16]).to_str();
+        let rtn = sunrise_id::EntityRef::new(EntityKind::Routine, [1; 16]).to_str();
+        let prf = sunrise_id::EntityRef::new(EntityKind::Preferences, [1; 16]).to_str();
+        assert_eq!(
+            features_used(FEATURES, &patch(&task, vec![("title", text("t"))])),
+            [FIELD_OPS_FEATURE]
+        );
+        assert_eq!(
+            features_used(
+                FEATURES,
+                &patch(&att, vec![("width", Value::Integer(9.into()))])
+            ),
+            ["attachment.thumbnail", FIELD_OPS_FEATURE]
+        );
+        assert_eq!(
+            features_used(FEATURES, &patch(&att, vec![("width", Value::Null)])),
+            [FIELD_OPS_FEATURE],
+            "a field cleared to null is not carried"
+        );
+        let floating = Value::Map(vec![
+            (text("kind"), text("floating")),
+            (text("civil"), text("2026-10-26T09:00:00")),
+        ]);
+        assert_eq!(
+            features_used(FEATURES, &patch(&rtn, vec![("starts_at", floating)])),
+            ["routine.civil_times", FIELD_OPS_FEATURE]
+        );
+        assert_eq!(
+            features_used(
+                FEATURES,
+                &patch(&rtn, vec![("starts_at", Value::Integer(0.into()))])
+            ),
+            [FIELD_OPS_FEATURE],
+            "a bare instant is the old shape"
+        );
+        assert_eq!(
+            features_used(
+                FEATURES,
+                &patch(&prf, vec![("values", Value::Map(Vec::new()))])
+            ),
+            ["preferences.entity"]
+        );
     }
 
     /// The registry's own invariants: every id is well formed and unique, and

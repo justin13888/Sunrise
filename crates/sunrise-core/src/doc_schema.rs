@@ -12,8 +12,9 @@
 //! [`canonical_schema`] builds it from the code, never by hand:
 //!
 //! - every entity, its op variants and the records they write, with each
-//!   field's wire name, value type, CRDT type and conflict class, from the
-//!   entity registry ([`sunrise_id::registry::ENTITIES`]);
+//!   field's wire name, value type, CRDT type and conflict class, and the
+//!   default a field the decoder requires reads as, from the entity registry
+//!   ([`sunrise_id::registry::ENTITIES`]);
 //! - the rules the conflict classes are decided by (ADR-0065 §3): which task
 //!   states are terminal, the precedence inside a set of concurrent writes,
 //!   and that a generated write yields;
@@ -370,12 +371,22 @@ fn raw_schema() -> Value {
                 "records": e.records.iter().map(|r| json!({
                     "name": r.name,
                     "keeps_unknowns": r.unknowns.is_some(),
-                    "fields": r.fields.iter().map(|f| json!({
-                        "name": f.name,
-                        "type": type_name(f.value_type),
-                        "crdt": crdt_name(f.crdt),
-                        "conflict": conflict_name(f.conflict),
-                    })).collect::<Vec<_>>(),
+                    "fields": r.fields.iter().map(|f| {
+                        let mut field = json!({
+                            "name": f.name,
+                            "type": type_name(f.value_type),
+                            "crdt": crdt_name(f.crdt),
+                            "conflict": conflict_name(f.conflict),
+                        });
+                        // Only a declared default is hashed: every other
+                        // field reads as its decoder's, which its type
+                        // already pins (ADR-0044 §2).
+                        if let Some(default) = f.default {
+                            field["default"] = serde_json::from_str(default)
+                                .unwrap_or_else(|_| Value::String(default.to_owned()));
+                        }
+                        field
+                    }).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             })
         })

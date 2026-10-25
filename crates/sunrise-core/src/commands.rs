@@ -59,11 +59,14 @@ pub enum Command {
     /// write"). It also resolves the entity's tombstone conflict, and is what
     /// undo of a delete submits.
     ///
-    /// Until the vault requires `core.field_ops` it writes a full-state op of
-    /// the entity as it projects, so like every edit in that mode it
-    /// supersedes the concurrent writes this device has applied (ADR-0065
-    /// D4, D9). Refused with `NotFound` for an entity this replica does not
-    /// hold, and `Invalid` for one that is not deleted or of another kind.
+    /// In a vault that requires `core.field_ops` it is one `Patch` of
+    /// `deleted` naming every head of the entity, so it descends from every
+    /// branch edited while deleted (ADR-0065 §4). Until then it writes a
+    /// full-state op of the entity as it projects, so like every edit in that
+    /// mode it supersedes the concurrent writes this device has applied
+    /// (ADR-0065 D4, D9, D11). Refused with `NotFound` for an entity this
+    /// replica does not hold, and `Invalid` for one that is not deleted or of
+    /// another kind.
     Restore(EntityRef),
     /// Settle one field's conflict (ADR-0065 §4): write `value` to `field`
     /// as a version that descends from every version this device has applied,
@@ -73,9 +76,12 @@ pub enum Command {
     /// canonical CBOR. Resolving `deleted` to `true` acknowledges a delete,
     /// and to `false` is a [`Self::Restore`].
     ///
-    /// Until the vault requires `core.field_ops` it is written as
-    /// [`Self::Restore`] is, as a full-state op, which also settles every
-    /// other field of the entity on the values it projects. Refused with
+    /// In a vault that requires `core.field_ops` it is one `Patch` of
+    /// `field` naming every head of the entity, written even when `value` is
+    /// the winner's, since the write is what settles the set. Until then it
+    /// is written as [`Self::Restore`] is, as a full-state op, which also
+    /// settles every other field of the entity on the values it projects
+    /// (clarification D11). Refused with
     /// `Invalid` for a field that is not a register (a set, counter, map,
     /// identity or derived field) or a value it cannot hold.
     ResolveConflict {

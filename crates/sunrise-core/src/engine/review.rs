@@ -123,11 +123,18 @@ impl Engine {
                 let target = inner.target_ref();
                 let (payload, after) = match inner {
                     InnerOp::Patch(p) if target.kind() == EntityKind::Task => {
+                        // A create starts from nothing, never from the task
+                        // as it projects now, which already holds every later
+                        // write.
                         let base = match tasks.get(&target) {
                             Some(t) => Some(t.clone()),
+                            None if p.create => None,
                             None => read_task(conn, target.bytes()).ok().flatten(),
                         };
                         replay_task_patch(base, &p, row.ts_ms)
+                    }
+                    InnerOp::Patch(p) if target.kind() == EntityKind::Stream => {
+                        (stream_patch_payload(&p, row.ts_ms), None)
                     }
                     InnerOp::TaskCreate(t) => {
                         let after = Some(t.clone());
@@ -646,6 +653,64 @@ pub(super) fn replay_task_patch(
         }
         _ => return (OpPayload::Ignored, None),
     };
+    let deletes = replay_field_ops(EntityKind::Task, &mut entries, ops);
+    set_field(EntityKind::Task, &mut entries, "updated_at", stamp);
+    let Ok(task) = Value::Map(entries).deserialized::<Task>() else {
+        return (OpPayload::Ignored, None);
+    };
+    let payload = if p.create {
+        OpPayload::TaskCreated(Box::new(task.clone()))
+    } else if deletes {
+        OpPayload::TaskDeleted
+    } else {
+        OpPayload::TaskUpdated(Box::new(task.clone()))
+    };
+    (payload, Some(task))
+}
+
+/// What a stream `Patch` stamped at `at_ms` reads as in the history, as its
+/// full-state op would: a create is `StreamCreated` with the stream it
+/// writes, a `deleted` set to `true` is `StreamDeleted`, and anything else is
+/// bookkeeping, as a `StreamUpdate` is.
+fn stream_patch_payload(p: &PatchPayload, at_ms: u64) -> OpPayload {
+    use ciborium::value::Value;
+    let Ok(ops) = check_patch(p) else {
+        return OpPayload::Ignored;
+    };
+    let stamp = Value::serialized(&ms_to_ts(i64::try_from(at_ms).unwrap_or(i64::MAX)))
+        .unwrap_or(Value::Null);
+    let mut entries = vec![
+        (
+            Value::Text("id".into()),
+            Value::serialized(&p.target).unwrap_or(Value::Null),
+        ),
+        (Value::Text("created_at".into()), stamp.clone()),
+        (Value::Text("updated_at".into()), stamp),
+    ];
+    let deletes = replay_field_ops(EntityKind::Stream, &mut entries, ops);
+    if p.create {
+        return Value::Map(entries)
+            .deserialized::<sunrise_domain::Stream>()
+            .map_or(OpPayload::Ignored, |s| {
+                OpPayload::StreamCreated(Box::new(s))
+            });
+    }
+    if deletes {
+        OpPayload::StreamDeleted
+    } else {
+        OpPayload::Ignored
+    }
+}
+
+/// Apply a `Patch`'s field ops to `entries`, a whole entity of `kind` as
+/// CBOR: a register write, an OR-set edit and a counter delta each as the
+/// fold reads it for one writer. Returns whether it sets `deleted` to `true`.
+fn replay_field_ops(
+    kind: EntityKind,
+    entries: &mut Vec<(ciborium::value::Value, ciborium::value::Value)>,
+    ops: Vec<(String, FieldOp)>,
+) -> bool {
+    use ciborium::value::Value;
     let mut deletes = false;
     for (name, op) in ops {
         match op {
@@ -653,7 +718,7 @@ pub(super) fn replay_task_patch(
                 if name == "deleted" {
                     deletes = v == Value::Bool(true);
                 }
-                set_field(EntityKind::Task, &mut entries, &name, v);
+                set_field(kind, entries, &name, v);
             }
             FieldOp::Edit { add, remove } => {
                 let mut held: Vec<Value> = entries
@@ -667,7 +732,7 @@ pub(super) fn replay_task_patch(
                         held.push(e);
                     }
                 }
-                set_field(EntityKind::Task, &mut entries, &name, Value::Array(held));
+                set_field(kind, entries, &name, Value::Array(held));
             }
             FieldOp::Inc(n) => {
                 let held = entries
@@ -677,24 +742,13 @@ pub(super) fn replay_task_patch(
                     .and_then(|i| i64::try_from(i).ok())
                     .unwrap_or(0);
                 let v = Value::Integer(held.saturating_add(n).into());
-                set_field(EntityKind::Task, &mut entries, &name, v);
+                set_field(kind, entries, &name, v);
             }
-            // A task has no map field.
+            // Neither a task nor a stream has a map field.
             FieldOp::Map(_) => {}
         }
     }
-    set_field(EntityKind::Task, &mut entries, "updated_at", stamp);
-    let Ok(task) = Value::Map(entries).deserialized::<Task>() else {
-        return (OpPayload::Ignored, None);
-    };
-    let payload = if p.create {
-        OpPayload::TaskCreated(Box::new(task.clone()))
-    } else if deletes {
-        OpPayload::TaskDeleted
-    } else {
-        OpPayload::TaskUpdated(Box::new(task.clone()))
-    };
-    (payload, Some(task))
+    deletes
 }
 
 /// The routine-tuning window: the `weeks` civil weeks ending with the reviewed

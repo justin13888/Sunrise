@@ -50,6 +50,7 @@
 //!     records: [
 //!         Record @ ("table", "key", Extra | Body | Plain) | none {
 //!             field: Type => Register(Quiet | Tracked | State | Tombstone);
+//!             field: Type => Register(Tracked) = "\"json\"";  // its default, see below
 //!             field: Type => Map | OrSet | Counter | Nested | Derived;
 //!             renamed as "wire_name": Type => Register(Quiet);
 //!             ..unknown                       // the flattened `Unknowns` field, if any
@@ -76,16 +77,17 @@
 //! has no reserved-name slot and no test checks for reuse. The first change
 //! that removes a name adds both.
 //!
-//! # Not declared yet
+//! # Defaults
 //!
-//! [ADR-0044] §2 also has the registry declare each field's **default**: the
-//! value a field-level create that omits the field reads as (§4). The merge
-//! (`sunrise-core`'s `engine::merge`) reads serde's defaults on the domain
-//! types, and keeps its own small table for the required fields that have
-//! none (`Task.title`, `state`, `stream_id`, `Context.name`). So
-//! [`FieldSpec`] has no default yet. Moving that table here is a document
-//! schema change: the fingerprint (#323) then hashes each default with the
-//! rest of its field.
+//! [ADR-0044] §2 has the registry declare each field's **default**: the value
+//! a field-level create that omits the field reads as (§4). A field whose
+//! domain type's decoder supplies one (an `Option`'s `None`, an empty list, a
+//! `false` behind `#[serde(default)]`) reads as that, and declares none. A
+//! field the decoder requires and the merge's projection supplies declares
+//! it after `=`, as the field's value in JSON (`FieldSpec::default`):
+//! `Task.title`, `state` and `stream_id`, and `Context.name`. The document
+//! schema's fingerprint (#323) hashes each declared default with the rest of
+//! its field, so changing one is a `DOC_SCHEMA_V` bump.
 //!
 //! [ADR-0044]: ../../../docs/11-adr/0044-per-field-ops.md
 //! [ADR-0065]: ../../../docs/11-adr/0065-copy-on-write-entity-versions.md
@@ -129,11 +131,12 @@ macro_rules! for_each_entity {
                         id: EntityRef => Register(Quiet);
                         created_at: Timestamp => Register(Quiet);
                         updated_at: Timestamp => Register(Quiet);
-                        title: String => Register(Tracked);
+                        title: String => Register(Tracked) = "\"\"";
                         body: Option<NoteBody> => Register(Tracked);
-                        stream_id: EntityRef => Register(Tracked);
+                        // The Inbox (`sunrise_domain::INBOX_STREAM_ID`).
+                        stream_id: EntityRef => Register(Tracked) = "\"str_0000076XBEE9MQ6S9ED5Q64VVR\"";
                         contexts: BTreeSet<EntityRef> => OrSet;
-                        state: TaskState => Register(State);
+                        state: TaskState => Register(State) = "\"todo\"";
                         priority: Option<u8> => Register(Quiet);
                         energy: Option<Energy> => Register(Quiet);
                         estimated_duration_s: Option<u64> => Register(Quiet);
@@ -217,7 +220,7 @@ macro_rules! for_each_entity {
                         id: EntityRef => Register(Quiet);
                         created_at: Timestamp => Register(Quiet);
                         updated_at: Timestamp => Register(Quiet);
-                        name: String => Register(Tracked);
+                        name: String => Register(Tracked) = "\"\"";
                         description: Option<String> => Register(Tracked);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
@@ -715,9 +718,6 @@ pub struct Storage {
 }
 
 /// One field of a record.
-///
-/// It has no default yet. See the [module docs](crate::registry) §Not declared
-/// yet.
 #[derive(Debug, Clone, Copy)]
 pub struct FieldSpec {
     /// The CBOR map key, which is the field's identity ([ADR-0044] §2).
@@ -733,6 +733,11 @@ pub struct FieldSpec {
     /// What its concurrent writes come to: declared on a register,
     /// [`Conflict::Merge`] on anything else.
     pub conflict: Conflict,
+    /// The value it reads as when no op has written it, as JSON, for a field
+    /// the record's decoder requires; `None` for a field whose decoder
+    /// supplies its own default. See the [module docs](crate::registry)
+    /// §Defaults.
+    pub default: Option<&'static str>,
 }
 
 /// One value type: a type a record field or an op payload carries that is not
@@ -1141,7 +1146,7 @@ macro_rules! define_entities {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))?;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))? $(= $default:literal)?;
                             )*
                             $(..$unknown:ident)?
                         }
@@ -1235,6 +1240,7 @@ macro_rules! define_entities {
                                             value_type: ::core::stringify!($field_ty),
                                             crdt: Crdt::$crdt,
                                             conflict: $crate::__registry_conflict!($field; $crdt $($conflict)?),
+                                            default: $crate::__registry_default!($($default)?),
                                         },
                                     )*
                                 ],
@@ -1245,6 +1251,18 @@ macro_rules! define_entities {
                 },
             )*
         ];
+    };
+}
+
+/// A field's declared default, or `None`: see the module docs §Defaults.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __registry_default {
+    () => {
+        ::core::option::Option::None
+    };
+    ($default:literal) => {
+        ::core::option::Option::Some($default)
     };
 }
 

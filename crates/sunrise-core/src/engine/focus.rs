@@ -133,22 +133,23 @@ impl Engine {
         let stream = *view.start.stream_id.bytes();
         let state = completion.as_ref().map(|c| c.task.state.clone());
         let op = InnerOp::FocusEnd(Box::new(end));
-        let field_ops = self.writes_field_ops(db.conn())?;
         let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
             let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
             if let Some(c) = completion {
+                let mode = self.write_mode(tx, now_ms)?;
                 let task_stream = *c.task.stream_id.bytes();
-                self.append_and_fold(tx, &InnerOp::TaskUpdate(c.task), &task_stream, now_ms)?;
+                let mut members = vec![(InnerOp::TaskUpdate(c.task), task_stream)];
                 // Same rule as a hand-completed occurrence: the streak advance
                 // rides in the same transaction as the completion that caused
                 // it (`docs/08-features/focus-mode.md`: "a focus session that
                 // completes a routine occurrence increments the routine
-                // streak").
+                // streak"), and in a field-ops vault in the same group.
                 if let Some(streak) = &c.streak {
-                    if let Some(routine) = streak.op_in(tx, field_ops)? {
-                        self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+                    if let Some(routine) = streak.op_in(tx, mode)? {
+                        members.push((routine, META_STREAM));
                     }
                 }
+                self.append_and_fold_together(tx, members, now_ms)?;
             }
             Ok(done)
         })?;

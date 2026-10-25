@@ -207,12 +207,13 @@ constraint parts of #333) delivers §1, §2 and the rest of §5:
 - **§5, constraints.** A wrapping window (`22:00–02:00`) is valid and belongs
   to the day it starts on; a zone change lists the open planned tasks that
   now break a hard window (`TimeZoneChange::hard_violations`).
-- **Since ADR-0065's seventh pull request**, concurrent defers both count
+- **Since ADR-0065's eighth pull request**, concurrent defers both count
   and concurrent completions of two occurrences of one routine keep both
-  streak keys, between devices that all fold field ops (ADR-0065
-  clarification D16): a defer is then a `Patch` that adds one to
-  `deferred_count`, and a streak advance one that adds its key, from which
-  the streak is derived. Against a device that does not, both stay the
-  full-state ops of before. Edit scopes, template propagation, catch-up of
+  streak keys, in a vault that requires `core.field_ops` (ADR-0065 §7; its
+  seventh pull request did so between devices that all advertised
+  `routine.civil_times`, clarification D16, which the eighth retired): a
+  defer is then a `Patch` that adds one to `deferred_count`, and a streak
+  advance one that adds its key, from which the streak is derived. In a vault
+  still in legacy mode, both stay the full-state ops of before. Edit scopes, template propagation, catch-up of
   occurrences left open, and the hard-constraint flag at generation remain
   #331's.

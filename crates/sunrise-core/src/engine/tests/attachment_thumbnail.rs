@@ -54,7 +54,13 @@ fn a_thumbnail_is_written_with_its_attachment_and_replicates() {
         .apply(&mut dba, Command::AttachFile(with_thumbnail(task)))
         .unwrap()
         .entity;
-    assert_eq!(required(&dba), vec!["attachment.thumbnail".to_owned()]);
+    assert_eq!(
+        required(&dba),
+        vec![
+            "attachment.thumbnail".to_owned(),
+            "core.field_ops".to_owned()
+        ]
+    );
 
     let a = read_attachment(dba.conn(), att.bytes()).unwrap().unwrap();
     assert_eq!((a.width, a.height), (Some(1920), Some(1080)));
@@ -63,7 +69,7 @@ fn a_thumbnail_is_written_with_its_attachment_and_replicates() {
 
     eb.apply_remote(
         &mut dbb,
-        &env_for_kind(&dba, att.bytes(), "attachment.create"),
+        &env_for_kind(&dba, att.bytes(), "attachment.patch"),
     )
     .unwrap();
     let b = read_attachment(dbb.conn(), att.bytes()).unwrap().unwrap();

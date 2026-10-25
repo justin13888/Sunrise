@@ -27,8 +27,9 @@
 
 use super::ids::time_from_parts;
 use super::ids::{decode_unknowns, ms_to_ts, require_kind, require_writable_stream};
+use super::snapshot::in_tx;
 use super::task::{decode_constraints, read_task};
-use super::write::Appended;
+use super::write::{Appended, PatchBuilder, WriteMode};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::inner_op::InnerOp;
@@ -68,22 +69,22 @@ impl StreakWrite {
         Self { routine, on_time }
     }
 
-    /// The op it is written as, if any.
+    /// The op it is written as in `mode`, if any.
     ///
-    /// Without `field_ops`, the full-state `RoutineUpdate` carrying the
-    /// streak the completion rule computed. With it (clarification D16), the
+    /// In [`WriteMode::Legacy`], the full-state `RoutineUpdate` carrying the
+    /// streak the completion rule computed. In [`WriteMode::Patch`], the
     /// `Patch` that adds the on-time keys to `streak_keys`, from which every
-    /// replica derives the streak (D17); a key added by a concurrent
-    /// completion of another occurrence on another device survives beside it,
-    /// so both count (#331). A completion past its grace window adds no key,
-    /// which is what makes it a miss, so it writes nothing
+    /// replica derives the streak (clarification D17); a key added by a
+    /// concurrent completion of another occurrence on another device survives
+    /// beside it, so both count (#331). A completion past its grace window
+    /// adds no key, which is what makes it a miss, so it writes nothing
     /// (`docs/02-domain/routines-and-recurrence.md` §Streak).
     pub(super) fn op_in(
         &self,
         tx: &Transaction<'_>,
-        field_ops: bool,
+        mode: WriteMode,
     ) -> rusqlite::Result<Option<InnerOp>> {
-        if !field_ops {
+        if mode == WriteMode::Legacy {
             return Ok(Some(InnerOp::RoutineUpdate(Box::new(self.routine.clone()))));
         }
         if self.on_time.is_empty() {
@@ -94,13 +95,30 @@ impl StreakWrite {
             .iter()
             .map(|k| ciborium::value::Value::Text(k.clone()))
             .collect();
-        super::write::field_patch(
-            tx,
-            self.routine.id,
-            vec![("streak_keys", super::write::add_op(keys))],
-        )
-        .map(Some)
+        PatchBuilder::new(self.routine.id)
+            .edit("streak_keys", keys, Vec::new())
+            .build(tx)
     }
+}
+
+/// The tombstone of a routine occurrence the routine engine itself drops: a
+/// `Patch` of `deleted` with `"origin": "generated"` in [`WriteMode::Patch`],
+/// so a concurrent user edit of the occurrence is never beaten by it
+/// (ADR-0065 §3), and the full-state `TaskDelete` otherwise.
+fn generated_tombstone(
+    tx: &Transaction<'_>,
+    mode: WriteMode,
+    task: &Task,
+) -> rusqlite::Result<Option<(InnerOp, [u8; 16])>> {
+    let stream = *task.stream_id.bytes();
+    if mode == WriteMode::Legacy {
+        return Ok(Some((InnerOp::TaskDelete(task.clone()), stream)));
+    }
+    Ok(PatchBuilder::new(task.id)
+        .generated()
+        .set("deleted", ciborium::value::Value::Bool(true))
+        .build(tx)?
+        .map(|op| (op, stream)))
 }
 
 impl Engine {
@@ -343,12 +361,26 @@ impl Engine {
 
         let wire = self.routine_op_form(db, &routine)?;
         let op = InnerOp::RoutineUpdate(Box::new(wire));
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        // A re-key tombstones the untouched occurrences the new rule no
+        // longer has, in the routine op's transaction: in a field-ops vault
+        // one group, so no replica shows the new rule beside the old
+        // occurrences (ADR-0065 §6).
+        let stale = if structural {
+            self.stale_future_tasks(db, &routine, now_ms)?
+        } else {
+            Vec::new()
+        };
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut members = vec![(op.clone(), META_STREAM)];
+            for t in &stale {
+                members.extend(generated_tombstone(tx, mode, t)?);
+            }
+            let done = self.append_and_fold_together(tx, members, now_ms)?;
+            Ok(done.first().copied().unwrap_or(Appended::NOTHING))
+        })?;
         let (op_id, seq) = (done.op_id, done.seq);
 
-        if structural {
-            self.regenerate_future_tasks(db, &routine, now_ms)?;
-        }
         if let Some(old) = repinned_from {
             self.repin_future_tasks(db, &routine, &old, now_ms)?;
         }
@@ -390,8 +422,27 @@ impl Engine {
             t.scheduled_at = Some(SunriseTime::zoned(civil, new.clone()));
             t.updated_at = now;
             let stream = *t.stream_id.bytes();
-            let op = InnerOp::TaskUpdate(t);
-            db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+            // The routine engine's own write: in a field-ops vault a
+            // generated `Patch` of the plan, which a concurrent user edit of
+            // the occurrence beats (ADR-0065 §3).
+            in_tx(db, |tx| {
+                let op = if self.write_mode(tx, now_ms)? == WriteMode::Patch {
+                    let plan = ciborium::value::Value::serialized(&t.scheduled_at)
+                        .map_err(|e| EngineError::Cbor(e.to_string()))?;
+                    match PatchBuilder::new(t.id)
+                        .generated()
+                        .set("scheduled_at", plan)
+                        .build(tx)?
+                    {
+                        Some(op) => op,
+                        None => return Ok(()),
+                    }
+                } else {
+                    InnerOp::TaskUpdate(t)
+                };
+                self.append_and_fold(tx, &op, &stream, now_ms)?;
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -445,16 +496,18 @@ impl Engine {
 
         let op = InnerOp::RoutineUpdate(Box::new(self.routine_op_form(db, &routine)?));
         let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
-            let done = self.append_and_fold(tx, &op, &META_STREAM, now_ms)?;
-            // Its own op under its own stream, folded with its own stamp: see
-            // the note on `Engine::lww_stamp`.
+            // Each its own op under its own stream, folded with its own
+            // stamp: see the note on `Engine::lww_stamp`. In a field-ops
+            // vault the skip and the tombstone are one group.
+            let mut members = vec![(op.clone(), META_STREAM)];
             if let Some(mut t) = drop_task {
                 t.deleted = true;
                 t.updated_at = ms_to_ts(now_ms as i64);
                 let stream = *t.stream_id.bytes();
-                self.append_and_fold(tx, &InnerOp::TaskDelete(t), &stream, now_ms)?;
+                members.push((InnerOp::TaskDelete(t), stream));
             }
-            Ok(done)
+            let done = self.append_and_fold_together(tx, members, now_ms)?;
+            Ok(done.first().copied().unwrap_or(Appended::NOTHING))
         })?;
         let (op_id, seq) = (done.op_id, done.seq);
 
@@ -589,12 +642,15 @@ impl Engine {
     /// routine-materialized tasks that are still untouched (Todo, non-deferred)
     /// and whose deterministic id no longer matches any current future
     /// occurrence. Started, completed, deferred, or user-moved tasks are kept.
-    fn regenerate_future_tasks(
+    ///
+    /// Returns those tasks, each tombstoned, for the routine op's transaction
+    /// to write.
+    fn stale_future_tasks(
         &self,
-        db: &mut Db,
+        db: &Db,
         routine: &Routine,
         now_ms: u64,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Vec<Task>, EngineError> {
         let horizon_ms = u64::from(materialization_horizon_days(&routine.rrule.freq)) * 86_400_000;
         let now_ts = ms_to_ts(now_ms as i64);
         let window = (now_ts, ms_to_ts(now_ms.saturating_add(horizon_ms) as i64));
@@ -624,6 +680,7 @@ impl Engine {
         drop(stmt);
 
         let reader = self.device_zone();
+        let mut out = Vec::new();
         for raw in ids {
             let mut bytes = [0u8; 16];
             let take = raw.len().min(16);
@@ -644,11 +701,9 @@ impl Engine {
             }
             t.deleted = true;
             t.updated_at = ms_to_ts(now_ms as i64);
-            let stream = *t.stream_id.bytes();
-            let op = InnerOp::TaskDelete(t);
-            db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+            out.push(t);
         }
-        Ok(())
+        Ok(out)
     }
 
     pub(super) fn query_routines(&self, db: &Db) -> Result<QueryResult, EngineError> {

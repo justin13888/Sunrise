@@ -21,35 +21,39 @@ use crate::engine::stream::ensure_stream_row;
 use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
-use sunrise_domain::{
-    inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task,
-    TaskState,
-};
+use sunrise_domain::{Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task};
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// What a field reads as when no write has reached it, for the fields whose
-/// domain type has no serde default. Only these are given one: an entity
-/// created by a `Patch` that leaves out any other required field is not
-/// projected until a write supplies it (ADR-0044 §4, "nothing is dropped
+/// domain type has no serde default: the default the registry declares for
+/// it (`sunrise_id::registry` §Defaults), as CBOR. Only these are given one:
+/// an entity created by a `Patch` that leaves out any other required field is
+/// not projected until a write supplies it (ADR-0044 §4, "nothing is dropped
 /// while it waits").
-fn field_default(kind: EntityKind, field: &str) -> Option<Value> {
-    match (kind, field) {
-        (EntityKind::Task | EntityKind::Context, "title" | "name") => {
-            Some(Value::Text(String::new()))
-        }
-        (EntityKind::Task, "state") => Value::serialized(&TaskState::Todo).ok(),
-        (EntityKind::Task, "stream_id") => Value::serialized(&inbox_stream_ref()).ok(),
-        _ => None,
-    }
+pub(in crate::engine) fn field_default(kind: EntityKind, field: &str) -> Option<Value> {
+    let json = kind
+        .spec()
+        .records
+        .first()?
+        .fields
+        .iter()
+        .find(|f| f.name == field)?
+        .default?;
+    let json: serde_json::Value = serde_json::from_str(json).ok()?;
+    Value::serialized(&json).ok()
 }
 
-const DEFAULTED: [(EntityKind, &str); 4] = [
-    (EntityKind::Task, "title"),
-    (EntityKind::Task, "state"),
-    (EntityKind::Task, "stream_id"),
-    (EntityKind::Context, "name"),
-];
+/// The fields of `kind`'s own record that declare a default.
+fn defaulted(kind: EntityKind) -> impl Iterator<Item = &'static str> {
+    kind.spec()
+        .records
+        .first()
+        .into_iter()
+        .flat_map(|r| r.fields.iter())
+        .filter(|f| f.default.is_some())
+        .map(|f| f.name)
+}
 
 /// The order a merged set's elements are written in: text by its string, so
 /// a `Vec<String>` set reads back sorted (the streak code binary-searches
@@ -321,8 +325,8 @@ pub(super) fn project(
     } else if let Some(created) = top.get("created_at").cloned() {
         top.insert("updated_at".into(), created);
     }
-    for (k, f) in DEFAULTED {
-        if k == kind && !top.contains_key(f) {
+    for f in defaulted(kind) {
+        if !top.contains_key(f) {
             if let Some(v) = field_default(kind, f) {
                 top.insert(f.to_owned(), v);
             }
@@ -486,7 +490,6 @@ pub(super) fn write_projection(
     head: &LwwStamp,
 ) -> rusqlite::Result<bool> {
     let id = target.bytes();
-    let ts_ms = head.hlc.physical_ms;
     let present = row_exists(tx, spec, id)?;
     macro_rules! decode {
         ($ty:ty) => {
@@ -524,7 +527,7 @@ pub(super) fn write_projection(
                 }
             }
             t.contexts = live;
-            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
+            ensure_stream_row(tx, &t.stream_id, placeholder_ms(t.created_at))?;
             if present {
                 update_task_row(tx, &t, head)?;
                 replace_task_contexts(tx, &t)?;
@@ -571,7 +574,7 @@ pub(super) fn write_projection(
         }
         EntityKind::Routine => {
             let r: Routine = decode!(Routine);
-            ensure_stream_row(tx, &r.template.stream_id, ts_ms)?;
+            ensure_stream_row(tx, &r.template.stream_id, placeholder_ms(r.created_at))?;
             if present {
                 update_routine_row(tx, &r, head)?;
             } else {
@@ -585,7 +588,7 @@ pub(super) fn write_projection(
         }
         EntityKind::Block => {
             let b: Block = decode!(Block);
-            ensure_stream_row(tx, &b.stream_id, ts_ms)?;
+            ensure_stream_row(tx, &b.stream_id, placeholder_ms(b.created_at))?;
             upsert_block_row(tx, &b, head)?;
             replace_block_tasks(tx, &b)?;
         }
@@ -623,6 +626,14 @@ pub(super) fn write_projection(
         }
     }
     Ok(true)
+}
+
+/// The time a placeholder `streams` row an entity names is stamped with: the
+/// entity's `created_at`, a function of its ops, where its head's stamp is a
+/// function of the order they came in. The placeholder keeps the earliest
+/// one (`ensure_stream_row`).
+fn placeholder_ms(created_at: jiff::Timestamp) -> u64 {
+    u64::try_from(created_at.as_millisecond()).unwrap_or(0)
 }
 
 /// A context came back from a tombstone: re-project every task whose
