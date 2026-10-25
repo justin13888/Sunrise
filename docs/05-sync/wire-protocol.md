@@ -530,6 +530,12 @@ it raises the stream's cursors to the record's frontier, and the re-subscribe
 that follows replays only what lies above it. `SnapshotReq`/`SnapshotResp`
 (`0x08`/`0x09`) keep their discriminators and nothing else.
 
+A record sealed under a key the device does not hold waits. Where the device
+holds the identity's `ID_D_priv` (one restored from the recovery code), it
+reads the account's key bundle with `GET /api/v1/accounts/me/key_bundle` and
+the blob it names, absorbs the keys, and retries the record
+([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)).
+
 ## Atomic batches
 
 `OpBatch` may carry multiple ops, and a batch is the unit of *relay durability*

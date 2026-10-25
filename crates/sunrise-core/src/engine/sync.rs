@@ -718,7 +718,7 @@ impl Engine {
     /// and never advanced the sync cursor, so the relay still counts it as
     /// undelivered and re-sends it on the next reconnect — by which time the key
     /// that opens it is already here.
-    fn drain_deferred(
+    pub(super) fn drain_deferred(
         &self,
         db: &mut Db,
         stream_id: &[u8; 16],

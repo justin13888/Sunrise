@@ -6,6 +6,14 @@
 one reserved per-vault key domain that is not a Stream, the private domain for
 stream-less content, under the same rules as a Stream key.
 
+**Amended by:** [ADR-0069](./0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)
+— decision 4's identity recipient class reaches the recovery path only while
+the relay retains the `key_envelope` ops, which it trims after 30 days or
+256 MiB. The account's keys therefore also travel as one bundle sealed to the
+same recipient, `ID_D_pub` of the identity in force, which the relay pins
+outside op retention and a recovering device opens with the restored
+`ID_D_priv`. Same recipient, so it reaches nobody the envelopes did not.
+
 **Amends** [`docs/03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md),
 [`key-rotation.md`](../03-crypto/key-rotation.md) and
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this

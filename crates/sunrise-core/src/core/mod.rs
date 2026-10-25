@@ -142,6 +142,10 @@ pub struct Core {
     /// than on every tick. Memory only: after a restart the first publish
     /// asks the relay what it pins before uploading anything.
     published_snapshots: Mutex<std::collections::HashMap<[u8; 16], [u8; 16]>>,
+    /// The manifest digest of the key bundle this process last saw the relay
+    /// hold at least as much as (ADR-0069). Memory only, as
+    /// `published_snapshots` is.
+    published_key_bundle: Mutex<Option<[u8; 32]>>,
     /// The clock the engine reads, holding the zone a client last reported
     /// through [`Core::on_time_zone_changed`].
     reader_clock: Arc<crate::config::ReportedZoneClock>,
@@ -359,6 +363,7 @@ impl Core {
             compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
             last_compaction_ms: Mutex::new(None),
             published_snapshots: Mutex::new(std::collections::HashMap::new()),
+            published_key_bundle: Mutex::new(None),
             reader_clock,
             closed: Mutex::new(false),
         };
@@ -1696,6 +1701,7 @@ fn format_iso8601(ms: u64) -> String {
     format!("{ms}")
 }
 
+mod key_bundle;
 mod repair;
 
 pub(crate) use repair::OpenMode;

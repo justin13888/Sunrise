@@ -226,6 +226,18 @@ pub enum KeySource {
     },
     /// Arrived in a pairing payload.
     Pairing,
+    /// Arrived in the account's key bundle, published and signed by
+    /// `publisher` (ADR-0069).
+    ///
+    /// Recorded as a delivery by that device, exactly as an
+    /// [`Envelope`](Self::Envelope) key is by its sender: a bundle is the
+    /// same claim as the identity-addressed envelopes it stands in for, and a
+    /// key a read-bounded device delivered is never written under however it
+    /// arrived.
+    Bundle {
+        /// The device whose cert and signature the bundle carried.
+        publisher: [u8; 16],
+    },
     /// Recomputed from the pre-ADR-0024 derivation while adopting a legacy
     /// vault.
     Legacy,
@@ -237,6 +249,7 @@ impl KeySource {
             Self::Local => "local",
             Self::Envelope { .. } => "envelope",
             Self::Pairing => "pairing",
+            Self::Bundle { .. } => "bundle",
             Self::Legacy => "legacy",
         }
     }
@@ -278,6 +291,9 @@ pub enum KeychainError {
     /// Pairing payload codec failure.
     #[error("pairing payload: {0}")]
     Pairing(#[from] sunrise_pairing::PairingPayloadError),
+    /// A key bundle could not be sealed, or was refused (ADR-0069).
+    #[error("key bundle: {0}")]
+    KeyBundle(#[from] sunrise_crypto::KeyBundleError),
     /// The vault root does not open the stored secrets (wrong root).
     #[error("vault root does not match stored device identity")]
     VaultRootMismatch,
@@ -2336,6 +2352,127 @@ impl Keychain {
             .try_into()
             .map_err(|_| KeychainError::WrappedLen)?;
         Ok(StreamKey::from_bytes(arr))
+    }
+
+    // ---- the key bundle (ADR-0069) ----
+
+    /// Every Stream key this device may **write** under, with its epoch: what
+    /// the account's key bundle carries.
+    ///
+    /// A key a read-bounded device delivered is left out (the `WRITABLE_KEY` predicate).
+    /// The bundle is read by a device that knows nothing else about the
+    /// account yet, and it credits every key to this device; carrying such a
+    /// key would launder it into one the reader writes under, which is the
+    /// hole issue #280 closed for envelopes.
+    ///
+    /// # Errors
+    /// SQLite failure, or [`KeychainError::UnreadableRow`] for an epoch that
+    /// does not fit.
+    pub fn writable_stream_keys_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+    ) -> Result<Vec<sunrise_crypto::BundledKey>, KeychainError> {
+        let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = {
+            let sql = format!(
+                "SELECT k.stream_id, k.epoch, k.key_id FROM stream_keys k WHERE {WRITABLE_KEY}"
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let cache = self.cache.lock();
+        let mut out = Vec::with_capacity(rows.len());
+        for (stream, epoch, key_id) in rows {
+            // A malformed stream id is skipped as `load_cache` skips it: it
+            // names no stream, so no reader could use the key.
+            let Some(stream_id) = to16(&stream) else {
+                continue;
+            };
+            let epoch = u32::try_from(epoch).map_err(|_| KeychainError::UnreadableRow("epoch"))?;
+            let held = cache.get(&(stream_id, epoch)).and_then(|keys| {
+                keys.iter()
+                    .find(|k| sunrise_crypto::stream_key_id(k).as_slice() == key_id.as_slice())
+            });
+            if let Some(key) = held {
+                out.push(sunrise_crypto::BundledKey {
+                    stream_id,
+                    epoch,
+                    key: key.clone(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Seal `keys` into a key bundle for the identity in force, signed by this
+    /// device.
+    ///
+    /// Any device can: sealing needs `ID_D_pub` only, which every device holds.
+    ///
+    /// # Errors
+    /// [`KeychainError::KeyBundle`].
+    pub fn seal_key_bundle(
+        &self,
+        keys: &[sunrise_crypto::BundledKey],
+        now_ms: u64,
+        rng: &dyn Rng,
+    ) -> Result<Vec<u8>, KeychainError> {
+        let (identity_id, dh_pub, cert) = {
+            let state = self.identity.lock();
+            (
+                state.identity.identity_id,
+                state.identity.dh_pub,
+                state.cert_blob.clone(),
+            )
+        };
+        let mut adapter = RngAdapter(rng);
+        Ok(sunrise_crypto::seal_key_bundle(
+            &identity_id,
+            &dh_pub,
+            &cert,
+            now_ms,
+            keys,
+            &|m| self.signing.sign(m),
+            &mut adapter,
+        )?)
+    }
+
+    /// Decode and verify a key bundle against the identity in force: sealed to
+    /// it, published by a device it certified, signed by that device.
+    ///
+    /// # Errors
+    /// [`KeychainError::KeyBundle`] naming which check failed.
+    pub fn verify_key_bundle<'a>(
+        &self,
+        bundle: &'a sunrise_crypto::KeyBundle,
+    ) -> Result<sunrise_crypto::VerifiedKeyBundle<'a>, KeychainError> {
+        let (identity_id, id_s_pub) = {
+            let state = self.identity.lock();
+            (
+                state.identity.identity_id,
+                state.identity.signing.public_bytes(),
+            )
+        };
+        Ok(bundle.verify(&identity_id, &id_s_pub)?)
+    }
+
+    /// Open a verified key bundle with `ID_D_priv`.
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySecretAbsent`] on a device that holds no
+    /// `ID_D_priv` (every paired one), [`KeychainError::KeyBundle`] for keys
+    /// that do not open.
+    pub fn open_key_bundle(
+        &self,
+        verified: &sunrise_crypto::VerifiedKeyBundle<'_>,
+    ) -> Result<Vec<sunrise_crypto::BundledKey>, KeychainError> {
+        let state = self.identity.lock();
+        let dh = state
+            .identity
+            .dh_secret
+            .as_ref()
+            .ok_or(KeychainError::IdentitySecretAbsent)?;
+        Ok(verified.open(dh)?)
     }
 
     // ---- op envelopes ----

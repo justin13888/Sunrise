@@ -508,6 +508,48 @@ The client is `sunrise_sync::Transport::snapshot_latest` and
 `Transport::snapshot_pin`, implemented by `SseTransport` and driven by
 `crates/sunrise-core/src/snapshot_sync.rs`.
 
+### Key bundle
+
+The account's key bundle, pinned
+([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)).
+A bundle is every Stream key a device may write under, sealed to the account
+identity's `ID_D_pub` and signed by the device that published it. A device
+restored from the recovery code holds the identity and no Stream key, and the
+identity-addressed `key_envelope` ops that used to be its only source of keys
+are trimmed with the rest of the op log. The bundle travels as a snapshot
+record does: through the three blob steps, then pinned here.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/accounts/me/key_bundle` | `{ blob_id, manifest_digest, replaces? }` | `200 { blob_id, size_bytes, manifest_digest, published_at_ms }` |
+| GET | `/api/v1/accounts/me/key_bundle` | — | `200 { blob_id, size_bytes, manifest_digest, published_at_ms }`, or `404` |
+
+Both routes are signed like the blob routes (`Signed` for the `PUT`,
+`SignedParts` for the `GET`), need no step-up (the bundle opens under
+`ID_D_priv`, not under anything a guess can reach), and are in the `blob`
+rate-limit group. Implemented in `api/key_bundle.rs`, over
+`store/key_bundles.rs` (relay migration 0007).
+
+- **One per account, replaced only by a publisher that read it.** `replaces`
+  is the `blob_id` of the pin the publisher last read, absent or `null` when
+  it read none. Any other pin in place is `409 KEY_BUNDLE_SUPERSEDED` and
+  nothing is written; the publisher reads again. After a replacement the relay
+  deletes the blob the old pin named. Pins are not touched by op retention and
+  go only with the account; maintenance never collects a pinned blob.
+- **The blob must be a committed key bundle of this account.** As for a
+  snapshot pin, the relay reads only the cleartext magic prefix and refuses any
+  kind but the key bundle's (`0x08`) with `400 VALIDATION_INVALID`.
+- **`manifest_digest`** is 64 lowercase hex characters, the publisher's digest
+  of the bundle's cleartext manifest. The relay cannot check it and only hands
+  it back, so a device can tell an unchanged bundle without fetching it.
+- **No pin** is `404 BLOB_NOT_FOUND`.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed.
+
+The client is `sunrise_sync::Transport::key_bundle_latest` and
+`Transport::key_bundle_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/key_bundle_sync.rs`.
+
 ### Sharing — NOT IMPLEMENTED
 
 No `api/shares.rs` exists, no `shares` table is in `store/`'s schema, and
@@ -691,7 +733,7 @@ refills continuously.
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
 | `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
-| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
@@ -785,6 +827,7 @@ that have not been built.
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
 | `/api/v1/snapshots/*` | yes | yes | **yes — built; the record is a local-disk blob** |
+| `/api/v1/accounts/me/key_bundle` | yes | yes | **yes — built; the bundle is a local-disk blob** |
 | `/api/v1/shares/*` | yes | yes | **no route** |
 | `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |

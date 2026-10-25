@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, MetadataError, MetadataStore,
-    NewDevice, NewTombstone, PinnedSnapshot, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, KeyBundlePinned, MetadataError,
+    MetadataStore, NewDevice, NewTombstone, PinnedKeyBundle, PinnedSnapshot, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
 use crate::relay_log::{account_key, Appended, DurableCaps, Replay};
+
+mod pins;
 
 /// A backend that never answers, standing in for a shared one that lost its
 /// connection.
@@ -173,6 +175,17 @@ impl MetadataStore for Unreachable {
     ) -> Result<Option<PinnedSnapshot>, MetadataError> {
         Err(down())
     }
+    async fn pin_key_bundle(
+        &self,
+        _: &str,
+        _: &PinnedKeyBundle,
+        _: Option<[u8; 16]>,
+    ) -> Result<KeyBundlePinned, MetadataError> {
+        Err(down())
+    }
+    async fn pinned_key_bundle(&self, _: &str) -> Result<Option<PinnedKeyBundle>, MetadataError> {
+        Err(down())
+    }
     async fn collectable_blobs(
         &self,
         _: u64,
@@ -234,10 +247,10 @@ impl MetadataStore for Unreachable {
     }
 }
 
-const NOW: u64 = 1_704_067_200_000;
+pub(super) const NOW: u64 = 1_704_067_200_000;
 const DEV: [u8; 16] = [0x22; 16];
 
-fn subject(sub: &str) -> Subject {
+pub(super) fn subject(sub: &str) -> Subject {
     Subject::new("https://idp.example", sub)
 }
 
@@ -274,7 +287,9 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
     the_blob_ledger_sums_what_is_readable(store).await;
-    one_snapshot_is_pinned_per_stream(store).await;
+    pins::one_snapshot_is_pinned_per_stream(store).await;
+    pins::one_key_bundle_is_pinned_per_account(store).await;
+    pins::a_key_bundle_goes_with_its_account(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))
@@ -566,68 +581,6 @@ async fn the_blob_ledger_sums_what_is_readable(store: &dyn MetadataStore) {
         .await
         .unwrap();
     assert_eq!(bytes().await, before);
-}
-
-/// A pin replaces its stream's last one and hands back the blob it released;
-/// a blob another of the account's streams still names is not released, and
-/// no other account sees the pin.
-async fn one_snapshot_is_pinned_per_stream(store: &dyn MetadataStore) {
-    let alice = store
-        .resolve_account(&subject("snap-alice"), true, NOW)
-        .await
-        .unwrap();
-    let bob = store
-        .resolve_account(&subject("snap-bob"), true, NOW)
-        .await
-        .unwrap();
-    let pin = |stream: u8, blob: u8, at: u64| PinnedSnapshot {
-        stream_id: [stream; 16],
-        blob_key: [blob; 16],
-        size_bytes: 100 + u64::from(blob),
-        published_by: Some("dev".to_owned()),
-        published_at_ms: at,
-    };
-    let a = &alice.account_id;
-    assert_eq!(store.pinned_snapshot(a, &[1; 16]).await.unwrap(), None);
-    assert_eq!(
-        store.pin_snapshot(a, &pin(1, 0xa0, NOW)).await.unwrap(),
-        None
-    );
-    assert_eq!(
-        store.pinned_snapshot(a, &[1; 16]).await.unwrap(),
-        Some(pin(1, 0xa0, NOW))
-    );
-    assert_eq!(
-        store.pin_snapshot(a, &pin(1, 0xa0, NOW + 1)).await.unwrap(),
-        None,
-        "pinning the same blob again releases nothing"
-    );
-    assert_eq!(
-        store.pin_snapshot(a, &pin(1, 0xa1, NOW + 2)).await.unwrap(),
-        Some([0xa0; 16]),
-        "a newer pin releases the blob the older one named"
-    );
-    assert_eq!(
-        store.pinned_snapshot(a, &[1; 16]).await.unwrap(),
-        Some(pin(1, 0xa1, NOW + 2))
-    );
-    assert_eq!(
-        store.pin_snapshot(a, &pin(2, 0xa1, NOW)).await.unwrap(),
-        None
-    );
-    assert_eq!(
-        store.pin_snapshot(a, &pin(1, 0xa2, NOW + 3)).await.unwrap(),
-        None,
-        "a blob stream 2 still names is not released"
-    );
-    assert_eq!(
-        store
-            .pinned_snapshot(&bob.account_id, &[1; 16])
-            .await
-            .unwrap(),
-        None,
-        "a pin is the account's own"
-    );
 }
 
 async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore) {

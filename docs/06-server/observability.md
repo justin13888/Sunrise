@@ -32,7 +32,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 51 `ev` names the server emits, complete:
+The 53 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -48,7 +48,7 @@ The 51 `ev` names the server emits, complete:
      already on the base branch: pull requests are squash-merged, so a commit
      on the pull request's own branch is gone once it merges, and the gate
      rejects one the base does not reach.
-     Last extracted: 3bc16cd0 -->
+     Last extracted: 6848763c -->
 
 ```
 srv.start                        srv.req.start
@@ -81,6 +81,8 @@ srv.account.delete_requested     srv.blob.gc_deleted
 srv.account.delete_completed     srv.blob.upload_swept
 srv.maintenance.failed           srv.snapshot.pinned
                                  srv.snapshot.release_failed
+                                 srv.key_bundle.pinned
+                                 srv.key_bundle.release_failed
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -157,7 +159,7 @@ extracted from the source and checked by a gate, so the catalogue's
      already on the base branch: pull requests are squash-merged, so a commit
      on the pull request's own branch is gone once it merges, and the gate
      rejects one the base does not reach.
-     Last extracted: 642f4150 -->
+     Last extracted: 6848763c -->
 
 ```
 sunrise_account_create_total
@@ -184,6 +186,7 @@ sunrise_devices_revoke_total
 sunrise_http_in_flight_requests
 sunrise_http_request_duration_seconds     {endpoint, method}
 sunrise_http_requests_total               {endpoint, method, status}
+sunrise_key_bundle_pin_total
 sunrise_metrics_series_dropped_total
 sunrise_oidc_jwks_fetch_total             {result}
 sunrise_pairing_total                     {result}
@@ -214,7 +217,7 @@ sunrise_sync_stream_total
 sunrise_sync_streams_active
 ```
 
-52 metric names, and four that earlier revisions of this file listed and the
+53 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

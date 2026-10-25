@@ -34,6 +34,7 @@ pub mod blobs;
 pub mod devices;
 pub mod error;
 pub mod health;
+pub mod key_bundle;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
@@ -129,6 +130,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             blobs::delete
         ])
         .mount(kynos::routes![snapshots::pin, snapshots::latest])
+        .mount(kynos::routes![key_bundle::pin, key_bundle::latest])
         .mount(kynos::routes![
             sync::session,
             sync::subscribe,

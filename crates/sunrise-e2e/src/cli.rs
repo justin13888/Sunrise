@@ -16,9 +16,11 @@
 //! test process, into the target directory this test binary was built in, so
 //! a scenario never runs a stale `sunrise` against new code.
 
+use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::OnceLock;
+use std::process::{Child, Command, Output};
+use std::sync::{mpsc, OnceLock};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -291,4 +293,112 @@ pub async fn settle(a: &Device, b: &Device) {
     b.sync().await;
     a.sync().await;
     b.sync().await;
+}
+
+/// Generous: every step is a process start against a relay.
+pub const WAIT: Duration = Duration::from_secs(180);
+
+/// A `sunrise` process still running, and the `--json` events it prints.
+/// The shape `cli_pair_relay.rs` drives pairing with.
+#[derive(Debug)]
+pub struct Running {
+    child: Child,
+    events: Option<mpsc::Receiver<Value>>,
+}
+
+impl Running {
+    /// Start `sunrise <args>` as `device`, reading its `--json` events.
+    ///
+    /// # Panics
+    /// When the process cannot be started.
+    #[must_use]
+    pub fn start(device: &Device, args: &[&str]) -> Self {
+        let mut child = device.spawn(args);
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            child,
+            events: Some(rx),
+        }
+    }
+
+    /// The next event, which must be `name`.
+    ///
+    /// # Panics
+    /// When no event arrives in time, or it is not `name`.
+    pub async fn event(&mut self, name: &str) -> Value {
+        let rx = self.events.take().expect("one wait at a time");
+        let (rx, got) = tokio::task::spawn_blocking(move || {
+            let got = rx.recv_timeout(WAIT);
+            (rx, got)
+        })
+        .await
+        .expect("join the reader");
+        self.events = Some(rx);
+        let event = got.unwrap_or_else(|e| panic!("no {name:?} event ({e})"));
+        assert_eq!(event["event"], name, "{event}");
+        event
+    }
+
+    /// Wait for it to exit, successfully.
+    ///
+    /// # Panics
+    /// When it does not exit in time, or fails.
+    pub async fn finish(mut self) -> Output {
+        drop(self.child.stdin.take());
+        let out = tokio::time::timeout(
+            WAIT,
+            tokio::task::spawn_blocking(move || self.child.wait_with_output()),
+        )
+        .await
+        .expect("the command exits")
+        .expect("join the process")
+        .expect("wait for sunrise");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+}
+
+/// Pair a vault-less `b` onto `a`'s account over the relay: `sunrise pair
+/// join` on `b`, `sunrise pair add` on `a`, both confirming the SAS.
+///
+/// # Panics
+/// When either side fails.
+pub async fn pair_over_relay(a: &Device, b: &Device) {
+    let mut join = Running::start(
+        b,
+        &[
+            "--json",
+            "pair",
+            "join",
+            "--yes",
+            "--email",
+            "a@example.com",
+        ],
+    );
+    let code = join.event("code").await["code"]
+        .as_str()
+        .expect("the code is text")
+        .to_owned();
+    let mut add = Running::start(a, &["--json", "pair", "add", &code, "--yes"]);
+    add.event("sas").await;
+    join.event("sas").await;
+    add.event("paired").await;
+    join.event("paired").await;
+    add.finish().await;
+    join.finish().await;
 }

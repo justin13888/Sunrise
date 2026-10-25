@@ -47,7 +47,7 @@ on the authenticated account deliberately stays `AUTH_TOKEN_INVALID`
 
 ### The argument currently on the record is the wrong argument
 
-Both the doc comment (`crates/sunrise-server/src/api/error.rs:322#device_sig_invalid`) and
+Both the doc comment (`crates/sunrise-server/src/api/error.rs:326#device_sig_invalid`) and
 `auth.md` justify the pre-lookup case by pointing at `GET /meta`'s
 `device_binding_required` (`crates/sunrise-server/src/api/meta.rs:59#meta`). That
 answers a different question. `device_binding_required` tells every caller that

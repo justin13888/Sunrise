@@ -64,6 +64,7 @@ pub mod events;
 pub mod export;
 pub mod feature;
 pub mod inner_op;
+mod key_bundle_sync;
 pub mod keychain;
 pub mod queries;
 mod relay_intents;
@@ -92,8 +93,8 @@ pub use control_op::{
 pub use core::{Core, CoreError};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, RebuildReport, SearchReindex, SnapshotApplied, BOOTSTRAP_FILE,
-    SNAPSHOT_FORMAT_V,
+    Engine, EngineError, KeyBundleApplied, RebuildReport, SearchReindex, SnapshotApplied,
+    BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
 };
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,

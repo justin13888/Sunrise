@@ -358,8 +358,9 @@ impl Store {
     /// pin a blob forever. The device that asked for the deletion is left out
     /// too: it published the op. Every other active device must have declared,
     /// for the tombstone's stream and origin device, a cursor at or past the
-    /// tombstone's `seq`. A blob a stream's snapshot pin names is never
-    /// collectable: it is not an attachment, and only a newer pin releases it.
+    /// tombstone's `seq`. A blob a stream's snapshot pin or the account's key
+    /// bundle pin names is never collectable: it is not an attachment, and
+    /// only a newer pin releases it.
     pub fn collectable_blobs(
         &self,
         tombstoned_by_ms: u64,
@@ -385,6 +386,9 @@ impl Store {
                 AND NOT EXISTS (SELECT 1 FROM stream_snapshots s
                                  WHERE s.account_id = t.account_id
                                    AND s.blob_key = t.blob_key)
+                AND NOT EXISTS (SELECT 1 FROM key_bundles k
+                                 WHERE k.account_id = t.account_id
+                                   AND k.blob_key = t.blob_key)
               ORDER BY t.tombstoned_at_ms",
         )?;
         let rows = stmt
@@ -540,6 +544,32 @@ mod tests {
         s.pin_snapshot(&a, &pin(BLOB)).unwrap();
         assert!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().is_empty());
         assert_eq!(s.pin_snapshot(&a, &pin([0xee; 16])).unwrap(), Some(BLOB));
+        assert_eq!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().len(), 1);
+    }
+
+    /// The same for the account's key bundle (ADR-0069): pinned, its blob is
+    /// kept whatever tombstone names it, and released once a newer pin
+    /// replaces it.
+    #[test]
+    fn a_pinned_key_bundle_blob_is_never_collected() {
+        let s = Store::open(None).unwrap();
+        let a = account(&s, "alice");
+        s.tombstone_blob(&a, &tombstone(7, None), NOW).unwrap();
+        let pin = |blob_key| crate::store::PinnedKeyBundle {
+            blob_key,
+            size_bytes: 1,
+            manifest_digest: [0; 32],
+            published_by: None,
+            published_at_ms: NOW,
+        };
+        s.pin_key_bundle(&a, &pin(BLOB), None).unwrap();
+        assert!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().is_empty());
+        assert_eq!(
+            s.pin_key_bundle(&a, &pin([0xee; 16]), Some(BLOB)).unwrap(),
+            crate::store::KeyBundlePinned::Pinned {
+                released: Some(BLOB)
+            }
+        );
         assert_eq!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().len(), 1);
     }
 
