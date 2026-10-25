@@ -446,8 +446,8 @@ fn project_task(t: &Task) -> CanonicalTask {
         state: state_str(&t.state),
         // No stream is the legacy Inbox id, which a baseline build reads.
         stream_id: *sunrise_domain::stream_key(t.stream_id).bytes(),
-        scheduled_at_ms: t.scheduled_at.as_ref().map(SunriseTime::index_ms),
-        due_at_ms: t.due_at.as_ref().map(SunriseTime::index_ms),
+        scheduled_at_ms: t.planned_at.as_ref().map(SunriseTime::index_ms),
+        due_at_ms: t.hard_due_at.as_ref().map(SunriseTime::index_ms),
         deleted: t.deleted,
         priority: t.priority,
         constraints: t

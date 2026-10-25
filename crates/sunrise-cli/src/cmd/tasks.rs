@@ -64,14 +64,68 @@ pub(super) async fn capture(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     Ok(())
 }
 
-/// `today` — Today, in the reader's zone.
+/// `today` — Today as ADR-0047 composes it, in the reader's zone: Planned,
+/// Carried over, Due today and Late, each row with what put it there. The
+/// groups and every task's lateness are the core's (`Query::TodayView`).
 pub(super) async fn today(ctx: &Ctx<'_>) -> CmdResult {
-    let q = Query::Today {
+    use sunrise_domain::{Lateness, TodayGroup, TodayRowDeadline};
+    let q = Query::TodayView {
         now_ms: ctx.core.now_ms(),
         contexts: vec![],
     };
-    list(ctx, ctx.core.query(q).await?);
+    let QueryResult::TodayView(rows) = ctx.core.query(q).await? else {
+        return Err(strings::general::unexpected_result().into());
+    };
+    let reader = ctx.reader();
+    if ctx.json {
+        sunrise_cli::json::print(&serde_json::Value::Array(
+            rows.iter()
+                .map(|r| sunrise_cli::json::today_row(r, &reader))
+                .collect(),
+        ));
+        return Ok(());
+    }
+    let mut group = None;
+    for r in &rows {
+        if group != Some(r.group) {
+            println!(
+                "{}",
+                match r.group {
+                    TodayGroup::Planned => strings::today::planned(),
+                    TodayGroup::CarriedOver => strings::today::carried_over(),
+                    TodayGroup::DueToday => strings::today::due_today(),
+                    TodayGroup::Late => strings::today::late(),
+                }
+            );
+            group = Some(r.group);
+        }
+        let note = match (r.group, r.deadline, r.lateness.state) {
+            (TodayGroup::Late, _, Lateness::LateHard) => strings::today::late_hard(),
+            (TodayGroup::Late, _, _) => strings::today::late_soft(),
+            (_, Some(TodayRowDeadline::Hard), _) => strings::today::deadline_hard(),
+            (_, Some(TodayRowDeadline::Target), _) => strings::today::deadline_target(),
+            _ => String::new(),
+        };
+        let note = if note.is_empty() {
+            note
+        } else {
+            format!("  ({note})")
+        };
+        println!("[ ] {}  {}{note}", r.task.id.to_str(), r.task.title);
+    }
     Ok(())
+}
+
+/// The task's lateness for the reader now (ADR-0047 §2), as the core reads
+/// it.
+async fn lateness_of(ctx: &Ctx<'_>, id: EntityRef) -> CmdResult<sunrise_domain::LatenessState> {
+    let QueryResult::Lateness(rows) = ctx.core.query(Query::Lateness { ids: vec![id] }).await?
+    else {
+        return Err(strings::general::unexpected_result().into());
+    };
+    Ok(rows
+        .first()
+        .map_or(sunrise_domain::LatenessState::ON_TRACK, |r| r.lateness))
 }
 
 /// `show <id>` — one task, every field a triage pass reads.
@@ -84,8 +138,13 @@ pub(super) async fn show(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     };
     let t = read_task(ctx.core, task_id(raw)?).await?;
     let reader = ctx.reader();
+    let lateness = lateness_of(ctx, t.id).await?;
     if ctx.json {
-        sunrise_cli::json::print(&sunrise_cli::json::task(&t, &reader));
+        let mut v = sunrise_cli::json::task(&t, &reader);
+        if let serde_json::Value::Object(map) = &mut v {
+            map.insert("lateness".into(), sunrise_cli::json::lateness(&lateness));
+        }
+        sunrise_cli::json::print(&v);
         return Ok(());
     }
     let streams = stream_names(ctx.core, Archived::Include).await?;
@@ -132,8 +191,17 @@ pub(super) async fn show(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         t.estimated_duration_s
             .map_or_else(|| "-".to_owned(), sunrise_domain::phrase::short_duration)
     );
-    println!("scheduled  {}", time(t.scheduled_at.as_ref()));
-    println!("due        {}", time(t.due_at.as_ref()));
+    println!("scheduled  {}", time(t.planned_at.as_ref()));
+    println!("target     {}", time(t.target_at.as_ref()));
+    println!("due        {}", time(t.hard_due_at.as_ref()));
+    println!(
+        "lateness   {}{}",
+        lateness.state.as_str(),
+        lateness.since.map_or_else(String::new, |at| format!(
+            " since {}",
+            when::describe(&at.into(), &reader)
+        ))
+    );
     println!("deferred   {}", t.deferred_count);
     if let Some(body) = note_text(&t) {
         println!();
@@ -392,7 +460,7 @@ pub(super) async fn defer(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         let cmd = match &plan {
             When::Days(days) => sunrise_client_core::schedule::defer_command(
                 id,
-                task.scheduled_at.as_ref(),
+                task.planned_at.as_ref(),
                 *days,
                 now,
                 &reader,
@@ -455,7 +523,7 @@ pub(super) async fn schedule(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     for id in ids {
         let task = read_task(ctx.core, id).await?;
         let patch = TaskPatch {
-            scheduled_at: Some(value.clone()),
+            planned_at: Some(value.clone()),
             ..Default::default()
         };
         ctx.submit(

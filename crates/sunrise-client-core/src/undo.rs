@@ -263,11 +263,11 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         Command::DeferTask { id, .. } | Command::DeferTaskTo { id, .. } => {
             // The date comes back; `deferred_count` is a PN-counter and keeps
             // its history on purpose.
-            let prev = task(state, *id)?.scheduled_at.clone();
+            let prev = task(state, *id)?.planned_at.clone();
             Ok(Command::UpdateTask {
                 id: *id,
                 patch: TaskPatch {
-                    scheduled_at: Some(prev),
+                    planned_at: Some(prev),
                     ..Default::default()
                 },
             })
@@ -474,8 +474,9 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
         priority: patch.priority.map(|_| t.priority),
         energy: patch.energy.as_ref().map(|_| t.energy.clone()),
         estimated_duration_s: patch.estimated_duration_s.map(|_| t.estimated_duration_s),
-        scheduled_at: patch.scheduled_at.as_ref().map(|_| t.scheduled_at.clone()),
-        due_at: patch.due_at.as_ref().map(|_| t.due_at.clone()),
+        planned_at: patch.planned_at.as_ref().map(|_| t.planned_at.clone()),
+        target_at: patch.target_at.as_ref().map(|_| t.target_at.clone()),
+        hard_due_at: patch.hard_due_at.as_ref().map(|_| t.hard_due_at.clone()),
         scheduling_constraints: patch
             .scheduling_constraints
             .as_ref()
@@ -575,8 +576,9 @@ mod tests {
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
@@ -807,7 +809,7 @@ mod tests {
         .expect("invertible");
         match &back[..] {
             [Command::UpdateTask { patch, .. }] => {
-                assert_eq!(patch.scheduled_at, Some(None), "the date comes back");
+                assert_eq!(patch.planned_at, Some(None), "the date comes back");
             }
             other => panic!("{other:?}"),
         }
@@ -819,7 +821,7 @@ mod tests {
     fn a_defer_to_a_floating_time_restores_the_previous_one() {
         let was = sunrise_domain::SunriseTime::all_day(jiff::civil::date(2026, 6, 1));
         let mut t = task(1);
-        t.scheduled_at = Some(was.clone());
+        t.planned_at = Some(was.clone());
         let rows = rows_with(t);
         let back = invert(
             &rows,
@@ -833,7 +835,7 @@ mod tests {
         .expect("invertible");
         match &back[..] {
             [Command::UpdateTask { patch, .. }] => {
-                assert_eq!(patch.scheduled_at, Some(Some(was)));
+                assert_eq!(patch.planned_at, Some(Some(was)));
             }
             other => panic!("{other:?}"),
         }
@@ -1059,8 +1061,9 @@ mod tests {
                     priority: None,
                     energy: None,
                     estimated_duration_s: None,
-                    scheduled_at: None,
-                    due_at: None,
+                    planned_at: None,
+                    target_at: None,
+                    hard_due_at: None,
                     scheduling_constraints: Vec::new(),
                     assignee: None,
                     reminder_lead_s: None,

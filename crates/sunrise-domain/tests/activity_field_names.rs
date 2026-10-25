@@ -44,8 +44,9 @@ fn task() -> Task {
         priority: None,
         energy: None,
         estimated_duration_s: None,
-        scheduled_at: None,
-        due_at: None,
+        planned_at: None,
+        target_at: None,
+        hard_due_at: None,
         scheduling_constraints: Vec::new(),
         completed_at: None,
         deferred_count: 0,
@@ -72,7 +73,7 @@ type FieldMutation = (&'static str, fn(&mut Task));
 /// `changed_task_fields` joins the name array to a parallel `[bool; N]` with
 /// `zip`, which pairs by position. The array length is compiler-enforced; the
 /// correspondence is not. Permuting two comparisons — or writing
-/// `prev.due_at != next.due_at` where `scheduled_at`'s name sits — compiles
+/// `prev.hard_due_at != next.hard_due_at` where `scheduled_at`'s name sits — compiles
 /// cleanly and makes the activity feed name the wrong edit.
 ///
 /// So: change exactly one field, and require exactly that field's name back.
@@ -98,13 +99,18 @@ fn each_tracked_field_is_reported_under_its_own_name() {
             t.estimated_duration_s = Some(900);
         }),
         ("scheduled_at", |t| {
-            t.scheduled_at = Some(SunriseTime::Instant {
+            t.planned_at = Some(SunriseTime::Instant {
                 at: ts(T0 + 60_000),
             });
         }),
         ("due_at", |t| {
-            t.due_at = Some(SunriseTime::Instant {
+            t.hard_due_at = Some(SunriseTime::Instant {
                 at: ts(T0 + 120_000),
+            });
+        }),
+        ("target_at", |t| {
+            t.target_at = Some(SunriseTime::Instant {
+                at: ts(T0 + 90_000),
             });
         }),
         ("blocked_by", |t| {

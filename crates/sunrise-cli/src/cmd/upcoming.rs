@@ -39,20 +39,25 @@ pub(super) async fn upcoming(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         return Ok(());
     }
 
-    let row = |t: &Task, at: Option<&sunrise_domain::SunriseTime>, due: bool| {
+    let row = |t: &Task, at: Option<&sunrise_domain::SunriseTime>, mark_as: Option<String>| {
         let mark = if t.state == TaskState::Done { "x" } else { " " };
         let when = at.map_or_else(String::new, |v| {
             let text = when::describe(v, &reader);
-            if due {
-                format!("  {} {text}", strings::upcoming::due())
-            } else {
-                format!("  {text}")
+            match &mark_as {
+                Some(label) => format!("  {label} {text}"),
+                None => format!("  {text}"),
             }
         });
         format!("[{mark}] {}  {}{when}", t.id.to_str(), t.title)
     };
+    let due = || Some(strings::upcoming::due());
+    let target = || Some(strings::upcoming::target());
     for day in &view.days {
-        if day.blocks.is_empty() && day.planned.is_empty() && day.due.is_empty() {
+        if day.blocks.is_empty()
+            && day.planned.is_empty()
+            && day.due.is_empty()
+            && day.targets.is_empty()
+        {
             println!("{}  {}", day.date, strings::upcoming::empty_day());
             continue;
         }
@@ -67,10 +72,13 @@ pub(super) async fn upcoming(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             );
         }
         for t in &day.planned {
-            println!("  {}", row(t, t.scheduled_at.as_ref(), false));
+            println!("  {}", row(t, t.planned_at.as_ref(), None));
         }
         for t in &day.due {
-            println!("  {}", row(t, t.due_at.as_ref(), true));
+            println!("  {}", row(t, t.hard_due_at.as_ref(), due()));
+        }
+        for t in &day.targets {
+            println!("  {}", row(t, t.target_at.as_ref(), target()));
         }
     }
 
@@ -92,7 +100,11 @@ pub(super) async fn upcoming(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             println!("  #{}", name_of(g.stream));
         }
         for t in &g.tasks {
-            println!("    {}", row(t, t.due_at.as_ref(), true));
+            let line = match (&t.target_at, &t.hard_due_at) {
+                (Some(v), _) => row(t, Some(v), target()),
+                (None, v) => row(t, v.as_ref(), due()),
+            };
+            println!("    {line}");
         }
         let shown = u32::try_from(g.tasks.len()).unwrap_or(u32::MAX);
         if g.total > shown {

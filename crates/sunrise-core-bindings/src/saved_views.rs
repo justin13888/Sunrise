@@ -14,8 +14,8 @@ use crate::dto::TaskItem;
 use sunrise_client_core::views;
 use sunrise_core::SavedViewResult;
 use sunrise_domain::{
-    DateWindow, Energy, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch, Unknowns,
-    ViewFilter, ViewKind, ViewSort, WindowField,
+    DateWindow, Energy, LatenessPart, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch,
+    Unknowns, ViewFilter, ViewKind, ViewSort, WindowField,
 };
 use sunrise_id::EntityRef;
 
@@ -44,8 +44,9 @@ pub struct ViewFilterItem {
     /// Tasks with any of these energies.
     #[uniffi(default = [])]
     pub energy: Vec<Energy>,
-    /// The time a date window reads: `scheduled` or `due`, or a newer
-    /// build's verbatim. No window when absent.
+    /// The time a date window reads: `scheduled` (the plan), `due` (the
+    /// hard deadline) or `target` (the soft one), or a newer build's
+    /// verbatim. No window when absent.
     #[uniffi(default = None)]
     pub window_field: Option<String>,
     /// The window's first day, in days from the reader's today.
@@ -60,6 +61,11 @@ pub struct ViewFilterItem {
     /// The filter as read, opaque; hand it back unchanged.
     #[uniffi(default = None)]
     pub extra: Option<Vec<u8>>,
+    /// Tasks whose lateness is any of these spellings (`late_hard`,
+    /// `late_soft`, `stale`, `on_track`, ADR-0047 §2), or a newer build's
+    /// verbatim. Empty is no filter.
+    #[uniffi(default = [])]
+    pub lateness: Vec<String>,
 }
 
 impl From<&ViewFilter> for ViewFilterItem {
@@ -77,6 +83,7 @@ impl From<&ViewFilter> for ViewFilterItem {
             window_from_days: f.window.as_ref().and_then(|w| w.from_days),
             window_to_days: f.window.as_ref().and_then(|w| w.to_days),
             text: f.text.clone(),
+            lateness: f.lateness.iter().map(|l| l.as_str().to_owned()).collect(),
             extra: if whole_is_known {
                 None
             } else {
@@ -123,6 +130,11 @@ impl From<ViewFilterItem> for ViewFilter {
             priority,
             energy: i.energy,
             window,
+            lateness: i
+                .lateness
+                .iter()
+                .map(|l| LatenessPart::from_raw(l))
+                .collect(),
             text: i.text,
             unknown: base.unknown,
         }

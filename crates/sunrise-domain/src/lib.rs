@@ -34,6 +34,7 @@ pub mod focus;
 pub mod import;
 pub mod inbox;
 pub mod key_domain;
+pub mod lateness;
 pub mod note;
 pub mod note_body;
 pub mod notify;
@@ -82,8 +83,8 @@ pub use context::{
     WAITING_ON_PREFIX,
 };
 pub use day_schedule::{
-    day_bounds, next_wind_down, plannable, planner_date, planner_day_of, wind_down_at, DayOverride,
-    DaySchedule, DayScheduleEntry, DayWindow, OutOfCalendar, WindDown,
+    day_bounds, deadline_at, next_wind_down, plannable, planner_date, planner_day_of, starts_at,
+    wind_down_at, DayOverride, DaySchedule, DayScheduleEntry, DayWindow, OutOfCalendar, WindDown,
 };
 pub use deps::{
     blocker_is_open, effective_state, is_actionable, resolve_cycles, DependencyGraph,
@@ -108,6 +109,7 @@ pub use inbox::{
 pub use key_domain::{
     effective_stream, Disposition, KeyDomain, StreamFate, StreamId, MAX_REHOME_CHAIN,
 };
+pub use lateness::{lateness, Lateness, LatenessState, DEFAULT_STALE_AFTER_DAYS};
 pub use note::Note;
 pub use note_body::{
     decode as decode_note_body, encode as encode_note_body, to_markdown as note_body_to_markdown,
@@ -127,7 +129,10 @@ pub use phrase::{
     activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
     length_label, plan_reason, relative_day, short_duration,
 };
-pub use planning::{is_overdue, is_overdue_in, today_section, today_section_in, TodaySection};
+pub use planning::{
+    is_overdue, is_overdue_in, today_group, today_section, today_section_in, TodayGroup,
+    TodayRowDeadline, TodaySection,
+};
 pub use preferences::{
     pref_spec, preferences_ref, resolve as resolve_preference, resolve_all as resolve_preferences,
     DeviceClass, PrefDefault, PrefEntries, PrefScope, PrefSource, PrefSpec, PrefTarget, PrefType,
@@ -149,8 +154,8 @@ pub use routine_gen::{
 };
 pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use saved_view::{
-    DateWindow, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch, ViewFilter, ViewKind,
-    ViewSort, WindowField,
+    DateWindow, LatenessPart, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch, ViewFilter,
+    ViewKind, ViewSort, WindowField,
 };
 pub use schema::DOC_SCHEMA_V;
 pub use sort_order::{
@@ -169,7 +174,7 @@ pub use stream::{
     resolve_parent_cycles, RootedStream, Stream, StreamColor, StreamDraft, StreamPatch,
     StreamReviewCadence,
 };
-pub use task::{Task, TaskDraft, TaskPatch, TaskState};
+pub use task::{OrderingWarning, Task, TaskDraft, TaskPatch, TaskState};
 pub use time::{first_day_of_week, shift_civil_days, CompatTime, SunriseTime, Unresolvable};
 pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use upcoming::{

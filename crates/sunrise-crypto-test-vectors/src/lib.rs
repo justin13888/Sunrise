@@ -302,6 +302,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 18 → 19 re-freeze (ADR-0046, optional streams) moved the same three regions
 /// and nothing else.
 ///
+/// The 19 → 20 re-freeze (ADR-0047, a task's three times) moved the same three regions
+/// and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -319,10 +322,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584047",
-        "bd174f0685e0fb802010ca0775edf97067f50de6664059af65ca0f65ce0e",
-        "01636cc4d358e2ca067a3d9538c49ef468eb40bb0fdb992992c404604e10",
-        "b83d070c130d4846ee3fe735d8a276",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840d9",
+        "157fb70660b4eb029db6f954c868cf5d021dd7ed12c8d75459c3f0fa5281",
+        "434842e6808ed328c0c424a737b9375bf80052a6c7b5aac6e6d64f7ad136",
+        "1f22040c140d487f0c318d6bb81e2f",
     ));
 }
 
@@ -384,6 +387,9 @@ pub mod signed_only_envelope {
 /// The 18 → 19 re-freeze (ADR-0046, optional streams) moved the same four regions;
 /// the ciphertext at `[94..117]` is again untouched.
 ///
+/// The 19 → 20 re-freeze (ADR-0047, a task's three times) moved the same four regions;
+/// the ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -403,11 +409,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb890fef2",
-        "af4a71472090a944110017f93f0b58400eeeaa7729c10e34c257ee3b2f70",
-        "bbd777ffc29f24710ed7cee6ccc665261791e248714b9dc7a5d27a66a7ce",
-        "4ad51944382c7b081c0cf31c87f610b388325e090c130d4846ee3fe735d8",
-        "a276",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8627582",
+        "77d0ca13aba29ae02e437e79290b5840d41ae2c2b9738a5f849b4e180193",
+        "2efd9dff26529d84182f5fa97e09c30a9c07c98021a9d41416ee3000f99a",
+        "70331b0da8351abb4b1767ed5558dc510553150e0c140d487f0c318d6bb8",
+        "1e2f",
     ));
 }
 

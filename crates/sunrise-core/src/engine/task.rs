@@ -24,7 +24,6 @@ use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use sunrise_domain::Unknowns;
 use sunrise_domain::{
     resolve_cycles, violations_by_severity, DependencyGraph, NoteBody, Routine, ScheduleConstraint,
     StreakOutcome, SunriseTime, SuppressedEdge, Task, TaskDraft, TaskPatch, TaskState,
@@ -43,39 +42,16 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
         let stream = home_of(d.stream_id)?;
-        let task = Task {
-            reminder_lead_s: d.reminder_lead_s,
-            id: task_id,
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
-            title: d.title.trim().to_string(),
-            body: d.body.clone(),
-            stream_id: stream,
-            contexts: d.contexts.iter().copied().collect(),
-            state: TaskState::Todo,
-            priority: d.priority,
-            energy: d.energy,
-            estimated_duration_s: d.estimated_duration_s,
-            scheduled_at: d.scheduled_at,
-            due_at: d.due_at,
-            scheduling_constraints: d.scheduling_constraints.clone(),
-            completed_at: None,
-            deferred_count: 0,
-            blocks: BTreeSet::new(),
-            blocked_by: BTreeSet::new(),
-            assignee: d.assignee,
-            routine_id: None,
-            routine_occurrence: None,
-            sort_order: None,
-            triaged_at: None,
-            archived: false,
-            deleted: false,
-            unknown: Unknowns::new(),
-        };
+        let mut task = Task::from_draft(task_id, ms_to_ts(now_ms as i64), d);
+        task.stream_id = stream;
 
         // Scheduling gate: a `hard` constraint violated by this `scheduled_at`
         // rejects the create outright; `soft` ones ride back on the result.
         let soft_violations = self.check_schedule_constraints(&task)?;
+        let warnings = task.ordering_warnings(
+            &self.device_zone(),
+            &super::day_schedule::schedule_in(db.conn())?,
+        );
 
         let op = InnerOp::TaskCreate(task);
         let domain = domain_bytes(stream);
@@ -84,7 +60,8 @@ impl Engine {
 
         Ok(
             CommandResult::new(task_id, Some(TaskState::Todo), op_id, seq)
-                .with_soft_violations(soft_violations),
+                .with_soft_violations(soft_violations)
+                .with_ordering_warnings(warnings),
         )
     }
 
@@ -148,8 +125,9 @@ impl Engine {
         // docs/02-domain/scheduling-constraints.md a `hard` violation "fails
         // validation when the user schedules a Task against it") — renaming a
         // task that already sits outside its window must not be rejected.
-        let touches_schedule =
-            patch.scheduled_at.is_some() || patch.scheduling_constraints.is_some();
+        let touches_schedule = patch.planned_at.is_some() || patch.scheduling_constraints.is_some();
+        let touches_times =
+            patch.planned_at.is_some() || patch.target_at.is_some() || patch.hard_due_at.is_some();
         let touches_blockers = patch.blocked_by.is_some();
 
         if let Some(t) = patch.title {
@@ -188,11 +166,14 @@ impl Engine {
         if let Some(d) = patch.estimated_duration_s {
             task.estimated_duration_s = d;
         }
-        if let Some(s) = patch.scheduled_at {
-            task.scheduled_at = s;
+        if let Some(s) = patch.planned_at {
+            task.planned_at = s;
         }
-        if let Some(d) = patch.due_at {
-            task.due_at = d;
+        if let Some(t) = patch.target_at {
+            task.target_at = t;
+        }
+        if let Some(d) = patch.hard_due_at {
+            task.hard_due_at = d;
         }
         if let Some(list) = patch.scheduling_constraints {
             task.scheduling_constraints = list;
@@ -212,10 +193,20 @@ impl Engine {
         if let Some(key) = patch.sort_order {
             task.sort_order = key;
         }
-        // Re-check cross-field invariants on the patched Task. A patch that
-        // sets only `due_at` earlier than the existing `scheduled_at` (or an
-        // invalid constraint list) would otherwise pass silently.
+        // Re-check the structural invariants on the patched Task (an invalid
+        // constraint list would otherwise pass silently). The order of the
+        // three times is reported, never refused (ADR-0047 §1), and only
+        // when the patch moved one of them: an edit of the title does not
+        // re-raise a warning the user has seen.
         task.validate_invariants(&self.device_zone())?;
+        let warnings = if touches_times {
+            task.ordering_warnings(
+                &self.device_zone(),
+                &super::day_schedule::schedule_in(conn)?,
+            )
+        } else {
+            Vec::new()
+        };
         if touches_blockers {
             // Local cycle/self-block check over the dependency index, per
             // docs/02-domain/tasks.md §Validation. Deliberately local: a cycle
@@ -238,6 +229,7 @@ impl Engine {
             defers: false,
             completes: sets_done && prev_state != TaskState::Done,
             soft,
+            warnings,
         })
     }
 
@@ -301,13 +293,15 @@ impl Engine {
         self.update_task(db, id, patch)
     }
 
-    /// Set `scheduled_at` to `to`, of whatever kind the caller meant, and
-    /// count the deferral.
+    /// Set `planned_at` to `to`, of whatever kind the caller meant, and
+    /// count the deferral. Neither deadline is touched (ADR-0047 §1).
     ///
     /// `docs/11-adr/0066-times-survive-travel.md` §4: the target keeps its
     /// kind (a floating "tomorrow 09:00" stays floating) and the deferral
-    /// passes the same checks as any edit of `scheduled_at`: the cross-field
-    /// invariants in the reader's zone, then the scheduling constraints.
+    /// passes the same checks as any edit of `planned_at`: the structural
+    /// invariants, then the `hard` scheduling constraints in the reader's
+    /// zone. A plan after the hard deadline is accepted and reported
+    /// (`CommandResult::ordering_warnings`).
     pub(super) fn defer_task(
         &self,
         db: &mut Db,
@@ -330,7 +324,7 @@ impl Engine {
         require_kind(id, EntityKind::Task)?;
         let mut task = read_task(conn, id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        task.scheduled_at = Some(to);
+        task.planned_at = Some(to);
         // The full-state op carries the count read, plus one, so of two
         // concurrent defers written that way one count survives. In a
         // field-ops vault the defer is written as the `Patch`
@@ -340,6 +334,10 @@ impl Engine {
         task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
         let soft = self.check_schedule_constraints(&task)?;
+        let warnings = task.ordering_warnings(
+            &self.device_zone(),
+            &super::day_schedule::schedule_in(conn)?,
+        );
         task.updated_at = ms_to_ts(now_ms as i64);
         // Logged as the `task.update` it is, the kind a peer logs it under,
         // so compaction and the history readers see one kind on every replica.
@@ -349,6 +347,7 @@ impl Engine {
             defers: true,
             completes: false,
             soft,
+            warnings,
         })
     }
 
@@ -387,6 +386,7 @@ impl Engine {
             defers: false,
             completes: false,
             soft: Vec::new(),
+            warnings: Vec::new(),
         })
     }
 
@@ -496,8 +496,15 @@ impl Engine {
         })?;
         let soft: Vec<ScheduleConstraint> =
             writes.iter().flat_map(|w| w.soft.iter().cloned()).collect();
+        let mut warnings: Vec<sunrise_domain::OrderingWarning> = writes
+            .iter()
+            .flat_map(|w| w.warnings.iter().copied())
+            .collect();
+        warnings.sort_unstable();
+        warnings.dedup();
         let first = writes.into_iter().next().map(|mut w| {
             w.soft = soft;
+            w.warnings = warnings;
             w
         });
         match (first, done.first()) {
@@ -578,12 +585,14 @@ pub(super) struct TaskWrite {
     pub(super) task: Task,
     /// A `TaskDelete` rather than a `TaskUpdate`.
     delete: bool,
-    /// A defer: `scheduled_at` and one more `deferred_count`.
+    /// A defer: `planned_at` and one more `deferred_count`.
     defers: bool,
     /// The task's first move to `done`, which advances its routine's streak.
     pub(super) completes: bool,
     /// The `soft` scheduling constraints the write violates.
     pub(super) soft: Vec<ScheduleConstraint>,
+    /// The time orderings the written task breaks (ADR-0047 §1).
+    pub(super) warnings: Vec<sunrise_domain::OrderingWarning>,
 }
 
 impl TaskWrite {
@@ -597,6 +606,7 @@ impl TaskWrite {
             defers: false,
             completes: false,
             soft: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -635,6 +645,7 @@ impl TaskWrite {
     pub(super) fn result(self, done: Appended) -> CommandResult {
         CommandResult::new(self.task.id, Some(self.task.state), done.op_id, done.seq)
             .with_soft_violations(self.soft)
+            .with_ordering_warnings(self.warnings)
     }
 }
 
@@ -643,7 +654,7 @@ impl TaskWrite {
 /// (its routine is pinned) in that zone, everything else in the reader's.
 /// A zone this build does not know is the reader's.
 fn constraint_zone(task: &Task, reader: &jiff::tz::TimeZone) -> jiff::tz::TimeZone {
-    match (&task.scheduled_at, task.routine_id) {
+    match (&task.planned_at, task.routine_id) {
         (Some(SunriseTime::Zoned { tz, .. }), Some(_)) => {
             jiff::tz::TimeZone::get(tz).unwrap_or_else(|_| reader.clone())
         }
@@ -666,11 +677,7 @@ fn constraint_violations(
     if task.scheduling_constraints.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let Some(at) = task
-        .scheduled_at
-        .as_ref()
-        .and_then(|s| s.resolve_in(reader))
-    else {
+    let Some(at) = task.planned_at.as_ref().and_then(|s| s.resolve_in(reader)) else {
         return (Vec::new(), Vec::new());
     };
     let zdt = at.to_zoned(constraint_zone(task, reader));
@@ -898,14 +905,14 @@ pub(super) fn read_task(
     let row = conn
         .query_row(
             "SELECT stream_id, title, state, priority, energy, estimated_min,
-                    scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
+                    planned_at_ms, hard_due_at_ms, completed_at_ms, deferred_count,
                     archived, deleted, body, scheduling_constraints,
                     routine_id, routine_occurrence, created_at_ms, updated_at_ms,
-                    scheduled_at_kind, scheduled_at_tz,
-                    due_at_kind, due_at_tz,
+                    planned_at_kind, planned_at_tz,
+                    hard_due_at_kind, hard_due_at_tz,
                     completed_at_kind, completed_at_tz, extra, reminder_lead_s,
-                    scheduled_at_civil, due_at_civil, completed_at_civil, sort_order,
-                    triaged_at_ms
+                    planned_at_civil, hard_due_at_civil, completed_at_civil, sort_order,
+                    triaged_at_ms, target_at_ms, target_at_kind, target_at_tz, target_at_civil
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -941,6 +948,12 @@ pub(super) fn read_task(
                     r.get::<_, Option<String>>(28)?,
                     r.get::<_, Option<String>>(29)?,
                     r.get::<_, Option<i64>>(30)?,
+                    (
+                        r.get::<_, Option<i64>>(31)?,
+                        r.get::<_, Option<String>>(32)?,
+                        r.get::<_, Option<String>>(33)?,
+                        r.get::<_, Option<String>>(34)?,
+                    ),
                 ))
             },
         )
@@ -976,8 +989,14 @@ pub(super) fn read_task(
             let secs = m.checked_mul(60)?;
             u64::try_from(secs).ok()
         }),
-        scheduled_at: time_from_parts(t.6, t.18.as_deref(), t.19.as_deref(), t.26.as_deref()),
-        due_at: time_from_parts(t.7, t.20.as_deref(), t.21.as_deref(), t.27.as_deref()),
+        planned_at: time_from_parts(t.6, t.18.as_deref(), t.19.as_deref(), t.26.as_deref()),
+        target_at: time_from_parts(
+            t.31 .0,
+            t.31 .1.as_deref(),
+            t.31 .2.as_deref(),
+            t.31 .3.as_deref(),
+        ),
+        hard_due_at: time_from_parts(t.7, t.20.as_deref(), t.21.as_deref(), t.27.as_deref()),
         scheduling_constraints: decode_constraints(t.13)?,
         completed_at: time_from_parts(t.8, t.22.as_deref(), t.23.as_deref(), t.28.as_deref()),
         deferred_count: t.9,

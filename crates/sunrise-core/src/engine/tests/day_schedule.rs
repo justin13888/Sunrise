@@ -46,8 +46,8 @@ fn task(
         db,
         Command::CreateTask(TaskDraft {
             title: title.into(),
-            scheduled_at: scheduled,
-            due_at: due,
+            planned_at: scheduled,
+            hard_due_at: due,
             ..Default::default()
         }),
     )

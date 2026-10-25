@@ -99,7 +99,7 @@ pub fn project(t: &Task) -> Projection {
     p.insert(Field::State, Some(t.state.as_str().to_owned()));
     p.insert(
         Field::DueKind,
-        t.due_at.as_ref().map(|d| d.kind_str().to_owned()),
+        t.hard_due_at.as_ref().map(|d| d.kind_str().to_owned()),
     );
     p.insert(
         Field::Note,

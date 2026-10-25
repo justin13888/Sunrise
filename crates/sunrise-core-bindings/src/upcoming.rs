@@ -24,8 +24,14 @@ pub struct UpcomingDayRow {
     /// Planned for the day: timed ones in time order, then all-day ones by
     /// stream.
     pub planned: Vec<TaskItem>,
-    /// Due that day and not planned for it, by deadline, then priority.
+    /// The hard deadline falls that day and the task is not planned for
+    /// it, by deadline, then priority.
     pub due: Vec<TaskItem>,
+    /// The soft deadline (`target_at`) falls that day, the task is not
+    /// planned for it and its hard deadline is not that day too, by target,
+    /// then priority (ADR-0047).
+    #[uniffi(default = [])]
+    pub targets: Vec<TaskItem>,
 }
 
 impl From<&UpcomingDay> for UpcomingDayRow {
@@ -37,6 +43,7 @@ impl From<&UpcomingDay> for UpcomingDayRow {
             blocks: d.blocks.iter().map(BlockGridRow::from).collect(),
             planned: d.planned.iter().map(TaskItem::from).collect(),
             due: d.due.iter().map(TaskItem::from).collect(),
+            targets: d.targets.iter().map(TaskItem::from).collect(),
         }
     }
 }

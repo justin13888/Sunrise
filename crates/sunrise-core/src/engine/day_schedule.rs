@@ -21,9 +21,7 @@ impl Engine {
     /// The vault's day schedule. Empty when none is set, which makes every
     /// planner day the civil day.
     pub(crate) fn day_schedule(&self, db: &Db) -> Result<DaySchedule, EngineError> {
-        Ok(read_preferences(db.conn(), preferences_ref().bytes())?
-            .map(|p| DaySchedule::from_values(&p.values))
-            .unwrap_or_default())
+        schedule_in(db.conn())
     }
 
     /// The planner day holding `at_ms` for the reader, and its bounds as
@@ -70,6 +68,14 @@ impl Engine {
             schedule,
         })))
     }
+}
+
+/// [`Engine::day_schedule`], read over `conn`: inside a command's planning,
+/// which holds a connection rather than the vault.
+pub(super) fn schedule_in(conn: &rusqlite::Connection) -> Result<DaySchedule, EngineError> {
+    Ok(read_preferences(conn, preferences_ref().bytes())?
+        .map(|p| DaySchedule::from_values(&p.values))
+        .unwrap_or_default())
 }
 
 fn calendar(e: sunrise_domain::OutOfCalendar) -> EngineError {

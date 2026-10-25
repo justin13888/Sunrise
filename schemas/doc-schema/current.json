@@ -1335,6 +1335,12 @@
                         {
                             "conflict": "tracked",
                             "crdt": "register",
+                            "name": "target_at",
+                            "type": "Option<SunriseTime>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
                             "default": "",
                             "name": "title",
                             "type": "String"
@@ -1384,6 +1390,11 @@
             "fallback": "other",
             "name": "InterruptionReason",
             "variants": ["blocked", "meeting", "other", "self"]
+        },
+        {
+            "fallback": null,
+            "name": "LatenessPart",
+            "variants": ["late_hard", "late_soft", "on_track", "stale"]
         },
         {
             "fallback": "skip",
@@ -1452,7 +1463,7 @@
         {
             "fallback": null,
             "name": "WindowField",
-            "variants": ["due", "scheduled"]
+            "variants": ["due", "scheduled", "target"]
         }
     ],
     "features": [
@@ -2178,6 +2189,10 @@
                 {
                     "name": "energy",
                     "type": "Vec<Energy>"
+                },
+                {
+                    "name": "lateness",
+                    "type": "Vec<LatenessPart>"
                 },
                 {
                     "name": "no_stream",

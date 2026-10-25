@@ -394,6 +394,7 @@ struct Attrs {
     priority: Option<u8>,
     estimate: bool,
     planned: Option<SunriseTime>,
+    target: Option<SunriseTime>,
     hard: Option<SunriseTime>,
     done: Option<SunriseTime>,
     created_ms: i64,
@@ -453,7 +454,12 @@ struct Run<'a> {
     atoms: Vec<Atom>,
     pending: Vec<Pending>,
     tz: TimeZone,
-    now_ms: u64,
+    /// The reader `is:late`, `is:late-hard` and `is:stale` read each task's
+    /// lateness for (ADR-0047 §2): the clock's now, the reader's zone, the
+    /// day schedule and `stale_after_days`.
+    lateness: super::lateness::LatenessReader,
+    /// Each task's lateness, read once.
+    late: HashMap<[u8; 16], sunrise_domain::LatenessState>,
     attrs: HashMap<[u8; 16], Attrs>,
     contexts: HashMap<[u8; 16], HashSet<[u8; 16]>>,
     flags: HashMap<([u8; 16], u8), bool>,
@@ -553,7 +559,8 @@ impl<'a> Run<'a> {
             atoms,
             pending,
             tz,
-            now_ms,
+            lateness: engine.lateness_reader(db, now_ms)?,
+            late: HashMap::new(),
             attrs: HashMap::new(),
             contexts: HashMap::new(),
             flags: HashMap::new(),
@@ -734,11 +741,12 @@ impl<'a> Run<'a> {
                 "tasks",
                 "id",
                 "stream_id, state, priority, estimated_min,
-                 scheduled_at_ms, scheduled_at_kind, scheduled_at_tz, scheduled_at_civil,
-                 due_at_ms, due_at_kind, due_at_tz, due_at_civil,
+                 planned_at_ms, planned_at_kind, planned_at_tz, planned_at_civil,
+                 hard_due_at_ms, hard_due_at_kind, hard_due_at_tz, hard_due_at_civil,
                  completed_at_ms, completed_at_kind, completed_at_tz, completed_at_civil,
                  created_at_ms, routine_id IS NOT NULL, length(COALESCE(body, X'')) > 0,
-                 triaged_at_ms",
+                 triaged_at_ms,
+                 target_at_ms, target_at_kind, target_at_tz, target_at_civil",
             ),
             SearchKind::Block => ("blocks", "id", "stream_id, created_at_ms"),
             SearchKind::Stream => (
@@ -770,6 +778,7 @@ impl<'a> Run<'a> {
                         .and_then(|p| u8::try_from(p).ok()),
                     estimate: r.get::<_, Option<i64>>(from + 3)?.is_some(),
                     planned: time(from + 4)?,
+                    target: time(from + 20)?,
                     hard: time(from + 8)?,
                     done: time(from + 12)?,
                     created_ms: r.get(from + 16)?,
@@ -921,8 +930,16 @@ impl<'a> Run<'a> {
                     DateField::Planned if task => {
                         a.planned.as_ref().and_then(|t| t.day_in(&self.tz))
                     }
-                    DateField::Hard | DateField::Due if task => {
-                        a.hard.as_ref().and_then(|t| t.day_in(&self.tz))
+                    DateField::Hard if task => a.hard.as_ref().and_then(|t| t.day_in(&self.tz)),
+                    DateField::Target if task => a.target.as_ref().and_then(|t| t.day_in(&self.tz)),
+                    // The earlier of the two deadlines' days.
+                    DateField::Due if task => {
+                        let day =
+                            |t: &Option<SunriseTime>| t.as_ref().and_then(|t| t.day_in(&self.tz));
+                        match (day(&a.target), day(&a.hard)) {
+                            (Some(x), Some(y)) => Some(x.min(y)),
+                            (x, y) => x.or(y),
+                        }
                     }
                     DateField::Done if task => a.done.as_ref().and_then(|t| t.day_in(&self.tz)),
                     _ => None,
@@ -962,18 +979,39 @@ impl<'a> Run<'a> {
             .is_some_and(|s| !matches!(s, "done" | "cancelled"))
     }
 
+    /// A task's lateness for the reader (ADR-0047 §2), read once: the whole
+    /// task, since staleness reads its last touch and lateness its every
+    /// deadline.
+    fn lateness_of(&mut self, id: &[u8; 16]) -> rusqlite::Result<sunrise_domain::LatenessState> {
+        if let Some(l) = self.late.get(id) {
+            return Ok(*l);
+        }
+        let l = super::task::read_task(self.db.conn(), id)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            .map_or(sunrise_domain::LatenessState::ON_TRACK, |t| {
+                self.lateness.of(&t)
+            });
+        self.late.insert(*id, l);
+        Ok(l)
+    }
+
     fn is(&mut self, v: IsValue, c: &Candidate) -> rusqlite::Result<bool> {
         let open = self.open(&c.id);
+        if matches!(v, IsValue::Late | IsValue::LateHard | IsValue::Stale) {
+            if !open {
+                return Ok(false);
+            }
+            let state = self.lateness_of(&c.id)?.state;
+            return Ok(match v {
+                IsValue::Late => state.is_late(),
+                IsValue::LateHard => state == sunrise_domain::Lateness::LateHard,
+                _ => state == sunrise_domain::Lateness::Stale,
+            });
+        }
         let Some(a) = self.attrs.get(&c.id) else {
             return Ok(false);
         };
         Ok(match v {
-            IsValue::Late | IsValue::LateHard => {
-                open && a
-                    .hard
-                    .as_ref()
-                    .is_some_and(|due| sunrise_domain::is_overdue(due, self.now_ms, &self.tz))
-            }
             IsValue::Recurring => a.recurring,
             IsValue::Unplanned => open && a.planned.is_none(),
             // The Inbox view (ADR-0046 §3): open, no stream, no plan, no
@@ -981,6 +1019,7 @@ impl<'a> Run<'a> {
             IsValue::Inbox => {
                 open && a.stream == Some(PRIVATE_DOMAIN_BYTES)
                     && a.planned.is_none()
+                    && a.target.is_none()
                     && a.hard.is_none()
                     && a.triaged_at_ms.is_none()
             }
@@ -996,7 +1035,11 @@ impl<'a> Run<'a> {
                              AND b.state NOT IN ('done', 'cancelled'))))",
                 )?
             }
-            IsValue::Stale | IsValue::Fixed | IsValue::Flexible => false,
+            IsValue::Late
+            | IsValue::LateHard
+            | IsValue::Stale
+            | IsValue::Fixed
+            | IsValue::Flexible => false,
         })
     }
 
@@ -1008,7 +1051,7 @@ impl<'a> Run<'a> {
         Ok(match v {
             HasValue::Note => a.has_note,
             HasValue::Estimate => task && a.estimate,
-            HasValue::Deadline => task && a.hard.is_some(),
+            HasValue::Deadline => task && (a.hard.is_some() || a.target.is_some()),
             HasValue::Attachment => self.flag(
                 &c.id,
                 1,
@@ -1172,9 +1215,9 @@ impl Compiler<'_> {
             Filter::Kind(v) => Node::Kinds(v.clone()),
             Filter::Priority(cmp, v) => Node::Priority(*cmp, v.clone()),
             Filter::Is(values) => {
-                let (ok, not): (Vec<IsValue>, Vec<IsValue>) = values.iter().partition(|v| {
-                    !matches!(v, IsValue::Stale | IsValue::Fixed | IsValue::Flexible)
-                });
+                let (ok, not): (Vec<IsValue>, Vec<IsValue>) = values
+                    .iter()
+                    .partition(|v| !matches!(v, IsValue::Fixed | IsValue::Flexible));
                 for v in not {
                     self.unsupported(format!("is:{}", v.as_str()));
                 }
@@ -1186,10 +1229,8 @@ impl Compiler<'_> {
                 }
                 Node::Has(values.clone())
             }
-            // No Place entity and no soft deadline yet: both match nothing.
-            Filter::Place(_) | Filter::Date(DateField::Target, ..) => {
-                self.unsupported(f.to_string())
-            }
+            // No Place entity yet: it matches nothing.
+            Filter::Place(_) => self.unsupported(f.to_string()),
             Filter::Date(field, cmp, span) => {
                 Node::Date(*field, *cmp, span.days(self.today, &self.week_start))
             }

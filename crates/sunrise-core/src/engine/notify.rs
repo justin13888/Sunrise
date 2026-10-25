@@ -44,6 +44,7 @@ impl Engine {
                 ms_to_ts(today_start),
                 ms_to_ts(today_end),
                 &self.device_zone(),
+                &schedule,
             ),
         )))
     }
@@ -67,6 +68,7 @@ impl Engine {
             ms_to_ts(day_end),
             ms_to_ts(week_end),
             &self.device_zone(),
+            &schedule,
         ))))
     }
 
@@ -129,7 +131,7 @@ impl Engine {
             if !matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress) {
                 continue;
             }
-            let Some(at) = t.scheduled_at.clone() else {
+            let Some(at) = t.planned_at.clone() else {
                 continue;
             };
             let stream_lead = lead_of(t.stream_id)?;

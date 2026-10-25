@@ -221,7 +221,7 @@ mod tests {
             .submit(Command::CreateTask(TaskDraft {
                 title: format!("{name} task"),
                 stream_id: Some(stream),
-                scheduled_at: Some(SunriseTime::instant(at)),
+                planned_at: Some(SunriseTime::instant(at)),
                 ..TaskDraft::default()
             }))
             .await

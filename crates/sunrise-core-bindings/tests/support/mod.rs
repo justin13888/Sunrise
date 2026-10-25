@@ -37,5 +37,6 @@ pub(crate) fn draft(title: &str) -> TaskDraftIn {
         scheduling_constraints: Vec::new(),
         assignee: None,
         reminder_lead_s: None,
+        target_at: None,
     }
 }

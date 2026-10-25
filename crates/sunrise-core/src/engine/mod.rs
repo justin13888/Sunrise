@@ -96,6 +96,7 @@ mod identity;
 mod identity_chain;
 mod ids;
 mod key_bundle;
+mod lateness;
 mod lww;
 mod merge;
 mod notify;
@@ -766,6 +767,8 @@ impl Engine {
             Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
             Query::DaySchedule { at_ms } => self.query_day_schedule(db, at_ms),
+            Query::TodayView { now_ms, contexts } => self.query_today_view(db, now_ms, &contexts),
+            Query::Lateness { ids } => self.query_lateness(db, &ids),
             Query::Conflicts {
                 entity,
                 include_quiet,

@@ -384,8 +384,8 @@ fn date_operators_resolve_in_the_readers_day() {
             &mut db,
             TaskDraft {
                 title: title.into(),
-                due_at: Some(at(due)),
-                scheduled_at: Some(at(due)),
+                hard_due_at: Some(at(due)),
+                planned_at: Some(at(due)),
                 ..Default::default()
             },
         );
@@ -417,6 +417,141 @@ fn date_operators_resolve_in_the_readers_day() {
     assert_eq!(titles("has:deadline").len(), 3);
 }
 
+/// The three times and lateness in search (ADR-0047): `target:` reads the
+/// soft deadline, `due:` the earlier of the two, `hard:` the hard one;
+/// `is:late` is either deadline missed, `is:late-hard` the hard one, and
+/// `is:stale` an undated task untouched for `stale_after_days`.
+#[test]
+fn the_three_times_and_lateness_are_operators() {
+    let (e, mut db) = (engine(), db());
+    // NOW is 2023-11-14T22:13:20Z, a Tuesday, in UTC.
+    let day = |d: u8| SunriseTime::AllDay {
+        date: jiff::civil::date(2023, 11, i8::try_from(d).unwrap()),
+    };
+    for (title, target, hard) in [
+        ("soft missed", Some(day(13)), Some(day(20))),
+        ("hard missed", None, Some(day(10))),
+        ("target friday", Some(day(17)), None),
+        ("on track", Some(day(15)), Some(day(16))),
+        ("missed nothing", None, None),
+    ] {
+        task_with(
+            &e,
+            &mut db,
+            TaskDraft {
+                title: title.into(),
+                target_at: target,
+                hard_due_at: hard,
+                ..Default::default()
+            },
+        );
+    }
+    new_stream(&e, &mut db, "missed deadlines", None);
+    let titles = |q: &str| {
+        let mut v: Vec<String> = hits(&e, &db, q);
+        v.sort();
+        v
+    };
+    assert_eq!(titles("target:fri"), ["task:target friday"]);
+    assert_eq!(titles("hard:fri"), Vec::<String>::new());
+    assert_eq!(titles("due:yesterday"), ["task:soft missed"]);
+    assert_eq!(titles("due:+1d"), ["task:on track"]);
+    assert_eq!(titles("is:late"), ["task:hard missed", "task:soft missed"]);
+    assert_eq!(titles("is:late-hard"), ["task:hard missed"]);
+    assert_eq!(titles("has:deadline").len(), 4);
+    assert_eq!(
+        titles("missed has:deadline"),
+        ["task:hard missed", "task:soft missed"],
+        "a stream has no deadline"
+    );
+    assert!(grouped(&e, &db, "is:stale").notices.is_empty());
+    assert_eq!(titles("is:stale"), Vec::<String>::new());
+    assert_eq!(titles("-is:late kind:task").len(), 3);
+}
+
+/// `is:stale` reads the reader's clock and the `stale_after_days`
+/// preference: an undated task is stale once that many planner days have
+/// passed since its last touch, `0` turns staleness off, and a deadline of
+/// either kind keeps a task off the stale clock.
+#[test]
+fn is_stale_reads_the_stale_after_days_preference() {
+    let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+    let e = Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc);
+    let mut db = db();
+    let id = new_task(&e, &mut db, "undated");
+    task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "targeted".into(),
+            target_at: Some(SunriseTime::AllDay {
+                date: jiff::civil::date(2030, 1, 1),
+            }),
+            ..Default::default()
+        },
+    );
+    let stale = |e: &Engine, db: &Db, at: i64| -> Vec<String> {
+        let r = match e
+            .query(
+                db,
+                Query::SearchGrouped {
+                    text: "is:stale".into(),
+                    now_ms: u64::try_from(at).unwrap(),
+                    prefix: false,
+                    per_group: None,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Search(r) => *r,
+            other => panic!("{other:?}"),
+        };
+        r.groups
+            .iter()
+            .flat_map(|g| g.hits.iter().map(|h| h.title.text.clone()))
+            .collect()
+    };
+    let day = 86_400_000i64;
+    // 2023-11-14 22:13 UTC; fourteen planner days later is 2023-11-28.
+    let midnight_28 = 1_701_129_600_000i64;
+    assert_eq!(stale(&e, &db, midnight_28 - 1), Vec::<String>::new());
+    assert_eq!(stale(&e, &db, midnight_28), ["undated"]);
+    let set = |e: &Engine, db: &mut Db, n: u64| {
+        e.apply(
+            db,
+            Command::SetPreference {
+                key: "stale_after_days".into(),
+                value: PrefValue::Uint(n),
+                target: PrefTarget::Vault,
+            },
+        )
+        .unwrap();
+    };
+    set(&e, &mut db, 0);
+    assert_eq!(
+        stale(&e, &db, midnight_28 + 400 * day),
+        Vec::<String>::new()
+    );
+    set(&e, &mut db, 1);
+    assert_eq!(stale(&e, &db, NOW + day), ["undated"]);
+    // A touch resets the clock.
+    *clock.0.lock() = u64::try_from(NOW + 3 * day).unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id,
+            patch: TaskPatch {
+                priority: Some(Some(3)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(stale(&e, &db, NOW + 3 * day + 1), Vec::<String>::new());
+    assert_eq!(stale(&e, &db, NOW + 5 * day), ["undated"]);
+}
+
 #[test]
 fn a_name_that_names_nothing_matches_nothing_and_says_so() {
     let (e, mut db) = (engine(), db());
@@ -434,7 +569,7 @@ fn a_name_that_names_nothing_matches_nothing_and_says_so() {
     // An exact name wins over a longer one it starts.
     assert!(grouped(&e, &db, "#work").notices.is_empty());
     // An operator this build cannot evaluate yet is said so too.
-    let r = grouped(&e, &db, "deploy is:stale");
+    let r = grouped(&e, &db, "deploy is:fixed");
     assert!(r.groups.is_empty());
     assert_eq!(r.notices[0].kind, NoticeKind::Unsupported);
     // And what the parser read as text.

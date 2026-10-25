@@ -1382,7 +1382,7 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     ] {
         core.submit(Command::CreateTask(TaskDraft {
             title: title.into(),
-            scheduled_at: Some(at),
+            planned_at: Some(at),
             ..Default::default()
         }))
         .await

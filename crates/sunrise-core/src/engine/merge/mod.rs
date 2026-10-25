@@ -160,8 +160,10 @@ pub(super) use versions::{heads, precedes};
 /// effective stream (ADR-0046 §4: a deleted stream reads as where it
 /// re-homed its dependents, and the legacy Inbox sentinel as no stream) and
 /// `Task.triaged_at` and `Stream.rehomed_to` into their columns (migration
-/// 0044, #332), where a build before it kept the last two in `extra`.
-pub(crate) const FOLD_V: u32 = 6;
+/// 0044, #332), where a build before it kept the last two in `extra`. `7`
+/// projects `Task.target_at` into its columns (migration 0045, #334), where
+/// a build before it kept a newer device's target in `extra`.
+pub(crate) const FOLD_V: u32 = 7;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

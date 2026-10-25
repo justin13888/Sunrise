@@ -85,13 +85,13 @@ pub struct TaskTemplate {
 impl TaskTemplate {
     /// Build a `TaskDraft` for this occurrence.
     ///
-    /// `scheduled_at` is the occurrence's planned time, of the anchor's kind
+    /// `planned_at` is the occurrence's planned time, of the anchor's kind
     /// ([`Routine::occurrence_time`]): a floating routine's occurrence is
     /// floating at its civil key, a zoned one's zoned in the anchor's zone.
     /// An occurrence is never an instant
     /// (`docs/11-adr/0066-times-survive-travel.md` §1).
     #[must_use]
-    pub fn to_draft(&self, scheduled_at: Option<SunriseTime>) -> TaskDraft {
+    pub fn to_draft(&self, planned_at: Option<SunriseTime>) -> TaskDraft {
         TaskDraft {
             title: self.title.clone(),
             body: self.body.clone(),
@@ -100,8 +100,9 @@ impl TaskTemplate {
             priority: self.priority,
             energy: self.energy.clone(),
             estimated_duration_s: self.estimated_duration_s,
-            scheduled_at,
-            due_at: None,
+            planned_at,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             assignee: None,
             // Routine occurrences inherit the Stream default, like any other
@@ -651,7 +652,7 @@ mod tests {
         assert_eq!(d.contexts, vec![ctx]);
         assert_eq!(d.priority, Some(2));
         assert_eq!(d.estimated_duration_s, Some(600));
-        assert!(d.scheduled_at.is_none() && d.due_at.is_none());
+        assert!(d.planned_at.is_none() && d.hard_due_at.is_none());
         t.stream_id = None;
         assert_eq!(t.to_draft(None).stream_id, None);
     }

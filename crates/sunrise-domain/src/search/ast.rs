@@ -100,12 +100,11 @@ impl Cmp {
 /// Which date a date operator reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DateField {
-    /// `planned`: when the task is planned for (`scheduled_at`).
+    /// `planned`: when the task is planned for (`planned_at`).
     Planned,
-    /// `target`: the soft deadline. No build has one yet, so it matches
-    /// nothing.
+    /// `target`: the soft deadline (`target_at`).
     Target,
-    /// `hard`: the hard deadline (`due_at`).
+    /// `hard`: the hard deadline (`hard_due_at`).
     Hard,
     /// `due`: the earlier of the two deadlines.
     Due,
@@ -162,7 +161,8 @@ pub enum IsValue {
     Late,
     /// `late-hard`: past the hard deadline and still open.
     LateHard,
-    /// `stale`: deferred again and again. Not available yet.
+    /// `stale`: an open task with no deadline, untouched for
+    /// `stale_after_days` planner days (ADR-0047 §2).
     Stale,
     /// `blocked`: an open task with an open blocker.
     Blocked,

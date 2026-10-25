@@ -695,8 +695,8 @@ fn every_command_writes_only_the_fields_it_changed() {
                         priority: Some(Some(5)),
                         energy: Some(t.energy),
                         estimated_duration_s: Some(t.estimated_duration_s),
-                        scheduled_at: Some(t.scheduled_at),
-                        due_at: Some(t.due_at),
+                        planned_at: Some(t.planned_at),
+                        hard_due_at: Some(t.hard_due_at),
                         ..Default::default()
                     },
                 }

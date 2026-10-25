@@ -141,8 +141,12 @@ macro_rules! for_each_entity {
                         priority: Option<u8> => Register(Quiet);
                         energy: Option<Energy> => Register(Quiet);
                         estimated_duration_s: Option<u64> => Register(Quiet);
-                        scheduled_at: Option<SunriseTime> => Register(Tracked);
-                        due_at: Option<SunriseTime> => Register(Tracked);
+                        // ADR-0047 §1: the plan, and the hard deadline. They keep
+                        // the wire names every build reads with their meaning
+                        // (ADR-0047 C1), and the soft deadline is new.
+                        planned_at as "scheduled_at": Option<SunriseTime> => Register(Tracked);
+                        target_at: Option<SunriseTime> => Register(Tracked);
+                        hard_due_at as "due_at": Option<SunriseTime> => Register(Tracked);
                         scheduling_constraints: Vec<ScheduleConstraint> => Register(Tracked);
                         completed_at: Option<SunriseTime> => Register(Quiet);
                         deferred_count: i64 => Counter;

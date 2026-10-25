@@ -80,8 +80,14 @@ pub struct TaskEditorForm {
     pub energy: Option<Energy>,
     /// Estimate in seconds; none or zero is no estimate.
     pub estimated_duration_s: Option<u64>,
-    /// The deadline picker, or none when the deadline is switched off.
+    /// The hard-deadline picker, or none when the deadline is switched off.
     pub due_at: Option<PickedTime>,
+    /// The soft-deadline picker (`target_at`, ADR-0047 §1), or none when it
+    /// is switched off. [`task_editor_form`] seeds it from the task; a client
+    /// posts back the form it was given, so one that does not show the
+    /// target leaves it as it was.
+    #[uniffi(default = None)]
+    pub target_at: Option<PickedTime>,
 }
 
 /// What the block editor shows. See [`sunrise_client_core::editor::BlockForm`].
@@ -137,7 +143,8 @@ pub fn task_editor_form(task: TaskItem, tz: String) -> Result<TaskEditorForm, Bi
         priority: form.priority,
         energy: form.energy,
         estimated_duration_s: form.estimated_duration_s,
-        due_at: form.due_at.map(PickedTime::from),
+        due_at: form.hard_due_at.map(PickedTime::from),
+        target_at: form.target_at.map(PickedTime::from),
     })
 }
 
@@ -155,7 +162,8 @@ pub fn task_editor_edit(
         priority: form.priority,
         energy: form.energy,
         estimated_duration_s: form.estimated_duration_s,
-        due_at: form.due_at.map(civil::PickedTime::from),
+        target_at: form.target_at.map(civil::PickedTime::from),
+        hard_due_at: form.due_at.map(civil::PickedTime::from),
     };
     let patch =
         editor::task_patch(&task_fields(&task), &form, &zone(&tz)?).map_err(editor_error)?;
@@ -365,7 +373,8 @@ fn task_fields(task: &TaskItem) -> editor::TaskFields {
         priority: task.priority,
         energy: task.energy.clone(),
         estimated_duration_s: task.estimated_duration_s,
-        due_at: task.due_at.clone().map(SunriseTime::from),
+        target_at: task.target_at.clone().map(SunriseTime::from),
+        hard_due_at: task.due_at.clone().map(SunriseTime::from),
     }
 }
 
@@ -395,12 +404,13 @@ fn split<T>(field: Option<Option<T>>) -> (Option<T>, bool) {
 }
 
 /// The task editor's patch as a [`TaskEdit`]. The editor sets only its own
-/// five fields; the rest stay at their defaults.
+/// six fields; the rest stay at their defaults.
 fn task_edit(patch: TaskPatch) -> TaskEdit {
     let (set_priority, clear_priority) = split(patch.priority);
     let (set_energy, clear_energy) = split(patch.energy);
     let (set_estimated_duration_s, clear_estimated_duration) = split(patch.estimated_duration_s);
-    let (set_due_at, clear_due_at) = split(patch.due_at);
+    let (set_due_at, clear_due_at) = split(patch.hard_due_at);
+    let (set_target_at, clear_target_at) = split(patch.target_at);
     TaskEdit {
         title: patch.title,
         set_priority,
@@ -411,6 +421,8 @@ fn task_edit(patch: TaskPatch) -> TaskEdit {
         clear_estimated_duration,
         set_due_at: set_due_at.as_ref().map(TimeValue::from),
         clear_due_at,
+        set_target_at: set_target_at.as_ref().map(TimeValue::from),
+        clear_target_at,
         ..TaskEdit::default()
     }
 }

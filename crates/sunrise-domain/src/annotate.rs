@@ -13,9 +13,10 @@
 //! | `!N` | set priority (1-5) |
 //! | `%low\|med\|high` | set energy |
 //! | `~30m` | set the estimate |
-//! | `^when` | set `scheduled_at` |
-//! | `due:when` | set `due_at` |
-//! | `!-` `%-` `~-` `^-` `due:-` `@-` | clear that facet |
+//! | `^when` | set `planned_at` |
+//! | `target:when` | set `target_at`, the soft deadline |
+//! | `due:when` | set `hard_due_at`, the hard deadline |
+//! | `!-` `%-` `~-` `^-` `target:-` `due:-` `@-` | clear that facet |
 //!
 //! Two deliberate differences from [`crate::capture`]:
 //!
@@ -65,7 +66,7 @@ pub enum EditError {
     BadEnergy(String),
     /// `~x` was not a duration.
     BadDuration(String),
-    /// `^x` / `due:x` was not a date.
+    /// `^x` / `target:x` / `due:x` was not a date.
     BadDate(String),
     /// A bare word: an annotate line is not a title.
     NotAToken(String),
@@ -101,6 +102,7 @@ pub struct TaskEdit {
     energy: Option<Set<Energy>>,
     duration_s: Option<Set<u64>>,
     scheduled: Option<Set<SunriseTime>>,
+    target: Option<Set<SunriseTime>>,
     due: Option<Set<SunriseTime>>,
     /// Tokens that could not be applied.
     pub errors: Vec<EditError>,
@@ -118,6 +120,7 @@ impl TaskEdit {
             && self.energy.is_none()
             && self.duration_s.is_none()
             && self.scheduled.is_none()
+            && self.target.is_none()
             && self.due.is_none()
     }
 
@@ -160,13 +163,19 @@ impl TaskEdit {
             });
         }
         if let Some(set) = &self.scheduled {
-            patch.scheduled_at = Some(match set {
+            patch.planned_at = Some(match set {
+                Set::To(t) => Some(t.clone()),
+                Set::Clear => None,
+            });
+        }
+        if let Some(set) = &self.target {
+            patch.target_at = Some(match set {
                 Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
         }
         if let Some(set) = &self.due {
-            patch.due_at = Some(match set {
+            patch.hard_due_at = Some(match set {
                 Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
@@ -228,6 +237,9 @@ impl TaskEdit {
         });
         push_set(&mut parts, self.scheduled.clone(), "schedule", |t| {
             format!("^{}", stamp(&t, tz))
+        });
+        push_set(&mut parts, self.target.clone(), "target", |t| {
+            format!("target {}", stamp(&t, tz))
         });
         push_set(&mut parts, self.due.clone(), "due", |t| {
             format!("due {}", stamp(&t, tz))
@@ -319,6 +331,13 @@ pub fn parse(
                 Some(v) => edit.duration_s = Some(v),
                 None => edit.errors.push(EditError::BadDuration(body.into())),
             }
+        } else if let Some(body) = strip_target(w) {
+            let (consumed, parsed) = take_date(&words, i, body, now, tz);
+            i += consumed;
+            match parsed {
+                Some(v) => edit.target = Some(v),
+                None => edit.errors.push(EditError::BadDate(body.into())),
+            }
         } else if let Some(body) = strip_due(w) {
             let (consumed, parsed) = take_date(&words, i, body, now, tz);
             i += consumed;
@@ -401,6 +420,12 @@ fn strip_due(w: &str) -> Option<&str> {
         .strip_prefix("*due:")
         .and_then(|b| b.strip_suffix('*'))
         .or_else(|| w.strip_prefix("due:"))?;
+    (!body.is_empty()).then_some(body)
+}
+
+/// `target:friday`, the soft deadline, as `due:` is the hard one.
+fn strip_target(w: &str) -> Option<&str> {
+    let body = w.strip_prefix("target:")?;
     (!body.is_empty()).then_some(body)
 }
 
@@ -547,16 +572,46 @@ mod tests {
 
     #[test]
     fn every_facet_the_patch_carries_is_reachable() {
-        let e = edit("!2 %high ~90m ^tomorrow due:tomorrow @home #travel");
+        let e = edit("!2 %high ~90m ^tomorrow target:friday due:tomorrow @home #travel");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
         assert_eq!(p.priority, Some(Some(2)));
         assert_eq!(p.energy, Some(Some(Energy::High)));
         assert_eq!(p.estimated_duration_s, Some(Some(90 * 60)));
-        assert!(p.scheduled_at.is_some());
-        assert!(p.due_at.is_some());
+        assert!(p.planned_at.is_some());
+        assert!(p.hard_due_at.is_some());
+        assert!(matches!(
+            p.target_at,
+            Some(Some(SunriseTime::AllDay { .. }))
+        ));
         assert_eq!(p.contexts, Some(vec![cid(1)]));
         assert_eq!(e.stream(), Some(sid(2)));
+    }
+
+    /// A target alone is an edit, and a target that spans words consumes
+    /// them and only them.
+    #[test]
+    fn a_target_alone_is_an_edit_and_may_span_words() {
+        assert!(edit("").is_empty());
+        let e = edit("target:friday");
+        assert!(!e.is_empty());
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let e = edit("target:next friday @home");
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let p = e.patch_for(&[]);
+        assert_eq!(
+            p.target_at,
+            edit("target:next friday").patch_for(&[]).target_at
+        );
+        assert_ne!(p.target_at, edit("target:next").patch_for(&[]).target_at);
+        assert_eq!(p.contexts, Some(vec![cid(1)]));
+        assert!(e
+            .preview(&streams(), &contexts(), &TimeZone::UTC)
+            .contains("target"));
+        assert!(matches!(
+            edit("target:someday-ish").errors.as_slice(),
+            [EditError::BadDate(_)]
+        ));
     }
 
     #[test]
@@ -564,14 +619,15 @@ mod tests {
         // `TaskPatch` distinguishes "leave alone" from "set to nothing"; with
         // no `-` form the second is unreachable, so a priority set by accident
         // could never be removed.
-        let e = edit("!- %- ~- ^- due:-");
+        let e = edit("!- %- ~- ^- target:- due:-");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
         assert_eq!(p.priority, Some(None));
         assert_eq!(p.energy, Some(None));
         assert_eq!(p.estimated_duration_s, Some(None));
-        assert_eq!(p.scheduled_at, Some(None));
-        assert_eq!(p.due_at, Some(None));
+        assert_eq!(p.planned_at, Some(None));
+        assert_eq!(p.hard_due_at, Some(None));
+        assert_eq!(p.target_at, Some(None));
     }
 
     #[test]
@@ -614,7 +670,7 @@ mod tests {
         let c = edit("^tomorrow !1");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(c.patch_for(&[]).priority, Some(Some(1)));
-        assert!(c.patch_for(&[]).scheduled_at.is_some());
+        assert!(c.patch_for(&[]).planned_at.is_some());
     }
 
     #[test]
@@ -625,12 +681,12 @@ mod tests {
         let e = edit("^next friday !1 due:next monday @home");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
+        assert_eq!(p.planned_at, edit("^next friday").patch_for(&[]).planned_at);
         assert_eq!(
-            p.scheduled_at,
-            edit("^next friday").patch_for(&[]).scheduled_at
+            p.hard_due_at,
+            edit("due:next monday").patch_for(&[]).hard_due_at
         );
-        assert_eq!(p.due_at, edit("due:next monday").patch_for(&[]).due_at);
-        assert_ne!(p.scheduled_at, edit("^next").patch_for(&[]).scheduled_at);
+        assert_ne!(p.planned_at, edit("^next").patch_for(&[]).planned_at);
         assert_eq!(p.priority, Some(Some(1)));
         assert_eq!(p.contexts, Some(vec![cid(1)]));
     }

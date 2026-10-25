@@ -1891,13 +1891,13 @@ USAGE:
     sunrise help                 show this message
 
 CAPTURE SYNTAX:
-    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
+    #stream  @context  ^when  !priority(1-5)  ~duration  *target:when*  *due:when*
 
     sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
 
 EDIT SYNTAX:
-    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when
-    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-
+    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  target:when  due:when
+    a trailing `-` clears a field:  !-  %-  ~-  ^-  target:-  due:-  @-
 
     sunrise edit tsk_01J… ''#work !1 ^next friday'
     sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
@@ -2125,6 +2125,19 @@ needs_date = "schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to cl
 [cli.show]
 usage = "usage: show <task-id>"
 
+[cli.today]
+# The headings of Today's groups (ADR-0047, planning-views.md §Today).
+planned = "Planned"
+carried_over = "Carried over"
+due_today = "Due today"
+late = "Late"
+# A Late row's state, after its title.
+late_hard = "late: hard deadline"
+late_soft = "late: target"
+# A Due today row's deadline, after its title.
+deadline_hard = "due"
+deadline_target = "target"
+
 [cli.note]
 usage = "usage: note <task-id> [<text>...|-|--file <path|->] [--force]"
 # stderr, from `sunrise note <id>` when the task has no note.
@@ -2306,8 +2319,10 @@ usage = "usage: upcoming [7|14|30]"
 unknown_span = "an Upcoming span is 7, 14 or 30 days, not {span}"
 # A day's header line ends with this when nothing is on the day.
 empty_day = "nothing planned"
-# Marks a task listed on its deadline's day rather than its plan's.
+# Marks a task listed on its hard deadline's day rather than its plan's.
 due = "due"
+# Marks a task listed on its soft deadline's (its target's) day.
+target = "target"
 # The heading above the undated tasks, grouped by stream.
 no_date = "No date"
 # The group of undated tasks that have no stream (still in the Inbox).

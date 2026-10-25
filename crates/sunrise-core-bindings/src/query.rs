@@ -248,6 +248,19 @@ pub enum CoreQuery {
         /// The view.
         id: EntityRef,
     },
+    /// Today as ADR-0047 composes it: each task with its group (planned,
+    /// carried over, due today, late) and its lateness, in group order.
+    TodayView {
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`].
+        now_ms: u64,
+        /// Narrow to these contexts; empty means all.
+        contexts: Vec<EntityRef>,
+    },
+    /// Each named task's lateness for the reader now, in the order asked.
+    Lateness {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
 }
 
 impl CoreQuery {
@@ -359,6 +372,8 @@ impl CoreQuery {
             Self::DaySchedule { at_ms } => Query::DaySchedule { at_ms },
             Self::SavedViews => Query::SavedViews,
             Self::SavedView { id } => Query::SavedView(id),
+            Self::TodayView { now_ms, contexts } => Query::TodayView { now_ms, contexts },
+            Self::Lateness { ids } => Query::Lateness { ids },
         }
     }
 }
@@ -566,6 +581,16 @@ pub enum CoreQueryResult {
         /// The view and what it matches.
         result: crate::saved_views::SavedViewResultItem,
     },
+    /// Today's rows, in group order.
+    TodayView {
+        /// The rows.
+        rows: Vec<crate::lateness::TodayRowItem>,
+    },
+    /// One row per task asked for, in that order.
+    Lateness {
+        /// The rows.
+        rows: Vec<crate::lateness::TaskLatenessItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -687,6 +712,18 @@ impl CoreQueryResult {
             },
             QueryResult::SavedView(r) => Self::SavedView {
                 result: crate::saved_views::SavedViewResultItem::from(r.as_ref()),
+            },
+            QueryResult::TodayView(rows) => Self::TodayView {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TodayRowItem::from)
+                    .collect(),
+            },
+            QueryResult::Lateness(rows) => Self::Lateness {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TaskLatenessItem::from)
+                    .collect(),
             },
         }
     }

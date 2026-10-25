@@ -92,7 +92,7 @@ async fn create_then_complete_round_trip() {
     core.submit(Command::UpdateTask {
         id: entity,
         patch: TaskPatch {
-            due_at: Some(Some(
+            hard_due_at: Some(Some(
                 jiff::Timestamp::from_millisecond(1_700_000_000_000 + 3_600_000)
                     .unwrap()
                     .into(),

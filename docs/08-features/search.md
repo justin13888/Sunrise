@@ -313,11 +313,16 @@ The empty state names the operators most likely to help ("Try `#stream` or
 - **Query:** `Query::SearchGrouped { text, now_ms, prefix, per_group }` returns
   `QueryResult::Search(SearchResults)`, and `Query::Search { text, limit }`
   answers the Tasks group of the same query as `QueryResult::Tasks`. Every
-  operator evaluates except `target` (no soft deadline yet), `place:`,
-  `has:place`, `is:stale`, `is:fixed` and `is:flexible`, which match nothing
-  and raise an `unsupported` notice. `is:late` and `is:late-hard` read the hard
-  deadline through `sunrise_domain::is_overdue`. A hostile query never reaches
-  FTS5 unquoted, which a property test holds against a real index.
+  operator evaluates except `place:`, `has:place`, `is:fixed` and
+  `is:flexible`, which match nothing and raise an `unsupported` notice.
+  `is:late`, `is:late-hard` and `is:stale` read each task's lateness through
+  `sunrise_domain::lateness` for the reader at the query's `now_ms`, with the
+  day schedule and the `stale_after_days` preference
+  (`crates/sunrise-core/src/engine/search.rs#lateness_of`, #334); `target:`
+  reads `target_at`, `hard:` `hard_due_at`, and `due:` the earlier of the two
+  deadlines' days. The date operators name calendar dates, so they compare
+  civil days in the reader's zone. A hostile query never reaches FTS5
+  unquoted, which a property test holds against a real index.
 - **CLI:** `sunrise search [--kind <k>[,<k>…]] [--all] <query>...` prints the
   groups in order with a "… N more" line, notices on stderr, and with `--json`
   the grouped document ([`../07-clients/overview.md`](../07-clients/overview.md)

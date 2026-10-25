@@ -11,6 +11,7 @@
 //! title, a count, or a fire time; it only ever sends a content-less wake-up.
 //! That is why the planning lives in the core at all.
 
+use crate::day_schedule::{starts_at, DaySchedule};
 use crate::task::{Task, TaskState};
 use crate::time::SunriseTime;
 use jiff::civil;
@@ -417,6 +418,7 @@ pub fn build_morning_summary(
     today_start: Timestamp,
     today_end: Timestamp,
     tz: &TimeZone,
+    schedule: &DaySchedule,
 ) -> MorningSummary {
     let mut completed: Vec<Task> = tasks
         .iter()
@@ -442,10 +444,10 @@ pub fn build_morning_summary(
 
     let mut due_today: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && lands_in(t, i64::MIN, today_end.as_millisecond(), tz))
+        .filter(|t| is_open(t) && lands_in(t, i64::MIN, today_end.as_millisecond(), tz, schedule))
         .cloned()
         .collect();
-    due_today.sort_by(|a, b| plan_order(a, b, tz));
+    due_today.sort_by(|a, b| plan_order(a, b, tz, schedule));
 
     MorningSummary {
         since,
@@ -465,26 +467,34 @@ pub fn build_end_of_day_plan(
     day_end: Timestamp,
     week_end: Timestamp,
     tz: &TimeZone,
+    schedule: &DaySchedule,
 ) -> EndOfDayPlan {
     let mut still_open: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && lands_in(t, i64::MIN, day_end.as_millisecond(), tz))
+        .filter(|t| is_open(t) && lands_in(t, i64::MIN, day_end.as_millisecond(), tz, schedule))
         .cloned()
         .collect();
-    still_open.sort_by(|a, b| plan_order(a, b, tz));
+    still_open.sort_by(|a, b| plan_order(a, b, tz, schedule));
 
     let mut week_ahead: Vec<Task> = tasks
         .iter()
         .filter(|t| {
-            is_open(t) && lands_in(t, day_end.as_millisecond(), week_end.as_millisecond(), tz)
+            is_open(t)
+                && lands_in(
+                    t,
+                    day_end.as_millisecond(),
+                    week_end.as_millisecond(),
+                    tz,
+                    schedule,
+                )
         })
         .cloned()
         .collect();
-    week_ahead.sort_by(|a, b| plan_order(a, b, tz));
+    week_ahead.sort_by(|a, b| plan_order(a, b, tz, schedule));
 
     let mut unscheduled: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && t.scheduled_at.is_none() && t.due_at.is_none())
+        .filter(|t| is_open(t) && t.planned_at.is_none() && !t.has_deadline())
         .cloned()
         .collect();
     unscheduled.sort_by(|a, b| {
@@ -520,35 +530,38 @@ fn completion_ms(t: &Task, tz: &TimeZone) -> i64 {
         .map_or(i64::MIN, Timestamp::as_millisecond)
 }
 
-/// The instant a task "lands" on in `tz`: its scheduled time, or its deadline
-/// when it has no scheduled time. `None` for a task with neither, or with a
-/// kind this build cannot place.
+/// The instant a task "lands" on in `tz`, whose days are `schedule`'s
+/// planner days: its plan, or, when it has none, the earlier of its two
+/// deadlines. `None` for a task with neither, or with a kind this build
+/// cannot place.
 ///
-/// TODO(#334): an `all_day` value lands at civil midnight of its date
-/// ([`SunriseTime::resolve_in`]), not at the start of its planner day
-/// (`crate::day_schedule::day_bounds`, #338). With a sleep time past
-/// midnight, a brief's planner-day window `[from_ms, to_ms)` can therefore
-/// count an all-day value of the next date into the late night of the day
-/// before. #334's `lateness(task, now, reader_zone, schedule)` resolves an
-/// all-day value to `boundary(d)` / `boundary(d + 1)` (time.md §2 rule 1,
-/// ADR-0047 `due()`), and this reads it from there.
-fn lands_at(t: &Task, tz: &TimeZone) -> Option<i64> {
-    t.scheduled_at
-        .as_ref()
-        .or(t.due_at.as_ref())
-        .and_then(|v| v.resolve_in(tz))
-        .map(Timestamp::as_millisecond)
+/// Each value resolves where it starts ([`starts_at`]): an `all_day` value
+/// at the start of its planner day, `boundary(d)` (`time.md` §2 rule 1), so
+/// with a sleep time past midnight a brief's planner-day window `[from_ms,
+/// to_ms)` never counts an all-day value of the next date into the late
+/// night of the day before.
+fn lands_at(t: &Task, tz: &TimeZone, schedule: &DaySchedule) -> Option<i64> {
+    let start = |v: Option<&SunriseTime>| v.and_then(|v| starts_at(schedule, v, tz));
+    let at = if t.planned_at.is_some() {
+        start(t.planned_at.as_ref())
+    } else {
+        match (start(t.target_at.as_ref()), start(t.hard_due_at.as_ref())) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    };
+    at.map(Timestamp::as_millisecond)
 }
 
-fn lands_in(t: &Task, from_ms: i64, to_ms: i64, tz: &TimeZone) -> bool {
-    lands_at(t, tz).is_some_and(|ms| ms >= from_ms && ms < to_ms)
+fn lands_in(t: &Task, from_ms: i64, to_ms: i64, tz: &TimeZone, schedule: &DaySchedule) -> bool {
+    lands_at(t, tz, schedule).is_some_and(|ms| ms >= from_ms && ms < to_ms)
 }
 
 /// Earliest first, then most urgent, then by id so two devices agree.
-fn plan_order(a: &Task, b: &Task, tz: &TimeZone) -> std::cmp::Ordering {
-    lands_at(a, tz)
+fn plan_order(a: &Task, b: &Task, tz: &TimeZone, schedule: &DaySchedule) -> std::cmp::Ordering {
+    lands_at(a, tz, schedule)
         .unwrap_or(i64::MAX)
-        .cmp(&lands_at(b, tz).unwrap_or(i64::MAX))
+        .cmp(&lands_at(b, tz, schedule).unwrap_or(i64::MAX))
         .then_with(|| {
             a.priority
                 .unwrap_or(u8::MAX)
@@ -583,8 +596,9 @@ mod tests {
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
@@ -933,11 +947,11 @@ mod tests {
         inbox_item.stream_id = None;
 
         let mut due_today = task(4);
-        due_today.due_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
+        due_today.hard_due_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
 
         let filed_and_later = {
             let mut t = task(5);
-            t.scheduled_at = Some(SunriseTime::instant(ts(day + 10 * DAY_MS)));
+            t.planned_at = Some(SunriseTime::instant(ts(day + 10 * DAY_MS)));
             t
         };
 
@@ -953,6 +967,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             s.completed.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -976,7 +991,7 @@ mod tests {
     fn an_overdue_task_shows_up_as_still_open() {
         let day = 1_772_064_000_000i64;
         let mut overdue = task(1);
-        overdue.due_at = Some(SunriseTime::instant(ts(day - 3 * DAY_MS)));
+        overdue.hard_due_at = Some(SunriseTime::instant(ts(day - 3 * DAY_MS)));
 
         let plan = build_end_of_day_plan(
             &[overdue.clone()],
@@ -984,6 +999,7 @@ mod tests {
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -996,6 +1012,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             summary.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1007,11 +1024,11 @@ mod tests {
     fn the_end_of_day_plan_separates_today_the_week_and_the_unscheduled() {
         let day = 1_772_064_000_000i64;
         let mut today = task(1);
-        today.scheduled_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
+        today.planned_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
         let mut later_this_week = task(2);
-        later_this_week.scheduled_at = Some(SunriseTime::instant(ts(day + 3 * DAY_MS)));
+        later_this_week.planned_at = Some(SunriseTime::instant(ts(day + 3 * DAY_MS)));
         let mut next_month = task(3);
-        next_month.scheduled_at = Some(SunriseTime::instant(ts(day + 40 * DAY_MS)));
+        next_month.planned_at = Some(SunriseTime::instant(ts(day + 40 * DAY_MS)));
         let floating = task(4);
         let mut done = task(5);
         done.state = TaskState::Done;
@@ -1028,6 +1045,7 @@ mod tests {
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1054,21 +1072,21 @@ mod tests {
     fn tied_fixture(landing_ms: i64) -> [Task; 4] {
         // Earliest, and *least* urgent — so it can only lead on key one.
         let mut earliest = task(9);
-        earliest.scheduled_at = Some(SunriseTime::instant(ts(landing_ms - 1)));
+        earliest.planned_at = Some(SunriseTime::instant(ts(landing_ms - 1)));
         earliest.priority = None;
 
         // The three below all land together. `urgent` can only lead on key
         // two; `tie_a` and `tie_b` are separated by key three alone.
         let mut tie_b = task(2);
-        tie_b.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        tie_b.planned_at = Some(SunriseTime::instant(ts(landing_ms)));
         tie_b.priority = Some(5);
 
         let mut urgent = task(3);
-        urgent.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        urgent.planned_at = Some(SunriseTime::instant(ts(landing_ms)));
         urgent.priority = Some(1);
 
         let mut tie_a = task(1);
-        tie_a.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        tie_a.planned_at = Some(SunriseTime::instant(ts(landing_ms)));
         tie_a.priority = Some(5);
 
         [earliest, tie_b, urgent, tie_a]
@@ -1100,6 +1118,7 @@ mod tests {
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
 
         assert_eq!(
@@ -1128,6 +1147,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             s.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1143,7 +1163,7 @@ mod tests {
         let day = 1_772_064_000_000i64;
         let mut today = task(1);
         today.state = TaskState::from_raw("snoozed");
-        today.scheduled_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
+        today.planned_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
         let mut floating = task(2);
         floating.state = TaskState::from_raw("snoozed");
 
@@ -1153,6 +1173,7 @@ mod tests {
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1162,6 +1183,53 @@ mod tests {
             plan.unscheduled.iter().map(|t| t.id).collect::<Vec<_>>(),
             vec![floating.id]
         );
+    }
+
+    /// With a sleep time past midnight, Friday's planner day runs to
+    /// Saturday's 07:00 wake. An all-day value of Saturday lands at the start
+    /// of Saturday's planner day, not at civil midnight inside Friday's late
+    /// night, so the evening plan does not count it as still open today
+    /// (#574's leftover, `time.md` §2 rule 1). A target alone lands too, and
+    /// a task with only a target is not "unscheduled".
+    #[test]
+    fn an_all_day_value_lands_at_the_start_of_its_planner_day() {
+        use crate::day_schedule::{day_bounds, DayWindow};
+        let window = DayWindow::new(civil::time(7, 0, 0, 0), civil::time(1, 0, 0, 0)).unwrap();
+        let schedule = DaySchedule {
+            weekday: [Some(window); 7],
+            ..DaySchedule::default()
+        };
+        let tz = TimeZone::UTC;
+        let friday = civil::date(2026, 3, 6);
+        let (start, end) = day_bounds(&schedule, friday, &tz).unwrap();
+        let week_end = end + jiff::SignedDuration::from_hours(24 * 7);
+        let mut saturday = task(1);
+        saturday.hard_due_at = Some(SunriseTime::all_day(friday.tomorrow().unwrap()));
+        let mut planned_friday = task(2);
+        planned_friday.planned_at = Some(SunriseTime::all_day(friday));
+        let mut target_friday = task(3);
+        target_friday.target_at = Some(SunriseTime::floating(friday.at(18, 0, 0, 0)));
+        let tasks = [
+            saturday.clone(),
+            planned_friday.clone(),
+            target_friday.clone(),
+        ];
+        let plan = build_end_of_day_plan(&tasks, start, end, week_end, &tz, &schedule);
+        let ids = |v: &[Task]| v.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(ids(&plan.still_open), [planned_friday.id, target_friday.id]);
+        assert_eq!(ids(&plan.week_ahead), [saturday.id]);
+        assert!(plan.unscheduled.is_empty());
+        // Read in civil days, the same Saturday value is on Saturday too.
+        let civil_end = day_bounds(&DaySchedule::default(), friday, &tz).unwrap().1;
+        let civil_plan = build_end_of_day_plan(
+            &tasks,
+            start,
+            civil_end,
+            week_end,
+            &tz,
+            &DaySchedule::default(),
+        );
+        assert_eq!(ids(&civil_plan.week_ahead), [saturday.id]);
     }
 
     #[test]
@@ -1176,6 +1244,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             &TimeZone::UTC,
+            &DaySchedule::default(),
         );
         assert!(s.to_triage.is_empty());
     }

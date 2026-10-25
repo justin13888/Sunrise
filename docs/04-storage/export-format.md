@@ -63,6 +63,11 @@ names and shapes the records have on the wire (`docs/02-domain/`, pinned by
   `{"kind":"all_day","date":"2026-01-02"}` or `{"kind":"instant","at":"…Z"}`.
   The civil and instant strings are RFC 9557. A floating time is not resolved
   into the exporting device's zone; it stays floating.
+- A task's plan is the key `scheduled_at` and its hard deadline the key
+  `due_at`, the wire names `planned_at` and `hard_due_at` keep, and its soft
+  deadline is `target_at`, absent when unset
+  ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) C1). Lateness is not
+  exported: it is derived for a reader, never stored.
 - Fields a newer build wrote and this one does not model are kept, inline, as
   they arrived, exactly as the wire carries them.
 - A note body (`body`, `description`) is its canonical CBOR, as a JSON array

@@ -144,9 +144,14 @@ it is.
 The comparisons are `SunriseTime`'s own (`crates/sunrise-domain/src/time.rs`):
 `resolve_in(tz)` is rule 1's instant, `due_in(tz)` its deadline exception,
 `day_in(tz)` the date a reader sees a value on (§4), `cmp_in(other, tz)` rule
-3's order, and `PREFILTER_SLACK_MS` rule 2's 48 hours. The `due ≥ scheduled`
-invariant compares the deadline as a deadline, so a task planned for 09:00
-Friday and due "Friday" is consistent.
+3's order, and `PREFILTER_SLACK_MS` rule 2's 48 hours. On a reader's planner
+days they are `sunrise_domain::starts_at` (an `all_day` value at
+`boundary(d)`) and `sunrise_domain::deadline_at` (at `boundary(d+1)`), which
+lateness, the briefs and the ordering warnings read
+(`crates/sunrise-domain/src/day_schedule.rs`, #334); with no day schedule
+they are `resolve_in` and `due_in`. The ordering warnings compare the
+deadline as a deadline, so a task planned for 09:00 Friday and due "Friday"
+is consistent.
 
 **No time falls back silently**
 ([ADR-0066](../11-adr/0066-times-survive-travel.md) §3). `to_instant(tz)`
@@ -374,7 +379,12 @@ value is recomputed:
 | `Pacific/Apia` ↔ `Pacific/Pago_Pago` (same longitude, 24 hours apart) | an `all_day` deadline is late in one zone and on track in the other at the same instant, and both answers are the reader's |
 | A zone change on a spring-forward night | a `hard` constraint window that became empty is flagged, and nothing is rewritten |
 
-Where the rows run: resolution, the DST rule, validation, lateness, overlap,
+Where the rows run: lateness, with every state, the midnight boundary, a DST
+day each way, a floating deadline in two zones, the Apia date line and a
+sleep past midnight, in `crates/sunrise-domain/src/lateness/tests.rs`, and
+against a vault, two readers of one floating target and a zone change that
+moves staleness, in `crates/sunrise-core/src/engine/tests/lateness.rs`;
+resolution, the DST rule, validation, lateness, overlap,
 the prefilter bound, deferral by civil days (the gaps of `America/New_York`,
 `Australia/Lord_Howe`, `Pacific/Apia`, `Asia/Kathmandu`'s 1986 move to +05:45,
 and `Pacific/Chatham`) and reminders across a zone change in

@@ -324,7 +324,7 @@ fn every_bulk_action_writes_what_its_single_command_writes() {
     assert_eq!(task_at(&p.dba, ids[0]).state, TaskState::Done);
     let deferred = task_at(&p.dba, ids[1]);
     assert_eq!(
-        (deferred.scheduled_at, deferred.deferred_count),
+        (deferred.planned_at, deferred.deferred_count),
         (Some(to), 1)
     );
     assert_eq!(task_at(&p.dba, ids[2]).state, TaskState::Cancelled);

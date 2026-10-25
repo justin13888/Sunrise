@@ -81,8 +81,8 @@ sunrise_id::for_each_entity!(check_records);
 
 #[allow(unused_imports)]
 use crate::{
-    ConstraintSeverity, DateRange, DateWindow, Frequency, PriorityRange, TimeOfDayRange, Weekday,
-    WeekdaySet, WindowField,
+    ConstraintSeverity, DateRange, DateWindow, Frequency, LatenessPart, PriorityRange,
+    TimeOfDayRange, Weekday, WeekdaySet, WindowField,
 };
 #[allow(unused_imports)]
 use jiff::civil::{Date, DateTime, Time};
@@ -159,6 +159,7 @@ sunrise_id::describe_value_types! {
             priority: Option<PriorityRange>;
             energy: Vec<Energy>;
             window: Option<DateWindow>;
+            lateness: Vec<LatenessPart>;
             text: String;
             ..unknown
         }
@@ -285,8 +286,9 @@ mod tests {
                 priority: None,
                 energy: None,
                 estimated_duration_s: None,
-                scheduled_at: None,
-                due_at: None,
+                planned_at: None,
+                target_at: Some(ts().into()),
+                hard_due_at: None,
                 scheduling_constraints: Vec::new(),
                 completed_at: None,
                 deferred_count: 0,

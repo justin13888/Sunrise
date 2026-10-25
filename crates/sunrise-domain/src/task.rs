@@ -109,14 +109,29 @@ pub struct Task {
     /// the ISO string to keep CBOR canonical).
     #[serde(default)]
     pub estimated_duration_s: Option<u64>,
-    /// When the user intends to do it. See [`SunriseTime`] — "Tuesday
-    /// morning" and "09:00 New York" are not the same kind of answer as
-    /// "this instant", and an earlier schema stored all three as the last one.
-    #[serde(default)]
-    pub scheduled_at: Option<SunriseTime>,
-    /// Hard deadline.
-    #[serde(default)]
-    pub due_at: Option<SunriseTime>,
+    /// When the user intends to work on it (ADR-0047 §1): a plan, not a
+    /// promise. The planner and defer own it, and a slipped plan is never
+    /// lateness. See [`SunriseTime`] — "Tuesday morning" and "09:00 New
+    /// York" are not the same kind of answer as "this instant".
+    ///
+    /// On the wire it keeps the key `scheduled_at`, which every build reads
+    /// as this field's meaning (ADR-0047 clarification C1).
+    #[serde(default, rename = "scheduled_at")]
+    pub planned_at: Option<SunriseTime>,
+    /// The soft deadline: when the user wants it done (ADR-0047 §1). Missing
+    /// it makes an open task [`crate::Lateness::LateSoft`].
+    ///
+    /// Absent on the wire when unset, so a task with no target encodes as it
+    /// did before `DOC_SCHEMA_V` 20, and an older build keeps a set one as an
+    /// unknown field and writes it back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_at: Option<SunriseTime>,
+    /// The hard deadline: when it must be done (ADR-0047 §1). Missing it
+    /// makes an open task [`crate::Lateness::LateHard`].
+    ///
+    /// On the wire it keeps the key `due_at` (ADR-0047 clarification C1).
+    #[serde(default, rename = "due_at")]
+    pub hard_due_at: Option<SunriseTime>,
     /// Scheduling constraints (value list; whole list is one LWW register).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
@@ -212,10 +227,15 @@ pub struct TaskDraft {
     pub energy: Option<Energy>,
     /// Optional estimated duration in seconds.
     pub estimated_duration_s: Option<u64>,
-    /// Optional scheduled_at.
-    pub scheduled_at: Option<SunriseTime>,
-    /// Optional due_at.
-    pub due_at: Option<SunriseTime>,
+    /// Optional plan (`planned_at`).
+    #[serde(default, rename = "scheduled_at")]
+    pub planned_at: Option<SunriseTime>,
+    /// Optional soft deadline.
+    #[serde(default)]
+    pub target_at: Option<SunriseTime>,
+    /// Optional hard deadline.
+    #[serde(default, rename = "due_at")]
+    pub hard_due_at: Option<SunriseTime>,
     /// Optional scheduling constraints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
@@ -248,10 +268,15 @@ pub struct TaskPatch {
     pub energy: Option<Option<Energy>>,
     /// New duration.
     pub estimated_duration_s: Option<Option<u64>>,
-    /// New scheduled_at.
-    pub scheduled_at: Option<Option<SunriseTime>>,
-    /// New due_at.
-    pub due_at: Option<Option<SunriseTime>>,
+    /// New plan.
+    #[serde(default, rename = "scheduled_at")]
+    pub planned_at: Option<Option<SunriseTime>>,
+    /// New soft deadline.
+    #[serde(default)]
+    pub target_at: Option<Option<SunriseTime>>,
+    /// New hard deadline.
+    #[serde(default, rename = "due_at")]
+    pub hard_due_at: Option<Option<SunriseTime>>,
     /// Replace the whole scheduling-constraints list (LWW). `None` leaves it
     /// unchanged; `Some(vec![])` clears it; `Some(list)` replaces it.
     pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
@@ -280,15 +305,11 @@ impl TaskDraft {
     /// after CRDT encoding) or `blocked_by` cycles (done at submit time
     /// once the full graph is known).
     ///
-    /// `tz` is the reader's zone, which resolves the kinds of time that carry
-    /// none of their own (`docs/10-cross-cutting/time.md` §2).
-    pub fn validate(&self, tz: &TimeZone) -> Result<(), ValidationError> {
+    /// The order of the three times is not checked here: an ordering is a
+    /// warning, never a rejection ([`Task::ordering_warnings`], ADR-0047 §1).
+    /// `_tz` is kept for the callers that pass the reader's zone.
+    pub fn validate(&self, _tz: &TimeZone) -> Result<(), ValidationError> {
         let _ = validate_title(&self.title, "task.title", MAX_TASK_TITLE_LEN)?;
-        if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
-            if due_before_scheduled(s, d, tz) {
-                return Err(ValidationError::DueBeforeScheduled);
-            }
-        }
         if let Some(p) = self.priority {
             if !(1..=5).contains(&p) {
                 return Err(ValidationError::Field {
@@ -302,7 +323,73 @@ impl TaskDraft {
     }
 }
 
+/// An ordering of a task's three times that ADR-0047 §1 *expects* and does
+/// not enforce: reported beside an accepted write, and computed by readers
+/// for display, never a reason to refuse one.
+///
+/// Concurrent per-field edits on two devices can produce any combination of
+/// the three registers, and a rule merge cannot enforce must not be one a
+/// command pretends to; and "I plan to do it after the deadline, knowingly"
+/// is a real decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderingWarning {
+    /// The soft deadline is missed after the hard one: `target_at` is later
+    /// than `hard_due_at`.
+    TargetAfterHardDue,
+    /// The plan starts at or after the moment the hard deadline is missed.
+    PlannedAfterHardDue,
+}
+
+impl OrderingWarning {
+    /// The stable spelling, as the CLI and the bindings print it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetAfterHardDue => "target_after_hard_due",
+            Self::PlannedAfterHardDue => "planned_after_hard_due",
+        }
+    }
+}
+
 impl Task {
+    /// The task a create of `draft` makes, with id `id`, created and touched
+    /// at `at`: `todo`, never deferred, placed nowhere, and the draft's title
+    /// trimmed. Not validated; [`TaskDraft::validate`] is the create's gate.
+    #[must_use]
+    pub fn from_draft(id: EntityRef, at: Timestamp, draft: TaskDraft) -> Self {
+        Self {
+            id,
+            created_at: at,
+            updated_at: at,
+            title: draft.title.trim().to_string(),
+            body: draft.body,
+            stream_id: draft.stream_id,
+            contexts: draft.contexts.into_iter().collect(),
+            state: TaskState::Todo,
+            priority: draft.priority,
+            energy: draft.energy,
+            estimated_duration_s: draft.estimated_duration_s,
+            planned_at: draft.planned_at,
+            target_at: draft.target_at,
+            hard_due_at: draft.hard_due_at,
+            scheduling_constraints: draft.scheduling_constraints,
+            completed_at: None,
+            deferred_count: 0,
+            blocks: BTreeSet::new(),
+            blocked_by: BTreeSet::new(),
+            assignee: draft.assignee,
+            routine_id: None,
+            routine_occurrence: None,
+            reminder_lead_s: draft.reminder_lead_s,
+            sort_order: None,
+            triaged_at: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }
+    }
+
     /// Whether the task is in the Inbox (ADR-0046 §3): open, live, and
     /// untriaged, which is to have no stream, no plan, no deadline and no
     /// [`Self::triaged_at`].
@@ -314,50 +401,84 @@ impl Task {
     #[must_use]
     pub fn in_inbox(&self) -> bool {
         self.stream_id.is_none()
-            && self.scheduled_at.is_none()
-            && self.due_at.is_none()
+            && self.planned_at.is_none()
+            && !self.has_deadline()
             && self.triaged_at.is_none()
-            && matches!(
-                self.state.effective(),
-                TaskState::Todo | TaskState::InProgress
-            )
-            && !self.archived
+            && self.is_open()
+    }
+
+    /// Open: `todo` or `in_progress` (an unknown state reads as `todo`),
+    /// not archived and not deleted. The tasks lateness is evaluated for
+    /// (ADR-0047 §2).
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        matches!(
+            self.state.effective(),
+            TaskState::Todo | TaskState::InProgress
+        ) && !self.archived
             && !self.deleted
     }
 
-    /// Re-check cross-field invariants on a materialized Task.
+    /// Whether the task carries a deadline of either kind.
+    #[must_use]
+    pub const fn has_deadline(&self) -> bool {
+        self.target_at.is_some() || self.hard_due_at.is_some()
+    }
+
+    /// Re-check the structural invariants of a materialized Task: the
+    /// scheduling-constraint list is valid.
     ///
-    /// Enforced after applying a patch (a patch that sets only `due_at` earlier
-    /// than an existing `scheduled_at` would otherwise silently break the
-    /// deadline invariant): `scheduled_at ≤ due_at` when both are present, and
-    /// the scheduling-constraint list is valid. `tz` is the reader's zone, as
-    /// for [`TaskDraft::validate`].
-    pub fn validate_invariants(&self, tz: &TimeZone) -> Result<(), ValidationError> {
-        if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
-            if due_before_scheduled(s, d, tz) {
-                return Err(ValidationError::DueBeforeScheduled);
-            }
-        }
+    /// The order of the three times is not one of them: it is reported by
+    /// [`Self::ordering_warnings`] and never rejects (ADR-0047 §1). `_tz` is
+    /// the reader's zone, kept for the callers that pass it.
+    pub fn validate_invariants(&self, _tz: &TimeZone) -> Result<(), ValidationError> {
         validate_constraint_list(&self.scheduling_constraints)?;
         Ok(())
     }
-}
 
-/// Whether the deadline `due` is missed before the plan `scheduled` starts,
-/// for a reader in `tz`.
-///
-/// Both resolve in the reader's zone (`docs/10-cross-cutting/time.md` §2 rule
-/// 1), never on the storage index, which puts a floating or all-day value up
-/// to 14 hours from where any reader sees it. The deadline resolves as a
-/// deadline, to the END of an all-day date (ADR-0047 §Due instant), so a task
-/// planned for 09:00 Friday and due "Friday" is consistent. A kind this build
-/// cannot place is compared with nothing: its stand-in would invent a
-/// violation.
-fn due_before_scheduled(scheduled: &SunriseTime, due: &SunriseTime, tz: &TimeZone) -> bool {
-    matches!(
-        (due.due_in(tz), scheduled.resolve_in(tz)),
-        (Some(d), Some(s)) if d < s
-    )
+    /// The orderings ADR-0047 §1 expects and this task breaks, for a reader
+    /// in `tz` whose days are `schedule`'s planner days: `target_at ≤
+    /// hard_due_at`, and `planned_at ≤ hard_due_at`.
+    ///
+    /// Each pair resolves in the reader's zone (`docs/10-cross-cutting/time.md`
+    /// §2 rule 1), never on the storage index. Both deadlines compare as
+    /// deadlines, at the instant they are missed ([`crate::deadline_at`]: the
+    /// END of an all-day date's planner day), and the plan at its start
+    /// ([`crate::starts_at`]), so a task planned for 09:00 Friday and due
+    /// "Friday" is consistent. A kind this build cannot place is compared
+    /// with nothing: its stand-in would invent a warning.
+    #[must_use]
+    pub fn ordering_warnings(
+        &self,
+        tz: &TimeZone,
+        schedule: &crate::DaySchedule,
+    ) -> Vec<OrderingWarning> {
+        let mut out = Vec::new();
+        let Some(hard) = self
+            .hard_due_at
+            .as_ref()
+            .and_then(|h| crate::deadline_at(schedule, h, tz))
+        else {
+            return out;
+        };
+        if self
+            .target_at
+            .as_ref()
+            .and_then(|t| crate::deadline_at(schedule, t, tz))
+            .is_some_and(|t| t > hard)
+        {
+            out.push(OrderingWarning::TargetAfterHardDue);
+        }
+        if self
+            .planned_at
+            .as_ref()
+            .and_then(|p| crate::starts_at(schedule, p, tz))
+            .is_some_and(|p| p >= hard)
+        {
+            out.push(OrderingWarning::PlannedAfterHardDue);
+        }
+        out
+    }
 }
 
 impl TaskPatch {
@@ -401,22 +522,50 @@ mod tests {
         TimeZone::get(name).expect("zone")
     }
 
-    fn timed(scheduled_at: SunriseTime, due_at: SunriseTime) -> TaskDraft {
-        TaskDraft {
+    fn timed(planned_at: SunriseTime, hard_due_at: SunriseTime) -> Task {
+        Task {
+            id: EntityRef::new(EntityKind::Task, [7u8; 16]),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
             title: "x".into(),
-            scheduled_at: Some(scheduled_at),
-            due_at: Some(due_at),
-            ..Default::default()
+            body: None,
+            stream_id: None,
+            contexts: BTreeSet::new(),
+            state: TaskState::Todo,
+            priority: None,
+            energy: None,
+            estimated_duration_s: None,
+            planned_at: Some(planned_at),
+            target_at: None,
+            hard_due_at: Some(hard_due_at),
+            scheduling_constraints: Vec::new(),
+            completed_at: None,
+            deferred_count: 0,
+            blocks: BTreeSet::new(),
+            blocked_by: BTreeSet::new(),
+            assignee: None,
+            routine_id: None,
+            routine_occurrence: None,
+            reminder_lead_s: None,
+            sort_order: None,
+            triaged_at: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
         }
+    }
+
+    fn warnings(t: &Task, tz: &TimeZone) -> Vec<OrderingWarning> {
+        t.ordering_warnings(tz, &crate::DaySchedule::default())
     }
 
     /// A deadline "Friday" is missed at the END of Friday, so a plan for
     /// 09:00 Friday is before it in every zone — on the storage index the
-    /// all-day value sat at 00:00 UTC and this was refused everywhere.
+    /// all-day value sat at 00:00 UTC and this was flagged everywhere.
     #[test]
     fn a_plan_inside_an_all_day_deadline_is_not_after_it() {
         let friday = jiff::civil::date(2026, 3, 6);
-        let d = timed(
+        let t = timed(
             SunriseTime::floating(friday.at(9, 0, 0, 0)),
             SunriseTime::all_day(friday),
         );
@@ -426,18 +575,18 @@ mod tests {
             "Pacific/Kiritimati",
             "Asia/Kolkata",
         ] {
-            d.validate(&zone(tz))
-                .unwrap_or_else(|e| panic!("{tz}: {e:?}"));
+            assert_eq!(warnings(&t, &zone(tz)), [], "{tz}");
         }
-        // The day after is still refused.
+        // The day after is a warning, and only a warning (ADR-0047 §1).
         let late = timed(
             SunriseTime::floating(friday.tomorrow().unwrap().at(9, 0, 0, 0)),
             SunriseTime::all_day(friday),
         );
         assert_eq!(
-            late.validate(&utc()),
-            Err(ValidationError::DueBeforeScheduled)
+            warnings(&late, &utc()),
+            [OrderingWarning::PlannedAfterHardDue]
         );
+        late.validate_invariants(&utc()).unwrap();
     }
 
     /// A zoned plan and a floating deadline are compared where the reader
@@ -446,15 +595,87 @@ mod tests {
     #[test]
     fn mixed_kinds_are_compared_in_the_readers_zone() {
         let day = jiff::civil::date(2026, 6, 1);
-        let d = timed(
+        let t = timed(
             SunriseTime::zoned(day.at(9, 0, 0, 0), "America/New_York"),
             SunriseTime::floating(day.at(11, 0, 0, 0)),
         );
-        d.validate(&zone("America/New_York")).unwrap();
+        assert_eq!(warnings(&t, &zone("America/New_York")), []);
         assert_eq!(
-            d.validate(&zone("Asia/Kolkata")),
-            Err(ValidationError::DueBeforeScheduled)
+            warnings(&t, &zone("Asia/Kolkata")),
+            [OrderingWarning::PlannedAfterHardDue]
         );
+    }
+
+    /// A soft deadline after the hard one is the other expected ordering,
+    /// and a target on the hard deadline's own day is not after it.
+    #[test]
+    fn a_target_after_the_hard_deadline_is_a_warning() {
+        let day = jiff::civil::date(2026, 6, 1);
+        let mut t = timed(
+            SunriseTime::floating(day.at(9, 0, 0, 0)),
+            SunriseTime::all_day(day),
+        );
+        t.target_at = Some(SunriseTime::all_day(day));
+        assert_eq!(warnings(&t, &utc()), []);
+        t.target_at = Some(SunriseTime::floating(day.at(23, 0, 0, 0)));
+        assert_eq!(warnings(&t, &utc()), []);
+        t.target_at = Some(SunriseTime::all_day(day.tomorrow().unwrap()));
+        assert_eq!(warnings(&t, &utc()), [OrderingWarning::TargetAfterHardDue]);
+        // With no hard deadline there is nothing to be after.
+        t.hard_due_at = None;
+        assert_eq!(warnings(&t, &utc()), []);
+    }
+
+    /// The draft and the invariants refuse no ordering at all.
+    #[test]
+    fn no_ordering_rejects_a_draft() {
+        let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let later = now + jiff::SignedDuration::from_hours(1);
+        let d = TaskDraft {
+            title: "x".into(),
+            planned_at: Some(later.into()),
+            target_at: Some(later.into()),
+            hard_due_at: Some(now.into()),
+            ..Default::default()
+        };
+        d.validate(&utc()).unwrap();
+        assert_eq!(
+            OrderingWarning::TargetAfterHardDue.as_str(),
+            "target_after_hard_due"
+        );
+        assert_eq!(
+            OrderingWarning::PlannedAfterHardDue.as_str(),
+            "planned_after_hard_due"
+        );
+    }
+
+    /// The Inbox predicate reads all three times.
+    #[test]
+    fn any_of_the_three_times_takes_a_task_out_of_the_inbox() {
+        let mut t = timed(Timestamp::UNIX_EPOCH.into(), Timestamp::UNIX_EPOCH.into());
+        t.planned_at = None;
+        t.hard_due_at = None;
+        assert!(t.in_inbox());
+        t.target_at = Some(SunriseTime::all_day(jiff::civil::date(2026, 6, 1)));
+        assert!(!t.in_inbox());
+        assert!(t.has_deadline());
+        t.target_at = None;
+        t.hard_due_at = Some(Timestamp::UNIX_EPOCH.into());
+        assert!(!t.in_inbox());
+        t.hard_due_at = None;
+        t.planned_at = Some(Timestamp::UNIX_EPOCH.into());
+        assert!(!t.in_inbox());
+        t.planned_at = None;
+        t.archived = true;
+        assert!(!t.in_inbox() && !t.is_open());
+        t.archived = false;
+        t.deleted = true;
+        assert!(!t.is_open());
+        t.deleted = false;
+        t.state = TaskState::Done;
+        assert!(!t.is_open());
+        t.state = TaskState::from_raw("waiting");
+        assert!(t.is_open(), "an unknown state reads as todo");
     }
 
     #[test]
@@ -488,39 +709,21 @@ mod tests {
         assert_eq!(d.validate(&utc()), Err(ValidationError::InvalidTitle));
     }
 
-    #[test]
-    fn draft_rejects_due_before_scheduled() {
-        let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
-        let later = now + jiff::SignedDuration::from_hours(1);
-        let d = TaskDraft {
-            title: "x".into(),
-            scheduled_at: Some(later.into()),
-            due_at: Some(now.into()),
-            ..Default::default()
-        };
-        assert_eq!(d.validate(&utc()), Err(ValidationError::DueBeforeScheduled));
-    }
-
     /// A time kind this build cannot place is compared with nothing, on
     /// either side.
     #[test]
-    fn an_unplaceable_time_kind_never_violates_due_after_scheduled() {
+    fn an_unplaceable_time_kind_never_warns() {
         let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
         let unknown = crate::SunriseTime::Unknown {
             kind: "lunar".into(),
             raw: crate::Unknowns::new(),
         };
-        for (scheduled_at, due_at) in [
-            (Some(unknown.clone()), Some(now.into())),
-            (Some(now.into()), Some(unknown)),
-        ] {
-            let d = TaskDraft {
-                title: "x".into(),
-                scheduled_at,
-                due_at,
-                ..Default::default()
-            };
-            d.validate(&utc()).unwrap();
+        for (planned_at, hard_due_at) in
+            [(unknown.clone(), now.into()), (now.into(), unknown.clone())]
+        {
+            let mut t = timed(planned_at, hard_due_at);
+            t.target_at = Some(unknown.clone());
+            assert_eq!(warnings(&t, &utc()), []);
         }
     }
 

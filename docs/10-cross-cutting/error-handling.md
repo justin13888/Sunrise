@@ -22,7 +22,9 @@ A finite enum across the system. Examples:
 - `CRYPTO_RECOVERY_BLOB_INVALID`
 - `INTEGRATION_REAUTH_REQUIRED`
 - `VALIDATION_INVALID_TITLE`
-- `VALIDATION_DUE_BEFORE_SCHEDULED`
+- `VALIDATION_DUE_BEFORE_SCHEDULED` (retired: no write returns it since
+  ADR-0047 §1 made the order of a task's times a warning,
+  `CommandResult::ordering_warnings`; the code stays reserved)
 - `INTERNAL_UNKNOWN_CODE`
 
 Codes are stable across versions; new codes can be added but never repurposed.

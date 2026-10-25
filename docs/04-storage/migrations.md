@@ -367,7 +367,13 @@ full-state ops wrote projects as it did at 4. `FOLD_V` 6 (#332, ADR-0046)
 projects each task's, block's and routine template's effective stream, NULL
 for no stream, into the `stream_id` columns migration 0044 makes nullable,
 and `Task.triaged_at` and `Stream.rehomed_to` into the columns it adds, where
-a build before it kept the last two in `extra`.
+a build before it kept the last two in `extra`. `FOLD_V` 7 (#334, ADR-0047)
+projects `Task.target_at` into the `target_at_*` columns migration 0045 adds,
+beside the `planned_at_*` and `hard_due_at_*` columns it renames from
+`scheduled_at_*` and `due_at_*`, where a build before it kept a newer
+device's target in `extra`. The survival check over the old-vault fixtures
+reads a renamed column under its new name (`RENAMED_COLUMNS` in
+`crates/sunrise-storage/src/vault_fixtures.rs`).
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

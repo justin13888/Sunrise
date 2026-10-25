@@ -614,6 +614,87 @@ const DELIBERATE_CHANGES: &[DeliberateChange] = &[
     },
 ];
 
+/// A column a migration renames, which the survival check below reads under
+/// its new name on a fixture older than that migration.
+struct RenamedColumn {
+    /// The migration that renames it.
+    migration: u32,
+    table: &'static str,
+    from: &'static str,
+    to: &'static str,
+}
+
+/// Every column rename in the chain. Each is asserted value by value by a
+/// test named after the fixture that reaches it; this list only keeps the
+/// general check from calling the old name a loss.
+const RENAMED_COLUMNS: &[RenamedColumn] = &[
+    // ADR-0047 §1: the plan and the hard deadline. Pinned by
+    // `a_v44_vaults_task_times_are_the_plan_and_the_hard_deadline_after_0045`.
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "scheduled_at_ms",
+        to: "planned_at_ms",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "scheduled_at_kind",
+        to: "planned_at_kind",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "scheduled_at_tz",
+        to: "planned_at_tz",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "scheduled_at_civil",
+        to: "planned_at_civil",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "due_at_ms",
+        to: "hard_due_at_ms",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "due_at_kind",
+        to: "hard_due_at_kind",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "due_at_tz",
+        to: "hard_due_at_tz",
+    },
+    RenamedColumn {
+        migration: 45,
+        table: "tasks",
+        from: "due_at_civil",
+        to: "hard_due_at_civil",
+    },
+];
+
+/// The name `table.column` of a fixture at `from_v` has once every later
+/// migration has run.
+fn renamed(table: &str, column: &str, from_v: u32) -> String {
+    let mut name = column.to_string();
+    for r in RENAMED_COLUMNS
+        .iter()
+        .filter(|r| r.migration > from_v && r.table == table)
+    {
+        if name == r.from {
+            name = r.to.to_string();
+        }
+    }
+    name
+}
+
 /// Every row of every table, as `table -> (columns, rows)`.
 ///
 /// FTS5's shadow tables are left out: they are the storage of `search_idx`,
@@ -690,7 +771,10 @@ fn assert_nothing_lost(name: &str, from_v: u32, before: &Snapshot, after: &Conne
                     .any(|c| c.table == table && c.column == Some(cols[i].as_str()))
             })
             .collect();
-        let kept_cols: Vec<String> = kept.iter().map(|&i| cols[i].clone()).collect();
+        let kept_cols: Vec<String> = kept
+            .iter()
+            .map(|&i| renamed(table, &cols[i], from_v))
+            .collect();
         for col in &kept_cols {
             assert!(
                 present.contains(col),
@@ -811,6 +895,14 @@ fn the_seed_reaches_every_table_and_column_this_build_creates() {
             )
         });
         for (column, _) in row.values {
+            // A column a later migration renames is still filled in the
+            // fixtures written before it, under the name it had there.
+            if RENAMED_COLUMNS
+                .iter()
+                .any(|r| r.table == row.table && r.from == *column)
+            {
+                continue;
+            }
             assert!(
                 cols.iter().any(|c| c == column),
                 "`seed::SEED` names `{}.{column}`, which no migration creates",
@@ -1643,8 +1735,8 @@ fn a_v40_vaults_routine_and_stream_times_gain_their_kinds_and_empty_civil_column
         Some("instant")
     );
     for (table, col) in [
-        ("tasks", "scheduled_at_civil"),
-        ("tasks", "due_at_civil"),
+        ("tasks", "planned_at_civil"),
+        ("tasks", "hard_due_at_civil"),
         ("tasks", "completed_at_civil"),
         ("blocks", "starts_at_civil"),
         ("blocks", "ends_at_civil"),
@@ -1810,4 +1902,84 @@ fn a_v43_vaults_inbox_rows_have_no_stream_after_0044() {
         )
         .unwrap();
     assert_eq!(leftovers, 0, "no scratch table outlives the migration");
+}
+
+/// Migration 0045 (#334, ADR-0047 §1) over a real v44 vault: the plan and
+/// the hard deadline are the old `scheduled_at` and `due_at`, every one of
+/// their four columns carried across byte for byte; the soft deadline starts
+/// NULL for every task, so no task gains a target; and the two deadline
+/// indexes exist, `tasks_by_due` now over the hard deadline.
+#[test]
+fn a_v44_vaults_task_times_are_the_plan_and_the_hard_deadline_after_0045() {
+    let (_dir, db) = open_migrated(&fixture_name(44));
+    let row: (i64, String, String, String, i64, String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT planned_at_ms, planned_at_kind, planned_at_tz, planned_at_civil,
+                    hard_due_at_ms, hard_due_at_kind, hard_due_at_tz, hard_due_at_civil
+             FROM tasks WHERE id = ?",
+            rusqlite::params![TASK_IN_ALPHA.to_vec()],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )
+        .expect("the seeded task");
+    assert_eq!(
+        row,
+        (
+            1_700_000_600_000,
+            "instant".into(),
+            "Europe/Paris".into(),
+            "2023-11-15T01:00:00".into(),
+            1_700_000_700_000,
+            "date".into(),
+            "UTC".into(),
+            "2023-11-16".into(),
+        ),
+        "scheduled_at is planned_at and due_at is hard_due_at, unchanged"
+    );
+    let targets: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tasks
+             WHERE target_at_ms IS NOT NULL OR target_at_kind IS NOT NULL
+                OR target_at_tz IS NOT NULL OR target_at_civil IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(targets, 0, "no task gets a target_at");
+    let old: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('tasks')
+             WHERE name LIKE 'scheduled_at%' OR name LIKE 'due_at%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old, 0, "no column keeps an old name");
+    for (index, column) in [
+        ("tasks_by_due", "hard_due_at_ms"),
+        ("tasks_by_target", "target_at_ms"),
+    ] {
+        let sql: String = db
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("`{index}`: {e}"));
+        assert!(sql.contains(column), "`{index}` indexes `{column}`: {sql}");
+    }
 }

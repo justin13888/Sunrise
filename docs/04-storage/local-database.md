@@ -192,7 +192,8 @@ is named. The ones that carry a read path rather than merely a foreign key:
 | `ops_by_stream (stream_id, seq)` | Replay and backfill in causal order. |
 | `ops_unapplied (applied_at) WHERE applied_at IS NULL` | The reconciliation pass. |
 | `ops_by_ts (ts_ms)` (migration 0021) | The HLC restore at open. Without it the two queries `Engine::prime_hlc` runs are full scans of `ops`, which is 2.0 s on a million-op vault. |
-| `tasks_by_due (due_at_ms) WHERE due_at_ms IS NOT NULL` | Today and the deadline views. |
+| `tasks_by_due (hard_due_at_ms) WHERE hard_due_at_ms IS NOT NULL` | Today, lateness and the deadline views (the hard deadline; migration 0045 renamed its column). |
+| `tasks_by_target (target_at_ms) WHERE target_at_ms IS NOT NULL` | The same, for the soft deadline (migration 0045). |
 | `task_blockers_by_blocker` | The reverse dependency direction. |
 | `contexts_by_name (name COLLATE NOCASE) WHERE deleted = 0` | `@name` resolution during capture. Deliberately **not** UNIQUE — see the baseline's comment. |
 | `review_snapshots_by_window (window_start_ms DESC, created_at_ms DESC)` | History, newest first. |
