@@ -67,15 +67,23 @@ pub(crate) struct Ctx<'a> {
 impl Ctx<'_> {
     /// Submit `cmd` and record how to reverse it under `label`.
     ///
-    /// A command with no inverse (a delete) is still submitted; it simply
-    /// leaves nothing to undo, which is the client layer's rule.
+    /// A command with no inverse is still submitted; it leaves nothing to
+    /// undo, which is the client layer's rule, and a note on stderr says so.
+    /// Without it, the next `undo` would reverse the step *before* this one
+    /// with nothing to tell the user it was not this one.
     pub(crate) async fn submit(
         &self,
         cmd: Command,
         label: String,
     ) -> Result<CommandResult, CoreError> {
-        let (res, _not_undoable) = self.history.submit(self.core, cmd, label).await?;
+        let (res, not_undoable) = self.history.submit(self.core, cmd, label.clone()).await?;
         self.dirty.set(true);
+        if not_undoable.is_some() {
+            eprintln!(
+                "{}",
+                strings::general::note(&strings::undo::not_undoable(&label))
+            );
+        }
         Ok(res)
     }
 

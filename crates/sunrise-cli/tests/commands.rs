@@ -79,6 +79,47 @@ fn undo_reverses_a_write_made_by_an_earlier_process_and_redo_replays_it() {
     );
 }
 
+/// `triage` and `untriage` are undone and redone like any other write, each
+/// command its own process. A triage that changes nothing leaves nothing to
+/// undo, and says so on stderr instead of leaving `undo` to reverse whatever
+/// came before it unannounced.
+#[test]
+fn triage_and_untriage_are_undone_and_redone_and_a_refusal_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let id = first_id(&ok(v, &["capture", "Call mum"]));
+    let in_inbox = || ok(v, &["inbox"]).contains(&id);
+    assert!(in_inbox());
+
+    let out = run_in(v, &["triage", &id]);
+    assert!(out.status.success());
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("cannot be undone"),
+        "a triage is undoable"
+    );
+    assert!(!in_inbox());
+    let undid = ok(v, &["undo"]);
+    assert!(undid.contains("triage “Call mum”"), "{undid}");
+    assert!(in_inbox(), "undo returned it to the Inbox");
+    ok(v, &["redo"]);
+    assert!(!in_inbox(), "redo triaged it again");
+
+    ok(v, &["untriage", &id]);
+    assert!(in_inbox());
+    let undid = ok(v, &["undo"]);
+    assert!(undid.contains("return “Call mum” to the Inbox"), "{undid}");
+    assert!(!in_inbox(), "undo triaged it again");
+
+    // Already triaged: the write changes nothing, so there is no inverse.
+    let out = run_in(v, &["triage", &id]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("note: triage “Call mum” cannot be undone"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn defer_counts_civil_days_and_keeps_the_plans_wall_clock_and_kind() {
     let dir = tempfile::tempdir().unwrap();

@@ -165,3 +165,128 @@ async fn undo_of_a_delete_is_a_restore() {
     assert_eq!(task_state(&core, task).await, None, "and deleted again");
     core.shutdown().await;
 }
+
+async fn in_inbox(core: &Core, id: EntityRef) -> bool {
+    let QueryResult::StreamTasks(inbox) = core.query(Query::Inbox).await.unwrap() else {
+        panic!("Inbox answers StreamTasks");
+    };
+    inbox.iter().any(|t| t.id == id)
+}
+
+/// A triage takes a task out of the Inbox and its undo puts it back; redo
+/// takes it out again. The rows the inverse is read from have to be read for
+/// it, or the step is refused and nothing goes on the stack.
+#[tokio::test]
+async fn a_triage_is_undone_and_redone() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let history = UndoHistory::new();
+    let task = core.submit(draft("Call mum")).await.unwrap().entity;
+    assert!(in_inbox(&core, task).await);
+
+    let (_, refused) = history
+        .submit(
+            &core,
+            Command::MarkTriaged { ids: vec![task] },
+            "triage".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused, None, "a triage is undoable");
+    assert!(!in_inbox(&core, task).await);
+
+    assert_eq!(
+        history.undo(&core).await.unwrap().as_deref(),
+        Some("triage")
+    );
+    assert!(in_inbox(&core, task).await, "undo returned it to the Inbox");
+    assert_eq!(
+        history.redo(&core).await.unwrap().as_deref(),
+        Some("triage")
+    );
+    assert!(!in_inbox(&core, task).await, "redo triaged it again");
+    core.shutdown().await;
+}
+
+/// The other direction: returning a task to the Inbox is undone by triaging
+/// it again.
+#[tokio::test]
+async fn a_return_to_the_inbox_is_undone_and_redone() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let history = UndoHistory::new();
+    let task = core.submit(draft("Call mum")).await.unwrap().entity;
+    core.submit(Command::MarkTriaged { ids: vec![task] })
+        .await
+        .unwrap();
+
+    let (_, refused) = history
+        .submit(
+            &core,
+            Command::ReturnToInbox { ids: vec![task] },
+            "untriage".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused, None, "an untriage is undoable");
+    assert!(in_inbox(&core, task).await);
+
+    history.undo(&core).await.unwrap();
+    assert!(!in_inbox(&core, task).await, "undo triaged it again");
+    history.redo(&core).await.unwrap();
+    assert!(in_inbox(&core, task).await, "redo returned it again");
+    core.shutdown().await;
+}
+
+/// A triage step survives the written history a client whose session spans
+/// processes keeps: written, read back into a fresh history, and undone there.
+#[tokio::test]
+async fn a_triage_step_is_undone_from_a_written_history() {
+    use sunrise_client_core::history::persist;
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let history = UndoHistory::new();
+    let task = core.submit(draft("Call mum")).await.unwrap().entity;
+    history
+        .submit(
+            &core,
+            Command::MarkTriaged { ids: vec![task] },
+            "triage".into(),
+        )
+        .await
+        .unwrap();
+
+    let (json, dropped) = persist::to_json(&history.snapshot()).unwrap();
+    assert_eq!(dropped, 0, "the step is written, not left out");
+    let later = UndoHistory::from_stacks(persist::from_json(&json).unwrap());
+    assert_eq!(later.labels().undo.as_deref(), Some("triage"));
+    later.undo(&core).await.unwrap();
+    assert!(in_inbox(&core, task).await);
+    core.shutdown().await;
+}
+
+/// A triage that changes nothing (the task is already triaged) has nothing
+/// to undo, and says so rather than recording a step that does nothing.
+#[tokio::test]
+async fn a_triage_that_changes_nothing_is_refused_for_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let history = UndoHistory::new();
+    let task = core.submit(draft("Call mum")).await.unwrap().entity;
+    core.submit(Command::MarkTriaged { ids: vec![task] })
+        .await
+        .unwrap();
+
+    let (_, refused) = history
+        .submit(
+            &core,
+            Command::MarkTriaged { ids: vec![task] },
+            "triage".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused, Some(NotUndoable::Unsupported));
+    assert_eq!(history.labels(), UndoLabels::default());
+    core.shutdown().await;
+}
