@@ -323,9 +323,18 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
                 },
             })
         }
-        Command::UpdateRoutine { id, patch } => {
+        // Only an edit of the whole series: an edit of one occurrence is a
+        // task edit the core makes, and a split creates a routine and
+        // rewrites occurrences in one group, and the routine row holds
+        // neither's prior state. Both fall to the refusal below.
+        Command::UpdateRoutine {
+            id,
+            scope: sunrise_domain::EditScope::All,
+            patch,
+        } => {
             let row = state.routine(*id).ok_or(NotUndoable::Unsupported)?;
             Ok(Command::UpdateRoutine {
+                scope: sunrise_domain::EditScope::All,
                 id: *id,
                 patch: RoutinePatch {
                     template: patch.template.as_ref().map(|_| row.template.clone()),
@@ -627,6 +636,7 @@ mod tests {
             assignee: None,
             routine_id: None,
             routine_occurrence: None,
+            hard_constraint_violated: false,
             sort_order: None,
             triaged_at: None,
             cancel_reason: None,
@@ -1073,6 +1083,7 @@ mod tests {
         let back = invert(
             &rows,
             &[Command::UpdateRoutine {
+                scope: sunrise_domain::EditScope::All,
                 id: rid(1),
                 patch: RoutinePatch {
                     paused: Some(true),

@@ -151,8 +151,10 @@ goes wrong, and unable to destroy anything the op log cannot regenerate.
   asserts on **row contents**, not on the open succeeding. Each fixture states
   the rows it holds, and the assertions check that every one of them survives
   in its migrated shape.
-- **The gate.** Adding a migration `NNNN` without a fixture at `NNNN − 1` fails
-  CI.
+- **The gate.** Adding a migration without a fixture at the version before
+  it fails CI. The version before it is the previous migration's id, which is
+  `NNNN − 1` unless a parallel change has reserved that number and not landed
+  yet: no vault was ever at a reserved version, so none has a fixture.
 - **Rebuild equivalence.** After migrating, the job also runs the projection
   rebuild (rule 4). It asserts that the rebuilt projection equals the migrated
   one. A migration that transforms data differently from how the op log would
@@ -374,7 +376,9 @@ beside the `planned_at_*` and `hard_due_at_*` columns it renames from
 device's target in `extra`. The survival check over the old-vault fixtures
 reads a renamed column under its new name (`RENAMED_COLUMNS` in
 `crates/sunrise-storage/src/vault_fixtures.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
-and `Task.late_acknowledged_at` into the columns migration 0046 adds.
+and `Task.late_acknowledged_at` into the columns migration 0046 adds. `FOLD_V` 9 (#331) projects `Routine.split_from` and
+`Task.hard_constraint_violated` into the columns migration 0047 adds, and
+a later write of `Task.routine_id` into its column.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 

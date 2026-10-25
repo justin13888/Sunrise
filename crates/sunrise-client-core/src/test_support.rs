@@ -31,6 +31,7 @@ pub(crate) fn task(n: u8, stream: u8) -> Task {
         assignee: None,
         routine_id: None,
         routine_occurrence: None,
+        hard_constraint_violated: false,
         sort_order: None,
         triaged_at: None,
         cancel_reason: None,

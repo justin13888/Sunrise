@@ -224,6 +224,10 @@ impl Engine {
                 || on_or_before_today(t.target_at.as_ref())
                 || on_or_before_today(t.hard_due_at.as_ref())
         });
+        // A routine's past occurrences, as its catch-up policy shows them
+        // (`docs/02-domain/routines-and-recurrence.md` §Catch-up for
+        // occurrences already materialized).
+        self.apply_catchup(db.conn(), &mut tasks, now_ms)?;
         sort_by_landing(&mut tasks, &tz, Unlanded::Last);
         Ok(QueryResult::Tasks(tasks))
     }

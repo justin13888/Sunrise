@@ -155,6 +155,9 @@ macro_rules! for_each_entity {
                         assignee: Option<EntityRef> => Register(Tracked);
                         routine_id: Option<EntityRef> => Register(Quiet);
                         routine_occurrence: Option<Timestamp> => Register(Quiet);
+                        // #331: set by the routine engine when it generates an
+                        // occurrence that breaks a hard constraint.
+                        hard_constraint_violated: bool => Register(Quiet);
                         reminder_lead_s: Option<u32> => Register(Quiet);
                         sort_order: Option<String> => Register(Quiet);
                         triaged_at: Option<Timestamp> => Register(Quiet);
@@ -244,7 +247,7 @@ macro_rules! for_each_entity {
                 tag: "routine",
                 merge: Lww,
                 owner: Meta,
-                features: ["routine.civil_times"],
+                features: ["routine.civil_times", "routine.series"],
                 ops: [
                     /// Create a routine (full state). Boxed to keep the enum small.
                     RoutineCreate(Box<Routine>) = "routine.create", Create, id;
@@ -280,6 +283,9 @@ macro_rules! for_each_entity {
                         paused_until: Option<CompatTime> => Register(Tracked);
                         archived: bool => Register(Quiet);
                         deleted: bool => Register(Tombstone);
+                        // #331: the series root a split routine continues,
+                        // written once, at the split.
+                        split_from: Option<EntityRef> => Register(Quiet);
                         ..unknown
                     }
                     TaskTemplate @ none {

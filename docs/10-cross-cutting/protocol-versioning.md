@@ -271,6 +271,13 @@ From now on:
   `Task.cancel_reason` and `Task.late_acknowledged_at`, what the triage
   queue's Drop and Keep write ([#335](https://github.com/justin13888/Sunrise/issues/335)),
   each absent when unset and kept by a v20 build as unknown.
+  `DOC_SCHEMA_V` 22 gave a routine a series
+  ([#331](https://github.com/justin13888/Sunrise/issues/331)):
+  `Routine.split_from`, the series root a split routine continues, and its
+  feature `routine.series`, which an op carrying it uses, because a build that
+  did not read it would key the continuation's occurrences on the wrong id;
+  and `Task.hard_constraint_violated`, absent when false, which an older build
+  keeps as unknown and needs no feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

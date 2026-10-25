@@ -30,7 +30,7 @@ Routine = {
     rrule:             RRule,               ; a STRUCTURED MAP, not an RFC 5545 string
     anchor:            stime,               ; "zoned" (default) or "floating": the first occurrence's wall clock
     ends_at?:          stime,               ; "floating" or "all_day"; no occurrence after it
-    split_from?:       entity-ref,          ; rtn_ ref of the series this one continues (§Edit scope)
+    split_from?:       entity-ref,          ; rtn_ ref of the root of the series this one continues (§Edit scope)
     skipped_keys:      [* occurrence-key],  ; OR-set; the skip list
     streak_keys:       [* occurrence-key],  ; OR-set; occurrences completed within the grace window
     catchup_policy:    CatchupPolicy,
@@ -132,9 +132,17 @@ anchor's `tz` for a `zoned` anchor, and in the reader's zone for a `floating`
 anchor, by the DST rule in [`time.md` §3](../10-cross-cutting/time.md#3-one-dst-rule).
 
 **`series_root`** is the id of the first routine in a chain of splits
-(§Edit scope): a routine with no `split_from` is its own root. Keying task ids
+(§Edit scope): a routine with no `split_from` is its own root, and a split
+routine's `split_from` names the root directly
+(`crates/sunrise-domain/src/routine_gen/edit.rs#series_root`). Keying task ids
 on the root is what lets a split series adopt occurrences its predecessor
-already materialized instead of duplicating them.
+already materialized instead of duplicating them, and naming the root rather
+than the routine split means no reader walks a chain whose links may not have
+arrived.
+
+A task's `routine_id` names the routine that owns its key: the one that
+generated it, or the continuation that adopted it at a split. The streak and
+the skip of an occurrence go to that routine.
 
 ### Anchors are civil
 
@@ -235,17 +243,24 @@ catch-up policy therefore **also** applies to open occurrences at read time, as
 a derived state that writes nothing (nothing changes a task automatically,
 [ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §4):
 
-An open occurrence is **past** when its key's resolved instant plus the grace
-window is before `now`. For the routine's past open occurrences:
+An occurrence is **open** while it is untouched (§Template propagation) and
+neither started, done nor cancelled, and **past** when its plan's resolved
+instant plus the grace window is before `now`
+(`crates/sunrise-core/src/engine/routine.rs#catchup_now`). For the routine's
+past open occurrences, oldest first
+(`crates/sunrise-domain/src/routine_gen/edit.rs#catchup_view`):
 
 | Policy | Views show |
 |---|---|
 | `skip` | none of them. Each is **lapsed**: hidden from Today, lists and the triage queue, counted as missed for the streak, and listed under the routine's "Lapsed" with a bulk Drop. |
-| `merge` | only the latest, titled with a ` (×N catch-up)` suffix computed at read time; the others are lapsed. |
+| `merge` | only the latest, titled with a ` (xN catch-up)` suffix computed at read time (the suffix generation's `merge` writes too); the others are lapsed. |
 | `queue` | all of them, as ordinary tasks. |
 
 A lapsed occurrence that the user edits, completes or drops is no longer open
-and leaves the lapsed set by the same predicate.
+and leaves the lapsed set by the same predicate. Today (and so the Today
+view), the stream lists, the context lists and the triage queue
+([ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §3) apply it; `Query::LapsedOccurrences`
+lists the lapsed set for the routine's "Lapsed".
 
 ### Scheduling constraints on occurrences
 
@@ -254,8 +269,23 @@ The `rrule` decides *when* occurrences exist; constraints annotate and validate
 the planning of the resulting Tasks, evaluated in the anchor's zone for a
 `zoned` anchor ([`scheduling-constraints.md`](./scheduling-constraints.md)
 §Evaluation zone). An occurrence that violates a `hard` constraint is still
-generated, never silently dropped, and the violation is **derived and flagged
-on read** like any other constraint violation, not persisted.
+generated, never silently dropped, and carries the **persisted** flag
+`Task.hard_constraint_violated` (#331):
+
+- Generation sets it, by evaluating the occurrence's plan against its copied
+  constraints (`crates/sunrise-core/src/engine/routine.rs#build_routine_task`).
+- A template or constraint propagation (§Template propagation) and a split's
+  adoption re-evaluate it on the untouched occurrences they write.
+- A plan the user chooses clears it: a user's plan that breaks a `hard`
+  constraint is refused, so after any re-plan the occurrence breaks none.
+- It is one quiet register, absent on the wire when false. A build before
+  `DOC_SCHEMA_V` 22 keeps it as an unknown field, so it needs no feature.
+
+It is stored, not derived, because it records what generation did: a reader
+can tell "the routine made this occurrence against its own rule" from "the
+user planned this" without re-deriving the generation. The read-time check of
+a plan against constraints (`Engine::hard_constraint_violations`, which a zone
+change re-runs) is separate and still derived.
 
 ## Edit scope
 
@@ -273,18 +303,35 @@ enum EditScope {
 - **This** writes the change onto that occurrence's Task only (materializing it
   first if it is inside the horizon but not yet generated). A time change moves
   its `planned_at`; the occurrence keeps its key.
-- **This and future** splits the series. In one command:
+- **This and future** splits the series. In one command, written as one
+  group ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §6):
   1. the old routine's `rrule.until` is set to the civil start of the last
      occurrence before `key` (or, if there is none, the old routine is
      archived);
-  2. a new routine is created with `split_from` = the old routine's id,
-     `anchor` = `key` in the anchor's kind (with the edit applied), the edited
-     template and rule, and the old routine's `skipped_keys` and `streak_keys`
-     at or after `key`;
-  3. the new routine's id is derived from `(series_root, key)`, so two devices
-     that split the same series at the same occurrence create **one** routine
-     and merge its fields.
+  2. a new routine is created with `split_from` = the series root, `anchor` =
+     `key` in the anchor's kind (with the edit applied), the edited template
+     and rule, a `count` reduced by the occurrences the old routine keeps, and
+     the old routine's `skipped_keys` and `streak_keys` at or after `key`;
+  3. the new routine's id is derived from `(series_root, key)`
+     (`split_routine_id`), so two devices that split the same series at the
+     same occurrence create **one** routine and merge its fields, and a second
+     split at the same key edits that routine;
+  4. of the old routine's occurrences at or after `key`, each untouched open
+     one the new routine has is **adopted**: same task id (both are keyed on
+     the root), `routine_id` = the new routine, the new template written onto
+     it. Each untouched one the new routine does not have (its time or rule
+     moved) is tombstoned. A touched one is left as it is.
+  The key must be one the series produces; any other is refused. A split
+  carries `split_from`, which the feature `routine.series` gates: it is
+  refused while a paired device has not advertised it, since that device
+  would key the new routine's occurrences on its own id and generate them a
+  second time. The new routine's streak starts at the split.
 - **All** edits the routine itself.
+
+`Command::UpdateRoutine { id, scope, patch }` carries the scope; an absent
+scope is **All**. **This** takes only the template, the anchor's time and the
+constraint list (`RoutinePatch::is_occurrence_edit`), and returns the task;
+**This and future** returns the new routine.
 
 **Which series owns a key.** Keys are identified against the series root, so a
 split can leave two routines whose ranges overlap after a concurrent edit (two
@@ -300,12 +347,21 @@ that already exist:
 
 - It reaches every **open** occurrence in scope (for *All*, past open ones
   included) and never a completed or cancelled one.
-- It is **per field**: a field propagates to an occurrence only if that
-  occurrence's register for the field was last written by generation or by an
-  earlier propagation. A field the user edited on that occurrence is left
-  alone, and other fields of the same occurrence still update. The register's
-  origin (generated or user) is part of the per-field register
-  ([ADR-0044](../11-adr/0044-per-field-ops.md)).
+- It is **per occurrence**: it reaches an occurrence only while the
+  occurrence is **untouched**, which is to have no version but the routine
+  engine's own: its generated create, and any propagation, adoption or re-pin
+  since, all `"origin": "generated"`
+  ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §1, §3;
+  `UNTOUCHED` in `crates/sunrise-core/src/engine/routine.rs`). An occurrence
+  the user edited in any field keeps every field as it is. A propagation is
+  written as a generated `Patch` of the fields it changes, so it yields to a
+  concurrent user edit and leaves the occurrence untouched for the next one.
+  In a vault that still writes full-state ops (ADR-0065 D9) a propagation is a
+  full-state `task.update`, which the fold reads as a user's write: an
+  occurrence is reached once there, and is touched after.
+- The fields it writes are the template's (`title`, `body`, `stream_id`,
+  `contexts`, `priority`, `energy`, `estimated_duration_s`) and the
+  constraint list, and it re-evaluates the hard-constraint flag.
 - A rule or anchor change re-keys nothing. An untouched open occurrence whose
   key is no longer produced by the new rule is tombstoned; a touched one stays
   as an ordinary task, keeps its `routine_id`, and is shown as "no longer in
@@ -414,9 +470,11 @@ To converge under concurrent completions on multiple devices:
 
 ## Status in the tree
 
-The shape above is the design of record. The tree still ships the previous
-model, tracked in [#331](https://github.com/justin13888/Sunrise/issues/331) (with [#336](https://github.com/justin13888/Sunrise/issues/336) for the time fields and [#319](https://github.com/justin13888/Sunrise/issues/319) for the
-merge):
+The shape above is the design of record. [#331](https://github.com/justin13888/Sunrise/issues/331)
+delivered its behaviour; what the tree still stores differently, or does not
+do yet, is below (with [#336](https://github.com/justin13888/Sunrise/issues/336)
+for the time fields and [#319](https://github.com/justin13888/Sunrise/issues/319)
+for the merge):
 
 - The anchor is still `starts_at` beside a `timezone` string rather than one
   `anchor` field, but it is a `SunriseTime` (#506): `floating` by default,
@@ -427,15 +485,23 @@ merge):
   ([`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §1).
 - `paused_until` is honoured as §Pausing says
   (`crates/sunrise-domain/src/routine_gen/series.rs#is_paused_at`).
-- Catch-up applies only on first materialization
-  (`crates/sunrise-core/src/engine/routine.rs#materialize_one_routine`).
+- Catch-up applies at generation to keys first scanned in the past, and at
+  read time to occurrences generated earlier and left open
+  (`crates/sunrise-core/src/engine/routine.rs#catchup_now`, #331), as
+  §Catch-up for occurrences already materialized says.
 - The streak key, the skip and the task id share the intended key: the streak
   recovers it from the task id
   (`crates/sunrise-domain/src/routine_gen/series.rs#occurrence_key_of`).
-- `streak_counter` and `streak_keys` merge with the whole row, so concurrent
-  completions of different occurrences lose one.
-- `RoutinePatch` has no edit scope (`crates/sunrise-domain/src/routine.rs#RoutinePatch`),
-  and template edits do not reach existing occurrences.
+- In a field-ops vault a completion adds its key to the `streak_keys`
+  OR-set, so concurrent completions of different occurrences both count
+  ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D17); §Streak
+  says what is still stored.
+- Edit scopes, the split and template propagation are as §Edit scope says
+  (`Command::UpdateRoutine`'s `scope`, `crates/sunrise-domain/src/routine_gen/edit.rs`),
+  and an occurrence that breaks a `hard` constraint carries
+  `Task.hard_constraint_violated`. A split routine's streak starts at the
+  split rather than walking the chain (§Streak), and undo does not reverse a
+  split or an edit of one occurrence.
 - There is no un-skip, and `skip_dates` is still read.
 - Unknown enum values already follow §Fields: an unknown `Frequency` or
   `Weekday` no longer fails the op, the rule is kept and generates nothing, and

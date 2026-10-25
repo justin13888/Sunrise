@@ -2174,7 +2174,12 @@ no_match = "no routine matches \"{text}\""
 ambiguous = "\"{text}\" matches more than one routine; use more of its title or its id"
 unknown_verb = "unknown routines verb `{verb}`; use create, edit, archive, unarchive, pause, resume, delete or skip"
 create_usage = "usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]"
-edit_usage = "usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]"
+edit_usage = "usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>] [--scope this|future|all --at <YYYY-MM-DDTHH:MM>]"
+# {scope} is what the user typed.
+bad_scope = "unknown edit scope `{scope}`; use this, future or all"
+scope_needs_at = "an edit of this occurrence or this and future ones names the occurrence with --at <YYYY-MM-DDTHH:MM>"
+# stdout, after the new routine's id, when an edit split the series.
+split = "split; this routine continues the series"
 # {error} says what is wrong with the rule.
 bad_rule = "that recurrence rule will not do: {error}"
 bad_catchup = "unknown catch-up policy `{policy}`; use skip, merge or queue"

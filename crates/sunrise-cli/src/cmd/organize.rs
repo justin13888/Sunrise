@@ -9,8 +9,8 @@ use sunrise_cli::i18n::strings;
 use sunrise_client_core::editor::{routine_form, routine_patch, RoutineFields};
 use sunrise_core::{Command, Query, QueryResult};
 use sunrise_domain::{
-    routine_rows, ContextDraft, ContextPatch, RRule, Routine, RoutineCatchupPolicy, RoutineDraft,
-    StreamColor, StreamDraft, StreamPatch, TaskTemplate,
+    routine_rows, ContextDraft, ContextPatch, EditScope, RRule, Routine, RoutineCatchupPolicy,
+    RoutineDraft, StreamColor, StreamDraft, StreamPatch, TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -466,7 +466,11 @@ pub(super) async fn routines(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 _ => patch.paused = Some(false),
             }
             ctx.submit(
-                Command::UpdateRoutine { id: r.id, patch },
+                Command::UpdateRoutine {
+                    id: r.id,
+                    scope: EditScope::All,
+                    patch,
+                },
                 strings::undo::edit(&r.template.title),
             )
             .await?;
@@ -576,11 +580,17 @@ async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 /// `routines edit <id|title>... [--title T] [--rule R] [--zone Z] [--floating]
-/// [--stream S] [--priority N|-] [--catchup p]`.
+/// [--stream S] [--priority N|-] [--catchup p] [--scope this|future|all --at K]`.
 ///
 /// `--zone` moves the routine to another zone keeping its wall-clock time
 /// (ADR-0066 §1); `--floating` unpins it, so it follows the traveller at the
 /// same wall-clock time.
+///
+/// `--scope` says how far the edit reaches
+/// (`docs/02-domain/routines-and-recurrence.md` §Edit scope): `all` (the
+/// default) edits the series, `future` splits it at the occurrence `--at`
+/// names and prints the routine that continues it, and `this` edits that
+/// one occurrence's task.
 ///
 /// Through the client layer's routine editor
 /// ([`sunrise_client_core::editor::routine_patch`]): the form starts as the
@@ -594,8 +604,14 @@ async fn edit_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         "--stream",
         "--priority",
         "--catchup",
+        "--scope",
+        "--at",
     ];
     let target = positionals(args, FLAGS, &["--floating"]).join(" ");
+    let scope = edit_scope(
+        flag_value(args, "--scope").as_deref(),
+        flag_value(args, "--at").as_deref(),
+    )?;
     let r = resolve_routine(ctx, &target).await?;
     let stored = RoutineFields::from(&r);
     let mut form = routine_form(&stored);
@@ -633,13 +649,38 @@ async fn edit_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     {
         return Err(strings::routines::edit_usage().into());
     }
-    ctx.submit(
-        Command::UpdateRoutine { id: r.id, patch },
-        strings::undo::edit(&r.template.title),
-    )
-    .await?;
-    println!("{}  {}", r.id.to_str(), strings::general::updated());
+    let splits = matches!(scope, EditScope::ThisAndFuture { .. });
+    let res = ctx
+        .submit(
+            Command::UpdateRoutine {
+                id: r.id,
+                scope,
+                patch,
+            },
+            strings::undo::edit(&r.template.title),
+        )
+        .await?;
+    if splits {
+        println!("{}  {}", res.entity.to_str(), strings::routines::split());
+    } else {
+        println!("{}  {}", res.entity.to_str(), strings::general::updated());
+    }
     Ok(())
+}
+
+/// The scope `--scope` names, with the occurrence `--at` names for `this`
+/// and `future`. No `--scope` is `all`.
+fn edit_scope(raw: Option<&str>, at: Option<&str>) -> CmdResult<EditScope> {
+    let needs_key = || -> CmdResult<String> {
+        at.map(str::to_owned)
+            .ok_or_else(|| strings::routines::scope_needs_at().into())
+    };
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("all") => Ok(EditScope::All),
+        Some("this") => Ok(EditScope::This { key: needs_key()? }),
+        Some("future" | "this-and-future") => Ok(EditScope::ThisAndFuture { key: needs_key()? }),
+        Some(_) => Err(strings::routines::bad_scope(raw.unwrap_or_default()).into()),
+    }
 }
 
 /// `routines skip <id|title>... [--at <YYYY-MM-DDTHH:MM>]` — skip one

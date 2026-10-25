@@ -373,6 +373,15 @@ pub enum Query {
     /// began and not in a paused stream, with its lateness, `LateHard` first,
     /// then `LateSoft`, then `Stale`, each oldest first, then by id.
     Triage,
+    /// The routine occurrences the catch-up policy lapses now: past, open
+    /// and untouched occurrences that Today, the stream and context lists
+    /// leave out (`docs/02-domain/routines-and-recurrence.md` §Catch-up for
+    /// occurrences already materialized), as `Tasks`, in Today's order.
+    /// Derived at read time; nothing is written.
+    LapsedOccurrences {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static

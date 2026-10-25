@@ -160,6 +160,13 @@ pub struct Task {
     /// Occurrence date for routine-generated tasks.
     #[serde(default)]
     pub routine_occurrence: Option<Timestamp>,
+    /// A routine occurrence generated planned where it breaks a `hard`
+    /// constraint its routine carries: generated all the same, and flagged
+    /// (`docs/02-domain/routines-and-recurrence.md` §Scheduling constraints
+    /// on occurrences, #331). The routine engine writes it; a user's re-plan
+    /// clears it. One quiet register, absent on the wire when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hard_constraint_violated: bool,
     /// How far ahead of `scheduled_at` this Task's reminder fires, in seconds.
     ///
     /// Top of the lead-time hierarchy in
@@ -404,6 +411,7 @@ impl Task {
             assignee: draft.assignee,
             routine_id: None,
             routine_occurrence: None,
+            hard_constraint_violated: false,
             reminder_lead_s: draft.reminder_lead_s,
             sort_order: None,
             triaged_at: None,

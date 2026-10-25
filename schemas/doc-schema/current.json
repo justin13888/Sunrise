@@ -726,7 +726,7 @@
             "tag": "review_snapshot"
         },
         {
-            "features": ["routine.civil_times"],
+            "features": ["routine.civil_times", "routine.series"],
             "merge": "lww",
             "ops": [
                 {
@@ -851,6 +851,12 @@
                             "crdt": "or_set",
                             "name": "skipped_keys",
                             "type": "Vec<String>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "split_from",
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "tracked",
@@ -1279,6 +1285,12 @@
                         {
                             "conflict": "quiet",
                             "crdt": "register",
+                            "name": "hard_constraint_violated",
+                            "type": "bool"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
@@ -1545,6 +1557,17 @@
                 "entity": "routine"
             },
             "since": 15
+        },
+        {
+            "field_op_kinds": [],
+            "fields": ["split_from"],
+            "id": "routine.series",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "routine"
+            },
+            "since": 22
         },
         {
             "field_op_kinds": [],

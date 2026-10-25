@@ -6,8 +6,10 @@ this build just created. Read
 [`../src/vault_fixtures.rs`](../src/vault_fixtures.rs) — it generates these
 files, states their contents, and asserts what survives.
 
-There is one file for every `storage_v` from 13 to the version before the
-current `STORAGE_V`, named `vault_storage_v<N>.db`. The test
+There is one file for every `storage_v` a migration leaves a vault at, from
+13 to the version before the current `STORAGE_V`, named
+`vault_storage_v<N>.db`: a migration number a parallel change has reserved
+and not landed is no version a vault was at, and has none. The test
 `every_migration_has_a_fixture_at_the_version_before_it` fails when a
 migration is appended without the fixture at the version before it, and
 `every_fixture_keeps_every_row_through_every_later_migration` opens each one

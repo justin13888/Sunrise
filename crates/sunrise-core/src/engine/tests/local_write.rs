@@ -147,6 +147,7 @@ fn a_local_write_and_its_replay_project_identical_rows() {
         &w,
         &mut dbw,
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: routine,
             patch: RoutinePatch {
                 rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),

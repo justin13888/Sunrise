@@ -226,7 +226,12 @@ impl Engine {
             }
         }
         let soft = if touches_schedule {
-            self.check_schedule_constraints(&task)?
+            let soft = self.check_schedule_constraints(&task)?;
+            // The plan the user chose breaks no `hard` constraint, or it
+            // would have been refused: a routine occurrence generated
+            // against one is flagged until it is re-planned (#331).
+            task.hard_constraint_violated = false;
+            soft
         } else {
             Vec::new()
         };
@@ -700,7 +705,7 @@ fn constraint_zone(task: &Task, reader: &jiff::tz::TimeZone) -> jiff::tz::TimeZo
 /// zone ([`constraint_zone`]); no window bound is resolved (time.md §3). A
 /// plan this build cannot place on the timeline is checked against nothing:
 /// its stand-in instant would invent a violation.
-fn constraint_violations(
+pub(super) fn constraint_violations(
     task: &Task,
     reader: &jiff::tz::TimeZone,
 ) -> (Vec<ScheduleConstraint>, Vec<ScheduleConstraint>) {
@@ -943,7 +948,8 @@ pub(super) fn read_task(
                     completed_at_kind, completed_at_tz, extra, reminder_lead_s,
                     planned_at_civil, hard_due_at_civil, completed_at_civil, sort_order,
                     triaged_at_ms, target_at_ms, target_at_kind, target_at_tz, target_at_civil,
-                    cancel_reason, late_acknowledged_at_ms
+                    cancel_reason, late_acknowledged_at_ms,
+                    hard_constraint_violated
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -984,6 +990,7 @@ pub(super) fn read_task(
                         r.get::<_, Option<String>>(32)?,
                         r.get::<_, Option<String>>(33)?,
                         r.get::<_, Option<String>>(34)?,
+                        r.get::<_, i64>(37)?,
                     ),
                     (
                         r.get::<_, Option<String>>(35)?,
@@ -1053,6 +1060,7 @@ pub(super) fn read_task(
             EntityRef::new(EntityKind::Routine, a)
         }),
         routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
+        hard_constraint_violated: t.31 .4 != 0,
         sort_order: t.29,
         triaged_at: t.30.map(ms_to_ts),
         cancel_reason: t.32 .0,

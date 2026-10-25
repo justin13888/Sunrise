@@ -79,6 +79,8 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
         "sort_order": t.sort_order,
         "cancel_reason": t.drop_reason(),
         "late_acknowledged_at_ms": t.late_acknowledged_at.map(jiff::Timestamp::as_millisecond),
+        "routine": t.routine_id.map(|r| r.to_str()),
+        "hard_constraint_violated": t.hard_constraint_violated,
     })
 }
 
@@ -454,6 +456,7 @@ mod tests {
             assignee: None,
             routine_id: None,
             routine_occurrence: None,
+            hard_constraint_violated: false,
             reminder_lead_s: None,
             sort_order: None,
             triaged_at: None,

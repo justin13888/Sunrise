@@ -824,6 +824,7 @@ mod testutil {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -2021,6 +2022,7 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
             ))
         }),
         ("routine.update", |db| Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: seed_bare_routine(db),
             patch: RoutinePatch {
                 grace_window_s: Some(Some(600)),
@@ -2216,6 +2218,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
             let id = e.apply(db, Command::CreateRoutine(d)).unwrap().entity;
             template.stream_id = Some(meta_ref());
             Command::UpdateRoutine {
+                scope: sunrise_domain::EditScope::All,
                 id,
                 patch: RoutinePatch {
                     template: Some(template),
@@ -3814,6 +3817,7 @@ fn two_engines_produce_identical_task_ids() {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -3995,8 +3999,15 @@ fn update_routine_regenerates_future_but_keeps_started() {
         rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
         ..Default::default()
     };
-    e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
-        .unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
+            id: rid,
+            patch,
+        },
+    )
+    .unwrap();
 
     let deleted = |id: EntityRef| -> bool {
         match e.query(&db, Query::EntityById(id)).unwrap() {
@@ -15080,6 +15091,7 @@ fn deterministic_routine_task_converges() {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -18967,6 +18979,7 @@ fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
     e.apply(
         &mut db,
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id: rid,
             patch: RoutinePatch {
                 paused: Some(true),
@@ -19257,8 +19270,15 @@ fn update_routine_regenerates_a_future_task_in_an_unknown_state() {
         rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
         ..Default::default()
     };
-    e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
-        .unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
+            id: rid,
+            patch,
+        },
+    )
+    .unwrap();
 
     let t = match e.query(&db, Query::EntityById(drop_id)).unwrap() {
         QueryResult::Task(t) => *t,
@@ -19583,3 +19603,8 @@ mod lateness;
 
 /// The triage queue and its four actions (ADR-0047, #335).
 mod triage;
+
+/// A routine's series: edit scopes and the split, template propagation,
+/// catch-up over occurrences generated earlier, and the hard-constraint flag
+/// (#331).
+mod series;

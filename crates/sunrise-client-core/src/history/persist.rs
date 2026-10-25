@@ -35,7 +35,7 @@
 use serde::{Deserialize, Serialize};
 use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
-    BlockDraft, ContextDraft, ContextPatch, Disposition, Energy, NoteBody, RRule,
+    BlockDraft, ContextDraft, ContextPatch, Disposition, EditScope, Energy, NoteBody, RRule,
     RoutineCatchupPolicy, RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch,
     ScheduleConstraint, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, SunriseTime,
     TaskDraft, TaskPatch, TaskState, TaskTemplate,
@@ -197,6 +197,9 @@ enum Cmd {
     CreateRoutine(RoutineDraft),
     UpdateRoutine {
         id: EntityRef,
+        /// Absent in an entry written before edit scopes (#331): `All`.
+        #[serde(default, skip_serializing_if = "is_all")]
+        scope: EditScope,
         #[serde(with = "RoutinePatchDef")]
         patch: RoutinePatch,
     },
@@ -284,7 +287,7 @@ impl Cmd {
             Command::UpdateContext { id, patch } => Self::UpdateContext { id, patch },
             Command::DeleteContext(id) => Self::DeleteContext(id),
             Command::CreateRoutine(d) => Self::CreateRoutine(d),
-            Command::UpdateRoutine { id, patch } => Self::UpdateRoutine { id, patch },
+            Command::UpdateRoutine { id, scope, patch } => Self::UpdateRoutine { id, scope, patch },
             Command::DeleteRoutine(id) => Self::DeleteRoutine(id),
             Command::CreateBlock(d) => Self::CreateBlock(d),
             Command::DeleteBlock(id) => Self::DeleteBlock(id),
@@ -330,7 +333,7 @@ impl Cmd {
             Self::UpdateContext { id, patch } => Command::UpdateContext { id, patch },
             Self::DeleteContext(id) => Command::DeleteContext(id),
             Self::CreateRoutine(d) => Command::CreateRoutine(d),
-            Self::UpdateRoutine { id, patch } => Command::UpdateRoutine { id, patch },
+            Self::UpdateRoutine { id, scope, patch } => Command::UpdateRoutine { id, scope, patch },
             Self::DeleteRoutine(id) => Command::DeleteRoutine(id),
             Self::CreateBlock(d) => Command::CreateBlock(d),
             Self::DeleteBlock(id) => Command::DeleteBlock(id),
@@ -511,6 +514,12 @@ struct ContextPatchDef {
     description: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived: Option<bool>,
+}
+
+/// `skip_serializing_if` for an edit scope that is the default, so an entry
+/// of an edit of the whole series encodes as one written before scopes did.
+fn is_all(scope: &EditScope) -> bool {
+    *scope == EditScope::All
 }
 
 #[derive(Serialize, Deserialize)]

@@ -57,8 +57,11 @@ Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/s
 ## Output and algorithm
 
 Zero or more new Tasks, each with the deterministic id
-`occurrence_task_id(series_root, key)`, `routine_occurrence_key = key`, and
-`planned_at` = the key in the anchor's kind. The per-key steps (skip, pause,
+`occurrence_task_id(series_root, key)` (`Routine::occurrence_task_id`),
+`routine_occurrence_key = key`, `planned_at` = the key in the anchor's kind,
+and `hard_constraint_violated` set when that plan breaks a `hard` constraint
+the routine carries. Of a split series, only the routine that owns a key
+generates it (`Routine::owns_key`: the latest anchor at or before the key). The per-key steps (skip, pause,
 dedup against live or tombstoned tasks, catch-up, template fields) and the
 look-ahead horizon, which is a fixed function of `FREQ`, are specified in
 [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
@@ -85,6 +88,16 @@ layer dedups it.
   routine's zone changes when occurrences fire, never which occurrences exist
   or what their keys are.
 - **Routine deletion.** Stops generation. Existing occurrences remain unless explicitly deleted by the user.
+- **Edits.** An edit takes a scope (*this*, *this and future*, *all*); *this
+  and future* splits the series, *all* propagates the template to untouched
+  occurrences, and both are written with their occurrence writes in one
+  commit ([`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Edit scope, §Template propagation).
+- **Missed occurrences.** Catch-up applies at generation to keys first scanned
+  in the past, and at read time to occurrences generated earlier and left
+  open; the read-time view writes nothing
+  ([`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Catch-up for occurrences already materialized).
 - **Adaptive cadence** is not modelled; the convergence rule it must follow is
   in [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
   §Adaptive cadence — convergence rule.
@@ -103,3 +116,12 @@ layer dedups it.
 
 - Property tests: random RRULEs across DST transitions; assert generation is deterministic and idempotent.
 - Multi-device convergence test: two devices with different clocks generate the same Routine's occurrences; assert no duplicates after merge.
+- Series (`crates/sunrise-core/src/engine/tests/series.rs`): a split keeps
+  every occurrence once, adopts the untouched ones and leaves the touched
+  ones; a split that moves the time tombstones what the continuation lacks;
+  a split converges on a peer, and two devices splitting at one key make one
+  routine; an edit of one occurrence touches only its task; a template edit
+  reaches untouched occurrences and yields to a concurrent user edit; each
+  catch-up policy over occurrences generated earlier; the hard-constraint
+  flag. The pure halves (the split, ownership, the catch-up view) are in
+  `crates/sunrise-domain/src/routine_gen/edit.rs`.

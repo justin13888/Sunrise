@@ -310,6 +310,7 @@ impl Engine {
                 tasks.push(t);
             }
         }
+        self.apply_catchup(db.conn(), &mut tasks, self.clock.now_ms())?;
         sort_listing(&mut tasks, &self.device_zone());
         Ok(QueryResult::StreamTasks(tasks))
     }

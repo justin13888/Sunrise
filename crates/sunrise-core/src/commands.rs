@@ -3,10 +3,10 @@
 use crate::control_op::RevokeReason;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, Energy,
-    InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
-    SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch,
-    SunriseTime, TaskDraft, TaskPatch, TaskState,
+    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, EditScope,
+    Energy, InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft,
+    RoutinePatch, SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft,
+    StreamPatch, SunriseTime, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -193,11 +193,28 @@ pub enum Command {
     DeleteContext(EntityRef),
     /// Create a Routine and materialize its near-horizon occurrences.
     CreateRoutine(RoutineDraft),
-    /// Mutate a Routine. An rrule/timezone/anchor change regenerates future
-    /// not-yet-started routine tasks.
+    /// Mutate a Routine, as far as `scope` reaches
+    /// (`docs/02-domain/routines-and-recurrence.md` §Edit scope).
+    ///
+    /// - [`EditScope::All`] edits the routine. An rrule or anchor change
+    ///   tombstones the untouched future occurrences the new rule no longer
+    ///   has, and a template or constraint change propagates to every
+    ///   untouched open occurrence.
+    /// - [`EditScope::ThisAndFuture`] splits the series at the key: the
+    ///   routine ends before it and a new routine, `split_from` the series
+    ///   root, continues it with the edit applied, in one group with the
+    ///   untouched occurrences it adopts or tombstones. The result names the
+    ///   new routine.
+    /// - [`EditScope::This`] writes the edit onto that occurrence's task
+    ///   only, generating it first if it is not yet. Only the template, the
+    ///   anchor's time and the constraint list may be set; the result names
+    ///   the task.
     UpdateRoutine {
         /// Target routine.
         id: EntityRef,
+        /// How far the edit reaches. `All` when absent.
+        #[serde(default)]
+        scope: EditScope,
         /// Patch.
         patch: RoutinePatch,
     },

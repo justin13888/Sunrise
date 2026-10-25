@@ -186,6 +186,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("lww_device", B(&DEVICE_LAPTOP)),
             ("extra", B(b"\xa1\x01\x41r")),
             ("rrule_cbor", B(b"\xa2\x01\x02\x03\x04")),
+            // 0047's series root.
+            ("split_from", B(&ROUTINE)),
         ],
     },
     SeedRow {
@@ -256,6 +258,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("sort_order", T(b"BN")),
             // 0044's triage acknowledgement.
             ("triaged_at_ms", I(1_700_000_650_000)),
+            // 0047's hard-constraint flag.
+            ("hard_constraint_violated", I(1)),
             ("archived", I(1)),
             ("deleted", I(0)),
             ("body", B(ALPHA_TASK_BODY)),

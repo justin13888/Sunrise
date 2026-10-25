@@ -37,6 +37,7 @@ fn task(n: u8) -> Task {
         assignee: None,
         routine_id: None,
         routine_occurrence: None,
+        hard_constraint_violated: false,
         reminder_lead_s: None,
         sort_order: None,
         triaged_at: None,

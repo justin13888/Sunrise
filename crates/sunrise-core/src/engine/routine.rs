@@ -34,14 +34,16 @@ use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::inner_op::InnerOp;
 use crate::queries::QueryResult;
+use jiff::Timestamp;
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    materialization_horizon_days, occurrence_key_at, occurrence_task_id, parse_occurrence_key,
-    Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch, StreakOutcome, SunriseTime, Task,
-    TaskState, TaskTemplate,
+    catchup_title, catchup_view, materialization_horizon_days, occurrence_key_at,
+    parse_occurrence_key, split_routine_id, CatchupView, EditScope, Routine, RoutineCatchupPolicy,
+    RoutineDraft, RoutinePatch, StreakOutcome, SunriseTime, Task, TaskPatch, TaskState,
+    TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -50,6 +52,11 @@ use sunrise_storage::Db;
 /// before `DOC_SCHEMA_V` 15 cannot (#506): a `floating` anchor, an `all_day`
 /// end, a `zoned` wall-clock time in a DST gap, a non-instant pause.
 pub(crate) const ROUTINE_CIVIL_TIMES_FEATURE: &str = "routine.civil_times";
+
+/// The feature a routine op uses when it carries `split_from`: a routine that
+/// continues a split series (#331), whose occurrences are keyed on the series
+/// root.
+pub(crate) const ROUTINE_SERIES_FEATURE: &str = "routine.series";
 
 /// The routine write a completion's streak advance makes: the advanced
 /// routine as a full-state op, and the keys of the occurrences it counted on
@@ -251,6 +258,7 @@ impl Engine {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -299,6 +307,7 @@ impl Engine {
         &self,
         db: &mut Db,
         id: EntityRef,
+        scope: EditScope,
         mut patch: RoutinePatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Routine)?;
@@ -309,71 +318,46 @@ impl Engine {
         // As in `create_routine`: tasks are regenerated and materialized
         // after the routine op commits.
         self.ensure_unlocked(db.conn(), &[EntityKind::Routine, EntityKind::Task])?;
+        match scope {
+            EditScope::All => self.edit_series(db, id, patch),
+            EditScope::This { key } => self.edit_occurrence(db, id, &key, patch),
+            EditScope::ThisAndFuture { key } => self.split_series(db, id, &key, patch),
+        }
+    }
+
+    /// An edit of the whole series ([`EditScope::All`]): the routine itself.
+    ///
+    /// A re-key (the rule, the anchor or the end changed) tombstones the
+    /// untouched future occurrences the new rule no longer has, and a
+    /// template or constraint change propagates to every untouched open
+    /// occurrence, past ones included (§Template propagation). Both are
+    /// written in the routine op's transaction: in a field-ops vault one
+    /// group, so no replica shows the new routine beside its old occurrences
+    /// (ADR-0065 §6).
+    fn edit_series(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        patch: RoutinePatch,
+    ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
-
-        // Track whether the change affects which occurrences exist (and thus
-        // requires regenerating future not-started tasks).
-        let mut structural = false;
-        if let Some(t) = patch.template {
-            routine.template = t;
-        }
-        if let Some(r) = patch.rrule {
-            structural |= routine.rrule != r;
-            routine.rrule = r;
-        }
-        // A zone change keeps every wall-clock time (ADR-0066 §1), so no key
-        // changes and nothing is regenerated: the untouched occurrences
-        // already planned in the old zone are re-pinned instead.
-        let mut repinned_from = None;
-        if let Some(tz) = patch.timezone {
-            if routine.timezone != tz {
-                repinned_from = Some(routine.timezone.clone());
-                routine.rezone(tz);
-            }
-        }
-        if let Some(s) = patch.starts_at {
-            structural |= routine.starts_at != s;
-            routine.starts_at = s;
-        }
-        if let Some(e) = patch.ends_at {
-            structural |= routine.ends_at != e;
-            routine.ends_at = e;
-        }
-        routine.normalize_legacy_times();
-        routine.validate_times()?;
-        if let Some(list) = patch.scheduling_constraints {
-            routine.scheduling_constraints = list;
-        }
-        if let Some(c) = patch.catchup_policy {
-            routine.catchup_policy = c;
-        }
-        if let Some(g) = patch.grace_window_s {
-            routine.grace_window_s = g;
-        }
-        if let Some(f) = patch.forgiveness_enabled {
-            routine.forgiveness_enabled = f;
-        }
-        if let Some(p) = patch.paused {
-            routine.paused = p;
-        }
-        if let Some(pu) = patch.paused_until {
-            routine.paused_until = pu;
-        }
-        if let Some(a) = patch.archived {
-            routine.archived = a;
-        }
-        routine.updated_at = ms_to_ts(now_ms as i64);
+        let effect = patch.apply_to(&mut routine, ms_to_ts(now_ms as i64))?;
 
         let wire = self.routine_op_form(db, &routine)?;
         let op = InnerOp::RoutineUpdate(Box::new(wire));
-        // A re-key tombstones the untouched occurrences the new rule no
-        // longer has, in the routine op's transaction: in a field-ops vault
-        // one group, so no replica shows the new rule beside the old
-        // occurrences (ADR-0065 §6).
-        let stale = if structural {
+        let stale = if effect.structural {
             self.stale_future_tasks(db, &routine, now_ms)?
+        } else {
+            Vec::new()
+        };
+        let propagated: Vec<Task> = if effect.template {
+            let gone: BTreeSet<EntityRef> = stale.iter().map(|t| t.id).collect();
+            self.propagation(db.conn(), &routine, &routine, None, now_ms)?
+                .into_iter()
+                .filter(|t| !gone.contains(&t.id))
+                .collect()
         } else {
             Vec::new()
         };
@@ -383,17 +367,401 @@ impl Engine {
             for t in &stale {
                 members.extend(generated_tombstone(tx, mode, t)?);
             }
+            for t in &propagated {
+                members.extend(self.generated_update(tx, mode, t)?);
+            }
             let done = self.append_and_fold_together(tx, members, now_ms)?;
             Ok(done.first().copied().unwrap_or(Appended::NOTHING))
         })?;
         let (op_id, seq) = (done.op_id, done.seq);
 
-        if let Some(old) = repinned_from {
+        if let Some(old) = effect.rezoned_from {
             self.repin_future_tasks(db, &routine, &old, now_ms)?;
         }
         self.materialize_one_routine(db, &routine, now_ms)?;
 
         Ok(CommandResult::new(id, None, op_id, seq))
+    }
+
+    /// An edit of one occurrence ([`EditScope::This`]): written onto that
+    /// occurrence's task only, as the user's edit of it, so it is touched
+    /// from then on and no later propagation reaches it. An occurrence not
+    /// generated yet is generated first. A time in `patch.starts_at` moves
+    /// the task's plan; the occurrence keeps its key.
+    fn edit_occurrence(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        key: &str,
+        patch: RoutinePatch,
+    ) -> Result<CommandResult, EngineError> {
+        if !patch.is_occurrence_edit() {
+            return Err(EngineError::Invalid(
+                "an edit of one occurrence sets only the template, the time and the \
+                 constraints"
+                    .into(),
+            ));
+        }
+        let now_ms = self.clock.now_ms();
+        let routine = read_routine(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
+        if !routine.has_occurrence(key) {
+            return Err(EngineError::NotFound(format!(
+                "occurrence {key} of routine {id}"
+            )));
+        }
+        let task_id = routine.occurrence_task_id(key);
+        let exists = read_task(db.conn(), task_id.bytes())?.is_some_and(|t| !t.deleted);
+        if !exists {
+            let civil = routine
+                .occurrence_civil(key)
+                .ok_or_else(|| EngineError::Invalid(format!("occurrence key {key}")))?;
+            let reader = self.device_zone();
+            let at = routine
+                .occurrence_instant(civil, &reader)
+                .ok_or_else(|| EngineError::Invalid(format!("occurrence {key} has no time")))?;
+            let occ = sunrise_domain::Occurrence {
+                key: key.to_owned(),
+                civil,
+                at,
+            };
+            let task = build_routine_task(&routine, &occ, None, now_ms, &reader);
+            db.with_tx(|tx| -> rusqlite::Result<()> {
+                if !occurrence_exists(tx, task.id.bytes())? {
+                    let stream = domain_bytes(task.stream_id);
+                    self.append_and_fold(tx, &InnerOp::TaskCreate(task.clone()), &stream, now_ms)?;
+                }
+                Ok(())
+            })?;
+        }
+        let mut edit = TaskPatch::default();
+        if let Some(t) = patch.template {
+            let was = &routine.template;
+            if t.title != was.title {
+                edit.title = Some(t.title);
+            }
+            if t.body != was.body {
+                edit.body = Some(t.body);
+            }
+            if t.stream_id != was.stream_id {
+                edit.stream_id = Some(t.stream_id);
+            }
+            if t.contexts != was.contexts {
+                edit.contexts = Some(t.contexts);
+            }
+            if t.priority != was.priority {
+                edit.priority = Some(t.priority);
+            }
+            if t.energy != was.energy {
+                edit.energy = Some(t.energy);
+            }
+            if t.estimated_duration_s != was.estimated_duration_s {
+                edit.estimated_duration_s = Some(t.estimated_duration_s);
+            }
+        }
+        if let Some(at) = patch.starts_at {
+            edit.planned_at = Some(Some(at));
+        }
+        if let Some(list) = patch.scheduling_constraints {
+            edit.scheduling_constraints = Some(list);
+        }
+        self.update_task(db, task_id, edit)
+    }
+
+    /// An edit of the occurrence at `key` and every one after it
+    /// ([`EditScope::ThisAndFuture`]): the series is split there
+    /// ([`Routine::split_at`]). The routine ends before `key`, a new routine
+    /// continues the series from it with the edit applied, and of the
+    /// routine's occurrences at or after `key`, each untouched open one the
+    /// continuation has is adopted (it takes the continuation's id and
+    /// template) and each it does not is tombstoned; a touched one is left as
+    /// it is. All of it is one group (ADR-0065 §6), so no replica shows the
+    /// split half made. The result names the continuation.
+    ///
+    /// The continuation names the series root in `split_from`, which only a
+    /// build with the feature `routine.series` reads, so the split is
+    /// refused while a paired device lacks it.
+    fn split_series(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        key: &str,
+        patch: RoutinePatch,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let now = ms_to_ts(now_ms as i64);
+        let routine = read_routine(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
+        // Splitting again where the series was already split edits the
+        // routine that continues it.
+        let continues = split_routine_id(&routine.series_root(), key);
+        if read_routine(db.conn(), continues.bytes())?.is_some_and(|r| !r.deleted) {
+            return self.edit_series(db, continues, patch);
+        }
+        let split = routine
+            .split_at(key, now)
+            .map_err(|e| EngineError::Invalid(format!("split routine {id}: {e}")))?;
+        let mut next = split.continuation;
+        patch.apply_to(&mut next, now)?;
+        self.require_features(db, &[ROUTINE_SERIES_FEATURE], false)?;
+        let ended = self.routine_op_form(db, &split.ended)?;
+        let created = self.routine_op_form(db, &next)?;
+
+        let reader = self.device_zone();
+        let mut adopted = Vec::new();
+        let mut dropped = Vec::new();
+        for t in self.untouched_open_occurrences(db.conn(), &routine, Some(key))? {
+            match occurrence_key_of_task(&routine, &t) {
+                Some(k) if next.has_occurrence(&k) => {
+                    let mut t = template_onto(t, &next, &reader);
+                    t.routine_id = Some(next.id);
+                    if let Some(civil) = next.occurrence_civil(&k) {
+                        t.planned_at = Some(next.occurrence_time(civil));
+                        t.hard_constraint_violated = hard_violated(&t, &reader);
+                    }
+                    t.updated_at = now;
+                    adopted.push(t);
+                }
+                _ => {
+                    let mut t = t;
+                    t.deleted = true;
+                    t.updated_at = now;
+                    dropped.push(t);
+                }
+            }
+        }
+        let done = db.with_tx(|tx| -> rusqlite::Result<Vec<Appended>> {
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut members = vec![
+                (InnerOp::RoutineUpdate(Box::new(ended.clone())), META_STREAM),
+                (
+                    InnerOp::RoutineCreate(Box::new(created.clone())),
+                    META_STREAM,
+                ),
+            ];
+            for t in &dropped {
+                members.extend(generated_tombstone(tx, mode, t)?);
+            }
+            for t in &adopted {
+                members.extend(self.generated_update(tx, mode, t)?);
+            }
+            self.append_and_fold_group(tx, members, now_ms)
+        })?;
+        let created_op = done.get(1).copied().unwrap_or(Appended::NOTHING);
+        tracing::info!(
+            ev = "core.routine.split",
+            n_retained = adopted.len() as u64,
+            n_dropped = dropped.len() as u64,
+            "a routine edit this-and-future split the series"
+        );
+        self.materialize_one_routine(db, &next, now_ms)?;
+        Ok(CommandResult::new(
+            next.id,
+            None,
+            created_op.op_id,
+            created_op.seq,
+        ))
+    }
+
+    /// The untouched open occurrences of `routine` (generated, never written
+    /// by a user, not done or cancelled, not deleted), each at or after
+    /// `from` when it is given, by id.
+    fn untouched_open_occurrences(
+        &self,
+        conn: &rusqlite::Connection,
+        routine: &Routine,
+        from: Option<&str>,
+    ) -> Result<Vec<Task>, EngineError> {
+        let sql = format!(
+            "SELECT id FROM tasks
+             WHERE routine_id = ? AND deleted = 0
+               -- open, spelled so an unknown state reads as it (ADR-0045 §6).
+               AND state NOT IN ('done', 'cancelled')
+               AND {UNTOUCHED}
+             ORDER BY id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let ids = stmt
+            .query_map(params![&routine.id.bytes()[..]], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let mut out = Vec::new();
+        for raw in ids {
+            let Some(t) = read_task(conn, &super::ids::blob16(&raw))? else {
+                continue;
+            };
+            if let Some(from) = from {
+                if occurrence_key_of_task(routine, &t).is_none_or(|k| k.as_str() < from) {
+                    continue;
+                }
+            }
+            out.push(t);
+        }
+        Ok(out)
+    }
+
+    /// The occurrences of `of` a template edit of `routine` reaches
+    /// (§Template propagation): each untouched open one at or after `from`,
+    /// with the template's fields and the constraint list of `routine`
+    /// written onto it and its hard-constraint flag re-evaluated. One that
+    /// already holds them is left out.
+    fn propagation(
+        &self,
+        conn: &rusqlite::Connection,
+        of: &Routine,
+        routine: &Routine,
+        from: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Vec<Task>, EngineError> {
+        let reader = self.device_zone();
+        let mut out = Vec::new();
+        for t in self.untouched_open_occurrences(conn, of, from)? {
+            let mut next = template_onto(t.clone(), routine, &reader);
+            if next == t {
+                continue;
+            }
+            next.updated_at = ms_to_ts(now_ms as i64);
+            out.push(next);
+        }
+        Ok(out)
+    }
+
+    /// The routine engine's own update of an occurrence `task`: in
+    /// [`WriteMode::Patch`] the `Patch` of the fields it changes, marked
+    /// `"origin": "generated"` so a concurrent user edit beats it and the
+    /// occurrence stays untouched (ADR-0065 §3); the full-state `TaskUpdate`
+    /// otherwise, which the fold reads as a user's write.
+    fn generated_update(
+        &self,
+        tx: &Transaction<'_>,
+        mode: WriteMode,
+        task: &Task,
+    ) -> rusqlite::Result<Option<(InnerOp, [u8; 16])>> {
+        let stream = domain_bytes(task.stream_id);
+        let op = InnerOp::TaskUpdate(task.clone());
+        if mode == WriteMode::Legacy {
+            return Ok(Some((op, stream)));
+        }
+        let patch = super::write::as_patch(self, tx, &op, &[]).map_err(|e| match e {
+            EngineError::Sqlite(e) => e,
+            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+        })?;
+        Ok(patch.map(|op| match op {
+            InnerOp::Patch(mut p) => {
+                p.origin = Some(crate::inner_op::PatchPayload::GENERATED.to_owned());
+                (InnerOp::Patch(p), stream)
+            }
+            other => (other, stream),
+        }))
+    }
+
+    /// The catch-up policy's read-time view of every routine's past open
+    /// occurrences at `now_ms`, for a reader in this device's zone
+    /// (§Catch-up for occurrences already materialized). An occurrence is
+    /// past once its plan plus the routine's grace window is before now, and
+    /// open while it is untouched and not started, done or cancelled: one
+    /// the user edits, completes or drops leaves the view by the same
+    /// predicate. Writes nothing.
+    pub(super) fn catchup_now(
+        &self,
+        conn: &rusqlite::Connection,
+        now_ms: u64,
+    ) -> Result<CatchupView, EngineError> {
+        let reader = self.device_zone();
+        let now = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
+        let sql = format!(
+            "SELECT id, routine_id FROM tasks
+             WHERE routine_id IS NOT NULL AND deleted = 0 AND archived = 0
+               AND state NOT IN ('in_progress', 'done', 'cancelled')
+               AND planned_at_ms IS NOT NULL AND planned_at_ms <= ?
+               AND {UNTOUCHED}
+             ORDER BY routine_id, id"
+        );
+        // The index key prefilters, widened (time.md §2 rule 2); whether an
+        // occurrence is past is decided on its resolved plan below.
+        let ceiling = i64::try_from(now_ms)
+            .unwrap_or(i64::MAX)
+            .saturating_add(PREFILTER_SLACK_MS);
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params![ceiling], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let mut by_routine: BTreeMap<[u8; 16], Vec<[u8; 16]>> = BTreeMap::new();
+        for (task, rid) in rows {
+            by_routine
+                .entry(super::ids::blob16(&rid))
+                .or_default()
+                .push(super::ids::blob16(&task));
+        }
+        let mut view = CatchupView::default();
+        for (rid, tasks) in by_routine {
+            let Some(routine) = read_routine(conn, &rid)? else {
+                continue;
+            };
+            let grace = jiff::SignedDuration::from_secs(
+                i64::try_from(routine.grace_window_seconds()).unwrap_or(i64::MAX),
+            );
+            let mut past: Vec<(Timestamp, EntityRef)> = Vec::new();
+            for raw in tasks {
+                let Some(t) = read_task(conn, &raw)? else {
+                    continue;
+                };
+                let Some(at) = t.planned_at.as_ref().and_then(|p| p.resolve_in(&reader)) else {
+                    continue;
+                };
+                if at.checked_add(grace).is_ok_and(|end| end < now) {
+                    past.push((at, t.id));
+                }
+            }
+            past.sort();
+            let ids: Vec<EntityRef> = past.into_iter().map(|(_, id)| id).collect();
+            view.extend(catchup_view(&routine.catchup_policy, &ids));
+        }
+        Ok(view)
+    }
+
+    /// `Query::LapsedOccurrences`: every occurrence the catch-up policy
+    /// lapses at `now_ms`, in the order Today lands them.
+    pub(super) fn query_lapsed_occurrences(
+        &self,
+        db: &Db,
+        now_ms: u64,
+    ) -> Result<QueryResult, EngineError> {
+        let view = self.catchup_now(db.conn(), now_ms)?;
+        let mut out = Vec::with_capacity(view.lapsed.len());
+        for id in &view.lapsed {
+            if let Some(t) = read_task(db.conn(), id.bytes())? {
+                out.push(t);
+            }
+        }
+        super::query::sort_by_landing(&mut out, &self.device_zone(), super::query::Unlanded::Last);
+        Ok(QueryResult::Tasks(out))
+    }
+
+    /// Apply the catch-up view at `now_ms` to a list of `tasks` a view shows
+    /// ([`Self::catchup_now`]): a lapsed occurrence is left out, and the one
+    /// a `merge` policy shows for several is titled for all of them. A list
+    /// with no routine occurrence in it is left as it is, without a read.
+    pub(super) fn apply_catchup(
+        &self,
+        conn: &rusqlite::Connection,
+        tasks: &mut Vec<Task>,
+        now_ms: u64,
+    ) -> Result<(), EngineError> {
+        if !tasks.iter().any(|t| t.routine_id.is_some()) {
+            return Ok(());
+        }
+        let view = self.catchup_now(conn, now_ms)?;
+        tasks.retain(|t| !view.lapsed.contains(&t.id));
+        for t in tasks.iter_mut() {
+            if let Some(n) = view.merged.get(&t.id) {
+                t.title = catchup_title(&t.title, *n);
+            }
+        }
+        Ok(())
     }
 
     /// After a zone change, move each untouched future occurrence still
@@ -489,7 +857,7 @@ impl Engine {
         // Tombstone the already-materialized task for this occurrence, but only
         // if it exists and is still an untouched (Todo, non-deferred) routine
         // task — a user who already started/edited it keeps it.
-        let task_id = occurrence_task_id(&id, &occurrence_key);
+        let task_id = routine.occurrence_task_id(&occurrence_key);
         let existing = read_task(db.conn(), task_id.bytes())?;
         let drop_task = existing
             .as_ref()
@@ -614,7 +982,7 @@ impl Engine {
                 let n = missed.len();
                 if n >= 2 {
                     let latest = &missed[n - 1];
-                    let title = format!("{} (x{n} catch-up)", routine.template.title);
+                    let title = catchup_title(&routine.template.title, n);
                     jobs.push((latest, Some(title)));
                 } else if let Some(o) = missed.first() {
                     jobs.push((o, None));
@@ -625,10 +993,15 @@ impl Engine {
             jobs.push((o, None));
         }
 
+        // Of a split series, only the routine that owns a key generates it
+        // (§Edit scope, which series owns a key).
+        let chain = series_chain(db.conn(), routine)?;
+        jobs.retain(|(o, _)| routine.owns_key(&o.key, &chain));
         let routine = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             for (occ, title_override) in &jobs {
-                let task = build_routine_task(&routine, occ, title_override.clone(), now_ms);
+                let task =
+                    build_routine_task(&routine, occ, title_override.clone(), now_ms, &reader);
                 // An occurrence is generated once: its id is a function of the
                 // routine and the key, so one this replica already holds,
                 // whoever generated it, is not generated again. Each one it
@@ -665,7 +1038,7 @@ impl Engine {
             .occurrences_in(window, &self.device_zone())
             .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?
             .iter()
-            .map(|o| *occurrence_task_id(&routine.id, &o.key).bytes())
+            .map(|o| *routine.occurrence_task_id(&o.key).bytes())
             .collect();
 
         // Candidate future, not-started routine tasks for this routine.
@@ -783,15 +1156,16 @@ fn build_routine_task(
     occ: &sunrise_domain::Occurrence,
     title_override: Option<String>,
     now_ms: u64,
+    reader: &jiff::tz::TimeZone,
 ) -> Task {
     let key = occ.key.as_str();
     let at = occ.at;
     let draft = routine
         .template
         .to_draft(Some(routine.occurrence_time(occ.civil)));
-    Task {
+    let mut task = Task {
         reminder_lead_s: draft.reminder_lead_s,
-        id: occurrence_task_id(&routine.id, key),
+        id: routine.occurrence_task_id(key),
         created_at: ms_to_ts(now_ms as i64),
         updated_at: ms_to_ts(now_ms as i64),
         title: title_override.unwrap_or(draft.title),
@@ -814,6 +1188,8 @@ fn build_routine_task(
         assignee: None,
         routine_id: Some(routine.id),
         routine_occurrence: Some(at),
+        // Set below, once the task it is evaluated on is whole.
+        hard_constraint_violated: false,
         sort_order: None,
         triaged_at: None,
         cancel_reason: None,
@@ -821,7 +1197,79 @@ fn build_routine_task(
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),
+    };
+    // An occurrence that breaks a `hard` constraint is generated all the
+    // same, and flagged (§Scheduling constraints on occurrences).
+    task.hard_constraint_violated = hard_violated(&task, reader);
+    task
+}
+
+/// The SQL predicate, over `tasks`, of an occurrence nobody has edited: every
+/// version of it is the routine engine's own (`"origin": "generated"`), its
+/// generation and any propagation or re-pin since (§Template propagation,
+/// #331). A task with no version row is not known to be untouched, so it is
+/// treated as touched.
+pub(super) const UNTOUCHED: &str = "EXISTS (SELECT 1 FROM entity_versions v
+                     WHERE v.entity_id = tasks.id)
+               AND NOT EXISTS (SELECT 1 FROM entity_versions v
+                     WHERE v.entity_id = tasks.id AND v.origin != 'generated')";
+
+/// The key of the occurrence whose task is `task`, as `routine`'s rule
+/// produces it: recovered from the task id ([`Routine::occurrence_key_of`]),
+/// near the instant it was due at.
+fn occurrence_key_of_task(routine: &Routine, task: &Task) -> Option<String> {
+    routine.occurrence_key_of(&task.id, task.routine_occurrence?)
+}
+
+/// Whether `task`'s plan breaks a `hard` scheduling constraint it carries,
+/// for a reader in `reader` (`super::task::constraint_violations`).
+fn hard_violated(task: &Task, reader: &jiff::tz::TimeZone) -> bool {
+    !super::task::constraint_violations(task, reader)
+        .0
+        .is_empty()
+}
+
+/// `task` with `routine`'s template fields and constraint list written onto
+/// it, and its hard-constraint flag re-evaluated: what a propagation, or an
+/// adoption by a split's continuation, makes of an untouched occurrence.
+fn template_onto(mut task: Task, routine: &Routine, reader: &jiff::tz::TimeZone) -> Task {
+    let t = &routine.template;
+    task.title.clone_from(&t.title);
+    task.body.clone_from(&t.body);
+    task.stream_id = t.stream_id;
+    task.contexts = t.contexts.iter().copied().collect();
+    task.priority = t.priority;
+    task.energy.clone_from(&t.energy);
+    task.estimated_duration_s = t.estimated_duration_s;
+    task.scheduling_constraints
+        .clone_from(&routine.scheduling_constraints);
+    task.hard_constraint_violated = hard_violated(&task, reader);
+    task
+}
+
+/// The live routines of `routine`'s series: its root and every routine split
+/// off it (§Edit scope).
+fn series_chain(
+    conn: &rusqlite::Connection,
+    routine: &Routine,
+) -> Result<Vec<Routine>, EngineError> {
+    let root = routine.series_root();
+    let sql = format!(
+        "SELECT id, {ROUTINE_COLUMNS} FROM routines
+         WHERE deleted = 0 AND (id = ?1 OR split_from = ?1) ORDER BY id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![&root.bytes()[..]], |r| {
+            let id_raw: Vec<u8> = r.get(0)?;
+            Ok((id_raw, RoutineRowRaw::read(r, 1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (raw, v) in rows {
+        out.push(routine_from_row(&super::ids::blob16(&raw), v)?);
     }
+    Ok(out)
 }
 
 /// The stored spelling of a catch-up policy; an unknown one's raw string.
@@ -959,7 +1407,7 @@ const ROUTINE_COLUMNS: &str = "rrule_text, timezone,
      template, skip_dates, skipped_keys, catchup_policy,
      last_completed_at_ms, last_completed_at_kind, last_completed_at_tz, last_completed_at_civil,
      paused_until_ms, paused_until_kind, paused_until_tz, paused_until_civil,
-     created_at_ms, updated_at_ms, streak_state, extra, rrule_cbor";
+     created_at_ms, updated_at_ms, streak_state, extra, rrule_cbor, split_from";
 
 /// One `SunriseTime`'s four columns, starting at `at`.
 fn time_at(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Option<SunriseTime>> {
@@ -994,6 +1442,7 @@ struct RoutineRowRaw {
     streak_state: Option<Vec<u8>>,
     extra: Option<Vec<u8>>,
     rrule_blob: Option<Vec<u8>>,
+    split_from: Option<Vec<u8>>,
 }
 
 impl RoutineRowRaw {
@@ -1019,6 +1468,7 @@ impl RoutineRowRaw {
             streak_state: r.get(from + 29)?,
             extra: r.get(from + 30)?,
             rrule_blob: r.get(from + 31)?,
+            split_from: r.get(from + 32)?,
         })
     }
 }
@@ -1064,6 +1514,9 @@ fn routine_from_row(id: &[u8; 16], v: RoutineRowRaw) -> Result<Routine, EngineEr
         paused_until: v.paused_until,
         archived: v.archived != 0,
         deleted: v.deleted != 0,
+        split_from: v
+            .split_from
+            .map(|b| EntityRef::new(EntityKind::Routine, super::ids::blob16(&b))),
         unknown: decode_unknowns(v.extra),
     };
     Ok(routine.normalized())

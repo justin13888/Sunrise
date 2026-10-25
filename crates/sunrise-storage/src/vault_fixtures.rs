@@ -104,11 +104,27 @@ fn fixture_name(storage_v: u32) -> String {
     format!("vault_storage_v{storage_v}.db")
 }
 
-/// Every version a fixture must exist for: the baseline, through the one
-/// before this build's. The current version needs none, because nothing
-/// migrates from it yet.
-fn fixture_versions() -> std::ops::Range<u32> {
-    BASELINE_STORAGE_V..u32::from(STORAGE_V)
+/// Every version a fixture must exist for: each version a migration leaves
+/// a vault at, from the baseline through the one before this build's. The
+/// current version needs none, because nothing migrates from it yet.
+///
+/// The versions are the migration ids, not every integer below `STORAGE_V`:
+/// a migration number reserved by a parallel change that has not landed yet
+/// is a version no vault was ever at (`docs/04-storage/migrations.md`), and
+/// a fixture "written at" it would be one at the version before it, stamped
+/// wrong.
+fn fixture_versions() -> Vec<u32> {
+    MIGRATIONS
+        .iter()
+        .map(|m| m.id)
+        .filter(|&v| v >= BASELINE_STORAGE_V && v < u32::from(STORAGE_V))
+        .collect()
+}
+
+/// The version a vault stood at before migration `id` ran: the id of the
+/// migration before it in [`MIGRATIONS`].
+fn version_before(id: u32) -> Option<u32> {
+    MIGRATIONS.iter().map(|m| m.id).filter(|&v| v < id).max()
 }
 
 /// A `streams` row's `(name, extra, description, default_context)`: the name
@@ -803,7 +819,7 @@ fn assert_nothing_lost(name: &str, from_v: u32, before: &Snapshot, after: &Conne
 #[test]
 fn every_migration_has_a_fixture_at_the_version_before_it() {
     for m in MIGRATIONS.iter().filter(|m| m.id > BASELINE_STORAGE_V) {
-        let name = fixture_name(m.id - 1);
+        let name = fixture_name(version_before(m.id).expect("the baseline is first"));
         assert!(
             fixture_dir().join(&name).exists(),
             "migration {:04} ({}) has no fixture at the version before it: \

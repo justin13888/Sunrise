@@ -165,7 +165,12 @@ pub(super) use versions::{heads, precedes};
 /// a build before it kept a newer device's target in `extra`. `8` projects
 /// `Task.cancel_reason` and `Task.late_acknowledged_at` into their columns
 /// (migration 0046, #335), where a build before it kept them in `extra`.
-pub(crate) const FOLD_V: u32 = 8;
+/// `9` projects
+/// `Routine.split_from` and `Task.hard_constraint_violated` into their
+/// columns (migration 0047, #331), and a later write of `Task.routine_id` or
+/// `routine_occurrence` into theirs, which only the insert wrote before: a
+/// split's continuation adopts an occurrence by writing its `routine_id`.
+pub(crate) const FOLD_V: u32 = 9;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

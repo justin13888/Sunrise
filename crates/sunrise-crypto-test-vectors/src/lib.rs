@@ -306,6 +306,8 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// and nothing else.
 ///
 /// The 20 → 21 re-freeze (ADR-0047, the triage queue's drop reason and Keep) moved the same three regions
+///
+/// The 21 → 22 re-freeze (#331, a routine's series) moved the same three regions
 /// and nothing else.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
@@ -325,10 +327,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58401b",
-        "e2948089ff02d48ce81b5ccb1543bff64704299b83eadaa816e759d0fdba",
-        "c222ed03266a3a5fe83dcf4eb71fc4eb63eb8000471d9a89a261e6a9feec",
-        "92050b0c150d4835b2c6020668ba96",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840ca",
+        "ea038e96632607e739665ac0d0d8266060f83f7163b2db337c0be69f4f01",
+        "ca41c4c5231f3ec5cc4b835c10bfb457e91c15ecacafeef8488619e139dd",
+        "d0520b0c160d48878b79742cd6b188",
     ));
 }
 
@@ -394,6 +396,8 @@ pub mod signed_only_envelope {
 /// the ciphertext at `[94..117]` is again untouched.
 ///
 /// The 20 → 21 re-freeze (ADR-0047, the triage queue's drop reason and Keep) moved the same four regions;
+///
+/// The 21 → 22 re-freeze (#331, a routine's series) moved the same four regions;
 /// the ciphertext at `[94..117]` is again untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
@@ -415,11 +419,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8411d60",
-        "75a4a1b3755907e90145ea97d80b584085bbb7a091000d6a4e19a60e4597",
-        "18c3ec3789221c89b3e83f34de7a8346ac1f89f9ad212479032fd82a7697",
-        "1dd1c4cb2726ca74078612f92210d233df4011070c150d4835b2c6020668",
-        "ba96",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8676085",
+        "fb50cc9df4325f838c91b117f30b5840ea974921792f17b26e5a8552cde6",
+        "f42e5ce392ff615e9af748d141d54a026ed5cfae82ab0e53e08ee8b477de",
+        "0409b5796c541b76e921d37000f062b7b6f08f020c160d48878b79742cd6",
+        "b188",
     ));
 }
 

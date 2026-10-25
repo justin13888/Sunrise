@@ -50,6 +50,7 @@ fn task(hard: Option<SunriseTime>, target: Option<SunriseTime>, touched: Timesta
         assignee: None,
         routine_id: None,
         routine_occurrence: None,
+        hard_constraint_violated: false,
         reminder_lead_s: None,
         sort_order: None,
         triaged_at: None,

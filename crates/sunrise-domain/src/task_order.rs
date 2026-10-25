@@ -77,6 +77,7 @@ mod tests {
             assignee: None,
             routine_id: None,
             routine_occurrence: None,
+            hard_constraint_violated: false,
             reminder_lead_s: None,
             sort_order: key.map(str::to_owned),
             triaged_at: None,

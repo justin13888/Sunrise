@@ -29,11 +29,17 @@ impl Engine {
     /// `Query::Triage`: every open task in the queue for the reader now, with
     /// its lateness, in the queue's order (`sunrise_domain::triage_order`).
     pub(super) fn query_triage(&self, db: &Db) -> Result<QueryResult, EngineError> {
-        let reader = self.lateness_reader(db, self.clock.now_ms())?;
+        let now_ms = self.clock.now_ms();
+        let reader = self.lateness_reader(db, now_ms)?;
+        // A routine occurrence its catch-up policy lapses is no decision to
+        // make: it is hidden from the queue as from Today
+        // (`docs/02-domain/routines-and-recurrence.md` §Catch-up for
+        // occurrences already materialized, #331).
+        let lapsed = self.catchup_now(db.conn(), now_ms)?.lapsed;
         let mut streams: BTreeMap<[u8; 16], Option<Stream>> = BTreeMap::new();
         let mut rows = Vec::new();
         for task in read_live_tasks(db.conn())? {
-            if !task.is_open() {
+            if !task.is_open() || lapsed.contains(&task.id) {
                 continue;
             }
             let lateness = reader.of(&task);

@@ -442,6 +442,7 @@ impl CoreCommand {
             Self::CreateRoutine { draft } => Command::CreateRoutine(draft.into()),
             Self::UpdateRoutine { id, edit } => Command::UpdateRoutine {
                 id,
+                scope: edit.scope.clone().map(Into::into).unwrap_or_default(),
                 patch: edit.into(),
             },
             Self::DeleteRoutine { id } => Command::DeleteRoutine(id),
