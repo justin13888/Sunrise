@@ -182,6 +182,11 @@ enum Cmd {
     },
     MarkTriaged(Vec<EntityRef>),
     ReturnToInbox(Vec<EntityRef>),
+    /// A triage action (ADR-0047 §4) over its tasks.
+    Triage {
+        ids: Vec<EntityRef>,
+        action: sunrise_domain::TriageAction,
+    },
     CreateContext(ContextDraft),
     UpdateContext {
         id: EntityRef,
@@ -274,6 +279,7 @@ impl Cmd {
             } => Self::DeleteStreamInto { id, into },
             Command::MarkTriaged { ids } => Self::MarkTriaged(ids),
             Command::ReturnToInbox { ids } => Self::ReturnToInbox(ids),
+            Command::Triage { ids, action } => Self::Triage { ids, action },
             Command::CreateContext(d) => Self::CreateContext(d),
             Command::UpdateContext { id, patch } => Self::UpdateContext { id, patch },
             Command::DeleteContext(id) => Self::DeleteContext(id),
@@ -319,6 +325,7 @@ impl Cmd {
             },
             Self::MarkTriaged(ids) => Command::MarkTriaged { ids },
             Self::ReturnToInbox(ids) => Command::ReturnToInbox { ids },
+            Self::Triage { ids, action } => Command::Triage { ids, action },
             Self::CreateContext(d) => Command::CreateContext(d),
             Self::UpdateContext { id, patch } => Command::UpdateContext { id, patch },
             Self::DeleteContext(id) => Command::DeleteContext(id),
@@ -460,6 +467,8 @@ struct TaskPatchDef {
     archived: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
     sort_order: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
+    late_acknowledged_at: Option<Option<jiff::Timestamp>>,
 }
 
 #[derive(Serialize, Deserialize)]

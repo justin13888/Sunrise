@@ -484,7 +484,7 @@ impl Core {
                 .skip(1)
                 .map(|i| DomainEvent::Updated(i.id))
                 .collect(),
-            Command::MoveTasks { ids, .. } => ids
+            Command::MoveTasks { ids, .. } | Command::Triage { ids, .. } => ids
                 .iter()
                 .skip(1)
                 .map(|id| DomainEvent::Updated(*id))

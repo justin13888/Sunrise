@@ -19580,3 +19580,6 @@ mod optional_stream;
 
 /// A task's three times and its lateness (ADR-0047, #334).
 mod lateness;
+
+/// The triage queue and its four actions (ADR-0047, #335).
+mod triage;

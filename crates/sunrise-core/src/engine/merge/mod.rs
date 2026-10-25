@@ -162,8 +162,10 @@ pub(super) use versions::{heads, precedes};
 /// `Task.triaged_at` and `Stream.rehomed_to` into their columns (migration
 /// 0044, #332), where a build before it kept the last two in `extra`. `7`
 /// projects `Task.target_at` into its columns (migration 0045, #334), where
-/// a build before it kept a newer device's target in `extra`.
-pub(crate) const FOLD_V: u32 = 7;
+/// a build before it kept a newer device's target in `extra`. `8` projects
+/// `Task.cancel_reason` and `Task.late_acknowledged_at` into their columns
+/// (migration 0046, #335), where a build before it kept them in `extra`.
+pub(crate) const FOLD_V: u32 = 8;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

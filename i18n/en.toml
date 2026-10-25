@@ -1710,6 +1710,16 @@ USAGE:
     sunrise triage <id>...       take tasks out of the Inbox and leave them
                                  with no stream and no date
     sunrise untriage <id>...     put triaged tasks back in the Inbox
+    sunrise triage [list]        the tasks that need a decision: late, hard
+                                 then soft, then stale, oldest first
+    sunrise triage defer <id>... <when>|next
+                                 move their plan; `next` is the next free slot
+    sunrise triage done <id>... [--on <when>]
+                                 already done, now or when it was done
+    sunrise triage drop <id>... [--reason <text>]
+                                 drop them, saying why
+    sunrise triage keep <id>...  leave them as they are until their lateness
+                                 changes
     sunrise next                 the focus planner's top picks
     sunrise search [--kind <k>] [--all] <query>...
                                  search everything, grouped by kind; the
@@ -2070,6 +2080,16 @@ needs_id = "drop needs at least one task id"
 
 [cli.triage]
 needs_id = "triage and untriage need at least one task id"
+usage = "usage: triage [list] | triage defer <id>... <when>|next | triage done <id>... [--on <when>] | triage drop <id>... [--reason <text>] | triage keep <id>... | triage <id>..."
+# stdout, from `sunrise triage` when the queue is empty.
+empty = "nothing needs a decision"
+# stdout, after each task an action applied to. {id} is its id.
+deferred = "{id}  deferred to {when}"
+done = "{id}  done {when}"
+dropped = "{id}  dropped"
+kept = "{id}  kept"
+# {when} of `deferred` above, for `triage defer <id> next`.
+next_free_slot = "the next free slot"
 
 [cli.reorder]
 usage = "usage: move <id>... before|after <id> | move <id>... first|last"
@@ -2262,6 +2282,8 @@ complete = "complete “{title}”"
 edit = "edit “{name}”"
 move_task = "move “{title}” to another stream"
 triage = "triage “{title}”"
+triage_done = "mark “{title}” already done"
+triage_keep = "keep “{title}”"
 untriage = "return “{title}” to the Inbox"
 retitle = "retitle “{title}”"
 defer = "defer “{title}”"

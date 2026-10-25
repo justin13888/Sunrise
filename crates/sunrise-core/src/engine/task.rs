@@ -150,6 +150,11 @@ impl Engine {
                 )));
             }
             let done = state == TaskState::Done;
+            // A reason belongs to the drop it explains (ADR-0047 §4): any
+            // move out of `cancelled` takes it away in the same write.
+            if task.state == TaskState::Cancelled && state != TaskState::Cancelled {
+                task.cancel_reason = None;
+            }
             task.state = state;
             if done {
                 task.completed_at = Some(ms_to_ts(now_ms as i64).into());
@@ -193,6 +198,9 @@ impl Engine {
         if let Some(key) = patch.sort_order {
             task.sort_order = key;
         }
+        if let Some(ack) = patch.late_acknowledged_at {
+            task.late_acknowledged_at = ack;
+        }
         // Re-check the structural invariants on the patched Task (an invalid
         // constraint list would otherwise pass silently). The order of the
         // three times is reported, never refused (ADR-0047 §1), and only
@@ -228,6 +236,7 @@ impl Engine {
             delete: false,
             defers: false,
             completes: sets_done && prev_state != TaskState::Done,
+            done_at_ms: None,
             soft,
             warnings,
         })
@@ -346,6 +355,7 @@ impl Engine {
             delete: false,
             defers: true,
             completes: false,
+            done_at_ms: None,
             soft,
             warnings,
         })
@@ -385,6 +395,7 @@ impl Engine {
             delete: deleted,
             defers: false,
             completes: false,
+            done_at_ms: None,
             soft: Vec::new(),
             warnings: Vec::new(),
         })
@@ -449,6 +460,18 @@ impl Engine {
                 BulkTaskAction::Restore => self.plan_tombstone(conn, item.id, false, now_ms)?,
             });
         }
+        self.commit_task_writes(db, writes, now_ms)
+    }
+
+    /// Append `writes`, already planned and validated, and the streak
+    /// advances they make, as one group (ADR-0065 §6), and report the first:
+    /// the commit half of [`Self::bulk_tasks`] and of `Command::Triage`.
+    pub(super) fn commit_task_writes(
+        &self,
+        db: &mut Db,
+        writes: Vec<TaskWrite>,
+        now_ms: u64,
+    ) -> Result<CommandResult, EngineError> {
         // Two occurrences of one routine completed together each count: the
         // routine is advanced in memory once per occurrence, in item order,
         // and written once.
@@ -467,7 +490,10 @@ impl Engine {
                     slot.insert((routine, Vec::new(), false))
                 }
             };
-            if let Some((key, outcome)) = self.advance_streak_of(routine, &write.task, now_ms) {
+            let done_at = write.done_at_ms.unwrap_or(now_ms);
+            if let Some((key, outcome)) =
+                self.advance_streak_of(routine, &write.task, done_at, now_ms)
+            {
                 *moved = true;
                 if outcome == StreakOutcome::Incremented {
                     on_time.push(key);
@@ -589,6 +615,9 @@ pub(super) struct TaskWrite {
     defers: bool,
     /// The task's first move to `done`, which advances its routine's streak.
     pub(super) completes: bool,
+    /// When the work was done, for the streak's grace window, when that is
+    /// not the command's now: a backdated completion (ADR-0047 §4).
+    pub(super) done_at_ms: Option<u64>,
     /// The `soft` scheduling constraints the write violates.
     pub(super) soft: Vec<ScheduleConstraint>,
     /// The time orderings the written task breaks (ADR-0047 §1).
@@ -605,6 +634,7 @@ impl TaskWrite {
             delete: false,
             defers: false,
             completes: false,
+            done_at_ms: None,
             soft: Vec::new(),
             warnings: Vec::new(),
         }
@@ -912,7 +942,8 @@ pub(super) fn read_task(
                     hard_due_at_kind, hard_due_at_tz,
                     completed_at_kind, completed_at_tz, extra, reminder_lead_s,
                     planned_at_civil, hard_due_at_civil, completed_at_civil, sort_order,
-                    triaged_at_ms, target_at_ms, target_at_kind, target_at_tz, target_at_civil
+                    triaged_at_ms, target_at_ms, target_at_kind, target_at_tz, target_at_civil,
+                    cancel_reason, late_acknowledged_at_ms
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -953,6 +984,10 @@ pub(super) fn read_task(
                         r.get::<_, Option<String>>(32)?,
                         r.get::<_, Option<String>>(33)?,
                         r.get::<_, Option<String>>(34)?,
+                    ),
+                    (
+                        r.get::<_, Option<String>>(35)?,
+                        r.get::<_, Option<i64>>(36)?,
                     ),
                 ))
             },
@@ -1020,6 +1055,8 @@ pub(super) fn read_task(
         routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
         sort_order: t.29,
         triaged_at: t.30.map(ms_to_ts),
+        cancel_reason: t.32 .0,
+        late_acknowledged_at: t.32 .1.map(ms_to_ts),
         archived: t.10 != 0,
         deleted: t.11 != 0,
         unknown: decode_unknowns(t.24),

@@ -439,6 +439,13 @@ pub struct TaskItem {
     /// The soft deadline (`target_at`, ADR-0047 §1), or none.
     #[uniffi(default = None)]
     pub target_at: Option<TimeValue>,
+    /// Why the task was dropped, while it is cancelled (ADR-0047 §4); none
+    /// otherwise, and none for a drop that gave no reason.
+    #[uniffi(default = None)]
+    pub cancel_reason: Option<String>,
+    /// When the user last kept the task in the triage queue, or none.
+    #[uniffi(default = None)]
+    pub late_acknowledged_at: Option<jiff::Timestamp>,
 }
 
 impl From<&Task> for TaskItem {
@@ -469,6 +476,8 @@ impl From<&Task> for TaskItem {
             reminder_lead_s,
             sort_order,
             triaged_at,
+            cancel_reason: _,
+            late_acknowledged_at,
             archived,
             deleted,
             // Deliberately not exported: see the module docs.
@@ -506,6 +515,8 @@ impl From<&Task> for TaskItem {
             home_stream: *stream_id,
             triaged_at: *triaged_at,
             target_at: target_at.as_ref().map(TimeValue::from),
+            cancel_reason: t.drop_reason().map(str::to_owned),
+            late_acknowledged_at: *late_acknowledged_at,
         }
     }
 }
@@ -704,6 +715,8 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
             archived: e.archived,
             // A client never writes a key: `CoreCommand::MoveTasks` does.
             sort_order: None,
+            // Nor an acknowledgement: `CoreCommand::Triage` with Keep does.
+            late_acknowledged_at: None,
         }
     }
 }

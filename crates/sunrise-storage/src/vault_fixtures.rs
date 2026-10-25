@@ -1983,3 +1983,38 @@ fn a_v44_vaults_task_times_are_the_plan_and_the_hard_deadline_after_0045() {
         assert!(sql.contains(column), "`{index}` indexes `{column}`: {sql}");
     }
 }
+
+/// Migration 0046 (#335, ADR-0047 §4) over a real v45 vault: every task
+/// gains a drop reason and a triage acknowledgement that start NULL, so no
+/// task reads as dropped with a reason or kept, and every other column is as
+/// it was.
+#[test]
+fn a_v45_vaults_tasks_gain_an_empty_drop_reason_and_keep_after_0046() {
+    let (_dir, db) = open_migrated(&fixture_name(45));
+    let set: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tasks
+             WHERE cancel_reason IS NOT NULL OR late_acknowledged_at_ms IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        set, 0,
+        "no task is dropped with a reason or kept by the migration"
+    );
+    let target: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT target_at_kind FROM tasks WHERE id = ?",
+            rusqlite::params![TASK_IN_ALPHA.to_vec()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        target.as_deref(),
+        Some("all_day"),
+        "0045's columns are kept"
+    );
+}

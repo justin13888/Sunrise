@@ -24,6 +24,7 @@ mod reports;
 mod search;
 mod settings;
 mod tasks;
+mod triage;
 mod upcoming;
 mod views;
 
@@ -112,7 +113,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "defer" => tasks::defer(ctx, rest).await,
         "schedule" => tasks::schedule(ctx, rest).await,
         "drop" => tasks::drop_tasks(ctx, rest).await,
-        "triage" => tasks::triage(ctx, rest, true).await,
+        "triage" => triage::triage(ctx, rest).await,
         "untriage" => tasks::triage(ctx, rest, false).await,
         "move" => order::move_tasks(ctx, rest).await,
         "restore" => conflicts::restore(ctx, rest).await,

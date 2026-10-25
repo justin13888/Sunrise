@@ -80,6 +80,8 @@ mod tests {
             reminder_lead_s: None,
             sort_order: key.map(str::to_owned),
             triaged_at: None,
+            cancel_reason: None,
+            late_acknowledged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),

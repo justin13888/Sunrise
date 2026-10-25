@@ -117,6 +117,7 @@ mod task;
 mod task_order;
 #[cfg(test)]
 mod tests;
+mod triage;
 mod upcoming;
 mod write;
 
@@ -621,6 +622,7 @@ impl Engine {
             Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
             Command::BulkTasks(items) => self.bulk_tasks(db, items),
+            Command::Triage { ids, action } => self.triage(db, ids, action),
             Command::Restore(id) => self.restore(db, id),
             Command::ResolveConflict {
                 entity,
@@ -769,6 +771,7 @@ impl Engine {
             Query::DaySchedule { at_ms } => self.query_day_schedule(db, at_ms),
             Query::TodayView { now_ms, contexts } => self.query_today_view(db, now_ms, &contexts),
             Query::Lateness { ids } => self.query_lateness(db, &ids),
+            Query::Triage => self.query_triage(db),
             Query::Conflicts {
                 entity,
                 include_quiet,

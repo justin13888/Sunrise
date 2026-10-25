@@ -77,6 +77,8 @@ pub fn task(t: &Task, reader: &TimeZone) -> Value {
         "note": note,
         "updated_at_ms": t.updated_at.as_millisecond(),
         "sort_order": t.sort_order,
+        "cancel_reason": t.drop_reason(),
+        "late_acknowledged_at_ms": t.late_acknowledged_at.map(jiff::Timestamp::as_millisecond),
     })
 }
 
@@ -455,6 +457,8 @@ mod tests {
             reminder_lead_s: None,
             sort_order: None,
             triaged_at: None,
+            cancel_reason: None,
+            late_acknowledged_at: None,
             archived: false,
             deleted: false,
             unknown: sunrise_domain::Unknowns::new(),

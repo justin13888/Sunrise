@@ -267,7 +267,10 @@ From now on:
   `hard_due_at` keep the wire keys `scheduled_at` and `due_at`, whose meaning
   they are, and `target_at`, `ViewFilter.lateness` and the `WindowField`
   spelling `target` are new and absent when unset. A v19 build keeps them as
-  unknown and writes them back unchanged, so none needs a feature.
+  unknown and writes them back unchanged, so none needs a feature. `DOC_SCHEMA_V` 21 added
+  `Task.cancel_reason` and `Task.late_acknowledged_at`, what the triage
+  queue's Drop and Keep write ([#335](https://github.com/justin13888/Sunrise/issues/335)),
+  each absent when unset and kept by a v20 build as unknown.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
