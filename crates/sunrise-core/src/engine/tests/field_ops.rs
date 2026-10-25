@@ -415,10 +415,7 @@ fn the_registry_declares_the_defaults_a_create_reads() {
     let (e, mut db) = (engine(), db());
     let task = new_task(&e, &mut db, "t");
     let t = read_task_t(&e, &db, task);
-    assert_eq!(
-        (t.state, t.stream_id),
-        (TaskState::Todo, inbox_stream_ref())
-    );
+    assert_eq!((t.state, t.stream_id), (TaskState::Todo, None));
 }
 
 /// A vault every device of which reads field ops never logs a full-state
@@ -559,7 +556,13 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
     );
     apply(&mut db, Command::DeleteRoutine(rid));
     apply(&mut db, Command::DeleteContext(ctx));
-    apply(&mut db, Command::DeleteStream(stream));
+    apply(
+        &mut db,
+        Command::DeleteStream {
+            id: stream,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    );
 
     let mut stmt = db
         .conn()
@@ -758,7 +761,10 @@ fn every_command_writes_only_the_fields_it_changed() {
         ),
         (
             "delete a stream",
-            |f| Command::DeleteStream(f.stream),
+            |f| Command::DeleteStream {
+                id: f.stream,
+                disposition: sunrise_domain::Disposition::Detach,
+            },
             |f| vec![(f.stream, &["deleted"])],
         ),
         (
@@ -994,8 +1000,9 @@ fn clearing_a_field_writes_what_its_absence_reads_as() {
 }
 
 /// A create writes the fields it sets to other than their defaults, and no
-/// others; a routine's generated occurrence says it is generated, and a
-/// user's create does not.
+/// others, but for its stream, which it always writes (a build before
+/// ADR-0046 has no default for a block's); a routine's generated occurrence
+/// says it is generated, and a user's create does not.
 #[test]
 fn a_create_writes_only_the_fields_it_sets() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
@@ -1005,7 +1012,7 @@ fn a_create_writes_only_the_fields_it_sets() {
     let task = new_task(&e, &mut db, "t");
     let p = only_patch(&e, &db, since);
     assert!(p.create && !p.is_generated());
-    assert_eq!(p.fields.keys().collect::<Vec<_>>(), ["title"]);
+    assert_eq!(p.fields.keys().collect::<Vec<_>>(), ["stream_id", "title"]);
     assert_eq!(read_task_t(&e, &db, task).title, "t");
 
     let since = mark(&db);
@@ -1457,6 +1464,16 @@ enum Action {
     Delete,
     Restore,
     Resolve(u8),
+    /// Move the task to stream `n` of the two, or (2) to no stream
+    /// (ADR-0046).
+    Move(u8),
+    /// Delete stream `n`, detaching what it held or (`true`) moving it into the
+    /// other.
+    DeleteStream(u8, bool),
+    /// Bring stream `n` back.
+    RestoreStream(u8),
+    /// Triage the task out of the Inbox, or put it back.
+    Triage(bool),
 }
 
 fn arb_action() -> impl Strategy<Value = Action> {
@@ -1470,6 +1487,10 @@ fn arb_action() -> impl Strategy<Value = Action> {
         1 => Just(Action::Delete),
         1 => Just(Action::Restore),
         1 => (0u8..3).prop_map(Action::Resolve),
+        2 => (0u8..3).prop_map(Action::Move),
+        1 => (0u8..2, any::<bool>()).prop_map(|(n, into)| Action::DeleteStream(n, into)),
+        1 => (0u8..2).prop_map(Action::RestoreStream),
+        1 => any::<bool>().prop_map(Action::Triage),
     ]
 }
 
@@ -1480,7 +1501,12 @@ fn arb_step() -> impl Strategy<Value = Step> {
     ]
 }
 
-fn command_of(action: &Action, task: EntityRef, contexts: &[EntityRef]) -> Command {
+fn command_of(
+    action: &Action,
+    task: EntityRef,
+    contexts: &[EntityRef],
+    streams: &[EntityRef; 2],
+) -> Command {
     let edit = |patch: TaskPatch| Command::UpdateTask { id: task, patch };
     match *action {
         Action::Retitle(v) => retitle(task, &format!("title {v}")),
@@ -1515,6 +1541,24 @@ fn command_of(action: &Action, task: EntityRef, contexts: &[EntityRef]) -> Comma
             field: "title".into(),
             value: sunrise_domain::CborValue(Value::Text(format!("title {v}"))),
         },
+        Action::Move(n) => edit(TaskPatch {
+            stream_id: Some(streams.get(usize::from(n)).copied()),
+            ..Default::default()
+        }),
+        Action::DeleteStream(n, into) => {
+            let n = usize::from(n);
+            Command::DeleteStream {
+                id: streams[n],
+                disposition: if into {
+                    sunrise_domain::Disposition::MoveTo(streams[1 - n])
+                } else {
+                    sunrise_domain::Disposition::Detach
+                },
+            }
+        }
+        Action::RestoreStream(n) => Command::Restore(streams[usize::from(n)]),
+        Action::Triage(true) => Command::MarkTriaged { ids: vec![task] },
+        Action::Triage(false) => Command::ReturnToInbox { ids: vec![task] },
     }
 }
 
@@ -1560,6 +1604,18 @@ proptest! {
             .iter()
             .map(|n| new_context(&p.engines[0], &mut p.dbs[0], n))
             .collect();
+        let streams = ["s0", "s1"].map(|n| {
+            p.engines[0]
+                .apply(
+                    &mut p.dbs[0],
+                    Command::CreateStream(StreamDraft {
+                        name: n.into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity
+        });
         let task = new_task(&p.engines[0], &mut p.dbs[0], "t");
         p.sync_all();
         for (n, step) in steps.iter().enumerate() {
@@ -1570,7 +1626,7 @@ proptest! {
                     // state does not allow) writes nothing, as it would.
                     let _ = p.engines[*who].apply(
                         &mut p.dbs[*who],
-                        command_of(action, task, &contexts),
+                        command_of(action, task, &contexts, &streams),
                     );
                 }
                 Step::Sync { from, to } if from != to => p.deliver(*from, *to),

@@ -1,8 +1,9 @@
 //! Time blocks (`docs/02-domain/time-blocks.md`).
 //!
-//! Block ops route under the Block's **own Stream**, like task ops and unlike
-//! routine ops: a calendar is per-Stream in the UI, so routing there keeps a
-//! Block's `seq` independent of the meta stream's.
+//! Block ops are sealed under the Block's **key domain**, like task ops and
+//! unlike routine ops: its own Stream's, or the private domain's for a block
+//! with no stream (ADR-0046 §2). A calendar is per-Stream in the UI, so
+//! routing there keeps a Block's `seq` independent of the meta stream's.
 //!
 //! `Task.blocks` is never written. It is derived from the `block_tasks` join
 //! every time a Task is read, which is what makes the spec's "Bound Task's
@@ -13,7 +14,7 @@
 //! query bounds are a *day* and a *week* rather than a timestamp; `notify` is
 //! their one other caller.
 
-use super::ids::{blob16, decode_unknowns, ms_to_ts, require_kind, require_writable_stream};
+use super::ids::{blob16, decode_unknowns, domain_bytes, home_of, ms_to_ts, require_kind};
 use super::task::read_task;
 use super::write::Appended;
 use super::{Engine, EngineError};
@@ -45,7 +46,7 @@ impl Engine {
     fn new_block(&self, db: &Db, d: BlockDraft, now_ms: u64) -> Result<Block, EngineError> {
         let tz = self.device_zone();
         d.validate(&tz)?;
-        require_writable_stream(d.stream_id)?;
+        let home = home_of(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
@@ -62,7 +63,7 @@ impl Engine {
             id: block_id,
             created_at: ms_to_ts(now_ms as i64),
             updated_at: ms_to_ts(now_ms as i64),
-            stream_id: d.stream_id,
+            stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
             title,
@@ -106,12 +107,12 @@ impl Engine {
         let id = union.id;
         let mut members = vec![(
             InnerOp::BlockCreate(Box::new(union.clone())),
-            *union.stream_id.bytes(),
+            domain_bytes(union.stream_id),
         )];
         for mut original in [first, second] {
             original.deleted = true;
             original.updated_at = ms_to_ts(now_ms as i64);
-            let stream = *original.stream_id.bytes();
+            let stream = domain_bytes(original.stream_id);
             members.push((InnerOp::BlockDelete(Box::new(original)), stream));
         }
         let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
@@ -146,7 +147,7 @@ impl Engine {
         }
         let tz = self.device_zone();
         d.validate(&tz)?;
-        require_writable_stream(d.stream_id)?;
+        let home = home_of(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
@@ -172,7 +173,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(|| ms_to_ts(now_ms as i64), |e| e.created_at),
             updated_at: ms_to_ts(now_ms as i64),
-            stream_id: d.stream_id,
+            stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
             title,
@@ -209,9 +210,7 @@ impl Engine {
         patch: BlockPatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Block)?;
-        if let Some(s) = patch.stream_id {
-            require_writable_stream(s)?;
-        }
+        let home = patch.stream_id.map(home_of).transpose()?;
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?
@@ -228,9 +227,8 @@ impl Engine {
         if let Some(track) = patch.title_track_task {
             block.title_track_task = track;
         }
-        if let Some(s) = patch.stream_id {
-            require_kind(s, EntityKind::Stream)?;
-            block.stream_id = s;
+        if let Some(home) = home {
+            block.stream_id = home;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&self.device_zone())?;
@@ -316,7 +314,7 @@ impl Engine {
             "block.delete" => InnerOp::BlockDelete(Box::new(block.clone())),
             _ => InnerOp::BlockUpdate(Box::new(block.clone())),
         };
-        let stream = *block.stream_id.bytes();
+        let stream = domain_bytes(block.stream_id);
         Ok(db.with_tx(|tx| self.append_and_fold(tx, &inner, &stream, now_ms))?)
     }
 
@@ -522,7 +520,7 @@ pub(super) fn read_block(
             params![&id[..]],
             |r| {
                 Ok((
-                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
@@ -548,7 +546,7 @@ pub(super) fn read_block(
         id: EntityRef::new(EntityKind::Block, *id),
         created_at: ms_to_ts(b.11.max(0)),
         updated_at: ms_to_ts(b.12.max(0)),
-        stream_id: EntityRef::new(EntityKind::Stream, blob16(&b.0)),
+        stream_id: b.0.map(|s| EntityRef::new(EntityKind::Stream, blob16(&s))),
         starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref(), b.13.as_deref()),
         ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref(), b.14.as_deref()),
         title: b.7,

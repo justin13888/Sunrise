@@ -54,7 +54,8 @@ pub struct MappedEvent {
     pub notices: Vec<ICalNotice>,
 }
 
-/// Lower one `VEVENT` onto a [`BlockDraft`] in `stream_id`.
+/// Lower one `VEVENT` onto a [`BlockDraft`] in `stream_id`, or in no stream
+/// for `None` (ADR-0046).
 ///
 /// # Errors
 ///
@@ -62,7 +63,10 @@ pub struct MappedEvent {
 /// `DTSTART`, a zero-length event, or an end that is not after its start. The
 /// caller reports it and moves on to the next event: one unusable event must
 /// not fail the whole import.
-pub fn event_to_block(ev: &ICalEvent, stream_id: EntityRef) -> Result<MappedEvent, ICalNotice> {
+pub fn event_to_block(
+    ev: &ICalEvent,
+    stream_id: Option<EntityRef>,
+) -> Result<MappedEvent, ICalNotice> {
     let uid = || Some(ev.uid.clone());
     let skip = |detail: String| ICalNotice {
         code: NoticeCode::Skipped,
@@ -324,10 +328,10 @@ mod tests {
 
     #[test]
     fn a_timed_event_becomes_a_block_over_the_same_range() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         assert_eq!(m.uid, "ev1@example.com");
         assert_eq!(m.draft.title.as_deref(), Some("Coffee with Alice"));
-        assert_eq!(m.draft.stream_id, stream());
+        assert_eq!(m.draft.stream_id, Some(stream()));
         assert!(m.draft.tasks.is_empty());
         assert!(!m.draft.title_track_task);
         m.draft
@@ -368,7 +372,7 @@ mod tests {
             dtstart: Some(ICalTime::Date(civil::date(2026, 3, 1))),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.starts_at,
             SunriseTime::all_day(civil::date(2026, 3, 1))
@@ -388,7 +392,7 @@ mod tests {
             dtstart: Some(utc(2026, 3, 1, 9)),
             ..ICalEvent::new("ev1")
         };
-        let err = event_to_block(&ev, stream()).expect_err("no end");
+        let err = event_to_block(&ev, Some(stream())).expect_err("no end");
         assert_eq!(err.code, NoticeCode::Skipped);
         assert!(err.detail.contains("zero length"), "{}", err.detail);
     }
@@ -400,7 +404,7 @@ mod tests {
             duration: Some("PT90M".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.ends_at,
             SunriseTime::instant(
@@ -422,7 +426,7 @@ mod tests {
             duration: Some("P1D".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 2, 9)));
     }
 
@@ -432,7 +436,7 @@ mod tests {
             duration: Some("PT9H".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 1, 15)));
         assert!(m
             .notices
@@ -446,7 +450,7 @@ mod tests {
             dtstart: None,
             ..event()
         };
-        assert!(event_to_block(&ev, stream()).is_err());
+        assert!(event_to_block(&ev, Some(stream())).is_err());
     }
 
     #[test]
@@ -455,7 +459,7 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 13)),
             ..event()
         };
-        let err = event_to_block(&ev, stream()).expect_err("inverted");
+        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
         assert!(err.detail.contains("not after"), "{}", err.detail);
     }
 
@@ -472,7 +476,7 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 12)),
             ..event()
         };
-        let err = event_to_block(&ev, stream()).expect_err("inverted");
+        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
         assert_eq!(err.code, NoticeCode::Skipped);
         assert!(err.detail.contains("not after"), "{}", err.detail);
 
@@ -485,7 +489,7 @@ mod tests {
             }),
             ..ev
         };
-        assert!(event_to_block(&ev, stream()).is_err());
+        assert!(event_to_block(&ev, Some(stream())).is_err());
     }
 
     /// A floating start beside a UTC end orders differently in different
@@ -498,7 +502,7 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 12)),
             ..event()
         };
-        assert!(event_to_block(&ev, stream()).is_ok());
+        assert!(event_to_block(&ev, Some(stream())).is_ok());
     }
 
     #[test]
@@ -509,7 +513,7 @@ mod tests {
             rrule: Some("FREQ=WEEKLY".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         let details: Vec<&str> = m.notices.iter().map(|n| n.detail.as_str()).collect();
         assert_eq!(details.len(), 3, "{details:?}");
         assert!(details.iter().any(|d| d.starts_with("DESCRIPTION")));
@@ -523,7 +527,7 @@ mod tests {
             summary: Some("   ".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.title.as_deref(), Some("(untitled event)"));
         m.draft.validate(&TimeZone::UTC).expect("valid");
     }
@@ -548,7 +552,7 @@ mod tests {
     /// user's own `.ics` from doubling their calendar when they read it back.
     #[test]
     fn a_block_exported_and_re_imported_maps_to_the_same_block() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         let id = imported_block_id("ics", &m.uid);
         let block = block_from(&m, id);
 
@@ -557,7 +561,7 @@ mod tests {
         // Under a different source too: the id is in the UID, not the hash.
         assert_eq!(imported_block_id("other", &exported.uid), id);
 
-        let back = event_to_block(&exported, stream()).expect("mapped");
+        let back = event_to_block(&exported, Some(stream())).expect("mapped");
         assert_eq!(back.draft.starts_at, m.draft.starts_at);
         assert_eq!(back.draft.ends_at, m.draft.ends_at);
         assert_eq!(back.draft.title, m.draft.title);
@@ -565,7 +569,7 @@ mod tests {
 
     #[test]
     fn export_uses_the_resolved_title_not_the_stored_one() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         let block = block_from(&m, imported_block_id("ics", &m.uid));
         let ev = block_to_event(&block, Some("What the grid shows"));
         assert_eq!(ev.summary.as_deref(), Some("What the grid shows"));

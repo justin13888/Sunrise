@@ -1705,7 +1705,11 @@ USAGE:
     sunrise today                list today's tasks
     sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then
                                  the undated tasks of each stream
-    sunrise inbox                list inbox tasks
+    sunrise inbox                list the Inbox: open tasks with no stream,
+                                 no date, and not triaged
+    sunrise triage <id>...       take tasks out of the Inbox and leave them
+                                 with no stream and no date
+    sunrise untriage <id>...     put triaged tasks back in the Inbox
     sunrise next                 the focus planner's top picks
     sunrise search [--kind <k>] [--all] <query>...
                                  search everything, grouped by kind; the
@@ -1717,9 +1721,15 @@ USAGE:
     sunrise streams move <id|name> before <id|name>
     sunrise streams move <id|name> last
                                  reorder the stream list; syncs to every device
-    sunrise stream <id|name>     list the tasks in one stream
+    sunrise stream <id|name>     list the tasks in one stream; `none` lists
+                                 the tasks of no stream
     sunrise streams create|edit|archive|unarchive|delete <id|name> ...
                                  change the stream list
+    sunrise streams delete <id|name> [--move-to <id|name>]
+                                 delete a stream and move everything it held,
+                                 its tasks, blocks and routines, to another
+                                 stream or to no stream; its sub-streams
+                                 become top-level
     sunrise contexts             list contexts with task counts
     sunrise context <id|name>    list the tasks carrying one context
     sunrise contexts create|edit|archive|unarchive|delete <id|name> ...
@@ -2058,6 +2068,9 @@ needs_id = "done needs at least one task id"
 [cli.drop]
 needs_id = "drop needs at least one task id"
 
+[cli.triage]
+needs_id = "triage and untriage need at least one task id"
+
 [cli.reorder]
 usage = "usage: move <id>... before|after <id> | move <id>... first|last"
 # {id} is a task being moved, {anchor} the task it was to land next to.
@@ -2235,6 +2248,8 @@ capture = "capture “{title}”"
 complete = "complete “{title}”"
 edit = "edit “{name}”"
 move_task = "move “{title}” to another stream"
+triage = "triage “{title}”"
+untriage = "return “{title}” to the Inbox"
 retitle = "retitle “{title}”"
 defer = "defer “{title}”"
 schedule = "schedule “{title}”"

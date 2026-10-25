@@ -9,7 +9,7 @@
 //! new attachment. Which is why its row writer is an upsert and there is no
 //! update-row at all (`merge::rows`).
 
-use super::ids::{blob16, blob32, decode_unknowns, ms_to_ts, require_kind};
+use super::ids::{blob16, blob32, decode_unknowns, domain_bytes, ms_to_ts, require_kind};
 use super::task::read_task;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
@@ -17,7 +17,7 @@ use crate::inner_op::InnerOp;
 use crate::queries::QueryResult;
 use rusqlite::{params, OptionalExtension};
 use sunrise_domain::Unknowns;
-use sunrise_domain::{inbox_stream_ref, Attachment, AttachmentDraft};
+use sunrise_domain::{Attachment, AttachmentDraft};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
@@ -91,7 +91,7 @@ impl Engine {
             att.set_preview(d.width, d.height, d.thumbnail.as_ref());
         }
         let id = att.id;
-        let stream = *parent.stream_id.bytes();
+        let stream = domain_bytes(parent.stream_id);
         let op = InnerOp::AttachmentCreate(Box::new(att));
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
@@ -112,15 +112,15 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut att = read_attachment(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("attachment {id}")))?;
-        let stream = read_task(db.conn(), att.parent.bytes())?
-            .map_or_else(inbox_stream_ref, |t| t.stream_id);
+        let stream =
+            domain_bytes(read_task(db.conn(), att.parent.bytes())?.and_then(|t| t.stream_id));
         // The op carries the attachment's whole state with `deleted` set, so a
         // delete that wins LWW replaces the row on every replica rather than
         // flipping one column on top of whatever that replica held.
         att.deleted = true;
         att.updated_at = ms_to_ts(now_ms as i64);
         let op = InnerOp::AttachmentDelete(Box::new(att));
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, stream.bytes(), now_ms))?;
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }

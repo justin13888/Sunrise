@@ -58,7 +58,8 @@ pub enum CoreCommand {
         /// Target.
         id: EntityRef,
     },
-    /// Move a task to another stream.
+    /// Move a task to another stream, or to no stream given the legacy Inbox
+    /// id ([`crate::vocab::inbox_stream_id`]).
     ///
     /// Equivalent to `UpdateTask` with `TaskEdit::stream_id` set — the core
     /// routes `PromoteToStream` straight into `update_task` with a
@@ -82,7 +83,10 @@ pub enum CoreCommand {
         /// The edit.
         edit: StreamEdit,
     },
-    /// Tombstone a stream.
+    /// Tombstone a stream, and move everything it held to no stream: its
+    /// tasks, blocks and routine templates, and its child streams to the top
+    /// level, in one commit. `DeleteStreamInto` moves them to another stream
+    /// instead. See [`sunrise_core::Command::DeleteStream`].
     DeleteStream {
         /// Target.
         id: EntityRef,
@@ -320,6 +324,26 @@ pub enum CoreCommand {
         /// The view.
         id: EntityRef,
     },
+    /// Tombstone a stream, and move everything it held into the live stream
+    /// `into`, in one commit (ADR-0046 §4): `DeleteStream` with a re-home
+    /// target. See [`sunrise_core::Command::DeleteStream`].
+    DeleteStreamInto {
+        /// Target.
+        id: EntityRef,
+        /// The live stream its tasks, blocks and routine templates go to.
+        into: EntityRef,
+    },
+    /// Triage tasks out of the Inbox without giving them a stream or a date
+    /// (ADR-0046 §3). See [`sunrise_core::Command::MarkTriaged`].
+    MarkTriaged {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// Undo `MarkTriaged`. See [`sunrise_core::Command::ReturnToInbox`].
+    ReturnToInbox {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -397,7 +421,10 @@ impl CoreCommand {
                 id,
                 patch: edit.into(),
             },
-            Self::DeleteStream { id } => Command::DeleteStream(id),
+            Self::DeleteStream { id } => Command::DeleteStream {
+                id,
+                disposition: sunrise_domain::Disposition::Detach,
+            },
             Self::CreateContext { draft } => Command::CreateContext(draft.into()),
             Self::UpdateContext { id, edit } => Command::UpdateContext {
                 id,
@@ -483,6 +510,12 @@ impl CoreCommand {
                 patch: edit.into(),
             },
             Self::DeleteSavedView { id } => Command::DeleteSavedView(id),
+            Self::DeleteStreamInto { id, into } => Command::DeleteStream {
+                id,
+                disposition: sunrise_domain::Disposition::MoveTo(into),
+            },
+            Self::MarkTriaged { ids } => Command::MarkTriaged { ids },
+            Self::ReturnToInbox { ids } => Command::ReturnToInbox { ids },
         })
     }
 }

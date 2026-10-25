@@ -16,7 +16,7 @@ fn row(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> BlockGridRow {
             id: EntityRef::new(EntityKind::Block, [n; 16]),
             created_at: Timestamp::UNIX_EPOCH,
             updated_at: Timestamp::UNIX_EPOCH,
-            stream_id: sunrise_domain::inbox_stream_ref(),
+            stream_id: None,
             starts_at,
             ends_at,
             title: Some("Deep work".into()),

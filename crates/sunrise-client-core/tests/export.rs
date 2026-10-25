@@ -81,7 +81,7 @@ async fn seed(core: &Core) {
         .unwrap()
         .entity;
     core.submit(Command::CreateBlock(BlockDraft {
-        stream_id: stream,
+        stream_id: Some(stream),
         starts_at: SunriseTime::zoned(day.at(14, 0, 0, 0), "Europe/Berlin"),
         ends_at: SunriseTime::zoned(day.at(15, 0, 0, 0), "Europe/Berlin"),
         title: Some("Dentist".into()),
@@ -93,7 +93,7 @@ async fn seed(core: &Core) {
     core.submit(Command::CreateRoutine(RoutineDraft {
         template: TaskTemplate {
             title: "Water plants".into(),
-            stream_id: stream,
+            stream_id: Some(stream),
             contexts: Vec::new(),
             energy: None,
             priority: None,

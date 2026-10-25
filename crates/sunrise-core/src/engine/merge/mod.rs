@@ -156,8 +156,12 @@ pub(super) use versions::{heads, precedes};
 /// before it kept a key a newer device wrote in `extra`, as an unknown field.
 /// `5` derives a routine's streak fields from its keys once a `Patch` has
 /// written them (ADR-0065 §5, #331), where a routine folded at `4` holds the
-/// registers.
-pub(crate) const FOLD_V: u32 = 5;
+/// registers. `6` projects a task's, block's and routine template's
+/// effective stream (ADR-0046 §4: a deleted stream reads as where it
+/// re-homed its dependents, and the legacy Inbox sentinel as no stream) and
+/// `Task.triaged_at` and `Stream.rehomed_to` into their columns (migration
+/// 0044, #332), where a build before it kept the last two in `extra`.
+pub(crate) const FOLD_V: u32 = 6;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

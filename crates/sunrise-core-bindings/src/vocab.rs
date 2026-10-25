@@ -315,15 +315,18 @@ pub fn session_progress(session: SessionRow, now_ms: u64) -> SessionProgress {
     }
 }
 
-/// The synthetic Inbox stream's id.
+/// The legacy Inbox id: how the seam spells "no stream" (ADR-0046 §5).
 ///
-/// `Query::StreamList` puts the Inbox first as an ordinary-looking row, and a
-/// client has to tell it apart: it cannot be renamed, recoloured or deleted,
-/// and offering those would produce a rejected command and a confused user.
+/// A task, block or routine template that belongs to no stream carries it in
+/// its non-optional `stream_id` (and `None` in the optional field beside it),
+/// and a command given it moves the entity to no stream. The binding's
+/// `CoreQuery::StreamList` still puts a synthetic Inbox row first under this
+/// id, counting the Inbox view, for a client that predates the Inbox being a
+/// view; it cannot be renamed, recoloured or deleted.
 ///
 /// Exported rather than hardcoded because the alternative is a client
-/// comparing against the literal all-zero id — or worse, against the string
-/// "Inbox", which is a display name and translatable.
+/// comparing against a literal id, or worse, against the string "Inbox",
+/// which is a display name and translatable.
 #[uniffi::export]
 #[must_use]
 pub fn inbox_stream_id() -> sunrise_id::EntityRef {
@@ -428,7 +431,7 @@ pub fn merged_block_draft(
     let draft = vocab::merged_block_draft(&a.block.to_domain(), &b.block.to_domain(), &tz)
         .map_err(|e| BindingError::Core(e.to_string()))?;
     Ok(BlockDraftIn {
-        stream_id: draft.stream_id,
+        stream_id: sunrise_domain::stream_key(draft.stream_id),
         starts_at: TimeValue::from(&draft.starts_at),
         ends_at: TimeValue::from(&draft.ends_at),
         title: draft.title,

@@ -105,12 +105,12 @@ pub enum ActivityKind {
         /// `deferred_count` after the write.
         count: i64,
     },
-    /// Task moved between Streams.
+    /// Task moved between Streams, or into or out of no stream.
     TaskMoved {
-        /// Stream it left.
-        from: EntityRef,
-        /// Stream it joined.
-        to: EntityRef,
+        /// Stream it left; `None` for no stream.
+        from: Option<EntityRef>,
+        /// Stream it joined; `None` for no stream.
+        to: Option<EntityRef>,
     },
     /// A field-level edit, summarized: *"Updated `<task>` (3 fields)"*.
     TaskUpdated {
@@ -384,7 +384,7 @@ mod tests {
             updated_at: ts(T0),
             title: title.into(),
             body: None,
-            stream_id: eref(EntityKind::Stream, stream),
+            stream_id: Some(eref(EntityKind::Stream, stream)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
@@ -401,6 +401,7 @@ mod tests {
             routine_id: None,
             routine_occurrence: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -424,6 +425,7 @@ mod tests {
             paused_until: None,
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         }
@@ -513,7 +515,7 @@ mod tests {
         let t = task(1, 2, "Ship it");
 
         let mut moved = t.clone();
-        moved.stream_id = eref(EntityKind::Stream, 9);
+        moved.stream_id = Some(eref(EntityKind::Stream, 9));
 
         let mut deferred = moved.clone();
         deferred.deferred_count = 1;
@@ -552,8 +554,8 @@ mod tests {
         assert_eq!(
             events[1].kind,
             ActivityKind::TaskMoved {
-                from: eref(EntityKind::Stream, 2),
-                to: eref(EntityKind::Stream, 9),
+                from: Some(eref(EntityKind::Stream, 2)),
+                to: Some(eref(EntityKind::Stream, 9)),
             }
         );
         assert_eq!(events[2].kind, ActivityKind::TaskDeferred { count: 1 });
@@ -602,7 +604,7 @@ mod tests {
         let start = FocusStart {
             id: session,
             task_id: t.id,
-            stream_id: t.stream_id,
+            stream_id: t.stream_id.unwrap_or_else(crate::inbox_stream_ref),
             started_at: crate::epoch_ms::from_u64(T0 + 10),
             planned_ms: Some(1_500_000),
             energy: Some(Energy::High),

@@ -1,7 +1,8 @@
 //! The Task command path and reads of the `tasks` table.
 //!
-//! Task ops route under their owning Stream's id rather than the meta stream,
-//! so a Task's `seq` advances with the Stream it lives in.
+//! Task ops are sealed under their key domain (ADR-0046 §2): their owning
+//! Stream's, or the private domain's for a task with no stream, never the
+//! meta stream's. So a Task's `seq` advances with the domain it lives in.
 //!
 //! The read spans more than one table on purpose: a Task's contexts, its
 //! blockers and its search-index rows are written and re-read together with the
@@ -11,8 +12,8 @@
 
 use super::block::read_task_blocks;
 use super::ids::{
-    blob16, decode_unknowns, ms_to_ts, parse_energy, parse_task_state, require_kind,
-    require_writable_stream, time_from_parts,
+    blob16, decode_unknowns, domain_bytes, home_of, ms_to_ts, parse_energy, parse_task_state,
+    require_kind, time_from_parts,
 };
 use super::routine::{read_routine, StreakWrite};
 use super::snapshot::in_tx;
@@ -25,9 +26,9 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, resolve_cycles, violations_by_severity, DependencyGraph, NoteBody, Routine,
-    ScheduleConstraint, StreakOutcome, SunriseTime, SuppressedEdge, Task, TaskDraft, TaskPatch,
-    TaskState, ValidationError,
+    resolve_cycles, violations_by_severity, DependencyGraph, NoteBody, Routine, ScheduleConstraint,
+    StreakOutcome, SunriseTime, SuppressedEdge, Task, TaskDraft, TaskPatch, TaskState,
+    ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -41,8 +42,7 @@ impl Engine {
         d.validate(&self.device_zone())?;
         let now_ms = self.clock.now_ms();
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
-        let stream = d.stream_id.unwrap_or_else(inbox_stream_ref);
-        require_writable_stream(stream)?;
+        let stream = home_of(d.stream_id)?;
         let task = Task {
             reminder_lead_s: d.reminder_lead_s,
             id: task_id,
@@ -67,6 +67,7 @@ impl Engine {
             routine_id: None,
             routine_occurrence: None,
             sort_order: None,
+            triaged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -77,7 +78,8 @@ impl Engine {
         let soft_violations = self.check_schedule_constraints(&task)?;
 
         let op = InnerOp::TaskCreate(task);
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, stream.bytes(), now_ms))?;
+        let domain = domain_bytes(stream);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &domain, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(
@@ -135,9 +137,7 @@ impl Engine {
         now_ms: u64,
     ) -> Result<TaskWrite, EngineError> {
         require_kind(id, EntityKind::Task)?;
-        if let Some(s) = patch.stream_id {
-            require_writable_stream(s)?;
-        }
+        let home = patch.stream_id.map(home_of).transpose()?;
         patch.validate()?;
         let mut task = read_task(conn, id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
@@ -158,9 +158,8 @@ impl Engine {
         if let Some(b) = patch.body {
             task.body = b;
         }
-        if let Some(s) = patch.stream_id {
-            require_kind(s, EntityKind::Stream)?;
-            task.stream_id = s;
+        if let Some(home) = home {
+            task.stream_id = home;
         }
         if let Some(cs) = patch.contexts {
             task.contexts = cs.into_iter().collect();
@@ -514,12 +513,61 @@ impl Engine {
         stream: EntityRef,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Task)?;
-        require_writable_stream(stream)?;
         let patch = TaskPatch {
-            stream_id: Some(stream),
+            stream_id: Some(home_of(Some(stream))?),
             ..Default::default()
         };
         self.update_task(db, id, patch)
+    }
+
+    /// [`Command::MarkTriaged`](crate::commands::Command::MarkTriaged) and
+    /// [`Command::ReturnToInbox`](crate::commands::Command::ReturnToInbox):
+    /// set `triaged_at` to now on every task in `ids`, or clear it, as one
+    /// group (ADR-0046 §3). A task that already holds the value is left
+    /// alone; the batch is refused whole on an unknown or repeated id.
+    pub(super) fn set_triaged(
+        &self,
+        db: &mut Db,
+        ids: Vec<EntityRef>,
+        triaged: bool,
+    ) -> Result<CommandResult, EngineError> {
+        if ids.is_empty() {
+            return Err(EngineError::Invalid(
+                "a triage command needs at least one task".into(),
+            ));
+        }
+        let now_ms = self.clock.now_ms();
+        let mut seen = BTreeSet::new();
+        let mut writes = Vec::with_capacity(ids.len());
+        for id in &ids {
+            require_kind(*id, EntityKind::Task)?;
+            if !seen.insert(*id) {
+                return Err(EngineError::Invalid(format!(
+                    "{id} appears twice in one triage command"
+                )));
+            }
+            let mut task = read_task(db.conn(), id.bytes())?
+                .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
+            let at = triaged.then(|| ms_to_ts(now_ms as i64));
+            if task.triaged_at.is_some() == triaged {
+                continue;
+            }
+            task.triaged_at = at;
+            task.updated_at = ms_to_ts(now_ms as i64);
+            writes.push(TaskWrite::plain(task));
+        }
+        let first = ids[0];
+        let done = in_tx(db, |tx| {
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut members: Vec<(InnerOp, [u8; 16])> = Vec::with_capacity(writes.len());
+            for w in &writes {
+                members.extend(w.op_in(self, tx, mode)?);
+            }
+            Ok(self.append_and_fold_group(tx, members, now_ms)?)
+        })?;
+        let done = done.first().copied().unwrap_or(Appended::NOTHING);
+        let state = read_task(db.conn(), first.bytes())?.map(|t| t.state);
+        Ok(CommandResult::new(first, state, done.op_id, done.seq))
     }
 }
 
@@ -552,9 +600,10 @@ impl TaskWrite {
         }
     }
 
-    /// The op and the stream it is logged in: the task's own.
+    /// The op and the key domain it is logged in: the task's own stream's,
+    /// or the private domain's (ADR-0046 §2).
     pub(super) fn op(&self) -> (InnerOp, [u8; 16]) {
-        let stream = *self.task.stream_id.bytes();
+        let stream = domain_bytes(self.task.stream_id);
         let op = if self.delete {
             InnerOp::TaskDelete(self.task.clone())
         } else {
@@ -644,13 +693,17 @@ fn constraint_violations(
 /// An edge the cycle rule suppresses ([`resolved_dependencies`]) is counted
 /// in neither direction, so a cycle two devices merged leaves one of its
 /// tasks actionable.
+///
+/// `stream` narrows to one stream; the legacy Inbox id narrows to the tasks
+/// of no stream (ADR-0046), as [`Query::StreamTasks`](crate::queries::Query::StreamTasks) reads it.
 pub(super) fn actionable_scan(
     conn: &rusqlite::Connection,
     stream: Option<EntityRef>,
     limit: u32,
     actionable_only: bool,
 ) -> Result<Vec<([u8; 16], u32, u32)>, EngineError> {
-    let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
+    let no_stream = stream.is_some_and(|s| sunrise_domain::names_no_stream(&s));
+    let stream_blob: Option<Vec<u8>> = stream.filter(|_| !no_stream).map(|s| s.bytes().to_vec());
     let suppressed = suppressed_edge_keys(conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, open_blockers, unblocks FROM (
@@ -674,6 +727,7 @@ pub(super) fn actionable_scan(
                -- build does not know counts as open, as `todo` (ADR-0045 §6).
                AND t.state NOT IN ('done', 'cancelled')
                AND (?1 IS NULL OR t.stream_id = ?1)
+               AND (?5 = 0 OR t.stream_id IS NULL)
          )
          WHERE (?3 = 0 OR open_blockers = 0)
          ORDER BY open_blockers ASC, unblocks DESC, id ASC
@@ -681,7 +735,13 @@ pub(super) fn actionable_scan(
     )?;
     let rows = stmt
         .query_map(
-            params![stream_blob, limit, i64::from(actionable_only), suppressed],
+            params![
+                stream_blob,
+                limit,
+                i64::from(actionable_only),
+                suppressed,
+                i64::from(no_stream)
+            ],
             |r| {
                 Ok((
                     r.get::<_, Vec<u8>>(0)?,
@@ -844,12 +904,13 @@ pub(super) fn read_task(
                     scheduled_at_kind, scheduled_at_tz,
                     due_at_kind, due_at_tz,
                     completed_at_kind, completed_at_tz, extra, reminder_lead_s,
-                    scheduled_at_civil, due_at_civil, completed_at_civil, sort_order
+                    scheduled_at_civil, due_at_civil, completed_at_civil, sort_order,
+                    triaged_at_ms
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
                 Ok((
-                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<i64>>(3)?,
@@ -879,6 +940,7 @@ pub(super) fn read_task(
                     r.get::<_, Option<String>>(27)?,
                     r.get::<_, Option<String>>(28)?,
                     r.get::<_, Option<String>>(29)?,
+                    r.get::<_, Option<i64>>(30)?,
                 ))
             },
         )
@@ -886,9 +948,6 @@ pub(super) fn read_task(
     let Some(t) = row else {
         return Ok(None);
     };
-    let mut stream_bytes = [0u8; 16];
-    let take = t.0.len().min(16);
-    stream_bytes[..take].copy_from_slice(&t.0[..take]);
     let mut contexts = BTreeSet::new();
     {
         let mut stmt = conn.prepare("SELECT context_id FROM task_contexts WHERE task_id = ?")?;
@@ -908,7 +967,7 @@ pub(super) fn read_task(
         updated_at: ms_to_ts(t.17.max(0)),
         title: t.1,
         body: t.12.map(NoteBody),
-        stream_id: EntityRef::new(EntityKind::Stream, stream_bytes),
+        stream_id: t.0.map(|b| EntityRef::new(EntityKind::Stream, blob16(&b))),
         contexts,
         state: parse_task_state(&t.2),
         priority: t.3.and_then(|v| u8::try_from(v).ok()),
@@ -941,6 +1000,7 @@ pub(super) fn read_task(
         }),
         routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
         sort_order: t.29,
+        triaged_at: t.30.map(ms_to_ts),
         archived: t.10 != 0,
         deleted: t.11 != 0,
         unknown: decode_unknowns(t.24),

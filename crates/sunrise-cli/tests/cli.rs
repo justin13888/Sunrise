@@ -104,15 +104,13 @@ fn capture_applies_annotations_end_to_end() {
 #[test]
 fn capture_resolves_a_stream_by_name() {
     let dir = tempfile::tempdir().unwrap();
-    // The synthetic Inbox row is resolvable by name with no setup.
+    // `#inbox` still names "no stream" (ADR-0046), and leaves the title alone.
     let out = run(dir.path(), &["capture", "Triage me #inbox"]);
     assert!(out.status.success());
-    let streams = stdout(&run(dir.path(), &["streams"]));
-    assert!(streams.contains("Inbox"), "got {streams:?}");
-    assert!(
-        streams.contains("1 open"),
-        "the captured task must count against Inbox: {streams:?}"
-    );
+    let inbox = stdout(&run(dir.path(), &["inbox"]));
+    assert!(inbox.contains("Triage me"), "got {inbox:?}");
+    assert!(!inbox.contains('#'), "got {inbox:?}");
+    assert!(!stdout(&run(dir.path(), &["streams"])).contains("Inbox"));
 }
 
 /// The parser's governing invariant, asserted through the binary: an
@@ -844,11 +842,12 @@ fn contexts_and_routines_are_listable_without_a_terminal() {
 #[test]
 fn stream_lists_the_tasks_in_one_stream() {
     let dir = tempfile::tempdir().unwrap();
-    run(dir.path(), &["capture", "Renew passport"]);
-    run(dir.path(), &["capture", "Book the movers"]);
+    run(dir.path(), &["streams", "create", "Errands"]);
+    run(dir.path(), &["capture", "Renew passport #errands"]);
+    run(dir.path(), &["capture", "Book the movers #errands"]);
 
-    // By name, resolved the same way `#inbox` is in a capture line.
-    let by_name = stdout(&run(dir.path(), &["stream", "inbox"]));
+    // By name, resolved the same way `#errands` is in a capture line.
+    let by_name = stdout(&run(dir.path(), &["stream", "errands"]));
     assert!(by_name.contains("Renew passport"), "got {by_name:?}");
     assert!(by_name.contains("Book the movers"), "got {by_name:?}");
 

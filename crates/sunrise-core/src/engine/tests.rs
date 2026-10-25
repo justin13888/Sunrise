@@ -199,7 +199,7 @@ mod testutil {
         RoutineDraft {
             template: TaskTemplate {
                 title: "Water plants".into(),
-                stream_id: stream,
+                stream_id: Some(stream),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -264,7 +264,7 @@ mod testutil {
     pub(super) fn block_draft(hour: i8, len: i8, title: Option<&str>) -> BlockDraft {
         let (starts_at, ends_at) = block_at(hour, len);
         BlockDraft {
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             starts_at,
             ends_at,
             title: title.map(ToOwned::to_owned),
@@ -756,6 +756,7 @@ mod testutil {
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
             reminder_lead_s: None,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         };
@@ -1188,7 +1189,7 @@ mod testutil {
         String,
         Option<i64>,
         Option<i64>,
-        Vec<u8>,
+        Option<Vec<u8>>,
         i64,
         i64,
         Option<i64>,
@@ -1212,7 +1213,7 @@ mod testutil {
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<i64>>(3)?,
                 r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, Option<Vec<u8>>>(5)?,
                 r.get::<_, i64>(6)?,
                 r.get::<_, i64>(7)?,
                 r.get::<_, Option<i64>>(8)?,
@@ -1695,7 +1696,7 @@ fn create_task_round_trips() {
         _ => panic!("wrong query result variant"),
     };
     assert_eq!(t.title, "draft a memo");
-    assert_eq!(t.stream_id, inbox_stream_ref());
+    assert_eq!(t.stream_id, None);
 }
 
 #[test]
@@ -1990,8 +1991,9 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
                 ..Default::default()
             },
         }),
-        ("stream.delete", |db| {
-            Command::DeleteStream(seed_stream(db, "Work"))
+        ("stream.delete", |db| Command::DeleteStream {
+            id: seed_stream(db, "Work"),
+            disposition: sunrise_domain::Disposition::Detach,
         }),
         ("context.create", |_db| {
             Command::CreateContext(ContextDraft {
@@ -2148,7 +2150,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
         ("UpdateTask.patch.stream_id", |e, db| Command::UpdateTask {
             id: new_task(e, db, "t"),
             patch: TaskPatch {
-                stream_id: Some(meta_ref()),
+                stream_id: Some(Some(meta_ref())),
                 ..Default::default()
             },
         }),
@@ -2189,8 +2191,9 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
                 },
             }
         }),
-        ("DeleteStream.id", |_e, _db| {
-            Command::DeleteStream(meta_ref())
+        ("DeleteStream.id", |_e, _db| Command::DeleteStream {
+            id: meta_ref(),
+            disposition: sunrise_domain::Disposition::Detach,
         }),
         ("CreateRoutine.template.stream_id", |_e, _db| {
             Command::CreateRoutine(routine_draft(
@@ -2211,7 +2214,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
             );
             let mut template = d.template.clone();
             let id = e.apply(db, Command::CreateRoutine(d)).unwrap().entity;
-            template.stream_id = meta_ref();
+            template.stream_id = Some(meta_ref());
             Command::UpdateRoutine {
                 id,
                 patch: RoutinePatch {
@@ -2222,12 +2225,12 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
         }),
         ("CreateBlock.stream_id", |_e, _db| {
             let mut d = block_draft(9, 1, Some("b"));
-            d.stream_id = meta_ref();
+            d.stream_id = Some(meta_ref());
             Command::CreateBlock(d)
         }),
         ("ImportBlock.draft.stream_id", |_e, _db| {
             let mut draft = block_draft(9, 1, Some("b"));
-            draft.stream_id = meta_ref();
+            draft.stream_id = Some(meta_ref());
             Command::ImportBlock {
                 source: "ics".into(),
                 uid: "uid-1".into(),
@@ -2242,7 +2245,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
             Command::UpdateBlock {
                 id,
                 patch: BlockPatch {
-                    stream_id: Some(meta_ref()),
+                    stream_id: Some(Some(meta_ref())),
                     ..Default::default()
                 },
             }
@@ -2786,7 +2789,7 @@ fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
     // guards and not a broken fixture.
     e.apply(&mut db, Command::PromoteToStream { id: task, stream })
         .unwrap();
-    assert_eq!(read_task_t(&e, &db, task).stream_id, stream);
+    assert_eq!(read_task_t(&e, &db, task).stream_id, Some(stream));
 }
 
 #[test]
@@ -2882,7 +2885,7 @@ fn a_reorder_moves_one_stream_and_touches_no_sibling() {
     }
     let listed = |e: &Engine, db: &Db| -> Vec<(String, String)> {
         match e.query(db, Query::StreamList).unwrap() {
-            QueryResult::Streams(rows) => rows[1..]
+            QueryResult::Streams(rows) => rows
                 .iter()
                 .map(|r| (r.name.clone(), r.sort_order.clone()))
                 .collect(),
@@ -2963,12 +2966,53 @@ fn a_sort_key_outside_the_alphabet_is_rejected() {
     assert!(sort_order::is_valid(&st.sort_order));
 }
 
+/// The private key domain, once the Inbox sentinel stream, is not a Stream
+/// (ADR-0046 §2): no stream command may delete, edit or nest under it.
 #[test]
-fn cannot_delete_inbox_stream() {
+fn the_private_domain_is_not_a_stream_any_stream_command_takes() {
     let mut db = db();
     let e = engine();
-    let res = e.apply(&mut db, Command::DeleteStream(inbox_stream_ref()));
-    assert!(matches!(res, Err(EngineError::Invalid(_))));
+    let private = inbox_stream_ref();
+    let res = e.apply(
+        &mut db,
+        Command::DeleteStream {
+            id: private,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    );
+    assert!(matches!(res, Err(EngineError::ReservedStream)), "{res:?}");
+    let res = e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id: private,
+            patch: StreamPatch {
+                name: Some("Mine".into()),
+                ..Default::default()
+            },
+        },
+    );
+    assert!(matches!(res, Err(EngineError::ReservedStream)), "{res:?}");
+    let res = e.apply(
+        &mut db,
+        Command::CreateStream(StreamDraft {
+            name: "Child".into(),
+            parent_id: Some(private),
+            ..Default::default()
+        }),
+    );
+    assert!(matches!(res, Err(EngineError::ReservedStream)), "{res:?}");
+    let work = seed_stream(&mut db, "Work");
+    let res = e.apply(
+        &mut db,
+        Command::DeleteStream {
+            id: work,
+            disposition: sunrise_domain::Disposition::MoveTo(private),
+        },
+    );
+    assert!(
+        matches!(res, Err(EngineError::ReservedStream)),
+        "a move into it is spelled Detach: {res:?}"
+    );
 }
 
 #[test]
@@ -3169,7 +3213,7 @@ fn invalid_state_transition_rejected() {
 }
 
 #[test]
-fn stream_list_counts_open_tasks_inbox_first_and_ordering() {
+fn stream_list_counts_open_tasks_and_ordering() {
     let mut db = db();
     let e = engine();
 
@@ -3207,7 +3251,14 @@ fn stream_list_counts_open_tasks_inbox_first_and_ordering() {
         )
         .unwrap()
         .entity;
-    e.apply(&mut db, Command::DeleteStream(gone)).unwrap();
+    e.apply(
+        &mut db,
+        Command::DeleteStream {
+            id: gone,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+    .unwrap();
 
     // Inbox: 1 open + 1 done (done not counted).
     e.apply(
@@ -3295,26 +3346,24 @@ fn stream_list_counts_open_tasks_inbox_first_and_ordering() {
         _ => panic!("wrong variant"),
     };
 
-    // Inbox is always first.
-    assert_eq!(rows[0].id, inbox_stream_ref());
-    assert_eq!(rows[0].name, "Inbox");
-    assert_eq!(rows[0].open_task_count, 1);
-
-    // Then real (non-deleted) streams in fractional-index order, which for
-    // a vault nobody has reordered is creation order. Deleted stream
-    // excluded entirely.
+    // The Inbox is a view, not a stream (ADR-0046 §3): it has no row here,
+    // and its count is the view's. The real (non-deleted) streams come in
+    // fractional-index order, which for a vault nobody has reordered is
+    // creation order. Deleted stream excluded entirely.
     let names: Vec<_> = rows.iter().map(|r| r.name.clone()).collect();
-    assert_eq!(names, vec!["Inbox", "Beta", "alpha"]);
-    assert!(!names.contains(&"Deleted".to_string()));
+    assert_eq!(names, vec!["Beta", "alpha"]);
+    assert!(!rows.iter().any(|r| r.id == inbox_stream_ref()));
+    let QueryResult::StreamTasks(inbox) = e.query(&db, Query::Inbox).unwrap() else {
+        panic!("wrong variant");
+    };
+    assert_eq!(inbox.len(), 1, "the Inbox view holds the one open task");
 
     // The keys really are ascending and really are keys — the sidebar
     // computes new positions from these, so a row arriving without one
     // would break the very next drag.
-    let keys: Vec<_> = rows[1..].iter().map(|r| r.sort_order.clone()).collect();
+    let keys: Vec<_> = rows.iter().map(|r| r.sort_order.clone()).collect();
     assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
     assert!(keys.iter().all(|k| sort_order::is_valid(k)));
-    // The Inbox is not a stream and holds no position.
-    assert_eq!(rows[0].sort_order, "");
 
     let alpha_row = rows.iter().find(|r| r.id == alpha).unwrap();
     assert_eq!(alpha_row.open_task_count, 2);
@@ -3704,7 +3753,7 @@ fn two_engines_produce_identical_task_ids() {
             updated_at: ms_to_ts(NOW),
             template: TaskTemplate {
                 title: "R".into(),
-                stream_id: stream_ref(7),
+                stream_id: Some(stream_ref(7)),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -5243,7 +5292,7 @@ fn a_scheduled_task_and_a_block_both_produce_reminders() {
         .apply(
             &mut db,
             Command::CreateBlock(BlockDraft {
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 starts_at: SunriseTime::instant(ms_to_ts(at)),
                 ends_at: SunriseTime::instant(ms_to_ts(at + 3_600_000)),
                 title: Some("Deep work".into()),
@@ -6545,7 +6594,7 @@ fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
     let InnerOp::TaskCreate(task) = &mut inner else {
         panic!("expected a task.create");
     };
-    task.stream_id = EntityRef::new(EntityKind::Stream, META_STREAM);
+    task.stream_id = Some(EntityRef::new(EntityKind::Stream, META_STREAM));
     let meta_key = dba
         .with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &META_STREAM))
         .unwrap()
@@ -6567,7 +6616,7 @@ fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
 
     eb.apply_remote(&mut dbb, &legacy_env)
         .expect("a legacy Inbox op still applies");
-    let stored: Vec<u8> = dbb
+    let stored: Option<Vec<u8>> = dbb
         .conn()
         .query_row(
             "SELECT stream_id FROM tasks WHERE id = ?",
@@ -6576,9 +6625,8 @@ fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
         )
         .unwrap();
     assert_eq!(
-        stored,
-        sunrise_domain::INBOX_STREAM_BYTES.to_vec(),
-        "the task belongs to the Inbox, which is where 0017 put it locally"
+        stored, None,
+        "the task belongs to no stream, where 0017 and then 0044 put it locally"
     );
     let meta_rows: i64 = dbb
         .conn()
@@ -13967,7 +14015,7 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     // on the entity and write it back through the normal update path.
     let mut task = read_task_t(&e, &db, created.entity);
     task.unknown = future_fields();
-    let stream = *task.stream_id.bytes();
+    let stream = sunrise_domain::KeyDomain::of_home(task.stream_id).bytes();
     log_and_fold(&e, &mut db, &InnerOp::TaskUpdate(task), &stream);
 
     let back = read_task_t(&e, &db, created.entity);
@@ -14047,7 +14095,7 @@ fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
     // An entity with unknown fields of its own replaces them.
     let mut t = read_task_t(&e, &db, task);
     t.unknown = future_fields();
-    let stream = *t.stream_id.bytes();
+    let stream = sunrise_domain::KeyDomain::of_home(t.stream_id).bytes();
     log_and_fold(&e, &mut db, &InnerOp::TaskUpdate(t), &stream);
     assert_eq!(read_task_t(&e, &db, task).unknown, future_fields());
 }
@@ -14331,7 +14379,7 @@ fn unknown_focus_fields_survive_the_materialized_row() {
         )
         .unwrap()
         .entity;
-    let stream = read_task_t(&e, &db, task).stream_id;
+    let stream = sunrise_domain::stream_key(read_task_t(&e, &db, task).stream_id);
 
     let session = EntityRef::new(EntityKind::FocusSession, [9u8; 16]);
     let start = FocusStart {
@@ -14971,7 +15019,7 @@ fn deterministic_routine_task_converges() {
             updated_at: ms_to_ts(NOW),
             template: TaskTemplate {
                 title: "Stretch".into(),
-                stream_id: stream_ref(7),
+                stream_id: Some(stream_ref(7)),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -19036,7 +19084,7 @@ fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
 /// An unknown state counts as open in the SQL that lists and counts open
 /// work, as `todo` does in Rust.
 #[test]
-fn an_unknown_state_counts_as_open_in_the_stream_list() {
+fn an_unknown_state_counts_as_open_in_the_inbox() {
     let mut db = db();
     let e = engine();
     let task = new_task(&e, &mut db, "open, in a state this build lacks");
@@ -19051,11 +19099,10 @@ fn an_unknown_state_counts_as_open_in_the_stream_list() {
         },
     )
     .unwrap();
-    let rows = match e.query(&db, Query::StreamList).unwrap() {
-        QueryResult::Streams(r) => r,
-        _ => panic!(),
+    let QueryResult::StreamTasks(inbox) = e.query(&db, Query::Inbox).unwrap() else {
+        panic!("wrong variant");
     };
-    assert_eq!(rows[0].open_task_count, 1, "the Inbox counts it as open");
+    assert_eq!(inbox.len(), 1, "the Inbox view counts it as open");
 }
 
 /// Set a task's state to one this build does not know.
@@ -19487,3 +19534,7 @@ mod derived;
 /// `core.field_ops` and the write mode: every command writes the `Patch` of
 /// the fields it changes once the vault requires it (ADR-0065 PR 8).
 mod field_ops;
+
+/// Optional streams, the private key domain, the Inbox view and stream
+/// deletion (ADR-0046, #332).
+mod optional_stream;

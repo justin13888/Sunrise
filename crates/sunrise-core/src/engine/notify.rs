@@ -13,8 +13,8 @@ use super::{Engine, EngineError};
 use crate::queries::QueryResult;
 use std::collections::BTreeMap;
 use sunrise_domain::{
-    build_end_of_day_plan, build_morning_summary, inbox_stream_ref, plan_reminders_reported,
-    ReminderCandidate, ReminderKind, ReminderPlan, ReminderSettings, TaskState,
+    build_end_of_day_plan, build_morning_summary, plan_reminders_reported, ReminderCandidate,
+    ReminderKind, ReminderPlan, ReminderSettings, TaskState,
 };
 use sunrise_storage::Db;
 
@@ -43,7 +43,6 @@ impl Engine {
                 ms_to_ts(prev_start),
                 ms_to_ts(today_start),
                 ms_to_ts(today_end),
-                inbox_stream_ref(),
                 &self.device_zone(),
             ),
         )))
@@ -109,7 +108,21 @@ impl Engine {
         if !settings.is_primary_device {
             return Ok(ReminderPlan::default());
         }
+        // Each stream's lead, read once. No stream has none: the device
+        // default is the fallback.
         let mut stream_leads: BTreeMap<[u8; 16], Option<u32>> = BTreeMap::new();
+        let mut lead_of =
+            |stream: Option<sunrise_id::EntityRef>| -> Result<Option<u32>, EngineError> {
+                let Some(stream) = stream else {
+                    return Ok(None);
+                };
+                Ok(match stream_leads.entry(*stream.bytes()) {
+                    std::collections::btree_map::Entry::Occupied(e) => *e.get(),
+                    std::collections::btree_map::Entry::Vacant(e) => *e.insert(
+                        read_stream(db.conn(), stream.bytes())?.and_then(|s| s.reminder_lead_s),
+                    ),
+                })
+            };
         let mut candidates = Vec::new();
 
         for t in read_live_tasks(db.conn())? {
@@ -119,12 +132,7 @@ impl Engine {
             let Some(at) = t.scheduled_at.clone() else {
                 continue;
             };
-            let stream_lead = match stream_leads.entry(*t.stream_id.bytes()) {
-                std::collections::btree_map::Entry::Occupied(e) => *e.get(),
-                std::collections::btree_map::Entry::Vacant(e) => *e.insert(
-                    read_stream(db.conn(), t.stream_id.bytes())?.and_then(|s| s.reminder_lead_s),
-                ),
-            };
+            let stream_lead = lead_of(t.stream_id)?;
             candidates.push(ReminderCandidate {
                 entity: t.id,
                 kind: ReminderKind::Task,
@@ -147,13 +155,7 @@ impl Engine {
             ));
         };
         for row in rows {
-            let stream_lead = match stream_leads.entry(*row.block.stream_id.bytes()) {
-                std::collections::btree_map::Entry::Occupied(e) => *e.get(),
-                std::collections::btree_map::Entry::Vacant(e) => *e.insert(
-                    read_stream(db.conn(), row.block.stream_id.bytes())?
-                        .and_then(|s| s.reminder_lead_s),
-                ),
-            };
+            let stream_lead = lead_of(row.block.stream_id)?;
             candidates.push(ReminderCandidate {
                 entity: row.block.id,
                 kind: ReminderKind::Block,

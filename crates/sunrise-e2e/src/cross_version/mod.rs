@@ -657,6 +657,7 @@ impl Run {
                                 (Field::State, Some("todo".into())),
                                 (Field::DueKind, None),
                                 (Field::Note, None),
+                                (Field::Stream, None),
                             ],
                         );
                         self.fresh.push(id);

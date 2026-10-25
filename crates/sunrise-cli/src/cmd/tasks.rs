@@ -100,7 +100,10 @@ pub(super) async fn show(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     };
     println!("{}  {}", t.id.to_str(), t.title);
     println!("state      {}", t.state.as_str());
-    println!("stream     {}", name_of(&streams, t.stream_id));
+    let stream = t
+        .stream_id
+        .map_or_else(|| "none".to_owned(), |s| name_of(&streams, s));
+    println!("stream     {stream}");
     let ctx_names: Vec<String> = t
         .contexts
         .iter()
@@ -163,6 +166,41 @@ pub(super) async fn done(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
     ctx.submit(one_or_bulk(items), label).await?;
     for raw in rest {
         println!("done  {raw}");
+    }
+    Ok(())
+}
+
+/// `triage <id>...` and `untriage <id>...`: take tasks out of the Inbox
+/// without giving them a stream or a date, or put them back (ADR-0046 §3).
+/// One commit either way.
+pub(super) async fn triage(ctx: &Ctx<'_>, rest: &[String], triaged: bool) -> CmdResult {
+    if rest.is_empty() {
+        return Err(strings::triage::needs_id().into());
+    }
+    let mut ids = Vec::with_capacity(rest.len());
+    let mut titles = Vec::with_capacity(rest.len());
+    for raw in rest {
+        let id = task_id(raw)?;
+        titles.push(read_task(ctx.core, id).await?.title);
+        ids.push(id);
+    }
+    let titles = titles.join(", ");
+    let (cmd, label, verb) = if triaged {
+        (
+            Command::MarkTriaged { ids },
+            strings::undo::triage(&titles),
+            "triaged",
+        )
+    } else {
+        (
+            Command::ReturnToInbox { ids },
+            strings::undo::untriage(&titles),
+            "untriaged",
+        )
+    };
+    ctx.submit(cmd, label).await?;
+    for raw in rest {
+        println!("{verb}  {raw}");
     }
     Ok(())
 }

@@ -8,8 +8,8 @@ use super::{Engine, EngineError};
 use crate::queries::{BlockRow, QueryResult};
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::{
-    build_upcoming, inbox_stream_ref, is_upcoming_span, upcoming_planner_days, PrefValue,
-    UpcomingError, UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS,
+    build_upcoming, is_upcoming_span, upcoming_planner_days, PrefValue, UpcomingError,
+    UpcomingInput, DEFAULT_UPCOMING_SPAN_DAYS,
 };
 use sunrise_id::EntityRef;
 use sunrise_storage::Db;
@@ -68,7 +68,6 @@ impl Engine {
             blocks: &blocks,
             block_of: |row: &BlockRow| &row.block,
             stream_order: &stream_order,
-            no_stream: inbox_stream_ref(),
             contexts,
             today,
             span_days: span,

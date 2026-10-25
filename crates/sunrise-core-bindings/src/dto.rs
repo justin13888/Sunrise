@@ -379,7 +379,10 @@ pub struct TaskItem {
     pub title: String,
     /// Optional rich-text body.
     pub body: Option<NoteBody>,
-    /// Owning Stream (the Inbox id if unassigned).
+    /// Owning Stream, or the legacy Inbox id
+    /// ([`sunrise_domain::inbox_stream_ref`]) for a task that belongs to no
+    /// stream. Kept for clients that predate ADR-0046; [`Self::home_stream`]
+    /// says the same thing as an optional.
     pub stream_id: EntityRef,
     /// Contexts carried, sorted.
     pub contexts: Vec<EntityRef>,
@@ -424,6 +427,13 @@ pub struct TaskItem {
     /// with `CoreCommand::MoveTasks`, never by writing one (#340).
     #[uniffi(default = None)]
     pub sort_order: Option<String>,
+    /// The stream the task belongs to, or none (ADR-0046 §1).
+    #[uniffi(default = None)]
+    pub home_stream: Option<EntityRef>,
+    /// When the task was triaged out of the Inbox, or none (ADR-0046 §3):
+    /// `CoreCommand::MarkTriaged` sets it, `ReturnToInbox` clears it.
+    #[uniffi(default = None)]
+    pub triaged_at: Option<jiff::Timestamp>,
 }
 
 impl From<&Task> for TaskItem {
@@ -452,6 +462,7 @@ impl From<&Task> for TaskItem {
             routine_occurrence,
             reminder_lead_s,
             sort_order,
+            triaged_at,
             archived,
             deleted,
             // Deliberately not exported: see the module docs.
@@ -463,7 +474,7 @@ impl From<&Task> for TaskItem {
             updated_at: *updated_at,
             title: title.clone(),
             body: body.clone(),
-            stream_id: *stream_id,
+            stream_id: sunrise_domain::stream_key(*stream_id),
             contexts: contexts.iter().copied().collect(),
             state: state.clone(),
             priority: *priority,
@@ -486,6 +497,8 @@ impl From<&Task> for TaskItem {
             archived: *archived,
             deleted: *deleted,
             sort_order: sort_order.clone(),
+            home_stream: *stream_id,
+            triaged_at: *triaged_at,
         }
     }
 }
@@ -497,7 +510,7 @@ pub struct TaskDraftIn {
     pub title: String,
     /// Optional body.
     pub body: Option<NoteBody>,
-    /// Owning Stream; the Inbox when absent.
+    /// Owning Stream; no stream when absent or the legacy Inbox id.
     pub stream_id: Option<EntityRef>,
     /// Contexts.
     pub contexts: Vec<EntityRef>,
@@ -568,7 +581,8 @@ pub struct TaskEdit {
     #[uniffi(default = false)]
     pub clear_body: bool,
     /// Move to another Stream. The same move `PromoteToStream` makes: that
-    /// command lowers to a stream-only `TaskPatch`, which is this field.
+    /// command lowers to a stream-only `TaskPatch`, which is this field. The
+    /// legacy Inbox id ([`crate::vocab::inbox_stream_id`]) moves it to no stream.
     #[uniffi(default = None)]
     pub stream_id: Option<EntityRef>,
     /// Replace the whole context set.
@@ -648,7 +662,8 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
         Self {
             title: e.title,
             body: patch_field(e.set_body, e.clear_body),
-            stream_id: e.stream_id,
+            // The legacy Inbox id moves the task to no stream (ADR-0046 §5).
+            stream_id: e.stream_id.map(|s| sunrise_domain::home_stream(Some(s))),
             contexts: e.contexts,
             state: e.state,
             priority: patch_field(e.set_priority, e.clear_priority),
@@ -714,6 +729,10 @@ pub struct StreamItem {
     pub reminder_lead_s: Option<u32>,
     /// Tombstoned.
     pub deleted: bool,
+    /// Where the stream's deletion re-homed what it held (ADR-0046 §4); none
+    /// for a live stream and for a delete that detached them.
+    #[uniffi(default = None)]
+    pub rehomed_to: Option<EntityRef>,
 }
 
 impl From<&Stream> for StreamItem {
@@ -734,6 +753,7 @@ impl From<&Stream> for StreamItem {
             review_cadence,
             default_context,
             reminder_lead_s,
+            rehomed_to,
             deleted,
             unknown: _,
         } = s;
@@ -754,6 +774,7 @@ impl From<&Stream> for StreamItem {
             default_context: *default_context,
             reminder_lead_s: *reminder_lead_s,
             deleted: *deleted,
+            rehomed_to: *rehomed_to,
         }
     }
 }
@@ -1008,7 +1029,7 @@ impl From<&TaskTemplate> for Template {
         } = t;
         Self {
             title: title.clone(),
-            stream_id: *stream_id,
+            stream_id: sunrise_domain::stream_key(*stream_id),
             contexts: contexts.clone(),
             energy: energy.clone(),
             priority: *priority,
@@ -1023,7 +1044,8 @@ impl From<Template> for TaskTemplate {
     fn from(t: Template) -> Self {
         Self {
             title: t.title,
-            stream_id: t.stream_id,
+            // The legacy Inbox id means no stream (ADR-0046 §5).
+            stream_id: sunrise_domain::home_stream(Some(t.stream_id)),
             contexts: t.contexts,
             energy: t.energy,
             priority: t.priority,
@@ -2395,9 +2417,9 @@ pub enum ActivityDetail {
     },
     /// Task moved between streams.
     TaskMoved {
-        /// Stream it left.
+        /// Stream it left; the legacy Inbox id for no stream.
         from: EntityRef,
-        /// Stream it joined.
+        /// Stream it joined; the legacy Inbox id for no stream.
         to: EntityRef,
     },
     /// Task edited.
@@ -2437,9 +2459,10 @@ impl From<&ActivityKind> for ActivityDetail {
             ActivityKind::TaskReopened => Self::TaskReopened,
             ActivityKind::TaskCancelled => Self::TaskCancelled,
             ActivityKind::TaskDeferred { count } => Self::TaskDeferred { count: *count },
+            // No stream is the legacy Inbox id, as on `TaskItem`.
             ActivityKind::TaskMoved { from, to } => Self::TaskMoved {
-                from: *from,
-                to: *to,
+                from: sunrise_domain::stream_key(*from),
+                to: sunrise_domain::stream_key(*to),
             },
             ActivityKind::TaskUpdated { fields } => Self::TaskUpdated { fields: *fields },
             ActivityKind::TaskDeleted => Self::TaskDeleted,
@@ -2511,7 +2534,9 @@ impl From<&ActivityEvent> for ActivityRow {
 // List rows and status
 // ---------------------------------------------------------------------------
 
-/// One row of the stream list; the Inbox comes first and is synthetic.
+/// One row of the stream list; the Inbox comes first and is synthetic: the
+/// Inbox view under the legacy Inbox id ([`crate::vocab::inbox_stream_id`]), not a
+/// stream (ADR-0046 §3).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct StreamListRow {
     /// Stream id.
@@ -2534,6 +2559,22 @@ pub struct StreamListRow {
     /// where it landed to compute the new one — see
     /// [`crate::vocab::stream_sort_key_between`].
     pub sort_order: String,
+}
+
+impl StreamListRow {
+    /// The synthetic Inbox row, counting the `open` tasks of the Inbox view.
+    pub(crate) fn inbox(open: u64) -> Self {
+        Self {
+            id: sunrise_domain::inbox_stream_ref(),
+            name: "Inbox".to_owned(),
+            color: StreamColor::Slate,
+            open_task_count: open,
+            archived: false,
+            paused: false,
+            // Not a stream, and not orderable: "no position".
+            sort_order: String::new(),
+        }
+    }
 }
 
 impl From<&StreamRow> for StreamListRow {
@@ -2877,7 +2918,7 @@ impl From<&Block> for BlockItem {
             id: *id,
             created_at: *created_at,
             updated_at: *updated_at,
-            stream_id: *stream_id,
+            stream_id: sunrise_domain::stream_key(*stream_id),
             starts_at: TimeValue::from(starts_at),
             ends_at: TimeValue::from(ends_at),
             title: title.clone(),
@@ -2902,7 +2943,7 @@ impl BlockItem {
             id: self.id,
             created_at: self.created_at,
             updated_at: self.updated_at,
-            stream_id: self.stream_id,
+            stream_id: sunrise_domain::home_stream(Some(self.stream_id)),
             starts_at: SunriseTime::from(self.starts_at.clone()),
             ends_at: SunriseTime::from(self.ends_at.clone()),
             title: self.title.clone(),
@@ -2962,7 +3003,8 @@ pub struct BlockDraftIn {
 impl From<BlockDraftIn> for sunrise_domain::BlockDraft {
     fn from(d: BlockDraftIn) -> Self {
         Self {
-            stream_id: d.stream_id,
+            // The legacy Inbox id means no stream (ADR-0046 §5).
+            stream_id: sunrise_domain::home_stream(Some(d.stream_id)),
             starts_at: SunriseTime::from(d.starts_at),
             ends_at: SunriseTime::from(d.ends_at),
             title: d.title,
@@ -3002,7 +3044,8 @@ impl From<BlockEdit> for sunrise_domain::BlockPatch {
             ends_at: e.ends_at.map(SunriseTime::from),
             title: patch_field(e.set_title, e.clear_title),
             title_track_task: e.title_track_task,
-            stream_id: e.stream_id,
+            // The legacy Inbox id moves the block to no stream.
+            stream_id: e.stream_id.map(|s| sunrise_domain::home_stream(Some(s))),
         }
     }
 }

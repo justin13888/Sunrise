@@ -53,8 +53,13 @@ pub enum RoutineReviewCadence {
 pub struct TaskTemplate {
     /// Title (required).
     pub title: String,
-    /// Owning Stream.
-    pub stream_id: EntityRef,
+    /// The Stream each occurrence is created in, or `None` for occurrences
+    /// that belong to no stream (ADR-0046 §1). The routine itself lives in
+    /// the vault-meta domain whatever this says, so re-pointing it is an
+    /// ordinary write. On the wire `None` is the legacy Inbox reference
+    /// ([`crate::inbox::wire`]).
+    #[serde(default, with = "crate::inbox::wire")]
+    pub stream_id: Option<EntityRef>,
     /// Optional contexts.
     #[serde(default)]
     pub contexts: Vec<EntityRef>,
@@ -90,7 +95,7 @@ impl TaskTemplate {
         TaskDraft {
             title: self.title.clone(),
             body: self.body.clone(),
-            stream_id: Some(self.stream_id),
+            stream_id: self.stream_id,
             contexts: self.contexts.clone(),
             priority: self.priority,
             energy: self.energy.clone(),
@@ -616,5 +621,38 @@ pub fn materialization_horizon_days(freq: &crate::rrule::Frequency) -> u32 {
         crate::rrule::Frequency::Weekly => 60,
         crate::rrule::Frequency::Monthly => 180,
         crate::rrule::Frequency::Yearly => 540,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_id::EntityKind;
+
+    /// An occurrence's draft carries the template's fields, its stream or
+    /// none (ADR-0046 §1), and leaves what is per occurrence unset.
+    #[test]
+    fn an_occurrence_draft_carries_the_template() {
+        let ctx = EntityRef::new(EntityKind::Context, [2; 16]);
+        let stream = EntityRef::new(EntityKind::Stream, [3; 16]);
+        let mut t = TaskTemplate {
+            title: "Water the plants".into(),
+            stream_id: Some(stream),
+            contexts: vec![ctx],
+            energy: None,
+            priority: Some(2),
+            estimated_duration_s: Some(600),
+            body: None,
+            unknown: Unknowns::new(),
+        };
+        let d = t.to_draft(None);
+        assert_eq!(d.title, "Water the plants");
+        assert_eq!(d.stream_id, Some(stream));
+        assert_eq!(d.contexts, vec![ctx]);
+        assert_eq!(d.priority, Some(2));
+        assert_eq!(d.estimated_duration_s, Some(600));
+        assert!(d.scheduled_at.is_none() && d.due_at.is_none());
+        t.stream_id = None;
+        assert_eq!(t.to_draft(None).stream_id, None);
     }
 }

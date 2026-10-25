@@ -92,7 +92,7 @@ the code rather than from the issue:
   (`crates/sunrise-core/src/engine/oplog.rs:358-360#emit_key_envelopes_to`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:473#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:474#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
@@ -115,7 +115,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7868-7870#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7905-7907#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -464,7 +464,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7857#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7905#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

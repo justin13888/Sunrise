@@ -262,14 +262,17 @@ impl super::Engine {
         };
         let (base, text_applied): (Vec<Task>, bool) = match &view.view {
             ViewKind::Today => (tasks_of(self.query_today(db, now_ms, &[])?), false),
-            ViewKind::Inbox => (
-                tasks_of(self.query_stream_tasks(db, &sunrise_domain::inbox_stream_ref())?),
-                false,
-            ),
-            ViewKind::Stream if !filter.streams.is_empty() => {
+            ViewKind::Inbox => (tasks_of(self.query_inbox(db)?), false),
+            ViewKind::Stream if !filter.streams.is_empty() || filter.no_stream => {
                 let mut all = Vec::new();
                 for s in &filter.streams {
                     all.extend(tasks_of(self.query_stream_tasks(db, s)?));
+                }
+                // The tasks of no stream, once: the legacy Inbox reference in
+                // `streams` already named them.
+                if filter.no_stream && !filter.streams.iter().any(sunrise_domain::names_no_stream) {
+                    let none = sunrise_domain::inbox_stream_ref();
+                    all.extend(tasks_of(self.query_stream_tasks(db, &none)?));
                 }
                 (all, false)
             }

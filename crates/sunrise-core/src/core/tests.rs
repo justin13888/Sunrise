@@ -699,7 +699,6 @@ async fn open_and_close() {
 /// never learn a Block or an Attachment appeared.
 #[tokio::test]
 async fn create_and_delete_commands_publish_the_right_change_event() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::{AttachmentDraft, BlockDraft, SunriseTime, TaskDraft};
 
     async fn next(rx: &mut tokio::sync::broadcast::Receiver<DomainEvent>) -> DomainEvent {
@@ -725,7 +724,7 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
 
     let block = core
         .submit(Command::CreateBlock(BlockDraft {
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             starts_at: SunriseTime::instant(now),
             ends_at: SunriseTime::instant(now + hour),
             title: Some("Deep work".into()),
@@ -782,7 +781,6 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
 /// its view off `changes()` leaves the row on screen.
 #[tokio::test]
 async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::{
         ContextDraft, FocusKind, RRule, RoutineCatchupPolicy, RoutineDraft, SessionLength,
         StreamDraft, TaskDraft, TaskTemplate,
@@ -823,7 +821,7 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
         .submit(Command::CreateRoutine(RoutineDraft {
             template: TaskTemplate {
                 title: "Water plants".into(),
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -888,7 +886,12 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
     core.submit(Command::DeleteContext(context)).await.unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == context));
 
-    core.submit(Command::DeleteStream(stream)).await.unwrap();
+    core.submit(Command::DeleteStream {
+        id: stream,
+        disposition: sunrise_domain::Disposition::Detach,
+    })
+    .await
+    .unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == stream));
 
     core.close().await.unwrap();
@@ -935,7 +938,6 @@ async fn the_notification_reads_answer_through_the_core() {
 /// `tokio::time::advance` fires the timer.
 #[tokio::test(start_paused = true)]
 async fn routine_timer_materializes_past_the_launch_horizon() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::routine::TaskTemplate;
     use sunrise_domain::rrule::RRule;
     use sunrise_domain::{RoutineCatchupPolicy, RoutineDraft};
@@ -954,7 +956,7 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
     core.submit(Command::CreateRoutine(RoutineDraft {
         template: TaskTemplate {
             title: "Water plants".into(),
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             contexts: Vec::new(),
             energy: None,
             priority: None,
@@ -1050,12 +1052,12 @@ async fn capture_resolves_streams_from_the_vault() {
         [Unresolved::UnknownStream(_)]
     ));
 
-    // The synthetic Inbox row is resolvable by name too.
+    // `#inbox` still resolves, to no stream (ADR-0046), and is not left in
+    // the title as an unknown stream.
     let c3 = core.capture("Triage me #inbox", &tz).await.unwrap();
-    assert_eq!(
-        c3.draft.stream_id,
-        Some(sunrise_domain::inbox::inbox_stream_ref())
-    );
+    assert_eq!(c3.draft.stream_id, None);
+    assert_eq!(c3.draft.title, "Triage me");
+    assert!(c3.unresolved.is_empty(), "{:?}", c3.unresolved);
 
     core.close().await.unwrap();
 }

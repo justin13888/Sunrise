@@ -154,7 +154,7 @@ use sunrise_crypto::{
     DeviceCert, DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError,
     IdentityDhKeyPair, IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
 };
-use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_domain::PRIVATE_DOMAIN_BYTES;
 use sunrise_pairing::{PairingGrant, PairingOffer, PairingPayload, PairingRequest};
 use sunrise_storage::Db;
 use thiserror::Error;
@@ -532,7 +532,7 @@ pub(crate) fn keychain_row_error(column: &'static str) -> rusqlite::Error {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RotationSet {
     /// Every stream with a live epoch, ascending. The vault-meta stream and
-    /// the Inbox are always present.
+    /// the private domain are always present.
     pub streams: Vec<[u8; 16]>,
     /// The distinct `stream_id` column values that are not 16 bytes, ascending.
     ///
@@ -1749,6 +1749,29 @@ impl Keychain {
         stream_keys
     }
 
+    /// The keys a share of `streams` carries: every epoch this device holds
+    /// of each named Stream, and of nothing else (ADR-0046 §2).
+    ///
+    /// It takes [`StreamId`](sunrise_domain::StreamId)s, which cannot name the
+    /// vault-meta domain or the private domain, so a stream-scoped grant can
+    /// never carry either: the private domain holds the account's stream-less
+    /// tasks and blocks, and is shared only by moving them into a Stream. The
+    /// sharing flow (`docs/03-crypto/sharing-with-others.md`) is not built;
+    /// this is the selection it makes.
+    #[must_use]
+    pub fn stream_grant_keys(
+        &self,
+        streams: &[sunrise_domain::StreamId],
+    ) -> BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> {
+        let named: std::collections::BTreeSet<[u8; 16]> = streams
+            .iter()
+            .map(|s| sunrise_domain::KeyDomain::Stream(*s).bytes())
+            .collect();
+        let mut held = self.held_stream_keys();
+        held.retain(|id, _| named.contains(id));
+        held
+    }
+
     /// Run a whole pairing against this sponsor, in one process, and return
     /// what the joiner would hand `Keychain::create`.
     ///
@@ -2301,7 +2324,8 @@ impl Keychain {
     /// rows it could not turn into one**.
     ///
     /// This is the rotation set: revoking a device mints a new epoch for every
-    /// stream in it, the vault-meta stream and the Inbox included.
+    /// stream in it, the vault-meta stream and the private domain included
+    /// (ADR-0046 §2: it rotates with every Stream, without exception).
     ///
     /// # Why this returns two lists and not one
     ///
@@ -2336,7 +2360,7 @@ impl Keychain {
         let mut unrotatable: std::collections::BTreeSet<Vec<u8>> =
             std::collections::BTreeSet::new();
         streams.insert(crate::engine::META_STREAM);
-        streams.insert(INBOX_STREAM_BYTES);
+        streams.insert(PRIVATE_DOMAIN_BYTES);
         for sql in [
             "SELECT DISTINCT stream_id FROM stream_keys",
             "SELECT stream_id FROM streams",
@@ -4607,7 +4631,7 @@ mod tests {
             1
         );
         assert_eq!(
-            kc.stream_keys_at(&INBOX_STREAM_BYTES, LEGACY_EPOCH).len(),
+            kc.stream_keys_at(&PRIVATE_DOMAIN_BYTES, LEGACY_EPOCH).len(),
             1
         );
 
@@ -4669,7 +4693,7 @@ mod tests {
         let set = d.with_tx(|tx| kc.rotation_set(tx)).unwrap();
         assert_eq!(
             set.streams,
-            vec![crate::engine::META_STREAM, INBOX_STREAM_BYTES],
+            vec![crate::engine::META_STREAM, PRIVATE_DOMAIN_BYTES],
             "a truncated stream id must not be padded into a stream of its own"
         );
         // ...and it is reported rather than dropped, because the stream it

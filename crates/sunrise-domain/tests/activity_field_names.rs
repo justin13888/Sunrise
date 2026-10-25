@@ -38,7 +38,7 @@ fn task() -> Task {
         updated_at: ts(T0),
         title: "Ship it".into(),
         body: None,
-        stream_id: eref(EntityKind::Stream, 2),
+        stream_id: Some(eref(EntityKind::Stream, 2)),
         contexts: BTreeSet::new(),
         state: TaskState::Todo,
         priority: None,
@@ -55,6 +55,7 @@ fn task() -> Task {
         routine_id: None,
         routine_occurrence: None,
         sort_order: None,
+        triaged_at: None,
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),
@@ -84,7 +85,9 @@ fn each_tracked_field_is_reported_under_its_own_name() {
     let mutations: Vec<FieldMutation> = vec![
         ("title", |t| t.title = "Ship it properly".into()),
         ("body", |t| t.body = Some(NoteBody(b"notes".to_vec()))),
-        ("stream_id", |t| t.stream_id = eref(EntityKind::Stream, 9)),
+        ("stream_id", |t| {
+            t.stream_id = Some(eref(EntityKind::Stream, 9));
+        }),
         ("contexts", |t| {
             t.contexts.insert(eref(EntityKind::Context, 3));
         }),

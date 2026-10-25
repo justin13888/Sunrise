@@ -505,7 +505,7 @@ impl Core {
             // the same id (so it reads as an update of the session view).
             | Command::StartFocus(_) => DomainEvent::Created(res.entity),
             Command::DeleteTask(_)
-            | Command::DeleteStream(_)
+            | Command::DeleteStream { .. }
             | Command::DeleteContext(_)
             | Command::DeleteRoutine(_)
             | Command::DeleteBlock(_)
@@ -946,7 +946,7 @@ impl Core {
             QueryResult::Contexts(rows) => rows,
             _ => Vec::new(),
         };
-        let stream_refs: Vec<NamedRef<'_>> = streams
+        let mut stream_refs: Vec<NamedRef<'_>> = streams
             .iter()
             .filter(|s| !s.archived)
             .map(|s| NamedRef {
@@ -954,6 +954,17 @@ impl Core {
                 name: s.name.as_str(),
             })
             .collect();
+        // `#inbox` still names "no stream", as it named the Inbox sentinel
+        // stream before ADR-0046, unless a real stream is called that.
+        if !stream_refs
+            .iter()
+            .any(|r| r.name.eq_ignore_ascii_case("inbox"))
+        {
+            stream_refs.push(NamedRef {
+                id: sunrise_domain::inbox_stream_ref(),
+                name: "Inbox",
+            });
+        }
         let context_refs: Vec<NamedRef<'_>> = contexts
             .iter()
             .filter(|c| !c.archived)
@@ -966,13 +977,9 @@ impl Core {
             i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
         )
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        Ok(sunrise_domain::capture::parse(
-            input,
-            now,
-            tz,
-            &stream_refs,
-            &context_refs,
-        ))
+        let mut c = sunrise_domain::capture::parse(input, now, tz, &stream_refs, &context_refs);
+        c.draft.stream_id = sunrise_domain::home_stream(c.draft.stream_id);
+        Ok(c)
     }
 
     /// **Capture-aside**: parse a mid-session thought and force it to the
@@ -1353,7 +1360,7 @@ impl Core {
         let conn = db.conn();
         let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
         streams.insert(crate::engine::META_STREAM);
-        streams.insert(sunrise_domain::INBOX_STREAM_BYTES);
+        streams.insert(sunrise_domain::PRIVATE_DOMAIN_BYTES);
         {
             let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;

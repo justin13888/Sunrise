@@ -153,6 +153,7 @@ sunrise_id::describe_value_types! {
         }
         ViewFilter {
             streams: Vec<EntityRef>;
+            no_stream: bool;
             contexts: Vec<EntityRef>;
             context_names: Vec<String>;
             priority: Option<PriorityRange>;
@@ -258,7 +259,7 @@ mod tests {
     fn template() -> TaskTemplate {
         TaskTemplate {
             title: "t".into(),
-            stream_id: eref(EntityKind::Stream, 2),
+            stream_id: Some(eref(EntityKind::Stream, 2)),
             contexts: Vec::new(),
             energy: None,
             priority: None,
@@ -278,7 +279,7 @@ mod tests {
                 updated_at: ts(),
                 title: "t".into(),
                 body: None,
-                stream_id: eref(EntityKind::Stream, 2),
+                stream_id: Some(eref(EntityKind::Stream, 2)),
                 contexts: BTreeSet::new(),
                 state: TaskState::Todo,
                 priority: None,
@@ -296,11 +297,17 @@ mod tests {
                 routine_occurrence: None,
                 reminder_lead_s: None,
                 sort_order: None,
+                triaged_at: None,
                 archived: false,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &["scheduling_constraints", "reminder_lead_s", "sort_order"],
+            &[
+                "scheduling_constraints",
+                "reminder_lead_s",
+                "sort_order",
+                "triaged_at",
+            ],
         );
         assert_wire_names(
             "Stream",
@@ -320,10 +327,11 @@ mod tests {
                 review_cadence: StreamReviewCadence::Weekly,
                 default_context: None,
                 reminder_lead_s: None,
+                rehomed_to: None,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &["icon", "reminder_lead_s"],
+            &["icon", "reminder_lead_s", "rehomed_to"],
         );
         assert_wire_names(
             "Context",
@@ -395,7 +403,7 @@ mod tests {
                 id: eref(EntityKind::Block, 1),
                 created_at: ts(),
                 updated_at: ts(),
-                stream_id: eref(EntityKind::Stream, 2),
+                stream_id: Some(eref(EntityKind::Stream, 2)),
                 starts_at: SunriseTime::Instant { at: ts() },
                 ends_at: SunriseTime::Instant { at: ts() },
                 title: None,

@@ -128,7 +128,7 @@ fn every_kind_is_indexed_and_a_tombstone_removes_it() {
         .apply(
             &mut db,
             Command::CreateBlock(BlockDraft {
-                stream_id: launch,
+                stream_id: Some(launch),
                 ..block_draft(9, 1, Some("Deep work on the rocket"))
             }),
         )
@@ -165,7 +165,14 @@ fn every_kind_is_indexed_and_a_tombstone_removes_it() {
     e.apply(&mut db, Command::DeleteBlock(block)).unwrap();
     e.apply(&mut db, Command::DeleteTask(task)).unwrap();
     e.apply(&mut db, Command::DeleteContext(errands)).unwrap();
-    e.apply(&mut db, Command::DeleteStream(launch)).unwrap();
+    e.apply(
+        &mut db,
+        Command::DeleteStream {
+            id: launch,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+    .unwrap();
     for r in [file, block, task, errands, launch] {
         assert!(!indexed(&db, r), "{r} is unindexed by its tombstone");
     }
@@ -341,6 +348,24 @@ fn structured_operators_narrow_the_hits() {
     assert_eq!(r.groups[0].total, 3);
     // A stream filter matches tasks and blocks, never the stream itself.
     assert!(group(&grouped(&e, &db, "#work"), SearchKind::Stream).is_none());
+    // A block's stream is read for it too, and `stream:Inbox` is no stream.
+    for (title, stream_id) in [("deploy slot", Some(work)), ("deploy rest", None)] {
+        e.apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                stream_id,
+                ..block_draft(9, 1, Some(title))
+            }),
+        )
+        .unwrap();
+    }
+    let blocks = |q: &str| -> Vec<String> {
+        group(&grouped(&e, &db, q), SearchKind::Block)
+            .map(|g| g.hits.iter().map(|h| h.title.text.clone()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(blocks("#work deploy"), ["deploy slot"]);
+    assert_eq!(blocks("stream:inbox deploy"), ["deploy rest"]);
 }
 
 #[test]

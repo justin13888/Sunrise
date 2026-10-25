@@ -187,6 +187,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "saved_views",
         sql: include_str!("../migrations/0043_saved_views.sql"),
     },
+    Migration {
+        id: 44,
+        name: "optional_stream",
+        sql: include_str!("../migrations/0044_optional_stream.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

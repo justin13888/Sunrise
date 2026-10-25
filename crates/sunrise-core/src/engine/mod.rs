@@ -77,7 +77,6 @@ use rusqlite::params;
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::decode_envelope;
-use sunrise_domain::inbox_stream_ref;
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 use thiserror::Error;
@@ -159,9 +158,9 @@ pub use self::snapshot::{SnapshotApplied, StreamRecord, SNAPSHOT_FORMAT_V};
 /// device holds `ID_D_priv`, so a revoked device reads the new meta epoch like
 /// any other. Bounding it is `#76`.
 ///
-/// The Inbox no longer shares this id: see
-/// [`sunrise_domain::INBOX_STREAM_BYTES`].
-pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
+/// The private key domain (once the Inbox) no longer shares this id: see
+/// [`sunrise_domain::PRIVATE_DOMAIN_BYTES`].
+pub(crate) const META_STREAM: [u8; 16] = sunrise_domain::META_DOMAIN_BYTES;
 
 /// Upper end of the trend window, applied as a silent clamp at **both** ends.
 ///
@@ -358,7 +357,8 @@ pub enum EngineError {
     /// Keychain failure while resolving or absorbing a Stream key.
     #[error("keychain: {0}")]
     Keychain(String),
-    /// A command named the vault-meta stream where an ordinary Stream belongs.
+    /// A command named the vault-meta stream, or the private key domain
+    /// (ADR-0046 §2), where an ordinary Stream belongs.
     ///
     /// The vault-meta stream is the control log — device certs, key envelopes,
     /// Stream and Context lifecycle. It is addressable as an [`EntityRef`] of
@@ -372,7 +372,7 @@ pub enum EngineError {
     /// Its own variant rather than an [`Self::Invalid`] string, because a
     /// caller that can build this ref can build it again and deserves to
     /// switch on the refusal rather than parse it.
-    #[error("the vault-meta stream is not an ordinary Stream")]
+    #[error("the vault-meta stream and the private domain are not ordinary Streams")]
     ReservedStream,
     /// The vault requires `feature`, this build does not have it, and the
     /// command would write an entity the feature's scope covers
@@ -629,7 +629,9 @@ impl Engine {
             Command::PromoteToStream { id, stream } => self.promote_task(db, id, stream),
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
-            Command::DeleteStream(id) => self.delete_stream(db, id),
+            Command::DeleteStream { id, disposition } => self.delete_stream(db, id, disposition),
+            Command::MarkTriaged { ids } => self.set_triaged(db, ids, true),
+            Command::ReturnToInbox { ids } => self.set_triaged(db, ids, false),
             Command::CreateContext(d) => self.create_context(db, d),
             Command::UpdateContext { id, patch } => self.update_context(db, id, patch),
             Command::DeleteContext(id) => self.delete_context(db, id),
@@ -695,7 +697,7 @@ impl Engine {
     pub fn query(&self, db: &Db, q: Query) -> Result<QueryResult, EngineError> {
         match q {
             Query::Today { now_ms, contexts } => self.query_today(db, now_ms, &contexts),
-            Query::Inbox => self.query_stream_tasks(db, &inbox_stream_ref()),
+            Query::Inbox => self.query_inbox(db),
             Query::StreamTasks(s) => self.query_stream_tasks(db, &s),
             Query::ContextTasks(c) => self.query_context_tasks(db, &c),
             Query::EntityById(r) => self.query_entity(db, r),

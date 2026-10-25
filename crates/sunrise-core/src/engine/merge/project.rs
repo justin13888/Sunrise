@@ -17,11 +17,13 @@ use super::state::{dec, enc, hlc_of, Meta};
 use super::{refresh, to_sql, OpRef, Stamp};
 use crate::engine::ids::{blob16, ms_to_ts};
 use crate::engine::lww::{read_row_lww, LwwStamp, RowLww};
-use crate::engine::stream::ensure_stream_row;
+use crate::engine::stream::stream_fate;
 use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
-use sunrise_domain::{Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task};
+use sunrise_domain::{
+    effective_stream, Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task,
+};
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -527,7 +529,11 @@ pub(super) fn write_projection(
                 }
             }
             t.contexts = live;
-            ensure_stream_row(tx, &t.stream_id, placeholder_ms(t.created_at))?;
+            // No placeholder `streams` row for a stream that has not
+            // arrived: its row is the fold of its own ops, and one made for
+            // every stream an entity passed through would depend on the
+            // order its versions came in (ADR-0046 clarification C12).
+            t.stream_id = effective(tx, t.stream_id)?;
             if present {
                 update_task_row(tx, &t, head)?;
                 replace_task_contexts(tx, &t)?;
@@ -544,10 +550,19 @@ pub(super) fn write_projection(
         }
         EntityKind::Stream => {
             let s: Stream = decode!(Stream);
+            // A stream with no row reads as live (`effective`), so only a
+            // tombstone, a restore or a new `rehomed_to` moves a dependent.
+            let fate = |tx: &Transaction<'_>| -> rusqlite::Result<sunrise_domain::StreamFate> {
+                Ok(stream_fate(tx, id)?.unwrap_or(sunrise_domain::StreamFate::Live))
+            };
+            let before = fate(tx)?;
             if present {
                 update_stream_row(tx, &s, head)?;
             } else {
                 insert_stream_row(tx, &s, head)?;
+            }
+            if fate(tx)? != before {
+                rehome_dependents(tx, &target)?;
             }
         }
         EntityKind::Context => {
@@ -573,8 +588,8 @@ pub(super) fn write_projection(
             }
         }
         EntityKind::Routine => {
-            let r: Routine = decode!(Routine);
-            ensure_stream_row(tx, &r.template.stream_id, placeholder_ms(r.created_at))?;
+            let mut r: Routine = decode!(Routine);
+            r.template.stream_id = effective(tx, r.template.stream_id)?;
             if present {
                 update_routine_row(tx, &r, head)?;
             } else {
@@ -584,16 +599,11 @@ pub(super) fn write_projection(
                     r.created_at.as_millisecond().max(0).unsigned_abs(),
                     head,
                 )?;
-                // The insert stamps `updated_at_ms` with the create's time.
-                // A routine first projected from a joined snapshot or a
-                // rebuild's compacted base has been edited since, so the
-                // projected value is written over it.
-                update_routine_row(tx, &r, head)?;
             }
         }
         EntityKind::Block => {
-            let b: Block = decode!(Block);
-            ensure_stream_row(tx, &b.stream_id, placeholder_ms(b.created_at))?;
+            let mut b: Block = decode!(Block);
+            b.stream_id = effective(tx, b.stream_id)?;
             upsert_block_row(tx, &b, head)?;
             replace_block_tasks(tx, &b)?;
         }
@@ -633,12 +643,76 @@ pub(super) fn write_projection(
     Ok(true)
 }
 
-/// The time a placeholder `streams` row an entity names is stamped with: the
-/// entity's `created_at`, a function of its ops, where its head's stamp is a
-/// function of the order they came in. The placeholder keeps the earliest
-/// one (`ensure_stream_row`).
-fn placeholder_ms(created_at: jiff::Timestamp) -> u64 {
-    u64::try_from(created_at.as_millisecond()).unwrap_or(0)
+/// The stream an entity whose `stream_id` register holds `stream` is
+/// projected into (ADR-0046 §4): a tombstone it names reads as wherever that
+/// stream's deletion re-homed its dependents, and a chain longer than
+/// [`sunrise_domain::MAX_REHOME_CHAIN`] or a cycle as no stream. A pure
+/// function of the `streams` rows, which are the fold of the stream ops.
+fn effective(
+    tx: &Transaction<'_>,
+    stream: Option<EntityRef>,
+) -> rusqlite::Result<Option<EntityRef>> {
+    let mut failed = None;
+    let out = effective_stream(stream, |s| match stream_fate(tx, s.bytes()) {
+        Ok(fate) => fate.unwrap_or(sunrise_domain::StreamFate::Live),
+        Err(e) => {
+            failed = Some(e);
+            sunrise_domain::StreamFate::Live
+        }
+    });
+    failed.map_or(Ok(out), Err)
+}
+
+/// A stream's tombstone or `rehomed_to` changed: re-project every task,
+/// block and routine whose `stream_id` register names a stream that resolves
+/// through it, so each reads in its new effective stream (ADR-0046 §4), as a
+/// context delete re-projects its tasks.
+///
+/// The registers are read from the merge state, not the rows: a row holds
+/// the effective stream, and the register is what the entity names. The set
+/// is every stream whose chain of re-homing tombstones reaches `stream`.
+fn rehome_dependents(tx: &Transaction<'_>, stream: &EntityRef) -> rusqlite::Result<()> {
+    let mut through: BTreeSet<[u8; 16]> = BTreeSet::from([*stream.bytes()]);
+    let mut frontier = vec![*stream.bytes()];
+    while let Some(at) = frontier.pop() {
+        let mut stmt =
+            tx.prepare("SELECT stream_id FROM streams WHERE deleted = 1 AND rehomed_to = ?")?;
+        let rows = stmt.query_map(params![&at[..]], |r| r.get::<_, Vec<u8>>(0))?;
+        for raw in rows {
+            let id = blob16(&raw?);
+            if through.insert(id) {
+                frontier.push(id);
+            }
+        }
+    }
+    let mut dependents: BTreeSet<(String, [u8; 16])> = BTreeSet::new();
+    for id in &through {
+        let value = enc(
+            &Value::serialized(&EntityRef::new(EntityKind::Stream, *id)).unwrap_or(Value::Null)
+        )?;
+        let mut stmt = tx.prepare(
+            "SELECT m.kind, r.entity_id FROM merge_registers r
+             JOIN merge_entities m ON m.entity_id = r.entity_id
+             WHERE r.field IN ('stream_id', 'template.stream_id') AND r.value = ?
+               AND m.kind IN ('task', 'block', 'routine')",
+        )?;
+        let rows = stmt.query_map(params![value], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (kind, raw) = row?;
+            dependents.insert((kind, blob16(&raw)));
+        }
+    }
+    for (kind, id) in dependents {
+        let kind = match kind.as_str() {
+            "task" => EntityKind::Task,
+            "block" => EntityKind::Block,
+            _ => EntityKind::Routine,
+        };
+        refresh(tx, EntityRef::new(kind, id)).map_err(to_sql)?;
+    }
+    Ok(())
 }
 
 /// A context came back from a tombstone: re-project every task whose

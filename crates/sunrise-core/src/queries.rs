@@ -22,12 +22,18 @@ pub enum Query {
         /// Filter to these contexts (empty means all).
         contexts: Vec<EntityRef>,
     },
-    /// Inbox, in manual order, as [`Query::StreamTasks`] is.
+    /// The Inbox view (ADR-0046 §3): the open, live tasks with no stream, no
+    /// plan, no deadline and no `triaged_at`
+    /// ([`sunrise_domain::Task::in_inbox`]), in manual order, as
+    /// [`Query::StreamTasks`] is.
     Inbox,
     /// All tasks in a single Stream, in manual order: every task placed by
     /// `Command::MoveTasks` first, by `sort_order` and then by id, and then
     /// the rest, unplanned first and by when each lands
-    /// ([`sunrise_domain::task_order`], #340).
+    /// ([`sunrise_domain::task_order`], #340). The legacy Inbox reference
+    /// ([`sunrise_domain::inbox_stream_ref`]) lists the tasks of no stream,
+    /// triaged or not: the set a manual order is kept within beside the
+    /// streams'.
     StreamTasks(EntityRef),
     /// All live tasks carrying one Context.
     ///
@@ -56,7 +62,8 @@ pub enum Query {
     IdentityStatus,
     /// Snapshot of sync status.
     SyncStatus,
-    /// All streams (plus the synthetic Inbox row), with open-task counts.
+    /// All live streams, with open-task counts. The Inbox is a view, not a
+    /// stream, and has no row here (ADR-0046 §3); [`Query::Inbox`] counts it.
     StreamList,
     /// All live (non-deleted) contexts, with the count of tasks carrying each.
     Contexts,
@@ -369,7 +376,7 @@ pub enum QueryResult {
     Identity(Box<IdentityStatus>),
     /// Sync status snapshot.
     SyncStatus(crate::events::SyncStatus),
-    /// `StreamList` returns stream rows (Inbox first).
+    /// `StreamList` returns stream rows.
     Streams(Vec<StreamRow>),
     /// `Contexts` returns context rows, ordered by name.
     Contexts(Vec<ContextRow>),
@@ -612,28 +619,27 @@ pub struct ActionableTask {
     pub unblocks: u32,
 }
 
-/// One row of [`Query::StreamList`]. The synthetic Inbox row uses
-/// [`sunrise_domain::inbox_stream_ref`] as its `id`.
+/// One row of [`Query::StreamList`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamRow {
-    /// Stream id (the all-zero id for the Inbox row).
+    /// Stream id.
     pub id: EntityRef,
-    /// Display name ("Inbox" for the synthetic row).
+    /// Display name.
     pub name: String,
     /// Stream color.
     pub color: StreamColor,
     /// Count of open tasks (todo / in-progress, not deleted).
     pub open_task_count: u64,
-    /// Whether the stream is archived (always false for Inbox).
+    /// Whether the stream is archived.
     pub archived: bool,
-    /// Whether the stream is paused (always false for Inbox).
+    /// Whether the stream is paused.
     ///
     /// Projected alongside `archived` because a client cannot offer
     /// pause/resume without knowing which one the key means, and reading it
     /// per row through `EntityById` would cost a query per sidebar row.
     pub paused: bool,
-    /// The fractional index this row is sorted on, or `""` for the synthetic
-    /// Inbox and for a row nothing has ever ordered.
+    /// The fractional index this row is sorted on, or `""` for a row nothing
+    /// has ever ordered.
     ///
     /// Projected because a client that wants to *move* a row needs the keys of
     /// the two rows it landed between, and reading them one `EntityById` at a

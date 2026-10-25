@@ -153,6 +153,13 @@ pub struct Stream {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Where this stream's deletion re-homed its tasks, blocks and routine
+    /// templates (ADR-0046 §4): the `MoveTo` target, or `None` for a detach,
+    /// a live stream, and a delete by a build before `DOC_SCHEMA_V` 19. An
+    /// entity that names a tombstone reads as belonging here
+    /// ([`crate::effective_stream`]). Absent on the wire when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rehomed_to: Option<EntityRef>,
     /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
     /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
     /// `docs/10-cross-cutting/protocol-versioning.md` §7.

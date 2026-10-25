@@ -112,6 +112,8 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
         "defer" => tasks::defer(ctx, rest).await,
         "schedule" => tasks::schedule(ctx, rest).await,
         "drop" => tasks::drop_tasks(ctx, rest).await,
+        "triage" => tasks::triage(ctx, rest, true).await,
+        "untriage" => tasks::triage(ctx, rest, false).await,
         "move" => order::move_tasks(ctx, rest).await,
         "restore" => conflicts::restore(ctx, rest).await,
         "conflicts" => conflicts::conflicts(ctx, rest).await,
@@ -231,11 +233,39 @@ pub(crate) async fn stream_names(
     let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
         return Err(strings::general::unexpected_result().into());
     };
-    Ok(rows
+    let mut out: Vec<(EntityRef, String)> = rows
         .into_iter()
         .filter(|s| archived == Archived::Include || !s.archived)
         .map(|s| (s.id, s.name))
-        .collect())
+        .collect();
+    // `#inbox` and `inbox` still name "no stream", as they named the Inbox
+    // sentinel stream before ADR-0046: the core reads its reference so.
+    if !out.iter().any(|(_, n)| n.eq_ignore_ascii_case("inbox")) {
+        out.push((sunrise_domain::inbox_stream_ref(), "Inbox".to_owned()));
+    }
+    Ok(out)
+}
+
+/// Whether `typed` is a word that names "no stream" where a command takes a
+/// stream: `none`, `no-stream` or `-` (ADR-0046).
+fn names_no_stream(typed: &str) -> bool {
+    matches!(
+        typed.to_ascii_lowercase().as_str(),
+        "none" | "no-stream" | "nostream" | "-"
+    )
+}
+
+/// [`resolve_stream`] for a command that gives a task, block or routine a
+/// home: `None` for "no stream" (`none`, `no-stream`, `-`, or the Inbox's
+/// old name), and the stream otherwise.
+pub(crate) async fn resolve_home(
+    core: &Core,
+    raw: &str,
+    archived: Archived,
+) -> CmdResult<Option<EntityRef>> {
+    Ok(sunrise_domain::home_stream(Some(
+        resolve_stream(core, raw, archived).await?,
+    )))
 }
 
 /// The Contexts as capture-parser candidates. See [`stream_names`].
@@ -280,6 +310,9 @@ pub(crate) async fn resolve_stream(
     }
     if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
         return Ok(id);
+    }
+    if names_no_stream(typed) {
+        return Ok(sunrise_domain::inbox_stream_ref());
     }
     let rows = stream_names(core, archived).await?;
     let mut unresolved = Vec::new();

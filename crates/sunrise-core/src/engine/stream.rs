@@ -5,14 +5,17 @@
 //! own id: the op that creates a Stream cannot be sequenced under a stream that
 //! does not exist yet, and the op that deletes one has to outlive it.
 //!
-//! `ensure_stream_row` is reached from the merge and the focus records, which
-//! fold an entity into a Stream and have to know the Stream row is there
+//! `ensure_stream_row` is reached from the focus records, which
+//! file a session under a Stream and have to know the Stream row is there
 //! first, which is why it is `pub(super)` here rather than duplicated. It
 //! writes no entity: the placeholder it leaves carries no op's stamp.
 
-use super::ids::{blob16, decode_unknowns, ms_to_ts, require_writable_stream};
+use super::block::read_block;
+use super::ids::{blob16, decode_unknowns, domain_bytes, ms_to_ts, require_writable_stream};
 use super::query::sort_listing;
-use super::task::read_task;
+use super::routine::read_routine;
+use super::snapshot::in_tx;
+use super::task::{read_task, TaskWrite};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::inner_op::InnerOp;
@@ -22,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::sort_order;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    inbox_stream_ref, resolve_parent_cycles, RootedStream, Stream, StreamColor, StreamDraft,
-    StreamPatch, StreamReviewCadence, SunriseTime, INBOX_STREAM_BYTES,
+    names_no_stream, resolve_parent_cycles, Disposition, RootedStream, Stream, StreamColor,
+    StreamDraft, StreamFate, StreamPatch, StreamReviewCadence, SunriseTime,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -60,6 +63,7 @@ impl Engine {
             paused_until: None,
             review_cadence: d.review_cadence.unwrap_or(StreamReviewCadence::Weekly),
             default_context: d.default_context,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         };
@@ -148,35 +152,137 @@ impl Engine {
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
+    /// [`Command::DeleteStream`](crate::commands::Command::DeleteStream):
+    /// tombstone the stream and re-home everything it held, as one group
+    /// (ADR-0046 §4).
+    ///
+    /// Every live Task and Block that names the stream is written to the
+    /// disposition's target, each sealed under the target's key domain;
+    /// every live routine's template is re-pointed, in the vault-meta
+    /// domain; every live child Stream becomes top-level; and the tombstone
+    /// records the target as `rehomed_to`, so a dependent another device
+    /// writes into the stream later reads as re-homed too
+    /// ([`sunrise_domain::effective_stream`]). Nothing is deleted with it.
     pub(super) fn delete_stream(
         &self,
         db: &mut Db,
         id: EntityRef,
+        disposition: Disposition,
     ) -> Result<CommandResult, EngineError> {
-        // The vault-meta half of this guard is now the shared one — naming
-        // that stream at all is refused, deletion included. What stays here is
-        // the Inbox, which is a perfectly ordinary Stream in every other
-        // respect and reserved against deletion alone.
+        // The vault-meta stream and the private domain are refused here, as
+        // everywhere a stream is named: neither is a Stream to delete.
         require_writable_stream(id)?;
-        if id.bytes() == &INBOX_STREAM_BYTES {
-            return Err(EngineError::Invalid(
-                "cannot delete the inbox stream".into(),
-            ));
-        }
         let now_ms = self.clock.now_ms();
+        let now = ms_to_ts(now_ms as i64);
         let mut stream = read_stream(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("stream {id}")))?;
+        let target = match disposition {
+            Disposition::Detach => None,
+            Disposition::MoveTo(to) => {
+                require_writable_stream(to)?;
+                if to == id {
+                    return Err(EngineError::Invalid(format!(
+                        "stream {id} cannot be re-homed into itself"
+                    )));
+                }
+                let live = read_stream(db.conn(), to.bytes())?.is_some_and(|t| !t.deleted);
+                if !live {
+                    return Err(EngineError::Invalid(format!(
+                        "stream {to} is not a live stream to move into"
+                    )));
+                }
+                Some(to)
+            }
+        };
+        let conn = db.conn();
+        let mut members: Vec<(InnerOp, [u8; 16])> = Vec::new();
+        let mut tasks = Vec::new();
+        for raw in live_ids_in(conn, "tasks", "id", "stream_id", id.bytes())? {
+            if let Some(mut task) = read_task(conn, &raw)? {
+                task.stream_id = target;
+                task.updated_at = now;
+                tasks.push(TaskWrite::plain(task));
+            }
+        }
+        for raw in live_ids_in(conn, "blocks", "id", "stream_id", id.bytes())? {
+            if let Some(mut block) = read_block(conn, &raw)? {
+                block.stream_id = target;
+                block.updated_at = now;
+                let domain = domain_bytes(target);
+                members.push((InnerOp::BlockUpdate(Box::new(block)), domain));
+            }
+        }
+        let mut routines = Vec::new();
+        for raw in live_ids_in(conn, "routines", "id", "stream_id", id.bytes())? {
+            if let Some(mut routine) = read_routine(conn, &raw)? {
+                routine.template.stream_id = target;
+                routine.updated_at = now;
+                routines.push(routine);
+            }
+        }
+        for routine in routines {
+            let form = self.routine_op_form(db, &routine)?;
+            members.push((InnerOp::RoutineUpdate(Box::new(form)), META_STREAM));
+        }
+        let conn = db.conn();
+        for raw in live_ids_in(conn, "streams", "stream_id", "parent_id", id.bytes())? {
+            if let Some(mut child) = read_stream(conn, &raw)? {
+                child.parent_id = None;
+                child.updated_at = now;
+                members.push((InnerOp::StreamUpdate(child), META_STREAM));
+            }
+        }
         stream.deleted = true;
-        stream.updated_at = ms_to_ts(now_ms as i64);
-        let op = InnerOp::StreamDelete(stream);
-        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
-        let (op_id, seq) = (done.op_id, done.seq);
-        Ok(CommandResult::new(id, None, op_id, seq))
+        stream.rehomed_to = target;
+        stream.updated_at = now;
+        let done = in_tx(db, |tx| {
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut all: Vec<(InnerOp, [u8; 16])> = Vec::with_capacity(members.len() + 1);
+            // The tombstone first, so the command's own result is its op.
+            all.push((InnerOp::StreamDelete(stream.clone()), META_STREAM));
+            for w in &tasks {
+                all.extend(w.op_in(self, tx, mode)?);
+            }
+            all.extend(members.iter().cloned());
+            Ok(self.append_and_fold_group(tx, all, now_ms)?)
+        })?;
+        let done = done
+            .first()
+            .copied()
+            .unwrap_or(super::write::Appended::NOTHING);
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
+    }
+
+    /// [`Query::Inbox`](crate::queries::Query::Inbox): the open, live tasks
+    /// that are untriaged (ADR-0046 §3), in manual order, as a stream's list
+    /// is. Untriaged is structural: no stream, no plan, no deadline, no
+    /// `triaged_at` ([`sunrise_domain::Task::in_inbox`]).
+    pub(super) fn query_inbox(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT id FROM tasks
+             WHERE stream_id IS NULL AND scheduled_at_ms IS NULL AND due_at_ms IS NULL
+               AND triaged_at_ms IS NULL AND deleted = 0 AND archived = 0",
+        )?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut tasks = Vec::with_capacity(ids.len());
+        for raw in ids {
+            if let Some(t) = read_task(db.conn(), &blob16(&raw))? {
+                if t.in_inbox() {
+                    tasks.push(t);
+                }
+            }
+        }
+        sort_listing(&mut tasks, &self.device_zone());
+        Ok(QueryResult::StreamTasks(tasks))
     }
 
     /// Live tasks in one Stream in manual order: the placed ones by their
     /// key, then the rest unscheduled first and by when each lands in the
-    /// reader's zone ([`sort_listing`]).
+    /// reader's zone ([`sort_listing`]). The legacy Inbox reference names
+    /// the tasks that belong to no stream, triaged or not: the no-stream set
+    /// a manual order is kept within (#340).
     pub(super) fn query_stream_tasks(
         &self,
         db: &Db,
@@ -184,9 +290,10 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
             "SELECT id FROM tasks
-             WHERE stream_id = ? AND deleted = 0",
+             WHERE stream_id IS ? AND deleted = 0",
         )?;
-        let stream_blob: Vec<u8> = stream.bytes().to_vec();
+        let stream_blob: Option<Vec<u8>> =
+            (!names_no_stream(stream)).then(|| stream.bytes().to_vec());
         let ids = stmt
             .query_map(params![stream_blob], |row| {
                 let id: Vec<u8> = row.get(0)?;
@@ -206,35 +313,15 @@ impl Engine {
         Ok(QueryResult::StreamTasks(tasks))
     }
 
+    /// [`Query::StreamList`](crate::queries::Query::StreamList): the live
+    /// Streams. The Inbox is not one (ADR-0046 §3): it is a view, and its
+    /// count is that view's ([`Self::query_inbox`]).
     pub(super) fn query_stream_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
-        let inbox = inbox_stream_ref();
-        let inbox_blob: Vec<u8> = inbox.bytes().to_vec();
-
-        // Synthetic Inbox row: count of open tasks parked in the inbox stream.
-        let inbox_open: i64 = db.conn().query_row(
-            "SELECT COUNT(*) FROM tasks
-             WHERE stream_id = ? AND deleted = 0
-               AND state NOT IN ('done', 'cancelled')",
-            params![inbox_blob.clone()],
-            |r| r.get(0),
-        )?;
-
         let mut rows = Vec::new();
-        rows.push(StreamRow {
-            id: inbox,
-            name: "Inbox".to_string(),
-            color: StreamColor::Slate,
-            open_task_count: u64::try_from(inbox_open).unwrap_or(0),
-            archived: false,
-            paused: false,
-            // The Inbox is not a Stream entity and cannot be reordered: it is
-            // pushed to the front of this list unconditionally, above. The
-            // sentinel says "no position", which is the truth about it.
-            sort_order: String::new(),
-        });
 
-        // Real streams (exclude deleted and the synthetic inbox row, which
-        // `ensure_stream_row` may have materialized with an empty name).
+        // Live streams. The private domain has no row, but a vault folded by
+        // a build before ADR-0046 may still hold the Inbox sentinel's
+        // placeholder until its first rebuild, so it is left out by id.
         //
         // Ordered by the fractional index, which is the user's hand-made
         // order and the reason `sort_order` exists. Sorting the *strings* is
@@ -258,7 +345,8 @@ impl Engine {
              WHERE s.deleted = 0 AND s.stream_id != ?
              ORDER BY s.sort_order ASC, s.name COLLATE NOCASE ASC, s.stream_id ASC",
         )?;
-        let mapped = stmt.query_map(params![inbox_blob], |row| {
+        let private = sunrise_domain::PRIVATE_DOMAIN_BYTES.to_vec();
+        let mapped = stmt.query_map(params![private], |row| {
             let id_blob: Vec<u8> = row.get(0)?;
             let name: String = row.get(1)?;
             let color_str: String = row.get(2)?;
@@ -364,7 +452,7 @@ pub(super) fn read_stream(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
                     paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order,
                     extra, description, default_context,
-                    paused_until_kind, paused_until_tz, paused_until_civil
+                    paused_until_kind, paused_until_tz, paused_until_civil, rehomed_to
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -390,6 +478,7 @@ pub(super) fn read_stream(
                         r.get::<_, Option<String>>(17)?,
                         r.get::<_, Option<String>>(18)?,
                     ),
+                    r.get::<_, Option<Vec<u8>>>(19)?,
                 ))
             },
         )
@@ -412,6 +501,7 @@ pub(super) fn read_stream(
         description_raw,
         default_ctx_raw,
         (pause_kind, pause_tz, pause_civil),
+        rehomed_raw,
     )) = row
     else {
         return Ok(None);
@@ -423,9 +513,19 @@ pub(super) fn read_stream(
         EntityRef::new(EntityKind::Stream, a)
     });
     // A stream the cycle rule reads as a root has no parent here, whatever
-    // its register holds (`rooted_streams`).
+    // its register holds (`rooted_streams`), and neither has one whose parent
+    // is a tombstone: a deletion promotes its children to the top level
+    // (ADR-0046 §4), including one nested under it on another device later.
     let parent = match parent {
         Some(_) if rooted_streams(conn)?.iter().any(|r| r.stream.bytes() == id) => None,
+        Some(p)
+            if matches!(
+                stream_fate(conn, p.bytes())?,
+                Some(StreamFate::Deleted { .. })
+            ) =>
+        {
+            None
+        }
         other => other,
     };
     let stream = Stream {
@@ -457,9 +557,51 @@ pub(super) fn read_stream(
             EntityRef::new(EntityKind::Context, a)
         }),
         deleted: deleted != 0,
+        rehomed_to: rehomed_raw.map(|b| EntityRef::new(EntityKind::Stream, blob16(&b))),
         unknown: decode_unknowns(extra),
     };
     Ok(Some(stream))
+}
+
+/// What this replica holds of stream `id`, for the re-homing rule
+/// ([`sunrise_domain::effective_stream`]): `None` when it has no row,
+/// [`StreamFate::Live`] for a live row (a placeholder included), and the
+/// tombstone's `rehomed_to` otherwise.
+pub(super) fn stream_fate(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> rusqlite::Result<Option<StreamFate>> {
+    conn.query_row(
+        "SELECT deleted, rehomed_to FROM streams WHERE stream_id = ?",
+        params![&id[..]],
+        |r| {
+            let deleted: i64 = r.get(0)?;
+            let rehomed: Option<Vec<u8>> = r.get(1)?;
+            Ok(if deleted == 0 {
+                StreamFate::Live
+            } else {
+                StreamFate::Deleted {
+                    rehomed_to: rehomed.map(|b| EntityRef::new(EntityKind::Stream, blob16(&b))),
+                }
+            })
+        },
+    )
+    .optional()
+}
+
+/// The live rows of `table` whose `column` names stream `stream`, by key.
+fn live_ids_in(
+    conn: &rusqlite::Connection,
+    table: &str,
+    key: &str,
+    column: &str,
+    stream: &[u8; 16],
+) -> rusqlite::Result<Vec<[u8; 16]>> {
+    let sql =
+        format!("SELECT {key} FROM {table} WHERE {column} = ? AND deleted = 0 ORDER BY {key}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![&stream[..]], |r| r.get::<_, Vec<u8>>(0))?;
+    rows.map(|r| r.map(|raw| blob16(&raw))).collect()
 }
 
 /// The streams the `parent_id` cycle rule reads as roots (ADR-0065 §5), with

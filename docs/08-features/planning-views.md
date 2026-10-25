@@ -172,6 +172,7 @@ pub struct SavedView {
 
 pub struct ViewFilter {                // every part optional, ANDed; values inside a part ORed
     pub streams: Vec<EntityRef>,
+    pub no_stream: bool,               // the tasks of no stream, ORed with `streams` (ADR-0046)
     pub contexts: Vec<EntityRef>,      // by id, so a rename keeps working
     pub context_names: Vec<String>,    // names an import could not resolve: reported, matched by nothing
     pub priority: Option<PriorityRange>,
@@ -184,8 +185,9 @@ pub struct ViewFilter {                // every part optional, ANDed; values ins
 
 The **result** is recomputed on each device by the core
 (`Query::SavedView`, `crates/sunrise-core/src/engine/saved_view.rs#evaluate_saved_view`);
-it is never stored. The view's base list is Today, the Inbox, the named
-Streams (every task when none), or the search for a Search view; the filter
+it is never stored. The view's base list is Today, the Inbox view, the named
+Streams and, with `no_stream`, the tasks of no stream (every task when none),
+or the search for a Search view; the filter
 then narrows it in the reader's zone, and the sort orders it. A view of a
 screen with no list (calendar, focus, routines, review, the briefs) returns no
 tasks, and the client opens that screen. The result names any context the
@@ -215,8 +217,7 @@ names resolve to ids, a name that resolves to nothing is reported and kept in
 marker beside the vault records the import. The CLI runs it the first time
 `sunrise views` meets a vault and no longer writes the file.
 
-> **Not built yet.** A "no stream" selector waits for optional streams
-> ([#332](https://github.com/justin13888/Sunrise/issues/332)), a lateness
+> **Not built yet.** A lateness
 > predicate for lateness states ([#334](https://github.com/justin13888/Sunrise/issues/334)),
 > a place predicate for Place ([#339](https://github.com/justin13888/Sunrise/issues/339)),
 > and the window over `planned_at`, `target_at` and `hard_due_at` for those

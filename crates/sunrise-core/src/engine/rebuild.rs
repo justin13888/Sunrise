@@ -49,8 +49,9 @@
 //! the log derives them:
 //!
 //! - a placeholder `streams` row no op has stamped (`lww_device IS NULL`),
-//!   which `ensure_stream_row` wrote when an op named a stream before its
-//!   create; the lazily seeded Inbox is one;
+//!   which `ensure_stream_row` wrote when a focus session named a stream
+//!   before its create (a task, block or routine no longer makes one,
+//!   ADR-0046 clarification C12);
 //! - each routine's `materialized_until_ms`, how far this device has
 //!   generated its occurrences, which is never on the wire;
 //! - every `pending_groups` row whose op is no longer in the log. Compaction

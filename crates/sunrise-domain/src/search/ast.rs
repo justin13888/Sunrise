@@ -170,7 +170,8 @@ pub enum IsValue {
     Recurring,
     /// `unplanned`: an open task with no planned time.
     Unplanned,
-    /// `inbox`: a task in the Inbox.
+    /// `inbox`: a task in the Inbox view: open, with no stream, no plan, no
+    /// deadline and no `triaged_at` (ADR-0046 §3).
     Inbox,
     /// `fixed`: a block that does not move. Not available yet.
     Fixed,

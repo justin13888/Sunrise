@@ -43,17 +43,22 @@ pub enum Field {
     DueKind,
     /// The newer build's top-level field.
     Note,
+    /// `stream_id`. Every task the scenario makes is created in the Inbox:
+    /// by a baseline as the sentinel stream, by `HEAD` with no stream. Read
+    /// by `HEAD` it is no stream either way (ADR-0046 §5).
+    Stream,
 }
 
 impl Field {
     /// Every field, in projection order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Title,
         Self::Priority,
         Self::Deleted,
         Self::State,
         Self::DueKind,
         Self::Note,
+        Self::Stream,
     ];
 }
 
@@ -102,6 +107,7 @@ pub fn project(t: &Task) -> Projection {
             .get(FUTURE_FIELD)
             .and_then(|v| v.get().as_text().map(str::to_owned)),
     );
+    p.insert(Field::Stream, t.stream_id.map(|s| s.to_str()));
     p
 }
 

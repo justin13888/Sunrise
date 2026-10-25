@@ -57,13 +57,15 @@ pub(in crate::engine::merge) fn insert_stream_row(
 }
 
 /// The `paused_until` sidecars (migration 0041), beside the index key the
-/// row statement writes.
+/// row statement writes, and `rehomed_to` (migration 0044, ADR-0046 §4).
 fn write_pause_sidecars(tx: &Transaction<'_>, id: &[u8], s: &Stream) -> rusqlite::Result<()> {
     let (_, kind, tz, civil) = time_to_parts(s.paused_until.as_ref());
+    let rehomed: Option<Vec<u8>> = s.rehomed_to.map(|r| r.bytes().to_vec());
     tx.execute(
-        "UPDATE streams SET paused_until_kind = ?, paused_until_tz = ?, paused_until_civil = ?
+        "UPDATE streams SET paused_until_kind = ?, paused_until_tz = ?, paused_until_civil = ?,
+                            rehomed_to = ?
          WHERE stream_id = ?",
-        params![kind, tz, civil, id],
+        params![kind, tz, civil, rehomed, id],
     )?;
     Ok(())
 }

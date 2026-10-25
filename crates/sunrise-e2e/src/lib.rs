@@ -444,7 +444,8 @@ fn project_task(t: &Task) -> CanonicalTask {
         id: t.id.to_str(),
         title: t.title.clone(),
         state: state_str(&t.state),
-        stream_id: *t.stream_id.bytes(),
+        // No stream is the legacy Inbox id, which a baseline build reads.
+        stream_id: *sunrise_domain::stream_key(t.stream_id).bytes(),
         scheduled_at_ms: t.scheduled_at.as_ref().map(SunriseTime::index_ms),
         due_at_ms: t.due_at.as_ref().map(SunriseTime::index_ms),
         deleted: t.deleted,
@@ -464,9 +465,15 @@ async fn all_tasks(core: &Core) -> Vec<Task> {
         other => panic!("expected Streams, got {other:?}"),
     };
     let mut out = Vec::new();
-    for row in streams {
+    // Every stream's tasks, and the tasks of no stream, which the legacy
+    // Inbox id names (ADR-0046): the Inbox is a view, not a stream row.
+    let homes = streams
+        .into_iter()
+        .map(|row| row.id)
+        .chain(std::iter::once(sunrise_domain::inbox_stream_ref()));
+    for home in homes {
         match core
-            .query(Query::StreamTasks(row.id))
+            .query(Query::StreamTasks(home))
             .await
             .expect("stream tasks")
         {

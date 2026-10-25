@@ -23,7 +23,7 @@ pub(in crate::engine::merge) fn insert_task_row(
     let extra_blob = encode_unknowns(&t.unknown)?;
 
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
+    let stream_blob: Option<Vec<u8>> = t.stream_id.map(|s| s.bytes().to_vec());
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
     let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
     tx.execute(
@@ -35,9 +35,9 @@ pub(in crate::engine::merge) fn insert_task_row(
           routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
-          scheduled_at_civil, due_at_civil, completed_at_civil, sort_order)
+          scheduled_at_civil, due_at_civil, completed_at_civil, sort_order, triaged_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -77,6 +77,7 @@ pub(in crate::engine::merge) fn insert_task_row(
             due_civil,
             done_civil,
             t.sort_order,
+            t.triaged_at.map(|at| at.as_millisecond()),
         ],
     )?;
     Ok(())
@@ -97,7 +98,7 @@ pub(in crate::engine::merge) fn update_task_row(
         &id_blob,
         encode_unknowns(&t.unknown)?,
     )?;
-    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
+    let stream_blob: Option<Vec<u8>> = t.stream_id.map(|s| s.bytes().to_vec());
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
     let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
     tx.execute(
@@ -110,7 +111,7 @@ pub(in crate::engine::merge) fn update_task_row(
             scheduled_at_civil = ?, due_at_civil = ?, completed_at_civil = ?,
             deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?, extra = ?, sort_order = ?,
-            updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+            triaged_at_ms = ?, updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -140,6 +141,7 @@ pub(in crate::engine::merge) fn update_task_row(
             constraints_blob,
             extra_blob,
             t.sort_order,
+            t.triaged_at.map(|at| at.as_millisecond()),
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
             lww.hlc.logical,

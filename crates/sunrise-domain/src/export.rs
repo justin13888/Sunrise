@@ -400,7 +400,9 @@ pub fn activity_table(events: &[ActivityEvent]) -> Table {
         let detail = match &e.kind {
             ActivityKind::TaskDeferred { count } => Cell::Int(*count),
             ActivityKind::TaskUpdated { fields } => Cell::u32(*fields),
-            ActivityKind::TaskMoved { to, .. } => Cell::text(to.to_str()),
+            ActivityKind::TaskMoved { to, .. } => {
+                to.map_or(Cell::Null, |to| Cell::text(to.to_str()))
+            }
             ActivityKind::FocusStarted { planned_ms, .. } => Cell::opt_ms(*planned_ms),
             ActivityKind::FocusEnded { focused_ms, .. } => Cell::u64(*focused_ms),
             _ => Cell::Null,
@@ -718,8 +720,8 @@ mod tests {
             ev(ActivityKind::TaskUpdated { fields: 4 }),
             ev(ActivityKind::TaskDeferred { count: 2 }),
             ev(ActivityKind::TaskMoved {
-                from: dest,
-                to: dest,
+                from: Some(dest),
+                to: Some(dest),
             }),
             ev(ActivityKind::FocusEnded {
                 session,

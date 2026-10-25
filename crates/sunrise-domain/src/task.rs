@@ -84,8 +84,16 @@ pub struct Task {
     /// Optional body (rich text).
     #[serde(default)]
     pub body: Option<NoteBody>,
-    /// Owning Stream (Inbox if unassigned).
-    pub stream_id: EntityRef,
+    /// Owning Stream, or `None` for a task that belongs to no stream
+    /// (ADR-0046 §1), whose ops are sealed under the private key domain.
+    ///
+    /// A projected task carries its *effective* stream: a tombstoned stream
+    /// it names reads as wherever that stream's deletion re-homed its
+    /// dependents ([`crate::effective_stream`]). On the wire `None` is the
+    /// legacy Inbox reference ([`crate::inbox::wire`]), which every build
+    /// reads as "no stream".
+    #[serde(default, with = "crate::inbox::wire")]
+    pub stream_id: Option<EntityRef>,
     /// Tag set (OR-Set semantics on the wire).
     #[serde(default)]
     pub contexts: BTreeSet<EntityRef>,
@@ -164,6 +172,14 @@ pub struct Task {
     /// `DOC_SCHEMA_V` 16.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<String>,
+    /// When the user acknowledged a task that has no stream and no date, so
+    /// it leaves the Inbox ([`Task::in_inbox`], ADR-0046 §3): set to now by
+    /// `Command::MarkTriaged`, cleared by `Command::ReturnToInbox`. Never
+    /// inferred, and nothing else writes it. One register (quiet). Absent on
+    /// the wire when unset, so a task nobody triaged encodes as it did
+    /// before `DOC_SCHEMA_V` 19.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triaged_at: Option<Timestamp>,
     /// Archived (out of default views).
     #[serde(default)]
     pub archived: bool,
@@ -185,7 +201,8 @@ pub struct TaskDraft {
     pub title: String,
     /// Optional body.
     pub body: Option<NoteBody>,
-    /// Owning Stream; defaults to Inbox if `None`.
+    /// Owning Stream; `None` for a task that belongs to no stream. The
+    /// legacy Inbox reference means `None` too.
     pub stream_id: Option<EntityRef>,
     /// Optional contexts.
     pub contexts: Vec<EntityRef>,
@@ -218,8 +235,9 @@ pub struct TaskPatch {
     /// Update body; outer `Option` chooses presence-of-update, inner is the
     /// new value (None to clear).
     pub body: Option<Option<NoteBody>>,
-    /// Move to a new Stream.
-    pub stream_id: Option<EntityRef>,
+    /// Move to another Stream, or (`Some(None)`) to no stream. The legacy
+    /// Inbox reference means no stream too.
+    pub stream_id: Option<Option<EntityRef>>,
     /// Replace contexts (set semantics on apply).
     pub contexts: Option<Vec<EntityRef>>,
     /// New state.
@@ -285,6 +303,28 @@ impl TaskDraft {
 }
 
 impl Task {
+    /// Whether the task is in the Inbox (ADR-0046 §3): open, live, and
+    /// untriaged, which is to have no stream, no plan, no deadline and no
+    /// [`Self::triaged_at`].
+    ///
+    /// A pure predicate over merged fields, so giving a task a stream or a
+    /// date takes it out of the Inbox without any command clearing a flag,
+    /// and a peer that predates `triaged_at` and plans a task still moves it
+    /// out on every replica.
+    #[must_use]
+    pub fn in_inbox(&self) -> bool {
+        self.stream_id.is_none()
+            && self.scheduled_at.is_none()
+            && self.due_at.is_none()
+            && self.triaged_at.is_none()
+            && matches!(
+                self.state.effective(),
+                TaskState::Todo | TaskState::InProgress
+            )
+            && !self.archived
+            && !self.deleted
+    }
+
     /// Re-check cross-field invariants on a materialized Task.
     ///
     /// Enforced after applying a patch (a patch that sets only `due_at` earlier

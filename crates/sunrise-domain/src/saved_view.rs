@@ -24,9 +24,6 @@
 //!
 //! # Not built yet
 //!
-//! * `TODO(#332)`: a "no stream" selector. Until tasks may have no stream,
-//!   the Inbox is the stream that means it, and [`ViewFilter::streams`] names
-//!   it like any other.
 //! * `TODO(#334)`: a lateness predicate. `Task` has no lateness state yet.
 //! * `TODO(#339)`: a place predicate. There is no Place entity yet.
 //! * `TODO(#336)`: the date window is over `scheduled_at` and `due_at`, the
@@ -204,9 +201,17 @@ pub struct DateWindow {
 /// What a saved view narrows its tasks to. See the module docs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewFilter {
-    /// Tasks in any of these Streams. Empty is no filter.
+    /// Tasks in any of these Streams. Empty (with [`Self::no_stream`]
+    /// unset) is no filter. The legacy Inbox reference here names the tasks
+    /// that belong to no stream, as a view saved before ADR-0046 meant it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub streams: Vec<EntityRef>,
+    /// Tasks that belong to no stream (ADR-0046), ORed with [`Self::streams`]:
+    /// "Work or no stream" is `streams: [work], no_stream: true`. Absent on
+    /// the wire when unset; a build before `DOC_SCHEMA_V` 19 keeps it as an
+    /// unknown part and reports the view incomplete.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_stream: bool,
     /// Tasks carrying any of these Contexts, by id. Empty is no filter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contexts: Vec<EntityRef>,
@@ -253,12 +258,26 @@ impl ViewFilter {
                 .is_none_or(|w| w.unknown.is_empty() && !w.field.is_unknown())
     }
 
+    /// Whether a task in `stream` passes the stream part: any listed stream,
+    /// or no stream when [`Self::no_stream`] is set or a listed reference is
+    /// the legacy Inbox one. No stream part passes everything.
+    #[must_use]
+    pub fn matches_stream(&self, stream: Option<EntityRef>) -> bool {
+        if self.streams.is_empty() && !self.no_stream {
+            return true;
+        }
+        match crate::home_stream(stream) {
+            Some(s) => self.streams.contains(&s),
+            None => self.no_stream || self.streams.iter().any(crate::names_no_stream),
+        }
+    }
+
     /// Whether `task` passes every part of the filter this build knows. With
     /// `with_text: false` the text part is skipped, for a Search view whose
     /// text the search itself applied.
     #[must_use]
     pub fn matches(&self, task: &Task, reader: &FilterReader, with_text: bool) -> bool {
-        if !self.streams.is_empty() && !self.streams.contains(&task.stream_id) {
+        if !self.matches_stream(task.stream_id) {
             return false;
         }
         if !self.contexts.is_empty() && !self.contexts.iter().any(|c| task.contexts.contains(c)) {

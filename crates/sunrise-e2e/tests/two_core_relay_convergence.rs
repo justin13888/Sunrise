@@ -23,9 +23,8 @@ use jiff::civil::time;
 use jiff::Timestamp;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{
-    inbox_stream_ref, ConstraintSeverity, Frequency, RRule, RoutineCatchupPolicy, RoutineDraft,
-    ScheduleConstraint, StreamDraft, TaskDraft, TaskPatch, TaskTemplate, TimeOfDayRange, Weekday,
-    WeekdaySet,
+    ConstraintSeverity, Frequency, RRule, RoutineCatchupPolicy, RoutineDraft, ScheduleConstraint,
+    StreamDraft, TaskDraft, TaskPatch, TaskTemplate, TimeOfDayRange, Weekday, WeekdaySet,
 };
 use sunrise_e2e::{
     canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero,
@@ -151,8 +150,9 @@ async fn two_core_relay_convergence() {
             .any(|t| t.id == t3.to_str() && t.constraints.len() == 1),
         "the constrained task carried its constraint list across the wire"
     );
-    // Both learn the "Shared" stream (Inbox + Shared = 2 rows).
-    wait_streams_converge(&a, &b, 2, TIMEOUT).await;
+    // Both learn the "Shared" stream, the one stream row: the Inbox is a
+    // view, not a stream (ADR-0046).
+    wait_streams_converge(&a, &b, 1, TIMEOUT).await;
 
     // --- 3. B completes one task and renames another; A converges. ---
     b.submit(Command::CompleteTask(t1))
@@ -242,7 +242,7 @@ async fn routine_materialization_convergence() {
     let draft = RoutineDraft {
         template: TaskTemplate {
             title: "standup".into(),
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             contexts: vec![],
             energy: None,
             priority: None,

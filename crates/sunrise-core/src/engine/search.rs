@@ -52,7 +52,10 @@ use sunrise_domain::search::{
     self, fold, is_cjk, match_ranges, snippet, Cmp, DateField, Days, Expr, Filter, HasValue,
     Highlighted, IsValue, NoticeKind, SearchKind, SearchQuery, StateValue,
 };
-use sunrise_domain::{inbox_stream_ref, resolve_named, NameKind, NamedRef, PrefValue, SunriseTime};
+use sunrise_domain::{
+    inbox_stream_ref, resolve_named, NameKind, NamedRef, PrefValue, SunriseTime,
+    PRIVATE_DOMAIN_BYTES,
+};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
@@ -382,7 +385,11 @@ struct Candidate {
 /// The rows of an entity a filter reads.
 #[derive(Debug, Clone, Default)]
 struct Attrs {
+    /// The task's or block's stream, the private domain's id for none: the
+    /// id the `Inbox` name of `stream:` resolves to.
     stream: Option<[u8; 16]>,
+    /// When the task was triaged out of the Inbox (ADR-0046 §3), in ms.
+    triaged_at_ms: Option<i64>,
     state: Option<String>,
     priority: Option<u8>,
     estimate: bool,
@@ -392,6 +399,12 @@ struct Attrs {
     created_ms: i64,
     recurring: bool,
     has_note: bool,
+}
+
+/// A stored `stream_id` column: the stream, or the private domain's id for a
+/// task or block that has none.
+fn stream_or_none(raw: Option<Vec<u8>>) -> [u8; 16] {
+    raw.map_or(PRIVATE_DOMAIN_BYTES, |b| blob16(&b))
 }
 
 /// A query, compiled against this vault.
@@ -504,6 +517,9 @@ impl<'a> Run<'a> {
                 *parent = None;
             }
         }
+        // `stream:Inbox` names the tasks of no stream, as it named the
+        // Inbox sentinel's before ADR-0046: the private domain's id, which a
+        // stream-less task's `stream` attribute holds.
         let inbox = inbox_stream_ref();
         if !streams.iter().any(|(id, _, _)| *id == inbox) {
             streams.push((inbox, "Inbox".to_owned(), None));
@@ -721,7 +737,8 @@ impl<'a> Run<'a> {
                  scheduled_at_ms, scheduled_at_kind, scheduled_at_tz, scheduled_at_civil,
                  due_at_ms, due_at_kind, due_at_tz, due_at_civil,
                  completed_at_ms, completed_at_kind, completed_at_tz, completed_at_civil,
-                 created_at_ms, routine_id IS NOT NULL, length(COALESCE(body, X'')) > 0",
+                 created_at_ms, routine_id IS NOT NULL, length(COALESCE(body, X'')) > 0,
+                 triaged_at_ms",
             ),
             SearchKind::Block => ("blocks", "id", "stream_id, created_at_ms"),
             SearchKind::Stream => (
@@ -745,7 +762,8 @@ impl<'a> Run<'a> {
             };
             Ok(match kind {
                 SearchKind::Task => Attrs {
-                    stream: Some(blob16(&r.get::<_, Vec<u8>>(from)?)),
+                    stream: Some(stream_or_none(r.get(from)?)),
+                    triaged_at_ms: r.get(from + 19)?,
                     state: Some(r.get(from + 1)?),
                     priority: r
                         .get::<_, Option<i64>>(from + 2)?
@@ -759,7 +777,7 @@ impl<'a> Run<'a> {
                     has_note: r.get(from + 18)?,
                 },
                 SearchKind::Block => Attrs {
-                    stream: Some(blob16(&r.get::<_, Vec<u8>>(from)?)),
+                    stream: Some(stream_or_none(r.get(from)?)),
                     created_ms: r.get(from + 1)?,
                     ..Attrs::default()
                 },
@@ -958,7 +976,14 @@ impl<'a> Run<'a> {
             }
             IsValue::Recurring => a.recurring,
             IsValue::Unplanned => open && a.planned.is_none(),
-            IsValue::Inbox => a.stream.as_ref() == Some(inbox_stream_ref().bytes()),
+            // The Inbox view (ADR-0046 §3): open, no stream, no plan, no
+            // deadline, not triaged.
+            IsValue::Inbox => {
+                open && a.stream == Some(PRIVATE_DOMAIN_BYTES)
+                    && a.planned.is_none()
+                    && a.hard.is_none()
+                    && a.triaged_at_ms.is_none()
+            }
             IsValue::Blocked => {
                 open && self.edge_flag(
                     &c.id,

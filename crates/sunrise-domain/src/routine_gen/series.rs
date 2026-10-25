@@ -226,7 +226,6 @@ pub fn routine_rows(routines: &[Routine], now: Timestamp, reader: &TimeZone) -> 
 #[cfg(test)]
 mod row_tests {
     use super::*;
-    use crate::inbox::inbox_stream_ref;
     use crate::routine::{RoutineCatchupPolicy, TaskTemplate};
     use crate::unknown::Unknowns;
     use sunrise_id::EntityKind;
@@ -243,7 +242,7 @@ mod row_tests {
             updated_at: Timestamp::UNIX_EPOCH,
             template: TaskTemplate {
                 title: title.into(),
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,

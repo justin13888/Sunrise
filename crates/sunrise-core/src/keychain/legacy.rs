@@ -12,7 +12,7 @@
 use super::to16;
 use sunrise_crypto::blake3_kdf::derive_key_32;
 use sunrise_crypto::{DeviceCert, StreamKey, VaultRootKey};
-use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_domain::PRIVATE_DOMAIN_BYTES;
 use sunrise_storage::Db;
 use zeroize::Zeroize;
 
@@ -30,16 +30,15 @@ pub(super) const LEGACY_EPOCH: u32 = 1;
 ///
 /// Every stream a pre-ADR-0024 vault could hold ops for.
 ///
-/// The two fixed ids are in the set unconditionally: the vault-meta stream
-/// never has a `streams` row, and the Inbox's only appears once a task has
-/// landed in it.
+/// The two fixed ids are in the set unconditionally: neither the vault-meta
+/// stream nor the private domain (once the Inbox) has a `streams` row.
 ///
 /// Delete at 1.0, along with
 /// [`Keychain::adopt_legacy_vault`](super::Keychain::adopt_legacy_vault).
 pub(super) fn legacy_stream_set(db: &Db) -> rusqlite::Result<std::collections::BTreeSet<[u8; 16]>> {
     let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
     streams.insert(crate::engine::META_STREAM);
-    streams.insert(INBOX_STREAM_BYTES);
+    streams.insert(PRIVATE_DOMAIN_BYTES);
     let conn = db.conn();
     for sql in [
         "SELECT DISTINCT stream_id FROM ops",

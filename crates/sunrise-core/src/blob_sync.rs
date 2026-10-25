@@ -217,18 +217,20 @@ impl Core {
     ) -> Result<(), CoreError> {
         let now_ms = i64::try_from(self.now_ms()).unwrap_or(i64::MAX);
         let db = self.db();
-        // The Stream the parent task lives on. `init` only checks that the
-        // field is non-empty — the relay stores nothing keyed by it — but
-        // sending the real one keeps the request honest and matches what the
-        // op it describes was routed under.
+        // The key domain the parent task lives in: its Stream's, or the
+        // private domain's for a task with none (ADR-0046 §2). `init` only
+        // checks that the field is non-empty — the relay stores nothing keyed
+        // by it — but sending the real one keeps the request honest and
+        // matches what the op it describes was routed under.
         let stream_id: Option<Vec<u8>> = db
             .conn()
             .query_row(
                 "SELECT stream_id FROM tasks WHERE id = ?",
                 rusqlite::params![&parent.bytes()[..]],
-                |r| r.get(0),
+                |r| r.get::<_, Option<Vec<u8>>>(0),
             )
-            .ok();
+            .ok()
+            .map(|s| s.unwrap_or_else(|| sunrise_domain::PRIVATE_DOMAIN_BYTES.to_vec()));
         db.conn().execute(
             "INSERT OR IGNORE INTO blob_uploads
              (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)

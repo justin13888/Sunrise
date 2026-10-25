@@ -46,7 +46,7 @@ pub(in crate::engine::merge) fn insert_routine_row(
 ) -> rusqlite::Result<()> {
     let r = &r.clone().normalized();
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
+    let stream_blob: Option<Vec<u8>> = r.template.stream_id.map(|s| s.bytes().to_vec());
     let rrule_text = r.rrule.to_rfc5545();
     let rrule_blob = encode_rrule(&r.rrule)?;
     let template_blob = sunrise_cbor::encode_canonical(&r.template)
@@ -84,7 +84,7 @@ pub(in crate::engine::merge) fn insert_routine_row(
             time_to_parts(r.last_completed_at.as_ref()).0,
             time_to_parts(r.paused_until.as_ref()).0,
             now_ms,
-            now_ms,
+            r.updated_at.as_millisecond(),
             streak_blob,
             extra_blob,
             lww.hlc.physical_ms,
@@ -103,7 +103,7 @@ pub(in crate::engine::merge) fn update_routine_row(
 ) -> rusqlite::Result<()> {
     let r = &r.clone().normalized();
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
-    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
+    let stream_blob: Option<Vec<u8>> = r.template.stream_id.map(|s| s.bytes().to_vec());
     let rrule_text = r.rrule.to_rfc5545();
     let rrule_blob = encode_rrule(&r.rrule)?;
     let template_blob = sunrise_cbor::encode_canonical(&r.template)

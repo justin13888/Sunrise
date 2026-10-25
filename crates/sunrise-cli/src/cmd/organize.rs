@@ -14,7 +14,10 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 
-use super::{flag_value, positionals, resolve_context, resolve_stream, Archived, CmdResult, Ctx};
+use super::{
+    flag_value, positionals, resolve_context, resolve_home, resolve_stream, Archived, CmdResult,
+    Ctx,
+};
 
 /// `streams [move|create|edit|archive|unarchive|delete …]`.
 pub(super) async fn streams(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
@@ -39,22 +42,40 @@ pub(super) async fn streams(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             println!("{}  {verb}d", id.to_str());
             Ok(())
         }
-        Some("delete") => {
-            let id = resolve_stream(ctx.core, &rest[1..].join(" "), Archived::Include).await?;
-            refuse_inbox(id)?;
-            ctx.submit(
-                Command::DeleteStream(id),
-                strings::undo::delete(&id.to_str()),
-            )
-            .await?;
-            println!("deleted  {}", id.to_str());
-            Ok(())
-        }
+        Some("delete") => delete_stream(ctx, &rest[1..]).await,
         Some(other) => Err(strings::streams::unknown_verb(other).into()),
     }
 }
 
-/// The Inbox is synthetic: it has no Stream entity to write to.
+/// `streams delete <id|name>... [--move-to <stream>]`: tombstone the stream
+/// and re-home everything it held, in one commit (ADR-0046 §4): to
+/// `--move-to`'s stream, or to no stream without it. Its child streams become
+/// top-level either way. Nothing it held is deleted.
+async fn delete_stream(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
+    const FLAGS: &[&str] = &["--move-to"];
+    let target = positionals(args, FLAGS, &["--detach"]).join(" ");
+    let id = resolve_stream(ctx.core, &target, Archived::Include).await?;
+    refuse_inbox(id)?;
+    let disposition = match flag_value(args, "--move-to") {
+        Some(to) => match resolve_home(ctx.core, &to, Archived::Exclude).await? {
+            Some(to) => sunrise_domain::Disposition::MoveTo(to),
+            None => sunrise_domain::Disposition::Detach,
+        },
+        None => sunrise_domain::Disposition::Detach,
+    };
+    ctx.submit(
+        Command::DeleteStream { id, disposition },
+        strings::undo::delete(&id.to_str()),
+    )
+    .await?;
+    match disposition.target() {
+        Some(to) => println!("deleted  {}  (moved into {})", id.to_str(), to.to_str()),
+        None => println!("deleted  {}", id.to_str()),
+    }
+    Ok(())
+}
+
+/// The Inbox is a view, not a stream: it has no Stream entity to write to.
 fn refuse_inbox(id: EntityRef) -> CmdResult {
     if id == sunrise_domain::inbox_stream_ref() {
         return Err(strings::streams::inbox_fixed().into());
@@ -501,8 +522,8 @@ async fn create_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
             .ok_or_else(strings::routines::needs_zone)?,
     };
     let stream_id = match flag_value(args, "--stream") {
-        Some(s) => resolve_stream(ctx.core, &s, Archived::Exclude).await?,
-        None => sunrise_domain::inbox_stream_ref(),
+        Some(s) => resolve_home(ctx.core, &s, Archived::Exclude).await?,
+        None => None,
     };
     let starts_at = match flag_value(args, "--starts") {
         Some(w) => sunrise_domain::capture::parse_when(&w, ctx.now(), &reader)
@@ -589,7 +610,7 @@ async fn edit_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         form.timezone = z;
     }
     if let Some(s) = flag_value(args, "--stream") {
-        form.stream_id = resolve_stream(ctx.core, &s, Archived::Exclude).await?;
+        form.stream_id = resolve_home(ctx.core, &s, Archived::Exclude).await?;
     }
     if let Some(p) = flag_value(args, "--priority") {
         form.priority = priority(&p)?;
