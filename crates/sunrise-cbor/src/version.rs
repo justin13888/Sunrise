@@ -189,7 +189,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// prefix it does not know, so none is written until every device has
 /// advertised the feature. Every v1..v16 payload shape is unchanged, so the
 /// floor does not move.
-pub const DOC_SCHEMA_V: u16 = 17;
+///
+/// `18` adds the structural feature `core.field_ops` (ADR-0065 §7): once a
+/// vault requires it, every command writes `Patch` naming its writer's heads,
+/// and a multi-entity commit is a group of them. No shape changes: `parents`
+/// and `group` arrived in `14`, and a v17 build folds a `Patch` with them as
+/// this one does. A v17 build lacks the feature, so it stops writing entities
+/// in a vault that requires it and goes on applying what it receives. Every
+/// v1..v17 payload shape is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 18;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -262,6 +270,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         17,
         hex32("2fc9c2a11793f1e1940133d9d5949ddff676fa2cb73fbfd65f2175c0215a2531"),
+    ),
+    (
+        18,
+        hex32("4093cc32794e193cf86235c9d79e31437b4e46f694f9b419e7f9414845617015"),
     ),
 ];
 

@@ -8,11 +8,12 @@
 //!
 //! # What is written
 //!
-//! Each moved task gets one `task.update` carrying its new key. Until the
-//! vault requires `core.field_ops` that is a full-state op of the task as it
-//! projects (ADR-0065 D9), like every other task edit; the key is one quiet
-//! register, so two devices moving the same task concurrently converge on
-//! one key by stamp, and moves of different tasks never touch each other.
+//! Each moved task gets one write of its new key: in a vault that requires
+//! `core.field_ops` a `Patch` of `sort_order` alone (ADR-0065 §7), and in one
+//! still in legacy mode a full-state op of the task as it projects (D9), like
+//! every other task edit there. The key is one quiet register, so two devices
+//! moving the same task concurrently converge on one key by stamp, and moves
+//! of different tasks never touch each other.
 //! A move of more than one task is one group (ADR-0065 §6), so a peer shows
 //! the whole move or none of it.
 //!

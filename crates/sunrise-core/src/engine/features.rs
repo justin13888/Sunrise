@@ -59,6 +59,35 @@ fn refuse(r: SealRefusal) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(r))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Set while a fold test seals a `Patch` as the peer that wrote it would
+    /// have (`engine::tests::field_merge::emit_patch`): the test is about how
+    /// the op folds, and its sender's vault, which would require
+    /// `core.field_ops`, is not the one the test holds.
+    static AS_A_PEER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` sealing ops as the peer that wrote them: the seal guard does not
+/// ask that the vault require `core.field_ops`. Test only.
+#[cfg(test)]
+pub(super) fn sealing_as_peer<T>(f: impl FnOnce() -> T) -> T {
+    AS_A_PEER.with(|c| c.set(true));
+    let out = f();
+    AS_A_PEER.with(|c| c.set(false));
+    out
+}
+
+#[cfg(test)]
+fn sealing_as_a_peer() -> bool {
+    AS_A_PEER.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+const fn sealing_as_a_peer() -> bool {
+    false
+}
+
 /// The vault's required feature ids, sorted.
 fn required_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT feature FROM vault_required_features ORDER BY feature")?;
@@ -177,6 +206,7 @@ impl Engine {
         }
         if let Some(id) = feature::features_used(self.features, inner_op)
             .into_iter()
+            .filter(|id| !(*id == feature::FIELD_OPS_FEATURE && sealing_as_a_peer()))
             .find(|id| !required.iter().any(|r| r == id))
         {
             return Err(refuse(SealRefusal::NotRequired(id.to_owned())));
@@ -243,38 +273,36 @@ impl Engine {
         record_device_features(tx, sender, &p.features, hlc, now_ms)
     }
 
-    /// Whether a defer and a streak advance are written as `Patch`es
-    /// (ADR-0065 clarification D16): this build has `routine.civil_times`,
-    /// at least one other device is paired and not revoked, and every such
-    /// device has advertised it.
+    /// Make the vault require feature `id` inside `tx`, when this build
+    /// supports it and no other non-revoked device lacks it, and say whether
+    /// the vault requires it once this returns.
     ///
-    /// `routine.civil_times` is the newest feature, and every build that
-    /// advertises it folds a `Patch` with parents, a counter `inc` and an
-    /// OR-set `add` on a task or a routine as this one does (ADR-0065 PR 1–5
-    /// landed before it). A vault with no peer has no concurrent write to
-    /// lose, so it keeps its full-state ops, and the streak rules they carry.
-    /// `core.field_ops` (PR 8) replaces this test with the vault's own
-    /// requirement.
-    pub(super) fn writes_field_ops(&self, conn: &Connection) -> rusqlite::Result<bool> {
-        use super::routine::ROUTINE_CIVIL_TIMES_FEATURE;
-        if !self
-            .features
-            .iter()
-            .any(|f| f.id == ROUTINE_CIVIL_TIMES_FEATURE)
-        {
+    /// The unconfirmed half of [`Self::require_features`], for a command's
+    /// own transaction: the `VaultRequires` is sealed in the transaction that
+    /// seals the first op using the feature, so the two commit together or
+    /// not at all, and a command that writes nothing emits nothing. A device
+    /// that has never advertised lacks every feature, so a vault with a
+    /// paired device on an older build stays as it is.
+    pub(super) fn require_if_unanimous(
+        &self,
+        tx: &Transaction<'_>,
+        id: &str,
+        now_ms: u64,
+    ) -> rusqlite::Result<bool> {
+        if self.vault_requires(tx, id)? {
+            return Ok(true);
+        }
+        if !self.features.iter().any(|f| f.id == id) || !self.devices_lacking(tx, id)?.is_empty() {
             return Ok(false);
         }
-        let me = self.keychain.device_id();
-        let peers: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM devices d WHERE d.device_id != ?1 \
-             AND NOT EXISTS (SELECT 1 FROM device_revocations r WHERE r.device_id = d.device_id)",
-            params![&me[..]],
-            |r| r.get(0),
-        )?;
-        Ok(peers > 0
-            && self
-                .devices_lacking(conn, ROUTINE_CIVIL_TIMES_FEATURE)?
-                .is_empty())
+        let ids = vec![id.to_owned()];
+        let inner = InnerOp::VaultRequires(VaultRequiresPayload {
+            features: ids.clone(),
+            unknown: sunrise_domain::Unknowns::new(),
+        });
+        self.emit_control_op(tx, &inner, now_ms, None)?;
+        record_required(tx, &ids, now_ms)?;
+        Ok(true)
     }
 
     /// Whether the vault's required set holds feature `id`.
@@ -405,7 +433,11 @@ impl Engine {
 
     /// Every other non-revoked device whose latest `DeviceFeatures` does not
     /// list `id`, including those that never sent one.
-    fn devices_lacking(&self, conn: &Connection, id: &str) -> rusqlite::Result<Vec<[u8; 16]>> {
+    pub(crate) fn devices_lacking(
+        &self,
+        conn: &Connection,
+        id: &str,
+    ) -> rusqlite::Result<Vec<[u8; 16]>> {
         let me = self.keychain.device_id();
         let mut stmt = conn.prepare(
             "SELECT d.device_id, f.features FROM devices d \

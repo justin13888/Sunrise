@@ -374,6 +374,25 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
     }
 }
 
+/// `value` decoded as `kind`'s record and encoded again: what the record
+/// reads as, with every key it leaves out at its default. `None` when it does
+/// not decode, or for a kind with no full-state op.
+pub(in crate::engine) fn round_trip(kind: EntityKind, value: Value) -> Option<Value> {
+    fn again<T: serde::Serialize + serde::de::DeserializeOwned>(value: Value) -> Option<Value> {
+        Value::serialized(&value.deserialized::<T>().ok()?).ok()
+    }
+    match kind {
+        EntityKind::Task => again::<Task>(value),
+        EntityKind::Stream => again::<Stream>(value),
+        EntityKind::Context => again::<Context>(value),
+        EntityKind::Routine => again::<Routine>(value),
+        EntityKind::Block => again::<Block>(value),
+        EntityKind::Attachment => again::<Attachment>(value),
+        // Preferences and saved views have no full-state op to round-trip.
+        _ => None,
+    }
+}
+
 /// A valid sample of each projected entity, as CBOR.
 fn probe(kind: EntityKind) -> Option<Value> {
     let at = jiff::Timestamp::UNIX_EPOCH;

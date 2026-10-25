@@ -424,6 +424,23 @@ mod testutil {
         }
     }
 
+    /// Pair `db` with a device that never advertised a feature (ADR-0045
+    /// §7), as an older build is: the vault then never requires
+    /// `core.field_ops`, and its commands write the full-state ops of
+    /// clarification D9 (ADR-0065 §7's legacy mode).
+    pub(super) fn legacy_peer(db: &Db) {
+        db.conn()
+            .execute(
+                "INSERT OR IGNORE INTO devices (device_id, cert_blob, nickname, platform, created_at_ms)
+                 VALUES (?, x'00', 'older build', 'ios', 0)",
+                [&LEGACY_PEER[..]],
+            )
+            .unwrap();
+    }
+
+    /// The device id [`legacy_peer`] pairs.
+    pub(super) const LEGACY_PEER: [u8; 16] = [0xEE; 16];
+
     pub(super) fn db_root(root: [u8; 32]) -> Db {
         Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
     }
@@ -1559,6 +1576,7 @@ mod testutil {
 #[test]
 fn create_task_seals_a_valid_envelope() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let res = e
         .apply(
@@ -1635,6 +1653,7 @@ fn per_device_seq_is_independent() {
 #[test]
 fn submit_enqueues_outbox_row() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let res = e
         .apply(
@@ -2002,7 +2021,7 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
         ("routine.update", |db| Command::UpdateRoutine {
             id: seed_bare_routine(db),
             patch: RoutinePatch {
-                timezone: Some("UTC".into()),
+                grace_window_s: Some(Some(600)),
                 ..Default::default()
             },
         }),
@@ -2773,6 +2792,7 @@ fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
 #[test]
 fn context_ops_seal_their_own_inner_op_variants() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let create = e
         .apply(
@@ -4018,6 +4038,7 @@ fn a_streams_reminder_lead_time_survives_a_reread() {
 #[test]
 fn create_block_round_trips_and_lands_on_the_day_grid() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let res = e
         .apply(
@@ -4368,6 +4389,7 @@ fn a_patch_that_inverts_the_range_is_rejected() {
 #[test]
 fn deleting_a_block_clears_it_from_the_grid_and_from_its_tasks() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let task = new_task(&e, &mut db, "Write the report");
     let block = e
@@ -4476,7 +4498,9 @@ fn a_block_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let block = ea
@@ -4647,6 +4671,7 @@ fn a_re_import_preserves_created_at_and_moves_updated_at() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock.clone());
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
     let id = e
         .apply(
             &mut db,
@@ -4709,6 +4734,7 @@ fn a_re_import_keeps_a_task_the_user_bound() {
 #[test]
 fn the_first_import_emits_a_create_and_the_second_an_update() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let first = e
         .apply(
@@ -4777,6 +4803,7 @@ fn an_import_validates_its_draft_like_any_other_write() {
 #[test]
 fn an_attached_file_round_trips_with_its_key() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let task = new_task(&e, &mut db, "File the expenses");
     let res = e
@@ -4864,6 +4891,7 @@ fn an_invalid_draft_is_rejected_before_any_op_is_written() {
 #[test]
 fn detaching_tombstones_the_metadata_and_hides_it_from_the_task() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let task = new_task(&e, &mut db, "File the expenses");
     let att = e
@@ -4891,7 +4919,9 @@ fn an_attachment_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "File the expenses");
@@ -5087,6 +5117,7 @@ fn a_deleted_task_is_not_resurrected() {
 #[test]
 fn the_completion_is_an_ordinary_task_update_op() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let task = new_task(&e, &mut db, "Write the report");
     let session = open_session(&e, &mut db, task);
@@ -5378,7 +5409,9 @@ fn a_replica_does_not_re_derive_the_completion_from_the_focus_op() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca);
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "Write the report");
@@ -5426,7 +5459,9 @@ fn completing_a_routine_occurrence_through_focus_advances_the_streak() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let (rid, occ) = seed_routine(&ea, &mut dba);
@@ -5468,7 +5503,9 @@ fn an_attachment_op_that_overtakes_its_task_still_materializes() {
     let ea = engine_seeded(ROOT, [1u8; 32], clock_a);
     let eb = engine_seeded(ROOT, [2u8; 32], clock_b);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "File the expenses");
@@ -5843,7 +5880,9 @@ fn a_context_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let ctx = new_context(&ea, &mut dba, "errands");
@@ -6483,7 +6522,9 @@ fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let res = ea
@@ -13910,6 +13951,7 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
 
     let created = e
         .apply(
@@ -13955,6 +13997,7 @@ fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
     // is in no op: a rebuild of the log does not reproduce it.
     crate::engine::rebuild::check::disable();
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
     let task = new_task(&e, &mut db, "holds bytes this build cannot read");
     // A float: canonical CBOR a newer build could write, and a value
     // `CborValue` refuses, so the whole map fails to decode here.
@@ -14145,6 +14188,7 @@ fn unknown_stream_fields_survive_the_materialized_row() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
 
     let created = e
         .apply(
@@ -14183,6 +14227,7 @@ fn unknown_context_fields_survive_the_materialized_row() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
 
     let created = e
         .apply(
@@ -14215,6 +14260,7 @@ fn unknown_routine_fields_survive_the_materialized_row() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
 
     let stream = e
         .apply(
@@ -15563,7 +15609,9 @@ fn the_streak_advance_converges_to_the_other_replica() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let (rid, occ) = seed_routine(&ea, &mut dba);
@@ -15607,7 +15655,9 @@ fn a_two_op_command_stamps_each_row_with_its_own_ops_stamp() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let (rid, occ) = seed_routine(&ea, &mut dba);
@@ -15650,7 +15700,9 @@ fn skipping_an_occurrence_stamps_the_task_row_with_the_task_ops_stamp() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca);
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let (rid, occ) = seed_routine(&ea, &mut dba);
@@ -15696,7 +15748,9 @@ fn a_dependency_op_that_overtakes_its_blocker_still_converges() {
     let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
     let eb = engine_seeded(ROOT, [2u8; 32], cb);
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let blocker = new_task(&ea, &mut dba, "buy paint");
@@ -17042,12 +17096,13 @@ fn export_trends_and_streaks_render_in_both_formats() {
 #[test]
 fn the_daily_review_shows_last_nights_captures_and_the_blocked_subset() {
     let (e, mut db, clock) = review_fixture();
+    // Captured a week ago — outside the glance window. First: a create's
+    // `created_at` is its op's clock reading, which never runs backwards.
+    set_clock(&clock, REVIEW_MON - 3 * REVIEW_DAY);
+    review_task(&e, &mut db, "old capture", None);
     // Captured last night.
     set_clock(&clock, REVIEW_MON + 22 * 3_600_000);
     let capture = review_task(&e, &mut db, "shower thought", None);
-    // Captured a week ago — outside the glance window.
-    set_clock(&clock, REVIEW_MON - 3 * REVIEW_DAY);
-    review_task(&e, &mut db, "old capture", None);
 
     // Two tasks planned for today, one waiting on the other. They live in
     // a real Stream so the inbox assertion below is about captures alone.
@@ -18086,8 +18141,10 @@ fn ops_run_end_reads_from_any_start() {
 /// payload is foreign.
 fn emit_raw_inner(sender: &Engine, db: &mut Db, stream: &[u8; 16], inner: &[u8]) -> Vec<u8> {
     let device = sender.keychain.device_id();
-    let op_id = db
-        .with_tx(|tx| {
+    // Sealed as the newer build that wrote it would have, whatever this
+    // vault requires: what is under test is the receiver.
+    let op_id = super::features::sealing_as_peer(|| {
+        db.with_tx(|tx| {
             let seq = sender.next_seq_tx(tx, stream)?;
             let op_id = remote_op_id(stream, &device, seq);
             sender.ops_insert(
@@ -18107,7 +18164,8 @@ fn emit_raw_inner(sender: &Engine, db: &mut Db, stream: &[u8; 16], inner: &[u8])
             )?;
             Ok(op_id)
         })
-        .unwrap();
+    })
+    .unwrap();
     env_bytes(db, &op_id)
 }
 
@@ -18157,7 +18215,9 @@ fn an_op_of_a_kind_this_build_does_not_know_is_parked_and_counted() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
     let a_id = ea.keychain.device_id();
 
@@ -18218,7 +18278,9 @@ fn parking_an_op_observes_the_senders_stamp() {
     );
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "stamped ahead");
@@ -18258,7 +18320,9 @@ fn parking_an_op_beyond_the_drift_window_is_refused_and_leaves_no_row() {
     );
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
     let a_id = ea.keychain.device_id();
 
@@ -18308,7 +18372,9 @@ fn a_parked_op_is_materialized_once_a_build_that_knows_its_kind_replays_it() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
     let a_id = ea.keychain.device_id();
 
@@ -18352,7 +18418,9 @@ fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let anchor = new_task(&ea, &mut dba, "anchor");
@@ -18395,7 +18463,9 @@ fn a_storage_failure_during_replay_leaves_the_op_unstamped_and_the_replay_goes_o
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let task = new_task(&ea, &mut dba, "held up by the disk");
@@ -18468,7 +18538,9 @@ fn a_parked_op_refused_on_replay_stays_parked_with_its_reason_updated() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
 
     let task = new_task(&ea, &mut dba, "refused on replay");
     let env = create_env_for(&dba, task.bytes());
@@ -18502,7 +18574,9 @@ fn a_known_kind_with_a_damaged_payload_is_still_refused() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
 
     let anchor = new_task(&ea, &mut dba, "anchor");
@@ -18570,7 +18644,9 @@ fn schema_bound_create(
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
     let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
     trust(&eb, &mut dbb, &ea);
     let task = new_task(&ea, &mut dba, "schema bound");
     let env = create_env_for(&dba, task.bytes());
@@ -18756,6 +18832,7 @@ fn a_replay_reparks_for_the_fingerprint_or_releases_once_the_registry_agrees() {
 #[test]
 fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let mut draft = routine_draft(
         stream_ref(5),
@@ -19167,6 +19244,7 @@ fn an_unknown_focus_kind_counts_as_a_work_session() {
 #[test]
 fn an_unknown_stream_color_and_cadence_survive_a_rename() {
     let mut db = db();
+    legacy_peer(&db);
     let e = engine();
     let s = e
         .apply(
@@ -19401,3 +19479,7 @@ mod recovery_rotation;
 /// Values `project` derives, the read-time cycle rules, and the history
 /// readers that understand `Patch` (ADR-0065 PR 7).
 mod derived;
+
+/// `core.field_ops` and the write mode: every command writes the `Patch` of
+/// the fields it changes once the vault requires it (ADR-0065 PR 8).
+mod field_ops;

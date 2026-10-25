@@ -431,6 +431,20 @@ impl SunriseCore {
     pub fn edit_gate(&self) -> Result<EditGate, BindingError> {
         Ok(EditGate::from_missing(&self.inner.missing_features()?))
     }
+
+    /// Make the vault require `core.field_ops` (ADR-0065 §7): every device
+    /// then writes field ops, so concurrent edits of different fields both
+    /// survive. Returns the feature ids this added, empty when the vault
+    /// already required it.
+    ///
+    /// A command does this itself once every paired device has said it
+    /// supports the feature. Unless `confirmed`, this refuses while one has
+    /// not, with a [`BindingError::Core`] naming them; ask the user, since
+    /// such a device goes read-only until it is updated, and call again with
+    /// `confirmed: true`.
+    pub fn enable_field_ops(&self, confirmed: bool) -> Result<Vec<String>, BindingError> {
+        Ok(self.inner.enable_field_ops(confirmed)?)
+    }
 }
 
 /// Whether `gate` leaves edits to the entity tagged `tag` (`"task"`,

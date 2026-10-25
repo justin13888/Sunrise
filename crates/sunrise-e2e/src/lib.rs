@@ -590,6 +590,27 @@ pub async fn wait_live(core: &Core, timeout: Duration) {
     .expect("timed out waiting for Live");
 }
 
+/// Wait until every core in `cores` holds a `DeviceFeatures` naming
+/// `core.field_ops` from each other device of the vault, so its next entity
+/// write makes the vault require the feature and is a `Patch`
+/// ([ADR-0065](../../../docs/11-adr/0065-copy-on-write-entity-versions.md) §7).
+pub async fn wait_field_ops(cores: &[&Core], timeout: Duration) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            let ready = cores.iter().all(|c| {
+                c.devices_lacking_feature(sunrise_core::FIELD_OPS_FEATURE)
+                    .is_ok_and(|lacking| lacking.is_empty())
+            });
+            if ready {
+                return;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for every device to advertise core.field_ops");
+}
+
 /// Wait until `core`'s persistent outbox has fully drained (`outbox_pending == 0`).
 pub async fn wait_pending_zero(core: &Core, timeout: Duration) {
     tokio::time::timeout(timeout, async {

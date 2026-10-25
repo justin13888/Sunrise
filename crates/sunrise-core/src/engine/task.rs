@@ -15,7 +15,8 @@ use super::ids::{
     require_writable_stream, time_from_parts,
 };
 use super::routine::{read_routine, StreakWrite};
-use super::write::Appended;
+use super::snapshot::in_tx;
+use super::write::{Appended, WriteMode};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::{BulkTaskAction, BulkTaskItem, CommandResult};
 use crate::inner_op::InnerOp;
@@ -103,22 +104,23 @@ impl Engine {
         } else {
             None
         };
-        let field_ops = self.writes_field_ops(db.conn())?;
         let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
-            let (op, stream) = write.op_in(tx, field_ops)?;
-            let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
             // The streak advance is a routine op in the SAME transaction, so
             // the counter can never diverge from the completion that caused
             // it. Each op is folded with its own stamp, the one every peer
-            // folds it with. As a `Patch` it adds the occurrence's key, which
-            // a concurrent completion of another occurrence cannot lose
-            // (clarification D16).
+            // folds it with. In a field-ops vault the two are one group, so
+            // no replica shows the completion without its streak key, and the
+            // advance is a `Patch` adding the occurrence's key, which a
+            // concurrent completion of another occurrence cannot lose (#331).
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut members = vec![write.op()];
             if let Some(streak) = &streak {
-                if let Some(routine) = streak.op_in(tx, field_ops)? {
-                    self.append_and_fold(tx, &routine, &META_STREAM, now_ms)?;
+                if let Some(routine) = streak.op_in(tx, mode)? {
+                    members.push((routine, META_STREAM));
                 }
             }
-            Ok(done)
+            let done = self.append_and_fold_together(tx, members, now_ms)?;
+            Ok(done.first().copied().unwrap_or(Appended::NOTHING))
         })?;
         Ok(write.result(done))
     }
@@ -331,11 +333,10 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.scheduled_at = Some(to);
         // The full-state op carries the count read, plus one, so of two
-        // concurrent defers written that way one count survives. Where every
-        // paired device folds field ops, the defer is written as the `Patch`
+        // concurrent defers written that way one count survives. In a
+        // field-ops vault the defer is written as the `Patch`
         // `{"scheduled_at": {"set": ..}, "deferred_count": {"inc": 1}}`
-        // instead ([`TaskWrite::op_in`], clarification D16), and the counter
-        // keeps both (#334).
+        // (`write::as_patch`), and the counter keeps both (#334).
         task.deferred_count = task.deferred_count.saturating_add(1);
         task.validate_invariants(&self.device_zone())?;
         // Deferring *is* scheduling, so it clears the same constraint gate.
@@ -397,10 +398,12 @@ impl Engine {
         write: TaskWrite,
         now_ms: u64,
     ) -> Result<CommandResult, EngineError> {
-        let field_ops = self.writes_field_ops(db.conn())?;
-        let done = db.with_tx(|tx| {
-            let (op, stream) = write.op_in(tx, field_ops)?;
-            self.append_and_fold(tx, &op, &stream, now_ms)
+        let done = in_tx(db, |tx| {
+            let mode = self.write_mode(tx, now_ms)?;
+            let Some((op, stream)) = write.op_in(self, tx, mode)? else {
+                return Ok(Appended::NOTHING);
+            };
+            Ok(self.append_and_fold(tx, &op, &stream, now_ms)?)
         })?;
         Ok(write.result(done))
     }
@@ -479,18 +482,18 @@ impl Engine {
                 streaks.push(StreakWrite::new(full, on_time));
             }
         }
-        let field_ops = self.writes_field_ops(db.conn())?;
-        let done = db.with_tx(|tx| {
-            let mut members: Vec<(InnerOp, [u8; 16])> = writes
-                .iter()
-                .map(|w| w.op_in(tx, field_ops))
-                .collect::<rusqlite::Result<_>>()?;
+        let done = in_tx(db, |tx| {
+            let mode = self.write_mode(tx, now_ms)?;
+            let mut members: Vec<(InnerOp, [u8; 16])> = Vec::with_capacity(writes.len());
+            for w in &writes {
+                members.extend(w.op_in(self, tx, mode)?);
+            }
             for streak in &streaks {
-                if let Some(op) = streak.op_in(tx, field_ops)? {
+                if let Some(op) = streak.op_in(tx, mode)? {
                     members.push((op, META_STREAM));
                 }
             }
-            self.append_and_fold_group(tx, members, now_ms)
+            Ok(self.append_and_fold_group(tx, members, now_ms)?)
         })?;
         let soft: Vec<ScheduleConstraint> =
             writes.iter().flat_map(|w| w.soft.iter().cloned()).collect();
@@ -560,30 +563,23 @@ impl TaskWrite {
         (op, stream)
     }
 
-    /// The op of [`Self::op`], or for a defer where `field_ops` holds
-    /// ([`Engine::writes_field_ops`], clarification D16), the `Patch` that
-    /// sets `scheduled_at` and adds one to `deferred_count`, naming the heads
-    /// `tx` holds. Built inside the command's transaction, so the parents are
-    /// the heads it writes over.
+    /// The op it is written as in `mode`, built inside the command's
+    /// transaction `tx`: [`Self::op`], which a field-ops vault rewrites as the
+    /// `Patch` of the fields it changes (`write::as_patch`). A defer always
+    /// writes the plan it sets, `{"scheduled_at": {"set": ..},
+    /// "deferred_count": {"inc": 1}}`, even onto the plan it held: a defer is
+    /// a statement of the plan, and two concurrent ones both count (#334).
     pub(super) fn op_in(
         &self,
+        engine: &Engine,
         tx: &rusqlite::Transaction<'_>,
-        field_ops: bool,
-    ) -> rusqlite::Result<(InnerOp, [u8; 16])> {
-        if !(field_ops && self.defers) {
-            return Ok(self.op());
+        mode: WriteMode,
+    ) -> Result<Option<(InnerOp, [u8; 16])>, EngineError> {
+        let (op, stream) = self.op();
+        if !(self.defers && mode == WriteMode::Patch) {
+            return Ok(Some((op, stream)));
         }
-        let planned = ciborium::value::Value::serialized(&self.task.scheduled_at)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let op = super::write::field_patch(
-            tx,
-            self.task.id,
-            vec![
-                ("scheduled_at", super::write::set_op(planned)),
-                ("deferred_count", super::write::inc_op(1)),
-            ],
-        )?;
-        Ok((op, *self.task.stream_id.bytes()))
+        Ok(super::write::as_patch(engine, tx, &op, &["scheduled_at"])?.map(|p| (p, stream)))
     }
 
     /// What the command returns, once the op is logged as `done`.

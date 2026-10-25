@@ -74,8 +74,11 @@ pub(super) fn emit_patch(
 ) -> (Vec<u8>, OpRef) {
     let device = sender.keychain.device_id();
     let bytes = encode_inner_op(op).unwrap();
-    let (op_id, seq) = db
-        .with_tx(|tx| {
+    // The op is sealed as its writer sealed it, in a vault that required
+    // `core.field_ops`; the vault `db` need not, since what is under test
+    // is the fold.
+    let (op_id, seq) = super::super::features::sealing_as_peer(|| {
+        db.with_tx(|tx| {
             let seq = sender.next_seq_tx(tx, stream)?;
             let op_id = remote_op_id(stream, &device, seq);
             let lww = sender.lww_stamp(seq);
@@ -97,7 +100,8 @@ pub(super) fn emit_patch(
             merge_op(tx, op, &lww, *stream)?;
             Ok((op_id, seq))
         })
-        .unwrap();
+    })
+    .unwrap();
     (
         env_bytes(db, &op_id),
         OpRef {

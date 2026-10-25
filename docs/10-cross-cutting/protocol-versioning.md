@@ -202,8 +202,10 @@ From now on:
 - **A new op kind or field-op kind** carries a feature id. Older builds park it
   (§7). `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
   ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. Its
-  feature id, `core.field_ops`, is not yet in this build's feature registry,
-  and until it is no build emits a `Patch`. `DOC_SCHEMA_V` 9 added
+  feature id, `core.field_ops`, entered the feature registry at
+  `DOC_SCHEMA_V` 18 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+  §7), and a build writes an entity `Patch` only into a vault that requires
+  it. `DOC_SCHEMA_V` 9 added
   `StreamDigest` ([ADR-0043](../11-adr/0043-commit-tree.md)), which a v8 build
   parks. It is emitted without a feature gate, because a build that parks one
   loses no data: a digest changes no entity, and the parked op only delays

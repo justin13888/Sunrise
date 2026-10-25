@@ -245,6 +245,7 @@ fn a_defer_is_logged_as_the_update_it_is() {
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let e = engine_seeded(ROOT, [1u8; 32], clock);
     let mut db = db_root(ROOT);
+    legacy_peer(&db);
     let task = new_task(&e, &mut db, "later");
     let res = e
         .apply(

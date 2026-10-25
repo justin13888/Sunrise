@@ -295,13 +295,15 @@ shape, and each gap is tracked:
   and `deferred_count` lose concurrent edits: [#319](https://github.com/justin13888/Sunrise/issues/319).
 - The `due ≥ scheduled` check compares storage index keys: [#336](https://github.com/justin13888/Sunrise/issues/336).
 - Undo of a delete is `Command::Restore`, a later write of `deleted = false`
-  (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). Until commands
-  write `Patch`, it is a full-state op of the task as it projects, so it also
-  settles every other field on this device's values (ADR-0065 D11).
-- `sort_order` is written by full-state `task.update` ops, like every other
-  task edit until the vault requires `core.field_ops` (ADR-0065 D9). It is
-  one quiet register, so concurrent moves of different tasks both survive and
-  concurrent moves of one task converge on one key. A build before
+  (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). In a vault that
+  requires `core.field_ops` it is a `Patch` of `deleted` naming every head;
+  in one still in legacy mode, a full-state op of the task as it projects, so
+  it also settles every other field on this device's values (ADR-0065 D11).
+- `sort_order` is written by a `Patch` of `sort_order` alone, or, in a vault
+  still in legacy mode, by a full-state `task.update` like every other task
+  edit there (ADR-0065 §7, D9). It is one quiet register, so concurrent moves
+  of different tasks both survive and concurrent moves of one task converge
+  on one key. A build before
   `DOC_SCHEMA_V` 16 keeps the key as an unknown field and writes it back, so
   no feature gates it. The Apple client still keeps its own order in
   `UserDefaults` until its one-time import

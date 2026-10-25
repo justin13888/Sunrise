@@ -592,7 +592,12 @@ fn a_preferences_patch_uses_the_entity_feature() {
         fields: Unknowns::new(),
         unknown: Unknowns::new(),
     }));
-    assert!(features_used(FEATURES, &encode_inner_op(&task).unwrap()).is_empty());
+    // A task has full-state ops, so a `Patch` of one is a version of
+    // ADR-0065, which only a vault that requires `core.field_ops` takes.
+    assert_eq!(
+        features_used(FEATURES, &encode_inner_op(&task).unwrap()),
+        [crate::feature::FIELD_OPS_FEATURE]
+    );
 }
 
 /// A vault write waits for every other device to support the entity: a

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # CRDT Design
@@ -13,37 +13,33 @@ status: proposed
 > lists and rich text, Loro snapshots) is withdrawn; it survives only in
 > [ADR-0003](../11-adr/0003-crdt-loro-vs-automerge.md) as history.
 >
-> **Status: proposed.** The merge is built; no command emits a `Patch` yet.
-> Tracked by [#319](https://github.com/justin13888/Sunrise/issues/319).
+> **Status: accepted, and in effect.** The merge is built, and every command
+> writes `Patch` once a vault requires `core.field_ops`
+> ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §7, which closed
+> [#319](https://github.com/justin13888/Sunrise/issues/319) and
+> [#447](https://github.com/justin13888/Sunrise/issues/447)).
 >
 > **What exists in the tree.** `crates/sunrise-core/src/engine/merge/` folds
-> every received entity op into per-field state, in migration
-> `0033_field_merge_state.sql`'s `merge_*` tables, and projects the merged
-> entity to its row. It reads both op shapes: `Patch` (`DOC_SCHEMA_V` 8) and
-> the full-state ops every earlier build wrote. Every field type in the table
-> below is implemented for Task, Stream, Context, Routine, Block and Attachment.
-> `loro` appears in no `Cargo.toml` in the workspace.
+> every entity op, a command's own and a received one, into per-field state,
+> in migration `0033_field_merge_state.sql`'s `merge_*` tables, and projects
+> the merged entity to its row. It reads both op shapes: `Patch` (`DOC_SCHEMA_V`
+> 8, with `parents` and `group` from 14) and the full-state ops every earlier
+> build wrote. Every field type in the table below is implemented for Task,
+> Stream, Context, Routine, Block and Attachment. A command writes the `Patch`
+> of the fields it changed in a vault that requires `core.field_ops`
+> (`DOC_SCHEMA_V` 18), and a full-state op while a paired device lacks it
+> (§What a command writes). `loro` appears in no `Cargo.toml` in the
+> workspace.
 >
 > What is not built yet:
 >
-> - **No command emits a `Patch`.** ADR-0044 §9 forbids a build from emitting
->   its first `Patch` into a vault until the vault's `vault_requires` lists
->   `core.field_ops`, and the feature registry `vault_requires` reads
->   ([#324](https://github.com/justin13888/Sunrise/issues/324)) does not list
->   it yet. Every local
->   command still writes a full-state op, which merges as a write to every
->   field it carries (see [Legacy full-state ops](#legacy-full-state-ops)). So
->   between two devices running this build, a concurrent edit to a different
->   field still loses to a later full-state write. A `Patch` from a build that
->   emits one merges field by field. Undoing a delete as a restore (ADR-0044
->   §5) waits for the same gate.
-> - **Streaks are stored, and derived once a `Patch` writes a key.** The
->   streak fields are registers a full-state routine op carries. Once a
->   `Patch` stamped above the legacy floor has written `streak_keys` or
->   `skipped_keys`, `project` derives them from the keys instead
+> - **Streaks are stored until a `Patch` writes a key.** The streak fields
+>   are registers a full-state routine op carries. Once a `Patch` stamped
+>   above the legacy floor has written `streak_keys` or `skipped_keys`,
+>   `project` derives them from the keys instead
 >   ([#331](https://github.com/justin13888/Sunrise/issues/331), ADR-0065
->   D17). Between devices that all fold field ops, a defer and a streak
->   advance are already such `Patch`es (D16).
+>   D17); in a field-ops vault every streak advance and skip is such a
+>   `Patch`.
 > - **The read-time invariant rules of ADR-0044 §6 are not applied**, except
 >   that a tombstoned context is not shown on a task, and the two cycle rules
 >   of ADR-0065 §5: a `blocked_by` edge that closes a cycle, newest first, and
@@ -173,9 +169,63 @@ and is now the `task.update` it is; compaction still recognises the older
 kind.
 
 Routine materialization is a local write like any other: each occurrence is a
-`task.create` appended and folded, with `generated` origin, and an occurrence
-the replica already holds, as a row or as a created entity waiting for a
-field, is not generated again.
+create appended and folded, with `generated` origin, and an occurrence the
+replica already holds, as a row or as a created entity waiting for a field,
+is not generated again. Two replicas that generate one occurrence write two
+equal creates of one deterministic id, which fold to one with no conflict
+(ADR-0065 D5).
+
+### What a command writes
+
+A command describes its write as the whole entity it leaves behind, the
+full-state op of ADR-0044 §7, and `engine/write.rs` decides, inside the
+command's transaction, what reaches the log (`Engine::write_mode`, ADR-0065
+§7):
+
+- **Legacy mode**, while this build or a paired device lacks
+  `core.field_ops` (clarification D9): the full-state op itself, and a group's
+  members carry the `op_group` mark (D13). A device that has never advertised
+  its features lacks every one, so a vault shared with a build before
+  `DOC_SCHEMA_V` 18 stays here.
+- **Patch mode**, once the vault requires `core.field_ops`. A device makes it
+  require the feature itself, sealing the `VaultRequires` in the transaction
+  of its first entity write, once no other non-revoked device lacks it;
+  `Core::enable_field_ops(confirmed)` requires it over one that does, which
+  then refuses to edit (ADR-0045 §8). From then on no full-state entity op is
+  written by this build.
+
+In Patch mode the full-state op is rewritten as the `Patch` of the fields that
+differ from the entity as the command read it (the projection, read by the
+same reader inside the transaction), naming the entity's heads as `parents`
+(`write::as_patch`, `write::PatchBuilder`):
+
+| Field type | What is written |
+|---|---|
+| Register | `{"set": v}` with the new value; an optional field cleared is `null`, and a list or flag a serializer leaves out when empty is its empty value |
+| Nested record (`template`) | One register per sub-field, `template.title`, …, for the ones that changed |
+| OR-set | `{"add": [..]}` of the elements gained, and `{"remove": [[e, tags]]}` of those lost, each with the add-tags this replica observed for it; an element with none observed is no remove |
+| Counter | `{"inc": n}` of the difference: a defer is `+1` |
+| Map | None has full-state ops: `Preferences.values` is written by its own `Patch` |
+| Unknown field | Never written: a command carries a key it does not know back as it read it, so a newer build's value stands |
+
+A create is a `Patch` with `create` writing every field set to other than its
+default, and a routine's generated occurrence carries `"origin":
+"generated"`, as does a re-key's tombstone of an untouched occurrence, so
+neither ever beats a concurrent user write (§3). `id`, `created_at` and
+`updated_at` are never written: a `Patch`-created entity's `created_at` is
+its create's clock reading. A defer always writes the plan it sets, even the
+plan the task held, since a defer is a statement of the plan. A write that
+changes no field writes nothing, and the command reports an all-zero op id.
+`ResolveConflict` and `Restore` write the one field whatever it held, as the
+write is what settles the set (ADR-0065 §4). A preferences or saved-view
+`Patch`, which has no full-state form, names its heads in Patch mode too.
+
+A command whose writes are only correct together writes them as one group of
+`Patch`es carrying `group` (§Groups): a block merge, a bulk task action, a
+manual reorder of several tasks, a completion and its streak key (from a
+command or a focus session), a skip and its occurrence's tombstone, and a
+routine re-key and the tombstones it makes. In legacy mode the last four stay
+the separate ops of one transaction they always were.
 
 Two kinds of row were written another way. An entity a vault held before
 migration 0033 has a row and no field state, and a build before ADR-0065's
@@ -254,10 +304,11 @@ account.
 ### Groups
 
 Some commands write several entities that are only correct together: merging
-two blocks (`Command::MergeBlocks`), and a batch of task actions
-(`Command::BulkTasks`). Each writes one op per entity, as one **group**
-(ADR-0065 §6): every member names the group's id and size, a `Patch` in its
-`group` key and a full-state op in a top-level `op_group` mark that names the
+two blocks (`Command::MergeBlocks`), a batch of task actions
+(`Command::BulkTasks`), and, in a field-ops vault, the others §What a command
+writes lists. Each writes one op per entity, as one **group** (ADR-0065 §6):
+every member names the group's id and size, a `Patch` in its `group` key and,
+in legacy mode, a full-state op in a top-level `op_group` mark that names the
 member's own op-ref (D13). A receiver stores a member and counts it toward the
 cursor, but holds it out of the fold until at least `size` members of the
 group are present; then it folds every held member in one transaction, and a
@@ -294,7 +345,7 @@ snapshot or a rebuild's base carries (D14).
 
 | Scenario | Result |
 |---|---|
-| Device A renames a task; device B renames it | As `Patch` versions: the `title` register shows the greater stamp and keeps the other, reported as a tracked conflict. As full-state ops, which every command writes until `core.field_ops`: the later op wins whole and nothing is kept (D4) |
+| Device A renames a task; device B renames it | As `Patch` versions: the `title` register shows the greater stamp and keeps the other, reported as a tracked conflict. As full-state ops, which a vault in legacy mode writes: the later op wins whole and nothing is kept (D4) |
 | Device A completes a task; device B, not having seen it, starts it | As `Patch` versions: `done` wins whatever the stamps, and `in_progress` is kept and reported (state class). A reopen written after seeing the completion is an ordinary later write and wins |
 | Device A renames a task; device B sets its priority | Both survive: they are different registers |
 | Device A adds context X; device B removes context X | The add survives if B had not observed A's add-tag; otherwise X is removed |
@@ -341,6 +392,19 @@ In `crates/sunrise-core/src/engine/tests/field_merge.rs`:
 - **Legacy ops.** A later full-state op writes every field it carries. A
   history of full-state ops alone reproduces entity-level LWW. A `Patch` to an
   entity with no field state keeps the fields its row held.
+
+In `crates/sunrise-core/src/engine/tests/field_ops.rs`, for the write mode:
+
+- **Commands converge.** `commands_converge_in_any_delivery_order`: three
+  current devices run commands on one task (retitle, priority, contexts,
+  defer, complete, reopen, delete, restore, resolve), catching up on each
+  other at random, so their `Patch`es name the heads each had. Receivers of
+  every op, forward, reversed and shuffled with repeats, hold byte for byte
+  the same rows, registers, losers, versions and conflicts, and rebuild to
+  exactly that.
+- **What each command writes.** `every_command_writes_only_the_fields_it_changed`,
+  table-driven over the commands, and
+  `no_full_state_op_is_emitted_once_field_ops_is_required`.
 
 Every existing engine test of the full-state merge also runs through this path
 unchanged. The model checks only the `Patch`-only cases. A case with a

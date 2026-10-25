@@ -444,6 +444,12 @@ struct Run<'a> {
     attrs: HashMap<[u8; 16], Attrs>,
     contexts: HashMap<[u8; 16], HashSet<[u8; 16]>>,
     flags: HashMap<([u8; 16], u8), bool>,
+    /// The `blocked_by` edges the read-time cycle rule sets aside, as the
+    /// key list [`super::task::suppressed_edge_keys`] writes, read once on
+    /// the first `is:blocked` or `has:dependency` (ADR-0065 clarification
+    /// D18): a set-aside edge neither blocks nor is a dependency here, as it
+    /// is in every other read of the graph.
+    suppressed: Option<String>,
 }
 
 /// One stream or context a name can resolve to: its id, name and parent.
@@ -535,6 +541,7 @@ impl<'a> Run<'a> {
             attrs: HashMap::new(),
             contexts: HashMap::new(),
             flags: HashMap::new(),
+            suppressed: None,
         })
     }
 
@@ -813,6 +820,26 @@ impl<'a> Run<'a> {
         Ok(v)
     }
 
+    /// [`Self::flag`] of a query over `task_blockers` that reads the
+    /// set-aside edges as `?2`.
+    fn edge_flag(&mut self, id: &[u8; 16], which: u8, sql: &str) -> rusqlite::Result<bool> {
+        if let Some(v) = self.flags.get(&(*id, which)) {
+            return Ok(*v);
+        }
+        if self.suppressed.is_none() {
+            let keys = super::task::suppressed_edge_keys(self.db.conn())
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            self.suppressed = Some(keys);
+        }
+        let keys = self.suppressed.as_deref().unwrap_or_default();
+        let v: bool = self
+            .db
+            .conn()
+            .query_row(sql, rusqlite::params![&id[..], keys], |r| r.get(0))?;
+        self.flags.insert((*id, which), v);
+        Ok(v)
+    }
+
     fn eval_node(
         &mut self,
         node: &Node,
@@ -933,12 +960,13 @@ impl<'a> Run<'a> {
             IsValue::Unplanned => open && a.planned.is_none(),
             IsValue::Inbox => a.stream.as_ref() == Some(inbox_stream_ref().bytes()),
             IsValue::Blocked => {
-                open && self.flag(
+                open && self.edge_flag(
                     &c.id,
                     0,
                     "SELECT EXISTS (SELECT 1 FROM task_blockers tb
                        LEFT JOIN tasks b ON b.id = tb.blocker_id
                       WHERE tb.task_id = ?1
+                        AND instr(?2, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0
                         AND (b.id IS NULL OR (b.deleted = 0
                              AND b.state NOT IN ('done', 'cancelled'))))",
                 )?
@@ -962,10 +990,11 @@ impl<'a> Run<'a> {
                 "SELECT EXISTS (SELECT 1 FROM attachments WHERE parent_id = ?1 AND deleted = 0)",
             )?,
             HasValue::Dependency => {
-                task && self.flag(
+                task && self.edge_flag(
                     &c.id,
                     2,
-                    "SELECT EXISTS (SELECT 1 FROM task_blockers WHERE task_id = ?1)",
+                    "SELECT EXISTS (SELECT 1 FROM task_blockers tb WHERE tb.task_id = ?1
+                       AND instr(?2, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0)",
                 )?
             }
             HasValue::Place => false,

@@ -526,7 +526,8 @@ fn an_unreadable_op_rolls_the_rebuild_back() {
     db.conn()
         .execute(
             "UPDATE ops SET envelope = X'00' WHERE rowid = (
-                 SELECT rowid FROM ops WHERE inner_kind = 'task.update' LIMIT 1)",
+                 SELECT rowid FROM ops WHERE inner_kind IN ('task.update', 'task.patch')
+                 ORDER BY rowid DESC LIMIT 1)",
             [],
         )
         .unwrap();

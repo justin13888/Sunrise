@@ -45,11 +45,20 @@ pub const FLOOR: &str = "d9566ade714bf49714ea1b034625a5b6a1792984";
 /// the nested-unknowns fix (#322).
 const BEFORE_PARKING: &[&str] = &[FLOOR];
 
+/// The baselines that predate `core.field_ops` (ADR-0065 §7): every one in
+/// the matrix. Against such a baseline `HEAD` writes full-state ops, as it
+/// must for a device that lacks the feature, and so does the baseline.
+const BEFORE_FIELD_OPS: &[&str] = &[FLOOR];
+
 /// Every expected failure. Ordered by issue.
 pub const KNOWN_GAPS: &[KnownGap] = &[
+    // `HEAD` writes `Patch`es once the vault requires `core.field_ops`
+    // (ADR-0065 §7), so two `HEAD` devices keep both fields. A baseline never
+    // advertises the feature, so `HEAD` stays in legacy mode against it, and
+    // the baseline's own full-state ops still replace the whole task.
     KnownGap {
         issue: 319,
-        scope: GapScope::Every,
+        scope: GapScope::Baselines(BEFORE_FIELD_OPS),
         summary: "entity-level last-writer-wins: of two concurrent writes to different \
                   fields of one task, one side's field is lost",
     },

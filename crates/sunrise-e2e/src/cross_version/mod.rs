@@ -102,6 +102,9 @@ pub(crate) trait Replica: Send {
     async fn task(&mut self, id: EntityRef) -> Option<Task>;
     async fn status(&mut self) -> Result<(String, u32), String>;
     async fn knows(&mut self, devices: &[[u8; 16]]) -> bool;
+    /// Whether this replica holds a `DeviceFeatures` naming `core.field_ops`
+    /// from each of `devices`. A baseline has no notion of one, and says yes.
+    async fn holds_field_ops_of(&mut self, devices: &[[u8; 16]]) -> bool;
     async fn take_events(&mut self) -> Vec<LoggedEvent>;
     async fn close(self: Box<Self>);
 }
@@ -189,6 +192,12 @@ impl Replica for HeadReplica {
         devices
             .iter()
             .all(|d| rows.iter().any(|r| r.device_id == *d))
+    }
+
+    async fn holds_field_ops_of(&mut self, devices: &[[u8; 16]]) -> bool {
+        self.0
+            .devices_lacking_feature(sunrise_core::FIELD_OPS_FEATURE)
+            .is_ok_and(|lacking| !devices.iter().any(|d| lacking.contains(d)))
     }
 
     async fn take_events(&mut self) -> Vec<LoggedEvent> {
@@ -538,13 +547,26 @@ async fn open_future_writer(
 impl Run {
     /// Wait for a synced three-device account. A baseline that never gets
     /// there has stopped syncing before the scenario began.
+    ///
+    /// Each `HEAD` side also waits for the `DeviceFeatures` of every other
+    /// `HEAD` device, so its first write already knows which write mode the
+    /// vault is in (ADR-0065 §7): `Patch` in a `HEAD`-only run, where every
+    /// device advertises `core.field_ops`, and full-state against a baseline,
+    /// which never advertises it.
     async fn setup(&mut self) -> bool {
         let deadline = tokio::time::Instant::now() + SETUP_TIMEOUT;
         let others_of_a = [self.devices[1], self.devices[2]];
         let others_of_b = [self.devices[0], self.devices[2]];
+        let head_others_of_b: Vec<[u8; 16]> = if self.a_is_baseline {
+            vec![self.devices[2]]
+        } else {
+            others_of_b.to_vec()
+        };
         loop {
-            let a_ok = self.a.knows(&others_of_a).await;
-            let b_ok = self.b.knows(&others_of_b).await;
+            let a_ok =
+                self.a.knows(&others_of_a).await && self.a.holds_field_ops_of(&others_of_a).await;
+            let b_ok = self.b.knows(&others_of_b).await
+                && self.b.holds_field_ops_of(&head_others_of_b).await;
             let c_ok = matches!(HeadReplica(Arc::clone(&self.c)).status().await, Ok((_, 0)));
             if a_ok && b_ok && c_ok && self.pending_zero().await {
                 // From here on C is the newer build, whose ops only the
@@ -936,6 +958,9 @@ impl Replica for Closed {
         Err("closed".into())
     }
     async fn knows(&mut self, _: &[[u8; 16]]) -> bool {
+        false
+    }
+    async fn holds_field_ops_of(&mut self, _: &[[u8; 16]]) -> bool {
         false
     }
     async fn take_events(&mut self) -> Vec<LoggedEvent> {

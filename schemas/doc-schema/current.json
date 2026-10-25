@@ -326,6 +326,7 @@
                         {
                             "conflict": "tracked",
                             "crdt": "register",
+                            "default": "",
                             "name": "name",
                             "type": "String"
                         },
@@ -1314,18 +1315,21 @@
                         {
                             "conflict": "state",
                             "crdt": "register",
+                            "default": "todo",
                             "name": "state",
                             "type": "TaskState"
                         },
                         {
                             "conflict": "tracked",
                             "crdt": "register",
+                            "default": "str_0000076XBEE9MQ6S9ED5Q64VVR",
                             "name": "stream_id",
                             "type": "EntityRef"
                         },
                         {
                             "conflict": "tracked",
                             "crdt": "register",
+                            "default": "",
                             "name": "title",
                             "type": "String"
                         },
@@ -1459,6 +1463,15 @@
                 "entity": "attachment"
             },
             "since": 13
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "core.field_ops",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": "structural",
+            "since": 18
         },
         {
             "field_op_kinds": [],

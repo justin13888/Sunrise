@@ -291,9 +291,11 @@ impl Engine {
 
 /// Materialize a placeholder `streams` row for `stream` if none exists yet.
 ///
-/// A no-op when the row is already there: the placeholder exists only so that
-/// an op naming a stream this device never saw created has a row to hang off,
-/// and it must never overwrite a row that already carries real data.
+/// The placeholder exists only so that an op naming a stream this device
+/// never saw created has a row to hang off, and it must never overwrite a row
+/// that already carries real data. Its times are the earliest `now_ms` any op
+/// naming it was folded at, so a replica that received those ops in another
+/// order, and a rebuild that refolds them in stamp order, hold the same row.
 pub(super) fn ensure_stream_row(
     tx: &Transaction<'_>,
     stream: &EntityRef,
@@ -306,6 +308,12 @@ pub(super) fn ensure_stream_row(
         |r| r.get(0),
     )?;
     if exists > 0 {
+        tx.execute(
+            "UPDATE streams SET created_at_ms = MIN(created_at_ms, ?2),
+                                updated_at_ms = MIN(updated_at_ms, ?2)
+             WHERE stream_id = ?1 AND lww_device IS NULL",
+            params![&id_blob, now_ms],
+        )?;
         return Ok(());
     }
     tx.execute(

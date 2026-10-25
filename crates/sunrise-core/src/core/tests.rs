@@ -287,7 +287,9 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
             .unwrap()
     };
     for (env, kind) in &envelopes {
-        if kind == "task.create" {
+        // The sponsor's vault requires `core.field_ops`, so its task is a
+        // create `Patch`.
+        if kind == "task.create" || kind == "task.patch" {
             let op = sunrise_crypto::decode_envelope(env).unwrap();
             joiner
                 .engine
@@ -648,7 +650,7 @@ async fn a_failed_rebuild_never_fails_the_open() {
             .execute_batch(
                 "DELETE FROM projection_rebuild;
                  UPDATE ops SET envelope = substr(envelope, 1, length(envelope) - 1)
-                 WHERE inner_kind = 'task.create';",
+                 WHERE inner_kind IN ('task.create', 'task.patch');",
             )
             .unwrap();
     }
@@ -1165,15 +1167,18 @@ async fn identity_persists_and_outbox_hydrates_across_reopen() {
         pending_before_close = core.sync_pending().unwrap();
         device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
             QueryResult::SyncStatus(s) => {
-                // One more, not two: the Inbox's key is minted at open
-                // along with the vault-meta one, so the first task in it
-                // finds a key already there and queues only itself. It was
-                // two while the Inbox epoch was minted lazily by whatever
-                // first wrote to that stream.
+                // Two more: the task, and the `VaultRequires` of
+                // `core.field_ops` its write makes first, as the vault's
+                // first entity write with no device lacking the feature
+                // (ADR-0065 §7). No key envelope: the Inbox's key is minted
+                // at open along with the vault-meta one, so the first task
+                // in it finds a key already there. It was one more while the
+                // Inbox epoch was minted lazily by whatever first wrote to
+                // that stream.
                 assert_eq!(
                     u64::from(s.outbox_pending),
-                    announced + 1,
-                    "only the task itself is newly pending"
+                    announced + 2,
+                    "only the task and the vault's requirement are newly pending"
                 );
                 // Read the device id straight from the vault for comparison.
                 let db = core.db.lock();
@@ -1343,8 +1348,10 @@ async fn both_observer_channels_deliver_to_their_subscribers() {
         core.sync_pending().unwrap(),
         "the query path reads outbox depth from the database"
     );
+    // Two rows: the task, and the vault's requirement of `core.field_ops`
+    // that its write, the vault's first, makes (ADR-0065 §7).
     assert_eq!(
-        u64::from(snapshot.outbox_pending) + 1,
+        u64::from(snapshot.outbox_pending) + 2,
         u64::from(from_query.outbox_pending),
         "and the broadcast snapshot is behind it by the one submit, because \
          nothing off the driver path republishes the depth"

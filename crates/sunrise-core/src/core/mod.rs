@@ -608,6 +608,56 @@ impl Core {
         Ok(self.engine.missing_features(&db)?)
     }
 
+    /// Make the vault require `core.field_ops` (ADR-0065 §7), from which
+    /// every command on every device writes `Patch` and nothing else. Returns
+    /// the ids this added: empty when the vault already required it.
+    ///
+    /// A command does this by itself, before its first write, once every
+    /// paired device has advertised the feature. This is the path for the
+    /// rest: unless `confirmed`, it refuses with
+    /// [`EngineError::FeatureUnsupportedByDevices`] naming the devices that
+    /// have not said they support it; the client asks the user ("Your iPhone
+    /// needs an update first: it will be read-only until it is updated") and
+    /// retries with `confirmed`. Those devices keep syncing and reading, and
+    /// refuse to edit (ADR-0045 §8).
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; the refusal above; storage.
+    pub fn enable_field_ops(&self, confirmed: bool) -> Result<Vec<String>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let added = {
+            let mut db = self.db.lock();
+            self.engine.require_features(
+                &mut db,
+                &[crate::feature::FIELD_OPS_FEATURE],
+                confirmed,
+            )?
+        };
+        if !added.is_empty() && self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        Ok(added)
+    }
+
+    /// The other non-revoked devices of the vault whose newest
+    /// `DeviceFeatures` does not list feature `id`, including every device
+    /// that never advertised one, sorted.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage.
+    pub fn devices_lacking_feature(&self, id: &str) -> Result<Vec<[u8; 16]>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self
+            .engine
+            .devices_lacking(db.conn(), id)
+            .map_err(crate::EngineError::from)?)
+    }
+
     /// What `Query::ReminderIntents` schedules, and the candidates it could
     /// not because their time has no instant for this reader, each with the
     /// reason (`docs/11-adr/0066-times-survive-travel.md` §3).

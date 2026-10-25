@@ -4027,7 +4027,7 @@ macro_rules! require_mirrors {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))?;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))? $(= $default:literal)?;
                             )*
                             $(..$unknown:ident)?
                         }

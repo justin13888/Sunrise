@@ -50,6 +50,12 @@
 //! applies through the same path as the corresponding update, so the whole row
 //! is replaced. See ADR-0014.
 //!
+//! Since ADR-0065 §7 the two cores here write `Patch`es once each has the
+//! other's `DeviceFeatures`, and a delete is a `Patch` of `deleted` alone that
+//! wins over a concurrent rename whatever the clocks, the rename kept inside
+//! the tombstone. Which mode a race runs in depends on whether the
+//! advertisement has crossed yet; the convergence assertion holds in both.
+//!
 //! # Where the deterministic coverage lives
 //!
 //! `BlockDelete` and `AttachmentDelete` were converted last, and their coverage

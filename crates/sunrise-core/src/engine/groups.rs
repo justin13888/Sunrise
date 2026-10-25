@@ -3,9 +3,10 @@
 //!
 //! # What makes an op a member
 //!
-//! A `Patch` names its group in its own `group` key. A full-state op (every
-//! op this build writes until the vault requires `core.field_ops`, D9) has
-//! no key of its own to carry one, so a member carries the top-level mark
+//! A `Patch` names its group in its own `group` key, and in a vault that
+//! requires `core.field_ops` every member is one. A full-state op (every op
+//! this build writes into a vault that does not, D9) has no key of its own
+//! to carry one, so a member carries the top-level mark
 //! [`FULL_STATE_GROUP_KEY`] beside its entity's fields:
 //! `{"id": bstr .size 16, "size": uint, "op": op-ref}`. `op` is the member's
 //! own op-ref. A build from before this record reads the mark as an unknown

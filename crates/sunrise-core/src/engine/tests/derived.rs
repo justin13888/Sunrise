@@ -2,8 +2,8 @@
 //! and the history readers that understand `Patch`.
 //!
 //! The pairs here advertise what they support to each other, as a fresh
-//! `Core::open` does, so a defer and a streak advance are written as
-//! `Patch`es between them (clarification D16).
+//! `Core::open` does, so their vault requires `core.field_ops` at its first
+//! write and every command is written as a `Patch` (ADR-0065 §7).
 
 use super::field_merge::{add, emit_patch, set, text};
 use super::*;
@@ -125,6 +125,32 @@ fn new_task(e: &Engine, db: &mut Db, title: &str) -> EntityRef {
     .entity
 }
 
+/// The titles of the tasks a search for `q` finds, sorted.
+fn search_titles(e: &Engine, db: &Db, q: &str) -> Vec<String> {
+    let QueryResult::Search(r) = e
+        .query(
+            db,
+            Query::SearchGrouped {
+                text: q.into(),
+                now_ms: T0,
+                prefix: false,
+                per_group: None,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("search shape")
+    };
+    let mut titles: Vec<String> = r
+        .groups
+        .iter()
+        .filter(|g| g.kind == sunrise_domain::search::SearchKind::Task)
+        .flat_map(|g| g.hits.iter().map(|h| h.title.text.clone()))
+        .collect();
+    titles.sort();
+    titles
+}
+
 fn defer(e: &Engine, db: &mut Db, id: EntityRef, to_ms: i64) {
     e.apply(
         db,
@@ -175,9 +201,10 @@ fn concurrent_defers_count_twice() {
 }
 
 /// Until every paired device has said it folds field ops, a defer is the
-/// full-state op every build reads, and so is one on a vault with no peer.
+/// full-state op every build reads (clarification D9). A vault with no peer
+/// requires `core.field_ops` at its first write, and defers by `Patch`.
 #[test]
-fn a_defer_is_a_full_state_op_until_every_peer_folds_field_ops() {
+fn a_defer_is_a_full_state_op_while_a_peer_lacks_field_ops() {
     let mut p = peers(false);
     let task = new_task(&p.ea, &mut p.dba, "t");
     defer(&p.ea, &mut p.dba, task, NOW + DAY_MS);
@@ -188,13 +215,9 @@ fn a_defer_is_a_full_state_op_until_every_peer_folds_field_ops() {
 
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
     let (solo, mut db) = (engine_clocked(clock), db());
-    assert!(solo.advertise_features(&mut db).unwrap());
     let task = new_task(&solo, &mut db, "t");
     defer(&solo, &mut db, task, NOW + DAY_MS);
-    assert_eq!(
-        kinds_logged(&db, task).last().map(String::as_str),
-        Some("task.update")
-    );
+    assert_eq!(kinds_logged(&db, task), ["task.patch", "task.patch"]);
     assert_eq!(task_of(&db, task).deferred_count, 1);
 }
 
@@ -271,6 +294,7 @@ fn a_legacy_streak_is_kept_until_a_patch_writes_the_keys() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
     let e = engine_clocked(clock.clone());
     let mut db = db();
+    legacy_peer(&db);
     let (rid, occ) = seed_routine(&e, &mut db);
     set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
@@ -372,6 +396,10 @@ fn a_concurrent_dependency_cycle_suppresses_the_newer_edge() {
             c[0].winner.value.as_ref().map(|v| v.get()),
             Some(&Value::serialized(&t1).unwrap())
         );
+        // Search reads the same graph: the set-aside edge neither blocks t2
+        // nor is a dependency of it.
+        assert_eq!(search_titles(e, db, "is:blocked"), ["t1"]);
+        assert_eq!(search_titles(e, db, "has:dependency"), ["t1"]);
         // The local check reads the same graph: t2 may now wait on t1's
         // blocker without being told it closes a loop it does not.
         e.assert_rebuild_identity(db);
@@ -510,7 +538,7 @@ fn the_activity_feed_reads_patches() {
     );
     assert_eq!(
         kinds_logged(&p.dba, task),
-        ["task.create", "task.patch", "task.patch"]
+        ["task.patch", "task.patch", "task.patch"]
     );
     sync(&mut p);
     for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
@@ -725,13 +753,13 @@ fn a_patch_replays_each_field_op_onto_the_task_before_it() {
     assert!(matches!(restored, OpPayload::TaskUpdated(_)));
 }
 
-/// A build without `routine.civil_times` writes defers as full-state ops,
-/// even when every paired device has the feature.
+/// A build without `core.field_ops` writes defers as full-state ops, even
+/// when every paired device has the feature: it cannot require it.
 #[test]
 fn a_build_lacking_the_feature_never_writes_field_ops() {
     // Another feature, so the test is not about an empty list.
     let others = &crate::feature::FEATURES[..1];
-    assert_ne!(others[0].id, "routine.civil_times");
+    assert_ne!(others[0].id, crate::feature::FIELD_OPS_FEATURE);
     let mut p = peers(true);
     let lacking = engine_seeded(ROOT, [1u8; 32], p.ca.clone()).with_features(others);
     let task = new_task(&lacking, &mut p.dba, "t");

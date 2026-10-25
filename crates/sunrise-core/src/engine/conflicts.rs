@@ -25,15 +25,18 @@
 //!
 //! # How a conflict is settled
 //!
-//! A write that descends from every member of a field's set clears it. With
-//! `Patch` writes that is a version whose parents are all the entity's heads
-//! (§4). Until the vault requires `core.field_ops`, commands write
-//! full-state ops (clarification D9), and both commands here do too: the op
-//! is the entity as it projects, with the one field set, stamped after every
-//! version this device has applied. It becomes the entity's legacy floor, so
-//! every write below it leaves its antichain (D4), on every replica that
-//! applies it. That settles every field of the entity at once, on the values
-//! this device shows, which is what any edit in that mode already does.
+//! A write that descends from every member of a field's set clears it. In a
+//! vault that requires `core.field_ops` both commands write that: one `Patch`
+//! of the field, whose parents are all the entity's heads (§4), and which
+//! settles that field alone.
+//!
+//! Until the vault requires the feature, commands write full-state ops
+//! (clarification D9), and so do both commands here (D11): the op is the
+//! entity as it projects, with the one field set, stamped after every version
+//! this device has applied. It becomes the entity's legacy floor, so every
+//! write below it leaves its antichain (D4), on every replica that applies
+//! it. That settles every field of the entity at once, on the values this
+//! device shows, which is what any edit in that mode already does.
 //!
 //! [`Command::ResolveConflict`]: crate::Command::ResolveConflict
 //! [`Command::Restore`]: crate::Command::Restore
@@ -47,6 +50,7 @@ use super::merge::{
 use super::snapshot::in_tx;
 use super::stream::rooted_streams;
 use super::task::resolved_dependencies;
+use super::write::{PatchBuilder, WriteMode};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::conflicts::{
@@ -303,6 +307,55 @@ fn full_state_update(
     })
 }
 
+impl Engine {
+    /// ADR-0065 §4's settle, in a field-ops vault: one `Patch` setting
+    /// `field` to `value`, whose parents are every head of `entity`, so it
+    /// descends from every write the field's unresolved set holds and clears
+    /// it on every replica that applies it. A restore is the same `Patch` of
+    /// `deleted`, and descends from every branch edited while deleted.
+    ///
+    /// `value` may equal the winner: the write is what settles the set, so it
+    /// is written whatever it changes.
+    fn settle_with_patch(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        entity: EntityRef,
+        field: &str,
+        value: Value,
+        now_ms: u64,
+    ) -> Result<CommandResult, EngineError> {
+        let stream = match entity.kind() {
+            EntityKind::Task => {
+                let t = super::task::read_task(tx, entity.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("task {entity}")))?;
+                *t.stream_id.bytes()
+            }
+            EntityKind::Block => {
+                let b = super::block::read_block(tx, entity.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("block {entity}")))?;
+                *b.stream_id.bytes()
+            }
+            EntityKind::Stream | EntityKind::Context | EntityKind::Routine => META_STREAM,
+            other => {
+                return Err(EngineError::Invalid(format!(
+                    "a {} is not restored or resolved",
+                    other.tag()
+                )))
+            }
+        };
+        let op = PatchBuilder::new(entity)
+            .set(field, value)
+            .build(tx)?
+            .ok_or_else(|| EngineError::Invalid("a settle writes its field".into()))?;
+        let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
+        let state = match entity.kind() {
+            EntityKind::Task => super::task::read_task(tx, entity.bytes())?.map(|t| t.state),
+            _ => None,
+        };
+        Ok(CommandResult::new(entity, state, done.op_id, done.seq))
+    }
+}
+
 /// Which of the two commands a settle runs for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Settle {
@@ -372,6 +425,9 @@ impl Engine {
                 .any(|(k, v)| k.as_text() == Some("deleted") && *v == Value::Bool(true));
             if how == Settle::Restore && !deleted {
                 return Err(EngineError::Invalid(format!("{entity} is not deleted")));
+            }
+            if self.write_mode(tx, now_ms)? == WriteMode::Patch {
+                return self.settle_with_patch(tx, entity, field, value, now_ms);
             }
             set_field(kind, &mut entries, field, value);
             let now = Value::serialized(&ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX)))

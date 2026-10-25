@@ -100,7 +100,7 @@ pub use engine::{
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };
-pub use feature::{FeatureScope, MissingFeature};
+pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,

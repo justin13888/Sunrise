@@ -522,6 +522,7 @@ fn open_rebuilds_once_per_fold_version() {
 fn a_failed_rebuild_at_open_is_tried_again() {
     let e = engine();
     let mut db = db();
+    legacy_peer(&db);
     let task = new_task(&e, &mut db, "kept");
     let env = create_env_for(&db, task.bytes());
     db.conn()

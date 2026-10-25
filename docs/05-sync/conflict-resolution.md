@@ -4,36 +4,34 @@ status: accepted
 
 # Conflict Resolution
 
-> **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
-> ops).** The merge model of record is ADR-0044's: ops carry only the fields a
-> command wrote, and each field merges by its own type (register, map, OR-set or
-> PN-counter). Where this page and ADR-0044 disagree, ADR-0044 wins. The
+> **The merge model of record is [ADR-0044](../11-adr/0044-per-field-ops.md)
+> (per-field ops) as [ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+> amends it.** Where this page and those records disagree, they win. The
 > comparison key and the HLC rules below are unchanged.
 >
-> **Today** the merge implements every policy in the table below, field by
-> field ([#319](https://github.com/justin13888/Sunrise/issues/319)). It does
-> not yet derive streaks. What a device *writes* has not changed: no command
-> emits a `Patch` until the vault can require `core.field_ops` (ADR-0044 §9,
-> [#324](https://github.com/justin13888/Sunrise/issues/324)). Every local edit
-> is still a full-state op, which merges as a write to every field it carries
-> at its own stamp, on the device that wrote it as on every peer: a command
-> folds its own op through the merge a received op takes
-> ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §5). Between two devices on this build, the later edit's whole
-> state therefore still wins, as entity-level LWW did
-> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A `Patch`
-> from a build that emits one merges per field.
-> [`crdt-design.md`](./crdt-design.md) §What exists in the tree has the
-> detail.
+> **What a device writes.** Once a vault requires the structural feature
+> `core.field_ops` (ADR-0065 §7), every command writes a `Patch` of the fields
+> it changed, naming the entity's heads it had applied as its `parents`, and a
+> command that writes several entities writes them as one group. A device
+> makes the vault require the feature itself, at its first entity write, once
+> every paired device has advertised it; `Core::enable_field_ops(true)`
+> requires it over a device that has not, which then reads and syncs but
+> refuses to edit (ADR-0045 §8). Until then, while a paired device lacks the
+> feature, every command writes a full-state op (clarification D9), and of two
+> concurrent full-state edits the later one's whole state wins, as entity-level
+> LWW did ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded).
+> Either way a command folds its own op through the merge a received op takes
+> (ADR-0065 §5). [`crdt-design.md`](./crdt-design.md) §What a command writes
+> has the detail.
 >
-> **Conflicts** ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
-> §3–§4) are folded, kept, listed and settled: every register keeps the
-> concurrent writes that lost, the field's class picks the one shown, and
-> `sunrise conflicts` (`Query::Conflicts`) lists them. Two full-state ops never
-> make a conflict (clarification D4), so between two devices on this build,
-> which both write full-state ops, none arises; a `Patch` naming its parents,
-> from a build that writes one, does. §Seeing and settling a conflict below.
+> **Conflicts** (ADR-0065 §3–§4) are folded, kept, listed and settled: every
+> register keeps the concurrent writes that lost, the field's class picks the
+> one shown, and `sunrise conflicts` (`Query::Conflicts`) lists them. Two
+> full-state ops never make a conflict (clarification D4), so a vault still in
+> legacy mode shows none between its own devices; two `Patch`es naming their
+> parents do. §Seeing and settling a conflict below.
 
-The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices. The banner above says which of them a device's own writes can exercise today.
+The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices. In a vault that requires `core.field_ops` a device's own writes exercise every one of them; in one still in legacy mode, a device's full-state edit writes every field it carries (the table's last row).
 
 ## Default policies
 
@@ -43,7 +41,7 @@ The merge layer resolves every concurrent edit deterministically, with no user p
 | Map (entries edited independently, such as `Preferences.values` and day-schedule entries) | One LWW register per key; a key is removed by a tombstone, never forgotten |
 | Set membership (`Task.contexts`, `Task.blocked_by`, `Block.tasks`, a routine's `skipped_keys` and `streak_keys`) | Observed-remove OR-set: a concurrent add survives a remove that did not observe it. `Task.blocks` is derived from `Block.tasks`, not merged. |
 | Counter (`deferred_count`) | PN-counter (commutative add/sub) |
-| Streaks | Derived at read time from `streak_keys` and `skipped_keys`; never stored or merged. Today they are still stored, and merge as registers ([#331](https://github.com/justin13888/Sunrise/issues/331)). |
+| Streaks | Derived in `project` from `streak_keys` and `skipped_keys` once a `Patch` has written either, and the "as of now" lapse applied at read time (ADR-0065 D17). A routine only full-state ops wrote keeps the streak registers its newest one carried ([#331](https://github.com/justin13888/Sunrise/issues/331)). |
 | Deletion (`deleted`) | A register of the tombstone class: a delete beats a concurrent restore. An edit concurrent with a delete stays inside the tombstoned entity, is reported as edited while deleted, and shows again on a restore; it never resurrects it. A restore is an ordinary later write. |
 | A full-state op | A write to every field it carries, at its own stamp. A register or map key written before the newest full-state op reads as that op left it, an OR-set add before it reads as removed unless the op re-adds it, and a counter is that op's value plus every increment after it ([`crdt-design.md`](./crdt-design.md) §Legacy full-state ops). |
 | Ordering (children of a Stream) | `sort_order` fractional key, one LWW register per entity |
@@ -112,38 +110,35 @@ A and B both transition a task on the same op-window:
 | `done` | `done` | Same value: no conflict (ADR-0065 D5). `completed_at` is quiet and takes the later stamp. |
 | `done` | `in_progress` | Terminal over open: `done` wins whatever the stamps, and `in_progress` is kept and reported, so the user can make it win in one action. A reopen written *after* seeing the completion is an ordinary later write and wins. |
 
-This is the outcome for `Patch` versions. Two full-state ops, which every
-command writes until the vault requires `core.field_ops`, are decided by stamp
-alone and keep no loser (ADR-0065 D4), exactly as before.
+This is the outcome for `Patch` versions, which every command writes once
+the vault requires `core.field_ops`. Two full-state ops, which a vault in
+legacy mode writes, are decided by stamp alone and keep no loser (ADR-0065
+D4), exactly as before.
 
 ### Concurrent deadline edits
 
-Both set `hard_due_at`. Under ADR-0044 the `hard_due_at` register takes the
-later write, and a concurrent edit to any *other* field on either side
-survives. Today a command writes a full-state op, so the later write still
-wins on the whole entity; a `Patch` from a build that emits one keeps the other
-field. Nothing is logged: the merge journal that would have recorded it was
-removed (see below).
+Both set `hard_due_at` (in the tree today, `due_at`). Each write is a `Patch`
+of that one register, and it is a tracked field: the later stamp wins, the
+other is kept and reported as a conflict on it, and a concurrent edit to any
+*other* field on either side survives. In a vault still in legacy mode the
+later full-state write wins the whole entity and nothing is kept.
 
 ### Concurrent task moves across streams
 
-**Today a move is not delete-plus-create — it is one op.** `Task.stream_id`
+**A move is not delete-plus-create — it is one op.** `Task.stream_id`
 (`crates/sunrise-domain/src/task.rs`) is a field on the entity, and moving a
-task emits a single `InnerOp::TaskUpdate` carrying the whole task with its new
-`stream_id`. There is no `TaskMove` variant and no delete/create pair in
-`crates/sunrise-core/src/inner_op.rs`.
+task writes one `Patch` of `stream_id` (in legacy mode, one `TaskUpdate`
+carrying the whole task with its new `stream_id`). There is no `TaskMove`
+variant and no delete/create pair in `crates/sunrise-core/src/inner_op.rs`.
 
-So two concurrent moves are just two concurrent writes to one entity, and
-the `stream_id` register settles them with the comparison key above: the later
-`(hlc, device_id, seq)` wins, the task ends up in exactly one stream, and every
-replica picks the same one. **No duplicate is ever created, so nothing needs
-tombstoning.**
-
-Under ADR-0044 a move is one `stream_id` register write, so the same holds per
-field: the later move wins and no other field is touched. A move between key
-domains also re-seals the task's field state under the destination with each
-field's original stamp ([ADR-0046](../11-adr/0046-optional-stream.md) §2),
-which is a carry, not a new write, so it cannot make a stale field win.
+So two concurrent moves are just two concurrent writes to one register, and
+`stream_id`'s class settles them: the later `(hlc, device_id, seq)` wins, the
+other is kept and reported (it is tracked), the task ends up in exactly one
+stream, and every replica picks the same one. No other field is touched.
+**No duplicate is ever created, so nothing needs tombstoning.** A move between
+key domains also re-seals the task's field state under the destination with
+each field's original stamp ([ADR-0046](../11-adr/0046-optional-stream.md)
+§2), which is a carry, not a new write, so it cannot make a stale field win.
 
 *Not planned.* Duplicate-and-tombstone is what would be needed
 if a move ever becomes a delete-source + create-destination pair — sort copies
@@ -167,15 +162,15 @@ Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
 - Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Two devices completing **different** occurrences add two keys, and both count.
-- Between devices that all fold field ops, each completion's key is a `Patch` of the routine (ADR-0065 D16), and `project` derives the streak from the keys (D17). Against a device that does not, the streak is still a register written with the routine's full state by the device that recorded the completion, and of two concurrent completions one key survives ([#331](https://github.com/justin13888/Sunrise/issues/331)).
+- In a vault that requires `core.field_ops`, the first completion of an occurrence is one group of two `Patch`es: the task's `state` and `completed_at`, and the routine's `streak_keys` add of the occurrence's key when it was completed within its grace window. `project` derives the streak from the keys (ADR-0065 D17), so no replica shows the completion without its key, and two concurrent completions of different occurrences both count. A late completion adds no key, which is what makes it a miss. In a vault still in legacy mode, the streak is a register written with the routine's full state by the device that recorded the completion, and of two concurrent completions one key survives ([#331](https://github.com/justin13888/Sunrise/issues/331)).
 
 ### Concurrent dependency cycles
 
-Two devices can each add a `blocked_by` edge that passes the local cycle check, `A→B` on one and `B→A` on the other, and merge into a cycle, since `blocked_by` is an add-wins set. Every replica reads the merged edges oldest first, by the stamp of each edge's oldest surviving add, and an edge that would close a cycle among those already kept is **suppressed**: it stays in the set and no read of the dependency graph sees it (`Query::Actionable`, the focus plan, the unblock cascade, the daily review's blocked set, and the local check itself). A stream nesting loop is read the same way: the stream whose `parent_id` write is newest reads as a root ([#333](https://github.com/justin13888/Sunrise/issues/333), ADR-0065 §5, D18). Each suppressed edge is a conflict of class `dependency_cycle` on the task or stream holding it, listed with the loop it would close; removing any edge of the loop ends it.
+Two devices can each add a `blocked_by` edge that passes the local cycle check, `A→B` on one and `B→A` on the other, and merge into a cycle, since `blocked_by` is an add-wins set. Every replica reads the merged edges oldest first, by the stamp of each edge's oldest surviving add, and an edge that would close a cycle among those already kept is **suppressed**: it stays in the set and no read of the dependency graph sees it (`Query::Actionable`, the focus plan, the unblock cascade, the daily review's blocked set, search's `is:blocked` and `has:dependency`, and the local check itself). A stream nesting loop is read the same way: the stream whose `parent_id` write is newest reads as a root ([#333](https://github.com/justin13888/Sunrise/issues/333), ADR-0065 §5, D18). Each suppressed edge is a conflict of class `dependency_cycle` on the task or stream holding it, listed with the loop it would close; removing any edge of the loop ends it.
 
 ### Concurrent list reorders
 
-Each entity's position is its own `sort_order` register (ADR-0044 §3), so concurrent moves of the same item produce one final position, the later write's, deterministic across replicas, and moves of different items both survive. Today a move is a full-state op, so the later writer's whole state wins on the moved entity; moves of different items already touch different entities.
+Each entity's position is its own `sort_order` register (ADR-0044 §3), so concurrent moves of the same item produce one final position, the later write's, deterministic across replicas, and moves of different items both survive. A move writes a `Patch` of `sort_order` alone, so a concurrent edit of the moved task's other fields survives too; in a vault still in legacy mode the later writer's whole state wins on the moved entity.
 
 ### Concurrent share-then-revoke
 
@@ -206,15 +201,20 @@ delete also reports the branches that edited the entity without seeing it.
   (`sunrise restore <id>`), which also clears a tombstone conflict. Undo of a
   delete is a restore.
 
-Until the vault requires `core.field_ops`, both commands write what every
-command writes, a full-state op: the entity as this device projects it, with
-the one field set, stamped after every version the device has applied. It
-becomes the entity's newest full-state op, so every kept write below it
-leaves its register (D4), on every replica that applies it. That settles
-every field of the entity at once, on the values this device shows, which is
-what any edit in that mode already does. Once commands write `Patch`, a
-resolution is a `Patch` naming all the entity's heads as parents and writing
-the one field (ADR-0065 §4).
+In a vault that requires `core.field_ops`, both commands write one `Patch`
+of the one field, naming every head of the entity as its parents (ADR-0065
+§4). It descends from every kept write of the field, and a restore from every
+branch edited while deleted, so it settles that field alone, everywhere it is
+applied; a resolution to the value the winner already holds is still written,
+since the write is what settles the set.
+
+In a vault still in legacy mode, both commands write what every command
+writes there, a full-state op (clarification D11): the entity as this device
+projects it, with the one field set, stamped after every version the device
+has applied. It becomes the entity's newest full-state op, so every kept
+write below it leaves its register (D4), on every replica that applies it.
+That settles every field of the entity at once, on the values this device
+shows, which is what any edit in that mode already does.
 
 ## Merge journal — removed
 
