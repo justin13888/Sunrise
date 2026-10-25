@@ -190,9 +190,59 @@ async fn once(core: &Core) -> CmdResult {
             println!("{}", strings::sync::live());
             Ok(())
         }
-        Err(_) => Err(strings::sync::timed_out(
-            i64::try_from(DEADLINE_MS / 1000).unwrap_or(i64::MAX),
-        )
-        .into()),
+        Err(last) => Err(not_caught_up(&last).into()),
+    }
+}
+
+/// Why a bounded wait did not end `Live`: the state that ended it early,
+/// named by its badge code, or the deadline it ran out.
+pub(super) fn not_caught_up(last: &sunrise_core::SyncStatus) -> String {
+    if sunrise_client_core::sync::ends_the_wait(last.state) {
+        let b = sunrise_client_core::sync_status::sync_badge(last.state, last.outbox_pending);
+        strings::sync::ended(badge_code(b.kind), i64::from(b.pending))
+    } else {
+        strings::sync::timed_out(i64::try_from(DEADLINE_MS / 1000).unwrap_or(i64::MAX))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_sync::SyncState;
+
+    fn status(state: SyncState, outbox_pending: u32) -> sunrise_core::SyncStatus {
+        sunrise_core::SyncStatus {
+            state,
+            outbox_pending,
+            peer_devices: 0,
+            last_sync_ms: None,
+            replay_applied: 0,
+            replay_remaining: None,
+        }
+    }
+
+    /// A wait that a refusal or a gap ended names that state; only one that
+    /// ran out its deadline says it timed out.
+    #[test]
+    fn a_wait_that_did_not_go_live_says_why() {
+        assert_eq!(
+            not_caught_up(&status(SyncState::Stopped, 2)),
+            "sync: stopped, so the outbox cannot drain; 2 changes waiting"
+        );
+        assert_eq!(
+            not_caught_up(&status(SyncState::Degraded, 1)),
+            "sync: changes_missing, so the outbox cannot drain; 1 change waiting"
+        );
+        for state in [
+            SyncState::Disconnected,
+            SyncState::CatchingUp,
+            SyncState::Live,
+        ] {
+            assert_eq!(
+                not_caught_up(&status(state, 3)),
+                strings::sync::timed_out(30),
+                "{state:?}"
+            );
+        }
     }
 }

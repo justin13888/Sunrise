@@ -2424,6 +2424,11 @@ stopped = "sync: stopped"
 needs_url = "sync needs SUNRISE_SYNC_URL"
 # {seconds} is how long `sync --once` waited.
 timed_out = "sync: outbox did not drain within {seconds, plural, one {#s} other {#s}}"
+# `sync --once`, when the session reached a state waiting cannot leave, before
+# its deadline. {badge} is stopped (the relay refused this device's credential)
+# or changes_missing (the relay cannot supply changes this device lacks),
+# typed as written; {count} changes wait to upload.
+ended = "sync: {badge}, so the outbox cannot drain; {count, plural, one {# change waiting} other {# changes waiting}}"
 # stderr, as a command opens the vault. {url} is the relay.
 driver_started = "sync driver started -> {url}"
 # {var} is the environment variable that names this device to the relay.
