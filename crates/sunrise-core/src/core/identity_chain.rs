@@ -21,9 +21,7 @@ impl Core {
     /// [`CoreError::Closed`] after close; [`crate::EngineError::Invalid`] for
     /// a record that is malformed, of another account, or does not verify.
     pub fn seed_identity_chain(&self, bytes: &[u8]) -> Result<ChainSeeded, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let mut db = self.db.lock();
         Ok(self.engine.seed_identity_chain(&mut db, bytes)?)
     }
@@ -31,9 +29,7 @@ impl Core {
     /// The identity chain record this replica would publish, unless this
     /// process already saw the relay hold the same bytes.
     pub(crate) fn identity_chain_plan(&self) -> Result<Option<Vec<u8>>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let plan = {
             let db = self.db.lock();
             self.engine.identity_chain_plan(&db)?

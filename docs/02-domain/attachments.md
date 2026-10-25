@@ -259,7 +259,7 @@ The 10 MiB threshold bounds only what is fetched *unasked*
 asks for one named attachment whatever its size: it writes a `blob_fetches`
 row, the sync driver drains it with no size predicate, and the call returns
 when the chunks are here. `Core::cancel_attachment_fetch`
-(`crates/sunrise-core/src/blob_fetch.rs:349#cancel_attachment_fetch`) is the
+(`crates/sunrise-core/src/blob_fetch.rs:350#cancel_attachment_fetch`) is the
 Cancel button, and it marks the request `partial` without needing the relay to
 agree, because a stalled transfer is what people cancel. Both are on the seam,
 behind the pane's Download and Cancel controls
