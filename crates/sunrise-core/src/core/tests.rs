@@ -925,7 +925,34 @@ async fn the_notification_reads_answer_through_the_core() {
         .unwrap(),
         QueryResult::Reminders(_)
     ));
-    core.close().await.unwrap();
+
+    // The catalog's reads (#347): a fresh vault's own announcement waits in
+    // the outbox, it has no news, and a hard deadline is a candidate.
+    let oldest = core.oldest_unacked_ms().unwrap();
+    assert!(
+        oldest.is_some_and(|ms| ms > 1 && ms <= now_ms),
+        "the vault's first ops wait from its opening: {oldest:?}"
+    );
+    assert!(core.security_events().unwrap().is_empty());
+    let due = sunrise_domain::SunriseTime::instant(
+        jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap() + 3_600_000).unwrap(),
+    );
+    let task = core
+        .submit(Command::CreateTask(sunrise_domain::TaskDraft {
+            title: "File taxes".into(),
+            hard_due_at: Some(due.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let got = core.deadline_candidates().unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].task, &got[0].hard_due_at), (task, &due));
+    core.shutdown().await;
+    assert!(matches!(core.oldest_unacked_ms(), Err(CoreError::Closed)));
+    assert!(matches!(core.security_events(), Err(CoreError::Closed)));
+    assert!(matches!(core.deadline_candidates(), Err(CoreError::Closed)));
 }
 
 /// `docs/08-features/recurrence-engine.md` requires materialization on a

@@ -22,6 +22,8 @@
 //! - [`plannable`]: the wake-to-sleep window inside it.
 //! - [`planner_date`]: the planner day an instant belongs to.
 //! - [`wind_down_at`]: the sleep time less the lead, when there is one.
+//! - [`brief_at`] and [`next_brief`]: when the morning and evening briefs
+//!   fire, wake plus or sleep less their offset.
 //! - [`starts_at`] and [`deadline_at`]: when a stored time starts, and when
 //!   it is missed as a deadline, with an all-day value on its planner day
 //!   (`boundary(d)` and `boundary(d + 1)`, ADR-0047 §Due instant).
@@ -508,6 +510,84 @@ pub fn next_wind_down(
         if let Some(w) = wind_down_at(schedule, d, tz, lead_s)? {
             if w.fire_at >= now {
                 return Ok(Some(w));
+            }
+        }
+        d = next(d)?;
+    }
+    Ok(None)
+}
+
+/// Which of the two daily briefs (`docs/08-features/notifications.md` #5, #7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Brief {
+    /// The morning brief: wake plus its offset.
+    Morning,
+    /// The evening plan: sleep less its offset.
+    Evening,
+}
+
+impl Brief {
+    /// The wall clock it fires at on a date with no schedule: 08:00 and
+    /// 20:00. The offset does not move it: an offset counts from a wake or a
+    /// sleep time, and the date has neither.
+    #[must_use]
+    pub const fn unscheduled_time(self) -> civil::Time {
+        match self {
+            Self::Morning => civil::Time::constant(8, 0, 0, 0),
+            Self::Evening => civil::Time::constant(20, 0, 0, 0),
+        }
+    }
+}
+
+/// When `which` brief fires for planner day `date` in `tz`: the morning one
+/// `offset_s` after the date's wake time, the evening one `offset_s` before
+/// its resolved sleep time (on the next date when it crosses midnight), and
+/// [`Brief::unscheduled_time`] on a date with no schedule. `None` for a date
+/// the zone skips.
+///
+/// A negative offset is allowed: `notifications.morning_brief.offset_s` runs
+/// −86400..86400, so a brief may fire before waking.
+///
+/// # Errors
+/// [`OutOfCalendar`] for a date at the edge of the calendar.
+pub fn brief_at(
+    schedule: &DaySchedule,
+    date: Date,
+    tz: &TimeZone,
+    which: Brief,
+    offset_s: i32,
+) -> Result<Option<Timestamp>, OutOfCalendar> {
+    if !exists(tz, date)? {
+        return Ok(None);
+    }
+    let offset = SignedDuration::from_secs(i64::from(offset_s));
+    let at = match (schedule.window_for(date), which) {
+        (None, _) => return at(tz, date, which.unscheduled_time()).map(Some),
+        (Some(w), Brief::Morning) => at(tz, date, w.wake)?.checked_add(offset),
+        (Some(_), Brief::Evening) => end(schedule, tz, date)?.checked_sub(offset),
+    };
+    at.map(Some).map_err(|_| OutOfCalendar(date))
+}
+
+/// The first `which` brief that fires at or after `now`: the planner day
+/// `now` is in, then the next ones, as `(date, fire_at)`. Looks three days
+/// ahead, the most a skipped date and a past brief can push it.
+///
+/// # Errors
+/// [`OutOfCalendar`] at the edge of the calendar.
+pub fn next_brief(
+    schedule: &DaySchedule,
+    now: Timestamp,
+    tz: &TimeZone,
+    which: Brief,
+    offset_s: i32,
+) -> Result<Option<(Date, Timestamp)>, OutOfCalendar> {
+    let mut d = prev(planner_date(schedule, now, tz)?)?;
+    for _ in 0..4 {
+        if let Some(at) = brief_at(schedule, d, tz, which, offset_s)? {
+            if at >= now {
+                return Ok(Some((d, at)));
             }
         }
         d = next(d)?;

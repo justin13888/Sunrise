@@ -46,6 +46,7 @@
     clippy::manual_let_else
 )]
 
+pub mod alerts;
 pub mod attach;
 mod blob_cache;
 mod blob_fetch;
@@ -74,6 +75,7 @@ pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
 
+pub use alerts::{DeadlineCandidate, SecurityEvent, SecurityEventKind};
 pub use attach::{AttachError, AttachPreview, ThumbnailImage};
 pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClass};
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;

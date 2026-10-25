@@ -158,7 +158,7 @@ fn pref_json(p: &sunrise_domain::ResolvedPref) -> serde_json::Value {
 
 /// The store a write goes to: the device overlay when asked for or when the
 /// key lives nowhere else, the vault otherwise.
-const fn target(scope: PrefScope, device: bool) -> PrefTarget {
+pub(super) const fn target(scope: PrefScope, device: bool) -> PrefTarget {
     match scope {
         PrefScope::Device => PrefTarget::Device,
         PrefScope::VaultOverridable if device => PrefTarget::Device,

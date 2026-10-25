@@ -85,20 +85,20 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | # | Kind | macOS | iOS / iPadOS | Android | Windows | Linux |
 |---|---|---|---|---|---|---|
 | 1 | Task reminder | **built** (actions: Mark Done, Snooze 1 h, Snooze until tomorrow) | **built** | no client | no client | no client |
-| 2 | Deadline | not built | not built | no client | no client | no client |
-| 3 | Routine due | not built (delivered as #1; `ReminderKind::Routine` is never produced) | not built (same) | no client | no client | no client |
+| 2 | Deadline | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 3 | Routine due | **built** (`ReminderKind::Routine` for a routine occurrence, under its own identifier, with the task category's actions) | **built** (same) | no client | no client | no client |
 | 4 | Block start | **built** (open only; no actions) | **built** (same) | no client | no client | no client |
-| 5 | Morning brief | not built (the view and `sunrise://morning` exist; nothing schedules it) | not built (same) | no client | no client | no client |
-| 6 | Triage nudge | not built | not built | no client | no client | no client |
-| 7 | Evening plan | not built (the view and `sunrise://evening` exist) | not built (same) | no client | no client | no client |
+| 5 | Morning brief | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 6 | Triage nudge | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 7 | Evening plan | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 8 | Wind-down | not built (the trigger is computed, `SunriseCore::wind_down_plan`; nothing schedules it) | not built (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |
-| 10 | Time zone changed | not built | not built | no client | no client | no client |
+| 10 | Time zone changed | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 11 | Weekly review | not built | not built | no client | no client | no client |
-| 12 | Sync stalled | not built | not built | no client | no client | no client |
-| 13 | New device paired | not built | not built | no client | no client | no client |
-| 14 | Device revoked | not built | not built | no client | no client | no client |
-| 15 | Recovery code used or changed | not built; blocked on a server account event | not built; same | no client | no client | no client |
+| 12 | Sync stalled | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 13 | New device paired | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 14 | Device revoked | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 15 | Recovery code used or changed | not built; a rotation that retires the code is planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet; a fetch of the blob is blocked on a server account event | not built; same | no client | no client | no client |
 | 16 | Calendar reconnect | not built; blocked on [#4](https://github.com/justin13888/Sunrise/issues/4) | not built; same | no client | no client | no client |
 | 17 | Shared change | not built; blocked on sharing ([#133](https://github.com/justin13888/Sunrise/issues/133)) | not built; same | no client | no client | no client |
 | 18 | Place arrival | not built; blocked on Places ([#339](https://github.com/justin13888/Sunrise/issues/339)) | not built; same | no client | no client | no client |
@@ -107,12 +107,20 @@ What exists today, read from the tree:
 
 - **The core** produces intents for two sources, a task's `planned_at` and a
   block's start (`crates/sunrise-core/src/engine/notify.rs#query_reminder_intents`).
-  `ReminderKind` (`crates/sunrise-domain/src/notify.rs:108#ReminderKind`) has a
-  `Routine` variant that only a test constructs. The morning summary and
-  end-of-day plan are queries
-  (`crates/sunrise-core/src/engine/notify.rs:28#query_morning_summary`,
-  `crates/sunrise-core/src/engine/notify.rs:52#query_end_of_day_plan`) that
-  nothing schedules.
+  A task that is a routine occurrence plans as `ReminderKind::Routine` (#3),
+  in place of `ReminderKind::Task`, never beside it. The core also reads what
+  the rest of the catalog is planned from
+  (`crates/sunrise-core/src/core/notify.rs`): the open tasks with a hard
+  deadline, the security events from after this device joined (another
+  device's certificate, a revocation, a rotation that carried no share to the
+  recovery code's holders), and the age of the oldest op the relay has not
+  acknowledged.
+- **The catalog is data.** `NotificationKind`
+  (`crates/sunrise-domain/src/notify_catalog.rs#NotificationKind`) is one row
+  of §Catalog each: its key, default, level, delivery, audience, actions, and
+  whether focus and quiet hours hold it; a test holds it equal to the table
+  above. `place` is the one path every catalog kind's fire time takes:
+  focus (§Focus suppression), then quiet hours.
 - **The Apple clients** share one scheduler: `ReminderScheduler` follows the
   change feed and reconciles against the OS's pending requests, and two
   categories are registered (`apps/apple/Sunrise/Notifications/ReminderPlan.swift:10`).
@@ -150,6 +158,20 @@ What exists today, read from the tree:
   whole re-plan in one call, Focus filter included, and the seam exports it
   as `SunriseCore::schedule_reminders`. The Apple scheduler still runs its own
   Swift planner until it adopts this.
+- **The rest of the catalog** is planned beside the reminders, in
+  `ReminderKind`-free records so no client's exhaustive switch over it breaks
+  (`crates/sunrise-client-core/src/reminders/catalog.rs`,
+  `crates/sunrise-client-core/src/reminders/alerts.rs`). The deadline, the two
+  briefs and the triage nudge are *scheduled*, under `sunrise.notify.`, and
+  reconciled like the reminders; the security, sync and zone notices are
+  *posted once*, under `sunrise.alert.`, which no reconcile cancels. What this
+  device has already posted is a `NotificationLedger` the caller keeps beside
+  its own device state (`crates/sunrise-client-core/src/reminders/ledger.rs`);
+  a fresh one adopts the events the vault already holds without posting them.
+  Reminders and scheduled catalog kinds share the 56-request cap. The seam
+  exports it all as `SunriseCore::schedule_notifications` and the catalog as
+  `notification_catalog`; `sunrise reminders plan` prints every kind, and
+  `sunrise reminders kinds|on|off` lists and toggles them.
 - **The keys** of §Preference keys are in the core's key table
   (`crates/sunrise-domain/src/preferences/keys.rs#PREFERENCE_KEYS`), stored and
   resolved there and served by `Query::Preferences` ([#337](https://github.com/justin13888/Sunrise/issues/337)).
@@ -180,6 +202,11 @@ is non-empty, the brief's body names it ("3 tasks need a decision") and offers
 **Open Triage**, and no separate nudge fires. With the brief off, the nudge fires
 alone at the same time. The nudge fires at most once per civil day and only when
 the queue changed since the last one, so an untouched queue does not nag.
+
+A date with no day schedule fires the brief at 08:00 and the evening plan at
+20:00, whatever their offsets: an offset counts from a wake or a sleep time, and
+that date has neither. A date-only deadline (#2) fires at the morning brief's
+time of its date, whether or not the brief itself is on.
 
 ### Wind-down
 
@@ -220,10 +247,15 @@ toggle off the re-plan still happens; only the notification is skipped.
 Kinds 13–15 are always on, go to **every** device regardless of the primary
 device rule, are never suppressed by quiet hours or focus, and cannot be
 snoozed. They are raised when the device applies the op that records the event
-(a `device_cert` publication for a new device, a `device_revoke`), so a device
-learns of them on its next sync. Kind 15 needs an event the relay originates,
-because the recovery blob is fetched from the relay and no op records the fetch;
-until the server emits one, it is not deliverable.
+(a `device_cert` publication for a new device, a `device_revoke`, an
+`identity_transition` that carries no share to the recovery code's holders and
+so retires the code, [ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)
+§1), so a device learns of them on its next sync. Only events from after the
+device's own certificate count: a device that pairs learns the account's
+history on its first sync, and none of it is news. The rest of kind 15 needs an
+event the relay originates, because the recovery blob is fetched from the relay
+and no op records the fetch; until the server emits one, that half is not
+deliverable.
 
 ### Sync stalled
 
@@ -272,8 +304,12 @@ at that time).
 
 During an in-app focus session ([`focus-mode.md`](./focus-mode.md)), only that
 session's own end and break notifications (#9) and security events fire. Every
-other kind is queued under the quiet-hours rule until 30 s after the session
-ends.
+other kind is queued under the quiet-hours rule until 30 s after the session's
+planned end: dropped under `drop`, and dropped when that wait passes the 4-hour
+cap. An open-ended session has no end to wait for, so what falls in it is
+dropped, as a notification still inside quiet hours at its cap is. A held
+reminder says "Held for focus" where quiet hours would say "Held for quiet
+hours".
 
 ## Multi-device dedup
 

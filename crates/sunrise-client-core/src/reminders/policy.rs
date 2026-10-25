@@ -60,7 +60,7 @@ impl ReminderPolicy {
 
 /// The value `key` resolves to: from `prefs` when it is there, else the key
 /// table's default.
-fn value(prefs: &[ResolvedPref], key: &str) -> Option<PrefValue> {
+pub(super) fn value(prefs: &[ResolvedPref], key: &str) -> Option<PrefValue> {
     match prefs.iter().find(|p| p.key == key) {
         Some(p) => p.value.clone(),
         None => sunrise_domain::pref_spec(key).and_then(|spec| {
@@ -75,7 +75,7 @@ fn value(prefs: &[ResolvedPref], key: &str) -> Option<PrefValue> {
     }
 }
 
-fn flag(prefs: &[ResolvedPref], key: &str, default: bool) -> bool {
+pub(super) fn flag(prefs: &[ResolvedPref], key: &str, default: bool) -> bool {
     match value(prefs, key) {
         Some(PrefValue::Bool(b)) => b,
         _ => default,

@@ -1768,6 +1768,7 @@ fn format_iso8601(ms: u64) -> String {
 
 mod identity_chain;
 mod key_bundle;
+mod notify;
 mod repair;
 
 pub(crate) use repair::OpenMode;

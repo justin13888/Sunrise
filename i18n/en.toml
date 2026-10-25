@@ -1784,6 +1784,9 @@ USAGE:
     sunrise brief morning|evening
                                  the morning or evening brief
     sunrise reminders plan       this device's reminders for the next day
+    sunrise reminders kinds      every notification kind, and whether it is on
+    sunrise reminders on|off <kind>... [--device]
+                                 turn notification kinds on or off
     sunrise export <dataset> [json|csv] [path]
                                  trends | activity | focus | streaks
     sunrise export all <dir> [--no-fetch]
@@ -2218,7 +2221,12 @@ saved = "review saved"
 usage = "unknown brief `{arg}`; use morning or evening"
 
 [cli.reminders]
-usage = "unknown reminders mode `{arg}`; use plan"
+usage = "unknown reminders mode `{arg}`; use plan, kinds, on or off"
+toggle_usage = "usage: reminders on|off <kind>... [--device]; `sunrise reminders kinds` lists them"
+# {kind} is what was typed.
+unknown_kind = "unknown notification kind `{kind}`; `sunrise reminders kinds` lists them"
+# {kind} is a security notification's name.
+always_on = "`{kind}` is a security notification and cannot be turned off"
 disabled = "reminders are switched off on this device (notifications.enabled), so nothing is planned"
 # A reminder the planner could not place. {entity} is its id; {reason} why.
 unscheduled = "{entity} has a reminder that cannot be placed: {reason}"

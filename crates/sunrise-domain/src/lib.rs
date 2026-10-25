@@ -38,6 +38,7 @@ pub mod lateness;
 pub mod note;
 pub mod note_body;
 pub mod notify;
+pub mod notify_catalog;
 pub mod person;
 pub mod phrase;
 pub mod planning;
@@ -84,8 +85,9 @@ pub use context::{
     WAITING_ON_PREFIX,
 };
 pub use day_schedule::{
-    day_bounds, deadline_at, next_wind_down, plannable, planner_date, planner_day_of, starts_at,
-    wind_down_at, DayOverride, DaySchedule, DayScheduleEntry, DayWindow, OutOfCalendar, WindDown,
+    brief_at, day_bounds, deadline_at, next_brief, next_wind_down, plannable, planner_date,
+    planner_day_of, starts_at, wind_down_at, Brief, DayOverride, DaySchedule, DayScheduleEntry,
+    DayWindow, OutOfCalendar, WindDown,
 };
 pub use deps::{
     blocker_is_open, effective_state, is_actionable, resolve_cycles, DependencyGraph,
@@ -124,6 +126,10 @@ pub use notify::{
     QuietHoursPolicy, ReminderCandidate, ReminderIntent, ReminderKind, ReminderPlan,
     ReminderSettings, SnoozeSpan, UnscheduledReminder, BLOCK_DEFAULT_LEAD_S,
     QUIET_HOURS_QUEUE_CAP_S,
+};
+pub use notify_catalog::{
+    deadline_fire_at, focus_hold, place, Delivery, FocusWindow, InterruptionLevel,
+    NotificationAction, NotificationAudience, NotificationKind, FOCUS_RELEASE_S,
 };
 pub use person::Person;
 pub use phrase::{

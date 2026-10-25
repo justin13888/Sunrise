@@ -20,6 +20,7 @@ mod files;
 mod order;
 mod organize;
 mod plumbing;
+mod reminders;
 mod reports;
 mod search;
 mod settings;
@@ -136,7 +137,7 @@ pub(crate) async fn dispatch(ctx: &Ctx<'_>, sub: &str, rest: &[String]) -> CmdRe
 
         "review" => reports::review(ctx, rest).await,
         "brief" => reports::brief(ctx, rest).await,
-        "reminders" => reports::reminders(ctx, rest).await,
+        "reminders" => reminders::reminders(ctx, rest).await,
         "export" => reports::export(ctx.core, rest).await,
         "ical" => reports::ical(ctx.core, rest).await,
 

@@ -74,6 +74,7 @@ pub mod lateness;
 pub mod links;
 pub mod note_editing;
 pub mod notes;
+pub mod notifications;
 pub mod pairing;
 pub mod pairing_relay;
 pub mod print;

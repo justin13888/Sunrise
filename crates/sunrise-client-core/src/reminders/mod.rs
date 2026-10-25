@@ -26,17 +26,40 @@
 //! `add`, `replace` and `cancel` alone touches the OS not at all.
 //!
 //! The wind-down (`wind_down`) is planned beside them, under an identifier
-//! of its own: it belongs to no entity, so it is not one of these.
+//! of its own: it belongs to no entity, so it is not one of these. So are
+//! the rest of the catalog's kinds (`catalog`, `alerts`): deadlines, briefs,
+//! the triage nudge, and the security, sync and zone alerts, each under a
+//! namespace of its own so that no reconcile cancels another's.
+//!
+//! # Focus holds them
+//!
+//! During an in-app focus session only its own end and security events fire
+//! (§Focus suppression); every reminder here that falls in one waits until
+//! 30 s after it, under the quiet-hours rule, and says so in its body.
 //!
 //! Everything here is pure except [`schedule()`] and [`read_day_schedule`],
 //! which read the vault.
 
+mod alerts;
+mod catalog;
+mod ledger;
 mod policy;
 mod schedule;
 mod wind_down;
 
+pub use alerts::{
+    alert_identifier, raise_alerts, security_identifier, stall, AlertInputs, Stall, SyncHealth,
+    SYNC_STALL_AFTER_MS,
+};
+pub use catalog::{
+    catalog_entries, catalog_identifier, catalog_policy, plan_catalog, reconcile_catalog,
+    triage_fingerprint, CatalogChanges, CatalogEntry, CatalogInputs, CatalogNotification,
+    CatalogPolicy, ALERT_PREFIX, CATALOG_PREFIX, EVENING_BODY, EVENING_TITLE, MORNING_BODY,
+    MORNING_TITLE, TRIAGE_TITLE,
+};
+pub use ledger::{NotificationLedger, NudgeRecord, LEDGER_VERSION};
 pub use policy::{primary_claim, reminder_policy, ReminderPolicy, PRIMARY_DEVICE_KEY};
-pub use schedule::{read_policy, schedule, Schedule, ScheduleRequest};
+pub use schedule::{read_catalog_policy, read_policy, schedule, Schedule, ScheduleRequest};
 pub use wind_down::{
     read_day_schedule, reconcile_wind_down, wind_down_notification, WindDownChange,
     WindDownNotification, WIND_DOWN_IDENTIFIER, WIND_DOWN_TITLE,
@@ -70,6 +93,9 @@ pub const MAX_SCHEDULED: usize = 56;
 
 /// What the body says when quiet hours moved a reminder.
 pub const QUIET_HOURS_NOTE: &str = "Held for quiet hours";
+
+/// What the body says when a focus session held a reminder.
+pub const FOCUS_NOTE: &str = "Held for focus";
 
 /// What the body says for a time block.
 pub const BLOCK_STARTING: &str = "Time block starting";
@@ -257,15 +283,17 @@ const fn tag(kind: ReminderKind) -> &'static str {
 /// `notifications.quiet_hours.policy = "queue"`).
 #[must_use]
 pub fn body(intent: &ReminderIntent, tz: &TimeZone, clock: ClockStyle) -> String {
+    body_noted(intent, tz, clock, QUIET_HOURS_NOTE)
+}
+
+/// [`body`], saying `note` for what moved it.
+fn body_noted(intent: &ReminderIntent, tz: &TimeZone, clock: ClockStyle, note: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if intent.kind == ReminderKind::Block {
         parts.push(BLOCK_STARTING.to_owned());
     }
     if let Some(from) = intent.deferred_from {
-        parts.push(format!(
-            "{QUIET_HOURS_NOTE} · due {}",
-            clock.format(from, tz)
-        ));
+        parts.push(format!("{note} · due {}", clock.format(from, tz)));
     }
     parts.join(" · ")
 }
@@ -277,8 +305,18 @@ pub fn notification(
     tz: &TimeZone,
     clock: ClockStyle,
 ) -> PlannedNotification {
+    notification_noted(intent, tz, clock, QUIET_HOURS_NOTE)
+}
+
+/// [`notification`], with `note` saying what moved it.
+fn notification_noted(
+    intent: &ReminderIntent,
+    tz: &TimeZone,
+    clock: ClockStyle,
+    note: &str,
+) -> PlannedNotification {
     let category = ReminderCategory::of(intent.kind);
-    let body = body(intent, tz, clock);
+    let body = body_noted(intent, tz, clock, note);
     let fire_at_ms = intent.fire_at.as_millisecond();
     PlannedNotification {
         identifier: identifier_of(intent),
@@ -305,8 +343,35 @@ pub fn plan(
     clock: ClockStyle,
     limit: usize,
 ) -> Vec<PlannedNotification> {
-    let mut all: Vec<PlannedNotification> =
-        intents.iter().map(|i| notification(i, tz, clock)).collect();
+    plan_noted(
+        intents,
+        tz,
+        clock,
+        limit,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+/// [`plan`], with the reminders a focus session held, by identifier, saying
+/// [`FOCUS_NOTE`] instead of [`QUIET_HOURS_NOTE`].
+fn plan_noted(
+    intents: &[ReminderIntent],
+    tz: &TimeZone,
+    clock: ClockStyle,
+    limit: usize,
+    focus_held: &std::collections::BTreeSet<String>,
+) -> Vec<PlannedNotification> {
+    let mut all: Vec<PlannedNotification> = intents
+        .iter()
+        .map(|i| {
+            let note = if focus_held.contains(&identifier_of(i)) {
+                FOCUS_NOTE
+            } else {
+                QUIET_HOURS_NOTE
+            };
+            notification_noted(i, tz, clock, note)
+        })
+        .collect();
     all.sort_by(|a, b| {
         a.fire_at_ms
             .cmp(&b.fire_at_ms)
