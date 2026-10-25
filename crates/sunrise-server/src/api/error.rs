@@ -79,6 +79,10 @@ pub mod codes {
     pub const RECOVERY_BLOB_EXISTS: &str = "RECOVERY_BLOB_EXISTS";
     /// The account has no recovery blob to serve.
     pub const RECOVERY_BLOB_NOT_FOUND: &str = "RECOVERY_BLOB_NOT_FOUND";
+    /// `PUT /accounts/me/key_bundle` named a pin that is not the one in place:
+    /// another device pinned a key bundle since this one read it. Nothing was
+    /// written; the publisher reads the pin again (ADR-0069).
+    pub const KEY_BUNDLE_SUPERSEDED: &str = "KEY_BUNDLE_SUPERSEDED";
     /// The bearer is valid and the authentication behind it is not recent or
     /// strong enough for the operation. The client re-runs its OIDC
     /// authorization request with `max_age=0` (or `prompt=login`, or the

@@ -297,6 +297,8 @@ fn open_composes_each_tenants_ddl_in_dependency_order() {
             "committed_blobs",
             // migration 0006 — each stream's pinned snapshot record
             "stream_snapshots",
+            // migration 0007 — each account's pinned key bundle
+            "key_bundles",
         ],
         "the DDL `open` composes, in the order it ran"
     );

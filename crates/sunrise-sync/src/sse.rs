@@ -47,7 +47,10 @@
 //! written for.
 
 use crate::signer::DeviceSigner;
-use crate::transport::{BlobCommit, RevokeOutcome, SnapshotPin, Transport, TransportError};
+use crate::transport::{
+    BlobCommit, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin, Transport,
+    TransportError,
+};
 use async_trait::async_trait;
 use base64::Engine as _;
 use http_body_util::{BodyExt as _, Full};
@@ -1345,6 +1348,83 @@ impl Transport for SseTransport {
         }
         snapshot_pin_of(&reply.bytes)
     }
+
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        let reply = self
+            .call("GET", "/api/v1/accounts/me/key_bundle", None)
+            .await?;
+        // No pin is `404 BLOB_NOT_FOUND`. Any other 404 is a relay that
+        // predates the route, and a publish to it would upload a blob that
+        // nothing can ever pin.
+        if reply.status.as_u16() == 404 {
+            let code = serde_json::from_slice::<serde_json::Value>(&reply.bytes)
+                .ok()
+                .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_owned));
+            return match code.as_deref() {
+                Some("BLOB_NOT_FOUND") => Ok(None),
+                _ => Err(TransportError::Unsupported),
+            };
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        key_bundle_pin_of(&reply.bytes).map(Some)
+    }
+
+    async fn key_bundle_pin(
+        &mut self,
+        blob_id: &[u8; 16],
+        manifest_digest: &[u8; 32],
+        replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
+        let reply = self
+            .call(
+                "PUT",
+                "/api/v1/accounts/me/key_bundle",
+                Some(serde_json::json!({
+                    "blob_id": format!("blb_{}", hex::encode(blob_id)),
+                    "manifest_digest": hex::encode(manifest_digest),
+                    "replaces": replaces.map(|r| format!("blb_{}", hex::encode(r))),
+                })),
+            )
+            .await?;
+        // `409 KEY_BUNDLE_SUPERSEDED`: another device pinned since this one
+        // read. Not a failure; the caller reads the pin again.
+        if reply.status.as_u16() == 409 {
+            return Ok(KeyBundlePinned::Superseded);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        Ok(KeyBundlePinned::Pinned)
+    }
+}
+
+/// A `KeyBundlePin` document's blob id and manifest digest.
+fn key_bundle_pin_of(bytes: &[u8]) -> Result<KeyBundlePin, TransportError> {
+    let body: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| protocol(&e))?;
+    let malformed = || TransportError::Protocol("a key bundle pin is malformed".to_owned());
+    let blob_id = body
+        .get("blob_id")
+        .and_then(|b| b.as_str())
+        .and_then(|s| s.strip_prefix("blb_"))
+        .and_then(|hexpart| {
+            let mut out = [0u8; 16];
+            hex::decode_to_slice(hexpart, &mut out).ok().map(|()| out)
+        })
+        .ok_or_else(malformed)?;
+    let manifest_digest = body
+        .get("manifest_digest")
+        .and_then(|b| b.as_str())
+        .and_then(|hexpart| {
+            let mut out = [0u8; 32];
+            hex::decode_to_slice(hexpart, &mut out).ok().map(|()| out)
+        })
+        .ok_or_else(malformed)?;
+    Ok(KeyBundlePin {
+        blob_id,
+        manifest_digest,
+    })
 }
 
 /// A `StreamSnapshot` document's blob id and size.

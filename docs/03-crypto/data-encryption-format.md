@@ -386,6 +386,43 @@ Receivers compute this once after all chunks decrypt and compare to the value in
 
 The per-blob `blob_key` is a 32-byte random value generated when the attachment is created and recorded inside the attachment's `create` op (which is itself encrypted under the Stream key, so the blob key is end-to-end protected).
 
+## Key bundle
+
+The account's key bundle ([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md))
+carries every Stream key a device may write under, sealed to the account
+identity, so a device restored from the recovery code reads the account once
+the relay has trimmed the identity-addressed `key_envelope` ops. Implemented in
+`crates/sunrise-crypto/src/key_bundle.rs`; frozen by
+`crates/sunrise-crypto/tests/frozen_key_bundle.rs`.
+
+```cddl
+KeyBundle = magic("SR", 0x08, u16be 1) || canonical-CBOR {
+    1: bstr .size 16,          ; identity_id: the identity the keys are sealed to
+    2: bstr,                   ; signer_cert: the publisher's DeviceCert (<= 4 KiB)
+    3: uint,                   ; generated_at_ms: informational only
+    4: [* [bstr .size 16, uint, uint]],  ; manifest: (stream_id, epoch, n_keys), sorted, unique
+    5: bstr,                   ; sealed: HPKE enc(32) || ct || tag(16)
+    6: bstr .size 64,          ; sig: Ed25519 by the publisher's D_S
+}
+
+plaintext = [* [bstr .size 16, uint, bstr .size 32]]  ; (stream_id, epoch, key), sorted, unique
+```
+
+- **HPKE** is the suite of §HPKE single-shot, Base mode, to `ID_D_pub`, with
+  `info = "sunrise.key_bundle.hpke.v1" || identity_id` and
+  `aad = magic || canonical({1..4})`. A ciphertext moved under another header
+  does not open.
+- **Signature** = `Ed25519(D_S, "sunrise.key_bundle.sig.v1" || BLAKE3(magic ||
+  canonical({1..5})))`, verified under the `D_S_pub` of `signer_cert`, which
+  must verify under the reader's `ID_S_pub` and name the reader's identity.
+- **Manifest digest** = `derive_key("sunrise.key_bundle.manifest.v1",
+  canonical(manifest))`. The relay stores it beside the pin and checks nothing.
+- **Reader order**: magic and version; canonical CBOR, every field present
+  and none unknown; `identity_id` equals the reader's (constant time); the
+  cert; the signature; then, with `ID_D_priv`, the keys, which must match the
+  manifest entry for entry.
+- **Bounds**: at most 65,536 keys and 8 MiB; an absorbed epoch at most 2^24.
+
 ## Maximum sizes
 
 - Inner Op (post-CBOR): 1 MiB. Larger user content goes through the blob path.

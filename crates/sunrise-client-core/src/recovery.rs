@@ -416,10 +416,14 @@ pub async fn restore_identity<R: RecoveryRelay>(
 /// `Core::open` does the cryptographic half of step 6 without being asked:
 /// `Keychain::create` mints fresh `D_S`/`D_D` and issues a `DeviceCert` signed
 /// by the restored `ID_S_priv`, and the engine publishes it as an op. The
-/// replay needs no walker of its own: every identity-addressed `key_envelope`
-/// arrives as an ordinary op and opens under the restored `ID_D_priv`. What
-/// this adds is the **waiting**: reporting success before the log has been
-/// read would hand the user an empty vault and call it a recovery.
+/// replay needs no walker of its own. Where the relay still holds them, every
+/// identity-addressed `key_envelope` arrives as an ordinary op and opens under
+/// the restored `ID_D_priv`. Where it has trimmed them, the relay reports a
+/// cursor gap, the stream's snapshot record needs a key this vault lacks, and
+/// the sync driver fetches the account's key bundle, opens it with the same
+/// `ID_D_priv` and applies the record (ADR-0069, #580). What this adds is the
+/// **waiting**: reporting success before the log has been read would hand the
+/// user an empty vault and call it a recovery.
 ///
 /// The core is shut down before this returns, on every path, so the caller
 /// can open the vault again in the same process.

@@ -1,8 +1,8 @@
 //! The metadata seam ADR-0062 §1 puts every relay table behind.
 //!
 //! [`MetadataStore`] covers accounts, devices, push tokens, cursors, blob
-//! tombstones, the committed-blob ledger, the pinned stream snapshots,
-//! deletion tokens and the durable relay log. Each method is one
+//! tombstones, the committed-blob ledger, the pinned stream snapshots and key
+//! bundles, deletion tokens and the durable relay log. Each method is one
 //! unit of work that commits or rolls back whole, which is the shape [`Store`]
 //! already had: revocation, account erasure and a relay append each touch
 //! several tables, and keeping each inside one method keeps its atomicity
@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, NewDevice, NewTombstone,
-    PinnedSnapshot, Store, StoreError, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, KeyBundlePinned, NewDevice,
+    NewTombstone, PinnedKeyBundle, PinnedSnapshot, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -247,6 +247,18 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         account_id: &str,
         stream_id: &[u8; 16],
     ) -> Result<Option<PinnedSnapshot>, MetadataError>;
+    /// [`Store::pin_key_bundle`].
+    async fn pin_key_bundle(
+        &self,
+        account_id: &str,
+        pin: &PinnedKeyBundle,
+        replaces: Option<[u8; 16]>,
+    ) -> Result<KeyBundlePinned, MetadataError>;
+    /// [`Store::pinned_key_bundle`].
+    async fn pinned_key_bundle(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<PinnedKeyBundle>, MetadataError>;
     /// [`Store::collectable_blobs`].
     async fn collectable_blobs(
         &self,
@@ -538,6 +550,20 @@ impl MetadataStore for Store {
         stream_id: &[u8; 16],
     ) -> Result<Option<PinnedSnapshot>, MetadataError> {
         Ok(Self::pinned_snapshot(self, account_id, stream_id)?)
+    }
+    async fn pin_key_bundle(
+        &self,
+        account_id: &str,
+        pin: &PinnedKeyBundle,
+        replaces: Option<[u8; 16]>,
+    ) -> Result<KeyBundlePinned, MetadataError> {
+        Ok(Self::pin_key_bundle(self, account_id, pin, replaces)?)
+    }
+    async fn pinned_key_bundle(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<PinnedKeyBundle>, MetadataError> {
+        Ok(Self::pinned_key_bundle(self, account_id)?)
     }
     async fn collectable_blobs(
         &self,

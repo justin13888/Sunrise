@@ -1413,6 +1413,9 @@ async fn session(
                     // The compactor's daily record rides the same tick as the
                     // compaction that wrote it (ADR-0068).
                     crate::snapshot_sync::publish(core, transport.as_mut()).await;
+                    // And the account's key bundle, when this device holds
+                    // keys the pinned one lacks (ADR-0069).
+                    crate::key_bundle_sync::publish(core, transport.as_mut()).await;
                     match encode_subscribe_all(core) {
                         Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
                         Err(()) => return SessionEnd::Disconnected,
@@ -2142,6 +2145,10 @@ struct GapRecovery {
     deferred: HashSet<[u8; 16]>,
     /// Streams nothing in this session can catch up.
     failed: HashSet<[u8; 16]>,
+    /// Whether this session already fetched the account's key bundle
+    /// (ADR-0069). Once per session: the relay pins one, and asking again
+    /// inside the session cannot produce another.
+    key_bundle_tried: bool,
 }
 
 /// Catch each stream in `gaps` up from its snapshot record, and re-subscribe
@@ -2182,9 +2189,27 @@ async fn recover_gaps<T: Transport + ?Sized>(
                 // what a deferred stream was waiting for.
                 gaps.extend(recovery.deferred.drain());
             }
-            crate::snapshot_sync::Recovery::Deferred(_) => {
+            crate::snapshot_sync::Recovery::Deferred(reason) => {
                 recovery.deferred.insert(stream);
                 shared.mark_degraded();
+                // A record sealed under a key this vault does not hold, on a
+                // vault that holds the identity's unwrapping key: a device
+                // restored from the recovery code, whose identity-addressed
+                // envelopes the relay has trimmed. The account's key bundle
+                // carries those keys (ADR-0069).
+                if matches!(reason, "no_key" | "pending")
+                    && !recovery.key_bundle_tried
+                    && core.holds_identity_key()
+                {
+                    recovery.key_bundle_tried = true;
+                    if let crate::key_bundle_sync::Recovery::Absorbed(n) =
+                        crate::key_bundle_sync::recover(core, transport).await
+                    {
+                        if n > 0 {
+                            gaps.extend(recovery.deferred.drain());
+                        }
+                    }
+                }
             }
             crate::snapshot_sync::Recovery::Failed(reason) => {
                 recovery.failed.insert(stream);
@@ -2230,7 +2255,10 @@ async fn recover_gaps<T: Transport + ?Sized>(
 /// this replica is the compactor for and the relay does not pin. Both are
 /// nothing at all on almost every session; on the one that has a record to
 /// upload, `Live` waits for it, so a sync that ends at `Live` — the CLI's,
-/// an OS background window's — has left the record on the relay.
+/// an OS background window's — has left the record on the relay. The
+/// account's key bundle is published the same way and for the same reason
+/// (ADR-0069): a rotation's new keys are on the relay by the time the session
+/// that sent them reports `Live`.
 async fn maybe_live<T: Transport + ?Sized>(
     core: &Core,
     shared: &SyncShared,
@@ -2245,6 +2273,7 @@ async fn maybe_live<T: Transport + ?Sized>(
     if pending == 0 && subscribed.iter().all(|s| caught_up.contains(s)) {
         core.sync_compact_if_due();
         crate::snapshot_sync::publish(core, transport).await;
+        crate::key_bundle_sync::publish(core, transport).await;
         if shared.current_state() != SyncState::CatchingUp {
             return;
         }

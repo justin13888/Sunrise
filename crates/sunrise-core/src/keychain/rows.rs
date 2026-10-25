@@ -192,7 +192,7 @@ pub(super) fn insert_stream_key_row(
     // Recorded whether or not the key was new. A second device sealing a key
     // this device already holds proves that device holds it too, and
     // `Keychain::current_epoch_tx` asks whether *any* read-bounded device does.
-    if let KeySource::Envelope { sender } = source {
+    if let KeySource::Envelope { sender } | KeySource::Bundle { publisher: sender } = source {
         tx.execute(
             "INSERT OR IGNORE INTO stream_key_senders
              (stream_id, epoch, key_id, sender_device_id)

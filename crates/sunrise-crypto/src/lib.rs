@@ -43,6 +43,7 @@ pub mod device_cert;
 pub mod hpke_seal;
 pub mod identity;
 pub mod identity_transition;
+pub mod key_bundle;
 pub mod keys;
 pub mod merkle;
 pub mod op_envelope;
@@ -76,6 +77,11 @@ pub use identity_transition::{
     roster_digest, shares_digest, sign_identity_transition, verify_identity_transition,
     verify_successor_signature, IdentityTransitionBody, IdentityTransitionError,
     IdentityTransitionSigs, DEVICE_SHARE_LEN, IDENTITY_SHARE_LEN,
+};
+pub use key_bundle::{
+    decode_key_bundle, manifest_covers, manifest_digest, manifest_of, seal_key_bundle, BundledKey,
+    KeyBundle, KeyBundleError, KeyBundleHeader, ManifestEntry, VerifiedKeyBundle,
+    KEY_BUNDLE_FORMAT_V,
 };
 pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,

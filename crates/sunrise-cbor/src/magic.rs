@@ -38,6 +38,9 @@ pub enum MagicKind {
     DiagBundle = 6,
     /// Pairing payload, base64url JSON inside (versioned by pairing v).
     PairingPayload = 7,
+    /// An account's identity-sealed key bundle (versioned by key bundle
+    /// format version, currently 1; ADR-0069).
+    KeyBundle = 8,
 }
 
 impl MagicKind {
@@ -58,6 +61,7 @@ impl MagicKind {
             5 => Some(Self::VaultMeta),
             6 => Some(Self::DiagBundle),
             7 => Some(Self::PairingPayload),
+            8 => Some(Self::KeyBundle),
             _ => None,
         }
     }
@@ -162,6 +166,7 @@ mod tests {
             MagicKind::VaultMeta,
             MagicKind::DiagBundle,
             MagicKind::PairingPayload,
+            MagicKind::KeyBundle,
         ];
         for k in kinds {
             for v in [0u16, 1, 0xff, 0x1234, 0xffff] {

@@ -90,8 +90,9 @@ The in-process scenarios above share one address space; these do not.
 `crates/sunrise-e2e/tests/cli_two_vaults.rs`,
 `crates/sunrise-e2e/tests/cli_traveller.rs`,
 `crates/sunrise-e2e/tests/cli_day_schedule.rs`,
-`crates/sunrise-e2e/tests/cli_pair_relay.rs` and
-`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs` boot the real relay and drive two
+`crates/sunrise-e2e/tests/cli_pair_relay.rs`,
+`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs` and
+`crates/sunrise-e2e/tests/cli_recover_trimmed.rs` boot the real relay and drive two or more
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
 a host with no Apple tooling: everything a user at two terminals does, with
@@ -142,6 +143,14 @@ nothing shared between the devices but the relay.
   relay afterwards, is told the inbox has a gap on its first `sync --once`,
   catches it up from the pinned record, takes the rest from the relay, and
   reports `live` with every task rather than ending `Degraded`.
+- **Recovering from the code past the relay's retention**
+  (`cli_recover_trimmed.rs`, ADR-0069, #580): the relay keeps thirty seconds
+  of each channel. A writes its history; C pairs, revokes A, and so rotates
+  every stream past the genesis; C's last write, after the window, leaves the
+  relay holding no vault-meta frame that carries a key. B runs `sunrise
+  recover` with A's 24 words, takes its keys from the account's key bundle,
+  applies the snapshot records sealed under them, and reports `live` holding
+  every task. With the bundle route removed it ends `Degraded` holding none.
 
 Run them with `mise run e2e-cli`, which builds the binary first. The harness
 also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)

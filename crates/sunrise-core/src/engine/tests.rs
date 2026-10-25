@@ -19391,6 +19391,10 @@ mod task_order;
 /// Saved views, a synced entity written only by `Patch` (#341).
 mod saved_views;
 
+/// The account's key bundle: what a replica publishes and absorbing one
+/// (ADR-0069, #580).
+mod key_bundle;
+
 /// Values `project` derives, the read-time cycle rules, and the history
 /// readers that understand `Patch` (ADR-0065 PR 7).
 mod derived;

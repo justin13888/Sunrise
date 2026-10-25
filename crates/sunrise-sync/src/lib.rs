@@ -37,4 +37,7 @@ pub use signer::DeviceSigner;
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;
 pub use state::SyncState;
-pub use transport::{BlobCommit, RevokeOutcome, SnapshotPin, Transport, TransportError};
+pub use transport::{
+    BlobCommit, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin, Transport,
+    TransportError,
+};

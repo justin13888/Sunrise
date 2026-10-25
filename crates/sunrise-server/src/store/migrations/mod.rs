@@ -90,6 +90,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "stream_snapshots",
         apply: stream_snapshots,
     },
+    Migration {
+        id: 7,
+        name: "key_bundles",
+        apply: key_bundles,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -184,6 +189,12 @@ fn committed_blobs(conn: &Connection) -> rusqlite::Result<()> {
 /// declares (ADR-0068). Created empty: no relay pinned one before it.
 fn stream_snapshots(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(super::snapshots::SCHEMA)
+}
+
+/// 0007: each account's pinned key bundle, which `store::key_bundles`
+/// declares (ADR-0069). Created empty: no relay pinned one before it.
+fn key_bundles(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::key_bundles::SCHEMA)
 }
 
 /// The database's `user_version`.

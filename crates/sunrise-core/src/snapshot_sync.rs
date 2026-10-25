@@ -107,10 +107,25 @@ async fn publish_one<T: Transport + ?Sized>(
     {
         return Ok(false);
     }
-    let chunks: Vec<&[u8]> = record.chunks(CHUNK_BYTES).collect();
+    let committed = upload(transport, stream, record).await?;
+    transport.snapshot_pin(stream, &committed).await?;
+    Ok(true)
+}
+
+/// Upload `bytes` through the blob routes in chunks of at most the relay's
+/// ceiling, filed under `stream`, and return the committed blob id.
+///
+/// Shared with the key bundle's publish (ADR-0069), which travels the same
+/// way.
+pub(crate) async fn upload<T: Transport + ?Sized>(
+    transport: &mut T,
+    stream: &[u8; 16],
+    bytes: &[u8],
+) -> Result<[u8; 16], TransportError> {
+    let chunks: Vec<&[u8]> = bytes.chunks(CHUNK_BYTES).collect();
     let count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
     let upload = transport
-        .blob_init(stream, count, record.len() as u64)
+        .blob_init(stream, count, bytes.len() as u64)
         .await?;
     for (idx, chunk) in chunks.iter().enumerate() {
         let idx = u32::try_from(idx).unwrap_or(u32::MAX);
@@ -120,10 +135,9 @@ async fn publish_one<T: Transport + ?Sized>(
         .iter()
         .map(|c| sunrise_crypto::ciphertext_hash(std::iter::once(*c)))
         .collect();
-    let whole = sunrise_crypto::ciphertext_hash(std::iter::once(record));
+    let whole = sunrise_crypto::ciphertext_hash(std::iter::once(bytes));
     let commit = transport.blob_finalize(&upload, &whole, &hashes).await?;
-    transport.snapshot_pin(stream, &commit.blob_id).await?;
-    Ok(true)
+    Ok(commit.blob_id)
 }
 
 /// What catching one gapped stream up from its snapshot came to.

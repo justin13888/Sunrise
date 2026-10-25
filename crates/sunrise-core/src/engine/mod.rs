@@ -95,6 +95,7 @@ mod focus;
 mod groups;
 mod identity;
 mod ids;
+mod key_bundle;
 mod lww;
 mod merge;
 mod notify;
@@ -126,6 +127,8 @@ pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
+pub use self::key_bundle::KeyBundleApplied;
+pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
 use self::lww::LwwStamp;
 #[cfg(test)]
 pub(crate) use self::merge::FOLD_V;

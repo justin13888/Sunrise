@@ -85,6 +85,27 @@ pub struct SnapshotPin {
     pub size_bytes: u64,
 }
 
+/// The account's pinned key bundle, as the relay states it (ADR-0069).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBundlePin {
+    /// The committed blob holding the bundle; [`Transport::blob_fetch`] reads
+    /// it.
+    pub blob_id: [u8; 16],
+    /// The digest of the bundle's manifest its publisher sent. The relay
+    /// cannot check it; a reader that needs the manifest fetches the bundle.
+    pub manifest_digest: [u8; 32],
+}
+
+/// What [`Transport::key_bundle_pin`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyBundlePinned {
+    /// The bundle is pinned.
+    Pinned,
+    /// The pin named as replaced is not the one in place: another device
+    /// pinned since it was read. Nothing was written.
+    Superseded,
+}
+
 /// Async wire transport. Both client and server sides implement this.
 ///
 /// Each call sends or receives a complete *frame* — the framing layer in
@@ -224,6 +245,24 @@ pub trait Transport: Send + Sync {
         _stream_id: &[u8; 16],
         _blob_id: &[u8; 16],
     ) -> Result<SnapshotPin, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/accounts/me/key_bundle`: the account's pinned key bundle,
+    /// or `Ok(None)` when the relay holds none (ADR-0069).
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/key_bundle`: make the committed blob
+    /// `blob_id` the account's key bundle, provided the pin in place is the
+    /// one `replaces` names (`None`: no pin in place).
+    async fn key_bundle_pin(
+        &mut self,
+        _blob_id: &[u8; 16],
+        _manifest_digest: &[u8; 32],
+        _replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
         Err(TransportError::Unsupported)
     }
 }
