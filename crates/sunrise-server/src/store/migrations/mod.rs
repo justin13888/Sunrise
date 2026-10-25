@@ -85,6 +85,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "committed_blobs",
         apply: committed_blobs,
     },
+    Migration {
+        id: 6,
+        name: "stream_snapshots",
+        apply: stream_snapshots,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -173,6 +178,12 @@ fn relay_frames_n_ops(conn: &Connection) -> rusqlite::Result<()> {
 /// their manifests.
 fn committed_blobs(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(super::blob_ledger::SCHEMA)
+}
+
+/// 0006: each stream's pinned snapshot record, which `store::snapshots`
+/// declares (ADR-0068). Created empty: no relay pinned one before it.
+fn stream_snapshots(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::snapshots::SCHEMA)
 }
 
 /// The database's `user_version`.

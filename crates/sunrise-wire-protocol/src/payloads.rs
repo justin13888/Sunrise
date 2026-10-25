@@ -197,13 +197,22 @@ pub struct BacklogPayload {
 
 /// `MsgKind::Error` payload: a coded, recoverable-or-terminal error.
 ///
-/// Fields are ordered for canonical CBOR: `code` (4), `reason` (6).
+/// Fields are ordered for canonical CBOR: `code` (4), `reason` (6),
+/// `stream_id` (9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     /// Canonical error code.
     pub code: ErrorCode,
     /// Human-readable reason (diagnostic).
     pub reason: String,
+    /// The stream the error is about, when it is about one.
+    ///
+    /// A `SYNC_CURSOR_GAP` names the stream whose retained ops no longer
+    /// reach the subscriber's cursor, so the client can catch that stream up
+    /// from its snapshot record (ADR-0068). Absent from the map when `None`,
+    /// and read as `None` when absent, so a payload without it is unchanged.
+    #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<[u8; 16]>,
 }
 
 /// `MsgKind::Close` payload: `{ reason: tstr, code: tstr }` per
@@ -425,6 +434,15 @@ mod tests {
             &ErrorPayload {
                 code: ErrorCode::SyncOpInvalid,
                 reason: "nope".into(),
+                stream_id: None,
+            },
+        );
+        assert_canonical(
+            "ErrorPayload with a stream",
+            &ErrorPayload {
+                code: ErrorCode::SyncCursorGap,
+                reason: "gap".into(),
+                stream_id: Some([3u8; 16]),
             },
         );
         assert_canonical(
@@ -565,9 +583,39 @@ mod tests {
         let v = ErrorPayload {
             code: ErrorCode::ProtocolBadMagic,
             reason: "nope".to_string(),
+            stream_id: None,
         };
         let bytes = v.encode().unwrap();
         assert_eq!(ErrorPayload::decode(&bytes).unwrap(), v);
+        let gap = ErrorPayload {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".to_string(),
+            stream_id: Some([7u8; 16]),
+        };
+        assert_eq!(ErrorPayload::decode(&gap.encode().unwrap()).unwrap(), gap);
+    }
+
+    /// The stream is optional in both directions: a payload written before it
+    /// existed reads as naming none, and one naming none writes no key.
+    #[test]
+    fn an_error_without_a_stream_is_the_payload_it_always_was() {
+        #[derive(Serialize)]
+        struct Before {
+            code: ErrorCode,
+            reason: String,
+        }
+        let before = encode_canonical(&Before {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".into(),
+        })
+        .unwrap();
+        let now = ErrorPayload {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".into(),
+            stream_id: None,
+        };
+        assert_eq!(now.encode().unwrap(), before);
+        assert_eq!(ErrorPayload::decode(&before).unwrap(), now);
     }
 
     #[test]

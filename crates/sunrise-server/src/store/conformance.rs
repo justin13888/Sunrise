@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::{
     Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, MetadataError, MetadataStore,
-    NewDevice, NewTombstone, StoreStats,
+    NewDevice, NewTombstone, PinnedSnapshot, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -159,6 +159,20 @@ impl MetadataStore for Unreachable {
     ) -> Result<(), MetadataError> {
         Err(down())
     }
+    async fn pin_snapshot(
+        &self,
+        _: &str,
+        _: &PinnedSnapshot,
+    ) -> Result<Option<[u8; 16]>, MetadataError> {
+        Err(down())
+    }
+    async fn pinned_snapshot(
+        &self,
+        _: &str,
+        _: &[u8; 16],
+    ) -> Result<Option<PinnedSnapshot>, MetadataError> {
+        Err(down())
+    }
     async fn collectable_blobs(
         &self,
         _: u64,
@@ -260,6 +274,7 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
     the_blob_ledger_sums_what_is_readable(store).await;
+    one_snapshot_is_pinned_per_stream(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))
@@ -553,6 +568,68 @@ async fn the_blob_ledger_sums_what_is_readable(store: &dyn MetadataStore) {
     assert_eq!(bytes().await, before);
 }
 
+/// A pin replaces its stream's last one and hands back the blob it released;
+/// a blob another of the account's streams still names is not released, and
+/// no other account sees the pin.
+async fn one_snapshot_is_pinned_per_stream(store: &dyn MetadataStore) {
+    let alice = store
+        .resolve_account(&subject("snap-alice"), true, NOW)
+        .await
+        .unwrap();
+    let bob = store
+        .resolve_account(&subject("snap-bob"), true, NOW)
+        .await
+        .unwrap();
+    let pin = |stream: u8, blob: u8, at: u64| PinnedSnapshot {
+        stream_id: [stream; 16],
+        blob_key: [blob; 16],
+        size_bytes: 100 + u64::from(blob),
+        published_by: Some("dev".to_owned()),
+        published_at_ms: at,
+    };
+    let a = &alice.account_id;
+    assert_eq!(store.pinned_snapshot(a, &[1; 16]).await.unwrap(), None);
+    assert_eq!(
+        store.pin_snapshot(a, &pin(1, 0xa0, NOW)).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store.pinned_snapshot(a, &[1; 16]).await.unwrap(),
+        Some(pin(1, 0xa0, NOW))
+    );
+    assert_eq!(
+        store.pin_snapshot(a, &pin(1, 0xa0, NOW + 1)).await.unwrap(),
+        None,
+        "pinning the same blob again releases nothing"
+    );
+    assert_eq!(
+        store.pin_snapshot(a, &pin(1, 0xa1, NOW + 2)).await.unwrap(),
+        Some([0xa0; 16]),
+        "a newer pin releases the blob the older one named"
+    );
+    assert_eq!(
+        store.pinned_snapshot(a, &[1; 16]).await.unwrap(),
+        Some(pin(1, 0xa1, NOW + 2))
+    );
+    assert_eq!(
+        store.pin_snapshot(a, &pin(2, 0xa1, NOW)).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store.pin_snapshot(a, &pin(1, 0xa2, NOW + 3)).await.unwrap(),
+        None,
+        "a blob stream 2 still names is not released"
+    );
+    assert_eq!(
+        store
+            .pinned_snapshot(&bob.account_id, &[1; 16])
+            .await
+            .unwrap(),
+        None,
+        "a pin is the account's own"
+    );
+}
+
 async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore) {
     let gone = store
         .resolve_account(&subject("dave"), true, NOW)
@@ -573,6 +650,19 @@ async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore
             .await
             .unwrap();
         let channel = (account_key(&account.account_id), [0x33; 16]);
+        store
+            .pin_snapshot(
+                &account.account_id,
+                &PinnedSnapshot {
+                    stream_id: [0x33; 16],
+                    blob_key: [0x44; 16],
+                    size_bytes: 1,
+                    published_by: None,
+                    published_at_ms: NOW,
+                },
+            )
+            .await
+            .unwrap();
         store
             .relay_append(channel, b"frame", &head(1), 1, None, 0, NOW, unbounded())
             .await
@@ -605,6 +695,13 @@ async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore
         .unwrap()
         .is_empty());
     assert_eq!(store.relay_len(channels[0].1).await.unwrap(), 0);
+    assert_eq!(
+        store
+            .pinned_snapshot(&gone.account_id, &[0x33; 16])
+            .await
+            .unwrap(),
+        None
+    );
 
     assert!(store.account(&kept.account_id).await.unwrap().is_some());
     assert_eq!(store.list_devices(&kept.account_id).await.unwrap().len(), 1);
@@ -617,6 +714,11 @@ async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore
         1
     );
     assert_eq!(store.relay_len(channels[1].1).await.unwrap(), 1);
+    assert!(store
+        .pinned_snapshot(&kept.account_id, &[0x33; 16])
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[cfg(test)]

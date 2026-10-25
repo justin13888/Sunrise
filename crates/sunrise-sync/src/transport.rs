@@ -75,6 +75,16 @@ pub struct BlobCommit {
     pub chunk_count: u32,
 }
 
+/// A stream's latest snapshot record, as the relay pins it (ADR-0068).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotPin {
+    /// The committed blob holding the record; [`Transport::blob_fetch`]
+    /// reads it.
+    pub blob_id: [u8; 16],
+    /// The record's size in bytes.
+    pub size_bytes: u64,
+}
+
 /// Async wire transport. Both client and server sides implement this.
 ///
 /// Each call sends or receives a complete *frame* — the framing layer in
@@ -190,6 +200,30 @@ pub trait Transport: Send + Sync {
     /// The body carries no framing between chunks;
     /// `sunrise_crypto::split_sealed` recovers the boundaries.
     async fn blob_fetch(&mut self, _blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/snapshots/{stream_id}`: the stream's pinned snapshot
+    /// record, or `Ok(None)` when the relay holds none.
+    ///
+    /// A record is a blob, not a frame, because a stream's snapshot outgrows
+    /// the 4 MiB frame cap (ADR-0068); the pin names it and
+    /// [`Transport::blob_fetch`] reads it.
+    async fn snapshot_latest(
+        &mut self,
+        _stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/snapshots/{stream_id}`: make the committed blob
+    /// `blob_id` the stream's latest snapshot record. The relay deletes the
+    /// blob the previous pin named.
+    async fn snapshot_pin(
+        &mut self,
+        _stream_id: &[u8; 16],
+        _blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
         Err(TransportError::Unsupported)
     }
 }

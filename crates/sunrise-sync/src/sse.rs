@@ -47,7 +47,7 @@
 //! written for.
 
 use crate::signer::DeviceSigner;
-use crate::transport::{BlobCommit, RevokeOutcome, Transport, TransportError};
+use crate::transport::{BlobCommit, RevokeOutcome, SnapshotPin, Transport, TransportError};
 use async_trait::async_trait;
 use base64::Engine as _;
 use http_body_util::{BodyExt as _, Full};
@@ -749,12 +749,16 @@ impl SseTransport {
                         .map_err(|e| protocol(&e))?,
                 ))
             }
+            // The stream rides along so the driver can catch that stream up
+            // from its snapshot record (ADR-0068). A gap event without one is
+            // still a gap; the driver then has no stream to recover.
             "gap" => Ok(Some(error_frame(
                 sunrise_error::ErrorCode::SyncCursorGap,
                 event
                     .get("reason")
                     .and_then(|r| r.as_str())
                     .unwrap_or("cursor gap"),
+                parse_id(event.get("stream_id")).ok(),
             )?)),
             "closed" => {
                 // The relay's own code wins, exactly as [`SseTransport::refuse`]
@@ -1302,6 +1306,63 @@ impl Transport for SseTransport {
         }
         Err(self.refuse(&reply))
     }
+
+    async fn snapshot_latest(
+        &mut self,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        let reply = self
+            .call(
+                "GET",
+                &format!("/api/v1/snapshots/{}", hex::encode(stream_id)),
+                None,
+            )
+            .await?;
+        // No pin, and an account the relay does not know, are one 404.
+        if reply.status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        snapshot_pin_of(&reply.bytes).map(Some)
+    }
+
+    async fn snapshot_pin(
+        &mut self,
+        stream_id: &[u8; 16],
+        blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
+        let reply = self
+            .call(
+                "PUT",
+                &format!("/api/v1/snapshots/{}", hex::encode(stream_id)),
+                Some(serde_json::json!({ "blob_id": format!("blb_{}", hex::encode(blob_id)) })),
+            )
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        snapshot_pin_of(&reply.bytes)
+    }
+}
+
+/// A `StreamSnapshot` document's blob id and size.
+fn snapshot_pin_of(bytes: &[u8]) -> Result<SnapshotPin, TransportError> {
+    let body: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| protocol(&e))?;
+    let blob_id = body
+        .get("blob_id")
+        .and_then(|b| b.as_str())
+        .and_then(|s| s.strip_prefix("blb_"))
+        .and_then(|hexpart| {
+            let mut out = [0u8; 16];
+            hex::decode_to_slice(hexpart, &mut out).ok().map(|()| out)
+        })
+        .ok_or_else(|| TransportError::Protocol("a snapshot pin names no blob".to_owned()))?;
+    Ok(SnapshotPin {
+        blob_id,
+        size_bytes: field_u64(&body, "size_bytes"),
+    })
 }
 
 /// One reply, already read.
@@ -1529,10 +1590,15 @@ fn parse_id(v: Option<&serde_json::Value>) -> Result<[u8; 16], TransportError> {
     Ok(out)
 }
 
-fn error_frame(code: sunrise_error::ErrorCode, reason: &str) -> Result<Vec<u8>, TransportError> {
+fn error_frame(
+    code: sunrise_error::ErrorCode,
+    reason: &str,
+    stream_id: Option<[u8; 16]>,
+) -> Result<Vec<u8>, TransportError> {
     let payload = ErrorPayload {
         code,
         reason: reason.to_owned(),
+        stream_id,
     }
     .encode()
     .map_err(|e| protocol(&e))?;

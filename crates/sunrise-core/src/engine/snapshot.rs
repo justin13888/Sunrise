@@ -84,6 +84,9 @@ const AAD_CONTEXT: &[u8] = b"sunrise.snapshot.aad.v1";
 /// Domain separator for the writer's signature.
 const SIG_CONTEXT: &[u8] = b"sunrise.snapshot.sig.v1";
 
+/// A stream and its snapshot record, verbatim.
+pub type StreamRecord = ([u8; 16], Vec<u8>);
+
 /// What [`Engine::apply_snapshot`] did with a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotApplied {
@@ -471,6 +474,32 @@ impl Engine {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Every stream whose latest snapshot record held here is one this
+    /// replica wrote, with that record: what this replica may publish for
+    /// the devices that need one (ADR-0068). A stream whose latest record
+    /// another device wrote is left out, so a replica never re-publishes a
+    /// record over the one it applied.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn own_stream_snapshots(&self, db: &Db) -> Result<Vec<StreamRecord>, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT stream_id, record FROM stream_snapshots
+             WHERE generated_by = ?1 ORDER BY stream_id",
+        )?;
+        let rows = stmt.query_map(params![&self.keychain.device_id()[..]], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (stream, record) = row?;
+            if let Ok(stream) = <[u8; 16]>::try_from(stream.as_slice()) {
+                out.push((stream, record));
+            }
+        }
+        Ok(out)
     }
 
     /// The signing key of a snapshot's writer: its cert as this vault holds

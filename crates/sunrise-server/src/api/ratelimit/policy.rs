@@ -98,7 +98,8 @@ pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
         }
         ("POST", "/api/v1/blobs/init" | "/api/v1/blobs/finalize")
         | ("PUT", "/api/v1/blobs/{upload_id}/{chunk_idx}")
-        | ("GET" | "DELETE", "/api/v1/blobs/{blob_id}") => Blob,
+        | ("GET" | "DELETE", "/api/v1/blobs/{blob_id}")
+        | ("GET" | "PUT", "/api/v1/snapshots/{stream_id}") => Blob,
         (
             "POST",
             "/api/v1/sync/session"

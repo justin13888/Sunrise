@@ -89,8 +89,9 @@ replaced with a gate everywhere else.
 The in-process scenarios above share one address space; these do not.
 `crates/sunrise-e2e/tests/cli_two_vaults.rs`,
 `crates/sunrise-e2e/tests/cli_traveller.rs`,
-`crates/sunrise-e2e/tests/cli_day_schedule.rs` and
-`crates/sunrise-e2e/tests/cli_pair_relay.rs` boot the real relay and drive two
+`crates/sunrise-e2e/tests/cli_day_schedule.rs`,
+`crates/sunrise-e2e/tests/cli_pair_relay.rs` and
+`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs` boot the real relay and drive two
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
 a host with no Apple tooling: everything a user at two terminals does, with
@@ -134,6 +135,13 @@ nothing shared between the devices but the relay.
   typed wrong at A's prompt, or named wrong with `--confirm-sas` on B — end
   the pairing on both: no vault on B and one device on the account. With no
   relay or no sign-in the command says so, and which way still works.
+- **Catching up past the relay's retention** (`cli_snapshot_catchup.rs`,
+  ADR-0068): the relay's durable log keeps a few frames per channel. A writes
+  its history over three syncs; the first pins the inbox's snapshot record,
+  the second pushes the frame it covers out of the relay. B, paired over the
+  relay afterwards, is told the inbox has a gap on its first `sync --once`,
+  catches it up from the pinned record, takes the rest from the relay, and
+  reports `live` with every task rather than ending `Degraded`.
 
 Run them with `mise run e2e-cli`, which builds the binary first. The harness
 also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)

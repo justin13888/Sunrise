@@ -358,7 +358,8 @@ impl Store {
     /// pin a blob forever. The device that asked for the deletion is left out
     /// too: it published the op. Every other active device must have declared,
     /// for the tombstone's stream and origin device, a cursor at or past the
-    /// tombstone's `seq`.
+    /// tombstone's `seq`. A blob a stream's snapshot pin names is never
+    /// collectable: it is not an attachment, and only a newer pin releases it.
     pub fn collectable_blobs(
         &self,
         tombstoned_by_ms: u64,
@@ -381,6 +382,9 @@ impl Store {
                                           AND c.stream_id = t.stream_id
                                           AND c.origin_device = t.origin_device
                                           AND c.applied_seq >= t.seq))
+                AND NOT EXISTS (SELECT 1 FROM stream_snapshots s
+                                 WHERE s.account_id = t.account_id
+                                   AND s.blob_key = t.blob_key)
               ORDER BY t.tombstoned_at_ms",
         )?;
         let rows = stmt
@@ -517,6 +521,26 @@ mod tests {
             at,
         )
         .unwrap();
+    }
+
+    /// A blob a stream's snapshot pin names is not an attachment, and a
+    /// tombstone naming it collects nothing until a newer pin releases it.
+    #[test]
+    fn a_pinned_snapshot_blob_is_never_collected() {
+        let s = Store::open(None).unwrap();
+        let a = account(&s, "alice");
+        s.tombstone_blob(&a, &tombstone(7, None), NOW).unwrap();
+        let pin = |blob_key| crate::store::PinnedSnapshot {
+            stream_id: STREAM,
+            blob_key,
+            size_bytes: 1,
+            published_by: None,
+            published_at_ms: NOW,
+        };
+        s.pin_snapshot(&a, &pin(BLOB)).unwrap();
+        assert!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().is_empty());
+        assert_eq!(s.pin_snapshot(&a, &pin([0xee; 16])).unwrap(), Some(BLOB));
+        assert_eq!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().len(), 1);
     }
 
     /// The quorum, one condition at a time: an active device behind the

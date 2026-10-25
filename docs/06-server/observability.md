@@ -32,7 +32,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 49 `ev` names the server emits, complete:
+The 51 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -79,7 +79,8 @@ srv.push.token_unregistered      srv.push.delivery_failed
 srv.account.delete_initiated     srv.blob.tombstoned
 srv.account.delete_requested     srv.blob.gc_deleted
 srv.account.delete_completed     srv.blob.upload_swept
-srv.maintenance.failed
+srv.maintenance.failed           srv.snapshot.pinned
+                                 srv.snapshot.release_failed
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -198,6 +199,7 @@ sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
 sunrise_relay_log_bytes
 sunrise_relay_log_evicted_total
+sunrise_snapshot_pin_total
 sunrise_start_time_seconds
 sunrise_sync_batch_ops
 sunrise_sync_fanout_latency_seconds
@@ -212,7 +214,7 @@ sunrise_sync_stream_total
 sunrise_sync_streams_active
 ```
 
-51 metric names, and four that earlier revisions of this file listed and the
+52 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
