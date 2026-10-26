@@ -256,7 +256,7 @@ mod tests {
         let usage = strings::usage::text();
         assert!(usage.starts_with("sunrise — command-line client for Sunrise\n\nUSAGE:\n"));
         assert!(usage.contains("\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n"));
-        assert!(usage.ends_with("see `sunrise pair`.\n"));
+        assert!(usage.ends_with("read times in this zone for this command\n"));
         assert!(strings::pair::usage().starts_with("usage:\n  over the relay"));
         assert!(strings::pair::usage().contains("\n  sunrise pair offer    --out"));
     }
