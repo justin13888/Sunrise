@@ -449,6 +449,22 @@ fn receiver(peers: &[Engine]) -> (Engine, Db) {
     receiver_at(peers, T0 + 1_000_000)
 }
 
+/// A replica's contiguous prefix in one stream: each device's
+/// `last_applied_seq`. A snapshot written there states it as its frontier.
+type Prefix = BTreeMap<Vec<u8>, i64>;
+
+/// `db`'s [`Prefix`] in `stream`.
+fn prefix(db: &Db, stream: &[u8; 16]) -> Prefix {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT device_id, last_applied_seq FROM sync_cursors WHERE stream_id = ?1")
+        .unwrap();
+    stmt.query_map(params![&stream[..]], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
 /// [`receiver`], its clock at `now_ms`.
 fn receiver_at(peers: &[Engine], now_ms: u64) -> (Engine, Db) {
     let e = engine_seeded(ROOT, [0x77; 32], Arc::new(FakeClock(PLMutex::new(now_ms))));
@@ -655,7 +671,8 @@ proptest! {
             }
         };
         keep(&d, &mut written);
-        let mut snapshots: Vec<[Vec<u8>; 2]> = Vec::new();
+        // Each snapshot record, beside the writer's prefix it states.
+        let mut snapshots: Vec<[(Vec<u8>, Prefix); 2]> = Vec::new();
         for (n, step) in steps.iter().enumerate() {
             let ms = T0 + 1_000 + u64::try_from(n).unwrap() * 7;
             match step {
@@ -678,9 +695,10 @@ proptest! {
                 Step::Snapshot(who) => {
                     d.at(*who, ms);
                     let mut write = |stream: &[u8; 16]| {
-                        d.engines[*who]
+                        let record = d.engines[*who]
                             .write_stream_snapshot(&mut d.dbs[*who], stream)
-                            .unwrap()
+                            .unwrap();
+                        record.map(|r| (r, prefix(&d.dbs[*who], stream)))
                     };
                     if let (Some(meta), Some(inbox)) = (write(&META_STREAM), write(&INBOX)) {
                         snapshots.push([meta, inbox]);
@@ -732,8 +750,23 @@ proptest! {
             for ix in &joiner_held {
                 j.apply_remote_all(&mut jdb, &written[ix.index(written.len())]).unwrap();
             }
-            for record in records {
-                j.apply_snapshot(&mut jdb, record).unwrap();
+            for ((record, stated), stream) in records.iter().zip([META_STREAM, INBOX]) {
+                // The join is applied exactly when the record states an op
+                // past the joiner's own prefix, and covered otherwise.
+                let held = prefix(&jdb, &stream);
+                let adds = stated
+                    .iter()
+                    .any(|(device, seq)| held.get(device).copied().unwrap_or(0) < *seq);
+                let (applied, _) = j.apply_snapshot(&mut jdb, record).unwrap();
+                if adds {
+                    prop_assert!(
+                        matches!(applied, crate::engine::SnapshotApplied::Applied { .. }),
+                        "a record past the joiner's prefix was {:?}",
+                        applied
+                    );
+                } else {
+                    prop_assert_eq!(applied, crate::engine::SnapshotApplied::Covered);
+                }
             }
             for env in &written {
                 j.apply_remote_all(&mut jdb, env).unwrap();
