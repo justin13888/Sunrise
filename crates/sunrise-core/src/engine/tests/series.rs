@@ -407,6 +407,7 @@ fn a_split_is_refused_while_a_paired_device_lacks_routine_series() {
     let (rid, keys) = daily(&p.ea, &mut p.dba, RoutineCatchupPolicy::Skip);
     sync(&mut p);
     let r = stored(&p.dba, rid);
+    let ops = op_count(&p.dba);
     let err =
         p.ea.apply(
             &mut p.dba,
@@ -424,6 +425,7 @@ fn a_split_is_refused_while_a_paired_device_lacks_routine_series() {
         "{err:?}"
     );
     assert!(stored(&p.dba, rid).rrule.until.is_none());
+    assert_eq!(op_count(&p.dba), ops);
 }
 
 // ---- edit scope: this ----
@@ -497,6 +499,7 @@ fn an_edit_of_this_occurrence_refuses_a_rule_change() {
     let e = engine();
     let mut db = db();
     let (rid, keys) = daily(&e, &mut db, RoutineCatchupPolicy::Skip);
+    let ops = op_count(&db);
     let err = e
         .apply(
             &mut db,
@@ -513,6 +516,7 @@ fn an_edit_of_this_occurrence_refuses_a_rule_change() {
         )
         .unwrap_err();
     assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_eq!(op_count(&db), ops);
 }
 
 // ---- template propagation ----
