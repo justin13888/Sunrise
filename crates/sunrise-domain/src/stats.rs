@@ -24,7 +24,6 @@ use crate::routine::Routine;
 use crate::routine_gen::{occurrence_key_at, ExpandError};
 use crate::rrule::Weekday;
 use crate::task::TaskState;
-use jiff::civil::Weekday as JiffWeekday;
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -98,7 +97,9 @@ impl WeekGrid {
 
     /// The `weeks` civil weeks ending with the one containing `now_ms`.
     ///
-    /// `week_start` is the weekday a week begins on (Monday for ISO callers).
+    /// `week_start` is the weekday a week begins on, read by
+    /// [`crate::time::first_day_of_week`]: a token this build does not know
+    /// starts the week on the preference's default, Sunday.
     /// The last bucket is the *current, partial* week — a review run on Friday
     /// must show the week it is in.
     pub fn trailing(
@@ -110,10 +111,7 @@ impl WeekGrid {
         let weeks = weeks.max(1);
         let now = to_timestamp(now_ms)?;
         let date = now.to_zoned(tz.clone()).date();
-        let back = i64::from(date.weekday().since(to_jiff(week_start)).rem_euclid(7));
-        let current = date
-            .checked_sub(Span::new().days(back))
-            .map_err(|_| StatsError::Overflow)?;
+        let current = crate::time::first_day_of_week(date, week_start);
 
         let mut starts = Vec::with_capacity(weeks as usize);
         for i in (0..weeks).rev() {
@@ -500,20 +498,6 @@ fn zone_start_ms(date: jiff::civil::Date, tz: &TimeZone) -> Result<u64, StatsErr
     u64::try_from(zoned.timestamp().as_millisecond()).map_err(|_| StatsError::Overflow)
 }
 
-/// Domain weekday → jiff weekday. A day token this build does not know starts
-/// the week on Monday, the ISO default every other caller passes.
-const fn to_jiff(w: &Weekday) -> JiffWeekday {
-    match w {
-        Weekday::Su => JiffWeekday::Sunday,
-        Weekday::Mo | Weekday::Unknown(_) => JiffWeekday::Monday,
-        Weekday::Tu => JiffWeekday::Tuesday,
-        Weekday::We => JiffWeekday::Wednesday,
-        Weekday::Th => JiffWeekday::Thursday,
-        Weekday::Fr => JiffWeekday::Friday,
-        Weekday::Sa => JiffWeekday::Saturday,
-    }
-}
-
 /// Whole days spanned by `[from, to)`, for callers sizing a review window.
 #[must_use]
 pub const fn days_between(from_ms: u64, to_ms: u64) -> u64 {
@@ -528,6 +512,7 @@ mod tests {
     use crate::rrule::RRule;
     use crate::task::Task;
     use crate::unknown::Unknowns;
+    use jiff::civil::Weekday as JiffWeekday;
     use std::collections::BTreeSet;
     use sunrise_id::EntityKind;
 
@@ -694,6 +679,33 @@ mod tests {
             "the instant before the grid"
         );
         assert_eq!(g.index_of(sun - 1), Some(1), "the last ms of week 1");
+    }
+
+    /// A `week_start` token this build does not know starts the grid's weeks
+    /// where `first_day_of_week` starts them, on the preference's default
+    /// (Sunday), so trends and the weekly review bucket the same weeks as
+    /// `Query::WeekBlocks`.
+    #[test]
+    fn an_unknown_week_start_buckets_the_weeks_first_day_of_week_does() {
+        let unknown = Weekday::from_raw("XX");
+        assert!(matches!(unknown, Weekday::Unknown(_)));
+        for day in 0..7 {
+            let now = MON + day * 86_400_000 + 3_600_000;
+            let g = WeekGrid::trailing(now, 2, &utc(), &unknown).unwrap();
+            let today = ts(now).to_zoned(utc()).date();
+            let first = crate::time::first_day_of_week(today, &unknown);
+            assert_eq!(
+                g.starts()[1],
+                zone_start_ms(first, &utc()).unwrap(),
+                "day {day}: the current bucket begins on {first}"
+            );
+            assert_eq!(
+                g.starts(),
+                WeekGrid::trailing(now, 2, &utc(), &Weekday::Su)
+                    .unwrap()
+                    .starts()
+            );
+        }
     }
 
     /// Asking for zero weeks is clamped to one rather than yielding a grid
