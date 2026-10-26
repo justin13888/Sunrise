@@ -14,6 +14,7 @@ use crate::dto::{
     DailyReviewReport, EveningReport, MorningReport, SnapshotDraftIn, SnapshotStream, StreakEntry,
     TaskItem, WeeklyReviewReport,
 };
+use crate::editing::zone;
 use crate::{BindingError, SunriseCore};
 
 /// One section of a brief: a stable id, a heading, what it says when empty,
@@ -171,11 +172,7 @@ pub fn snooze_label(span: SnoozeSpan) -> String {
 /// [`BindingError::BadTime`] for a zone the tzdb does not know.
 #[uniffi::export]
 pub fn daily_review_since_ms(now_ms: u64, tz: String) -> Result<u64, BindingError> {
-    let zone = jiff::tz::TimeZone::get(&tz).map_err(|e| BindingError::BadTime {
-        value: tz.clone(),
-        cause: e.to_string(),
-    })?;
-    Ok(review::daily_review_since_ms(now_ms, &zone))
+    Ok(review::daily_review_since_ms(now_ms, &zone(&tz)?))
 }
 
 /// The snapshot of the weekly review a screen showed, with `note` trimmed
