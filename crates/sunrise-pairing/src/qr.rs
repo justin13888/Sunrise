@@ -19,6 +19,24 @@ use thiserror::Error;
 
 const PAIRING_VERSION: u16 = 1;
 
+const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
+
+/// Compute the 4-byte (8 hex chars) `account_email_hash`. Email is normalized
+/// (lowercase + trim) before hashing. The hash is non-reversible and is the
+/// account tag a pairing QR carries, so a screen can say which account it is
+/// pairing without holding the address. It is not a rate-limit key: the
+/// relay buckets attempts by `account_id`. Never use it to identify a user
+/// across accounts.
+#[must_use]
+pub fn account_email_hash(email: &str) -> [u8; 4] {
+    let normalized = email.trim().to_ascii_lowercase();
+    let mut hasher = blake3::Hasher::new_derive_key(EMAIL_HASH_DOMAIN);
+    hasher.update(normalized.as_bytes());
+    let mut out = [0u8; 4];
+    hasher.finalize_xof().fill(&mut out);
+    out
+}
+
 /// 10 lowercase hex chars representing the 5-byte magic prefix at v1.
 ///
 /// `"SR"` is `5352`, kind `07` (`MagicKind::PairingPayload`), version `0001`
@@ -233,5 +251,19 @@ mod tests {
         let mut p = fixture();
         p.relay_url = "x".repeat(257);
         assert_eq!(encode_qr_payload(&p), Err(QrPayloadError::RelayUrlTooLong));
+    }
+
+    #[test]
+    fn account_email_hash_is_deterministic_after_normalizing() {
+        let a = account_email_hash("Justin@Example.com");
+        let b = account_email_hash(" justin@example.com  ");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn account_email_hashes_of_different_emails_diverge() {
+        let a = account_email_hash("a@example.com");
+        let b = account_email_hash("b@example.com");
+        assert_ne!(a, b);
     }
 }

@@ -13,7 +13,7 @@ Three flows: account creation, adding a new device, recovering identity. Recover
 Implemented, in `crates/sunrise-pairing`:
 
 * The full **Noise XX** transcript, `Noise_XX_25519_ChaChaPoly_SHA256` (`handshake.rs::NOISE_PARAMS`), with a throwaway X25519 static per handshake as §Handshake specifies.
-* The **QR payload** codec — lex-ordered UTF-8 JSON, base64url no-pad, magic prefix (`qr.rs`).
+* The **QR payload** codec — lex-ordered UTF-8 JSON, base64url no-pad, magic prefix — and the `account_email_hash` the QR carries as its account tag (`qr.rs`).
 * The **6-digit SAS**, `BLAKE3("sunrise.pair_sas.v1" || h, 3)` (`sas.rs`), with the SAS gate enforced by the session type rather than by a caller remembering to check it.
 
 Implemented on the relay and in the seam:
