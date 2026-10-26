@@ -248,3 +248,121 @@ fn a_zone_change_moves_the_planner_day_and_rewrites_nothing() {
     assert_eq!(day(&tokyo), date(2026, 3, 3));
     assert_eq!(stored(&db), before);
 }
+
+// ---- a DST day is still a day ----
+
+/// An engine in New York whose clock reads the instant `at`.
+fn ny_at(at: &str) -> (Engine, u64) {
+    let now = u64::try_from(ts(at).as_millisecond()).unwrap();
+    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
+    let e = Engine::from_clock(
+        Arc::new(ZonedClock(now, "America/New_York")),
+        Arc::new(SystemRng),
+        kc,
+    );
+    (e, now)
+}
+
+/// A task completed at the instant `at`, written by a device whose clock
+/// reads it.
+fn done_at(db: &mut Db, title: &str, at: &str) {
+    let (e, _) = ny_at(at);
+    let id = task(&e, db, title, None, None);
+    e.apply(db, Command::CompleteTask(id)).unwrap();
+}
+
+fn briefs(e: &Engine, db: &Db, now: u64) -> (MorningSummary, EndOfDayPlan) {
+    let QueryResult::MorningSummary(s) =
+        e.query(db, Query::MorningSummary { now_ms: now }).unwrap()
+    else {
+        panic!("not a summary");
+    };
+    let QueryResult::EndOfDayPlan(p) = e.query(db, Query::EndOfDayPlan { now_ms: now }).unwrap()
+    else {
+        panic!("not a plan");
+    };
+    (*s, *p)
+}
+
+fn titles_of(tasks: &[Task]) -> Vec<&str> {
+    let mut v: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+    v.sort_unstable();
+    v
+}
+
+/// The night New York springs forward (Sunday 8 March 2026), with no day
+/// schedule: Sunday is a 23-hour day, and the briefs bound it by its civil
+/// midnights, never by 24 hours. Monday's "since" is Sunday's midnight, so
+/// a completion an hour before it is not news; Sunday's brief lists what
+/// lands before Monday's midnight, and not what lands in the hour after it
+/// that a 24-hour day would have reached.
+#[test]
+fn the_briefs_bound_a_spring_forward_day_by_its_midnights() {
+    let mut db = db_root(ROOT);
+    done_at(&mut db, "saturday 23:30", "2026-03-08T04:30Z");
+    done_at(&mut db, "sunday 00:30", "2026-03-08T05:30Z");
+    let (sunday, now) = ny_at("2026-03-08T16:00Z");
+    for (title, at) in [
+        ("sunday 23:30", "2026-03-09T03:30Z"),
+        ("monday 00:30", "2026-03-09T04:30Z"),
+    ] {
+        task(
+            &sunday,
+            &mut db,
+            title,
+            Some(SunriseTime::instant(ts(at))),
+            None,
+        );
+    }
+
+    let (s, p) = briefs(&sunday, &db, now);
+    assert_eq!(s.since, ts("2026-03-07T05:00Z"), "Saturday 00:00 EST");
+    assert_eq!(s.today_start, ts("2026-03-08T05:00Z"), "Sunday 00:00 EST");
+    assert_eq!(titles_of(&s.due_today), ["sunday 23:30"]);
+    assert_eq!(p.day_start, ts("2026-03-08T05:00Z"));
+    assert_eq!(p.day_end, ts("2026-03-09T04:00Z"), "Monday 00:00 EDT");
+    assert_eq!(p.week_end, ts("2026-03-16T04:00Z"), "the 16th, 00:00 EDT");
+
+    let (monday, now) = ny_at("2026-03-09T12:00Z");
+    let (s, _) = briefs(&monday, &db, now);
+    assert_eq!(s.since, ts("2026-03-08T05:00Z"), "Sunday 00:00 EST");
+    assert_eq!(s.today_start, ts("2026-03-09T04:00Z"), "Monday 00:00 EDT");
+    assert_eq!(titles_of(&s.completed), ["sunday 00:30"]);
+}
+
+/// The night New York falls back (Sunday 1 November 2026): Sunday is a
+/// 25-hour day. Monday's "since" reaches the whole of it, so a completion
+/// in its first half hour is news; Sunday's brief lists what lands in its
+/// last hour, which a 24-hour day would have left out.
+#[test]
+fn the_briefs_bound_a_fall_back_day_by_its_midnights() {
+    let mut db = db_root(ROOT);
+    done_at(&mut db, "saturday 23:30", "2026-11-01T03:30Z");
+    done_at(&mut db, "sunday 00:30", "2026-11-01T04:30Z");
+    let (sunday, now) = ny_at("2026-11-01T17:00Z");
+    for (title, at) in [
+        ("sunday 23:30", "2026-11-02T04:30Z"),
+        ("monday 00:30", "2026-11-02T05:30Z"),
+    ] {
+        task(
+            &sunday,
+            &mut db,
+            title,
+            Some(SunriseTime::instant(ts(at))),
+            None,
+        );
+    }
+
+    let (s, p) = briefs(&sunday, &db, now);
+    assert_eq!(s.today_start, ts("2026-11-01T04:00Z"), "Sunday 00:00 EDT");
+    assert_eq!(titles_of(&s.due_today), ["sunday 23:30"]);
+    assert_eq!(p.day_start, ts("2026-11-01T04:00Z"));
+    assert_eq!(p.day_end, ts("2026-11-02T05:00Z"), "Monday 00:00 EST");
+    assert_eq!(p.week_end, ts("2026-11-09T05:00Z"), "the 9th, 00:00 EST");
+
+    let (monday, now) = ny_at("2026-11-02T13:00Z");
+    let (s, _) = briefs(&monday, &db, now);
+    assert_eq!(s.since, ts("2026-11-01T04:00Z"), "Sunday 00:00 EDT");
+    assert_eq!(s.today_start, ts("2026-11-02T05:00Z"), "Monday 00:00 EST");
+    assert_eq!(titles_of(&s.completed), ["sunday 00:30"]);
+}
