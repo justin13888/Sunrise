@@ -31,8 +31,8 @@
 //! it in the catalogue; all other fields must be on the allowlist.
 //!
 //! ```
-//! # fn demo(lat_ms: u64) {
-//! tracing::info!(ev = "srv.ws.connect", lat_ms, "relay session opened");
+//! # fn demo(account_h: &str) {
+//! tracing::info!(ev = "srv.sync.session_open", account_h, "sync session established");
 //! # }
 //! ```
 //!
