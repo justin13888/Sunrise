@@ -3235,6 +3235,7 @@ dependencies = [
  "sunrise-relay-client",
  "sunrise-sync",
  "sunrise-test-seed",
+ "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

@@ -3373,6 +3373,26 @@ pub mod sync {
         out
     }
 
+    /// sync: {badge}, so the outbox cannot drain; {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn ended(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(badge);
+        out.push_str(", so the outbox cannot drain; ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
     /// sync driver started -> {url}
     #[must_use]
     pub fn driver_started(url: &str) -> String {

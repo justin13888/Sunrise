@@ -58,6 +58,7 @@ use sunrise_crypto::recovery::RecoveryPayload;
 use sunrise_crypto::{
     retired_check_matches, unseal_recovery_blob, CarryWalk, IdentityChain, RecoveryError,
 };
+use sunrise_sync::SyncState;
 use thiserror::Error;
 use zeroize::Zeroize as _;
 
@@ -680,29 +681,52 @@ pub fn replay_progress(status: &SyncStatus) -> RecoveryProgress {
 /// [`crate::sync::wait_until_caught_up`], timed against the core's injected
 /// clock, with each snapshot read through [`replay_progress`] and reported
 /// only when it moved.
+///
+/// A `Stopped` session ends the wait: the relay refused this device, and
+/// nothing in this call replaces the credential. A `Degraded` one does not.
+/// A restored device's replay passes through it on purpose: a stream whose
+/// snapshot record is sealed under a key the relay has trimmed is deferred,
+/// which latches `Degraded`, until the account's key bundle supplies the
+/// key and the record applies (ADR-0069). So the wait is resumed until the
+/// budget passes, as it always was for that state.
 async fn wait_until_live(
     core: &Core,
     budget_ms: u64,
     progress: &mut (dyn FnMut(RecoveryProgress) + Send),
 ) -> Result<(), String> {
+    let deadline = core.now_ms().saturating_add(budget_ms);
     let mut reported: Option<RecoveryProgress> = None;
-    let waited = crate::sync::wait_until_caught_up(core, budget_ms, &mut |status| {
+    let mut on_status = |status: &SyncStatus| {
         let now = replay_progress(status);
         let started = matches!(now, RecoveryProgress::Replaying { applied, total } if applied > 0 || total.is_some());
         if started && reported.as_ref() != Some(&now) {
             progress(now.clone());
             reported = Some(now);
         }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    };
+    let waited = loop {
+        let left = deadline.saturating_sub(core.now_ms());
+        let waited = crate::sync::wait_until_caught_up(core, left, &mut on_status)
+            .await
+            .map_err(|e| e.to_string())?;
+        match waited {
+            Err(last) if last.state == SyncState::Degraded && core.now_ms() < deadline => {
+                tokio::time::sleep(crate::sync::STATUS_POLL).await;
+            }
+            other => break other,
+        }
+    };
     waited.map_err(|last| {
-        format!(
-            "still {:?}, {} pending after {}s",
-            last.state,
-            last.outbox_pending,
-            budget_ms / 1000
-        )
+        if last.state == SyncState::Stopped {
+            format!("ended {:?}, {} pending", last.state, last.outbox_pending)
+        } else {
+            format!(
+                "still {:?}, {} pending after {}s",
+                last.state,
+                last.outbox_pending,
+                budget_ms / 1000
+            )
+        }
     })
 }
 

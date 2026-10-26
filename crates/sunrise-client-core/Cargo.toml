@@ -87,5 +87,6 @@ rand_chacha = { workspace = true }
 rand_core = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 sunrise-test-seed = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

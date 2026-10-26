@@ -365,9 +365,20 @@ pub fn settled(status: &SyncStatus, fresh: bool) -> Option<bool> {
         // A terminal refusal parks the driver until the credential changes,
         // and a cursor gap latches for the life of the session: neither ends
         // inside this budget, so waiting it out only spends the OS's time.
-        SyncState::Stopped | SyncState::Degraded => Some(false),
+        state if ends_the_wait(state) => Some(false),
         _ => None,
     }
+}
+
+/// Whether `state` ends a [`wait_until_caught_up`] before its budget: the
+/// session will not become `Live` by waiting.
+///
+/// `Stopped` parks the driver until the credential is replaced, and
+/// `Degraded` means the relay cannot supply ops this device lacks. Every
+/// other state may still become `Live`.
+#[must_use]
+pub const fn ends_the_wait(state: SyncState) -> bool {
+    matches!(state, SyncState::Stopped | SyncState::Degraded)
 }
 
 /// Bring `core` level with the relay once, within `budget_ms`, and report
@@ -459,11 +470,14 @@ pub async fn sync_once<E: From<SyncStatusError>>(
 }
 
 /// Wait, against the core's clock, until the driver already running reports
-/// `Live` with an empty outbox, or `budget_ms` passes.
+/// `Live` with an empty outbox, reports a state that [`ends_the_wait`]
+/// (`Stopped`, `Degraded`), or `budget_ms` passes.
 ///
 /// `on_status` hears every status read, before it is judged, so a caller can
 /// report progress — an outbox draining, a replay applying — as it goes.
-/// `Ok(Err(last))` is the budget running out, carrying the last status read.
+/// `Ok(Err(last))` carries the status read last: one whose state
+/// [`ends_the_wait`] when the session will not go live by waiting, any other
+/// when the budget ran out.
 ///
 /// What `sunrise sync --once` and a recovery's replay wait (§Recovery flow
 /// step 8) both are. Unlike [`sync_once`] it accepts the session that is
@@ -483,7 +497,7 @@ pub async fn wait_until_caught_up(
         if status.state == SyncState::Live && status.outbox_pending == 0 {
             return Ok(Ok(()));
         }
-        if core.now_ms() >= deadline {
+        if ends_the_wait(status.state) || core.now_ms() >= deadline {
             return Ok(Err(status));
         }
         tokio::time::sleep(STATUS_POLL).await;
@@ -491,160 +505,4 @@ pub async fn wait_until_caught_up(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn status(state: SyncState, outbox_pending: u32) -> SyncStatus {
-        SyncStatus {
-            state,
-            outbox_pending,
-            peer_devices: 0,
-            last_sync_ms: None,
-            replay_applied: 0,
-            replay_remaining: None,
-        }
-    }
-
-    /// Nothing settles before a fresh session exists: `Live` there is the
-    /// session the app was suspended with.
-    #[test]
-    fn only_a_fresh_session_settles_the_wait() {
-        for state in [
-            SyncState::Live,
-            SyncState::Stopped,
-            SyncState::Degraded,
-            SyncState::Disconnected,
-            SyncState::CatchingUp,
-        ] {
-            assert_eq!(settled(&status(state, 0), false), None, "{state:?}");
-        }
-    }
-
-    #[test]
-    fn live_with_an_empty_outbox_is_caught_up() {
-        assert_eq!(settled(&status(SyncState::Live, 0), true), Some(true));
-        assert_eq!(
-            settled(&status(SyncState::Live, 3), true),
-            None,
-            "an op still unacked keeps the wait open"
-        );
-        assert_eq!(settled(&status(SyncState::CatchingUp, 0), true), None);
-        assert_eq!(settled(&status(SyncState::Disconnected, 0), true), None);
-    }
-
-    #[test]
-    fn a_refusal_or_a_gap_ends_the_wait_without_completing() {
-        assert_eq!(settled(&status(SyncState::Stopped, 0), true), Some(false));
-        assert_eq!(settled(&status(SyncState::Degraded, 0), true), Some(false));
-    }
-
-    /// The cancel is sticky: a wait that starts after it resolves at once,
-    /// and one already waiting is woken.
-    #[tokio::test]
-    async fn a_cancel_ends_a_wait_before_or_after_it_starts() {
-        let early = SyncCancel::new();
-        early.cancel();
-        tokio::time::timeout(Duration::from_secs(5), early.cancelled())
-            .await
-            .expect("a handle cancelled first resolves at once");
-
-        let late = Arc::new(SyncCancel::new());
-        assert!(!late.is_cancelled());
-        let waiter = {
-            let late = Arc::clone(&late);
-            tokio::spawn(async move { late.cancelled().await })
-        };
-        late.cancel();
-        tokio::time::timeout(Duration::from_secs(5), waiter)
-            .await
-            .expect("a waiting handle is woken")
-            .expect("the waiter ran");
-        assert!(late.is_cancelled());
-    }
-
-    /// A transport whose stream never yields: what a socket that died while
-    /// the app was suspended looks like from here.
-    struct Silent;
-
-    #[async_trait::async_trait]
-    impl Transport for Silent {
-        async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
-            Ok(())
-        }
-        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-            std::future::pending().await
-        }
-        async fn close(&mut self) -> Result<(), TransportError> {
-            Ok(())
-        }
-    }
-
-    /// The kick is what rescues a session stuck on a dead stream: the wrapped
-    /// transport reports the stream ended, which the driver answers by
-    /// dialling again.
-    #[tokio::test]
-    async fn a_kick_ends_a_session_dialled_before_it() {
-        let link = SyncLink::new();
-        let mut stale = link.wrap(Box::new(Silent));
-        assert_eq!(link.dialled(), 1);
-        link.kick();
-        let ended = tokio::time::timeout(Duration::from_secs(5), stale.recv_frame())
-            .await
-            .expect("a kicked transport answers at once");
-        assert!(matches!(ended, Ok(None)), "{ended:?}");
-    }
-
-    /// A transport dialled after the kick is the fresh session the kick asked
-    /// for, and must not be ended by it.
-    #[tokio::test]
-    async fn a_kick_spares_a_session_dialled_after_it() {
-        let link = SyncLink::new();
-        link.kick();
-        let mut fresh = link.wrap(Box::new(Silent));
-        assert_eq!(link.dialled(), 1);
-        let waited = tokio::time::timeout(Duration::from_millis(100), fresh.recv_frame()).await;
-        assert!(
-            waited.is_err(),
-            "the fresh session keeps waiting on its stream"
-        );
-    }
-
-    /// A vault with no driver running is never `Live`, so the wait runs out
-    /// its budget against the core's clock and hands back the last status.
-    #[tokio::test]
-    async fn a_wait_with_no_driver_runs_out_and_reports_the_last_status() {
-        #[derive(Debug)]
-        struct Frozen;
-        impl sunrise_core::Clock for Frozen {
-            fn now_ms(&self) -> u64 {
-                1_767_225_600_000
-            }
-            fn timezone(&self) -> String {
-                "UTC".to_owned()
-            }
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let core = Core::open(
-            sunrise_core::CoreConfig::with_clock(
-                dir.path().to_path_buf(),
-                "test",
-                Arc::new(Frozen),
-                Arc::new(sunrise_core::SystemRng),
-            ),
-            sunrise_core::Unlock::DevicePaired {
-                root: sunrise_crypto::keys::VaultRootKey::from_bytes([4; 32]),
-                paired: None,
-            },
-        )
-        .await
-        .unwrap();
-        let mut seen = 0;
-        let last = wait_until_caught_up(&core, 0, &mut |_| seen += 1)
-            .await
-            .unwrap()
-            .expect_err("nothing is syncing");
-        assert_eq!(seen, 1, "a zero budget reads once and stops");
-        assert_ne!(last.state, SyncState::Live);
-        core.shutdown().await;
-    }
-}
+pub(crate) mod tests;

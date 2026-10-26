@@ -142,3 +142,50 @@ fn a_mistyped_code_is_refused_as_a_code() {
         Err(RecoveryFlowError::Crypto(_))
     ));
 }
+
+/// The replay wait ends on a session the relay refused, naming the state,
+/// rather than spending its budget and reporting a timeout.
+#[tokio::test]
+async fn the_replay_wait_ends_on_a_refused_session() {
+    use crate::sync::tests::{hello_ack, relay, terminal_close, vault_at, Stuck};
+    let dir = tempfile::tempdir().unwrap();
+    let core = vault_at(dir.path(), Arc::new(Stuck)).await;
+    core.start_sync(relay(vec![hello_ack(), terminal_close()]))
+        .unwrap();
+    let detail = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        wait_until_live(&core, 3_600_000, &mut |_| {}),
+    )
+    .await
+    .expect("a refused session ends the wait though the clock never moves")
+    .expect_err("not live");
+    assert!(detail.starts_with("ended Stopped, "), "{detail}");
+    core.shutdown().await;
+}
+
+/// A `Degraded` session does not end the replay wait: a restored device
+/// passes through it while a deferred stream waits for the account's key
+/// bundle. The wait runs out its budget, and says it was still degraded.
+#[tokio::test]
+async fn the_replay_wait_rides_out_a_degraded_session_until_its_budget() {
+    use crate::sync::tests::{cursor_gap, hello_ack, relay, vault_at, Stepping};
+    use std::sync::atomic::AtomicU64;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(Stepping(AtomicU64::new(0)));
+    let core = vault_at(dir.path(), clock.clone()).await;
+    core.start_sync(relay(vec![hello_ack(), cursor_gap()]))
+        .unwrap();
+    let started = core.now_ms();
+    let detail = wait_until_live(&core, 120_000, &mut |_| {})
+        .await
+        .expect_err("not live");
+    assert!(
+        clock.0.load(std::sync::atomic::Ordering::Relaxed) >= started + 120_000,
+        "the wait returned before its budget: {detail}"
+    );
+    assert!(
+        detail.starts_with("still Degraded, ") && detail.ends_with(" pending after 120s"),
+        "{detail}"
+    );
+    core.shutdown().await;
+}
