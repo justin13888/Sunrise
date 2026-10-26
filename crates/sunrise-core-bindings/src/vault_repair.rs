@@ -234,6 +234,68 @@ mod tests {
         assert!(matches!(other, BindingError::Core(_)), "{other:?}");
     }
 
+    /// One row per problem a failed open can name: each crosses as its own
+    /// variant, and reads as the `Core` message it replaces.
+    #[test]
+    fn every_open_problem_crosses_as_its_own_variant() {
+        type Is = fn(&BindingError) -> bool;
+        let rows: [(DbError, Is); 5] = [
+            (
+                DbError::StorageVTooNew {
+                    db_v: 9,
+                    binary_v: 8,
+                },
+                |b| matches!(b, BindingError::VaultTooNew(_)),
+            ),
+            (
+                DbError::StorageVTooOld {
+                    db_v: 1,
+                    binary_v: 8,
+                },
+                |b| matches!(b, BindingError::VaultTooOld(_)),
+            ),
+            (
+                DbError::StorageVPreBaseline {
+                    db_v: 1,
+                    baseline_v: 8,
+                },
+                |b| matches!(b, BindingError::VaultTooOld(_)),
+            ),
+            (
+                DbError::Migration {
+                    id: 47,
+                    name: "test",
+                    // `rusqlite` is not a dependency here; inference names
+                    // its error type from the field.
+                    source: std::ffi::CString::new("a\0b").unwrap_err().into(),
+                },
+                |b| matches!(b, BindingError::VaultMigrationFailed(_)),
+            ),
+            (
+                DbError::Backup {
+                    from_v: 8,
+                    source: std::io::Error::other("disk full"),
+                },
+                |b| matches!(b, BindingError::VaultBackupFailed(_)),
+            ),
+        ];
+        for (db, is) in rows {
+            let e = CoreError::Db(db);
+            let before = BindingError::Core(e.to_string()).to_string();
+            let crossed = open_failed(e);
+            assert!(is(&crossed), "{crossed:?}");
+            assert_eq!(crossed.to_string(), before, "{crossed:?}");
+        }
+
+        let rebuild = open_failed(CoreError::Db(DbError::RebuildBackup {
+            source: std::io::Error::other("read-only"),
+        }));
+        assert!(
+            matches!(rebuild, BindingError::VaultBackupFailed(_)),
+            "{rebuild:?}"
+        );
+    }
+
     #[test]
     fn the_remedies_are_the_client_layers() {
         assert_eq!(

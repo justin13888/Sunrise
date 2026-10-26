@@ -728,6 +728,52 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
     }
 }
 
+#[cfg(test)]
+mod task_edit_tests {
+    use super::{patch_field, TaskEdit};
+    use sunrise_domain::TaskPatch;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// The three answers a doubly optional field can carry, and `clear`
+    /// winning over a value set beside it.
+    #[test]
+    fn clear_wins_over_a_value_set_beside_it() {
+        assert_eq!(patch_field(Some(3u8), true), Some(None));
+        assert_eq!(patch_field(None::<u8>, true), Some(None));
+        assert_eq!(patch_field(Some(3u8), false), Some(Some(3)));
+        assert_eq!(patch_field(None::<u8>, false), None);
+    }
+
+    /// The rule holds through the edit a client hands in, not only in the
+    /// helper.
+    #[test]
+    fn a_task_edit_setting_and_clearing_a_field_clears_it() {
+        let assignee = EntityRef::new(EntityKind::Device, [4; 16]);
+        let patch = TaskPatch::from(TaskEdit {
+            set_priority: Some(3),
+            clear_priority: true,
+            set_estimated_duration_s: Some(600),
+            clear_estimated_duration: true,
+            set_assignee: Some(assignee),
+            clear_assignee: true,
+            set_reminder_lead_s: Some(300),
+            clear_reminder_lead_s: true,
+            ..TaskEdit::default()
+        });
+        assert_eq!(patch.priority, Some(None));
+        assert_eq!(patch.estimated_duration_s, Some(None));
+        assert_eq!(patch.assignee, Some(None));
+        assert_eq!(patch.reminder_lead_s, Some(None));
+
+        let set = TaskPatch::from(TaskEdit {
+            set_priority: Some(3),
+            ..TaskEdit::default()
+        });
+        assert_eq!(set.priority, Some(Some(3)));
+        assert_eq!(set.estimated_duration_s, None, "an untouched field");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stream / Context
 // ---------------------------------------------------------------------------
