@@ -3052,6 +3052,14 @@ mod tests {
     //! (no sockets). Each `on_connect`/`inbound`/`duplicate`/`reconnect`/
     //! `submit_while_live` test drives the real driver task; the fake server
     //! scripts the protocol side.
+    //!
+    //! Every test that waits on the driver runs on paused time
+    //! (`start_paused`). Nothing here leaves the runtime: the core's storage
+    //! runs inline and the relay is a channel, so the clock only moves once
+    //! every task is parked. A deadline is then virtual and cannot expire
+    //! because the host is slow, and an absence asserted after a sleep is a
+    //! fact about the run — everything the driver could do before that instant
+    //! has been done — rather than a bet that it would have happened by then.
 
     use super::{
         drain_relay_revocations, mark_renewals_current, note_marked_at_connect, run, BoxTransport,
@@ -3998,7 +4006,7 @@ mod tests {
     /// close, reconnect — costs a full handshake, a re-subscribe, and a
     /// catch-up window in which the client is not live, all on a schedule the
     /// client already knew in advance. That is the case this closes.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_renewed_bearer_reaches_a_live_session_without_reconnecting() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4163,10 +4171,13 @@ mod tests {
             }],
             "the connect carried both writes, and the event says which version it reached"
         );
+        // One poll, not a timed wait: `changed` resolves on its first poll for
+        // any write this handle has not observed, so a pending first poll is
+        // the handle being current, whatever the host's load.
+        let mut next = std::pin::pin!(renewals.changed());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), renewals.changed())
-                .await
-                .is_err(),
+            std::future::Future::poll(next.as_mut(), &mut cx).is_pending(),
             "the pump must not re-announce a bearer this connect already presented"
         );
     }
@@ -4289,7 +4300,7 @@ mod tests {
     // Three scripted sessions and the connect-count assertion put this one
     // six lines past the limit; `session` above carries the same allow.
     #[allow(clippy::too_many_lines)]
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn the_report_waits_for_the_handshake_not_for_the_connect() {
         use std::sync::atomic::{AtomicU64, Ordering};
         use tracing::instrument::WithSubscriber as _;
@@ -4577,7 +4588,7 @@ mod tests {
     /// leaves that assertion green and fails the frame assertion with
     /// `saw ["renewed-token"]`, which is precisely the wasted round trip #244
     /// reported.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_renewal_from_the_offline_window_is_presented_and_not_re_announced() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4630,6 +4641,8 @@ mod tests {
         })
         .await
         .expect("the driver never reconnected");
+        // Paused time: this returns only once the reconnect's session has run
+        // to a park, so a frame it was going to send has been sent.
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(
             server.lock().presented,
@@ -4685,7 +4698,7 @@ mod tests {
     /// a timer, because "after the factory returned, before the session
     /// exists" is an ordering rather than a duration and there is no wall
     /// clock that names it.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_renewal_landing_during_the_dial_still_reaches_the_live_session() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4750,7 +4763,7 @@ mod tests {
     ///
     /// Marking to the source's current version instead of the carried one
     /// (`renewals.mark_current()` in the old shape) fails this with no frame.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_renewal_between_the_read_and_the_mark_still_reaches_the_live_session() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4809,7 +4822,7 @@ mod tests {
     /// minted a fresh `TokenSource` per call, that path had two cells — the
     /// caller wrote one, the driver watched the other — so in-band renewal was
     /// silently dead for every Swift caller while looking wired up.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_renewal_reaches_the_driver_when_sync_was_unconfigured_at_open() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = CoreConfig::with_clock(
@@ -4868,7 +4881,7 @@ mod tests {
     /// another hour" from "nothing happened", which call for opposite
     /// behaviour. Negotiating first means the client only sends the frame to
     /// someone it knows will answer.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn a_relay_that_does_not_negotiate_refresh_is_sent_no_frame() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4892,6 +4905,7 @@ mod tests {
         let _ = collect_until_live(&mut status_rx).await;
 
         credential.set(Some("renewed-token".into()));
+        // Paused time: the session has seen the write and parked again.
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(
             refreshes.lock().is_empty(),
@@ -4905,7 +4919,7 @@ mod tests {
     /// Clearing the credential is not a renewal. An empty `RefreshToken` would
     /// be rejected by the relay as an unverifiable token, ending a session
     /// that was working — so nothing is sent.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(start_paused = true)]
     async fn clearing_the_credential_sends_no_refresh_frame() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
@@ -4929,6 +4943,7 @@ mod tests {
         let _ = collect_until_live(&mut status_rx).await;
 
         credential.set(None);
+        // Paused time: the session has seen the write and parked again.
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(
             refreshes.lock().is_empty(),
@@ -4937,7 +4952,7 @@ mod tests {
         core.shutdown().await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn on_connect_drains_pending_outbox_and_reaches_live() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
@@ -4994,7 +5009,7 @@ mod tests {
     }
 
     // ---- Test (b): inbound remote OpBatch materializes + advances cursor ----
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn inbound_remote_op_materializes_and_advances_cursor() {
         let (peer, stream, envs) = make_remote_tasks(&["from B"]).await;
         let dir = tempfile::tempdir().unwrap();
@@ -5026,7 +5041,7 @@ mod tests {
     }
 
     // ---- Test (c): duplicate inbound delivery is idempotent ----
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_inbound_delivery_is_idempotent() {
         let (peer, stream, envs) = make_remote_tasks(&["dup", "sentinel"]).await;
         let dir = tempfile::tempdir().unwrap();
@@ -5058,7 +5073,7 @@ mod tests {
     }
 
     // ---- Test (d): transport drop → reconnect → convergence ----
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn reconnect_after_drop_converges() {
         let (peer, stream, envs) = make_remote_tasks(&["missed"]).await;
         let dir = tempfile::tempdir().unwrap();
@@ -5091,7 +5106,7 @@ mod tests {
     }
 
     // ---- Test (e): submit while Live pushes immediately (no reconnect) ----
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn submit_while_live_pushes_without_reconnect() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
@@ -5144,7 +5159,7 @@ mod tests {
     // `Live`. The assertion that matters is not merely that the op arrives, but
     // that it arrives *without a reconnect* — recovery has to happen in-session,
     // because on a link like this no reconnect is ever coming.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn unacked_batch_is_retransmitted_within_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
@@ -5213,7 +5228,7 @@ mod tests {
     // that ack rather than resend: a resend here is a retransmit of a batch
     // the relay already acked, and under a sustained commit rate it is the
     // loop that exhausted the retry policy and tore the session down.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn an_ack_queued_during_a_slow_send_is_read_before_the_batch_is_resent() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
@@ -5232,7 +5247,8 @@ mod tests {
         core.start_sync(factory).unwrap();
 
         wait_pending_zero(&core).await;
-        // Long enough for any resend already queued to have reached the relay.
+        // Past every batch's first retransmit deadline, on paused time, so any
+        // resend the driver would make has reached the relay.
         tokio::time::sleep(Duration::from_millis(400)).await;
 
         let mut seen: Vec<Vec<Vec<u8>>> = Vec::new();
@@ -5259,7 +5275,7 @@ mod tests {
     // re-subscribes early. The injected batch is delivered only on the second
     // and later Subscribe, so materializing it proves an in-session resync
     // happened — a reconnect would show up as a second connect.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn loss_evidence_triggers_an_in_session_resync() {
         let (peer, stream, envs) = make_remote_tasks(&["only on resync"]).await;
         let dir = tempfile::tempdir().unwrap();
@@ -5304,7 +5320,7 @@ mod tests {
     // it. Here the link is clean and nothing is withheld, so no evidence is
     // ever produced, and only the timer can account for the resync. The timer
     // is the guarantee; evidence is only the latency optimisation.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn resync_timer_fires_without_any_loss_evidence() {
         let (peer, stream, envs) = make_remote_tasks(&["timer backstop"]).await;
         let dir = tempfile::tempdir().unwrap();
@@ -5339,7 +5355,7 @@ mod tests {
     // while permanently missing ops the relay can never resend — the same "no
     // progress, no signal" failure as issue #20, one layer up. Re-subscribing
     // cannot fix it, so the state has to survive the rest of the session.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn cursor_gap_degrades_the_session_and_never_reports_live() {
         let dir = tempfile::tempdir().unwrap();
         // Short resync timer: proves the degraded latch survives re-subscribes,
@@ -5350,6 +5366,7 @@ mod tests {
             gap_on_subscribe: true,
             ..Default::default()
         };
+        let mut status_rx = core.sync_status();
         let (factory, _server, _batch_rx) = harness(vec![script]);
         core.start_sync(factory).unwrap();
 
@@ -5365,12 +5382,13 @@ mod tests {
                 "a gap the relay cannot fill must not resolve to Live"
             );
         }
+        assert_never_live(&mut status_rx);
     }
 
     /// A gap that names its stream sends the driver to the stream's
     /// snapshot record (ADR-0068). With none pinned there is nothing to
     /// catch up from, and the session latches exactly as before.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn a_gap_with_no_snapshot_pinned_still_degrades() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc_with_resync(dir.path(), Duration::from_millis(100)).await;
@@ -5379,6 +5397,7 @@ mod tests {
             snapshots: SnapshotRoutes::Pinned(None),
             ..Default::default()
         };
+        let mut status_rx = core.sync_status();
         let (factory, _server, _batch_rx) = harness(vec![script]);
         core.start_sync(factory).unwrap();
         wait_state(&core, SyncState::Degraded).await;
@@ -5386,11 +5405,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(60)).await;
             assert_eq!(sync_state(&core).await, SyncState::Degraded);
         }
+        assert_never_live(&mut status_rx);
     }
 
     /// A pinned record that is not one this vault can apply — forged, junk,
     /// of another history — is refused by the engine, and the gap stands.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn a_pinned_record_the_engine_refuses_leaves_the_gap_degraded() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc_with_resync(dir.path(), Duration::from_millis(100)).await;
@@ -5399,6 +5419,7 @@ mod tests {
             snapshots: SnapshotRoutes::Pinned(Some(b"SR\x04\x00\x01not a record".to_vec())),
             ..Default::default()
         };
+        let mut status_rx = core.sync_status();
         let (factory, _server, _batch_rx) = harness(vec![script]);
         core.start_sync(factory).unwrap();
         wait_state(&core, SyncState::Degraded).await;
@@ -5406,6 +5427,31 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(60)).await;
             assert_eq!(sync_state(&core).await, SyncState::Degraded);
         }
+        assert_never_live(&mut status_rx);
+    }
+
+    /// Drain every state the core broadcast since `rx` subscribed, and fail
+    /// if one was `Live` or if the channel lagged past one unread.
+    ///
+    /// The polls above sample the state; this reads every transition, so a
+    /// `Live` that came and went between two samples is caught too.
+    fn assert_never_live(rx: &mut broadcast::Receiver<crate::SyncStatus>) {
+        let mut seen = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(s) => seen.push(s.state),
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(e) => panic!("the status channel {e:?}, so a state may have gone unread"),
+            }
+        }
+        assert!(
+            seen.contains(&SyncState::Degraded),
+            "the gap was broadcast, saw {seen:?}"
+        );
+        assert!(
+            !seen.contains(&SyncState::Live),
+            "a gap the relay cannot fill must never be broadcast as Live, saw {seen:?}"
+        );
     }
 
     async fn sync_state(core: &Core) -> SyncState {
