@@ -29,8 +29,9 @@
 //! serve any bundle it ever held: freshness is not something it can be made to
 //! prove, and ADR-0069 §Rollback says what that costs.
 
-use crate::api::blobs::{account, hex_pattern, not_found, parse_blob_id, refuse_if_pending};
+use crate::api::blobs::{account, not_found, refuse_if_pending};
 use crate::api::error::{codes, ApiError};
+use crate::api::ids::{hex_pattern, parse_blob_id};
 use crate::api::signed::{Signed, SignedParts};
 use crate::blob::Manifest;
 use crate::state::ServerState;

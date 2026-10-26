@@ -35,6 +35,7 @@ pub mod devices;
 pub mod error;
 pub mod health;
 pub mod identity_chain;
+pub(crate) mod ids;
 pub mod key_bundle;
 pub mod meta;
 pub mod metrics;

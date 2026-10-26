@@ -24,7 +24,7 @@ use sunrise_telemetry::{Attr, Count};
 use sunrise_wire_protocol::{encode_frame, FrameFlags, MsgKind, OpBatchPayload};
 
 use super::credential::{resolve, SessionHeader};
-use super::cursors::parse_id;
+use crate::api::ids::parse_hex16;
 
 /// The route's description path, as the rate-limit metric labels it.
 const OPS: &str = "/api/v1/sync/ops";
@@ -126,7 +126,7 @@ pub async fn ops(
     // A session opened before the deletion was confirmed must not keep
     // writing into a log the erasure is about to remove.
     crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id).await?;
-    let stream_id = parse_id(&body.stream_id, "stream_id")?;
+    let stream_id = parse_hex16(&body.stream_id, "stream_id")?;
     // Per op, before anything is stored: a refused batch stays in the outbox.
     let (limiter, n_ops) = (&state.limiter, body.ops.len() as u64);
     limiter
