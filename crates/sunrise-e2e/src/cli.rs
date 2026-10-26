@@ -217,7 +217,8 @@ impl Device {
     /// [`WAIT`] from now.
     ///
     /// # Panics
-    /// As [`Device::sync_by`] does, with a deadline [`WAIT`] from now.
+    /// When `sync --once` fails other than by timing out, or still times out
+    /// once [`WAIT`] has passed, with its last output and the device's log.
     pub async fn sync(&self) {
         self.sync_by(Instant::now() + WAIT).await;
     }
