@@ -56,7 +56,7 @@ fn cursor(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> i64 {
         .unwrap_or(0)
 }
 
-fn digest_of(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> [u8; 32] {
+pub(super) fn digest_of(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> [u8; 32] {
     let now = e.clock.now_ms();
     db.with_tx(|tx| digest_payload(tx, stream, now))
         .unwrap()

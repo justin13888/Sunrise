@@ -13927,7 +13927,8 @@ proptest::proptest! {
     /// run — duplicates, repeats, holes at any position — followed by a
     /// shuffled permutation of every op, and asserts after **every single
     /// delivery** that the cursor equals the length of the contiguous
-    /// prefix actually applied, never the maximum seq seen.
+    /// prefix actually applied, never the maximum seq seen. Once every op
+    /// is in, the run left no chain evidence and the two digests agree.
     #[test]
     fn a_cursor_equals_the_contiguous_prefix_after_every_delivery(
         schedule in delivery_schedule(),
@@ -13986,6 +13987,15 @@ proptest::proptest! {
             cursor_for(&dbb, &stream, &device),
             DELIVERY_OPS as u64,
             "every op arrived, so the prefix covers all of them"
+        );
+        // Chain links are evidence whatever order they arrive in
+        // (`engine::chain`): an honest history delivered with duplicates,
+        // repeats and holes leaves no fork, no divergence and nothing
+        // wanted, and the receiver's stream digest is the writer's.
+        proptest::prop_assert_eq!(eb.chain_integrity(&dbb).unwrap(), crate::ChainIntegrity::default());
+        proptest::prop_assert_eq!(
+            op_chain::digest_of(&eb, &mut dbb, &stream),
+            op_chain::digest_of(&ea, &mut dba, &stream)
         );
     }
 }
