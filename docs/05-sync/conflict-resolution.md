@@ -62,7 +62,7 @@ compared left to right, where
 |---|---|---|
 | `hlc` | `(physical_ms, logical)` — a hybrid logical clock, envelope field 5 | An unbounded device wall clock let one skewed device win every conflict it ever entered, permanently and silently (issue #21). It also could not order two writes inside one millisecond at all. |
 | `device_id` | the raw 16-byte id, memcmp, higher wins | Breaks *cross-device* ties deterministically, so every replica picks the same winner. |
-| `seq` | the writer's per-`(stream, device)` counter, envelope field 4 | Reached only when two ops from the SAME device carry an equal `hlc`. The HLC's send rule makes that impossible while a device's clock state lives; it becomes possible across a process restart, when the logical counter resets. |
+| `seq` | the writer's per-`(stream, device)` counter, envelope field 4 | Reached only when two ops from the SAME device carry an equal `hlc`. The HLC's send rule makes that impossible while a device's clock state lives, except where its logical counter has saturated at `u32::MAX` and the wall clock is not ahead of its `physical_ms`, when a send returns its input unchanged; it also becomes possible across a process restart, when the logical counter resets. |
 
 The newest-legacy-op floor of the table above, and the stamp an entity row
 carries, compare the same key with the op's stream appended last. `seq` counts
@@ -75,7 +75,9 @@ made in two streams with an otherwise equal key.
   physical component takes the wall clock when the wall clock is ahead and the
   logical counter resets; otherwise the logical counter increments. A device's
   own ops are therefore strictly ordered even if its clock stalls or jumps
-  backwards.
+  backwards, until the logical counter saturates at `u32::MAX`: it does not
+  carry into `physical_ms`, so a saturated send returns a stamp equal to its
+  input and `seq` breaks the tie.
 - **Receive.** `local = max(local, received, now) + 1`. After observing a peer's
   op, this device sits above it, so everything it emits afterwards sorts after
   the op that caused it. Causality without a vector clock.

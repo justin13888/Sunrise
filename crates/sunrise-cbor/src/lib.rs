@@ -1,4 +1,20 @@
-//! Deterministic CBOR + magic-prefix utilities + v1 version constants.
+//! Deterministic CBOR, magic prefixes, hybrid logical clocks, the cleartext
+//! envelope header, and the protocol version constants.
+//!
+//! Modules:
+//! - [`canonical`] — canonical CBOR encode and decode.
+//! - [`bounded`] — depth-limited decoding of untrusted CBOR, at
+//!   [`MAX_DOC_DEPTH`] for document content and [`MAX_VALUE_DEPTH`] for
+//!   framing.
+//! - [`cbor_value`] — [`CborValue`], a preserved CBOR value that refuses
+//!   floats on decode.
+//! - [`hlc`] — the hybrid logical clock [`Hlc`] and its drift bound
+//!   [`MAX_DRIFT_MS`].
+//! - [`envelope_header`] — the cleartext routing header of an `OpEnvelope`,
+//!   decoded without its contents.
+//! - [`magic`] — the 5-byte magic prefix.
+//! - [`version`] — the version constants and floors, and the
+//!   [`DOC_SCHEMA_FINGERPRINTS`] registry.
 //!
 //! See:
 //! - `docs/10-cross-cutting/protocol-versioning.md` §3 — uniform 5-byte
@@ -6,12 +22,14 @@
 //! - `docs/03-crypto/data-encryption-format.md` — canonical CBOR
 //!   serialization rules for the op envelope.
 //!
-//! Canonical CBOR rules enforced here:
+//! Canonical CBOR rules:
 //! - Map keys sorted by their CBOR-encoded byte sequence (RFC 8949 §4.2.3
 //!   "Core Deterministic Encoding").
 //! - Shortest-form integer encoding.
 //! - Definite-length items only.
-//! - No floating-point in v1 envelopes (use millisecond integers instead).
+//! - No floating-point (use millisecond integers instead). The encoder does
+//!   not check this: a float is refused where a value decodes as
+//!   [`CborValue`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -26,8 +44,7 @@ pub mod version;
 
 pub use bounded::{decode_bounded, decode_value, ValueDecodeError, MAX_DOC_DEPTH, MAX_VALUE_DEPTH};
 pub use canonical::{
-    decode_canonical, decode_canonical_within, decode_lenient, encode_canonical, CanonicalEncoding,
-    CanonicalError,
+    decode_canonical, decode_canonical_within, decode_lenient, encode_canonical, CanonicalError,
 };
 pub use cbor_value::CborValue;
 pub use envelope_header::{
