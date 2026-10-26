@@ -15,9 +15,10 @@
 //! 1. **Decoding cannot fail.** [`decode`](decode()) is total. A body that is
 //!    not CBOR, or is CBOR the grammar does not name, still produces the best
 //!    rendering this build can manage — down to plain UTF-8 lines as
-//!    paragraphs, which is exactly what the `sunrise` CLI writes ("plain text
-//!    only; no structured-body editing"). The failure mode is "render as best
-//!    you can", never "drop the bytes".
+//!    paragraphs. (The `sunrise` CLI does not write such bodies: both its
+//!    writers, task notes and stream descriptions, encode CBOR paragraph
+//!    blocks.) The failure mode is "render as best you can", never "drop the
+//!    bytes".
 //! 2. **Adding a block kind is not a `DOC_SCHEMA_V` change**, so an older
 //!    build meeting a newer body must not corrupt it. That is what
 //!    [`Fidelity`] is for.

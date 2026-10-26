@@ -8,7 +8,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 // Domain entities use a lot of CBOR-mapped optional fields; relax the
-// stylistic lints while the layer stabilizes (revisit Phase 17).
+// stylistic lints while the layer stabilizes.
 #![allow(
     clippy::doc_markdown,
     clippy::manual_let_else,

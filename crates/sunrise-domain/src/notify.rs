@@ -382,7 +382,8 @@ pub struct MorningSummary {
     pub completed: Vec<Task>,
     /// Live open tasks sitting unfiled in the Inbox: the triage queue.
     pub to_triage: Vec<Task>,
-    /// Live open tasks scheduled or due inside today, earliest first.
+    /// Live open tasks landing before the end of today, **overdue included**,
+    /// earliest first.
     pub due_today: Vec<Task>,
 }
 
