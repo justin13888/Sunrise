@@ -1,15 +1,15 @@
 //! Stable error code enum.
 //!
-//! **GENERATED** mirror of `crates/sunrise-error/codes.toml`. Until the
-//! build-script lands (target: Phase 17), this file is hand-maintained.
-//! `tests/manifest_in_sync.rs` asserts the two stay aligned.
+//! Hand-kept mirror of `crates/sunrise-error/codes.toml`, the registry's
+//! source of truth. `tests/manifest_in_sync.rs` asserts the two stay
+//! aligned.
 
 use crate::kind::ErrorKind;
 use serde::{Deserialize, Serialize};
 
 /// Canonical error code. Stable across versions; never repurposed.
 ///
-/// Adding a code requires updating `codes.toml` and (for now) this enum.
+/// Adding a code requires updating both `codes.toml` and this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]

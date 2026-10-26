@@ -1,8 +1,8 @@
 //! Asserts that `codes.toml` and the hand-maintained Rust enum stay aligned.
 //!
 //! Per `docs/10-cross-cutting/error-handling.md`, the TOML manifest is the
-//! source of truth and the Rust enum is a generated mirror; until the
-//! build-script lands, this test catches drift.
+//! source of truth and the Rust enum is a hand-kept mirror of it; this test
+//! is what catches drift between the two.
 
 use sunrise_error::ErrorCode;
 
