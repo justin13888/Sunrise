@@ -1,9 +1,9 @@
 //! Stable canonical error codes shared across the workspace.
 //!
 //! Per `docs/10-cross-cutting/error-handling.md`, the registry source of
-//! truth is `codes.toml`. The Rust enum here is intended to be a generated
-//! mirror; until the build-script codegen lands, it is hand-maintained and
-//! kept in sync by the test in `tests/manifest_in_sync.rs`.
+//! truth is `codes.toml`. The Rust enum in [`codes`] is a hand-kept mirror
+//! of it, and the test in `tests/manifest_in_sync.rs` fails when a code
+//! name is in one and not the other.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

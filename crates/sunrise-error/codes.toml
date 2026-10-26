@@ -1,12 +1,10 @@
 # Sunrise error code registry — single source of truth.
 #
 # Per docs/10-cross-cutting/error-handling.md §registry, this manifest is
-# authoritative; the Rust enum at crates/sunrise-error/src/codes.rs and the
-# TypeScript enum at packages/sunrise-error-ts/src/codes.ts are GENERATED
-# mirrors of this file. Hand-editing the generated files is a CI failure.
-#
-# Until the codegen build script lands (target: Phase 17), the Rust enum is
-# kept in sync manually; the keep-in-sync test in tests/ catches drift.
+# authoritative. The Rust enum at crates/sunrise-error/src/codes.rs is a
+# hand-kept mirror of it: adding a code means editing both files.
+# tests/manifest_in_sync.rs fails when a name is in one file and not the
+# other, or when the ids here repeat or do not increase.
 #
 # Rules:
 #  - Codes are stable across versions.
