@@ -679,6 +679,7 @@ pub(crate) fn known_kinds() -> &'static [&'static str] {
 mod tests {
     use super::*;
     use crate::control_op::{KeyShare, RosterEntry};
+    use proptest::strategy::Strategy;
     use serde_bytes::ByteBuf;
 
     fn transition() -> InnerOp {
@@ -1117,5 +1118,91 @@ mod tests {
         assert_eq!(op.effect(), OpEffect::Control);
         assert_eq!(op.entity_kind(), EntityKind::Identity);
         assert!(op.is_control());
+    }
+
+    /// Any CBOR value a peer could send as a payload: scalars, and arrays and
+    /// maps of them a few levels deep.
+    fn any_value() -> impl proptest::strategy::Strategy<Value = ciborium::value::Value> {
+        use ciborium::value::Value;
+        use proptest::prelude::*;
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(|n| Value::Integer(n.into())),
+            "[a-z_]{0,12}".prop_map(Value::Text),
+            proptest::collection::vec(any::<u8>(), 0..24).prop_map(Value::Bytes),
+        ];
+        leaf.prop_recursive(4, 32, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                proptest::collection::vec((inner.clone(), inner), 0..4).prop_map(Value::Map),
+            ]
+        })
+    }
+
+    /// An `UnknownKind` names a family this build does not declare, and only
+    /// that: the class a receiver parks rather than refuses.
+    fn unknown_kind_is_unknown(r: &Result<InnerOp, InnerOpError>) -> bool {
+        match r {
+            Err(InnerOpError::UnknownKind(name)) => !known_kinds().contains(&name.as_str()),
+            _ => true,
+        }
+    }
+
+    proptest::proptest! {
+        /// Bytes off the wire never panic the decoder, and whatever error it
+        /// returns is in its documented classes.
+        #[test]
+        fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
+            let r = decode_inner_op(&bytes);
+            proptest::prop_assert!(unknown_kind_is_unknown(&r));
+        }
+
+        /// A valid op with any byte replaced, or cut short, still decodes to
+        /// a documented outcome without panicking.
+        #[test]
+        fn a_mutated_op_never_panics(
+            at in proptest::prelude::any::<proptest::sample::Index>(),
+            byte in proptest::prelude::any::<u8>(),
+            cut in proptest::prelude::any::<bool>(),
+        ) {
+            let mut bytes = encode_inner_op(&transition()).unwrap();
+            let i = at.index(bytes.len());
+            if cut {
+                bytes.truncate(i);
+            } else {
+                bytes[i] = byte;
+            }
+            let r = decode_inner_op(&bytes);
+            proptest::prop_assert!(unknown_kind_is_unknown(&r));
+        }
+
+        /// A known family's name never reads as `UnknownKind`, whatever
+        /// payload it carries: a damaged op of a family this build reads is
+        /// reported as damage.
+        #[test]
+        fn a_known_name_is_never_an_unknown_kind(
+            kind in proptest::sample::select(known_kinds()),
+            payload in any_value(),
+        ) {
+            use ciborium::value::Value;
+            let bytes = cbor(&Value::Map(vec![(Value::Text(kind.to_owned()), payload)]));
+            proptest::prop_assert!(!matches!(decode_inner_op(&bytes), Err(InnerOpError::UnknownKind(_))));
+        }
+
+        /// A name this build does not declare is `UnknownKind` carrying that
+        /// name, whatever payload sits under it.
+        #[test]
+        fn an_undeclared_name_is_an_unknown_kind(
+            kind in "[A-Z][A-Za-z]{0,16}".prop_filter("undeclared", |k| !known_kinds().contains(&k.as_str())),
+            payload in any_value(),
+        ) {
+            use ciborium::value::Value;
+            let bytes = cbor(&Value::Map(vec![(Value::Text(kind.clone()), payload)]));
+            proptest::prop_assert!(matches!(
+                decode_inner_op(&bytes),
+                Err(InnerOpError::UnknownKind(k)) if k == kind
+            ));
+        }
     }
 }

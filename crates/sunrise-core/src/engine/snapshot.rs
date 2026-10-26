@@ -775,3 +775,113 @@ fn store(
     )?;
     Ok(())
 }
+
+/// The record parser runs on relay bytes before any signature is checked,
+/// so it is held to: every input yields a record or [`EngineError::Invalid`],
+/// and nothing panics.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn bytes(n: usize, b: u8) -> Value {
+        Value::Bytes(vec![b; n])
+    }
+
+    /// The outer fields of a record `snapshot_record` would write, with one
+    /// frontier entry. Nothing in it verifies; `parse` does not ask.
+    fn fields() -> Vec<(Value, Value)> {
+        let entry = Value::Array(vec![
+            bytes(16, 4),
+            int(3),
+            bytes(32, 5),
+            bytes(32, 6),
+            int(1_700_000_000_000),
+            int(2),
+        ]);
+        vec![
+            (key(1), bytes(16, 1)),
+            (key(2), int(7)),
+            (key(3), bytes(16, 2)),
+            (key(4), int(1_700_000_000_001)),
+            (key(5), Value::Array(vec![entry])),
+            (key(6), bytes(32, 3)),
+            (key(7), bytes(40, 8)),
+            (key(8), bytes(AEAD_NONCE_LEN, 9)),
+            (key(9), bytes(64, 10)),
+            (key(10), bytes(64, 11)),
+        ]
+    }
+
+    fn record(fields: Vec<(Value, Value)>) -> Vec<u8> {
+        let mut out = prefix().to_vec();
+        out.extend_from_slice(&encode(&Value::Map(fields)).unwrap());
+        out
+    }
+
+    fn is_invalid<T>(r: &Result<T, EngineError>) -> bool {
+        matches!(r, Err(EngineError::Invalid(_)))
+    }
+
+    #[test]
+    fn a_well_formed_record_parses_into_its_fields() {
+        let rec = parse(&record(fields())).unwrap();
+        assert_eq!(rec.stream_id, [1; 16]);
+        assert_eq!(rec.epoch, 7);
+        assert_eq!(rec.generated_by, [2; 16]);
+        assert_eq!(rec.generated_at_ms, 1_700_000_000_001);
+        assert_eq!(rec.entries.len(), 1);
+        assert_eq!(rec.entries[0].device, [4; 16]);
+        assert_eq!(rec.entries[0].floor.seq, 3);
+        assert_eq!(rec.digest, [3; 32]);
+        assert_eq!(rec.sig, [11; 64]);
+    }
+
+    /// Each field is required, and a field of the wrong width is refused.
+    #[test]
+    fn a_missing_or_misshapen_field_is_invalid() {
+        for n in 1..=10 {
+            let without: Vec<_> = fields()
+                .into_iter()
+                .filter(|(k, _)| as_u64(k) != Some(n))
+                .collect();
+            assert!(is_invalid(&parse(&record(without))), "field {n} absent");
+            let mut wrong = fields();
+            wrong[usize::try_from(n - 1).unwrap()].1 = Value::Text("x".into());
+            assert!(is_invalid(&parse(&record(wrong))), "field {n} misshapen");
+        }
+    }
+
+    proptest! {
+        /// Any bytes at all, with or without a snapshot prefix.
+        #[test]
+        fn arbitrary_bytes_are_invalid_or_a_record(
+            body in proptest::collection::vec(any::<u8>(), 0..512),
+            prefixed in any::<bool>(),
+        ) {
+            let mut input = if prefixed { prefix().to_vec() } else { Vec::new() };
+            input.extend_from_slice(&body);
+            let r = parse(&input);
+            prop_assert!(r.is_ok() || is_invalid(&r));
+        }
+
+        /// A well-formed record with one byte replaced, or cut short.
+        #[test]
+        fn a_mutated_record_is_invalid_or_a_record(
+            at in any::<proptest::sample::Index>(),
+            byte in any::<u8>(),
+            cut in any::<bool>(),
+        ) {
+            let mut input = record(fields());
+            let i = at.index(input.len());
+            if cut {
+                input.truncate(i);
+                prop_assert!(is_invalid(&parse(&input)));
+            } else {
+                input[i] = byte;
+                let r = parse(&input);
+                prop_assert!(r.is_ok() || is_invalid(&r));
+            }
+        }
+    }
+}
