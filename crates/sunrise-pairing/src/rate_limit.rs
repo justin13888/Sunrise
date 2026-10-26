@@ -189,6 +189,39 @@ mod tests {
         assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, T0 + DAY_MS), Ok(()));
     }
 
+    /// Characterization, not endorsement: this pins what the window does today
+    /// when `now_ms` steps back, so a later change to it is a visible one.
+    ///
+    /// An attempt admitted after a step-back is appended behind later ones,
+    /// so the log is no longer sorted. `full_until` still reads the front of
+    /// the in-window attempts as the oldest, so the `Retry-After` it promises
+    /// is the expiry of the first attempt by position (`T0`), not of the one
+    /// that is oldest by time (`T0 - 5_000`) — and a retry is in fact admitted
+    /// five seconds before the promised moment.
+    #[test]
+    fn a_clock_step_back_promises_the_expiry_of_the_first_logged_attempt() {
+        let mut w = AttemptWindow::default();
+        for i in 0..9 {
+            assert_eq!(
+                w.try_admit(AttemptLimit::PER_ACCOUNT, T0 + i * 1000),
+                Ok(())
+            );
+        }
+        let stepped_back = T0 - 5_000;
+        assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back), Ok(()));
+        let now = T0 + 10_000;
+        assert_eq!(
+            w.try_admit(AttemptLimit::PER_ACCOUNT, now),
+            Err(T0 + HOUR_MS - now)
+        );
+        // The stepped-back attempt leaves the hour first, and its slot opens
+        // before the wait above has run out.
+        assert_eq!(
+            w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back + HOUR_MS),
+            Ok(())
+        );
+    }
+
     #[test]
     fn the_address_limit_has_no_daily_bound() {
         let mut w = AttemptWindow::default();

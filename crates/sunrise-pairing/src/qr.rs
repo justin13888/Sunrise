@@ -176,6 +176,59 @@ mod tests {
     }
 
     #[test]
+    fn rejects_n_static_pub_that_is_not_base64url() {
+        let mut p = fixture();
+        // `+` and `/` are standard base64, not base64url.
+        p.n_static_pub = "+/".repeat(21) + "+";
+        let s = encode_qr_payload(&p).unwrap();
+        assert_eq!(
+            decode_qr_payload(&s),
+            Err(QrPayloadError::BadField("n_static_pub"))
+        );
+    }
+
+    #[test]
+    fn rejects_n_static_pub_of_the_wrong_length() {
+        for len in [31usize, 33] {
+            let mut p = fixture();
+            p.n_static_pub = URL_SAFE_NO_PAD.encode(vec![3u8; len]);
+            let s = encode_qr_payload(&p).unwrap();
+            assert_eq!(
+                decode_qr_payload(&s),
+                Err(QrPayloadError::BadField("n_static_pub")),
+                "{len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_account_email_hash_of_the_wrong_length() {
+        // The odd lengths are also refused by `hex::decode`; the even ones
+        // are valid hex and reach only the 8-char length check.
+        for hash in ["abcdef0", "abcdef012", "abcdef", "abcdef0123"] {
+            let mut p = fixture();
+            p.account_email_hash = hash.to_string();
+            let s = encode_qr_payload(&p).unwrap();
+            assert_eq!(
+                decode_qr_payload(&s),
+                Err(QrPayloadError::BadField("account_email_hash")),
+                "{hash}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_account_email_hash_that_is_not_hex() {
+        let mut p = fixture();
+        p.account_email_hash = "abcdef0g".to_string();
+        let s = encode_qr_payload(&p).unwrap();
+        assert_eq!(
+            decode_qr_payload(&s),
+            Err(QrPayloadError::BadField("account_email_hash"))
+        );
+    }
+
+    #[test]
     fn rejects_long_relay_url() {
         let mut p = fixture();
         p.relay_url = "x".repeat(257);
