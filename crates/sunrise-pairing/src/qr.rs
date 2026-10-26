@@ -30,10 +30,12 @@ const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
 #[must_use]
 pub fn account_email_hash(email: &str) -> [u8; 4] {
     let normalized = email.trim().to_ascii_lowercase();
-    let mut hasher = blake3::Hasher::new_derive_key(EMAIL_HASH_DOMAIN);
-    hasher.update(normalized.as_bytes());
     let mut out = [0u8; 4];
-    hasher.finalize_xof().fill(&mut out);
+    out.copy_from_slice(&sunrise_crypto::derive_key(
+        EMAIL_HASH_DOMAIN,
+        normalized.as_bytes(),
+        4,
+    ));
     out
 }
 
