@@ -100,7 +100,7 @@ const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// document like every other route and is capped by [`MAX_EVENT_BYTES`] like
 /// every other route, so this number applies to one side of `is_success` and
 /// not to the route.
-/// `crates/sunrise-server/src/api/blobs.rs:427-431#finalize` refuses to commit one larger
+/// `crates/sunrise-server/src/api/blobs/mod.rs:339-343#finalize` refuses to commit one larger
 /// than this, so the number is the relay's own ceiling restated on the side
 /// that has to allocate it. Capping it at [`MAX_EVENT_BYTES`] instead would
 /// refuse every attachment over eight mebibytes, and leaving it uncapped — as
@@ -2858,7 +2858,7 @@ mod tests {
     /// blob route, so the split there is by status rather than by route.
     ///
     /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
-    /// (`crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`) restated on the side that
+    /// (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`) restated on the side that
     /// allocates it. Lowering it would refuse attachments the relay accepted,
     /// which is a failure no caller could diagnose from here. It bounds a
     /// fetched attachment and nothing else; a refused fetch is capped by
@@ -4819,7 +4819,7 @@ mod tests {
     /// side, which is the side that matters anyway — sizing this route by
     /// [`super::MAX_EVENT_BYTES`] would refuse every attachment over eight
     /// mebibytes, and the relay commits them up to a hundred megabytes
-    /// (`crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`). A byte past the event cap
+    /// (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). A byte past the event cap
     /// is enough to tell the two constants apart, and it is the cheapest body
     /// that can.
     ///

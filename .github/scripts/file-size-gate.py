@@ -259,10 +259,6 @@ BASELINE: dict[str, str] = {
         "routes mounted together, so splitting it to satisfy a line count "
         "would be churn."
     ),
-    "crates/sunrise-server/src/api/blobs.rs": (
-        "498 implementation lines. Not audited for a split; the chunked upload, "
-        "finalize and streaming fetch paths share the pending store."
-    ),
     "crates/sunrise-server/src/relay_log.rs": (
         "570 implementation lines, and it grew when the relay DDL moved here to "
         "sit beside the only code that touches it — a net improvement that "
