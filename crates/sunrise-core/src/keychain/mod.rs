@@ -5922,4 +5922,274 @@ mod tests {
             );
         }
     }
+
+    // ---- refusal arms (issue #604) ---------------------------------------
+
+    fn count(d: &Db, table: &str) -> i64 {
+        d.conn()
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn stored_identity_id(d: &Db) -> Vec<u8> {
+        d.conn()
+            .query_row("SELECT identity_id FROM identity", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A vault that already holds one account's `identity` row, and no device
+    /// of its own yet: the state [`Keychain::create`] is entered in with
+    /// `existing` set.
+    fn vault_with_identity_and_no_device(byte: u8) -> (VaultRootKey, Db, Keychain) {
+        let root = VaultRootKey::from_bytes([byte; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        d.conn().execute("DELETE FROM local_identity", []).unwrap();
+        (root, d, kc)
+    }
+
+    /// A pairing payload for one account cannot be adopted into a vault whose
+    /// identity row is another account's, and nothing is written on the way
+    /// out. The control opens the same vault with its own account's payload,
+    /// so the refusal is the identity comparison and not the missing device.
+    #[test]
+    fn a_payload_for_another_account_conflicts_with_the_vaults_identity() {
+        let (root, mut d, ka) = vault_with_identity_and_no_device(0x61);
+        let own_payload = ka
+            .pair_device_in_process(
+                &d,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
+
+        let other_root = VaultRootKey::from_bytes([0x62; 32]);
+        let mut other_db = db(&other_root);
+        let kb = open(&mut other_db, &other_root);
+        assert_ne!(kb.identity_id(), ka.identity_id());
+        let foreign_payload = kb
+            .pair_device_in_process(
+                &other_db,
+                "joiner".into(),
+                "test".into(),
+                [0x73; 32],
+                [0x74; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
+
+        let err = Keychain::open(
+            &mut d,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &seed_of(&foreign_payload),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, KeychainError::IdentityConflict),
+            "got {err:?}"
+        );
+        assert_eq!(
+            count(&d, "local_identity"),
+            0,
+            "the refusal writes no device"
+        );
+        assert_eq!(stored_identity_id(&d), ka.identity_id().to_vec());
+
+        let joined =
+            Keychain::open(&mut d, root, &clock(), &SystemRng, &seed_of(&own_payload)).unwrap();
+        assert_eq!(joined.identity_id(), ka.identity_id());
+    }
+
+    /// The recovery arm of the same comparison: a blob for another account is
+    /// refused by a vault already holding an identity row, and one for this
+    /// vault's own account is adopted.
+    #[test]
+    fn a_recovery_blob_for_another_account_conflicts_with_the_vaults_identity() {
+        let (root, mut d, ka) = vault_with_identity_and_no_device(0x63);
+        let own_blob = recovered_payload(&ka, &[0x47; 32]);
+
+        let other_root = VaultRootKey::from_bytes([0x64; 32]);
+        let mut other_db = db(&other_root);
+        let kb = open(&mut other_db, &other_root);
+        let foreign_blob = recovered_payload(&kb, &[0x48; 32]);
+
+        let err = Keychain::open(
+            &mut d,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(foreign_blob)),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, KeychainError::IdentityConflict),
+            "got {err:?}"
+        );
+        assert_eq!(
+            count(&d, "local_identity"),
+            0,
+            "the refusal writes no device"
+        );
+        assert_eq!(stored_identity_id(&d), ka.identity_id().to_vec());
+
+        let recovered = Keychain::open(
+            &mut d,
+            root,
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(own_blob)),
+        )
+        .unwrap();
+        assert_eq!(recovered.identity_id(), ka.identity_id());
+    }
+
+    /// A sponsor refuses to spend a grant on a request answering another
+    /// account's offer. The control is the account that made the offer, which
+    /// grants the same request.
+    #[test]
+    fn a_sponsor_refuses_a_request_that_answers_another_accounts_offer() {
+        let root_a = VaultRootKey::from_bytes([0x65; 32]);
+        let mut da = db(&root_a);
+        let ka = open(&mut da, &root_a);
+        let root_b = VaultRootKey::from_bytes([0x66; 32]);
+        let mut db_b = db(&root_b);
+        let kb = open(&mut db_b, &root_b);
+
+        let joiner = sunrise_pairing::PairingJoiner::new(
+            kb.export_pairing_offer(&db_b).unwrap(),
+            "joiner".into(),
+            "test".into(),
+            [0x75; 32],
+            [0x76; 32],
+        );
+
+        let err = ka
+            .issue_pairing_grant(joiner.request(), BTreeSet::new(), 1_700_000_000_000)
+            .unwrap_err();
+        assert!(
+            matches!(err, KeychainError::IdentityConflict),
+            "got {err:?}"
+        );
+
+        kb.issue_pairing_grant(joiner.request(), BTreeSet::new(), 1_700_000_000_000)
+            .expect("the account that made the offer grants it");
+    }
+
+    /// A known vault whose stored signing secret is not the key its
+    /// `device_id` derives from is refused at load, rather than opening as a
+    /// device that signs under someone else's id.
+    #[test]
+    fn a_stored_signing_key_that_is_not_the_devices_is_refused_at_load() {
+        let root = VaultRootKey::from_bytes([0x67; 32]);
+        let mut d = db(&root);
+        let device_id = open(&mut d, &root).device_id();
+
+        // Wrapped under this device's AAD, so the unwrap succeeds and only the
+        // derivation check can catch it.
+        let other = DeviceSigningKeyPair::from_secret_bytes(&[0x5a; 32]);
+        assert_ne!(device_id_from_pub(&other.public_bytes()), device_id);
+        let mut secret = other.secret_bytes();
+        let wrapped = wrap_secret(&root, &secret, &device_aad(&device_id), &SystemRng);
+        secret.zeroize();
+        d.conn()
+            .execute(
+                "UPDATE local_identity SET signing_secret_wrapped = ?",
+                params![wrapped],
+            )
+            .unwrap();
+
+        let err =
+            Keychain::open(&mut d, root, &clock(), &SystemRng, &IdentitySeed::Own).unwrap_err();
+        assert!(
+            matches!(err, KeychainError::DeviceIdMismatch),
+            "got {err:?}"
+        );
+    }
+
+    /// The legacy adoption path makes the same check before minting an
+    /// identity, and a refused adoption leaves no identity row behind.
+    #[test]
+    fn a_legacy_vault_whose_device_id_is_not_its_keys_is_refused() {
+        let root = VaultRootKey::from_bytes([0x68; 32]);
+        let mut d = db(&root);
+        let device_signing = DeviceSigningKeyPair::from_secret_bytes(&[0x44; 32]);
+        let claimed_id = [0x99u8; 16];
+        assert_ne!(
+            device_id_from_pub(&device_signing.public_bytes()),
+            claimed_id
+        );
+        let mut secret = device_signing.secret_bytes();
+        let wrapped = wrap_secret(&root, &secret, &device_aad(&claimed_id), &SystemRng);
+        secret.zeroize();
+        d.conn()
+            .execute(
+                "INSERT INTO local_identity
+                 (id, device_id, signing_secret_wrapped, cert_blob, created_at_ms)
+                 VALUES (1, ?, ?, X'00', 1)",
+                params![&claimed_id[..], wrapped],
+            )
+            .unwrap();
+
+        let err =
+            Keychain::open(&mut d, root, &clock(), &SystemRng, &IdentitySeed::Own).unwrap_err();
+        assert!(
+            matches!(err, KeychainError::DeviceIdMismatch),
+            "got {err:?}"
+        );
+        assert_eq!(count(&d, "identity"), 0, "no identity is minted");
+    }
+
+    /// `open_op` opens only this device's own envelopes. A sibling that holds
+    /// the very key the op was sealed under still gets `UnknownDevice`, so the
+    /// refusal is the device check and not a missing key.
+    #[test]
+    fn open_op_refuses_another_devices_envelope_even_with_its_key() {
+        let root = VaultRootKey::from_bytes([0x69; 32]);
+        let mut da = db(&root);
+        let ka = open(&mut da, &root);
+        let sid = [0x0d; 16];
+        let (epoch, key) = da
+            .with_tx(|tx| ka.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        let payload = ka
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x77; 32],
+                [0x78; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
+        let mut db2 = db(&root);
+        let kb = Keychain::open(
+            &mut db2,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &seed_of(&payload),
+        )
+        .unwrap();
+        assert_eq!(kb.stream_keys_at(&sid, epoch), vec![key.clone()]);
+
+        let env = ka
+            .seal_op_at(
+                sid,
+                1,
+                sunrise_cbor::hlc::Hlc::at(1),
+                b"from A",
+                &SystemRng,
+                epoch,
+                &key,
+            )
+            .unwrap();
+        assert_eq!(ka.open_op(&env).unwrap(), b"from A");
+        let err = kb.open_op(&env).unwrap_err();
+        assert!(matches!(err, KeychainError::UnknownDevice), "got {err:?}");
+    }
 }
