@@ -78,6 +78,13 @@ fn the_manifest_reads_back_and_its_bytes_do_not_depend_on_insertion_order() {
 
 #[test]
 fn a_manifest_of_another_format_is_refused() {
-    let other = br#"{"format":"something-else"}"#;
-    assert!(Manifest::from_bytes(other).is_err());
+    // A manifest complete in every other field, so it is the format check
+    // and not the shape that refuses it.
+    let mut other = Manifest::new(1_767_225_600_000, "America/New_York");
+    other.format = "something-else".into();
+    let err = Manifest::from_bytes(&other.to_bytes()).unwrap_err();
+    assert!(
+        matches!(&err, ExportError::Manifest(why) if why == r#"format is "something-else""#),
+        "{err:?}"
+    );
 }

@@ -132,30 +132,53 @@ fn a_move_into_an_empty_list() {
     assert_eq!(order[1..], unplaced[..], "the rest keep the order they had");
 }
 
+/// `r` is the `Invalid` refusal whose reason holds `why`, so a refusal from a
+/// different check than the one a case names fails it.
+#[track_caller]
+fn invalid(r: Result<CommandResult, EngineError>, why: &str) {
+    match r {
+        Err(EngineError::Invalid(reason)) => {
+            assert!(reason.contains(why), "refused for {reason:?}, not {why:?}");
+        }
+        other => panic!("expected Invalid({why:?}), got {other:?}"),
+    }
+}
+
 #[test]
 fn a_move_refuses_what_has_no_place() {
     let (e, mut db) = (engine(), db());
     let t = tasks(&e, &mut db, 3);
-    let invalid = |r: Result<CommandResult, EngineError>| {
-        assert!(matches!(r, Err(EngineError::Invalid(_))), "{r:?}");
-    };
-    invalid(mv(&e, &mut db, &[], None, None));
-    invalid(mv(&e, &mut db, &[t[0], t[0]], None, None));
-    invalid(mv(&e, &mut db, &[t[0]], Some(t[0]), None));
+    invalid(mv(&e, &mut db, &[], None, None), "at least one task");
+    invalid(
+        mv(&e, &mut db, &[t[0], t[0]], None, None),
+        "appears twice in one move",
+    );
+    invalid(
+        mv(&e, &mut db, &[t[0]], Some(t[0]), None),
+        "cannot be moved next to itself",
+    );
     // An anchor nobody placed.
-    invalid(mv(&e, &mut db, &[t[0]], Some(t[1]), None));
+    invalid(
+        mv(&e, &mut db, &[t[0]], Some(t[1]), None),
+        "has no place in manual order yet",
+    );
     // Anchors out of order.
     mv(&e, &mut db, &[t[1], t[2]], None, None).unwrap();
-    invalid(mv(&e, &mut db, &[t[0]], Some(t[2]), Some(t[1])));
+    invalid(
+        mv(&e, &mut db, &[t[0]], Some(t[2]), Some(t[1])),
+        "not in increasing manual order",
+    );
     // A stream is not a task.
-    assert!(mv(
-        &e,
-        &mut db,
-        &[sunrise_domain::inbox_stream_ref()],
-        None,
-        None
-    )
-    .is_err());
+    invalid(
+        mv(
+            &e,
+            &mut db,
+            &[sunrise_domain::inbox_stream_ref()],
+            None,
+            None,
+        ),
+        "expected Task, got Stream",
+    );
     let gone = EntityRef::new(EntityKind::Task, [0x77; 16]);
     assert!(matches!(
         mv(&e, &mut db, &[gone], None, None),
@@ -189,10 +212,10 @@ fn equal_keys_tie_break_by_id_on_both_replicas() {
     };
     assert_eq!(inbox_order(&p.ea, &p.dba), vec![t[0], lo, hi]);
     assert_eq!(inbox_order(&p.eb, &p.dbb), vec![t[0], lo, hi]);
-    assert!(matches!(
+    invalid(
         mv(&p.ea, &mut p.dba, &[t[0]], Some(lo), Some(hi)),
-        Err(EngineError::Invalid(_))
-    ));
+        "not in increasing manual order",
+    );
     // Moving the later one too settles it.
     mv(&p.ea, &mut p.dba, &[t[0], hi], Some(lo), None).unwrap();
     assert_eq!(inbox_order(&p.ea, &p.dba), vec![lo, t[0], hi]);
@@ -301,8 +324,12 @@ fn step() -> impl Strategy<Value = Step> {
 
 /// The move `step` makes on one replica's list, or nothing when its anchors
 /// tie (the client would move the tied row too; the property only needs
-/// moves the core accepts).
-fn apply_step(e: &Engine, db: &mut Db, from: usize, to: usize) {
+/// moves the core accepts). Whether the move was accepted.
+///
+/// An accepted move lands the task exactly where it was dropped: between
+/// `after` and `before`, every other task keeping its place. The only
+/// refusal a well-formed move can meet is the tie.
+fn apply_step(e: &Engine, db: &mut Db, from: usize, to: usize) -> bool {
     let list = inbox_order(e, db);
     let moving = list[from % list.len()];
     let rest: Vec<EntityRef> = list.into_iter().filter(|id| *id != moving).collect();
@@ -310,7 +337,23 @@ fn apply_step(e: &Engine, db: &mut Db, from: usize, to: usize) {
     let after = at.checked_sub(1).map(|i| rest[i]);
     let before = rest.get(at).copied();
     match mv(e, db, &[moving], after, before) {
-        Ok(_) | Err(EngineError::Invalid(_)) => {}
+        Ok(_) => {
+            let mut want = rest;
+            want.insert(at, moving);
+            assert_eq!(
+                inbox_order(e, db),
+                want,
+                "the move landed where it was dropped"
+            );
+            true
+        }
+        Err(EngineError::Invalid(reason)) => {
+            assert!(
+                reason.contains("not in increasing manual order"),
+                "a move between two adjacent tasks was refused for {reason:?}"
+            );
+            false
+        }
         Err(other) => panic!("{other:?}"),
     }
 }
@@ -318,6 +361,7 @@ fn apply_step(e: &Engine, db: &mut Db, from: usize, to: usize) {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/task_order.txt",
@@ -337,16 +381,23 @@ proptest! {
         let t = tasks(&p.ea, &mut p.dba, 6);
         mv(&p.ea, &mut p.dba, &t, None, None).unwrap();
         sync(&mut p);
+        let mut accepted = 0usize;
         for (i, s) in steps.into_iter().enumerate() {
             let tick = 1_000 * (i as u64 + 1);
             *p.ca.0.lock() = T0 + tick;
             *p.cb.0.lock() = T0 + tick;
-            match s {
+            let moved = match s {
                 Step::Move { on_a: true, from, to } => apply_step(&p.ea, &mut p.dba, from, to),
                 Step::Move { on_a: false, from, to } => apply_step(&p.eb, &mut p.dbb, from, to),
-                Step::Sync => sync(&mut p),
-            }
+                Step::Sync => {
+                    sync(&mut p);
+                    false
+                }
+            };
+            accepted += usize::from(moved);
         }
+        // A case in which nothing moved says nothing about convergence.
+        prop_assume!(accepted > 0);
         sync(&mut p);
         let a = inbox_order(&p.ea, &p.dba);
         prop_assert_eq!(&a, &inbox_order(&p.eb, &p.dbb));
