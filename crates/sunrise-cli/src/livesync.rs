@@ -218,7 +218,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     fn clean(s: Option<&str>) -> Option<String> {
         s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
-    // A stored login beats the env var. `SUNRISE_SYNC_TOKEN` stays as the
+    // The env var beats a stored login: `SUNRISE_SYNC_TOKEN` stays as the
     // override for CI and for a relay whose token comes from somewhere else,
     // but a user who ran `sunrise login` should not have to also export it.
     let token = clean(env.token.as_deref()).or_else(|| clean(env.stored_token.as_deref()));
@@ -650,6 +650,70 @@ mod tests {
                 .as_deref(),
             Some("from-env")
         );
+    }
+
+    /// A blank `SUNRISE_SYNC_TOKEN` is unset, so a stored login behind it
+    /// still supplies the bearer rather than the blank export hiding it.
+    #[test]
+    fn a_blank_env_token_falls_back_to_a_stored_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sunrise_auth::FileStore::in_dir(dir.path());
+        store
+            .save(&sunrise_auth::Credentials::new(
+                "stored-access".into(),
+                None,
+                Some(3600),
+                0,
+            ))
+            .unwrap();
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            token: Some("   ".into()),
+            ..SyncEnv::default()
+        }
+        .with_stored(&store, 0);
+        assert_eq!(
+            plan_from_env(&env)
+                .sync
+                .unwrap()
+                .credential
+                .get()
+                .as_deref(),
+            Some("stored-access")
+        );
+    }
+
+    /// A stored login whose token is blank is not offered, empty or
+    /// whitespace: it collapses to no bearer exactly as a blank export does.
+    #[test]
+    fn a_blank_stored_token_is_not_offered() {
+        for blank in ["", "   "] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = sunrise_auth::FileStore::in_dir(dir.path());
+            store
+                .save(&sunrise_auth::Credentials::new(
+                    blank.into(),
+                    None,
+                    Some(3600),
+                    0,
+                ))
+                .unwrap();
+            let env = SyncEnv {
+                url: Some("wss://relay.example/sync".into()),
+                ..SyncEnv::default()
+            }
+            .with_stored(&store, 0);
+            assert_eq!(
+                env.stored_token.as_deref(),
+                Some(blank),
+                "the store hands the blank token back as it was saved"
+            );
+            assert_eq!(
+                plan_from_env(&env).sync.unwrap().credential.get(),
+                None,
+                "a blank stored token {blank:?} must not be presented"
+            );
+        }
     }
 
     /// An expired stored token is not offered. Presenting it earns a `401` and
