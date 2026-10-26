@@ -4,10 +4,12 @@
 
 const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
 
-/// Pair attempts per rolling hour per `account_email_hash`.
+/// Pair attempts per rolling hour per account; the relay buckets them by
+/// `account_id`.
 pub const RATE_LIMIT_HOURLY: u32 = 10;
 
-/// Pair attempts per rolling day per `account_email_hash`.
+/// Pair attempts per rolling day per account; the relay buckets them by
+/// `account_id`.
 pub const RATE_LIMIT_DAILY: u32 = 30;
 
 /// Pair attempts per rolling hour per relay client address.
@@ -122,9 +124,11 @@ impl AttemptWindow {
 }
 
 /// Compute the 4-byte (8 hex chars) `account_email_hash`. Email is normalized
-/// (lowercase + trim) before hashing. The hash is non-reversible and used
-/// only as the rate-limit bucket key — never to identify a user across
-/// accounts.
+/// (lowercase + trim) before hashing. The hash is non-reversible and is the
+/// account tag a pairing QR carries, so a screen can say which account it is
+/// pairing without holding the address. It is not a rate-limit key: the
+/// relay buckets attempts by `account_id`. Never use it to identify a user
+/// across accounts.
 #[must_use]
 pub fn account_email_hash(email: &str) -> [u8; 4] {
     let normalized = email.trim().to_ascii_lowercase();
