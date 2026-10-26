@@ -345,3 +345,104 @@ fn account_hash(account_id: &str) -> [u8; 16] {
     out.copy_from_slice(&h.as_bytes()[..16]);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::account_hash;
+    use crate::relay_log::{account_key, DurableCaps};
+    use crate::Store;
+
+    /// Ids of every shape an account id could take: empty, ASCII, a UUID,
+    /// multi-byte UTF-8, and lengths either side of BLAKE3's 64-byte block and
+    /// 1024-byte chunk boundaries.
+    fn ids() -> Vec<String> {
+        let mut ids: Vec<String> = [
+            "",
+            "a",
+            "alice",
+            "acct_01HZX3K9Q2V7",
+            "0b9f6c1e-3a4d-4e8b-9c2f-7d1a5e6b8c90",
+            "ünïcødé-账户-🔑",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for n in [63, 64, 65, 1023, 1024, 1025, 4096] {
+            ids.push("x".repeat(n));
+        }
+        // A deterministic spread of arbitrary bytes-as-chars, so the check
+        // covers ids nobody chose by hand without making the test random.
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..256 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let len = usize::try_from(seed % 97).unwrap();
+            let id: String = (0..len)
+                .map(|i| {
+                    // Below the surrogate range, so every value is a char.
+                    let c = seed.rotate_left(u32::try_from(i % 64).unwrap()) % 0xd800;
+                    char::from_u32(u32::try_from(c).unwrap()).unwrap()
+                })
+                .collect();
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// The namespace a session's channels are keyed by is the namespace the
+    /// relay log, erasure, maintenance and the blob tree use. If the two
+    /// copies drifted, erasure would stop deleting what sessions wrote.
+    #[test]
+    fn the_session_namespace_is_the_relay_logs_account_key() {
+        for id in ids() {
+            assert_eq!(account_hash(&id), account_key(&id), "id {id:?}");
+        }
+    }
+
+    /// Distinct ids land in distinct namespaces, so the equality above is not
+    /// satisfied by two functions that both ignore their input.
+    #[test]
+    fn distinct_ids_get_distinct_namespaces() {
+        let mut seen = std::collections::HashMap::new();
+        for id in ids() {
+            if let Some(other) = seen.insert(account_hash(&id), id.clone()) {
+                assert_eq!(other, id, "two ids share a namespace");
+            }
+        }
+        assert!(seen.len() > 200, "the id spread is not degenerate");
+    }
+
+    /// A frame written under the key a session's `account` field holds is
+    /// deleted by erasing that account by id, and another account's frame is
+    /// not.
+    #[test]
+    fn a_sessions_account_keys_erasure() {
+        const STREAM: [u8; 16] = [0x11; 16];
+        let store = Store::open(None).unwrap();
+        let (alice, bob) = ("alice", "bob");
+        for who in [alice, bob] {
+            store
+                .relay_append(
+                    (account_hash(who), STREAM),
+                    b"frame",
+                    &[],
+                    0,
+                    None,
+                    1,
+                    1_000,
+                    DurableCaps::default(),
+                )
+                .unwrap();
+        }
+
+        store.erase_account(alice).unwrap();
+
+        assert_eq!(store.relay_len((account_hash(alice), STREAM)).unwrap(), 0);
+        assert_eq!(
+            store.relay_len((account_hash(bob), STREAM)).unwrap(),
+            1,
+            "another account's log is untouched"
+        );
+    }
+}
