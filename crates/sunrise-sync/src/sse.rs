@@ -2236,6 +2236,149 @@ mod tests {
         assert_eq!(data, "x");
     }
 
+    /// The cases above pin a few hand-picked cut points. This one covers every
+    /// cut point: a stream of events whose lines end in any mix of `\r`, `\n`
+    /// and `\r\n`, cut anywhere, yields the events and leaves the remainder
+    /// that the same stream read whole does — and reading it whole yields the
+    /// events it was built from.
+    mod framing_split {
+        use super::{buffered, SseTransport};
+        use proptest::prelude::*;
+
+        type Event = (Option<String>, String);
+
+        /// One line of a generated event, before its line ending is chosen.
+        #[derive(Debug, Clone)]
+        enum Line {
+            Id(String),
+            Data(String),
+            Comment(String),
+        }
+
+        fn line_ending() -> impl Strategy<Value = &'static str> {
+            prop_oneof![Just("\r"), Just("\n"), Just("\r\n")]
+        }
+
+        /// A value holding no line ending: colons and leading spaces included,
+        /// since those are what the field rules read.
+        fn value() -> impl Strategy<Value = String> {
+            "[a-z0-9 :{}\"]{0,8}"
+        }
+
+        fn line() -> impl Strategy<Value = Line> {
+            prop_oneof![
+                value().prop_map(Line::Id),
+                value().prop_map(Line::Data),
+                value().prop_map(Line::Comment),
+            ]
+        }
+
+        /// The lines of one event, each with its ending, then the ending of
+        /// the blank line that closes it.
+        fn event() -> impl Strategy<Value = (Vec<(Line, &'static str)>, &'static str)> {
+            (
+                prop::collection::vec((line(), line_ending()), 1..4),
+                line_ending(),
+            )
+        }
+
+        /// The bytes of `events` followed by `tail`, and what each event
+        /// carries.
+        ///
+        /// A lone `\r` followed by a lone `\n` is one `\r\n`, not a line
+        /// ending then a blank line, so a closing `\n` after a `\r` would merge
+        /// the event into the next. That is the format, not the parser, so the
+        /// generator closes such an event with `\r` instead.
+        fn render(
+            events: &[(Vec<(Line, &'static str)>, &'static str)],
+            tail: &str,
+        ) -> (Vec<u8>, Vec<Event>) {
+            let mut bytes = String::new();
+            let mut expected = Vec::new();
+            for (lines, blank) in events {
+                let mut id = None;
+                let mut data: Vec<&str> = Vec::new();
+                let mut last = "";
+                for (line, ending) in lines {
+                    let (field, v) = match line {
+                        Line::Id(v) => {
+                            id = Some(v.clone());
+                            ("id: ", v)
+                        }
+                        Line::Data(v) => {
+                            data.push(v);
+                            ("data: ", v)
+                        }
+                        Line::Comment(v) => (":", v),
+                    };
+                    bytes.push_str(field);
+                    bytes.push_str(v);
+                    bytes.push_str(ending);
+                    last = ending;
+                }
+                let blank = if last == "\r" && *blank == "\n" {
+                    "\r"
+                } else {
+                    blank
+                };
+                bytes.push_str(blank);
+                expected.push((id, data.join("\n")));
+            }
+            bytes.push_str(tail);
+            (bytes.into_bytes(), expected)
+        }
+
+        fn drain(t: &mut SseTransport, out: &mut Vec<Event>) {
+            while let Some(event) = t.take_event() {
+                out.push(event);
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                rng_seed: sunrise_test_seed::proptest_rng_seed(),
+                ..ProptestConfig::default()
+            })]
+
+            #[test]
+            fn a_stream_cut_anywhere_reads_as_the_stream_read_whole(
+                events in prop::collection::vec(event(), 0..5),
+                tail in prop_oneof![
+                    Just(String::new()),
+                    value().prop_map(|v| format!("data: {v}")),
+                    (value(), line_ending()).prop_map(|(v, e)| format!("data: {v}{e}")),
+                ],
+                cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..8),
+            ) {
+                let (stream, expected) = render(&events, &tail);
+
+                let mut whole = buffered(&stream);
+                let mut read_whole = Vec::new();
+                drain(&mut whole, &mut read_whole);
+                prop_assert_eq!(&read_whole, &expected);
+                prop_assert_eq!(
+                    whole.buf.as_slice(),
+                    tail.as_bytes(),
+                    "the unterminated tail is the remainder"
+                );
+
+                let mut at: Vec<usize> = cuts.iter().map(|i| i.index(stream.len() + 1)).collect();
+                at.push(stream.len());
+                at.sort_unstable();
+                let mut cut = buffered(b"");
+                let mut read_cut = Vec::new();
+                let mut from = 0;
+                for to in at {
+                    cut.buf.extend_from_slice(&stream[from..to]);
+                    drain(&mut cut, &mut read_cut);
+                    from = to;
+                }
+                prop_assert_eq!(&read_cut, &read_whole);
+                prop_assert_eq!(cut.buf, whole.buf);
+            }
+        }
+    }
+
     // ---- the mapping half: `frame_for` needs no socket either ----
 
     /// An `ops` event hands the driver the relay's bytes, byte for byte.

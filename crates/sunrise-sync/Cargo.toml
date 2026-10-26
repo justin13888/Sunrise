@@ -60,6 +60,10 @@ sunrise-wire-protocol = { workspace = true, optional = true }
 # which needs a concrete key. The crate itself never holds one: it asks a
 # `DeviceSigner` for signatures.
 ed25519-dalek = { workspace = true }
+# The `sse` framing property: an event stream cut at any point reads the same
+# as the stream read whole. The seed comes from the workspace's one convention.
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 # `test-util` is for the `read_body` cases in `sse`, which run on paused time
 # so they can assert exact elapsed time instead of a wall-clock window.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "test-util"] }
