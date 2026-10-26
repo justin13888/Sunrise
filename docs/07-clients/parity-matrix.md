@@ -212,21 +212,20 @@ forbids a state carried by appearance alone. A screen that *can* print but is
 empty right now stays enabled and beeps; that is a different condition, and a
 menu item flickering as tasks come and go would explain less.
 
-### CLI — 10 MUSTs
+### CLI — 12 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
-| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
-| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
+| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTaskTo`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch), `note <id>` (`UpdateTask` with a `body` patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line |
+| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines` list them; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. `streams create\|edit\|archive\|unarchive\|delete` (`CreateStream`, …) and `contexts create\|edit\|archive\|unarchive\|delete` (`CreateContext`, …) change the two lists, `streams move <x> before <y>\|last` reorders streams (`UpdateStream { sort_order }`), and `routines create\|edit\|archive\|unarchive\|pause\|resume\|delete\|skip` (`CreateRoutine`, …) manage routines |
 | Today / Inbox / Stream views (list form) | met *(today, no context filter)* | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
 | Upcoming (list form) | met *(no drag, no context filter)* | `upcoming [7\|14\|30]` (`Query::Upcoming`): one block per civil day in the reader's zone, its blocks, plans and deadlines, then each stream's undated tasks, five each with "N more". With no span the device's `views.upcoming.span_days` decides; `--json` prints the days with their bounds. Rescheduling is `defer` / `schedule`, since a terminal has no drag |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
-| Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
+| Search (FTS) | met | `sunrise search [--kind <k>] [--all] <query>…` (`Query::SearchGrouped`) — results grouped by kind, and the query takes the operators [search.md](../08-features/search.md) specifies (`#stream`, `@context`, `!1`, `state:`, `kind:`, `is:`, `has:`, `due<fri`) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
 | Multi-account (`SUNRISE_VAULT`) | met *(0600 on unix only)* | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
 | iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
-
 | Device list and revocation | met | `sunrise devices` marks revoked and non-current devices distinctly, and `sunrise device revoke <id-prefix> [--reason …]` rotates every Stream key — **and** the account identity, when run from the device that created the account ([ADR-0037](../11-adr/0037-identity-transition.md)). Only that device holds `ID_S_priv` since #105, so a revocation elsewhere cuts the keys and logs `core.identity.rotation_unavailable`; it costs little, because a revoked device that was itself paired cannot certify itself back in either way. It prints the two-state disclosure — revoked locally versus the relay has been told — because those are different guarantees and the second is the one a user pressing the button believes they are getting ([#160](https://github.com/justin13888/Sunrise/issues/160)). **Both Apple clients now have it too** ([#144](https://github.com/justin13888/Sunrise/issues/144)): `DeviceListSection` is a section of the Settings form that `VaultWindow` presents on macOS and `VaultTabs` on iOS, so one file serves both, and `DeviceListModel` drives it off `CoreQuery.deviceList` and the change feed. Removing a device is a swipe action and a context-menu item, confirmed through a dialog offering the four reasons the register records, and the result states both halves the CLI states plus the streams the rotation could not reach. Three signals reach a user there that previously reached none: this vault holding the only copy of `ID_D_priv`, a device id first seen after a revocation, and `CommandResult::unrotated_streams` |
 | Identity status and rotation | met *(CLI only; no client surface)* | `sunrise identity status` prints the chain — the account's stable `genesis_identity_id`, the identity in force, the rotation count, whether this device still speaks for the account, whether it can seal a recovery code, and whether it can **add another device** — and `sunrise identity rotate [--keep-code]` replaces the identity while keeping every current device, refusing by name on a device admitted by pairing; without `--keep-code` it retires the recovery code and prints a new one, and `sunrise identity new-code` re-issues one alone ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)). A code a rotation retired fails `recover` on every client with its own error. **Still CLI-only**, and narrower than the row above suggests: the Apple device list reads `SunriseCore::holds_identity_key` and `can_sponsor_pairing` directly, so the two facts a user acts on are on screen, but nothing in either app calls `Query::IdentityStatus` and neither offers a rotation |
 
@@ -249,9 +248,11 @@ single file written at startup can stand in for it. The CLI is the driver with
 no channel at all, which is why the protocol had to be transport-agnostic.
 
 `SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
-carefully: it supplies a root outright and touches no keystore, which is how two
-vaults are told to be one account until pairing lands, and how a vault created
-before per-vault keys existed is opened. Such a vault is **refused** with a
+carefully: it supplies a root outright and touches no keystore, which hands two
+vaults the same at-rest key without making them one account (each still mints
+its own identity; joining an account is `sunrise pair`), and is how a vault
+created before per-vault keys existed is opened. Without it, such a vault is
+**refused** with a
 typed `PreMultiAccount` error rather than opened by guessing the old constant —
 and the refusal quotes that constant, so the data can still be read out once and
 moved. Refusing and then telling the user exactly how to proceed is the point:
@@ -358,22 +359,13 @@ over:
   as a literal AND of quoted terms: every operator
   [search.md](../08-features/search.md) specifies is currently matched as a
   literal word, and the by-kind grouping does not exist.
-- **CLI.** A Task's `body` is unreachable — Notes is a CLI **MAY**, and what
-  plain stdin should become as structured `NoteBlock`s is a design question
-  rather than a gap. Streams, Contexts and Routines can be listed and (for
-  Streams) reordered, but none can be created, renamed, archived or deleted;
-  the row asks for *read + capture*, and that is what it has.
-  `ical export` takes the same windows and no Stream scope — `today`, `day`,
+- **CLI.** `ical export` takes the same windows and no Stream scope — `today`, `day`,
   `week` — and `ical import` drops `RRULE`, `DESCRIPTION` and `LOCATION` for
   the same missing `Block` fields, so a recurring event imports as one
   occurrence with a notice against it. Both halves are the seam's, so the CLI
   is narrow here in exactly the way the app is.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
-  `search` issues the same query the app does, so it inherits the same
-  narrowness — the operator grammar
-  [search.md](../08-features/search.md) specifies is matched literally; see
-  the macOS note above.
 - **iOS.** No MUST is unmet. The two that were — **saved views** and **iCal
   import / export**, a working, tested shared model with no iOS caller in each
   case — now have one: a toolbar menu on the screens a saved view can name, and
@@ -472,10 +464,8 @@ capability and each capability is reachable. They are written down so that
   hunting for shortfalls nobody has recorded — an unrecorded narrowness is a
   gap in the notes first, and gets a qualifier when it is written down. Two
   things sit outside the set. A scope the row's own **title** already carries
-  needs no second copy in the verdict: *Streams, contexts, routines (read +
-  capture)* names its bound, and the note saying the CLI mints no Stream is
-  measuring against the capability rather than against that row. A title
-  parenthetical covers only what it says, though — *Today / Inbox / Stream
+  needs no second copy in the verdict. A title parenthetical covers only what
+  it says, though — *Today / Inbox / Stream
   views (list form)* names the output shape, so the missing `today` context
   filter is a different shortfall and still earns its qualifier. And a recorded
   shortfall with **no verdict cell** cannot carry a qualifier at all: the
@@ -484,11 +474,8 @@ capability and each capability is reachable. They are written down so that
   to attach to and stays in prose. The test is mechanical — find the capability
   in the requirement table above, and if its mark in that column is not the one
   that column's audit grades, there is no cell to qualify. Among the ones
-  recorded today: macOS *Print / PDF export*, a **SHOULD** the 24-MUST audit
-  has no line for; the CLI's unwritable Task `body`, which belongs to its
-  *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
-  *Read/write tasks* — in whose cell that gap is recorded — is bare; and on
-  iOS the **MAY**s the audit keeps in prose rather than in the table —
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the macOS audit
+  has no line for; and on iOS the **MAY**s the audit keeps in prose rather than in the table —
   *Watch app*, *Mouse* and *Print / PDF export*. No count is given because the
   set grows every time a narrowness is written down against a capability the
   audits do not grade. Outside the mechanism altogether are the
