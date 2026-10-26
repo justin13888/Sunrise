@@ -476,7 +476,7 @@ fn is_ical_date_time(value: &str) -> bool {
 /// Read a `DTSTART` / `DTEND` value in the light of its parameters.
 ///
 /// Returns the value, plus the zone name when a `TZID` had to be abandoned —
-/// which the caller reports as `int.import.tz_unknown`
+/// which the caller reports as a [`NoticeCode::UnknownTimezone`] notice
 /// (`docs/09-integrations/icalendar.md` §Time zones).
 ///
 /// The value is held to RFC 5545's grammar exactly (see [`is_ical_date`]);

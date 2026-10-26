@@ -59,10 +59,9 @@ token path.**
 - **Subject:** the ID token's `sub` is the account's `subject`. A reconnect that
   returns a different `sub` is refused.
 
-An earlier revision specified a server-mediated exchange with a `client_secret`
-in the managed server's secret store. ADR-0025 deleted it, and ADR-0049 keeps
-it deleted: it would put the relay in possession of every user's calendar
-tokens.
+There is no server-mediated exchange and no `client_secret` in the managed
+server's secret store. ADR-0025 and ADR-0049 rule it out: it would put the
+relay in possession of every user's calendar tokens.
 
 ## Fetch
 
