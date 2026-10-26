@@ -93,10 +93,19 @@ impl EntityRef {
         if s.len() != 4 + ENCODED_LEN {
             return Err(EntityRefError::BadLength(s.len()));
         }
-        let prefix = &s[..4];
+        // The length is in bytes, so byte 4 can fall inside a multi-byte
+        // character. No prefix is anything but ASCII, so such a string has an
+        // unknown prefix: the characters that begin within its four bytes.
+        let Some((prefix, body)) = s.split_at_checked(4) else {
+            let typed = s
+                .char_indices()
+                .take_while(|(at, _)| *at < 4)
+                .map(|(_, c)| c)
+                .collect();
+            return Err(EntityRefError::UnknownPrefix(typed));
+        };
         let kind = EntityKind::from_prefix(prefix)
             .ok_or_else(|| EntityRefError::UnknownPrefix(prefix.to_string()))?;
-        let body = &s[4..];
         let bytes = decode_str(body)?;
         Ok(Self { kind, bytes })
     }
@@ -186,6 +195,58 @@ mod tests {
             EntityRef::parse_any(s),
             Err(EntityRefError::UnknownPrefix(_))
         ));
+    }
+
+    /// A non-ASCII character straddling the prefix boundary is refused as an
+    /// unknown prefix rather than panicking on a byte slice.
+    #[test]
+    fn rejects_a_non_ascii_prefix_without_panicking() {
+        // "tsk" then 'é' (two bytes, 3..5), then 25 body bytes: 30 bytes long.
+        let s = format!("tsk\u{e9}{}", "0".repeat(25));
+        assert_eq!(s.len(), 30);
+        assert!(matches!(
+            EntityRef::parse_any(&s),
+            Err(EntityRefError::UnknownPrefix(p)) if p == "tsk\u{e9}"
+        ));
+    }
+
+    /// A non-ASCII character in the body is a body decode error.
+    #[test]
+    fn rejects_a_non_ascii_body_without_panicking() {
+        let s = format!("tsk_\u{e9}{}", "0".repeat(24));
+        assert_eq!(s.len(), 30);
+        assert!(matches!(
+            EntityRef::parse_any(&s),
+            Err(EntityRefError::BadBody(_))
+        ));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Any string parses to a value or an error, never a panic.
+        #[test]
+        fn parse_any_never_panics(s in proptest::prelude::any::<String>()) {
+            let _ = EntityRef::parse_any(&s);
+        }
+
+        /// Thirty bytes with a multi-byte character somewhere inside: the
+        /// shape that reaches the prefix slice.
+        #[test]
+        fn parse_any_never_panics_on_thirty_bytes(
+            head in "[a-z_]{0,6}",
+            ch in proptest::prelude::any::<char>(),
+        ) {
+            let mut s = head;
+            s.push(ch);
+            while s.len() < 30 {
+                s.push('0');
+            }
+            let _ = EntityRef::parse_any(&s);
+        }
     }
 
     #[test]

@@ -106,6 +106,24 @@ fn defer_counts_civil_days_and_keeps_the_plans_wall_clock_and_kind() {
     assert!(field(&ok(v, &["show", &id]), "scheduled").ends_with("15:00 [floating]"));
 }
 
+/// A relative phrase whose unit is a multi-byte character is refused as an
+/// unreadable date. It used to panic: the unit was split off one byte from the
+/// end, inside the character.
+#[test]
+fn defer_refuses_a_phrase_with_a_non_ascii_unit_instead_of_crashing() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let id = first_id(&ok(v, &["capture", "Call the bank"]));
+    let out = run_in(v, &["defer", &id, "+3\u{65e5}"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.contains("could not read the date \"+3\u{65e5}\""),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn schedule_sets_a_day_without_counting_a_deferral_and_dash_clears_it() {
     let dir = tempfile::tempdir().unwrap();

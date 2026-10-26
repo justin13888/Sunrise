@@ -51,6 +51,8 @@ sunrise-sync = { workspace = true, features = ["sse"] }
 serde_json = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
 # `tests/rebuild_command.rs` damages a vault the binary wrote, through the

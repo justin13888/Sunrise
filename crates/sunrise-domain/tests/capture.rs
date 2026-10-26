@@ -295,6 +295,30 @@ fn relative_spans() {
     }
 }
 
+/// A relative span whose unit is a multi-byte character is not a date. It used
+/// to panic: the unit was split off one *byte* from the end, which lands
+/// inside the character.
+#[test]
+fn a_relative_span_with_a_non_ascii_unit_is_not_a_date() {
+    for bad in ["+3\u{e9}", "+3\u{65e5}", "+\u{e9}", "+\u{1f600}"] {
+        assert!(parse_when(bad, now(), &utc()).is_none(), "{bad:?}");
+        assert!(parse_when_time(bad, now(), &utc()).is_none(), "{bad:?}");
+    }
+}
+
+/// The capture line keeps such a token in the title and reports it, the same
+/// as any other date it cannot read.
+#[test]
+fn a_capture_token_with_a_non_ascii_unit_is_reported_not_a_crash() {
+    let c = run("Call mum ^+3\u{e9}");
+    assert_eq!(c.draft.planned_at, None);
+    assert!(c.draft.title.contains("^+3\u{e9}"), "{:?}", c.draft.title);
+    assert!(c
+        .unresolved
+        .iter()
+        .any(|u| matches!(u, Unresolved::UnparseableDate(_))));
+}
+
 #[test]
 fn unparseable_dates_return_none_rather_than_guessing() {
     for bad in [

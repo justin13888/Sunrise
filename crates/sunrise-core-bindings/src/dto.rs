@@ -3432,10 +3432,18 @@ fn from_hex<const N: usize>(s: &str, field: &str) -> Result<[u8; N], crate::Bind
         return Err(bad_width::<N>(field));
     }
     for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| bad_width::<N>(field))?;
+        // `get`, not indexing: the field comes from outside Rust, and a pair
+        // that starts or ends inside a multi-byte character is not hex.
+        let pair = s
+            .get(i * 2..i * 2 + 2)
+            .ok_or_else(|| bad_width::<N>(field))?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| bad_width::<N>(field))?;
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod hex_tests;
 
 // ---------------------------------------------------------------------------
 // Notifications
