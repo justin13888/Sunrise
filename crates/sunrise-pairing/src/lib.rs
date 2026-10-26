@@ -5,8 +5,9 @@
 //! - QR payload encode/decode (lex-ordered JSON UTF-8, base64url-no-pad).
 //! - Short Authentication String (SAS) — 6-digit decimal derived from the
 //!   Noise handshake hash via `BLAKE3("sunrise.pair_sas.v1" || h, 3)`.
-//! - Rate limit constants (10 attempts / hour, 30 / day per
-//!   `account_email_hash`).
+//! - Rate limit constants (10 attempts / hour, 30 / day per account, which
+//!   the relay buckets by `account_id`) and the `account_email_hash` a QR
+//!   carries as its account tag.
 //!
 //! - The full Noise XX transcript ([`handshake`]), including the encrypted
 //!   channel the existing device uses to hand the new device its vault root.
