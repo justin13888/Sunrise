@@ -29,6 +29,7 @@
 //! rest patterns. Adding a field to a domain entity therefore fails this
 //! crate's build, which is the only way a mirror layer stays honest.
 
+use sunrise_client_core::vocab::zone_or_utc;
 use sunrise_core::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow,
 };
@@ -142,7 +143,7 @@ impl From<&SunriseTime> for TimeValue {
 /// (the routine's), or the latest instant for one that has none. The kind is
 /// in the matching `*_time` field.
 fn legacy_instant(t: &SunriseTime, tz: &str) -> jiff::Timestamp {
-    t.instant_or_last(&jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC))
+    t.instant_or_last(&zone_or_utc(tz))
 }
 
 impl From<TimeValue> for SunriseTime {
@@ -725,6 +726,52 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
             // Nor an acknowledgement: `CoreCommand::Triage` with Keep does.
             late_acknowledged_at: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod task_edit_tests {
+    use super::{patch_field, TaskEdit};
+    use sunrise_domain::TaskPatch;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// The three answers a doubly optional field can carry, and `clear`
+    /// winning over a value set beside it.
+    #[test]
+    fn clear_wins_over_a_value_set_beside_it() {
+        assert_eq!(patch_field(Some(3u8), true), Some(None));
+        assert_eq!(patch_field(None::<u8>, true), Some(None));
+        assert_eq!(patch_field(Some(3u8), false), Some(Some(3)));
+        assert_eq!(patch_field(None::<u8>, false), None);
+    }
+
+    /// The rule holds through the edit a client hands in, not only in the
+    /// helper.
+    #[test]
+    fn a_task_edit_setting_and_clearing_a_field_clears_it() {
+        let assignee = EntityRef::new(EntityKind::Device, [4; 16]);
+        let patch = TaskPatch::from(TaskEdit {
+            set_priority: Some(3),
+            clear_priority: true,
+            set_estimated_duration_s: Some(600),
+            clear_estimated_duration: true,
+            set_assignee: Some(assignee),
+            clear_assignee: true,
+            set_reminder_lead_s: Some(300),
+            clear_reminder_lead_s: true,
+            ..TaskEdit::default()
+        });
+        assert_eq!(patch.priority, Some(None));
+        assert_eq!(patch.estimated_duration_s, Some(None));
+        assert_eq!(patch.assignee, Some(None));
+        assert_eq!(patch.reminder_lead_s, Some(None));
+
+        let set = TaskPatch::from(TaskEdit {
+            set_priority: Some(3),
+            ..TaskEdit::default()
+        });
+        assert_eq!(set.priority, Some(Some(3)));
+        assert_eq!(set.estimated_duration_s, None, "an untouched field");
     }
 }
 
@@ -1321,8 +1368,7 @@ pub struct RoutineDraftIn {
 /// An instant's wall-clock time in `tz`, as a floating value: what a client
 /// that sends an instant and a zone and no kind means by a routine time.
 fn floating_in(at: jiff::Timestamp, tz: &str) -> SunriseTime {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
-    SunriseTime::floating(at.to_zoned(zone).datetime())
+    SunriseTime::floating(at.to_zoned(zone_or_utc(tz)).datetime())
 }
 
 impl From<RoutineDraftIn> for sunrise_domain::RoutineDraft {
@@ -3101,6 +3147,27 @@ impl From<BlockDraftIn> for sunrise_domain::BlockDraft {
     }
 }
 
+impl From<&sunrise_domain::BlockDraft> for BlockDraftIn {
+    fn from(d: &sunrise_domain::BlockDraft) -> Self {
+        let sunrise_domain::BlockDraft {
+            stream_id,
+            starts_at,
+            ends_at,
+            title,
+            title_track_task,
+            tasks,
+        } = d;
+        Self {
+            stream_id: sunrise_domain::stream_key(*stream_id),
+            starts_at: TimeValue::from(starts_at),
+            ends_at: TimeValue::from(ends_at),
+            title: title.clone(),
+            title_track_task: *title_track_task,
+            tasks: tasks.clone(),
+        }
+    }
+}
+
 /// An edit to a block. Split-optional, like [`TaskEdit`].
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct BlockEdit {
@@ -3739,7 +3806,7 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
 ///
 /// The return of [`crate::SunriseCore::bootstrap_account`], which is the Apple
 /// clients' `sunrise bootstrap`.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct AccountBootstrap {
     /// The relay's id for this account.
     pub identity_id: String,
@@ -3769,6 +3836,99 @@ pub struct AccountBootstrap {
     /// it cannot seal a blob; the device that created the account is the one
     /// that can, and it already did.
     pub recovery_code: Option<String>,
+}
+
+// Hand-written, like `LoginCredentials`': `recovery_code` is the plaintext
+// twenty-four words, and a derived `Debug` would put them in the first log line
+// anyone writes while debugging the seam. Destructured so a new field has to be
+// placed here before the crate builds.
+impl std::fmt::Debug for AccountBootstrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            identity_id,
+            email,
+            device_id,
+            recovery_code,
+        } = self;
+        f.debug_struct("AccountBootstrap")
+            .field("identity_id", identity_id)
+            .field("email", email)
+            .field("device_id", device_id)
+            .field(
+                "recovery_code",
+                &recovery_code.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod redaction_and_draft_tests {
+    use super::{AccountBootstrap, BlockDraftIn, TimeValue};
+    use sunrise_domain::{BlockDraft, SunriseTime};
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// The recovery code never prints; the ids around it still do, and a
+    /// device admitted by pairing still reads as having none.
+    #[test]
+    fn an_account_bootstrap_redacts_its_recovery_code_under_debug() {
+        let b = AccountBootstrap {
+            identity_id: "ident-1".into(),
+            email: "a@example.test".into(),
+            device_id: "dev-1".into(),
+            recovery_code: Some("abandon ability able".into()),
+        };
+        let s = format!("{b:?}");
+        assert!(!s.contains("abandon"), "{s}");
+        assert!(s.contains("recovery_code: Some(\"<redacted>\")"), "{s}");
+        assert!(s.contains("ident-1") && s.contains("dev-1"), "{s}");
+        let none = format!(
+            "{:?}",
+            AccountBootstrap {
+                recovery_code: None,
+                ..b
+            }
+        );
+        assert!(none.contains("recovery_code: None"), "{none}");
+    }
+
+    /// Every field crosses, and no stream reads as the legacy Inbox key, the
+    /// inverse of `From<BlockDraftIn> for BlockDraft`.
+    #[test]
+    fn a_block_draft_crosses_field_for_field() {
+        let stream = EntityRef::new(EntityKind::Stream, [2; 16]);
+        let task = EntityRef::new(EntityKind::Task, [3; 16]);
+        let starts_at = SunriseTime::instant(jiff::Timestamp::from_millisecond(1_000).unwrap());
+        let ends_at = SunriseTime::instant(jiff::Timestamp::from_millisecond(2_000).unwrap());
+        let d = BlockDraft {
+            stream_id: Some(stream),
+            starts_at: starts_at.clone(),
+            ends_at: ends_at.clone(),
+            title: Some("Deep work".into()),
+            title_track_task: true,
+            tasks: vec![task],
+        };
+        let into = BlockDraftIn::from(&d);
+        assert_eq!(into.stream_id, stream);
+        assert_eq!(
+            format!("{:?}", into.starts_at),
+            format!("{:?}", TimeValue::from(&starts_at))
+        );
+        assert_eq!(
+            format!("{:?}", into.ends_at),
+            format!("{:?}", TimeValue::from(&ends_at))
+        );
+        assert_eq!(into.title.as_deref(), Some("Deep work"));
+        assert!(into.title_track_task);
+        assert_eq!(into.tasks, vec![task]);
+        assert_eq!(format!("{:?}", BlockDraft::from(into)), format!("{d:?}"));
+
+        let homeless = BlockDraftIn::from(&BlockDraft {
+            stream_id: None,
+            ..d
+        });
+        assert_eq!(homeless.stream_id, sunrise_domain::stream_key(None));
+    }
 }
 
 // ---------------------------------------------------------------------------

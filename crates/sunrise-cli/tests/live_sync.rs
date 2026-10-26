@@ -22,9 +22,9 @@ use tokio::task::JoinHandle;
 /// envelopes decrypt — the "one account, two devices" case.
 ///
 /// The binary no longer holds a constant like this: `sunrise_cli::vault` mints
-/// a fresh root per vault directory, and `SUNRISE_VAULT_ROOT` is how two of
-/// them are told to share one until pairing lands. This test passes the root
-/// to `open_with_plan` directly, which is the same thing one layer down.
+/// a fresh root per vault directory, and `SUNRISE_VAULT_ROOT` supplies one
+/// outright. This test passes the root to `open_with_plan` directly, which is
+/// the same thing one layer down.
 const SHARED_ROOT: [u8; 32] = [7u8; 32];
 const POLL: Duration = Duration::from_millis(25);
 const TIMEOUT: Duration = Duration::from_secs(10);

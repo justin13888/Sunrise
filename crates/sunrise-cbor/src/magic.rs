@@ -92,14 +92,6 @@ pub enum MagicError {
     /// Kind byte not in the known set.
     #[error("magic prefix kind byte {0:#x} is unknown")]
     UnknownKind(u8),
-    /// Version mismatch — caller wanted a specific version but found another.
-    #[error("magic prefix version mismatch: wanted {wanted}, got {got}")]
-    VersionMismatch {
-        /// Expected version.
-        wanted: u16,
-        /// Decoded version.
-        got: u16,
-    },
 }
 
 impl MagicError {
@@ -133,26 +125,6 @@ pub fn decode_prefix(buf: &[u8]) -> Result<MagicPrefix, MagicError> {
     let kind = MagicKind::from_byte(buf[2]).ok_or(MagicError::UnknownKind(buf[2]))?;
     let version = u16::from_be_bytes([buf[3], buf[4]]);
     Ok(MagicPrefix { kind, version })
-}
-
-/// Convenience: decode and assert a specific kind + version.
-///
-/// # Errors
-/// Returns the decode error or a [`MagicError::VersionMismatch`] /
-/// [`MagicError::UnknownKind`] if the prefix doesn't match the expected
-/// `(kind, version)` pair.
-pub fn expect_prefix(buf: &[u8], kind: MagicKind, version: u16) -> Result<(), MagicError> {
-    let p = decode_prefix(buf)?;
-    if p.kind != kind {
-        return Err(MagicError::UnknownKind(p.kind.as_byte()));
-    }
-    if p.version != version {
-        return Err(MagicError::VersionMismatch {
-            wanted: version,
-            got: p.version,
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -226,16 +198,5 @@ mod tests {
         let mut buf = [0u8; MAGIC_LEN];
         write_prefix(&mut buf, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
         assert_eq!(buf, *b"SR\x02\x00\x03");
-    }
-
-    #[test]
-    fn expect_prefix_validates_pair() {
-        let mut buf = [0u8; MAGIC_LEN];
-        write_prefix(&mut buf, MagicKind::Frame, 1);
-        expect_prefix(&buf, MagicKind::Frame, 1).unwrap();
-        assert!(matches!(
-            expect_prefix(&buf, MagicKind::Frame, 2),
-            Err(MagicError::VersionMismatch { wanted: 2, got: 1 })
-        ));
     }
 }

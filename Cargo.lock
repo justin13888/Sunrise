@@ -3173,9 +3173,11 @@ name = "sunrise-cbor"
 version = "0.2.0"
 dependencies = [
  "ciborium",
+ "proptest",
  "serde",
  "serde_json",
  "sunrise-error",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
 ]
 

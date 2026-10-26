@@ -46,7 +46,7 @@ directory without one is an export that did not finish.
 ### `entities/<kind>.jsonl`
 
 One file per entity kind with a table of its own in the registry
-(`crates/sunrise-id/src/registry.rs`), named by its registry tag: `task`,
+(`crates/sunrise-id/src/registry/table.rs`), named by its registry tag: `task`,
 `stream`, `context`, `routine`, `block`, `attachment`, `focus_session`,
 `review_snapshot`, `preferences` and `saved_view` (#341). A file is written even when it holds no
 row, so a reader can tell "none" from "not exported". A test fails when a kind

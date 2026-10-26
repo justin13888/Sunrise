@@ -317,4 +317,113 @@ mod tests {
             "A's next op sorts after the op that caused it"
         );
     }
+
+    /// At a saturated counter a send that cannot take the wall clock ties
+    /// with its input instead of exceeding it, as the module doc says.
+    #[test]
+    fn send_at_a_saturated_counter_returns_its_input() {
+        let h = Hlc {
+            physical_ms: 1_000,
+            logical: u32::MAX,
+        };
+        assert_eq!(h.send(1_000), h);
+        assert_eq!(h.send(999), h);
+        // A wall clock that has moved on still advances it.
+        assert_eq!(h.send(1_001), Hlc::at(1_001));
+    }
+
+    /// The same saturation in `receive`: whichever saturated input sets the
+    /// physical component, the result equals it rather than exceeding it.
+    #[test]
+    fn receive_at_a_saturated_counter_returns_the_saturated_input() {
+        let saturated = Hlc {
+            physical_ms: 1_000,
+            logical: u32::MAX,
+        };
+        let behind = Hlc {
+            physical_ms: 1_000,
+            logical: 5,
+        };
+        assert_eq!(behind.receive(saturated, 1_000), Ok(saturated));
+        assert_eq!(saturated.receive(behind, 1_000), Ok(saturated));
+        assert_eq!(saturated.receive(Hlc::at(10), 500), Ok(saturated));
+        assert_eq!(Hlc::at(10).receive(saturated, 500), Ok(saturated));
+    }
+
+    /// Physical components drawn from a narrow window, so that ties with each
+    /// other and with `now` are common, or from anywhere in `u64`.
+    fn physical() -> impl proptest::strategy::Strategy<Value = u64> {
+        use proptest::prelude::*;
+        prop_oneof![
+            0u64..16,
+            (u64::MAX - 16)..=u64::MAX,
+            MAX_DRIFT_MS - 8..MAX_DRIFT_MS + 24,
+            any::<u64>(),
+        ]
+    }
+
+    /// Logical counters that reach the saturation point often.
+    fn logical() -> impl proptest::strategy::Strategy<Value = u32> {
+        use proptest::prelude::*;
+        prop_oneof![0u32..4, (u32::MAX - 2)..=u32::MAX, any::<u32>()]
+    }
+
+    fn hlc() -> impl proptest::strategy::Strategy<Value = Hlc> {
+        use proptest::prelude::*;
+        (physical(), logical()).prop_map(|(physical_ms, logical)| Hlc {
+            physical_ms,
+            logical,
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Invariant 1: send is strictly increasing, except at a saturated
+        /// counter the wall clock cannot rescue, where it returns its input.
+        #[test]
+        fn send_is_strictly_increasing_below_saturation(h in hlc(), now in physical()) {
+            let next = h.send(now);
+            proptest::prop_assert!(next.physical_ms >= now);
+            if now <= h.physical_ms && h.logical == u32::MAX {
+                proptest::prop_assert_eq!(next, h);
+            } else {
+                proptest::prop_assert!(next > h);
+            }
+        }
+
+        /// Invariant 2: receive dominates both inputs and the wall clock,
+        /// strictly for every input it continues below saturation, and it
+        /// refuses exactly what lies beyond the drift window.
+        #[test]
+        fn receive_dominates_both_inputs_below_saturation(
+            local in hlc(),
+            received in hlc(),
+            now in physical(),
+        ) {
+            let limit = now.saturating_add(MAX_DRIFT_MS);
+            match local.receive(received, now) {
+                Err(HlcError::DriftTooLarge { ahead_ms }) => {
+                    proptest::prop_assert!(received.physical_ms > limit);
+                    proptest::prop_assert_eq!(ahead_ms, received.physical_ms - now);
+                }
+                Ok(merged) => {
+                    proptest::prop_assert!(received.physical_ms <= limit);
+                    proptest::prop_assert!(merged.physical_ms >= now);
+                    for input in [local, received] {
+                        if merged.physical_ms == input.physical_ms
+                            && input.logical == u32::MAX
+                        {
+                            proptest::prop_assert_eq!(merged, input);
+                        } else {
+                            proptest::prop_assert!(merged > input);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

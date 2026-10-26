@@ -1965,3 +1965,51 @@ mod login_error_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod attach_error_tests {
+    use super::BindingError;
+    use sunrise_core::AttachError;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// Bytes not fetched yet and a download the user cancelled are not
+    /// failures, so each crosses as its own variant carrying the id; every
+    /// other attachment error crosses as `Attachment` with its message.
+    #[test]
+    fn each_attach_error_crosses_as_what_the_client_does_next() {
+        let id = EntityRef::new(EntityKind::Attachment, [7; 16]);
+
+        let not_here = BindingError::from(AttachError::BytesNotHere { id });
+        assert!(
+            matches!(&not_here, BindingError::AttachmentNotHere { id: i } if *i == id.to_str()),
+            "{not_here:?}"
+        );
+
+        let cancelled = BindingError::from(AttachError::FetchCancelled { id });
+        assert!(
+            matches!(
+                &cancelled,
+                BindingError::AttachmentDownloadCancelled { id: i } if *i == id.to_str()
+            ),
+            "{cancelled:?}"
+        );
+        assert_eq!(
+            cancelled.to_string(),
+            AttachError::FetchCancelled { id }.to_string(),
+            "the message is unchanged"
+        );
+
+        for other in [
+            AttachError::FetchUnavailable { id },
+            AttachError::NotOnRelay { id },
+            AttachError::SyncOffline { id },
+        ] {
+            let message = other.to_string();
+            let crossed = BindingError::from(other);
+            assert!(
+                matches!(&crossed, BindingError::Attachment(m) if *m == message),
+                "{crossed:?}"
+            );
+        }
+    }
+}

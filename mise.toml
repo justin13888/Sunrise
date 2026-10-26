@@ -457,8 +457,11 @@ description = "Build every cargo-fuzz target (the compile gate for fuzz/, run lo
 shell = "bash -c"
 run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
 
-# Ten seconds a target, nine targets: about a minute and a half once the build
-# is warm.
+# Ten seconds a target: about a minute and a half for the whole set once the
+# build is warm.
+# The targets are the `[[bin]]` entries of `fuzz/Cargo.toml`, read through
+# `cargo metadata`, so a new harness is run here as soon as it is declared
+# there. CI's nightly `fuzz-plan` and `fuzz-pr-plan` read the same list.
 # This is not a search — ten seconds finds nothing a corpus does not already
 # contain. What it proves is that each harness starts, reads its committed
 # seeds, and does not abort on one of them, which is the failure `fuzz-build`
@@ -475,7 +478,13 @@ shell = "bash -c"
 run = """
 set -euo pipefail
 seconds="${SUNRISE_FUZZ_SECONDS:-10}"
-for target in op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope; do
+targets=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+  python3 -c 'import json, sys; print(" ".join(t["name"] for p in json.load(sys.stdin)["packages"] for t in p["targets"] if t["kind"] == ["bin"]))')
+if [ -z "$targets" ]; then
+  echo "fuzz/Cargo.toml declares no [[bin]] target" >&2
+  exit 1
+fi
+for target in $targets; do
   mkdir -p "fuzz/corpus/$target"
   echo "== $target (${seconds}s)"
   cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$target" \
