@@ -613,6 +613,51 @@ mod tests {
         ));
     }
 
+    /// One byte over [`MAX_ATTACHMENT_BYTES`] is refused before anything is
+    /// written, and the error names the size it refused; exactly the limit is
+    /// accepted.
+    #[tokio::test]
+    async fn a_file_over_the_limit_is_refused_and_one_at_it_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let limit = usize::try_from(MAX_ATTACHMENT_BYTES).unwrap();
+
+        let mut bytes = vec![0u8; limit + 1];
+        let refused = core
+            .attach_file(
+                task,
+                "huge.bin".into(),
+                "application/octet-stream".into(),
+                &bytes,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(AttachError::TooLarge { size }) if size == MAX_ATTACHMENT_BYTES + 1),
+            "got {refused:?}"
+        );
+        assert!(matches!(
+            core.query(Query::TaskAttachments(task)).await,
+            Ok(QueryResult::Attachments(rows)) if rows.is_empty()
+        ));
+        assert!(
+            core.pending_blob_uploads().unwrap().is_empty(),
+            "a refused file queues no upload"
+        );
+
+        bytes.truncate(limit);
+        let att = core
+            .attach_file(
+                task,
+                "huge.bin".into(),
+                "application/octet-stream".into(),
+                &bytes,
+            )
+            .await
+            .expect("a file of exactly the limit is accepted");
+        assert_eq!(att.size_bytes, MAX_ATTACHMENT_BYTES);
+    }
+
     #[tokio::test]
     async fn reading_an_unknown_or_detached_attachment_is_not_found() {
         let dir = tempfile::tempdir().unwrap();

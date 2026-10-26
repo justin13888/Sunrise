@@ -1231,4 +1231,121 @@ mod tests {
             Err(AttachError::NotOnRelay { .. })
         ));
     }
+
+    // ---- how a started fetch ends (issue #604) ----------------------------
+
+    /// Mark sync active with a driver that never connects, so
+    /// [`Core::fetch_attachment`] gets past `SyncOffline` and every outcome it
+    /// sees is one this test publishes.
+    fn start_a_driver_that_never_connects(core: &Arc<Core>) {
+        let factory: crate::sync_driver::TransportFactory =
+            Arc::new(|_| Box::pin(std::future::pending()));
+        core.start_sync(factory).expect("start");
+    }
+
+    /// Spawn `fetch_attachment(id)` and return once it has subscribed and
+    /// written its request row, which it does in that order.
+    async fn a_waiting_fetch(
+        core: &Arc<Core>,
+        id: EntityRef,
+    ) -> tokio::task::JoinHandle<Result<(), AttachError>> {
+        let waiting = Arc::clone(core);
+        let handle = tokio::spawn(async move { waiting.fetch_attachment(id).await });
+        for _ in 0..10_000 {
+            if core.attachment_fetch_state(id).expect("state") == AttachmentFetchState::Requested {
+                return handle;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the fetch never wrote its request row");
+    }
+
+    /// Publish more outcomes than [`OUTCOME_BUFFER`] holds, all for another
+    /// attachment, so the waiting subscriber's next receive is `Lagged`.
+    fn overrun_the_outcome_channel(core: &Core) {
+        let stranger = EntityRef::new(sunrise_id::EntityKind::Task, [0xab; 16]);
+        for _ in 0..=OUTCOME_BUFFER {
+            core.blob_fetch_signals()
+                .publish(stranger, AttachmentFetchOutcome::Fetched);
+        }
+    }
+
+    /// A request the driver gives up on ends the waiting call with
+    /// `FetchUnavailable`, which is what tells the client to show the
+    /// interrupted state rather than keep a spinner running.
+    #[tokio::test]
+    async fn a_request_the_driver_parks_ends_the_wait_as_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let att = a_remote_attachment(&core, dir.path(), b"%PDF-1.7 a lease").await;
+        start_a_driver_that_never_connects(&core);
+
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        park(&core, &att, "test");
+
+        let answer = fetch.await.expect("join");
+        assert!(
+            matches!(answer, Err(AttachError::FetchUnavailable { id }) if id == att.id),
+            "got {answer:?}"
+        );
+        assert_eq!(
+            core.attachment_fetch_state(att.id).expect("state"),
+            AttachmentFetchState::Partial
+        );
+    }
+
+    /// A subscriber the channel overran falls back to the durable row: a
+    /// request parked while it lagged ends as `FetchUnavailable`, though the
+    /// `Unavailable` outcome itself was never published to it.
+    #[tokio::test]
+    async fn a_lagged_wait_reads_a_parked_request_as_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let att = a_remote_attachment(&core, dir.path(), b"%PDF-1.7 a lease").await;
+        start_a_driver_that_never_connects(&core);
+
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        overrun_the_outcome_channel(&core);
+        assert!(core.mark_blob_fetch_partial(att.id).expect("mark"));
+
+        let answer = fetch.await.expect("join");
+        assert!(
+            matches!(answer, Err(AttachError::FetchUnavailable { id }) if id == att.id),
+            "got {answer:?}"
+        );
+    }
+
+    /// The other half of the fallback: bytes that arrived while the
+    /// subscriber lagged end the wait with success, and a lag with the request
+    /// still outstanding keeps waiting until an outcome for it arrives.
+    #[tokio::test]
+    async fn a_lagged_wait_reads_arrived_bytes_as_fetched_and_otherwise_keeps_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "lease.pdf".into(), "application/pdf".into(), b"here")
+            .await
+            .expect("attach");
+        let blobs = dir.path().join("blobs");
+        let kept = dir.path().join("blobs.kept");
+        std::fs::rename(&blobs, &kept).expect("take the chunks away");
+        start_a_driver_that_never_connects(&core);
+
+        // Lagged, with the request still outstanding: the call keeps waiting.
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        overrun_the_outcome_channel(&core);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!fetch.is_finished(), "a lag alone is not an answer");
+
+        // Lagged again, and the bytes are here by then.
+        std::fs::rename(&kept, &blobs).expect("the chunks arrive");
+        overrun_the_outcome_channel(&core);
+        fetch
+            .await
+            .expect("join")
+            .expect("bytes found on the fallback read are a fetch");
+    }
 }
