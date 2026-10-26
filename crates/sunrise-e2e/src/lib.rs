@@ -1,7 +1,7 @@
 //! End-to-end gating crate.
 //!
 //! Boots cross-crate scenarios that span [`sunrise_core`] + [`sunrise_server`].
-//! Used by Phase 17 release-gating checks per `docs/10-cross-cutting/testing.md`.
+//! Run by `cargo test -p sunrise-e2e` and `mise run e2e-cli`.
 //!
 //! This crate's library surface is a **test harness**: helpers to boot the real
 //! relay in-process, open [`Core`] instances wired to it over the real SSE +
@@ -547,8 +547,8 @@ pub async fn wait_task_converges(a: &Core, b: &Core, id: EntityRef, timeout: Dur
     );
 }
 
-/// Canonical stream table for `core`, sorted by id (the synthetic Inbox row is
-/// included).
+/// Canonical stream table for `core`, sorted by id. The Inbox is a view and
+/// has no row (ADR-0046).
 pub async fn canonical_streams(core: &Core) -> Vec<CanonicalStream> {
     let streams = match core.query(Query::StreamList).await.expect("stream list") {
         QueryResult::Streams(v) => v,
