@@ -630,6 +630,37 @@ fn ids_of(vault: &Path, args: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `#inbox` names no stream in `capture` and in `edit` (ADR-0046) until a
+/// real stream is called Inbox, and from then on names that stream in both.
+#[test]
+fn inbox_names_no_stream_until_a_stream_is_called_inbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    ok(v, &["streams", "create", "Work"]);
+    let stream_of = |id: &str| json_of(v, &["show", id])["stream"].clone();
+
+    let captured = first_id(&ok(v, &["capture", "Call mum #inbox"]));
+    assert_eq!(stream_of(&captured), serde_json::Value::Null, "capture");
+    let edited = first_id(&ok(v, &["capture", "Pack the boxes #work"]));
+    ok(v, &["edit", &edited, "#inbox"]);
+    assert_eq!(stream_of(&edited), serde_json::Value::Null, "edit");
+
+    ok(v, &["streams", "create", "Inbox"]);
+    let real = json_of(v, &["streams"])
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["name"] == "Inbox").cloned())
+        .expect("Inbox is listed")["id"]
+        .clone();
+    let captured = first_id(&ok(v, &["capture", "Water the plants #inbox"]));
+    assert_eq!(stream_of(&captured), real, "capture beside a real Inbox");
+    ok(v, &["edit", &edited, "#inbox"]);
+    assert_eq!(stream_of(&edited), real, "edit beside a real Inbox");
+    // No second "Inbox" candidate is left beside the real one, so a prefix
+    // names it alone (search's `stream:inb` does not; see search_command.rs).
+    let prefixed = first_id(&ok(v, &["capture", "Sort the post #inb"]));
+    assert_eq!(stream_of(&prefixed), real, "a prefix beside a real Inbox");
+}
+
 /// A task belongs to no stream until it is given one (ADR-0046): `stream
 /// none` lists the tasks of no stream, `triage` takes one out of the Inbox
 /// without giving it a home, `#inbox` sends one back to no stream, and

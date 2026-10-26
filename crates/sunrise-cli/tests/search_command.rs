@@ -25,6 +25,53 @@ fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
+/// The titles of the task hits `search --json` returns for `query`.
+fn task_titles(vault: &Path, query: &str) -> Vec<String> {
+    let doc: serde_json::Value = serde_json::from_str(
+        stdout(&run(vault, &["search", "--json", "--kind", "task", query])).trim(),
+    )
+    .unwrap();
+    let mut titles: Vec<String> = doc["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|g| g["hits"].as_array().cloned().unwrap_or_default())
+        .filter_map(|h| h["task"]["title"].as_str().map(str::to_owned))
+        .collect();
+    titles.sort();
+    titles
+}
+
+/// `stream:Inbox` finds the tasks of no stream (ADR-0046), and beside a real
+/// stream called Inbox finds that stream's tasks instead, as `#inbox` names
+/// it in capture and edit. Pinned as it behaves today, which is not by
+/// capture's rule: search keeps its "Inbox" candidate beside the real one,
+/// the real one wins the exact match because it is listed first, and the
+/// second candidate makes the prefix `stream:inb` ambiguous where `#inb`
+/// in capture names the real stream alone.
+#[test]
+fn stream_inbox_finds_the_tasks_of_no_stream_until_a_stream_is_called_inbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    run(v, &["streams", "create", "Work"]);
+    run(v, &["capture", "Call mum"]);
+    run(v, &["capture", "Pack the boxes #work"]);
+    assert_eq!(task_titles(v, "stream:Inbox"), ["Call mum"]);
+    assert_eq!(task_titles(v, "stream:inb"), ["Call mum"]);
+
+    run(v, &["streams", "create", "Inbox"]);
+    run(v, &["capture", "Water the plants #inbox"]);
+    assert_eq!(task_titles(v, "stream:Inbox"), ["Water the plants"]);
+    let out = run(v, &["search", "--kind", "task", "stream:inb"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("more than one name starts with “inb”"),
+        "{err:?}"
+    );
+    assert!(task_titles(v, "stream:inb").is_empty());
+}
+
 /// `search` answers every kind, grouped, with operators, CJK and
 /// substrings, and `--json` is the grouped document with each task whole.
 #[test]
