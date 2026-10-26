@@ -189,7 +189,7 @@ pub async fn replace_recovery_blob(
     if caller.device.is_none() {
         return Err(ApiError::device_sig_invalid());
     }
-    crate::api::blobs::refuse_if_pending(&state, &caller).await?;
+    crate::api::account_deletion::refuse_if_pending(&state, &caller).await?;
     let account_id = &caller.principal.account.account_id;
     let offered = body.recovery_blob.trim();
     let bytes = BLOB_B64

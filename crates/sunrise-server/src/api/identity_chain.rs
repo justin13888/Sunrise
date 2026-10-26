@@ -111,7 +111,7 @@ pub async fn pin(
         .as_ref()
         .map(|d| parse_digest(&d.0))
         .transpose()?;
-    crate::api::blobs::refuse_if_pending(&state, &caller).await?;
+    crate::api::account_deletion::refuse_if_pending(&state, &caller).await?;
     let account_id = &caller.principal.account.account_id;
     let pinned = PinnedIdentityChain {
         digest: *blake3::hash(&chain).as_bytes(),

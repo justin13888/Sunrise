@@ -38,6 +38,7 @@
 //! check someone can forget, and dedup still works where it should — across
 //! one account's devices.
 
+use crate::api::account_deletion::refuse_if_pending;
 use crate::api::error::{codes, ApiError};
 use crate::api::ids::{parse_blob_id, parse_hash, parse_hex16, parse_upload_id};
 use crate::api::ids::{BlobId, ChunkHash, UploadId};
@@ -680,20 +681,6 @@ fn hash_mismatch(message: impl Into<String>) -> ApiError {
 /// whether another account holds that ciphertext.
 pub(crate) fn not_found() -> ApiError {
     ApiError::not_found(codes::BLOB_NOT_FOUND, "blob not found")
-}
-
-/// `403 ACCOUNT_PENDING_DELETION` for every upload step of an account whose
-/// deletion is confirmed: an upload finished after the mark would write files
-/// the erasure then has to chase.
-pub(crate) async fn refuse_if_pending(
-    state: &ServerState,
-    caller: &Caller,
-) -> Result<(), ApiError> {
-    crate::api::account_deletion::refuse_if_pending_deletion(
-        state,
-        &caller.principal.account.account_id,
-    )
-    .await
 }
 
 #[cfg(test)]

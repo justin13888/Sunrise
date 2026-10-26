@@ -32,7 +32,8 @@
 //! so two writers race only while the election changes hands, and a reader
 //! that applies an older record loses nothing: applying a snapshot is a join.
 
-use crate::api::blobs::{account, not_found, refuse_if_pending};
+use crate::api::account_deletion::refuse_if_pending;
+use crate::api::blobs::{account, not_found};
 use crate::api::error::ApiError;
 use crate::api::ids::{hex_pattern, parse_blob_id, parse_hex16};
 use crate::api::signed::{Signed, SignedParts};
