@@ -26,8 +26,9 @@ const PLATFORMS: [&str; 6] = ["ios", "android", "macos", "windows", "linux", "we
 /// dependency on `sunrise-crypto` — it is reached only transitively, through
 /// `sunrise-pairing` and `sunrise-storage`, and never called; the relay never
 /// parses a cert, it stores it as opaque text — so the agreement is asserted
-/// from `sunrise-e2e`, which depends on both: see `sunrise-e2e/tests/nickname_bound_agreement.rs`. It is `pub` so
-/// that test can read it.
+/// from `sunrise-e2e`, which depends on both: see
+/// `sunrise-e2e/tests/nickname_bound_agreement.rs`. It is `pub` so that test
+/// can read it.
 pub const MAX_NICKNAME_BYTES: usize = 64;
 
 /// A registered device.
