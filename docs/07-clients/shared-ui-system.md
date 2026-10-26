@@ -37,8 +37,8 @@ runs, and `lefthook.yaml` runs on pre-push), `mise run tokens-check` (which
 additionally compiles and rustfmt-checks `tokens.rs`), and a `tokens-current`
 CI job. [ADR-0029](../11-adr/0029-design-token-pipeline.md) records why the
 outputs are committed rather than generated at build time, why `tokens.rs` is
-an `include!`-ready file rather than a crate, and why the spacing scale below
-supersedes the one `packages/sunrise-ui` used to carry.
+an `include!`-ready file rather than a crate, and why the spacing scale is the
+one below.
 
 **`tokens.kt` is not emitted.** There is no Android target to compile it and no
 Kotlin consumer to read it; it lands with the Android client, not before.

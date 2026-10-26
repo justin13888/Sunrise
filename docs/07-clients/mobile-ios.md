@@ -12,8 +12,7 @@ Target: **iOS 26, iPadOS 26**, Apple Silicon simulator or device.
 `apps/apple/project.yml` pins `deploymentTarget.iOS: "26.0"`, matching the Mac's
 26.0 — a shared source file cannot use an API only one of its two targets can
 reach, and matching the majors is what lets the shared tree carry no
-`@available` forks at all. An earlier revision of this page specified iOS 17+;
-that is no longer what is built.
+`@available` forks at all.
 
 ## Status
 
