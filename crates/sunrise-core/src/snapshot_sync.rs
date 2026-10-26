@@ -27,7 +27,7 @@ use crate::core::{Core, CoreError};
 use crate::engine::{hex_short, EngineError, SnapshotApplied};
 
 /// The largest chunk a record is uploaded in: the relay's per-chunk ceiling
-/// (`crates/sunrise-server/src/api/blobs.rs#MAX_CHUNK_BYTES`).
+/// (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES`).
 const CHUNK_BYTES: usize = 1024 * 1024;
 
 /// A record this replica should publish.

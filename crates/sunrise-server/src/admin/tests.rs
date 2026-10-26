@@ -171,7 +171,7 @@ impl Harness {
 
 /// Where the filesystem backend keeps `account_id`'s `area` under `root`.
 fn account_dir(root: &Path, area: Area, account_id: &str) -> std::path::PathBuf {
-    FsBlobs::new(root).account_dir(area, crate::relay_log::account_key(account_id))
+    FsBlobs::new(root).account_dir(area, crate::account_ns::account_key(account_id))
 }
 
 fn hello() -> serde_json::Value {
@@ -237,7 +237,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     h.db()
         .upsert_push_token(&device_id, "apns", "tok", T0_MS)
         .unwrap();
-    let account_h = crate::relay_log::account_key(&account_id);
+    let account_h = crate::account_ns::account_key(&account_id);
     h.db()
         .relay_append(
             (account_h, [0x11; 16]),

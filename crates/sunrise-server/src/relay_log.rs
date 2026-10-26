@@ -604,15 +604,9 @@ fn evict(
     Ok(evicted)
 }
 
-/// The relay's namespace for an account: the first 16 bytes of
-/// `BLAKE3(account_id)`, which keys `relay_frames.account_h` and the blob
-/// tree's per-account directories alike.
-#[must_use]
-pub fn account_key(account_id: &str) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&blake3::hash(account_id.as_bytes()).as_bytes()[..16]);
-    out
-}
+/// The relay's namespace for an account, which keys `relay_frames.account_h`;
+/// defined with every other per-account store's key in `account_ns`.
+pub use crate::account_ns::account_key;
 
 /// Delete every row this module holds for one account, inside the caller's
 /// transaction, returning the frames removed.

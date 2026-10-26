@@ -24,7 +24,7 @@
 
 use serde::Serialize;
 
-use crate::relay_log::account_key;
+use crate::account_ns::account_key;
 use crate::state::ServerState;
 use crate::store::MetadataError;
 

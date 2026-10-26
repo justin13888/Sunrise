@@ -396,7 +396,7 @@ it is the **content address** of bytes the server has not seen yet.
 | DELETE | `/api/v1/blobs/<blob_id>` | `{ stream_id, device_id, seq }` | `202 { collect_after_ms }`; a tombstone, collected later (below) |
 
 Every route is authenticated and device-bound like the rest of the REST API —
-`api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
+`api/blobs/` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
 answers `200`, a chunk `PUT` answers `204`, and `finalize` answers `200`.
 Alongside the hash checks, `init` and `finalize` enforce
 `1 <= chunk_count <= 4096`, `1 <= chunk_bytes <= 1 MiB`, and a

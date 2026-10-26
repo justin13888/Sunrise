@@ -135,7 +135,7 @@ the entity.
 
 ## Size policy
 
-- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs.rs:67#MAX_BLOB_BYTES`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
+- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
 - Recommended UX: nudge the user toward external storage links (Drive, Dropbox) for files > 25 MB.
 - No per-vault quota. The only ceiling is the fixed 100 MB per attachment above; there is no per-account accounting to charge a vault total against ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 

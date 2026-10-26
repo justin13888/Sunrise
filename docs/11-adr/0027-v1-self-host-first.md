@@ -109,7 +109,7 @@ records that `sunrise-server` has no `sunrise-crypto` dependency and that the
 only envelope type it can reach is `EnvelopeHeader`, which carries
 `{stream_id, device_id, seq}` and no payload, no signature and no nonce.
 
-Its blob path cannot work either. `crates/sunrise-server/src/api/blobs.rs:29-36`
+Its blob path cannot work either. `crates/sunrise-server/src/api/blobs/mod.rs:29-36`
 roots both the pending area and the committed store under a per-account
 directory keyed by a BLAKE3 of the account id — deliberately, so that content
 addressing cannot become a cross-tenant read primitive. A grantee naming an
@@ -140,9 +140,9 @@ enforces are fixed operator constants, not per-account accounting:
 | Limit | Value | Source |
 |---|---|---|
 | Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
-| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:59#MAX_CHUNK_BYTES` |
-| Blob chunk count | 4096 | `api/blobs.rs:63` |
-| Blob size | 100 MB | `api/blobs.rs:67` |
+| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES` |
+| Blob chunk count | 4096 | `api/blobs/mod.rs:77` |
+| Blob size | 100 MB | `api/blobs/mod.rs:81` |
 | Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log.rs:121,130` |
 
 No `plan_tier` metric label. No `AUTH_QUOTA_EXCEEDED` or `AUTH_RATE_LIMITED` on
@@ -308,7 +308,7 @@ is that dedup by key sharing does not exist at any scope.
 **`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
-(`crates/sunrise-server/src/api/blobs.rs:239-265,448-457`). This reconciles
+(`crates/sunrise-server/src/api/blobs/mod.rs:302-338,466-474`). This reconciles
 `crates/sunrise-domain/src/attachment.rs:42-44#Attachment` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.

@@ -3,10 +3,11 @@
 //! The cursor vocabulary and the one operation that writes it: [`subscribe`]
 //! replaces a session's stream set, and a [`StreamSubscription`] carries the
 //! [`DeviceCursor`]s that decide how much of the retained backlog
-//! `GET /sync/events` replays. [`parse_id`] lives here because these are the
-//! types that spell ids as hex on the wire; the publish path shares it.
+//! `GET /sync/events` replays. The hex ids these types carry are parsed by
+//! [`crate::api::ids::parse_hex16`], the parser every route shares.
 
 use crate::api::error::ApiError;
+use crate::api::ids::parse_hex16;
 use crate::api::signed::Signed;
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
@@ -72,13 +73,13 @@ pub async fn subscribe(
     let mut streams = Vec::with_capacity(body.streams.len());
     for s in &body.streams {
         streams.push(SubscribeEntry {
-            stream_id: parse_id(&s.stream_id, "stream_id")?,
+            stream_id: parse_hex16(&s.stream_id, "stream_id")?,
             cursors: s
                 .cursors
                 .iter()
                 .map(|c| {
                     Ok(CursorEntry {
-                        device_id: parse_id(&c.device_id, "device_id")?,
+                        device_id: parse_hex16(&c.device_id, "device_id")?,
                         last_applied_seq: c.last_applied_seq,
                     })
                 })
@@ -120,29 +121,4 @@ pub async fn subscribe(
         .await?;
 
     Ok(kynos::response::status::NoContent)
-}
-
-/// Parse a 16-byte id from 32 **lowercase** hex characters.
-///
-/// The case check is explicit because the decode underneath
-/// (`hex::decode_to_slice`) is case-insensitive and would accept `AB…` as the
-/// same sixteen bytes as `ab…`. One value with two spellings is a liability in
-/// a system that keys directories, cursor maps and content addresses off these
-/// ids, so the canonical form is the only one admitted: nothing released emits
-/// anything else, and the refusal below has always said so.
-pub(super) fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
-    let mut out = [0u8; 16];
-    if s.len() != 32 {
-        return Err(ApiError::validation(format!(
-            "{field} must carry 32 hex characters"
-        )));
-    }
-    if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-        return Err(ApiError::validation(format!(
-            "{field} must be lowercase hex"
-        )));
-    }
-    hex::decode_to_slice(s, &mut out)
-        .map_err(|_| ApiError::validation(format!("{field} must be lowercase hex")))?;
-    Ok(out)
 }

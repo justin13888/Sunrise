@@ -32,10 +32,10 @@
 //! so two writers race only while the election changes hands, and a reader
 //! that applies an older record loses nothing: applying a snapshot is a join.
 
-use crate::api::blobs::{
-    account, hex_pattern, not_found, parse_blob_id, parse_hex16, refuse_if_pending,
-};
+use crate::api::account_deletion::refuse_if_pending;
+use crate::api::blobs::{account, not_found};
 use crate::api::error::ApiError;
+use crate::api::ids::{hex_pattern, parse_blob_id, parse_hex16};
 use crate::api::signed::{Signed, SignedParts};
 use crate::blob::Manifest;
 use crate::state::ServerState;
@@ -49,7 +49,7 @@ use sunrise_cbor::magic::{decode_prefix, MagicKind};
 
 /// A stream id in a URL path: 32 lowercase hex characters, the spelling
 /// `POST /blobs/init` and `DELETE /blobs/{blob_id}` already use. A newtype for
-/// the reason `blobs::UploadId` is one: a path parameter's pattern has to be
+/// the reason `ids::UploadId` is one: a path parameter's pattern has to be
 /// something its type states.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(transparent)]

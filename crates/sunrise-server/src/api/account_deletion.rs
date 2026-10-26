@@ -34,7 +34,7 @@
 //! the erasure earlier.
 
 use crate::api::error::{codes, ApiError};
-use crate::api::signed::{Signed, SignedParts};
+use crate::api::signed::{Caller, Signed, SignedParts};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
@@ -178,6 +178,17 @@ pub(crate) async fn refuse_if_pending_deletion(
             "this account is being deleted and accepts no new sessions, ops or uploads",
         )),
     }
+}
+
+/// [`refuse_if_pending_deletion`] for the routes that hold a verified
+/// [`Caller`]: every upload step, and the recovery-blob, key-bundle,
+/// identity-chain and snapshot pins. An upload finished after the mark would
+/// write files the erasure then has to chase.
+pub(crate) async fn refuse_if_pending(
+    state: &ServerState,
+    caller: &Caller,
+) -> Result<(), ApiError> {
+    refuse_if_pending_deletion(state, &caller.principal.account.account_id).await
 }
 
 /// The stored form of a phrase: BLAKE3 of it, uppercased, so a database copy

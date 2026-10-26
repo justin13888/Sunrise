@@ -21,7 +21,7 @@ status: proposed
 > ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`),
 > so every "the server also checks" sentence has been corrected rather than
 > annotated. And the cross-account blob path cannot work: both blob stores are
-> rooted per account (`crates/sunrise-server/src/api/blobs.rs:29-36`), so a
+> rooted per account (`crates/sunrise-server/src/api/blobs/mod.rs:29-36`), so a
 > grantee naming an owner's `blb_…` gets `404 BLOB_NOT_FOUND`
 > ([`../06-server/api.md`](../06-server/api.md)`:289`). That root is deliberate;
 > removing it would make content addressing a cross-tenant read primitive.

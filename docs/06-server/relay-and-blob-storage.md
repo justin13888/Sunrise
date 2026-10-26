@@ -6,7 +6,7 @@ status: accepted
 
 > **Implementation status.** The self-host single-binary path is built and is
 > the only one: one SQLite database (`store/` + `relay_log.rs`) and a
-> local-filesystem blob root (`api/blobs.rs` over `sunrise_storage::BlobStore`).
+> local-filesystem blob root (`api/blobs/` over `sunrise_storage::BlobStore`).
 > There is no Postgres, no object store, and no pub/sub; the "managed" sections
 > below describe a deployment that does not exist. Sections that describe built
 > behaviour are marked **(implemented)**.
@@ -214,7 +214,7 @@ server only claims ops are gone when they actually are.
 
 The blob flow is a genuine two-phase commit, fully implemented and
 hash-verified, but it is not the Postgres/S3 outbox an earlier draft described.
-What `api/blobs.rs` does:
+What `api/blobs/` does:
 
 ```
 1. POST /api/v1/blobs/init { stream_id, chunk_count, size_bytes }

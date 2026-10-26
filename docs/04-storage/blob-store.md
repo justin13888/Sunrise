@@ -18,9 +18,9 @@ The creating device computes it while sealing
 ([`../02-domain/attachments.md`](../02-domain/attachments.md)`:27`, "assigned by
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
-(`crates/sunrise-server/src/api/blobs.rs:390-426#finalize`), takes the same first 16
-bytes as the storage key (`blob_key`, `blobs.rs:759-769`), and returns it as
-`blb_` + 32 lowercase hex (`blobs.rs:470`). The two values are equal by
+(`crates/sunrise-server/src/api/blobs/mod.rs:302-338#finalize`), takes the same first 16
+bytes as the storage key (`blob_key`, `blobs/mod.rs:466-474`), and returns it as
+`blb_` + 32 lowercase hex (`blobs/mod.rs:382`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.
 
 That one 16-byte value is `Attachment.blob_id`
@@ -55,7 +55,7 @@ per account (§Server-side storage below).
 - Chunks are streamed to/from the server independently.
 - **Two different numbers, often confused.** 256 KiB is the *plaintext* chunking
   unit. 1 MiB is the relay's ceiling on a single *ciphertext* chunk body
-  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs.rs:59#MAX_CHUNK_BYTES`), alongside a
+  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES`), alongside a
   4096-chunk cap (`:63`) and a 100 MB per-blob cap (`:67`). A 256 KiB plaintext
   chunk seals to 256 KiB + a 16-byte tag, comfortably inside the ceiling; the
   ceiling is an anti-DoS bound on a request body, not a chunk size.
@@ -106,7 +106,7 @@ The relay stores the same sealed chunks under the same `blob_id`, in the same
 <blob_root>/committed/<blake3(account_id)[..16] hex>/manifests/<blob_id_hex>
 ```
 
-The per-account root is deliberate and load-bearing (`blobs.rs:29-36,357-367`):
+The per-account root is deliberate and load-bearing (`blobs/mod.rs:31-39,447-458`):
 content addressing without it would be a cross-tenant read primitive, since one
 account could name another's blob by its hash. A grantee naming an owner's
 `blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id
@@ -115,7 +115,7 @@ is one of the reasons cross-user sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 The manifest (`"<chunk_count> <size_bytes>"`) is written **after** every chunk
-(`blobs.rs:271-283`), so a crash mid-commit leaves an invisible partial rather
+(`blobs/mod.rs:345-379`), so a crash mid-commit leaves an invisible partial rather
 than a short read: a reader that finds no manifest sees no blob.
 
 Upload is three calls, not one: `POST /blobs/init` reserves an `up_…` id and
@@ -191,8 +191,8 @@ Integrity comes from three facts, each at a different layer:
    guarantee, and it is the only hash the relay cannot compute.
 2. **`FinalizeRequest.chunk_hashes` are BLAKE3 of each *ciphertext* chunk**, and
    `FinalizeRequest.content_hash` is BLAKE3 of the concatenated ciphertext
-   (`blobs.rs:93-97`). The relay re-hashes what is on disk and refuses on
-   mismatch (`blobs.rs:253-264`, `sunrise_blob_hash_mismatch_total`), which
+   (`blobs/mod.rs:116-121`). The relay re-hashes what is on disk and refuses on
+   mismatch (`blobs/mod.rs:325-338`, `sunrise_blob_hash_mismatch_total`), which
    catches a chunk that never arrived, arrived truncated, or arrived corrupted —
    at upload time, rather than months later on another device.
 3. **The XChaCha20-Poly1305 tag inside each sealed chunk** catches any
