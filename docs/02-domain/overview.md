@@ -166,7 +166,7 @@ Each entity spec's §Merge mapping names its fields' types.
 ## The entity registry
 
 Every entity kind is declared once, in the entity registry: the
-`for_each_entity!` macro in `crates/sunrise-id/src/registry.rs`. An entry
+`for_each_entity!` macro in `crates/sunrise-id/src/registry/table.rs`. An entry
 records the kind's id prefix, its op-log tag, how its ops merge (`Lww`,
 `AppendOnly`, `Control` or `Unsynced`), which stream seals its ops, the feature
 ids scoped to it, the op variants that carry it, and the records those ops

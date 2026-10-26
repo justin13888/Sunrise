@@ -278,7 +278,7 @@ first, then the class rule, then the stamp (clarification D7):
 never beats a concurrent user write and still replaces one it descends from,
 which is not in the antichain. Ordered writes are decided by the order alone:
 the later one is the only candidate left. The registry declares each class
-(`crates/sunrise-id/src/registry.rs`), and quiet and tracked differ only in
+(`crates/sunrise-id/src/registry/table.rs`), and quiet and tracked differ only in
 whether a loser is reported.
 
 The winner is an argmax over a set, so no two writes are ever merged pair by
