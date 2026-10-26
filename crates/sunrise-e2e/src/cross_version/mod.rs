@@ -514,8 +514,9 @@ async fn open_pair(
 
 /// Pair C to B with `HEAD` and build the newer-build writer on C's identity.
 ///
-/// Every task lives in the Inbox. It is the one Stream whose key every device
-/// holds from the moment it is paired: a Stream created later mints its key
+/// Every task lives in the Inbox, whose ops are sealed under the private key
+/// domain (`INBOX_STREAM_BYTES`). Every device holds that domain's key from
+/// the moment it is paired: a Stream created later mints its key
 /// with its first op and reaches the others by key envelope, which would make
 /// the writer's key a race with that envelope.
 async fn open_future_writer(
