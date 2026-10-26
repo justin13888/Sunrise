@@ -1,5 +1,5 @@
 {
-    "$comment": "The relay URL rule's cases, read by crates/sunrise-client-core/src/relay_url.rs and apps/web/src/server-url.test.ts. Each case names the origin an input becomes or the issue that refuses it. {256} in an input stands for 256 'a's.",
+    "$comment": "The relay URL rule's cases, read by crates/sunrise-client-core/src/relay_url.rs and apps/web/src/server-url.test.ts. Each case names the origin an input becomes or the issue that refuses it. {256} in an input stands for 256 'a's. The host of 25 'aü' labels is 107 bytes as typed and 257 as an origin, because IDNA writes each label as xn--a-tfa.",
     "cases": [
         { "input": "https://relay.example", "origin": "https://relay.example" },
         {
@@ -31,6 +31,10 @@
         { "input": "", "issue": "empty" },
         { "input": "   ", "issue": "empty" },
         { "input": "https://{256}.example", "issue": "too_long" },
+        {
+            "input": "https://aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü.aü",
+            "issue": "too_long"
+        },
         { "input": "relay.example", "issue": "not_a_url" },
         { "input": "not a url", "issue": "not_a_url" },
         { "input": "https://", "issue": "not_a_url" },

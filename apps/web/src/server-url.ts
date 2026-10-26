@@ -106,6 +106,11 @@ export function checkRelayUrl(input: string): RelayUrlCheck {
     if (url.protocol === "http:" && !isLoopback(url.hostname)) {
         return { issue: "insecure_remote" };
     }
+    // Again on the origin: IDNA writes a non-ASCII label as `xn--…`, which
+    // can be longer than what was typed.
+    if (new TextEncoder().encode(url.origin).length > MAX_SERVER_URL_LENGTH) {
+        return { issue: "too_long" };
+    }
     return { origin: url.origin };
 }
 
