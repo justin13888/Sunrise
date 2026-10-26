@@ -330,3 +330,178 @@ impl Engine {
         Ok(at.map(|v| u64::try_from(v).unwrap_or(0)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::Engine;
+    use crate::alerts::SecurityEventKind as K;
+    use crate::commands::Command;
+    use crate::config::{Clock, SystemRng};
+    use crate::keychain::Keychain;
+    use rusqlite::params;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use sunrise_crypto::keys::VaultRootKey;
+    use sunrise_domain::{SunriseTime, TaskDraft, TaskPatch, TaskState};
+    use sunrise_storage::Db;
+
+    const ROOT: [u8; 32] = [0x92; 32];
+    const NOW: u64 = 1_700_000_000_000;
+
+    #[derive(Debug)]
+    struct Fixed;
+
+    impl Clock for Fixed {
+        fn now_ms(&self) -> u64 {
+            NOW
+        }
+    }
+
+    fn vault() -> (Engine, Db) {
+        let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
+        let e = Engine::from_clock(Arc::new(Fixed), Arc::new(SystemRng), kc);
+        (e, Db::open_memory(&VaultRootKey::from_bytes(ROOT)).unwrap())
+    }
+
+    /// Which tasks with a hard deadline plan a deadline reminder: an open
+    /// one, todo or in progress; never a done, cancelled, archived or
+    /// deleted one, and never one with only a target.
+    #[test]
+    fn deadline_candidates_are_the_live_open_unarchived_tasks_with_a_hard_deadline() {
+        let (e, mut db) = vault();
+        let due = SunriseTime::instant(super::ms_to_ts(NOW as i64 + 3_600_000));
+        let table: [(&str, TaskPatch, bool); 7] = [
+            ("todo", TaskPatch::default(), true),
+            (
+                "in progress",
+                TaskPatch {
+                    state: Some(TaskState::InProgress),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                "done",
+                TaskPatch {
+                    state: Some(TaskState::Done),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                "cancelled",
+                TaskPatch {
+                    state: Some(TaskState::Cancelled),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                "archived",
+                TaskPatch {
+                    archived: Some(true),
+                    ..Default::default()
+                },
+                false,
+            ),
+            ("deleted", TaskPatch::default(), false),
+            (
+                "target only",
+                TaskPatch {
+                    hard_due_at: Some(None),
+                    target_at: Some(Some(due.clone())),
+                    ..Default::default()
+                },
+                false,
+            ),
+        ];
+        let mut want = BTreeSet::new();
+        for (title, patch, planned) in table {
+            let id = e
+                .apply(
+                    &mut db,
+                    Command::CreateTask(TaskDraft {
+                        title: title.into(),
+                        hard_due_at: Some(due.clone()),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity;
+            e.apply(&mut db, Command::UpdateTask { id, patch }).unwrap();
+            if title == "deleted" {
+                e.apply(&mut db, Command::DeleteTask(id)).unwrap();
+            }
+            if planned {
+                want.insert((id, title.to_owned()));
+            }
+        }
+        let got: BTreeSet<_> = e
+            .deadline_candidates(&db)
+            .unwrap()
+            .into_iter()
+            .map(|c| {
+                assert_eq!(c.hard_due_at, due, "{}", c.title);
+                (c.task, c.title)
+            })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    /// Security events at one instant are ordered by kind, then subject,
+    /// whatever order the rows were written in, so two reads agree; a
+    /// rotation whose payload this build cannot read is no event.
+    #[test]
+    fn security_events_at_one_instant_order_by_kind_then_subject() {
+        let (e, db) = vault();
+        let at = 1_800_000_000_000i64;
+        let conn = db.conn();
+        for (device, nickname) in [([0x30u8; 16], "thirty"), ([0x20u8; 16], "twenty")] {
+            conn.execute(
+                "INSERT INTO devices (device_id, cert_blob, nickname, platform, created_at_ms)
+                 VALUES (?1, X'', ?2, 'test', ?3)",
+                params![&device[..], nickname, at],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO device_revocations
+             (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+             VALUES (?1, ?2, 0, X'', 'Lost', ?2)",
+            params![&[0x10u8; 16][..], at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO device_revocations
+             (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+             VALUES (?1, ?2, 0, X'', 'Lost', ?2)",
+            params![&[0x40u8; 16][..], at - 1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO identity_transitions
+             (to_identity_id, from_identity_id, to_id_s_pub, to_id_d_pub, meta_epoch,
+              hlc_physical_ms, hlc_logical, emitter_device_id, payload, prev_sig, next_sig)
+             VALUES (?1, X'', X'', X'', 0, ?2, 0, X'', X'00ff', X'', X'')",
+            params![&[0x05u8; 16][..], at],
+        )
+        .unwrap();
+        let events = e.security_events(&db).unwrap();
+        let order: Vec<(u64, K, [u8; 16])> = events
+            .iter()
+            .map(|ev| (ev.at_ms, ev.kind, ev.subject))
+            .collect();
+        let at = u64::try_from(at).unwrap();
+        assert_eq!(
+            order,
+            [
+                (at - 1, K::DeviceRevoked, [0x40; 16]),
+                (at, K::DeviceJoined, [0x20; 16]),
+                (at, K::DeviceJoined, [0x30; 16]),
+                (at, K::DeviceRevoked, [0x10; 16]),
+            ],
+            "time, then kind, then subject; the unreadable rotation is no news"
+        );
+        assert_eq!(events, e.security_events(&db).unwrap());
+    }
+}
