@@ -17,20 +17,18 @@
 //! select a `#[ignore]`d test that acquires the lock and parks. A normal
 //! `cargo test` run therefore never executes the child body directly.
 
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use sunrise_core::vault_lock::{VaultLock, VaultLockError};
 
 /// Env var carrying the vault dir from parent to child.
 const CHILD_DIR_ENV: &str = "SUNRISE_VAULT_LOCK_CHILD_DIR";
-/// Sentinel the child writes once it holds the lock.
-const READY_FILE: &str = "child.ready";
-/// Polling budget: 300 × 10ms = 3s. A bounded count rather than a deadline
-/// because `Instant::now` is denied by the determinism gate, and this needs no
-/// clock — the sleep is constant.
-const READY_POLLS: u32 = 300;
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Line the child prints on stdout once it holds the lock. The parent blocks on
+/// the pipe until it reads this line or the pipe closes, so readiness is an
+/// event rather than a real-time budget a loaded host could overrun.
+const READY_LINE: &str = "SUNRISE_VAULT_LOCK_CHILD_READY";
 
 // ---------------------------------------------------------------------------
 // Child bodies. `#[ignore]` so a plain `cargo test` never runs them; the parent
@@ -43,7 +41,7 @@ fn child_holds_lock_forever() {
     let dir = child_dir();
     let _lock = VaultLock::acquire(&dir, std::process::id(), "2026-01-01T00:00:00Z")
         .expect("child must acquire the lock");
-    std::fs::write(dir.join(READY_FILE), b"1").unwrap();
+    signal_ready();
     // Park until the parent kills us. Never returns.
     loop {
         std::thread::sleep(Duration::from_secs(3600));
@@ -56,7 +54,7 @@ fn child_acquires_then_aborts() {
     let dir = child_dir();
     let _lock = VaultLock::acquire(&dir, std::process::id(), "2026-01-01T00:00:00Z")
         .expect("child must acquire the lock");
-    std::fs::write(dir.join(READY_FILE), b"1").unwrap();
+    signal_ready();
     // Models `panic = "abort"` from the release profile: the specific
     // interaction that made the old bug unrecoverable.
     std::process::abort();
@@ -68,7 +66,7 @@ fn child_acquires_then_returns() {
     let dir = child_dir();
     let lock = VaultLock::acquire(&dir, std::process::id(), "2026-01-01T00:00:00Z")
         .expect("child must acquire the lock");
-    std::fs::write(dir.join(READY_FILE), b"1").unwrap();
+    signal_ready();
     drop(lock);
 }
 
@@ -81,7 +79,7 @@ fn child_acquires_then_returns() {
 fn sigkilled_holder_releases_lock() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_child("child_holds_lock_forever", dir.path());
-    wait_ready(dir.path(), &mut child);
+    wait_ready(&mut child);
 
     child.kill().expect("kill child");
     child.wait().expect("reap child");
@@ -97,7 +95,7 @@ fn sigkilled_holder_releases_lock() {
 fn aborted_holder_releases_lock() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_child("child_acquires_then_aborts", dir.path());
-    wait_ready(dir.path(), &mut child);
+    wait_ready(&mut child);
     let _ = child.wait();
 
     let lock = VaultLock::acquire(dir.path(), 1, "2026-01-01T00:00:01Z")
@@ -109,7 +107,7 @@ fn aborted_holder_releases_lock() {
 fn normal_child_exit_releases_lock() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_child("child_acquires_then_returns", dir.path());
-    wait_ready(dir.path(), &mut child);
+    wait_ready(&mut child);
     let status = child.wait().expect("reap child");
     assert!(status.success(), "child should exit cleanly");
 
@@ -124,7 +122,7 @@ fn normal_child_exit_releases_lock() {
 fn cross_process_contention_reports_child_pid() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_child("child_holds_lock_forever", dir.path());
-    wait_ready(dir.path(), &mut child);
+    wait_ready(&mut child);
     let child_pid = child.id();
 
     match VaultLock::acquire(dir.path(), 1, "2026-01-01T00:00:01Z") {
@@ -153,7 +151,7 @@ fn cross_process_contention_reports_child_pid() {
 fn lock_survives_contender_reading_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_child("child_holds_lock_forever", dir.path());
-    wait_ready(dir.path(), &mut child);
+    wait_ready(&mut child);
 
     for _ in 0..20 {
         let _ = std::fs::read(dir.path().join("core.lock.owner"));
@@ -188,24 +186,40 @@ fn spawn_child(test_name: &str, dir: &Path) -> Child {
     Command::new(exe)
         .args(["--ignored", "--exact", test_name, "--nocapture"])
         .env(CHILD_DIR_ENV, dir)
+        .stdout(Stdio::piped())
         .spawn()
         .expect("spawn child test process")
 }
 
+/// Tell the parent this child holds the lock. The explicit flush puts the line
+/// on the pipe before the child parks, aborts, or exits.
+fn signal_ready() {
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{READY_LINE}").expect("write ready line");
+    out.flush().expect("flush ready line");
+}
+
 /// Block until the child signals that it holds the lock, failing loudly if it
 /// dies first — otherwise a child that panicked would show up as a confusing
-/// timeout instead of the real error.
-fn wait_ready(dir: &Path, child: &mut Child) {
-    let ready = dir.join(READY_FILE);
-    for _ in 0..READY_POLLS {
-        if ready.exists() {
+/// hang instead of the real error. The read ends at the ready line or at end
+/// of file, which the child's exit guarantees, so there is no deadline to tune.
+fn wait_ready(child: &mut Child) {
+    let stdout = child.stdout.take().expect("child stdout is piped");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).expect("read child stdout") == 0 {
+            break;
+        }
+        // libtest may print the test name on the same line, so match within it.
+        if line.contains(READY_LINE) {
+            // Keep the pipe drained until the child exits: closing it would
+            // fail the child's later libtest output with a broken pipe.
+            std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
             return;
         }
-        if let Some(status) = child.try_wait().expect("poll child") {
-            panic!("child exited before acquiring the lock: {status}");
-        }
-        std::thread::sleep(POLL_INTERVAL);
     }
-    let _ = child.kill();
-    panic!("child never signalled ready");
+    let status = child.wait().expect("reap child");
+    panic!("child exited before acquiring the lock: {status}");
 }

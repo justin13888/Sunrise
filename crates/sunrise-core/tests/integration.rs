@@ -152,9 +152,10 @@ async fn changes_event_emitted_on_create() {
         }))
         .await
         .unwrap();
-    let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // `submit` publishes before it returns, so the event is already queued:
+    // no wait, and so no real-time budget a loaded host could overrun.
+    let evt = rx
+        .try_recv()
+        .expect("submit must publish its event before it returns");
     assert!(matches!(evt, sunrise_core::DomainEvent::Created(_)));
 }
