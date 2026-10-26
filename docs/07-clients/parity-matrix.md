@@ -146,11 +146,8 @@ added:**
 The iOS widget row is graded **met**. The graded MUSTs live in
 three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) when they were last graded,
-and became MUSTs under ADR-0042 without any verdict changing. The previous revision of
-this audit recorded one unmet macOS MUST (iCal import/export), one partial macOS
-MUST (drag-and-drop) and three partial CLI MUSTs (read/write tasks, the Stream
-view, multi-account); all five were closed in code, and each was re-traced from
-a surface rather than taken on report. What remains narrower than the prose
+and became MUSTs under ADR-0042 without any verdict changing. Each verdict was
+traced from a surface rather than taken on report. What remains narrower than the prose
 around it is recorded in the cells below and in
 [What is still narrow](#what-is-still-narrow) — an audit whose every row says
 "met" is worth nothing if the narrowness is not written down beside it.
@@ -168,7 +165,7 @@ around it is recorded in the cells below and in
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
 | Attachments — view image/PDF | met *(bytes this device can get)* | task editor → Attachments pane; `PDFKit` inline, images inline. The scope note narrowed with [#227](https://github.com/justin13888/Sunrise/issues/227): what it can draw is no longer only what is *stored* here. Under the 10 MiB auto-fetch threshold the sync driver fetches an attachment unasked ([#176](https://github.com/justin13888/Sunrise/issues/176)); over it, the row is the placeholder [`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch specifies — file name, size, and a **Download** button (`AttachmentsView.swift:99`) → `AttachmentsModel.download(_:)` (`AttachmentsModel.swift:159`) → `CoreBridge.fetchAttachment` (`CoreBridge.swift:144`) → the seam (`sunrise-core-bindings/src/lib.rs:656`) → `Core::fetch_attachment` (`sunrise-core/src/blob_fetch.rs:250`), which queues the request and lets the driver, which owns the transport, fetch it with no size predicate. During the transfer the row draws progress and a **Cancel** button, which marks the attachment `partial` and needs no relay to do it. What stays outside the row: `auto_fetch_on_cellular`, resume-from-partial (excluded by §Lazy fetch itself — a cancelled transfer restarts from byte 0), and the LRU cache with its configurable size |
 | Attachments — upload | met | `Attach…` file importer (`AttachmentsView.swift:38`) **and** a drop target on the pane (`:32`) → `AttachmentsModel.attach(contentsOf:)` (`AttachmentsModel.swift:130`) → `CoreBridge.attachFile` (`CoreBridge.swift:109`) → the seam (`sunrise-core-bindings/src/lib.rs:589`) → `Core::attach_file` (`sunrise-core/src/attach.rs:148`), which mints a per-blob key, seals each chunk into **this vault's** blob store (`sunrise-storage/src/blob_store.rs:31`, `:46`), submits `Command::AttachFile`, and queues the blob in `blob_uploads`. The sync driver drains that queue over `POST /blobs/init` → `PUT` → `finalize`, and a paired device fetches the ciphertext back with `GET /blobs/{id}` ([#176](https://github.com/justin13888/Sunrise/issues/176), `crates/sunrise-core/src/blob_sync.rs`, proven end to end by `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`). The upload needs no network at attach time: the row is durable and the next session drains it |
-| Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
+| Search (FTS) | met *(tasks only)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce → `TaskListKind.search` → `CoreQuery.search` → `Query::Search`. The core parses the text in the [search.md](../08-features/search.md) grammar, so operators and negation work, and answers with tasks only: the by-kind grouping is `Query::SearchGrouped`, which no Apple screen issues |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
 | Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet. Every bound action shows its key wherever it appears ([Rule 1](../08-features/keyboard.md#1-hints-everywhere)): the menu bar's native equivalents, drawn from `CommandMenus`; the row context menu; the Undo and Redo tooltips; the palette, the cheat sheet and the empty states of Today, the Inbox, a stream and Search. `NoLiteralChordTests` fails on any `.keyboardShortcut(` that does not read `Keymap`, and `KeymapReachTests` on a bound action missing from the palette, the cheat sheet or a menu |
 | Drag-and-drop | met *(seven of eight cells)* | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built, and what is missing is two modifiers rather than a layout: `BlockChip` is not `.draggable` and `TaskListView`'s drop only reorders. The write it would issue exists and is tested — `TaskListModel.bind(_:to:)` → `Command::BindTask` |
@@ -186,11 +183,9 @@ around it is recorded in the cells below and in
 | Mouse | met | standard AppKit/SwiftUI controls, plus double-click-to-open and context menus |
 | First-run pairing | met | `OnboardingView` "Pair with that device", and the same route out of `LockedView` |
 
-**iCal import / export was the one unmet macOS MUST, and it is now met.** The
-gap was never in the core: `SunriseCore::import_ical` / `::export_ical` and the
-`IcalImportReport` / `IcalNotice` DTOs were correct and tested, and
-`sunrise-cli` already consumed them — what was missing was a caller on the
-client the row applies to. `apps/apple` now has one: `CoreBridge.importIcal` /
+**iCal import / export** on macOS is `SunriseCore::import_ical` /
+`::export_ical` and the `IcalImportReport` / `IcalNotice` DTOs, the same ones
+`sunrise-cli` consumes, reached through `CoreBridge.importIcal` /
 `.exportIcal`, an `IcalModel` holding the report as a value, and the two File
 menu items. The import's notices are **shown to the user, grouped by code**,
 rather than counted — an importer that silently drops a `VTODO` is the failure
@@ -212,21 +207,20 @@ forbids a state carried by appearance alone. A screen that *can* print but is
 empty right now stays enabled and beeps; that is a different condition, and a
 menu item flickering as tasks come and go would explain less.
 
-### CLI — 10 MUSTs
+### CLI — 12 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
-| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
-| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
+| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTaskTo`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch), `note <id>` (`UpdateTask` with a `body` patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line |
+| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines` list them; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. `streams create\|edit\|archive\|unarchive\|delete` (`CreateStream`, …) and `contexts create\|edit\|archive\|unarchive\|delete` (`CreateContext`, …) change the two lists, `streams move <x> before <y>\|last` reorders streams (`UpdateStream { sort_order }`), and `routines create\|edit\|archive\|unarchive\|pause\|resume\|delete\|skip` (`CreateRoutine`, …) manage routines |
 | Today / Inbox / Stream views (list form) | met *(today, no context filter)* | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
 | Upcoming (list form) | met *(no drag, no context filter)* | `upcoming [7\|14\|30]` (`Query::Upcoming`): one block per civil day in the reader's zone, its blocks, plans and deadlines, then each stream's undated tasks, five each with "N more". With no span the device's `views.upcoming.span_days` decides; `--json` prints the days with their bounds. Rescheduling is `defer` / `schedule`, since a terminal has no drag |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
-| Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
+| Search (FTS) | met | `sunrise search [--kind <k>] [--all] <query>…` (`Query::SearchGrouped`) — results grouped by kind, and the query takes the operators [search.md](../08-features/search.md) specifies (`#stream`, `@context`, `!1`, `state:`, `kind:`, `is:`, `has:`, `due<fri`) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
 | Multi-account (`SUNRISE_VAULT`) | met *(0600 on unix only)* | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
 | iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
-
 | Device list and revocation | met | `sunrise devices` marks revoked and non-current devices distinctly, and `sunrise device revoke <id-prefix> [--reason …]` rotates every Stream key — **and** the account identity, when run from the device that created the account ([ADR-0037](../11-adr/0037-identity-transition.md)). Only that device holds `ID_S_priv` since #105, so a revocation elsewhere cuts the keys and logs `core.identity.rotation_unavailable`; it costs little, because a revoked device that was itself paired cannot certify itself back in either way. It prints the two-state disclosure — revoked locally versus the relay has been told — because those are different guarantees and the second is the one a user pressing the button believes they are getting ([#160](https://github.com/justin13888/Sunrise/issues/160)). **Both Apple clients now have it too** ([#144](https://github.com/justin13888/Sunrise/issues/144)): `DeviceListSection` is a section of the Settings form that `VaultWindow` presents on macOS and `VaultTabs` on iOS, so one file serves both, and `DeviceListModel` drives it off `CoreQuery.deviceList` and the change feed. Removing a device is a swipe action and a context-menu item, confirmed through a dialog offering the four reasons the register records, and the result states both halves the CLI states plus the streams the rotation could not reach. Three signals reach a user there that previously reached none: this vault holding the only copy of `ID_D_priv`, a device id first seen after a revocation, and `CommandResult::unrotated_streams` |
 | Identity status and rotation | met *(CLI only; no client surface)* | `sunrise identity status` prints the chain — the account's stable `genesis_identity_id`, the identity in force, the rotation count, whether this device still speaks for the account, whether it can seal a recovery code, and whether it can **add another device** — and `sunrise identity rotate [--keep-code]` replaces the identity while keeping every current device, refusing by name on a device admitted by pairing; without `--keep-code` it retires the recovery code and prints a new one, and `sunrise identity new-code` re-issues one alone ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)). A code a rotation retired fails `recover` on every client with its own error. **Still CLI-only**, and narrower than the row above suggests: the Apple device list reads `SunriseCore::holds_identity_key` and `can_sponsor_pairing` directly, so the two facts a user acts on are on screen, but nothing in either app calls `Query::IdentityStatus` and neither offers a rotation |
 
@@ -249,8 +243,11 @@ single file written at startup can stand in for it. The CLI is the driver with
 no channel at all, which is why the protocol had to be transport-agnostic.
 
 `SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
-carefully: it supplies a root outright and touches no keystore, which is how a
-vault created before per-vault keys existed is opened. Such a vault is **refused** with a
+carefully: it supplies a root outright and touches no keystore, which hands two
+vaults the same at-rest key without making them one account (each still mints
+its own identity; joining an account is `sunrise pair`), and is how a vault
+created before per-vault keys existed is opened. Without it, such a vault is
+**refused** with a
 typed `PreMultiAccount` error rather than opened by guessing the old constant —
 and the refusal quotes that constant, so the data can still be read out once and
 moved. Refusing and then telling the user exactly how to proceed is the point:
@@ -278,7 +275,7 @@ actually reach on a phone.
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor` (`TaskEditorView.swift:92`). Checklist ticks draw as filling circles rather than switches, because the iOS default for a `Toggle` says "this setting is on" where a checklist means "this is done" (`PlatformKit.swift:204-229`). Scope per ADR-0020 |
 | Attachments — view image/PDF | met *(bytes this device can get)* | task editor → Attachments pane (`TaskEditorView.swift:93`); `PDFView` bridged through `UIViewRepresentable` (`AttachmentsView.swift:224-226`). Same scope note as the Mac's row and for the same reason: `apps/apple/Sunrise/` compiles into both targets, so the Download placeholder and its Cancel ([#227](https://github.com/justin13888/Sunrise/issues/227)) are literally the same view here. iOS carries one narrowing the Mac does not: `auto_fetch_on_cellular` is specified and unbuilt, so a phone on a cellular link fetches under-threshold attachments exactly as it would on Wi-Fi |
 | Attachments — upload | met | `.fileImporter` (`AttachmentsView.swift:38`) and a URL drop target beside it (`:32`) — the same shared `AttachmentsModel` and the same core path the Mac reaches, since `apps/apple/Sunrise/` compiles into both targets (`project.yml:195`, `:353`), so the relay upload and the paired-device fetch are the Mac's ([#176](https://github.com/justin13888/Sunrise/issues/176)). See the macOS row above |
-| Search (FTS) | met *(plain-text half)* | the `.search`-role tab (`VaultTabs.swift:97-99`) → the shared `SearchView`. It issues the identical literal-AND FTS query the Mac does and inherits the identical narrowness ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
+| Search (FTS) | met *(tasks only)* | the `.search`-role tab (`VaultTabs.swift:97-99`) → the shared `SearchView`. It issues the same `Query::Search` the Mac does and has the same narrowness: operators work, and only tasks come back |
 | Saved searches / views | met | the shared `SavedViewsMenu` on the toolbar of the three screens a saved view can name — Today, a pushed list and Search (`iOS/VaultTabs.swift`, `savedViewsButton(for:)`) — recalling through the same `show(_:)` a deep link uses, and saving through `SaveViewSheet` on a detent (`iOS/VaultSurfaces.swift`, `LibrarySurfaces`). Not Browse's overflow, where "Save this view…" would have meant the sidebar. Driven end to end by `LibraryReachUITests` |
 | Keyboard navigation | met | `onKeyChord(scope: .list…)` on the shared `TaskListView` — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. On an **iPad** the `.application`-scoped chords as well: `KeyCommandMenus` (`Sunrise/Keyboard/KeyboardCommands.swift`), attached to the scene in `iOS/SunriseiOSApp.swift`, turns `CommandMenus` into `UIKeyCommand`-backed menu commands, and `VaultTabs.perform(_:)` opens the palette (⇧⌘P) and the cheat sheet (⌘/, or `?` in a list). On an **iPhone** both stay inert by decision ([#348](https://github.com/justin13888/Sunrise/issues/348)), and so do the empty-state hints; the ⌘ commands themselves still answer an attached keyboard. ⌘P prints the screen on show; Export as PDF is the Mac's alone and is not offered, because the iOS print sheet saves the same PDF (`AppAction.isOffered`). `PadKeyboardUITests` drives ⇧⌘P and `?` and skips on an iPhone simulator, which is the one the `ios-app` task runs |
 | Drag-and-drop | met *(six of eight cells)* | six of the eight cells, from shared files with no platform fork. `.draggable` on the task row (`TaskRowView.swift:74`) is the source for three of them — stream and context rows accept it (`BrowseSidebar.swift:263`, `:306`) and other task rows accept it for reorder (`TaskListView.swift:192`). The other three need no task drag: stream order is `ForEach.onMove` (`BrowseSidebar.swift:45`), files drop onto the attachments pane (`AttachmentsView.swift:32`), and a block moves and resizes inside the grid by its own gestures (`BlockChip`, `CalendarView.swift:417`, moved at `:467` and resized at `:504`). The gesture is a long-press drag rather than a click-drag. Two cells are **No**. *Calendar block → Task* is unbuilt on both platforms (`BlockChip` carries no `.draggable`; `TaskListView`'s drop only reorders). *Task → Calendar block* — a **Yes** on macOS — fails on iOS for reach: the grid's `dropDestination` (`CalendarView.swift:280`) is shared and built, and `accept(items:at:)` (`:371`) takes `tsk_` payloads only, so it serves this cell and no other — but no iOS screen shows a task row and the grid together, no `Tab` carries a `dropDestination`, and nothing configures spring-loading. Those last two are the cell's load-bearing claims, so they are asserted rather than described: `SunriseTests/TabDropTargetTests.swift` reads every source under `apps/apple/iOS/` and fails if one of them configures a `dropDestination`, an `onDrop` or spring-loading, with a second test that the shell still declares the five tabs it is reading — so the cell goes red on the commit that would overturn it. It replaced a two-second simulator drag ([#215](https://github.com/justin13888/Sunrise/issues/215)), which asserted the same negative through a timing-dependent gesture: it failed CI on a pull request that touched five markdown files and then passed a re-run of the same commit, and an assertion that can fail spuriously can pass spuriously — a drag that never lifted satisfies "the tab did not change" without anything having been measured. So the **one-handed** gesture is recorded as *unbuilt* rather than as measured-and-absent ([#72](https://github.com/justin13888/Sunrise/issues/72)), and the two-handed one stays unmeasured, because XCUITest has no API for two independent simultaneous touches; the cell stays **No** on this table's own rule that a completable path has to be shown. Of the six, *File → Task* needs iPad multitasking ([`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix)) |
@@ -352,32 +349,19 @@ over:
   Resume-from-partial is *not* on this list; §Lazy fetch excludes it by
   name, and a cancelled transfer's chunks are discarded so the next attempt
   starts from byte 0, which is the behaviour that section describes. Search
-  reaches
-  FTS5 on tasks only,
-  as a literal AND of quoted terms: every operator
-  [search.md](../08-features/search.md) specifies is currently matched as a
-  literal word, and the by-kind grouping does not exist.
-- **CLI.** A Task's `body` is unreachable — Notes is a CLI **MAY**, and what
-  plain stdin should become as structured `NoteBlock`s is a design question
-  rather than a gap. Streams, Contexts and Routines can be listed and (for
-  Streams) reordered, but none can be created, renamed, archived or deleted;
-  the row asks for *read + capture*, and that is what it has.
-  `ical export` takes the same windows and no Stream scope — `today`, `day`,
+  issues `Query::Search`, which takes the operators
+  [search.md](../08-features/search.md) specifies and returns tasks only; the
+  by-kind grouping `Query::SearchGrouped` answers has no Apple caller.
+- **CLI.** `ical export` takes the same windows and no Stream scope — `today`, `day`,
   `week` — and `ical import` drops `RRULE`, `DESCRIPTION` and `LOCATION` for
   the same missing `Block` fields, so a recurring event imports as one
   occurrence with a notice against it. Both halves are the seam's, so the CLI
   is narrow here in exactly the way the app is.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
-  `search` issues the same query the app does, so it inherits the same
-  narrowness — the operator grammar
-  [search.md](../08-features/search.md) specifies is matched literally; see
-  the macOS note above.
-- **iOS.** No MUST is unmet. The two that were — **saved views** and **iCal
-  import / export**, a working, tested shared model with no iOS caller in each
-  case — now have one: a toolbar menu on the screens a saved view can name, and
-  a document importer and exporter behind Browse's overflow where the Mac has a
-  File menu. Background sync runs frontmost, on the OS's refresh schedule,
+- **iOS.** No MUST is unmet. **Saved views** are a toolbar menu on the
+  screens a saved view can name, and **iCal import / export** a document
+  importer and exporter behind Browse's overflow where the Mac has a File menu. Background sync runs frontmost, on the OS's refresh schedule,
   and on a silent push.
   An iPad with an attached keyboard gets the desktop keyboard set — the ⌘
   bindings as menu commands, the palette and the cheat sheet — and an iPhone
@@ -399,7 +383,7 @@ over:
   [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix).
   Search, *Pairing — scan QR* and the two *Attachments* rows are
   narrow here in exactly the way they are on the Mac, and none of the three
-  narrownesses is iOS's: the literal-AND FTS query and the attachment byte path
+  narrownesses is iOS's: the tasks-only search query and the attachment byte path
   are the seam's, while when pairing falls back to copy and paste is shared
   SwiftUI rather than anything in the core. See the macOS
   note above.
@@ -446,7 +430,7 @@ capability and each capability is reachable. They are written down so that
 - A user can run **without** any specific OS feature (Live Activities,
   Spotlight, etc.); fallbacks via plain notifications must exist.
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
-  qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
+  qualifier — `met *(paste half)*`, `met *(tasks only)*`,
   `met *(list keymap)*`, `met *(frontmost only)*`,
   `met *(seven of eight cells)*`, `met *(six of eight cells)*`,
   `met *(windowed, no round-trip)*`, `met *(0600 on unix only)*`,
@@ -471,10 +455,8 @@ capability and each capability is reachable. They are written down so that
   hunting for shortfalls nobody has recorded — an unrecorded narrowness is a
   gap in the notes first, and gets a qualifier when it is written down. Two
   things sit outside the set. A scope the row's own **title** already carries
-  needs no second copy in the verdict: *Streams, contexts, routines (read +
-  capture)* names its bound, and the note saying the CLI mints no Stream is
-  measuring against the capability rather than against that row. A title
-  parenthetical covers only what it says, though — *Today / Inbox / Stream
+  needs no second copy in the verdict. A title parenthetical covers only what
+  it says, though — *Today / Inbox / Stream
   views (list form)* names the output shape, so the missing `today` context
   filter is a different shortfall and still earns its qualifier. And a recorded
   shortfall with **no verdict cell** cannot carry a qualifier at all: the
@@ -483,11 +465,8 @@ capability and each capability is reachable. They are written down so that
   to attach to and stays in prose. The test is mechanical — find the capability
   in the requirement table above, and if its mark in that column is not the one
   that column's audit grades, there is no cell to qualify. Among the ones
-  recorded today: macOS *Print / PDF export*, a **SHOULD** the 24-MUST audit
-  has no line for; the CLI's unwritable Task `body`, which belongs to its
-  *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
-  *Read/write tasks* — in whose cell that gap is recorded — is bare; and on
-  iOS the **MAY**s the audit keeps in prose rather than in the table —
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the macOS audit
+  has no line for; and on iOS the **MAY**s the audit keeps in prose rather than in the table —
   *Watch app*, *Mouse* and *Print / PDF export*. No count is given because the
   set grows every time a narrowness is written down against a capability the
   audits do not grade. Outside the mechanism altogether are the

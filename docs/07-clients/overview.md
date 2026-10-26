@@ -25,9 +25,8 @@ iOS / iPadOS ships, and carries SHOULDs rather than MUSTs
 ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)); moving it to parity is
 roadmap phase P5. See [`parity-matrix.md`](./parity-matrix.md).
 
-Windows and Linux desktop were specified in an earlier revision of this
-directory and never built. [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
-stops claiming them.
+There is no Windows or Linux desktop client
+([ADR-0019](../11-adr/0019-swiftui-macos-client.md)).
 
 ## CLI
 
@@ -35,107 +34,14 @@ stops claiming them.
 vault, do the thing, print the result, exit. It links the core directly — no
 daemon, no socket, no second process.
 
-```
-capture and triage
-  sunrise capture <text>...    parse and commit one task, then exit
-  sunrise edit <id>... <tokens>...
-                               change a task's fields (annotate grammar)
-  sunrise retitle <id> <text>...
-                               give one task a new title
-  sunrise defer <id>... <when> push tasks out, counting the deferral
-  sunrise schedule <id>... <when>|-
-                               set or clear the plan, counting nothing
-  sunrise done <id>...         complete one or more tasks
-  sunrise drop <id>...         soft-delete one or more tasks
-  sunrise restore <id>...      bring back deleted tasks, streams, contexts,
-                               routines or blocks
-  sunrise conflicts [list] [<id>] [--all]
-                               fields two devices wrote without seeing each
-                               other, with every write kept; --all adds quiet
-                               fields
-  sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)
-                               settle one field on a kept write or a new value
-  sunrise note <id> [<text>...|-|--file <path|->] [--force]
-                               print, replace or clear a task's note
-  sunrise show <id>            one task's fields, each time with its kind
-  sunrise undo | redo          reverse or replay this vault's last write
-  sunrise today | inbox        list today's tasks / the inbox
-  sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then
-                               each stream's undated tasks
-  sunrise next                 the focus planner's top picks
-  sunrise search <query>...    full-text search
-
-the vault's shape
-  sunrise streams | contexts | routines
-  sunrise stream <id|name>     list the tasks in one stream
-  sunrise context <id|name>    list the tasks carrying one context
-  sunrise streams move <x> before <y> | last
-                               reorder the stream list; syncs, unlike task order
-  sunrise streams create|edit|archive|unarchive|delete ...
-  sunrise contexts create|edit|archive|unarchive|delete ...
-  sunrise routines create <title>... --rule <RRULE> [--zone <IANA>] ...
-  sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
-  sunrise routines skip <id|title> [--at <occurrence-key>]
-
-calendar
-  sunrise blocks [day|week] [<when>]
-  sunrise block create --from <when> (--to <when> | --for <length>) ...
-  sunrise block move <block-id> --from <when> [--to <when>]
-  sunrise block bind|unbind <block-id> <task-id>...
-  sunrise block merge <block-id> <block-id>
-  sunrise block delete <block-id>
-
-calendar interchange
-  sunrise ical import <path|-> read an .ics into Blocks, idempotently
-  sunrise ical export [today|day|week] [path]
-                               write a window of Blocks as .ics
-
-review and reporting
-  sunrise review               this week's review summary
-  sunrise review daily         the glance since the start of yesterday
-  sunrise review save [note]   record that the week was reviewed
-  sunrise brief morning|evening
-  sunrise reminders plan       this device's reminders for the next day
-  sunrise export <trends|activity|focus|streaks> [json|csv] [path]
-  sunrise export all <dir> [--no-fetch]
-                               everything, decrypted, in the open export format
-
-views and preferences
-  sunrise views [save <name> <view> [--query q] [--contexts a,b] | apply <name> | delete <name>]
-  sunrise prefs [list | get <key> | set <key> <value> [--device] | clear <key> [--device]]
-
-attachments
-  sunrise attachments <task-id>
-  sunrise attachment add <task-id> <path> | remove <id> | get <id> [path] | cancel <id>
-
-account
-  sunrise vaults               list this machine's vaults, marking the open one
-  sunrise login | logout | whoami
-  sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
-                               on the device being added: show a code, compare
-                               the six digits, open the vault here (§Pairing)
-  sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
-                               on the device with the vault: pair with it
-  sunrise pair offer | request | issue | accept
-                               the same pairing by files, with no relay
-
-plumbing
-  sunrise focus <id>           open a focus session on a task
-  sunrise focus end [--done]   close every running session; --done completes
-                               the task it was opened on
-  sunrise sync --once          drain the outbox and exit (cron / CI)
-  sunrise sync --watch [--rounds <n>]
-                               keep draining until Ctrl-C / SIGTERM, backing
-                               off while the relay is unreachable
-  sunrise tz [set <IANA> | clear]
-                               the zone times are read in, and its source
-  sunrise rebuild              rebuild every row from this vault's own op log,
-                               in one transaction; nothing is sent
-```
+`sunrise help` is the command list: each verb, its arguments and a line on
+what it does. Its text is `[cli.usage]` in `i18n/en.toml`. This page states the
+contracts the list cannot: the JSON output, the reader's zone, pairing, undo,
+and the rules each verb follows.
 
 ### A client of the client layer
 
-Every verb above is a lowering onto `sunrise-client-core`
+Every verb is a lowering onto `sunrise-client-core`
 ([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)
 §The client layer), not a second implementation of it: `defer` is
 `schedule::defer_command`, `schedule` is `schedule::scheduled_on_day`,
@@ -199,13 +105,16 @@ value's round-trippable rendering, `zone` a zoned value's own zone (else
 placed). A **task** is `{id, title, state, stream, contexts, priority, energy,
 estimate_s, scheduled_at, due_at, target_at, completed_at, deferred_count,
 blocked_by, note, updated_at_ms, sort_order, cancel_reason,
-late_acknowledged_at_ms}`, its times as above, `note` as
+late_acknowledged_at_ms, routine, hard_constraint_violated}`, its times as above, `note` as
 Markdown text or `null`, and `sort_order` the task's manual-order key or `null`
 when nobody placed it. `scheduled_at` is the plan (`planned_at`) and `due_at`
 the hard deadline (`hard_due_at`), under the names they always had here;
 `target_at` is the soft deadline (ADR-0047); `cancel_reason` is a dropped
 task's reason (`null` unless it is cancelled with one), and
-`late_acknowledged_at_ms` when it was last kept in the triage queue. A **lateness** is `{state,
+`late_acknowledged_at_ms` when it was last kept in the triage queue,
+`routine` the id of the routine that generated the task (`null` for any other
+task), and `hard_constraint_violated` `true` for a routine occurrence planned
+where it breaks one of its routine's `hard` constraints, else `false`. A **lateness** is `{state,
 since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
 `since_ms` when it began, `null` when on track.
 
@@ -214,7 +123,7 @@ since_ms}`: `state` one of `late_hard`, `late_soft`, `stale`, `on_track`, and
 | `today` | array of tasks in Today's group order, each with `today_group` (`planned`, `carried_over`, `due_today`, `late`), `deadline` (`hard` or `target` for a `due_today` row, else `null`) and `lateness` |
 | `inbox`, `stream`, `context`, `views apply` (task views) | array of tasks; `inbox`, `stream` and `context` in manual order |
 | `move <id>... before\|after <id>`, `move <id>... first\|last` | array of tasks: the stream's list in its new order |
-| `search [--kind <k>] [--all] <query>` | `{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: [{id, opens, title, snippet, task}]}]}`, groups in the core's fixed order; `title` and `snippet` are `{text, ranges}` with each range `[start, end]` in Unicode scalars, `snippet` `null` when the body did not match, and `task` the whole task for a task hit, else `null`. Before #345 this was an array of tasks; a script reads them as `.groups[] \| select(.kind == "task") \| .hits[].task` |
+| `search [--kind <k>] [--all] <query>` | `{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: [{id, opens, title, snippet, task}]}]}`, groups in the core's fixed order; `title` and `snippet` are `{text, ranges}` with each range `[start, end]` in Unicode scalars, `snippet` `null` when the body did not match, and `task` the whole task for a task hit, else `null`. A script reads the tasks as `.groups[] \| select(.kind == "task") \| .hits[].task` |
 | `show <id>` | one task, with its `lateness` |
 | `triage`, `triage list` | array of tasks in the triage queue's order, each with its `lateness` |
 | `upcoming [7\|14\|30]` | `{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due, targets}], no_date: [{stream, no_stream, tasks, total}]}`, `blocks` as in `blocks`, `planned`, `due` (hard deadlines), `targets` (soft ones) and `tasks` arrays of tasks |
@@ -349,11 +258,14 @@ missing says exactly that rather than failing as a corrupt read.
 
 `SUNRISE_VAULT_ROOT` (64 hex characters) supplies a root outright and touches no
 keystore. It is an explicit dev affordance for handing two vaults the same
-at-rest key, and how to open a vault created before per-vault keys existed. It
-does **not** make them one account: each still mints its own identity, so
-neither reads the other's ops. Joining an account is `sunrise pair`. Such a vault is refused
-with its own typed error rather than opened by guessing the old constant, and
-the error quotes that constant so the data can be read out; the refusal follows
+at-rest key. It does **not** make them one account: each still mints its own
+identity, so neither reads the other's ops. Joining an account is
+`sunrise pair`.
+
+It is also how to open a vault created before per-vault keys existed. Without
+it, such a vault is refused with its own typed error rather than opened by
+guessing the old constant, and the error quotes that constant so the data can
+be read out with `SUNRISE_VAULT_ROOT`; the refusal follows
 the precedent of the `BASELINE_STORAGE_V = 13` refusal in
 [`../11-adr/0018-storage-baseline-reset.md`](../11-adr/0018-storage-baseline-reset.md).
 
@@ -406,9 +318,7 @@ the Task's `deferred_count` — the counter `sunrise review` reports as
 the plan keeps its kind and time of day, so a floating 09:00 deferred to
 tomorrow is a floating 09:00 tomorrow wherever its owner is
 ([ADR-0066](../11-adr/0066-times-survive-travel.md) §4); a phrase that names a
-time (`tomorrow 3pm`) is the user choosing it, and is written as typed. It used
-to send `Command::DeferTask`, an instant, which pinned a travelling plan to
-the zone the command happened to run in.
+time (`tomorrow 3pm`) is the user choosing it, and is written as typed.
 
 `schedule` sets the plan without counting a deferral: a day is that day, all
 day, because "schedule for tomorrow" names no time of day; `-` clears it.
