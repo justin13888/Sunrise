@@ -213,7 +213,8 @@ impl Device {
         self.json(&["show", id]).await
     }
 
-    /// `sync --once`, required to end live within [`WAIT`].
+    /// `sync --once`, required to end live, re-run on a timeout until
+    /// [`WAIT`] from now.
     ///
     /// # Panics
     /// As [`Device::sync_by`] does, with a deadline [`WAIT`] from now.
@@ -222,9 +223,10 @@ impl Device {
     }
 
     /// `sync --once`, re-run while it fails only because its own 30 s
-    /// budget ran out, until `deadline`. One reconnect cascade under load
-    /// outlasts a single budget; any other failure (a usage error, a
-    /// refused or degraded session) fails at once.
+    /// budget ran out, until `deadline`. The deadline is read after each
+    /// run, so the last run can end up to one budget past it. One reconnect
+    /// cascade under load outlasts a single budget; any other failure (a
+    /// usage error, a refused or degraded session) fails at once.
     ///
     /// # Panics
     /// When `sync --once` fails other than by timing out, or still times out
@@ -353,10 +355,15 @@ pub async fn bootstrap_and_recover(root: &Path, relay: &str) -> (Device, Device)
 /// Rounds of `sync --once` on A then B, until both report nothing pending,
 /// then one more round in which neither device's pending count or badge
 /// changes: B's last sends reach A in it, and a change either side still
-/// had in hand shows. All of it within [`WAIT`].
+/// had in hand shows.
+///
+/// One deadline, [`WAIT`] from the start, bounds every call, but it is read
+/// only between them: a `sync --once` that starts just before it still runs
+/// its full 30 s budget, and the round it is in finishes, so a settle that
+/// fails can overrun [`WAIT`] by about one round.
 ///
 /// # Panics
-/// When the two have not converged within [`WAIT`], with both devices' last
+/// When the two have not converged by the deadline, with both devices' last
 /// status.
 pub async fn settle(a: &Device, b: &Device) {
     let deadline = Instant::now() + WAIT;
