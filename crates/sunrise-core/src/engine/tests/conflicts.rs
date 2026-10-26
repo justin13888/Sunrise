@@ -886,6 +886,7 @@ fn held(e: &Engine, db: &Db, task: EntityRef) -> Held {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/conflicts.txt",
