@@ -263,6 +263,125 @@ mod tests {
         assert_eq!(back, v);
     }
 
+    /// A map whose keys are out of encoded-byte order decodes leniently but
+    /// is refused as non-canonical.
+    #[test]
+    fn detects_non_canonical_unsorted_map_keys() {
+        use ciborium::value::Value;
+        // a2 61 62 01 61 61 02 = {"b": 1, "a": 2}; canonical puts "a" first.
+        let raw = [0xa2, 0x61, b'b', 0x01, 0x61, b'a', 0x02];
+        assert!(decode_lenient::<Value>(&raw).is_ok());
+        assert!(matches!(
+            decode_canonical::<Value>(&raw),
+            Err(CanonicalError::NonCanonical {
+                input: 7,
+                reencoded: 7
+            })
+        ));
+    }
+
+    /// An integer written in a longer form than it needs decodes leniently
+    /// but is refused as non-canonical.
+    #[test]
+    fn detects_non_canonical_long_form_integers() {
+        // 18 01 = 1 with a one-byte argument; the shortest form is 01.
+        let raw = [0x18, 0x01];
+        assert_eq!(decode_lenient::<u32>(&raw).unwrap(), 1);
+        assert!(matches!(
+            decode_canonical::<u32>(&raw),
+            Err(CanonicalError::NonCanonical {
+                input: 2,
+                reencoded: 1
+            })
+        ));
+        // 1a 00 00 00 05 = 5 with a four-byte argument.
+        let raw = [0x1a, 0x00, 0x00, 0x00, 0x05];
+        assert!(matches!(
+            decode_canonical::<ciborium::value::Value>(&raw),
+            Err(CanonicalError::NonCanonical {
+                input: 5,
+                reencoded: 1
+            })
+        ));
+    }
+
+    /// Arbitrary float-free `Value` trees: integers across the whole CBOR
+    /// range, byte and text strings, booleans, null, and arrays, maps (keys
+    /// any of the above, unsorted and possibly repeated) and tags around them.
+    fn value() -> impl proptest::strategy::Strategy<Value = ciborium::value::Value> {
+        use ciborium::value::{Integer, Value};
+        use proptest::prelude::*;
+        let integer = prop_oneof![
+            any::<u64>().prop_map(Integer::from),
+            any::<i64>().prop_map(Integer::from),
+            (-(1i128 << 64)..0)
+                .prop_map(|n| Integer::try_from(n).expect("in CBOR's negative range")),
+        ];
+        let leaf = prop_oneof![
+            integer.prop_map(Value::Integer),
+            proptest::collection::vec(any::<u8>(), 0..24).prop_map(Value::Bytes),
+            any::<String>().prop_map(Value::Text),
+            any::<bool>().prop_map(Value::Bool),
+            Just(Value::Null),
+        ];
+        // Tags 2 and 3 are bignums, which a decoder may read back as an
+        // integer; they are drawn as integers instead.
+        let tag = prop_oneof![Just(0u64), Just(1u64), 4u64..=1_000, any::<u64>()]
+            .prop_filter("bignum tags are integers", |t| *t != 2 && *t != 3);
+        leaf.prop_recursive(4, 48, 6, move |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..6).prop_map(Value::Array),
+                proptest::collection::vec((inner.clone(), inner.clone()), 0..6)
+                    .prop_map(Value::Map),
+                (tag.clone(), inner).prop_map(|(t, v)| Value::Tag(t, Box::new(v))),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// What the encoder writes the strict decoder accepts, as the
+        /// canonicalized value; a canonical value round-trips to itself; and
+        /// canonicalizing is idempotent.
+        #[test]
+        fn encode_then_decode_canonical_round_trips(v in value()) {
+            use ciborium::value::Value;
+            let canonical = canonicalize(v.clone());
+            proptest::prop_assert_eq!(&canonicalize(canonical.clone()), &canonical);
+
+            let bytes = encode_canonical(&v).unwrap();
+            let back: Value = decode_canonical(&bytes).unwrap();
+            proptest::prop_assert_eq!(&back, &canonical);
+            proptest::prop_assert_eq!(encode_canonical(&back).unwrap(), bytes.clone());
+            proptest::prop_assert_eq!(encode_canonical(&canonical).unwrap(), bytes);
+        }
+
+        /// Whatever bytes the strict decoder accepts re-encode to themselves.
+        #[test]
+        fn decode_canonical_then_encode_is_the_identity(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..32),
+        ) {
+            if let Ok(v) = decode_canonical::<ciborium::value::Value>(&bytes) {
+                proptest::prop_assert_eq!(encode_canonical(&v).unwrap(), bytes);
+            }
+        }
+
+        /// The same over bytes the encoder wrote, so the accepting branch is
+        /// the one exercised: the strict decoder accepts them, and its value
+        /// re-encodes to the same bytes.
+        #[test]
+        fn decode_canonical_accepts_and_reproduces_encoder_output(v in value()) {
+            let bytes = encode_canonical(&v).unwrap();
+            let back = decode_canonical::<ciborium::value::Value>(&bytes);
+            proptest::prop_assert!(back.is_ok());
+            proptest::prop_assert_eq!(encode_canonical(&back.unwrap()).unwrap(), bytes);
+        }
+    }
+
     #[test]
     fn lenient_accepts_what_canonical_rejects() {
         let raw = [0x9f, 0x01, 0xff];

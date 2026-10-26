@@ -19,5 +19,7 @@ thiserror = { workspace = true }
 sunrise-error = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sunrise-test-seed = { workspace = true }
