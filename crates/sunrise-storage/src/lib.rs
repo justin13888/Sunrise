@@ -1,16 +1,17 @@
 //! SQLite + SQLCipher local storage layer.
 //!
 //! Implements `docs/04-storage/`. Each device's vault opens exactly one
-//! `Db` instance; the in-process advisory lock is owned by `sunrise-core`
-//! (Phase 10).
+//! `Db` instance; the vault advisory lock is owned by `sunrise-core`'s
+//! `vault_lock` module.
 //!
 //! Storage is per-device and per-account. Encryption at rest is provided
 //! by SQLCipher; the key is derived from the vault root via
 //! `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`.
 //!
-//! The tree ships a single migration — the `migrations/0013_baseline.sql` schema
-//! reset (ADR-0018); future `STORAGE_V` bumps add new files and never edit
-//! prior ones.
+//! The schema is a migration chain under `migrations/`, listed in
+//! [`migrations::MIGRATIONS`] and applied in id order. It starts at the
+//! `0013_baseline.sql` schema reset (ADR-0018); each `STORAGE_V` bump appends
+//! a new file and never edits a prior one.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

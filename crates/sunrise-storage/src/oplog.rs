@@ -29,7 +29,7 @@ impl OpLog {
     /// at-least-once delivery from sync.
     ///
     /// `applied_at` should be `None` if the op cannot be applied yet (deps
-    /// unsatisfied); the materializer will set it later.
+    /// unsatisfied); [`Self::unpark`] sets it when the parked op is released.
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         tx: &rusqlite::Transaction<'_>,
