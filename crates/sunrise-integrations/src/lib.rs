@@ -7,12 +7,14 @@
 //!   `Block` and [`ical_vault`] driving that into a live vault. `sunrise ical
 //!   import` / `sunrise ical export` and the macOS app's menu items are the
 //!   two callers.
-//! - [`gcal`]: Google Calendar OAuth flow + event sync (interface only;
-//!   the HTTP client is bound by callers in the desktop / mobile apps
-//!   so OAuth tokens stay on-device).
+//! - [`gcal`]: Google Calendar PKCE, token refresh and change detection,
+//!   implemented against an injected HTTP transport so OAuth tokens stay
+//!   on-device. Nothing calls it yet: it has no consumer, no storage and no
+//!   UI ([#4](https://github.com/justin13888/Sunrise/issues/4)).
 //!
-//! Each integration runs through the [`IntegrationProvider`] trait so
-//! the core can drive runs uniformly.
+//! [`IntegrationProvider`] is declared and has no implementor. The live iCal
+//! path is driven directly through [`ical_vault`]'s `import` / `export` by the
+//! CLI and the UniFFI seam, not through the trait.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -64,9 +66,10 @@ pub enum IntegrationError {
     Core(String),
 }
 
-/// Pluggable integration runner. Each returns a summary of what it did
-/// (counts of imported / exported / skipped items) so the core's
-/// observability layer can log it as `int.run.ok`.
+/// Pluggable integration runner: the intended shape
+/// ([#4](https://github.com/justin13888/Sunrise/issues/4)), with no
+/// implementor. A run would return a summary of what it did (counts of
+/// imported / exported / skipped items); no `int.run.ok` is emitted.
 #[async_trait]
 pub trait IntegrationProvider: Send + Sync + std::fmt::Debug {
     /// Kind discriminator.

@@ -20,9 +20,8 @@ user can actually take today, and the only one that creates Blocks.
 > (`ical_vault`), reached today by `sunrise ical import` / `sunrise ical export`
 > and by `import_ical` / `export_ical` on the UniFFI seam. **Both shipping
 > clients call it**: the macOS app through File → Import Calendar… (⌘⇧I) and
-> Export Calendar ▸ Today | This Week, which closed the last open parity gap
-> on that client. The import's notices reach the user there, grouped by code,
-> rather than being counted.
+> Export Calendar ▸ Today | This Week. The import's notices reach the user
+> there, grouped by code, rather than being counted.
 >
 > Where this document and the build disagree:
 >
@@ -83,10 +82,9 @@ user can actually take today, and the only one that creates Blocks.
 
 ## Mapping rules
 
-**This is not the CalDAV mapping.** This section used to say "same as CalDAV
-mapping table", a table that was never written. CalDAV is now a read-only
-integration ([`caldav.md`](./caldav.md)), and it maps events onto
-`ExternalEvent`, not onto Blocks, so it shares no table with this file. The
+**This is not the CalDAV mapping.** CalDAV is a read-only integration
+([`caldav.md`](./caldav.md)), and it maps events onto `ExternalEvent`, not
+onto Blocks, so it shares no table with this file. The
 `.ics` file mapping is below, and it is read off
 `crates/sunrise-integrations/src/ical_map.rs` — `event_to_block` (line 65) and
 `block_to_event` (line 146) — which is the only place it exists.
@@ -192,12 +190,13 @@ Two deliberate carve-outs:
 
 ## Edge cases
 
-- **Long descriptions:** no client-side truncation. Round-trip preserves DESCRIPTION verbatim. The Block's description field is plain text; iCalendar HTML in `X-ALT-DESC` is dropped on import (logged) and not regenerated on export.
+- **Descriptions:** `DESCRIPTION` is reported as an `ICalNotice` (`UnmappedProperty`), not stored, and not exported, because a Block has no notes field. `X-ALT-DESC` is reported the same way, as any `X-` property is.
+  - *Target state:* a Block field that holds the description, so import → export preserves `DESCRIPTION` verbatim with no client-side truncation.
 - **Attached files (`ATTACH`):** dropped on import. The UI shows `"This event had attachments which were not imported."` once per event. Documented in user-facing help. Not produced on export (attachments are heavy and require separate handling).
 - **Time zones:**
   - *Target state:* `VTIMEZONE` blocks emitted on export. The exporter does not emit them; zoned times go out as TZID references without an accompanying definition.
   - *Target state:* parsing an inline `VTIMEZONE` on import and using it to resolve VEVENT TZID values. The parser skips `VTIMEZONE` bodies entirely (`crates/sunrise-integrations/src/ical.rs:37-39,259-264`); a `TZID` is resolved against the **bundled IANA tzdb** instead, and the skipped component is reported as an `ICalNotice` rather than dropped silently.
-  - A TZID that the bundled IANA tzdb does not know falls back to UTC and logs `int.import.tz_unknown`.
+  - A TZID that the bundled IANA tzdb does not know is read as UTC and reported as an `unknown_timezone` notice.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 
 ## Subscribed `.ics` URLs — not implemented
