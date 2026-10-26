@@ -417,3 +417,138 @@ fn defer_moves_a_zoned_plan_and_never_a_deadline() {
     assert_eq!(t.hard_due_at, Some(hard));
     assert_eq!(t.deferred_count, 1);
 }
+
+// ---- derived at read time, in the order asked ----
+
+/// `Query::Lateness` of several tasks answers each, in the order asked,
+/// whatever that order is.
+#[test]
+fn lateness_of_several_tasks_answers_in_the_order_asked() {
+    let day = date(2026, 6, 1);
+    let (e, _) = engine_at("UTC", day.at(12, 0, 0, 0));
+    let mut db = db();
+    let soft = add(&e, &mut db, "a", None, Some(floating(day, 9)), None);
+    let quiet = add(&e, &mut db, "b", None, None, None);
+    let hard = add(&e, &mut db, "c", None, None, Some(floating(day, 10)));
+    for asked in [
+        vec![hard, soft, quiet],
+        vec![quiet, hard, soft],
+        vec![soft, quiet, hard],
+    ] {
+        let QueryResult::Lateness(rows) = e
+            .query(&db, Query::Lateness { ids: asked.clone() })
+            .unwrap()
+        else {
+            panic!("expected Lateness");
+        };
+        let got: Vec<EntityRef> = rows.iter().map(|r| r.task).collect();
+        assert_eq!(got, asked);
+        let state = |id| rows.iter().find(|r| r.task == id).unwrap().lateness.state;
+        assert_eq!(
+            (state(soft), state(quiet), state(hard)),
+            (Lateness::LateSoft, Lateness::OnTrack, Lateness::LateHard)
+        );
+    }
+}
+
+/// Zones the lateness property reads in: one with no DST, two that move
+/// their clocks (one of them by half an hour), and one far east.
+const ZONES: [&str; 4] = [
+    "UTC",
+    "America/New_York",
+    "Australia/Lord_Howe",
+    "Asia/Tokyo",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 48,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/lateness.txt",
+            ),
+        )),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// Lateness is derived purely at read time: as now moves forward with
+    /// no edit in between, every task's state only moves forward (on track,
+    /// then stale or late soft, then late hard), reading twice at one
+    /// instant agrees, the rows come back in the order asked, and no read
+    /// writes an op.
+    #[test]
+    fn lateness_only_moves_forward_and_no_read_writes(
+        zone in proptest::sample::select(ZONES.to_vec()),
+        stale_after in 0u64..21,
+        steps in proptest::collection::vec(0i64..(3 * 24), 1..12),
+        order in proptest::strategy::Strategy::prop_shuffle(
+            proptest::strategy::Just(vec![0usize, 1, 2, 3, 4]),
+        ),
+    ) {
+        let start = date(2026, 3, 1);
+        let (e, clock) = engine_at(zone, start.at(12, 0, 0, 0));
+        let mut db = db();
+        e.apply(
+            &mut db,
+            Command::SetPreference {
+                key: "stale_after_days".into(),
+                value: PrefValue::Uint(stale_after),
+                target: PrefTarget::Vault,
+            },
+        )
+        .unwrap();
+        let day = |n: i8| start.checked_add(jiff::Span::new().days(n)).unwrap();
+        let tasks = [
+            add(&e, &mut db, "undated", None, None, None),
+            add(&e, &mut db, "target", None, Some(floating(day(3), 9)), None),
+            add(&e, &mut db, "hard", None, None, Some(SunriseTime::all_day(day(5)))),
+            add(
+                &e,
+                &mut db,
+                "both",
+                None,
+                Some(SunriseTime::zoned(day(2).at(18, 0, 0, 0), "Europe/Paris")),
+                Some(floating(day(6), 8)),
+            ),
+            add(&e, &mut db, "planned", Some(floating(day(1), 9)), None, None),
+        ];
+        let asked: Vec<EntityRef> = order.iter().map(|i| tasks[*i]).collect();
+        let ops = op_count(&db);
+        let read = |e: &Engine, db: &Db| match e
+            .query(db, Query::Lateness { ids: asked.clone() })
+            .unwrap()
+        {
+            QueryResult::Lateness(rows) => rows,
+            other => panic!("expected Lateness, got {other:?}"),
+        };
+        let mut last: Option<Vec<TaskLateness>> = None;
+        for hours in steps {
+            *clock.0.lock() += u64::try_from(hours).unwrap() * 3_600_000;
+            let rows = read(&e, &db);
+            proptest::prop_assert_eq!(&rows, &read(&e, &db), "a second read agrees");
+            let got: Vec<EntityRef> = rows.iter().map(|r| r.task).collect();
+            proptest::prop_assert_eq!(&got, &asked, "in the order asked");
+            let now = i64::try_from(*clock.0.lock()).unwrap();
+            for r in &rows {
+                let since = r.lateness.since.map(|s| s.as_millisecond());
+                proptest::prop_assert_eq!(
+                    since.is_some(),
+                    r.lateness.state != Lateness::OnTrack,
+                    "{:?}", r
+                );
+                proptest::prop_assert!(since.is_none_or(|s| s <= now), "{:?}", r);
+            }
+            if let Some(prev) = &last {
+                for (was, is) in prev.iter().zip(&rows) {
+                    proptest::prop_assert!(
+                        is.lateness.state <= was.lateness.state,
+                        "{:?} moved back from {:?} to {:?}",
+                        is.task, was.lateness.state, is.lateness.state
+                    );
+                }
+            }
+            last = Some(rows);
+        }
+        proptest::prop_assert_eq!(op_count(&db), ops, "no read wrote an op");
+    }
+}

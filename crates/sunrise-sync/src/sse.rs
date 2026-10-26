@@ -2754,8 +2754,12 @@ mod tests {
     /// The deadline these cases drive `read_body` with.
     ///
     /// Not [`BODY_IDLE_TIMEOUT`]: the mechanism and the shipped value are
-    /// separate claims, and tying them together would spend two real seconds
-    /// per case to say nothing the value's own case does not.
+    /// separate claims, and tying them together would say nothing the value's
+    /// own case does not.
+    ///
+    /// The cases that time a read run on paused time (`start_paused`), so a
+    /// timer fires on its own deadline and `elapsed()` is exactly the sum of
+    /// the waits the read made, however loaded the machine is.
     const TEST_IDLE: std::time::Duration = std::time::Duration::from_millis(300);
 
     /// [`read_body`]'s deadline bounds a *stall*, not a download: a body that
@@ -2772,7 +2776,7 @@ mod tests {
     /// hundred megabytes and the relay serves it one chunk per poll. That is
     /// why the bound is idle rather than total, and this is the case that says
     /// so.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_body_that_keeps_arriving_is_not_cut_off_by_the_idle_deadline() {
         let gap = TEST_IDLE / 3;
         let started = tokio::time::Instant::now();
@@ -2795,13 +2799,19 @@ mod tests {
             "and every frame is there, in order"
         );
         assert!(
-            started.elapsed() > TEST_IDLE,
-            "the read outlasted the deadline, which is the whole point of it"
+            gap * 4 > TEST_IDLE,
+            "the script is longer than the deadline"
+        );
+        assert_eq!(
+            started.elapsed(),
+            gap * 4,
+            "the read outlasted the deadline, which is the whole point of it, and took \
+             exactly the four gaps it was given"
         );
     }
 
     /// And a body that *stops* arriving is cut off.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_body_that_stops_arriving_is_cut_off_at_the_idle_deadline() {
         let started = tokio::time::Instant::now();
 
@@ -2821,9 +2831,11 @@ mod tests {
             matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
             "a stall is named as one rather than reported as a broken read: {err}"
         );
-        assert!(
-            started.elapsed() >= TEST_IDLE,
-            "and it waited the deadline out rather than giving up on the first `Pending`"
+        assert_eq!(
+            started.elapsed(),
+            TEST_IDLE,
+            "and it waited the deadline out rather than giving up on the first `Pending`, \
+             and no longer than the deadline"
         );
     }
 
@@ -3025,7 +3037,7 @@ mod tests {
     /// rather than as a broken body. And it errors *late* — after the first,
     /// inside-deadline gap was absorbed — so the deadline was re-armed per
     /// frame rather than fired on the first pause.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_body_still_arriving_is_cut_off_at_the_first_gap_that_crosses_the_deadline() {
         let inside = TEST_IDLE / 3;
         let across = TEST_IDLE * 2;
@@ -3051,16 +3063,21 @@ mod tests {
             matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
             "a body that stopped arriving is named as one, though it had been arriving: {err}"
         );
-        let elapsed = started.elapsed();
+        // On paused time both claims are one equality: the inside gap was
+        // absorbed rather than counted against the deadline (a read cut at the
+        // first pause would stop at `TEST_IDLE`), and the deadline then ran
+        // from the second frame rather than the long gap being waited out
+        // (which would stop at `inside + across`).
         assert!(
-            elapsed >= TEST_IDLE + inside,
-            "the gap inside the deadline was absorbed rather than counted against it, so \
-             the read outlived the deadline before the deadline ended it: {elapsed:?}"
+            TEST_IDLE + inside < inside + across,
+            "the two outcomes differ"
         );
-        assert!(
-            elapsed < inside + across,
-            "and it did not simply wait the long gap out, which is what an unbounded read \
-             would have done: {elapsed:?}"
+        assert_eq!(
+            started.elapsed(),
+            inside + TEST_IDLE,
+            "the gap inside the deadline was absorbed rather than counted against it, and \
+             the read was cut a deadline after the last frame rather than waiting the long \
+             gap out, which is what an unbounded read would have done"
         );
     }
 
@@ -4566,10 +4583,13 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed >= std::time::Duration::from_millis(1_500)
-                && elapsed < std::time::Duration::from_secs(10),
+                && elapsed < std::time::Duration::from_secs(14),
             "the read is bounded by its own deadline, and that deadline is the two seconds \
              `the_body_bounds_are_the_numbers_they_are_documented_as` pins — an upper bound \
-             alone leaves every shorter value passing too: {elapsed:?}"
+             alone leaves every shorter value passing too. The upper bound is the one thing \
+             here that tells two seconds from the blob route's fifteen, since nothing names \
+             the deadline that ran, so it sits just under fifteen and leaves real wall \
+             clock the rest: {elapsed:?}"
         );
     }
 
@@ -4618,13 +4638,14 @@ mod tests {
             "and it is the *document* deadline that ran, named in the diagnostic: {err}"
         );
         let elapsed = started.elapsed();
+        // A lower bound only: the diagnostic above already says it was the two
+        // seconds and not the blob route's fifteen, and the harness timeout
+        // bounds the wait, so an upper bound here would only measure how loaded
+        // the machine is.
         assert!(
-            elapsed >= std::time::Duration::from_millis(1_500)
-                && elapsed < std::time::Duration::from_secs(10),
-            "it came back on the client's own deadline, and on that deadline's own value — \
-             an upper bound alone leaves every shorter value passing, including the fifteen \
-             seconds the blob route waits, which on this route is the whole handshake: \
-             {elapsed:?}"
+            elapsed >= std::time::Duration::from_millis(1_500),
+            "it came back on the client's own deadline, and not before it — an upper bound \
+             alone leaves every shorter value passing: {elapsed:?}"
         );
         assert!(
             t.session.is_none(),
@@ -4682,10 +4703,11 @@ mod tests {
              disconnect and a backoff, and the diagnostic names the head bound that ran: {err}"
         );
         let elapsed = started.elapsed();
+        // A lower bound only: the diagnostic names the fifteen seconds that ran,
+        // and the harness timeout bounds the wait.
         assert!(
-            elapsed >= std::time::Duration::from_secs(11)
-                && elapsed < std::time::Duration::from_secs(30),
-            "it came back on the head bound, and on that bound's own value: {elapsed:?}"
+            elapsed >= std::time::Duration::from_secs(11),
+            "it came back on the head bound, and not before it: {elapsed:?}"
         );
         assert!(
             t.session.is_none(),
@@ -4743,7 +4765,7 @@ mod tests {
     ///
     /// This is the most expensive case in the file — it spends
     /// [`super::BLOB_IDLE_TIMEOUT`] of real wall clock, by construction, since
-    /// no clock in this crate's test profile can be paused — and it is the only
+    /// it reads a real socket, which paused time would not wait for — and it is the only
     /// place the blob route's own patience is observable end to end. The
     /// mechanism itself is pinned in milliseconds against `Scripted` above.
     ///
@@ -4777,9 +4799,10 @@ mod tests {
              rather than inferred from the clock: {err}"
         );
         let elapsed = started.elapsed();
+        // A lower bound only: the diagnostic names the fifteen seconds that ran,
+        // and the harness timeout bounds the wait.
         assert!(
-            elapsed >= std::time::Duration::from_millis(11_000)
-                && elapsed < std::time::Duration::from_secs(30),
+            elapsed >= std::time::Duration::from_millis(11_000),
             "it waited an attachment's worth of patience, not a document's: two seconds \
              here is a minimum inter-frame arrival rate on a hundred megabytes, and with \
              no `Range` header and ten attempts it is an attachment that never arrives: \
@@ -4914,11 +4937,12 @@ mod tests {
              the two seconds that ran and not the attachment's fifteen: {err}"
         );
         let elapsed = started.elapsed();
+        // A lower bound only: the diagnostic names the two seconds that ran,
+        // and the harness timeout bounds the wait.
         assert!(
-            elapsed >= std::time::Duration::from_millis(1_500)
-                && elapsed < std::time::Duration::from_secs(10),
-            "and it came back on that deadline's own value, which is what decides what a \
-             drain of four of these costs the session pump: {elapsed:?}"
+            elapsed >= std::time::Duration::from_millis(1_500),
+            "and it came back on that deadline and not before it, which is what decides \
+             what a drain of four of these costs the session pump: {elapsed:?}"
         );
     }
 
@@ -5257,10 +5281,11 @@ mod tests {
              attachment's fifteen seconds belongs to the body an attachment is: {err}"
         );
         let elapsed = started.elapsed();
+        // A lower bound only: the diagnostic names the two seconds that ran,
+        // and the harness timeout bounds the wait.
         assert!(
-            elapsed >= std::time::Duration::from_millis(1_500)
-                && elapsed < std::time::Duration::from_secs(10),
-            "and it came back on that deadline's own value: {elapsed:?}"
+            elapsed >= std::time::Duration::from_millis(1_500),
+            "and it came back on that deadline and not before it: {elapsed:?}"
         );
     }
 
