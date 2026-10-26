@@ -546,6 +546,7 @@ fn done_count(db: &Db, ids: &[EntityRef]) -> usize {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/groups.txt",
@@ -566,6 +567,7 @@ proptest! {
         edits in 0usize..3,
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..24),
     ) {
+        begin_case();
         let mut p = pair();
         let ids: Vec<EntityRef> = (0..n)
             .map(|i| new_task(&p.ea, &mut p.dba, &format!("t{i}")))

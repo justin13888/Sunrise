@@ -530,6 +530,8 @@ fn full_state_ops_alone_reproduce_entity_level_lww() {
     assert_eq!(merged.priority, Some(5));
 }
 
+/// The OR-set add rows `id` holds. A deliberate white-box read: what the
+/// garbage collection below deletes is storage no public read shows.
 fn orset_adds(db: &Db, id: EntityRef) -> i64 {
     db.conn()
         .query_row(
@@ -687,6 +689,7 @@ fn a_generated_occurrence_is_generated_on_every_replica() {
         ),
     );
     p.eb.apply_remote(&mut p.dbb, &edit).unwrap();
+    // A deliberate white-box read: a register's origin has no public read.
     let origin = |db: &Db, field: &str| -> String {
         db.conn()
             .query_row(
@@ -1345,6 +1348,7 @@ struct Oracle {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // The repository's convention (docs/10-cross-cutting/testing.md §2):
         // a shrunken counterexample is committed, at a path named here.
         failure_persistence: Some(Box::new(
@@ -1369,6 +1373,7 @@ proptest! {
         writes in proptest::collection::vec((0usize..3, arb_write()), 1..14),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..40),
     ) {
+        begin_case();
         let clocks: Vec<Arc<FakeClock>> =
             (0..3).map(|_| Arc::new(FakeClock(PLMutex::new(T0)))).collect();
         let devices: Vec<Engine> = (0..3u8)

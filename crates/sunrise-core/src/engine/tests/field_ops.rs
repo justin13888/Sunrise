@@ -1599,6 +1599,7 @@ proptest! {
         steps in proptest::collection::vec(arb_step(), 1..18),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..48),
     ) {
+        begin_case();
         let mut p = peers_with(&[
             crate::feature::FEATURES,
             crate::feature::FEATURES,
@@ -1627,11 +1628,20 @@ proptest! {
                 Step::Do { who, action } => {
                     set_clock(&p.clocks[*who], T0 + 1_000 + u64::try_from(n).unwrap() * 7);
                     // A refusal (a restore of a live task, a transition the
-                    // state does not allow) writes nothing, as it would.
-                    let _ = p.engines[*who].apply(
+                    // state does not allow) writes nothing, as it would. A
+                    // storage or internal error is no refusal, and fails.
+                    match p.engines[*who].apply(
                         &mut p.dbs[*who],
                         command_of(action, task, &contexts, &streams),
-                    );
+                    ) {
+                        Ok(_)
+                        | Err(
+                            EngineError::Invalid(_)
+                            | EngineError::NotFound(_)
+                            | EngineError::Validation(_),
+                        ) => {}
+                        Err(other) => panic!("{action:?}: {other:?}"),
+                    }
                 }
                 Step::Sync { from, to } if from != to => p.deliver(*from, *to),
                 Step::Sync { .. } => {}

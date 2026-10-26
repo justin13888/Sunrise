@@ -145,7 +145,7 @@ async fn changes_event_emitted_on_create() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
     let mut rx = core.changes();
-    let _ = core
+    let created = core
         .submit(Command::CreateTask(TaskDraft {
             title: "x".into(),
             ..Default::default()
@@ -157,5 +157,8 @@ async fn changes_event_emitted_on_create() {
     let evt = rx
         .try_recv()
         .expect("submit must publish its event before it returns");
-    assert!(matches!(evt, sunrise_core::DomainEvent::Created(_)));
+    assert!(
+        matches!(evt, sunrise_core::DomainEvent::Created(id) if id == created.entity),
+        "{evt:?}"
+    );
 }

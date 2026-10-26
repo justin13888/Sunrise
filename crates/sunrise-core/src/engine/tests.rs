@@ -83,12 +83,59 @@ mod testutil {
         }
     }
 
+    /// The randomness a test engine is built with, paired with [`FakeClock`].
+    ///
+    /// A frozen clock makes every ULID an engine mints share its timestamp,
+    /// so their order is the order of their random tails. With `SystemRng`
+    /// that order changed from run to run, and any expectation resting on
+    /// the final id tie-break (search order, the Late group's tie) would
+    /// have been nondeterministic. Each engine a test builds draws from its
+    /// own seeded stream instead: the seed is the engine's position among
+    /// the engines its thread has built, so a test replays exactly and two
+    /// engines of one test never mint the same id.
+    ///
+    /// A proptest runs every case and shrink step on one thread, so a
+    /// property that builds engines calls [`begin_case`] first: its engines
+    /// then mint the same ids whether the case runs fresh or is replayed
+    /// from `proptest-regressions`.
+    #[derive(Debug)]
+    pub(super) struct SeededRng(PLMutex<rand::rngs::StdRng>);
+
+    impl Rng for SeededRng {
+        fn fill_bytes(&self, dest: &mut [u8]) {
+            rand_core::RngCore::fill_bytes(&mut *self.0.lock(), dest);
+        }
+    }
+
+    thread_local! {
+        static ENGINES_BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The next seeded [`Rng`] of this thread; see [`SeededRng`].
+    pub(super) fn seeded_rng() -> Arc<SeededRng> {
+        let n = ENGINES_BUILT.with(|c| {
+            let n = c.get();
+            c.set(n + 1);
+            n
+        });
+        Arc::new(SeededRng(PLMutex::new(
+            <rand::rngs::StdRng as rand_core::SeedableRng>::seed_from_u64(0x5EED_0000 + n),
+        )))
+    }
+
+    /// Restart this thread's [`seeded_rng`] sequence at its first seed, so
+    /// the engines one proptest case builds do not depend on how many the
+    /// cases and shrink steps before it built.
+    pub(super) fn begin_case() {
+        ENGINES_BUILT.with(|c| c.set(0));
+    }
+
     pub(super) fn engine() -> Engine {
         let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
         crate::engine::rebuild::check::enable();
         Engine::from_clock(
             Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-            Arc::new(SystemRng),
+            seeded_rng(),
             keychain,
         )
     }
@@ -453,7 +500,7 @@ mod testutil {
         // Every command and delivery on this test's thread then checks that
         // a rebuild of the log lands on the rows it left (ADR-0065 PR 3).
         crate::engine::rebuild::check::enable();
-        Engine::from_clock(clock, Arc::new(SystemRng), kc)
+        Engine::from_clock(clock, seeded_rng(), kc)
     }
 
     /// Like [`engine_seeded`] but with **real random** Stream keys, so a key
@@ -473,7 +520,7 @@ mod testutil {
             VaultRootKey::from_bytes(root),
             seed,
         ));
-        Engine::from_clock(clock, Arc::new(SystemRng), kc)
+        Engine::from_clock(clock, seeded_rng(), kc)
     }
 
     /// Hand `receiver` the `(epoch, key)` `sender` holds for `stream_id`.
@@ -1305,7 +1352,7 @@ mod testutil {
 
     pub(super) fn engine_clocked(clock: Arc<FakeClock>) -> Engine {
         let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        Engine::from_clock(clock, Arc::new(SystemRng), keychain)
+        Engine::from_clock(clock, seeded_rng(), keychain)
     }
 
     pub(super) fn routine_of(e: &Engine, db: &Db, rid: EntityRef) -> Routine {
@@ -1390,10 +1437,7 @@ mod testutil {
     pub(super) fn focus_engine(now_ms: u64) -> (Engine, Arc<FakeClock>) {
         let clock = Arc::new(FakeClock(PLMutex::new(now_ms)));
         let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        (
-            Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc),
-            clock,
-        )
+        (Engine::from_clock(clock.clone(), seeded_rng(), kc), clock)
     }
 
     pub(super) fn task_with(e: &Engine, db: &mut Db, title: &str, d: TaskDraft) -> EntityRef {
@@ -1622,7 +1666,7 @@ fn per_device_seq_is_independent() {
     let clock = || Arc::new(FakeClock(PLMutex::new(1_700_000_000_000)));
     let ea = Engine::from_clock(
         clock(),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_seeded(
             VaultRootKey::from_bytes([0xab; 32]),
             [1u8; 32],
@@ -1630,7 +1674,7 @@ fn per_device_seq_is_independent() {
     );
     let eb = Engine::from_clock(
         clock(),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_seeded(
             VaultRootKey::from_bytes([0xab; 32]),
             [2u8; 32],
@@ -3674,11 +3718,17 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
 }
 
 proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
     /// `Query::Search` must never surface an FTS5 syntax error, no matter
     /// how hostile the input (quotes, colons, stars, unbalanced quotes,
     /// `NEAR`, hyphens, parentheses).
     #[test]
     fn search_never_errors_on_hostile_input(s in ".*") {
+        begin_case();
         let mut db = db();
         let e = engine();
         e.apply(
@@ -9581,7 +9631,7 @@ fn a_paired_device_cannot_certify_a_fresh_device_id_before_or_after_its_revocati
     // The device under test: same account, admitted by pairing.
     let paired = Engine::from_clock(
         Arc::new(FakeClock(PLMutex::new(T0))),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_paired(
             VaultRootKey::from_bytes(ROOT),
             [2u8; 32],
@@ -9654,7 +9704,7 @@ fn a_paired_device_cannot_certify_a_fresh_device_id_before_or_after_its_revocati
 fn a_revocation_from_a_paired_device_cuts_the_keys_without_rotating_the_identity() {
     let paired = Engine::from_clock(
         Arc::new(FakeClock(PLMutex::new(T0))),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_paired(
             VaultRootKey::from_bytes(ROOT),
             [1u8; 32],
@@ -13813,6 +13863,11 @@ fn an_unstamped_row_loses_to_any_real_op() {
 }
 
 proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
     /// `docs/05-sync/conflict-resolution.md` specifies this comparator as a
     /// deterministic total order over `(hlc, device, seq)` — "memcmp,
     /// higher wins … so every replica picks the same winner". Five
@@ -13933,6 +13988,7 @@ proptest::proptest! {
     fn a_cursor_equals_the_contiguous_prefix_after_every_delivery(
         schedule in delivery_schedule(),
     ) {
+        begin_case();
         let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let mut dba = db_root(ROOT);
@@ -14563,7 +14619,7 @@ fn zone_less_times_survive_a_device_timezone_change() {
         ));
         let writer = Engine::from_clock(
             Arc::new(ZonedClock(T0, "Europe/Berlin")),
-            Arc::new(SystemRng),
+            seeded_rng(),
             Arc::clone(&kc),
         );
         let mut db = db_root(ROOT);
@@ -14581,7 +14637,7 @@ fn zone_less_times_survive_a_device_timezone_change() {
         // The same vault, read by a device in a different zone.
         let reader = Engine::from_clock(
             Arc::new(ZonedClock(T0, "Pacific/Auckland")),
-            Arc::new(SystemRng),
+            seeded_rng(),
             kc,
         );
         let got = read_task_t(&reader, &db, res.entity).planned_at;
@@ -15175,6 +15231,7 @@ proptest::proptest! {
             1usize..14usize,
         ),
     ) {
+        begin_case();
         // Shared timeline so ops carry a common ts axis (ties possible).
         let clock = Arc::new(FakeClock(PLMutex::new(T0)));
         let ea = engine_seeded(ROOT, [1u8; 32], clock.clone());
@@ -19622,3 +19679,25 @@ mod series;
 /// The notification catalog's reads: security events, deadlines, the
 /// outbox's age, routine reminders (#347).
 mod security_events;
+
+/// A proptest case replayed from `proptest-regressions` builds engines that
+/// mint the ids they minted when it failed: [`begin_case`] restarts the
+/// seeded sequence however many engines earlier cases built.
+#[test]
+fn begin_case_restarts_the_seeded_rng_sequence() {
+    let draw = |rng: &SeededRng| {
+        let mut b = [0u8; 16];
+        rng.fill_bytes(&mut b);
+        b
+    };
+    begin_case();
+    let first = draw(&seeded_rng());
+    let second = draw(&seeded_rng());
+    assert_ne!(
+        first, second,
+        "two engines of one case draw distinct streams"
+    );
+    begin_case();
+    assert_eq!(draw(&seeded_rng()), first);
+    assert_eq!(draw(&seeded_rng()), second);
+}

@@ -451,6 +451,8 @@ fn nothing_changes_a_task_without_a_command() {
             .unwrap();
         e.apply(&mut db, Command::MaterializeRoutines { now_ms: now })
             .unwrap();
+        e.compact_op_log(&mut db, &super::compaction::policy())
+            .unwrap();
     }
     e.rebuild_projection(&mut db).unwrap();
     assert_eq!(task_ops(&db), ops, "no task op was written");
@@ -752,6 +754,7 @@ fn a_later_id_refused_in_planning_refuses_the_batch() {
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
         cases: 32,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/triage.txt",
@@ -771,6 +774,7 @@ proptest::proptest! {
         bad in proptest::sample::select(vec![Bad::Unknown, Bad::Deleted, Bad::Unplannable]),
         defer in proptest::bool::ANY,
     ) {
+        begin_case();
         let (e, _clock) = clocked();
         let mut db = db();
         let (ids, held, wrong) = batch_with_one_bad(&e, &mut db, good, at, bad, defer);

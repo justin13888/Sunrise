@@ -658,8 +658,7 @@ fn compaction_keeps_parked_append_only_and_unsent_ops() {
     let (eb, mut dbb) = r.pop().unwrap();
     let (ea, mut dba) = r.pop().unwrap();
     let task = new_task(&ea, &mut dba, "one");
-    let session = open_session(&ea, &mut dba, task);
-    let _ = session;
+    open_session(&ea, &mut dba, task);
     super::emit_raw_inner(
         &ea,
         &mut dba,
@@ -676,19 +675,29 @@ fn compaction_keeps_parked_append_only_and_unsent_ops() {
     eb.apply_remote_all(&mut dbb, &a_ack).unwrap();
 
     // B received the future op and parked it; A's own copy is unsent.
-    let b_before: Vec<String> = kinds(&dbb, &INBOX);
-    eb.compact_op_log(&mut dbb, &policy()).unwrap();
-    let b_after = kinds(&dbb, &INBOX);
-    assert!(
-        b_after.contains(&"unknown".to_owned()),
-        "the parked op stays"
+    let a_before = kinds(&dba, &INBOX);
+    assert_eq!(
+        kinds(&dbb, &INBOX),
+        [
+            "task.create",
+            "focus.start",
+            "unknown",
+            "task.create",
+            "task.create",
+            "stream.digest",
+            "stream.digest"
+        ]
     );
-    assert!(
-        b_before.len() > b_after.len(),
-        "the task ops below the tip went"
+    eb.compact_op_log(&mut dbb, &policy()).unwrap();
+    // The task ops below the tip went; the focus record (append-only), the
+    // parked op and the digests stayed.
+    assert_eq!(
+        kinds(&dbb, &INBOX),
+        ["focus.start", "unknown", "stream.digest", "stream.digest"]
     );
     let a_removed = ea.compact_op_log(&mut dba, &policy()).unwrap().ops_removed;
     assert_eq!(a_removed, 0, "every op of A is still waiting in its outbox");
+    assert_eq!(kinds(&dba, &INBOX), a_before);
 }
 
 /// A defer is compacted like any other edit of a task. Bug (d) of ADR-0065

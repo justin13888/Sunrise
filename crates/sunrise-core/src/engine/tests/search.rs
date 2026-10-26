@@ -1023,6 +1023,7 @@ proptest::proptest! {
         prefix in proptest::bool::ANY,
         raw in ".{0,40}",
     ) {
+        begin_case();
         let mut db = db();
         let e = engine();
         crate::engine::rebuild::check::disable();

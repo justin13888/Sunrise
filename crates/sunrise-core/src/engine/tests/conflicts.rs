@@ -594,13 +594,11 @@ fn an_equal_concurrent_value_is_not_a_conflict() {
     let (a, _) = write_on(&mut p, 0, 1_000, task, &[("state", state("done"))]);
     let (b, _) = write_on(&mut p, 1, 2_000, task, &[("state", state("done"))]);
     exchange(&mut p, task, &[&a], &[&b]);
+    // Not even as a quiet one, on either side.
     assert!(conflicts_of(&p.ea, &p.dba, true).is_empty());
-    let kept: i64 = p
-        .dba
-        .conn()
-        .query_row("SELECT COUNT(*) FROM register_losers", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(kept, 1, "the loser is kept, only not reported");
+    assert!(conflicts_of(&p.eb, &p.dbb, true).is_empty());
+    assert_eq!(task_at(&p.dba, task).state, TaskState::Done);
+    assert_eq!(task_at(&p.dba, task), task_at(&p.dbb, task));
 }
 
 /// A full-state op that loses to a concurrent `Patch` is kept and never
@@ -633,17 +631,10 @@ fn a_legacy_loser_is_never_surfaced() {
     exchange(&mut p, task, &[&legacy], &[&patch]);
 
     assert_eq!(task_at(&p.dba, task).title, "patched");
-    let legacy_losers: i64 = p
-        .dba
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM register_losers WHERE field = 'title' AND legacy = 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(legacy_losers, 1);
+    assert_eq!(task_at(&p.dbb, task).title, "patched");
+    // Not even as a quiet one, on either side.
     assert!(conflicts_of(&p.ea, &p.dba, true).is_empty());
+    assert!(conflicts_of(&p.eb, &p.dbb, true).is_empty());
 }
 
 /// A full-state op from a device that never saw a field raises the floor past
@@ -669,6 +660,8 @@ fn the_floor_drops_a_register_its_op_did_not_write() {
         .unwrap();
     let legacy = env_bytes(&p.dbb, &res.op_id);
     exchange(&mut p, task, &[&a], &[&legacy]);
+    // A deliberate white-box read: the register's removal, winner and all,
+    // is storage no public read shows.
     let left: i64 = p
         .dba
         .conn()
@@ -723,12 +716,8 @@ fn legacy_only_history_reports_no_conflicts() {
         "the later op"
     );
     assert!(conflicts_of(&p.ea, &p.dba, true).is_empty());
-    let kept: i64 = p
-        .dba
-        .conn()
-        .query_row("SELECT COUNT(*) FROM register_losers", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(kept, 0);
+    assert!(conflicts_of(&p.eb, &p.dbb, true).is_empty());
+    assert_eq!(task_at(&p.dba, task), task_at(&p.dbb, task));
 }
 
 /// A field this build does not know folds as quiet: decided by stamp, kept,
@@ -886,6 +875,7 @@ fn held(e: &Engine, db: &Db, task: EntityRef) -> Held {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/conflicts.txt",
@@ -905,6 +895,7 @@ proptest! {
         steps in proptest::collection::vec(arb_step(), 1..16),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..40),
     ) {
+        begin_case();
         let clocks: Vec<Arc<FakeClock>> =
             (0..3).map(|_| Arc::new(FakeClock(PLMutex::new(T0)))).collect();
         let devices: Vec<Engine> = (0..3u8)

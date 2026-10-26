@@ -858,6 +858,7 @@ proptest::proptest! {
         pivot_at in 1usize..6,
         moved in proptest::sample::select(vec![0i64, 30, 90]),
     ) {
+        begin_case();
         let e = engine();
         let mut db = db();
         let draft = routine_draft(

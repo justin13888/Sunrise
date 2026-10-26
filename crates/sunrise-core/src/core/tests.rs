@@ -419,27 +419,36 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
     )
     .await
     .unwrap();
+    // A snapshot is due at every compaction, so the vault-meta stream's
+    // snapshot is what shows whether a tick compacted.
     let policy = crate::engine::CompactionPolicy {
         retention_ms: 1,
+        snapshot_every_ms: 1,
         ..Default::default()
     };
     core.set_compaction_policy(policy);
     assert_eq!(core.compaction_policy(), policy);
+    let meta = || core.stream_snapshot(crate::engine::META_STREAM).unwrap();
+    assert_eq!(meta(), None, "nothing has compacted yet");
 
     core.sync_publish_due_digests();
-    assert_eq!(*core.last_compaction_ms.lock(), Some(T));
+    let first = meta().expect("the first tick compacts and writes a snapshot");
     *clock.0.lock() = T + 1_000;
     core.sync_publish_due_digests();
-    assert_eq!(
-        *core.last_compaction_ms.lock(),
-        Some(T),
-        "not again within the day"
-    );
+    assert_eq!(meta().as_ref(), Some(&first), "not again within the day");
     *clock.0.lock() = T + COMPACT_EVERY_MS;
     core.sync_publish_due_digests();
-    assert_eq!(*core.last_compaction_ms.lock(), Some(T + COMPACT_EVERY_MS));
+    let next = meta().expect("a snapshot");
+    assert_ne!(next, first, "the next day's tick compacts again");
 
-    assert!(core.compact_op_log().is_ok());
+    *clock.0.lock() = T + COMPACT_EVERY_MS + 1_000;
+    let report = core.compact_op_log().unwrap();
+    assert_eq!(report.snapshots_written, 1, "{report:?}");
+    assert_ne!(
+        meta(),
+        Some(next),
+        "a direct call compacts whatever the cadence"
+    );
     assert!(matches!(
         core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
         Err(CoreError::Engine(EngineError::Invalid(_)))

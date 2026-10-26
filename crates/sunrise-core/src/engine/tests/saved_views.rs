@@ -345,10 +345,11 @@ fn a_delete_is_restored_and_an_edit_of_a_deleted_view_is_refused() {
     p.ea.apply(&mut p.dba, Command::Restore(id)).unwrap();
     sync(&mut p);
     assert_eq!(views(&p.eb, &p.dbb).len(), 1);
-    assert!(matches!(
-        p.ea.apply(&mut p.dba, Command::Restore(id)),
-        Err(EngineError::Invalid(_))
-    ));
+    let again = p.ea.apply(&mut p.dba, Command::Restore(id));
+    assert!(
+        matches!(&again, Err(EngineError::Invalid(why)) if why.ends_with("is not deleted")),
+        "{again:?}"
+    );
 }
 
 /// Every write is a `Patch` naming the fields it writes, with the entity's
@@ -572,13 +573,19 @@ fn a_view_is_found_by_its_name() {
 fn a_draft_that_does_not_validate_writes_nothing() {
     let mut p = pair();
     let ops = op_count(&p.dba);
-    assert!(p
-        .ea
-        .apply(
+    let err =
+        p.ea.apply(
             &mut p.dba,
-            Command::CreateSavedView(draft(" ", ViewKind::Today, ViewFilter::default()))
+            Command::CreateSavedView(draft(" ", ViewKind::Today, ViewFilter::default())),
         )
-        .is_err());
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            EngineError::Validation(sunrise_domain::ValidationError::InvalidTitle)
+        ),
+        "{err:?}"
+    );
     assert!(views(&p.ea, &p.dba).is_empty());
     assert_eq!(op_count(&p.dba), ops, "no op was logged");
 }
@@ -603,7 +610,10 @@ fn an_edit_that_changes_nothing_is_refused_and_writes_nothing() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert!(
+        matches!(&err, EngineError::Invalid(why) if why == "an edit that changes nothing"),
+        "{err:?}"
+    );
     assert_eq!(op_count(&p.dba), ops);
     assert_eq!(views(&p.ea, &p.dba), before);
 }
