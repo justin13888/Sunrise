@@ -215,6 +215,44 @@ fn renaming_a_context_rewrites_the_tasks_that_carry_it() {
     let _ = task;
 }
 
+/// A context whose task row cannot be read, because its
+/// `scheduling_constraints` column is not CBOR. `read_task` fails with
+/// [`EngineError::Cbor`].
+fn a_context_on_an_unreadable_task(e: &Engine, db: &mut Db) -> EntityRef {
+    let ctx = new_context(e, db, "Errands");
+    let task = task_with(
+        e,
+        db,
+        TaskDraft {
+            title: "Buy milk".into(),
+            contexts: vec![ctx],
+            ..Default::default()
+        },
+    );
+    db.conn()
+        .execute(
+            "UPDATE tasks SET scheduling_constraints = x'ff' WHERE id = ?",
+            params![&task.bytes()[..]],
+        )
+        .unwrap();
+    ctx
+}
+
+/// The context reindex speaks `rusqlite::Result`, so it carries an engine
+/// error out boxed. `snapshot::in_tx` unboxes it, so the caller sees the
+/// error `read_task` raised, not an `Invalid` holding its text.
+#[test]
+fn a_reindex_failure_keeps_its_engine_error_variant_through_in_tx() {
+    let (e, mut db) = (engine(), db());
+    let ctx = a_context_on_an_unreadable_task(&e, &mut db);
+    let err = crate::engine::snapshot::in_tx(&mut db, |tx| {
+        crate::engine::merge::reindex_tasks_of(tx, ctx.bytes())?;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(matches!(err, EngineError::Cbor(_)), "{err:?}");
+}
+
 #[test]
 fn cjk_text_is_found_whole_in_part_and_by_two_characters() {
     let (e, mut db) = (engine(), db());
