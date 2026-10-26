@@ -1698,7 +1698,7 @@ USAGE:
     sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)
                                  settle one field on a kept write, or on a new
                                  value (JSON, or plain text)
-    sunrise note <id> [<text>...|-|--file <path|->]
+    sunrise note <id> [<text>...|-|--file <path|->] [--force]
                                  print, replace or clear a task's note
     sunrise show <id>            one task's fields, each time with its kind
     sunrise undo | redo          reverse or replay this vault's last write
@@ -1798,7 +1798,7 @@ USAGE:
   calendar interchange (RFC 5545)
     sunrise ical import <path|-> [--stream <id>] [--source <name>]
                                  read an .ics file (or stdin) as time blocks
-    sunrise ical export [today|week] [path]
+    sunrise ical export [today|day|week] [path]
                                  write .ics to stdout, or to a path
 
   devices and identity
@@ -1912,7 +1912,7 @@ EDIT SYNTAX:
     #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  target:when  due:when
     a trailing `-` clears a field:  !-  %-  ~-  ^-  target:-  due:-  @-
 
-    sunrise edit tsk_01J… ''#work !1 ^next friday'
+    sunrise edit tsk_01J… '#work !1 ^next friday'
     sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
 
     Bare words are refused: an edit line is not a title, and the whole
@@ -1929,9 +1929,8 @@ ENVIRONMENT:
                               inside the vault: a vault directory copied on
                               its own must stay ciphertext. Back both up
     SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
-                              keystore — how two vaults share one account
-                              until pairing lands, and how to open a vault
-                              made before per-vault keys
+                              keystore — how to open a vault made before
+                              per-vault keys
     SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
     SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
                               login. Unset, with no stored login, only works
@@ -1945,9 +1944,6 @@ ENVIRONMENT:
 GLOBAL FLAGS (anywhere on the line; `--` ends them):
     --json                    print a query's result as one JSON document
     --tz <IANA>               read times in this zone for this command
-
-  Joining an account is `sunrise pair`, not a variable. The two that used to do
-  it carried the account's signing key in one file; see `sunrise pair`.
 '''
 
 [cli.general]
@@ -2383,7 +2379,7 @@ missing_fetch_failed = "{id} {filename}: the download did not bring them"
 [cli.ical]
 # {mode} is what the user typed, in quotes.
 unknown_mode = "unknown ical mode {mode}; try import or export"
-usage = "usage: ical import <path|-> | ical export [today|week] [path]"
+usage = "usage: ical import <path|-> | ical export [today|day|week] [path]"
 import_usage = "usage: ical import <path|-> [--stream <id>] [--source <name>]"
 stream_needs_id = "--stream needs a stream id"
 source_needs_name = "--source needs a name"
