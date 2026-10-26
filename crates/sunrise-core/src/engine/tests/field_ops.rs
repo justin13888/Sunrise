@@ -1599,6 +1599,7 @@ proptest! {
         steps in proptest::collection::vec(arb_step(), 1..18),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..48),
     ) {
+        begin_case();
         let mut p = peers_with(&[
             crate::feature::FEATURES,
             crate::feature::FEATURES,

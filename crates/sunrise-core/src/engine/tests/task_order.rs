@@ -377,6 +377,7 @@ proptest! {
     fn concurrent_moves_converge_to_one_total_order(
         steps in proptest::collection::vec(step(), 1..24),
     ) {
+        begin_case();
         let mut p = pair();
         let t = tasks(&p.ea, &mut p.dba, 6);
         mv(&p.ea, &mut p.dba, &t, None, None).unwrap();

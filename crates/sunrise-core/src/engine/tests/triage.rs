@@ -774,6 +774,7 @@ proptest::proptest! {
         bad in proptest::sample::select(vec![Bad::Unknown, Bad::Deleted, Bad::Unplannable]),
         defer in proptest::bool::ANY,
     ) {
+        begin_case();
         let (e, _clock) = clocked();
         let mut db = db();
         let (ids, held, wrong) = batch_with_one_bad(&e, &mut db, good, at, bad, defer);

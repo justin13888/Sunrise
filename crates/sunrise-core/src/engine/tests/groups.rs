@@ -567,6 +567,7 @@ proptest! {
         edits in 0usize..3,
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..24),
     ) {
+        begin_case();
         let mut p = pair();
         let ids: Vec<EntityRef> = (0..n)
             .map(|i| new_task(&p.ea, &mut p.dba, &format!("t{i}")))

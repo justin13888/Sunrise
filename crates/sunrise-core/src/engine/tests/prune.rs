@@ -652,6 +652,7 @@ proptest! {
         joiner_held in proptest::collection::vec(any::<prop::sample::Index>(), 0..16),
         joined in any::<prop::sample::Index>(),
     ) {
+        begin_case();
         let mut d = Devices::new(3, patch);
         let task = new_task(&d.engines[0], &mut d.dbs[0], "t");
         let second = new_task(&d.engines[0], &mut d.dbs[0], "u");
@@ -1461,6 +1462,7 @@ proptest! {
         held in proptest::collection::vec(any::<prop::sample::Index>(), 0..12),
         hostile in arb_hostile(),
     ) {
+        begin_case();
         let mut d = Devices::new(2, patch);
         let task = new_task(&d.engines[0], &mut d.dbs[0], "t");
         let second = new_task(&d.engines[0], &mut d.dbs[0], "u");

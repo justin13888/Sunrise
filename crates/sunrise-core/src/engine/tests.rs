@@ -93,6 +93,11 @@ mod testutil {
     /// own seeded stream instead: the seed is the engine's position among
     /// the engines its thread has built, so a test replays exactly and two
     /// engines of one test never mint the same id.
+    ///
+    /// A proptest runs every case and shrink step on one thread, so a
+    /// property that builds engines calls [`begin_case`] first: its engines
+    /// then mint the same ids whether the case runs fresh or is replayed
+    /// from `proptest-regressions`.
     #[derive(Debug)]
     pub(super) struct SeededRng(PLMutex<rand::rngs::StdRng>);
 
@@ -116,6 +121,13 @@ mod testutil {
         Arc::new(SeededRng(PLMutex::new(
             <rand::rngs::StdRng as rand_core::SeedableRng>::seed_from_u64(0x5EED_0000 + n),
         )))
+    }
+
+    /// Restart this thread's [`seeded_rng`] sequence at its first seed, so
+    /// the engines one proptest case builds do not depend on how many the
+    /// cases and shrink steps before it built.
+    pub(super) fn begin_case() {
+        ENGINES_BUILT.with(|c| c.set(0));
     }
 
     pub(super) fn engine() -> Engine {
@@ -3716,6 +3728,7 @@ proptest::proptest! {
     /// `NEAR`, hyphens, parentheses).
     #[test]
     fn search_never_errors_on_hostile_input(s in ".*") {
+        begin_case();
         let mut db = db();
         let e = engine();
         e.apply(
@@ -13975,6 +13988,7 @@ proptest::proptest! {
     fn a_cursor_equals_the_contiguous_prefix_after_every_delivery(
         schedule in delivery_schedule(),
     ) {
+        begin_case();
         let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let mut dba = db_root(ROOT);
@@ -15217,6 +15231,7 @@ proptest::proptest! {
             1usize..14usize,
         ),
     ) {
+        begin_case();
         // Shared timeline so ops carry a common ts axis (ties possible).
         let clock = Arc::new(FakeClock(PLMutex::new(T0)));
         let ea = engine_seeded(ROOT, [1u8; 32], clock.clone());
@@ -19664,3 +19679,25 @@ mod series;
 /// The notification catalog's reads: security events, deadlines, the
 /// outbox's age, routine reminders (#347).
 mod security_events;
+
+/// A proptest case replayed from `proptest-regressions` builds engines that
+/// mint the ids they minted when it failed: [`begin_case`] restarts the
+/// seeded sequence however many engines earlier cases built.
+#[test]
+fn begin_case_restarts_the_seeded_rng_sequence() {
+    let draw = |rng: &SeededRng| {
+        let mut b = [0u8; 16];
+        rng.fill_bytes(&mut b);
+        b
+    };
+    begin_case();
+    let first = draw(&seeded_rng());
+    let second = draw(&seeded_rng());
+    assert_ne!(
+        first, second,
+        "two engines of one case draw distinct streams"
+    );
+    begin_case();
+    assert_eq!(draw(&seeded_rng()), first);
+    assert_eq!(draw(&seeded_rng()), second);
+}

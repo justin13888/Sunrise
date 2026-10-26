@@ -1048,6 +1048,7 @@ proptest! {
         patches in any::<bool>(),
         steps in proptest::collection::vec(step(), 1..24),
     ) {
+        begin_case();
         let mut p = pair_in(patches);
         let mut streams: Vec<EntityRef> = Vec::new();
         let mut tasks: Vec<EntityRef> = Vec::new();

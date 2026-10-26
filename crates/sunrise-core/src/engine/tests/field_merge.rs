@@ -1373,6 +1373,7 @@ proptest! {
         writes in proptest::collection::vec((0usize..3, arb_write()), 1..14),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..40),
     ) {
+        begin_case();
         let clocks: Vec<Arc<FakeClock>> =
             (0..3).map(|_| Arc::new(FakeClock(PLMutex::new(T0)))).collect();
         let devices: Vec<Engine> = (0..3u8)
