@@ -412,9 +412,7 @@ impl Core {
         &self,
         zone: &str,
     ) -> Result<crate::commands::TimeZoneChange, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let Ok(to) = jiff::tz::TimeZone::get(zone) else {
             return Err(CoreError::UnknownTimeZone {
                 zone: zone.to_string(),
@@ -465,9 +463,7 @@ impl Core {
     /// entry in a single `BEGIN IMMEDIATE` transaction, and emits a
     /// `DomainEvent` on `changes()`.
     pub async fn submit(&self, cmd: Command) -> Result<CommandResult, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let res = {
             let mut db = self.db.lock();
             self.engine.apply(&mut db, cmd.clone())?
@@ -560,9 +556,7 @@ impl Core {
         &self,
         envelope_bytes: &[u8],
     ) -> Result<Vec<DomainEvent>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let (events, pending) = {
             let mut db = self.db.lock();
             let events = self.engine.apply_remote_all(&mut db, envelope_bytes)?;
@@ -601,9 +595,7 @@ impl Core {
     /// `VaultRequires` op that locks a scope is reported as an update to the
     /// vault-meta stream.
     pub fn missing_features(&self) -> Result<Vec<crate::feature::MissingFeature>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.missing_features(&db)?)
     }
@@ -624,9 +616,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; the refusal above; storage.
     pub fn enable_field_ops(&self, confirmed: bool) -> Result<Vec<String>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let added = {
             let mut db = self.db.lock();
             self.engine.require_features(
@@ -648,9 +638,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage.
     pub fn devices_lacking_feature(&self, id: &str) -> Result<Vec<[u8; 16]>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self
             .engine
@@ -671,9 +659,7 @@ impl Core {
         horizon_ms: u64,
         settings: &sunrise_domain::ReminderSettings,
     ) -> Result<sunrise_domain::ReminderPlan, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self
             .engine
@@ -710,18 +696,14 @@ impl Core {
     ///
     /// [`CoreError::Closed`] after close, and a storage read error.
     pub fn export_records(&self) -> Result<crate::export::VaultRecords, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.export_records(&db)?)
     }
 
     /// Run a read query.
     pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         if matches!(q, Query::SyncStatus) {
             // Outbox depth is DB truth (accurate offline and online); the live
             // session fields come from the driver's `SyncShared`.
@@ -763,6 +745,26 @@ impl Core {
     pub async fn close(self) -> Result<(), CoreError> {
         self.shutdown().await;
         Ok(())
+    }
+
+    /// Whether [`Core::close`] or [`Core::shutdown`] has run on this handle.
+    pub(crate) fn is_closed(&self) -> bool {
+        *self.closed.lock()
+    }
+
+    /// The one closed check. Every public method that reads or writes the
+    /// vault's storage starts with it, before it touches anything, so a
+    /// closed handle answers [`CoreError::Closed`] and leaves the vault as it
+    /// was: no row read, no chunk written, nothing evicted.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] once the handle is closed.
+    pub(crate) fn ensure_open(&self) -> Result<(), CoreError> {
+        if self.is_closed() {
+            Err(CoreError::Closed)
+        } else {
+            Ok(())
+        }
     }
 
     /// Stop the sync driver (if running) and mark this handle closed, **without
@@ -898,7 +900,7 @@ impl Core {
                 let Some(core) = weak.upgrade() else {
                     return; // Core dropped; nothing left to do.
                 };
-                if *core.closed.lock() {
+                if core.is_closed() {
                     return;
                 }
                 let now_ms = core.cfg.clock.now_ms();
@@ -938,6 +940,7 @@ impl Core {
         tz: &jiff::tz::TimeZone,
     ) -> Result<sunrise_domain::capture::Capture, CoreError> {
         use sunrise_domain::capture::NamedRef;
+        self.ensure_open()?;
         let streams = match self.query(Query::StreamList).await? {
             QueryResult::Streams(rows) => rows,
             _ => Vec::new(),
@@ -1094,6 +1097,7 @@ impl Core {
     /// # Errors
     /// Storage failures reading this device's labels or the fold anchor.
     pub fn export_pairing_offer(&self) -> Result<sunrise_pairing::PairingOffer, CoreError> {
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.keychain().export_pairing_offer(&db)?)
     }
@@ -1121,6 +1125,7 @@ impl Core {
         &self,
         request: &sunrise_pairing::PairingRequest,
     ) -> Result<sunrise_pairing::PairingGrant, CoreError> {
+        self.ensure_open()?;
         // The read bound travels with the keys, so the joiner starts with
         // this device's bound rather than none (#282). Read under the same
         // lock the keys are held under, from the table the engine owns.
@@ -1174,6 +1179,7 @@ impl Core {
         seed_s: [u8; 32],
         seed_d: [u8; 32],
     ) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.keychain().pair_device_in_process(
             &db,
@@ -1247,6 +1253,7 @@ impl Core {
     /// [`crate::keychain::KeychainError::IdentitySecretAbsent`] on a device
     /// admitted by pairing, which holds no `ID_D_priv` to seal.
     pub fn seal_recovery_blob(&self, seed: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.seal_recovery_blob(&db, seed)?)
     }
@@ -1461,9 +1468,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn chain_integrity(&self) -> Result<crate::ChainIntegrity, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.chain_integrity(&db)?)
     }
@@ -1543,9 +1548,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn compact_op_log(&self) -> Result<crate::engine::CompactionReport, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let policy = *self.compaction_policy.lock();
         let mut db = self.db.lock();
         Ok(self.engine.compact_op_log(&mut db, &policy)?)
@@ -1568,9 +1571,7 @@ impl Core {
     /// [`EngineError::Invalid`] for an op in the log that cannot be read;
     /// storage failures. On any error the projection is left as it was.
     pub fn rebuild_projection(&self) -> Result<crate::engine::RebuildReport, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let mut db = self.db.lock();
         db.back_up_for_rebuild()?;
         Ok(self.engine.rebuild_projection(&mut db)?)
@@ -1592,9 +1593,7 @@ impl Core {
     /// index is the old one and the next call resumes.
     pub async fn reindex_search(&self) -> Result<crate::engine::SearchReindex, CoreError> {
         loop {
-            if *self.closed.lock() {
-                return Err(CoreError::Closed);
-            }
+            self.ensure_open()?;
             let step = {
                 let mut db = self.db.lock();
                 self.engine.reindex_search_step(&mut db)?
@@ -1618,9 +1617,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn stream_snapshot(&self, stream_id: [u8; 16]) -> Result<Option<Vec<u8>>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.stream_snapshot(&db, &stream_id)?)
     }
@@ -1637,9 +1634,7 @@ impl Core {
         &self,
         record: &[u8],
     ) -> Result<crate::engine::SnapshotApplied, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let (outcome, events) = {
             let mut db = self.db.lock();
             self.engine.apply_snapshot(&mut db, record)?
@@ -1662,9 +1657,7 @@ impl Core {
     pub(crate) fn snapshots_to_publish(
         &self,
     ) -> Result<Vec<crate::snapshot_sync::Publishable>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let policy = *self.compaction_policy.lock();
         let mut db = self.db.lock();
         let own = self.engine.own_stream_snapshots(&db)?;

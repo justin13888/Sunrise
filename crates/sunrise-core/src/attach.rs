@@ -219,9 +219,9 @@ impl Core {
     ///
     /// # Errors
     ///
-    /// [`AttachError::Empty`], [`AttachError::TooLarge`] or
-    /// [`AttachError::BadThumbnail`] before anything is written; a store or
-    /// command error after.
+    /// [`CoreError::Closed`] after close, [`AttachError::Empty`],
+    /// [`AttachError::TooLarge`] or [`AttachError::BadThumbnail`] before
+    /// anything is written; a store or command error after.
     pub async fn attach_file_with(
         &self,
         parent: EntityRef,
@@ -230,6 +230,7 @@ impl Core {
         bytes: &[u8],
         preview: AttachPreview,
     ) -> Result<Attachment, AttachError> {
+        self.ensure_open()?;
         let size_bytes = bytes.len() as u64;
         if bytes.is_empty() {
             return Err(AttachError::Empty);
@@ -350,6 +351,7 @@ impl Core {
         &self,
         id: EntityRef,
     ) -> Result<Option<(String, Vec<u8>)>, AttachError> {
+        self.ensure_open()?;
         let att = self.attachment_row(id).await?;
         let Some(thumb) = att.thumbnail() else {
             return Ok(None);
@@ -377,6 +379,7 @@ impl Core {
     /// did not, and [`AttachError::Chunk`] when what is stored does not open or
     /// does not hash to its claim.
     pub async fn attachment_bytes(&self, id: EntityRef) -> Result<Vec<u8>, AttachError> {
+        self.ensure_open()?;
         let att = self.attachment_row(id).await?;
         let store = BlobStore::new(self.vault_dir())?;
         if !store.has_all(&att.blob_id, att.chunk_count)? {
@@ -411,6 +414,7 @@ impl Core {
     ///
     /// A blob-store read error.
     pub fn attachment_is_local(&self, att: &Attachment) -> Result<bool, AttachError> {
+        self.ensure_open()?;
         let store = BlobStore::new(self.vault_dir())?;
         Ok(store.has_all(&att.blob_id, att.chunk_count)?)
     }

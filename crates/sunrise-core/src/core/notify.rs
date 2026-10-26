@@ -13,9 +13,7 @@ impl Core {
     ///
     /// [`CoreError::Closed`] after close, or the failed read.
     pub fn deadline_candidates(&self) -> Result<Vec<DeadlineCandidate>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.deadline_candidates(&db)?)
     }
@@ -29,9 +27,7 @@ impl Core {
     ///
     /// [`CoreError::Closed`] after close, or the failed read.
     pub fn security_events(&self) -> Result<Vec<SecurityEvent>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.security_events(&db)?)
     }
@@ -43,9 +39,7 @@ impl Core {
     ///
     /// [`CoreError::Closed`] after close, or the failed read.
     pub fn oldest_unacked_ms(&self) -> Result<Option<u64>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.oldest_unacked_ms(&db)?)
     }
