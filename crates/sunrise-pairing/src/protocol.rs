@@ -86,23 +86,10 @@ use sunrise_crypto::keys::{DeviceDhKeyPair, DeviceSigningKeyPair};
 use sunrise_crypto::{device_id_from_pub, identity_id_from_pub, DeviceCert};
 use zeroize::Zeroize;
 
-use crate::payload::{
-    arr16, arr32, int, read_bounds_value, read_read_bounds, PairingPayload, PairingPayloadError,
-    MAX_PAIRING_PAYLOAD,
+use crate::codec::{
+    arr16, arr32, decode_message, int, read_bounds_value, read_read_bounds, read_stream_keys,
 };
-
-/// Decode one pairing message's CBOR into a value tree, under the framing
-/// bound every decoder in this crate shares, the payload's included.
-///
-/// # Errors
-/// [`PairingPayloadError::TooDeep`] past [`sunrise_cbor::MAX_VALUE_DEPTH`],
-/// [`PairingPayloadError::Cbor`] for anything else that does not decode.
-pub(crate) fn decode_message(bytes: &[u8]) -> Result<ciborium::value::Value, PairingPayloadError> {
-    sunrise_cbor::decode_value(&mut &bytes[..]).map_err(|e| match e {
-        sunrise_cbor::ValueDecodeError::TooDeep => PairingPayloadError::TooDeep,
-        sunrise_cbor::ValueDecodeError::Malformed(m) => PairingPayloadError::Cbor(m),
-    })
-}
+use crate::payload::{PairingPayload, PairingPayloadError, MAX_PAIRING_PAYLOAD};
 
 /// Message 1: what the sponsor offers, before it has been asked for anything.
 ///
@@ -586,7 +573,7 @@ pub fn decode_pairing_grant(bytes: &[u8]) -> Result<PairingGrant, PairingPayload
             (1, Value::Bytes(b)) => device_cert = Some(b),
             (2, Value::Bytes(b)) => vault_root = Some(arr32(&b, "grant vault_root")?),
             (3, Value::Map(streams)) => {
-                crate::payload::read_stream_keys(streams, &mut stream_keys)?;
+                read_stream_keys(streams, &mut stream_keys)?;
             }
             // Optional, and absent from a sponsor that predates it: the joiner
             // then adopts no bound, which is where every joiner used to start.
