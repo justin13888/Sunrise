@@ -2253,8 +2253,40 @@ jobs:
         run: python3 .github/scripts/test_reverses_gate.py
 
 
+  # The nightly `fuzz` matrix, computed rather than written out: the targets
+  # are the `[[bin]]` entries of `fuzz/Cargo.toml`, the one place a harness is
+  # declared. `mise run fuzz-smoke` and `fuzz-pr-plan` read the same list.
+  fuzz-plan:
+    name: Fuzz plan (nightly)
+    runs-on: ubuntu-latest
+    # A checkout and one `cargo metadata --no-deps`. Seconds.
+    timeout-minutes: 5
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    env:
+      # The runner's preinstalled stable, which is enough to read a manifest.
+      # Without it `rust-toolchain.toml` would have rustup install 1.91.1 and
+      # its components first.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Name every fuzz target
+        id: plan
+        # A name that is not `[A-Za-z0-9_]+`, or an empty list, fails the plan
+        # rather than reaching the matrix.
+        run: |
+          set -euo pipefail
+          json=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+            jq -c '[.packages[].targets[] | select(.kind == ["bin"]) | .name]
+              | if length > 0 and all(test("^[A-Za-z0-9_]+$")) then .
+                else error("fuzz/Cargo.toml: no [[bin]] target, or a name outside [A-Za-z0-9_]+") end')
+          echo "Targets: $json"
+          echo "targets=$json" >> "$GITHUB_OUTPUT"
+
   fuzz:
     name: Fuzz (${{ matrix.target }})
+    needs: fuzz-plan
     runs-on: ubuntu-latest
     # Derived, not measured: no run of this job has ever executed a step, and
     # neither has any other job in this file since the billing block. 30
@@ -2265,8 +2297,8 @@ jobs:
     # wants replacing with a real figure the first time a nightly completes.
     timeout-minutes: 60
     # Nightly and on demand — the same gate the `mutants` job carries. Half an
-    # hour a target and nine targets is four and a half hours of runner time,
-    # which is a nightly's shape, not a pull request's. A pull request that
+    # hour a target, across every target, is hours of runner time, which is a
+    # nightly's shape, not a pull request's. A pull request that
     # touches a decoder gets the short, path-filtered `fuzz-pr` job below
     # instead (ADR-0061).
     #
@@ -2275,20 +2307,11 @@ jobs:
     # change is under review, before anyone moves the pin `fuzz-pr` reads.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
-      # Not fail-fast: a finding in one parser must not hide whether the other
-      # eight ran clean. Each target is an independent search.
+      # Not fail-fast: a finding in one parser must not hide whether the
+      # others ran clean. Each target is an independent search.
       fail-fast: false
       matrix:
-        target:
-          - op_envelope
-          - wire_frame
-          - rrule
-          - ical
-          - oauth_state
-          - recovery_blob
-          - identity_transition
-          - device_cert
-          - key_envelope
+        target: ${{ fromJSON(needs.fuzz-plan.outputs.targets) }}
     env:
       # This workflow sets `RUSTFLAGS: -D warnings` globally. `cargo-fuzz`
       # composes its own `RUSTFLAGS` (the sanitizer and `sancov` passes) on top
@@ -2384,11 +2407,19 @@ jobs:
         # The path list is #365's; each maps to the targets that drive that
         # code through its public API. `sunrise-http-sig` triggers the plan and
         # maps to nothing: no harness drives it yet, and testing.md says so.
-        # A name is only ever emitted from the fixed list `all`, so a file name
-        # in the diff never reaches a shell command in the job below.
+        # `all` is the `[[bin]]` entries of `fuzz/Cargo.toml`, read as the
+        # nightly `fuzz-plan` reads them, and every one must match
+        # `[A-Za-z0-9_]+`. A name is only ever emitted from `all`, so a file
+        # name in the diff never reaches a shell command in the job below.
+        env:
+          # As in `fuzz-plan`: the preinstalled stable reads the manifest.
+          RUSTUP_TOOLCHAIN: stable
         run: |
           set -euo pipefail
-          all="op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope"
+          all=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+            jq -r '[.packages[].targets[] | select(.kind == ["bin"]) | .name]
+              | if length > 0 and all(test("^[A-Za-z0-9_]+$")) then join(" ")
+                else error("fuzz/Cargo.toml: no [[bin]] target, or a name outside [A-Za-z0-9_]+") end')
           crypto="op_envelope recovery_blob identity_transition device_cert key_envelope"
           picked=""
           while IFS= read -r path; do
