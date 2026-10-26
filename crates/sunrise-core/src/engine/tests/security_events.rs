@@ -26,7 +26,7 @@ fn open_at(root: [u8; 32], seed: &IdentitySeed, at: u64) -> (Engine, Db, Arc<Fak
         seed,
     )
     .unwrap();
-    let e = Engine::from_clock(c.clone(), Arc::new(SystemRng), Arc::new(kc));
+    let e = Engine::from_clock(c.clone(), seeded_rng(), Arc::new(kc));
     e.ensure_base_epochs(&mut db).unwrap();
     e.publish_device_cert(&mut db).unwrap();
     (e, db, c)
