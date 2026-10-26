@@ -249,9 +249,8 @@ single file written at startup can stand in for it. The CLI is the driver with
 no channel at all, which is why the protocol had to be transport-agnostic.
 
 `SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
-carefully: it supplies a root outright and touches no keystore, which is how two
-vaults are told to be one account until pairing lands, and how a vault created
-before per-vault keys existed is opened. Such a vault is **refused** with a
+carefully: it supplies a root outright and touches no keystore, which is how a
+vault created before per-vault keys existed is opened. Such a vault is **refused** with a
 typed `PreMultiAccount` error rather than opened by guessing the old constant —
 and the refusal quotes that constant, so the data can still be read out once and
 moved. Refusing and then telling the user exactly how to proceed is the point:
