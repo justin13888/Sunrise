@@ -23,6 +23,9 @@ use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
+// The tokio clock, as `latency.rs` uses: the workspace bans `std`'s
+// `Instant::now`.
+use tokio::time::Instant;
 
 /// The bearer the harness relay's `NullVerifier` accepts, as any bearer.
 pub const SELF_HOST_BEARER: &str = "self-host";
@@ -162,18 +165,36 @@ impl Device {
     /// Run and require success; returns stdout.
     ///
     /// # Panics
-    /// When the command fails, with its stdout and stderr.
+    /// When the command fails, with its stdout, its stderr and the tail of
+    /// this device's log.
     pub async fn ok(&self, args: &[&str]) -> String {
         let out = self.run(args).await;
-        assert!(
-            out.status.success(),
-            "`sunrise {}` failed on {}:\n{}\n{}",
+        assert!(out.status.success(), "{}", self.failure(args, &out));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Why `sunrise <args>` failed: its stdout and stderr, then the last
+    /// [`LOG_TAIL`] lines of `log.ndjson`. The log is the only record of the
+    /// session errors and backoffs behind a failed sync, and it goes with
+    /// the tempdir as the panic unwinds, so this message is its one chance
+    /// to be read.
+    fn failure(&self, args: &[&str], out: &Output) -> String {
+        let log_path = self.vault.with_extension("log.ndjson");
+        let log = std::fs::read_to_string(&log_path).map_or_else(
+            |e| format!("(no log at {}: {e})", log_path.display()),
+            |text| {
+                let lines: Vec<&str> = text.lines().collect();
+                lines[lines.len().saturating_sub(LOG_TAIL)..].join("\n")
+            },
+        );
+        format!(
+            "`sunrise {}` failed on {}:\n{}\n{}\n--- last {LOG_TAIL} lines of {} ---\n{log}",
             args.join(" "),
             self.vault.display(),
             String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+            String::from_utf8_lossy(&out.stderr),
+            log_path.display(),
+        )
     }
 
     /// Run with `--json` and parse the document.
@@ -192,12 +213,52 @@ impl Device {
         self.json(&["show", id]).await
     }
 
-    /// `sync --once`, required to succeed.
+    /// `sync --once`, required to end live within [`WAIT`].
+    ///
+    /// # Panics
+    /// As [`Device::sync_by`] does, with a deadline [`WAIT`] from now.
     pub async fn sync(&self) {
-        let out = self.ok(&["sync", "--once"]).await;
-        assert!(out.contains("sync: live"), "{out}");
+        self.sync_by(Instant::now() + WAIT).await;
+    }
+
+    /// `sync --once`, re-run while it fails only because its own 30 s
+    /// budget ran out, until `deadline`. One reconnect cascade under load
+    /// outlasts a single budget; any other failure (a usage error, a
+    /// refused or degraded session) fails at once.
+    ///
+    /// # Panics
+    /// When `sync --once` fails other than by timing out, or still times out
+    /// at `deadline`, with its last output and the device's log.
+    async fn sync_by(&self, deadline: Instant) {
+        const ARGS: [&str; 2] = ["sync", "--once"];
+        // The CLI's message for a wait that ran out its budget, which is
+        // `DEADLINE_MS` (30 s) in `sunrise-cli`'s `cmd/plumbing.rs`.
+        let timed_out = sunrise_cli::i18n::strings::sync::timed_out(30);
+        loop {
+            let out = self.run(&ARGS).await;
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(stdout.contains("sync: live"), "{stdout}");
+                return;
+            }
+            let retry = String::from_utf8_lossy(&out.stderr).contains(&timed_out)
+                && Instant::now() < deadline;
+            assert!(retry, "{}", self.failure(&ARGS, &out));
+        }
+    }
+
+    /// `sunrise --json sync status`: the badge code and the outbox depth.
+    async fn sync_status(&self) -> (String, u64) {
+        let s = self.json(&["sync", "status"]).await;
+        let badge = s["badge"].as_str().expect("a badge code").to_owned();
+        let pending = s["pending"].as_u64().expect("a pending count");
+        (badge, pending)
     }
 }
+
+/// How many lines of a device's `log.ndjson` a failed command's message ends
+/// with.
+const LOG_TAIL: usize = 100;
 
 /// The id a create command printed: the first word of its output.
 ///
@@ -288,11 +349,37 @@ pub async fn bootstrap_and_recover(root: &Path, relay: &str) -> (Device, Device)
 }
 
 /// Sync both ways until neither has anything left to send or receive.
+///
+/// Rounds of `sync --once` on A then B, until both report nothing pending,
+/// then one more round in which neither device's pending count or badge
+/// changes: B's last sends reach A in it, and a change either side still
+/// had in hand shows. All of it within [`WAIT`].
+///
+/// # Panics
+/// When the two have not converged within [`WAIT`], with both devices' last
+/// status.
 pub async fn settle(a: &Device, b: &Device) {
-    a.sync().await;
-    b.sync().await;
-    a.sync().await;
-    b.sync().await;
+    let deadline = Instant::now() + WAIT;
+    let round = || async {
+        a.sync_by(deadline).await;
+        b.sync_by(deadline).await;
+        (a.sync_status().await, b.sync_status().await)
+    };
+    let mut last = round().await;
+    loop {
+        let drained = last.0 .1 == 0 && last.1 .1 == 0;
+        let next = round().await;
+        if drained && next == last {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "A and B did not converge within {WAIT:?}: A {:?}, B {:?}",
+            next.0,
+            next.1
+        );
+        last = next;
+    }
 }
 
 /// Generous: every step is a process start against a relay.
