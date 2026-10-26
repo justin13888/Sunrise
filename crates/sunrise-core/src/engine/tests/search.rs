@@ -271,6 +271,67 @@ fn cjk_text_is_found_whole_in_part_and_by_two_characters() {
     );
 }
 
+/// A one- or two-character CJK term scans titles, and the scan stops at
+/// `SHORT_CJK_CAP` rows: the group's total is the cap, not every title that
+/// holds the term.
+#[test]
+fn a_short_cjk_term_finds_at_most_the_cap() {
+    let (e, mut db) = (engine(), db());
+    // The rebuild check after each of these writes would rebuild the
+    // projection five hundred times; one rebuild below does the same job.
+    crate::engine::rebuild::check::disable();
+    let cap = usize::try_from(crate::engine::search::SHORT_CJK_CAP).unwrap();
+    // Inside a longer CJK run, so the word index, which keeps the run as
+    // one token, does not find the term: only the scan does.
+    for i in 0..cap + 5 {
+        new_task(&e, &mut db, &format!("黒猫{i}"));
+    }
+    let r = grouped(&e, &db, "猫");
+    let tasks = group(&r, SearchKind::Task).unwrap();
+    assert_eq!(tasks.total, u32::try_from(cap).unwrap());
+    // Below the cap, every title is found.
+    new_task(&e, &mut db, "犬の散歩");
+    assert_eq!(
+        group(&grouped(&e, &db, "犬"), SearchKind::Task)
+            .unwrap()
+            .total,
+        1
+    );
+    e.rebuild_projection(&mut db).unwrap();
+    assert_eq!(grouped(&e, &db, "猫"), r, "a rebuild finds the same");
+}
+
+/// A query with no text lists the newest first, and two made in the same
+/// millisecond by id, whatever their titles.
+#[test]
+fn a_query_with_no_text_lists_the_newest_first() {
+    let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+    let e = engine_clocked(clock.clone());
+    let mut db = db();
+    let mut made = Vec::new();
+    for (i, title) in ["b oldest", "a middle", "c newest"].into_iter().enumerate() {
+        set_clock(&clock, NOW as u64 + 1_000 * i as u64);
+        made.push((new_task(&e, &mut db, title), title));
+    }
+    assert_eq!(
+        hits(&e, &db, "state:open"),
+        ["task:c newest", "task:a middle", "task:b oldest"]
+    );
+    // Two more in one millisecond, after the rest: by id between them.
+    set_clock(&clock, NOW as u64 + 5_000);
+    let mut same = [
+        (new_task(&e, &mut db, "y same"), "y same"),
+        (new_task(&e, &mut db, "x same"), "x same"),
+    ];
+    same.sort_by_key(|(id, _)| *id);
+    let want: Vec<String> = same
+        .iter()
+        .chain(made.iter().rev())
+        .map(|(_, t)| format!("task:{t}"))
+        .collect();
+    assert_eq!(hits(&e, &db, "state:open"), want);
+}
+
 #[test]
 fn a_substring_finds_the_word_it_is_inside() {
     let (e, mut db) = (engine(), db());
@@ -314,8 +375,16 @@ fn word_hits_rank_above_substring_hits_and_titles_above_bodies() {
     );
     new_task(&e, &mut db, "passports for everyone");
     let order = hits(&e, &db, "passport");
-    assert_eq!(order[0], "task:passport photos");
-    assert_eq!(order.len(), 3);
+    // Each is one word hit, so the word index's `bm25` decides: a title
+    // outweighs a body, and the shorter title the longer one.
+    assert_eq!(
+        order,
+        [
+            "task:passport photos",
+            "task:passports for everyone",
+            "task:Paperwork"
+        ]
+    );
     let r = grouped(&e, &db, "passport");
     let body_hit = group(&r, SearchKind::Task)
         .unwrap()
@@ -945,7 +1014,9 @@ proptest::proptest! {
     })]
 
     /// No query is an FTS5 syntax error, or any other error, whatever it
-    /// holds and whether or not the last word is a prefix.
+    /// holds and whether or not the last word is a prefix; each answers the
+    /// same on a second read and after a rebuild of the indexes from the
+    /// rows; and the seeded doc is still found.
     #[test]
     fn hostile_input_never_errors(
         parts in proptest::collection::vec(proptest::sample::select(HOSTILE), 0..24),
@@ -955,13 +1026,31 @@ proptest::proptest! {
         let mut db = db();
         let e = engine();
         crate::engine::rebuild::check::disable();
-        new_task(&e, &mut db, "haystack passport 東京出張");
-        for text in [parts.concat(), parts.join(" "), raw] {
-            let res = e.query(
-                &db,
-                Query::SearchGrouped { text: text.clone(), now_ms: NOW as u64, prefix, per_group: None },
-            );
+        let seeded = new_task(&e, &mut db, "haystack passport 東京出張");
+        new_task(&e, &mut db, "haystack");
+        new_task(&e, &mut db, "passport haystack form");
+        let read = |db: &Db, text: &str| e.query(
+            db,
+            Query::SearchGrouped { text: text.to_owned(), now_ms: NOW as u64, prefix, per_group: None },
+        ).map(|r| match r {
+            QueryResult::Search(r) => *r,
+            other => panic!("expected Search, got {other:?}"),
+        });
+        let texts = [parts.concat(), parts.join(" "), raw];
+        let mut first = Vec::new();
+        for text in &texts {
+            let res = read(&db, text);
             proptest::prop_assert!(res.is_ok(), "{text:?}: {res:?}");
+            let res = res.unwrap();
+            proptest::prop_assert_eq!(&res, &read(&db, text).unwrap(), "{:?}: a second read", text);
+            first.push(res);
         }
+        e.rebuild_projection(&mut db).unwrap();
+        for (text, before) in texts.iter().zip(&first) {
+            proptest::prop_assert_eq!(before, &read(&db, text).unwrap(), "{:?}: after a rebuild", text);
+        }
+        let found = read(&db, "haystack 東京").unwrap();
+        let found: Vec<EntityRef> = found.groups.iter().flat_map(|g| g.hits.iter().map(|h| h.entity)).collect();
+        proptest::prop_assert_eq!(found, vec![seeded]);
     }
 }

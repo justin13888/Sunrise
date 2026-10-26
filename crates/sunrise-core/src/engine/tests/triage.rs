@@ -627,3 +627,167 @@ fn a_pause_holds_until_its_expiry_and_a_re_cancel_keeps_the_reason() {
     .unwrap();
     assert_eq!(read_task_t(&e, &db, t).drop_reason(), Some("why"));
 }
+
+// ---- one refusal, wherever it falls ----
+
+/// How the one bad id in a batch is bad.
+#[derive(Debug, Clone, Copy)]
+enum Bad {
+    /// No task by that id: refused while checking.
+    Unknown,
+    /// A deleted task: refused while checking.
+    Deleted,
+    /// A task the action's write cannot apply to, refused while planning:
+    /// a done task cannot be dropped (`plan_update`), and a task whose hard
+    /// constraint the defer target breaks cannot be deferred there
+    /// (`plan_defer`).
+    Unplannable,
+}
+
+/// A defer to `OUTSIDE_WINDOW_MS`, which `sample_constraint`'s hard 09:00 to
+/// 17:00 window refuses.
+fn defer_outside_the_window() -> TriageAction {
+    TriageAction::Defer {
+        to: DeferTarget::At(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
+    }
+}
+
+/// The task `bad` names for `action`, created in `db`.
+fn bad_id(e: &Engine, db: &mut Db, bad: Bad, defer: bool) -> EntityRef {
+    match bad {
+        Bad::Unknown => EntityRef::new(EntityKind::Task, [0x99; 16]),
+        Bad::Deleted => {
+            let id = add(e, db, "gone", None, None);
+            e.apply(db, Command::DeleteTask(id)).unwrap();
+            id
+        }
+        Bad::Unplannable if defer => {
+            e.apply(
+                db,
+                Command::CreateTask(TaskDraft {
+                    title: "nine to five".into(),
+                    scheduling_constraints: vec![sample_constraint()],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+        Bad::Unplannable => {
+            let id = add(e, db, "done already", None, None);
+            e.apply(db, Command::CompleteTask(id)).unwrap();
+            id
+        }
+    }
+}
+
+/// Builds the batch: `good` fresh tasks with the bad one at `at`, and
+/// returns it with every task id it holds that the vault has.
+fn batch_with_one_bad(
+    e: &Engine,
+    db: &mut Db,
+    good: usize,
+    at: usize,
+    bad: Bad,
+    defer: bool,
+) -> (Vec<EntityRef>, Vec<EntityRef>, EntityRef) {
+    let mut ids: Vec<EntityRef> = (0..good)
+        .map(|i| add(e, db, &format!("good {i}"), None, None))
+        .collect();
+    let wrong = bad_id(e, db, bad, defer);
+    let held: Vec<EntityRef> = ids
+        .iter()
+        .copied()
+        .chain((!matches!(bad, Bad::Unknown)).then_some(wrong))
+        .collect();
+    ids.insert(at.min(good), wrong);
+    (ids, held, wrong)
+}
+
+/// The stored row of each of `ids`, a tombstoned one included.
+fn rows(db: &Db, ids: &[EntityRef]) -> Vec<Task> {
+    ids.iter()
+        .map(|id| read_task(db.conn(), id.bytes()).unwrap().expect("held"))
+        .collect()
+}
+
+/// A batch whose last id fails in planning, after every id before it was
+/// checked and planned, still writes nothing: the refusal of a done task's
+/// drop and of a defer into a hard constraint's gap each refuse the whole
+/// batch.
+#[test]
+fn a_later_id_refused_in_planning_refuses_the_batch() {
+    for defer in [false, true] {
+        let (e, _clock) = clocked();
+        let mut db = db();
+        let (ids, held, wrong) = batch_with_one_bad(&e, &mut db, 3, 3, Bad::Unplannable, defer);
+        assert_eq!(ids.last(), Some(&wrong), "the bad id is planned last");
+        let ops = op_count(&db);
+        let before: Vec<Task> = rows(&db, &held);
+        let action = if defer {
+            defer_outside_the_window()
+        } else {
+            TriageAction::Drop { reason: None }
+        };
+        let err = triage(&e, &mut db, &ids, action).unwrap_err();
+        if defer {
+            assert!(
+                matches!(
+                    err,
+                    EngineError::Validation(
+                        sunrise_domain::ValidationError::HardScheduleConstraint
+                    )
+                ),
+                "{err:?}"
+            );
+        } else {
+            assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+        }
+        assert_eq!(op_count(&db), ops, "nothing written (defer: {defer})");
+        let after: Vec<Task> = rows(&db, &held);
+        assert_eq!(before, after, "no task row moved (defer: {defer})");
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 32,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/triage.txt",
+            ),
+        )),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// One bad id anywhere in a batch of good ones, refused while checking
+    /// or while planning, refuses the batch: the op count and every task
+    /// row are as they were. The same batch without it is one write of
+    /// each task.
+    #[test]
+    fn one_bad_id_at_any_position_writes_nothing(
+        good in 1usize..5,
+        at in 0usize..5,
+        bad in proptest::sample::select(vec![Bad::Unknown, Bad::Deleted, Bad::Unplannable]),
+        defer in proptest::bool::ANY,
+    ) {
+        let (e, _clock) = clocked();
+        let mut db = db();
+        let (ids, held, wrong) = batch_with_one_bad(&e, &mut db, good, at, bad, defer);
+        let ops = op_count(&db);
+        let before: Vec<Task> = rows(&db, &held);
+        let action = || if defer {
+            defer_outside_the_window()
+        } else {
+            TriageAction::Drop { reason: Some("not mine".into()) }
+        };
+        proptest::prop_assert!(triage(&e, &mut db, &ids, action()).is_err());
+        proptest::prop_assert_eq!(op_count(&db), ops);
+        let after: Vec<Task> = rows(&db, &held);
+        proptest::prop_assert_eq!(before, after);
+
+        let rest: Vec<EntityRef> = ids.into_iter().filter(|id| *id != wrong).collect();
+        triage(&e, &mut db, &rest, action()).unwrap();
+        proptest::prop_assert_eq!(op_count(&db), ops + i64::try_from(good).unwrap());
+    }
+}

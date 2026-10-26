@@ -801,6 +801,48 @@ fn only_the_least_known_device_writes_the_snapshot() {
     assert!(e.stream_snapshot(db, &INBOX).unwrap().is_some());
 }
 
+/// `is_stream_compactor` answers the election directly: the least known id
+/// is the compactor and the other is not; once the least has been silent
+/// past `known_device_window_ms` the role moves to the other; and when it
+/// is heard from again the role moves back.
+#[test]
+fn the_compactor_role_moves_past_a_silent_least_device_and_back() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (e2, db2) = r.pop().unwrap();
+    let (e1, db1) = r.pop().unwrap();
+    let ((least, mut least_db), (other, mut other_db)) =
+        if e1.keychain.device_id() < e2.keychain.device_id() {
+            ((e1, db1), (e2, db2))
+        } else {
+            ((e2, db2), (e1, db1))
+        };
+    new_task(&least, &mut least_db, "from the least");
+    new_task(&other, &mut other_db, "from the other");
+    sync(&least_db, &other, &mut other_db);
+    sync(&other_db, &least, &mut least_db);
+    let policy = policy();
+    let is = |e: &Engine, db: &mut Db| e.is_stream_compactor(db, &INBOX, &policy).unwrap();
+    assert!(is(&least, &mut least_db), "the least known id compacts");
+    assert!(!is(&other, &mut other_db), "the other does not");
+
+    // Just inside the window the least is still known to the other.
+    set_clock(&c, T0 + policy.known_device_window_ms);
+    assert!(!is(&other, &mut other_db));
+    // Past it, the other has not heard from the least, and takes the role.
+    set_clock(&c, T0 + policy.known_device_window_ms + 1);
+    assert!(
+        is(&other, &mut other_db),
+        "the election moved past the least"
+    );
+    assert!(is(&least, &mut least_db), "the least still holds it itself");
+
+    // The least is heard from again: the role is its once more.
+    new_task(&least, &mut least_db, "back again");
+    sync(&least_db, &other, &mut other_db);
+    assert!(!is(&other, &mut other_db), "the least is known again");
+}
+
 /// The acceptance test: a device that joins from a snapshot and the tail
 /// above it holds exactly what a device that replayed every op holds, whose
 /// projection, cursors and stream digest all agree.

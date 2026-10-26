@@ -163,7 +163,11 @@ fn a_this_and_future_edit_splits_the_series() {
     assert_eq!(next.split_from, Some(rid));
     assert_eq!(next.template.title, "Water the garden");
     assert_eq!(old.template.title, "Water plants");
-    assert!(old.rrule.until.is_some());
+    assert_eq!(
+        old.rrule.until,
+        Some(r.occurrence_time(r.occurrence_civil(&keys[2]).unwrap())),
+        "the old routine ends at the occurrence before the pivot"
+    );
     assert!(old.has_occurrence(&keys[2]) && !old.has_occurrence(&pivot));
 
     for (i, k) in keys.iter().enumerate() {
@@ -403,6 +407,7 @@ fn a_split_is_refused_while_a_paired_device_lacks_routine_series() {
     let (rid, keys) = daily(&p.ea, &mut p.dba, RoutineCatchupPolicy::Skip);
     sync(&mut p);
     let r = stored(&p.dba, rid);
+    let ops = op_count(&p.dba);
     let err =
         p.ea.apply(
             &mut p.dba,
@@ -420,6 +425,7 @@ fn a_split_is_refused_while_a_paired_device_lacks_routine_series() {
         "{err:?}"
     );
     assert!(stored(&p.dba, rid).rrule.until.is_none());
+    assert_eq!(op_count(&p.dba), ops);
 }
 
 // ---- edit scope: this ----
@@ -493,6 +499,7 @@ fn an_edit_of_this_occurrence_refuses_a_rule_change() {
     let e = engine();
     let mut db = db();
     let (rid, keys) = daily(&e, &mut db, RoutineCatchupPolicy::Skip);
+    let ops = op_count(&db);
     let err = e
         .apply(
             &mut db,
@@ -509,6 +516,7 @@ fn an_edit_of_this_occurrence_refuses_a_rule_change() {
         )
         .unwrap_err();
     assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_eq!(op_count(&db), ops);
 }
 
 // ---- template propagation ----
@@ -659,10 +667,266 @@ fn catch_up_skip_lapses_past_open_occurrences_generated_earlier() {
             "{id} is lapsed"
         );
     }
-    let listed = titles(&e, &db, Query::StreamTasks(stream_ref(5)));
-    assert_eq!(listed.len(), keys.len() - 4);
-    // Nothing was written: the read derived it.
+    let QueryResult::StreamTasks(listed) = e.query(&db, Query::StreamTasks(stream_ref(5))).unwrap()
+    else {
+        panic!("StreamTasks returns tasks");
+    };
+    let listed: BTreeSet<EntityRef> = listed.into_iter().map(|t| t.id).collect();
+    let kept: BTreeSet<EntityRef> = ids
+        .iter()
+        .copied()
+        .filter(|id| !lapsed.contains(id))
+        .collect();
+    assert_eq!(
+        listed, kept,
+        "the stream lists every occurrence but the lapsed"
+    );
+    // Nothing was written: the read derived it, and derives it again.
     assert!(!task(&db, ids[0]).deleted);
+}
+
+/// Catch-up writes nothing: every read that applies it leaves the op count
+/// where it was, and reading again gives the same answer.
+#[test]
+fn catch_up_is_derived_and_writes_nothing() {
+    for policy in [
+        RoutineCatchupPolicy::Skip,
+        RoutineCatchupPolicy::Merge,
+        RoutineCatchupPolicy::Queue,
+    ] {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT_331, [6u8; 32], clock.clone());
+        let mut db = db_root(ROOT_331);
+        let (rid, _) = daily(&e, &mut db, policy.clone());
+        set_clock(&clock, late());
+        let ops = op_count(&db);
+        let rows = tasks_projection(&db);
+        let read = |e: &Engine, db: &Db| {
+            (
+                lapsed(e, db),
+                today(e, db),
+                titles(e, db, Query::StreamTasks(stream_ref(5))),
+                match e.query(db, Query::Triage).unwrap() {
+                    QueryResult::Triage(rows) => rows
+                        .into_iter()
+                        .map(|r| (r.task, r.lateness))
+                        .collect::<Vec<_>>(),
+                    other => panic!("{other:?}"),
+                },
+            )
+        };
+        let first = read(&e, &db);
+        assert_eq!(first, read(&e, &db), "{policy:?}: a second read agrees");
+        assert_eq!(op_count(&db), ops, "{policy:?}: no read wrote an op");
+        assert_eq!(tasks_projection(&db), rows, "{policy:?}: no row moved");
+        assert!(stored(&db, rid).rrule.until.is_none());
+    }
+}
+
+/// A context's list applies catch-up as Today does: a lapsed occurrence of
+/// a routine whose template carries the context is not listed.
+#[test]
+fn catch_up_lapses_occurrences_in_a_context_list() {
+    let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+    let e = engine_seeded(ROOT_331, [7u8; 32], clock.clone());
+    let mut db = db_root(ROOT_331);
+    let garden = new_context(&e, &mut db, "garden");
+    let mut draft = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    draft.template.contexts = vec![garden];
+    let rid = e
+        .apply(&mut db, Command::CreateRoutine(draft))
+        .unwrap()
+        .entity;
+    let all: BTreeSet<EntityRef> = live_series(&db, &[rid]).iter().map(|t| t.id).collect();
+    set_clock(&clock, late());
+    let lapsed: BTreeSet<EntityRef> = lapsed(&e, &db).into_iter().collect();
+    assert_eq!(
+        lapsed.len(),
+        5,
+        "the first five are past their grace window"
+    );
+    let QueryResult::StreamTasks(listed) = e.query(&db, Query::ContextTasks(garden)).unwrap()
+    else {
+        panic!("ContextTasks returns tasks");
+    };
+    let listed: BTreeSet<EntityRef> = listed.into_iter().map(|t| t.id).collect();
+    assert_eq!(listed, &all - &lapsed);
+}
+
+// ---- refusals ----
+
+/// An edit of one occurrence at a key the series does not produce is
+/// refused as not found, and nothing is written.
+#[test]
+fn an_edit_of_an_occurrence_the_series_lacks_is_not_found() {
+    let e = engine();
+    let mut db = db();
+    let (rid, _) = daily(&e, &mut db, RoutineCatchupPolicy::Skip);
+    let r = stored(&db, rid);
+    let ops = op_count(&db);
+    let err = e
+        .apply(
+            &mut db,
+            Command::UpdateRoutine {
+                id: rid,
+                scope: EditScope::This {
+                    key: "2023-11-20T07:00".into(),
+                },
+                patch: title_patch(&r, "x"),
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
+    assert_eq!(op_count(&db), ops);
+}
+
+/// A routine this replica does not hold is not found, under every scope,
+/// and nothing is written.
+#[test]
+fn an_edit_of_an_unknown_routine_is_not_found_under_every_scope() {
+    let e = engine();
+    let mut db = db();
+    let (rid, keys) = daily(&e, &mut db, RoutineCatchupPolicy::Skip);
+    let r = stored(&db, rid);
+    let unknown = EntityRef::new(EntityKind::Routine, [0x5e; 16]);
+    let ops = op_count(&db);
+    for scope in [
+        EditScope::All,
+        EditScope::This {
+            key: keys[1].clone(),
+        },
+        EditScope::ThisAndFuture {
+            key: keys[1].clone(),
+        },
+    ] {
+        let err = e
+            .apply(
+                &mut db,
+                Command::UpdateRoutine {
+                    id: unknown,
+                    scope: scope.clone(),
+                    patch: title_patch(&r, "x"),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::NotFound(_)),
+            "{scope:?}: {err:?}"
+        );
+    }
+    assert_eq!(op_count(&db), ops);
+}
+
+// ---- a split never loses an occurrence ----
+
+/// The rules the split property draws from: daily, every other day,
+/// weekdays, and three days a week.
+const RULES: [&str; 4] = [
+    "FREQ=DAILY",
+    "FREQ=DAILY;INTERVAL=2",
+    "FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR",
+    "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 24,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/series.txt",
+            ),
+        )),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// A "this and future" split at any key, whatever the rule and whether
+    /// or not it moves the time, loses no occurrence: every occurrence
+    /// before the pivot is the same live task of the ended routine, every
+    /// occurrence the continuation has in the horizon is a live task of it
+    /// (the same task, adopted, when the time did not move), and nothing
+    /// else of the series is live. The ended routine ends at the occurrence
+    /// before the pivot.
+    #[test]
+    fn a_split_never_loses_an_occurrence(
+        rule in proptest::sample::select(RULES.to_vec()),
+        pivot_at in 1usize..6,
+        moved in proptest::sample::select(vec![0i64, 30, 90]),
+    ) {
+        let e = engine();
+        let mut db = db();
+        let draft = routine_draft(
+            stream_ref(5),
+            rule,
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let rid = e.apply(&mut db, Command::CreateRoutine(draft)).unwrap().entity;
+        let r = stored(&db, rid);
+        let horizon = i64::from(sunrise_domain::materialization_horizon_days(&r.rrule.freq)) * DAY_MS;
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + horizon));
+        let keys: Vec<String> = r
+            .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .into_iter()
+            .map(|o| o.key)
+            .collect();
+        proptest::prop_assume!(keys.len() > pivot_at);
+        let pivot = keys[pivot_at].clone();
+        let mut patch = title_patch(&r, "Water the garden");
+        if moved != 0 {
+            let civil = parse_occurrence_key(&pivot).unwrap();
+            let later = civil.checked_add(jiff::Span::new().minutes(moved)).unwrap();
+            patch.starts_at = Some(SunriseTime::zoned(later, "UTC"));
+        }
+        let next_id = edit(&e, &mut db, rid, EditScope::ThisAndFuture { key: pivot }, patch).entity;
+
+        let old = stored(&db, rid);
+        let next = stored(&db, next_id);
+        proptest::prop_assert_eq!(
+            &old.rrule.until,
+            &Some(r.occurrence_time(r.occurrence_civil(&keys[pivot_at - 1]).unwrap()))
+        );
+        let mut want: BTreeSet<EntityRef> = keys[..pivot_at]
+            .iter()
+            .map(|k| r.occurrence_task_id(k))
+            .collect();
+        for k in &keys[..pivot_at] {
+            let t = task(&db, r.occurrence_task_id(k));
+            proptest::prop_assert!(!t.deleted, "{} before the pivot is live", k);
+            proptest::prop_assert_eq!(t.routine_id, Some(rid));
+        }
+        let continued: Vec<String> = next
+            .occurrences_in(window, &jiff::tz::TimeZone::UTC)
+            .unwrap()
+            .into_iter()
+            .map(|o| o.key)
+            .collect();
+        if moved == 0 {
+            proptest::prop_assert_eq!(&continued[..], &keys[pivot_at..]);
+        }
+        for k in &continued {
+            let id = next.occurrence_task_id(k);
+            let t = task(&db, id);
+            proptest::prop_assert!(!t.deleted, "{} of the continuation is live", k);
+            proptest::prop_assert_eq!(t.routine_id, Some(next_id));
+            if moved == 0 {
+                proptest::prop_assert_eq!(id, r.occurrence_task_id(k), "{} is adopted", k);
+            }
+            want.insert(id);
+        }
+        let live: BTreeSet<EntityRef> = live_series(&db, &[rid, next_id])
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        proptest::prop_assert_eq!(live, want);
+    }
 }
 
 /// `merge`: the latest past open occurrence stands for all of them, titled
