@@ -39,6 +39,7 @@
     clippy::missing_panics_doc
 )]
 
+pub(crate) mod account_ns;
 pub mod admin;
 pub mod api;
 pub mod auth;

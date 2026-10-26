@@ -754,7 +754,7 @@ fn chunk_stream(
 /// one upload with two spellings, and a backend that stored them apart would
 /// hide chunks PUT under one from a `finalize` using the other.
 pub(crate) fn account(caller: &Caller) -> AccountKey {
-    crate::relay_log::account_key(&caller.principal.account.account_id)
+    crate::account_ns::account_key(&caller.principal.account.account_id)
 }
 
 // ---------------------------------------------------------------------------

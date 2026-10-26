@@ -12,9 +12,10 @@ use super::{
     KeyBundlePinned, MetadataError, MetadataStore, NewDevice, NewTombstone, PinnedIdentityChain,
     PinnedKeyBundle, PinnedSnapshot, RetiredRecoveryBlob, StoreStats,
 };
+use crate::account_ns::account_key;
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
-use crate::relay_log::{account_key, Appended, DurableCaps, Replay};
+use crate::relay_log::{Appended, DurableCaps, Replay};
 
 mod pins;
 

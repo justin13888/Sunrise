@@ -270,7 +270,7 @@ impl Store {
     pub fn erase_account(&self, account_id: &str) -> Result<bool, StoreError> {
         let mut conn = self.tx("store.erase_account");
         let tx = conn.transaction()?;
-        crate::relay_log::erase_account(&tx, crate::relay_log::account_key(account_id))?;
+        crate::relay_log::erase_account(&tx, crate::account_ns::account_key(account_id))?;
         let erased = tx.execute(
             "DELETE FROM accounts WHERE account_id = ?1",
             params![account_id],
@@ -662,7 +662,7 @@ mod tests {
         s.tombstone_blob(&a, &tombstone(1, None), NOW).unwrap();
         s.put_delete_token(&a, &[1; 32], NOW + 1).unwrap();
         for who in [&a, &b] {
-            let key = (crate::relay_log::account_key(who), STREAM);
+            let key = (crate::account_ns::account_key(who), STREAM);
             s.relay_append(
                 key,
                 b"frame",
@@ -703,9 +703,9 @@ mod tests {
             assert_eq!(left(&sql, &d), 0, "{table}");
         }
         let frames = "SELECT COUNT(*) FROM relay_frames WHERE account_h = ?1";
-        let ah = crate::relay_log::account_key(&a).to_vec();
+        let ah = crate::account_ns::account_key(&a).to_vec();
         assert_eq!(left(frames, &ah), 0);
-        let bh = crate::relay_log::account_key(&b).to_vec();
+        let bh = crate::account_ns::account_key(&b).to_vec();
         assert_eq!(left(frames, &bh), 1, "another account's log is untouched");
     }
 
