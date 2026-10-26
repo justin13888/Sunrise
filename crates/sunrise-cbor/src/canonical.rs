@@ -8,9 +8,10 @@
 //!   (deterministic length-then-lexicographic for the byte string form).
 //! - Definite-length items only.
 //! - Shortest-form integer encoding.
-//! - No floats.
+//! - No floats. [`encode_canonical`] passes a float through unchanged; it is
+//!   refused where a value decodes as [`CborValue`](crate::CborValue).
 //!
-//! `ciborium` alone gives neither property. A derived `Serialize` emits map
+//! `ciborium` alone gives neither of the first two. A derived `Serialize` emits map
 //! fields in DECLARATION order, and `#[serde(flatten)]` makes it emit an
 //! INDEFINITE-length map (`0xbf … 0xff`) because the length is not known up
 //! front. So [`encode_canonical`] does not hand the value straight to
@@ -63,13 +64,6 @@ pub enum CanonicalError {
         reencoded: usize,
     },
 }
-
-/// Marker trait for types whose `Serialize` impl produces canonical CBOR.
-///
-/// Concrete types in `sunrise-domain` / `sunrise-crypto` impl this to
-/// document the contract; the crate-level encode helper uses it as a
-/// boundary marker.
-pub trait CanonicalEncoding: Serialize {}
 
 /// Encode `value` to canonical CBOR bytes: definite lengths, map keys sorted
 /// bytewise by their encoded form.

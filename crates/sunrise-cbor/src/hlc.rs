@@ -25,6 +25,12 @@
 //!    afterwards sorts after the op it just saw. Causality is preserved
 //!    without a vector clock.
 //!
+//! Both hold only while `logical` is below `u32::MAX`. The counter saturates
+//! rather than carrying into `physical_ms`, so at `u32::MAX` a send or a
+//! receive that does not advance the physical component returns a reading
+//! equal to its input, not greater. A saturated stamp only ties, and a tie is
+//! broken by the `(device_id, seq)` terms of the LWW key.
+//!
 //! The receiver **stores the sender's value**, not its own post-merge value.
 //! That is what makes the order replica-independent: two replicas that receive
 //! the same op in different orders still record the same stamp for it, so they
@@ -91,6 +97,9 @@ impl Hlc {
     /// `now_ms` is the device wall clock. The result is strictly greater than
     /// `self` even when the wall clock has stalled or gone backwards, which is
     /// what makes a device's own ops totally ordered without consulting `seq`.
+    ///
+    /// The exception is a saturated counter: when `now_ms <= self.physical_ms`
+    /// and `self.logical == u32::MAX`, the result equals `self`.
     #[must_use]
     pub const fn send(self, now_ms: u64) -> Self {
         if now_ms > self.physical_ms {
@@ -111,6 +120,10 @@ impl Hlc {
     /// Returns this device's new clock state. The caller stamps the received op
     /// with `received` — NOT with the value returned here — so that every
     /// replica records the same stamp for the same op.
+    ///
+    /// The `+ 1` saturates: where the logical counter it continues is already
+    /// `u32::MAX`, the result's `logical` is `u32::MAX`, equal to that input
+    /// rather than greater.
     ///
     /// # Errors
     /// [`HlcError::DriftTooLarge`] when `received` sits more than
