@@ -309,6 +309,13 @@ impl SavedViews {
     ///
     /// Whole-file, because the file is the set: a partial write would leave
     /// the store disagreeing with what the picker just showed.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] when the store has no path, when the file
+    /// cannot be written, and when a view holds text the file cannot carry
+    /// (a `;` in its query, a `=` or `"` in its name, and the other cases
+    /// `SaveError::Unencodable` names). Then nothing is written.
     pub fn save(&self, views_to_write: Vec<SavedView>) -> Result<(), BindingError> {
         let rows: Vec<views::SavedView> = views_to_write.into_iter().map(Into::into).collect();
         self.store
