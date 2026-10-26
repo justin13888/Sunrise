@@ -203,7 +203,9 @@ mod tests {
 
     #[test]
     fn rejects_account_email_hash_of_the_wrong_length() {
-        for hash in ["abcdef0", "abcdef012"] {
+        // The odd lengths are also refused by `hex::decode`; the even ones
+        // are valid hex and reach only the 8-char length check.
+        for hash in ["abcdef0", "abcdef012", "abcdef", "abcdef0123"] {
             let mut p = fixture();
             p.account_email_hash = hash.to_string();
             let s = encode_qr_payload(&p).unwrap();
