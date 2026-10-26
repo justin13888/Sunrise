@@ -249,6 +249,12 @@ impl Engine {
     /// the envelope op's own `None` — would leave a screen showing a vault the
     /// database no longer contains. [`crate::Core::apply_remote`] takes this
     /// form for exactly that reason.
+    ///
+    /// # Errors
+    /// The same as [`Self::apply_remote`]:
+    /// [`EngineError::RemoteOpInvalid`] for malformed / unverifiable /
+    /// undecryptable envelopes, [`EngineError::UnknownDevice`] for an
+    /// untrusted sender, and storage errors from the transaction.
     pub fn apply_remote_all(
         &self,
         db: &mut Db,

@@ -49,6 +49,9 @@ pub(in crate::engine) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
 /// A value an applied op wrote is shallower than the op by the levels the op
 /// wraps it in, so the bound refuses none of them. It does hold a value a
 /// joined snapshot carried to the same bound an op is held to.
+///
+/// It never fails: bytes that do not decode, including a value nested past
+/// the bound, read as [`Value::Null`], indistinguishable from a stored null.
 pub(in crate::engine) fn dec(bytes: &[u8]) -> Value {
     sunrise_cbor::decode_bounded(&mut &bytes[..], sunrise_cbor::MAX_DOC_DEPTH)
         .unwrap_or(Value::Null)

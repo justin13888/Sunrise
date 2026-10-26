@@ -6061,9 +6061,9 @@ fn concurrent_context_renames_converge_to_one_name() {
 /// converge on **one device's arrangement**, not on a merge of the two.
 ///
 /// This is `docs/02-domain/streams.md` §Merge mapping made executable.
-/// `sort_order` is one field on an entity-level LWW row (ADR-0014), so the
-/// losing device's drag is discarded whole. If per-field registers ever
-/// land, this test is where the change in behaviour shows up first.
+/// `sort_order` is one per-field LWW register per Stream (ADR-0044), so the
+/// losing device's drag is discarded whole. If the field ever merges by
+/// another CRDT type, this test is where the change shows up first.
 #[test]
 fn concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge() {
     let ca = Arc::new(FakeClock(PLMutex::new(T0)));
@@ -6742,7 +6742,7 @@ fn revoking_a_device_queues_the_relays_half_in_the_same_transaction() {
 /// ops.
 ///
 /// The row is an LWW register on the declaring op's own `(hlc, device_id)`,
-/// which is how ADR-0014 resolves every other concurrent write here. It
+/// the comparison every per-field register here resolves on (ADR-0044). It
 /// converges regardless of order, and — unlike the `MIN` join it replaces —
 /// it is reversible: a later revocation supersedes an earlier one, so a cut
 /// that landed wrong can be corrected by revoking again.
