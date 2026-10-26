@@ -11,10 +11,6 @@
 //! All algorithm choices are FROZEN for v1 (ADR-0004): Ed25519, X25519,
 //! XChaCha20-Poly1305, ChaCha20-Poly1305 (HPKE-internal), HPKE Base, Noise XX,
 //! BLAKE3 (with KDF mode), Argon2id, TLS 1.3.
-//!
-//! HPKE share grants and Noise XX pairing have type-level scaffolding here;
-//! their full implementations live in `sunrise-pairing` (Phase 9 in the
-//! roadmap). Within `sunrise-crypto` we own only the building blocks.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -23,7 +19,7 @@
 // targeted local relaxation on a defensive boundary that uses a lot of
 // CBOR `Value` matching, integer casts in CBOR conversion, and
 // auto-generated CDDL field names that don't survive doc_markdown's
-// backtick heuristic. To be tightened in Phase 17 (testing pass).
+// backtick heuristic.
 #![allow(
     clippy::manual_let_else,
     clippy::doc_markdown,
