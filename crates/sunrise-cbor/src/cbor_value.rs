@@ -69,25 +69,54 @@ fn contains_float(v: &ciborium::value::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{decode_lenient, encode_canonical};
+    use crate::{decode_lenient, encode_canonical, CanonicalError};
     use ciborium::value::Value;
+
+    /// Decode `v` as a [`CborValue`] and assert it is refused for carrying a
+    /// float, not for any other reason.
+    fn assert_refused_as_float(v: &Value) {
+        let bytes = encode_canonical(v).unwrap();
+        match decode_lenient::<CborValue>(&bytes) {
+            Err(CanonicalError::Decode(msg)) => assert!(
+                msg.contains("floating point is not permitted"),
+                "refused for the wrong reason: {msg}"
+            ),
+            other => panic!("a float must not become a preserved value: {other:?}"),
+        }
+    }
 
     #[test]
     fn a_float_is_refused_so_eq_stays_reflexive() {
-        let bytes = encode_canonical(&Value::Float(f64::NAN)).unwrap();
-        let res: Result<CborValue, _> = decode_lenient(&bytes);
-        assert!(res.is_err(), "a float must not become a preserved value");
+        assert_refused_as_float(&Value::Float(f64::NAN));
     }
 
     #[test]
     fn a_nested_float_is_refused_too() {
-        let bytes = encode_canonical(&Value::Array(vec![
+        assert_refused_as_float(&Value::Array(vec![
             Value::Integer(1.into()),
             Value::Array(vec![Value::Float(1.5)]),
-        ]))
-        .unwrap();
-        let res: Result<CborValue, _> = decode_lenient(&bytes);
-        assert!(res.is_err());
+        ]));
+    }
+
+    #[test]
+    fn a_float_map_key_is_refused() {
+        assert_refused_as_float(&Value::Map(vec![(
+            Value::Float(1.5),
+            Value::Integer(1.into()),
+        )]));
+    }
+
+    #[test]
+    fn a_float_map_value_is_refused() {
+        assert_refused_as_float(&Value::Map(vec![(
+            Value::Text("k".into()),
+            Value::Float(1.5),
+        )]));
+    }
+
+    #[test]
+    fn a_float_inside_a_tag_is_refused() {
+        assert_refused_as_float(&Value::Tag(1_000, Box::new(Value::Float(1.5))));
     }
 
     #[test]
