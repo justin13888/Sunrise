@@ -944,8 +944,11 @@ fn projection_rank(kind: EntityKind) -> u8 {
 /// Join `doc_state` into this replica's merge state and re-project every
 /// entity it names. Returns those entities, in the order they were projected.
 ///
-/// The whole document is read before anything is written, so a malformed one
-/// writes nothing.
+/// It writes into `tx` as it goes: the group members are recorded before the
+/// per-entity loop, and a malformed entity can still be refused inside that
+/// loop after earlier entities were joined. A malformed document leaves
+/// nothing behind only because the caller rolls `tx` back on the error, as
+/// the snapshot apply path's `in_tx` and the rebuild's transaction do.
 ///
 /// # Errors
 /// [`EngineError::Invalid`] for a document that does not parse, or names an

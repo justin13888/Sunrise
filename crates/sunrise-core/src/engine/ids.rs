@@ -333,7 +333,15 @@ pub(crate) fn hex_bytes(b: &[u8]) -> String {
     s
 }
 
-/// Left-pad / truncate a stored blob into a 16-byte id.
+/// Zero-pad on the right or truncate a stored blob into a 16-byte id: the
+/// blob's bytes go first, and a short one is followed by zeros.
+///
+/// The engine reads this from columns its own fold wrote, out of ids that
+/// are 16 bytes by construction, so a blob of any other length is a corrupt
+/// row. Padding one is the silent repair [`crate::keychain::to16`] argues
+/// against, and is tolerated here only because refusing instead would change
+/// what the engine does on such a row; moving these reads to `to16` is a
+/// separate, behaviour-changing step.
 pub(super) fn blob16(raw: &[u8]) -> [u8; 16] {
     let mut a = [0u8; 16];
     let take = raw.len().min(16);
@@ -341,7 +349,8 @@ pub(super) fn blob16(raw: &[u8]) -> [u8; 16] {
     a
 }
 
-/// Left-pad / truncate a stored blob into a 32-byte key or digest.
+/// Zero-pad on the right or truncate a stored blob into a 32-byte key or
+/// digest, for the same reason and with the same caveat as [`blob16`].
 pub(super) fn blob32(raw: &[u8]) -> [u8; 32] {
     let mut a = [0u8; 32];
     let take = raw.len().min(32);

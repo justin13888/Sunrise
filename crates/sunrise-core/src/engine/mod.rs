@@ -3,10 +3,11 @@
 //! Translates a [`Command`] into:
 //! 1. a new op-id (ULID; high 48 bits = clock, low 80 bits = RNG),
 //! 2. a CBOR-encoded inner-op blob (the canonical op record),
-//! 3. an op log row (envelope = inner-op for now; the encrypted
-//!    `OpEnvelope` wrapping happens once `sunrise-sync` actually emits
-//!    on the wire — locally we store the plaintext inner-op as the
-//!    envelope blob since SQLCipher already encrypts at rest),
+//! 3. an op log row whose envelope blob is a sealed, signed
+//!    [`sunrise_crypto::OpEnvelope`]: the inner op encrypted under the
+//!    Stream key for its epoch, stamped with its chain fields (ADR-0043),
+//!    and signed with this device's `D_S` (`Engine::ops_insert_at`), the
+//!    same bytes a peer receives,
 //! 4. the fold of that op into the projection, through the merge a received
 //!    op takes (`write::append_and_fold`, ADR-0065 §5): no command writes a
 //!    row itself, and
@@ -597,10 +598,18 @@ impl Engine {
     /// Apply a command end-to-end inside a single transaction.
     ///
     /// # Errors
-    /// [`EngineError::FeatureMissing`] when the vault requires a feature this
-    /// build lacks and the command would write an entity its scope covers.
-    /// The refusal is made where each op is sealed, so it covers every op a
-    /// command writes, and the transaction it aborts leaves nothing behind.
+    /// - [`EngineError::FeatureMissing`] when the vault requires a feature
+    ///   this build lacks and the command would write an entity its scope
+    ///   covers. The refusal is made where each op is sealed, so it covers
+    ///   every op a command writes, and the transaction it aborts leaves
+    ///   nothing behind.
+    /// - [`EngineError::Validation`] for a draft or patch the domain rejects.
+    /// - [`EngineError::NotFound`] for a command naming an entity this
+    ///   replica does not hold.
+    /// - [`EngineError::Invalid`] for a state transition or policy the
+    ///   command breaks, and [`EngineError::ReservedStream`] for one naming
+    ///   the vault-meta stream or the private domain as an ordinary Stream.
+    /// - Storage, op-log and CBOR failures from the transaction.
     pub fn apply(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
         let result = self
             .dispatch(db, cmd)
@@ -699,6 +708,13 @@ impl Engine {
     }
 
     /// Run a read query against the materialized tables.
+    ///
+    /// # Errors
+    /// [`EngineError::Invalid`] for [`Query::SyncStatus`], always: `Core`
+    /// serves it from the live sync state, and the engine never does.
+    /// [`EngineError::NotFound`] for a query naming an entity or saved view
+    /// this replica does not hold, and storage and CBOR failures from the
+    /// read.
     pub fn query(&self, db: &Db, q: Query) -> Result<QueryResult, EngineError> {
         match q {
             Query::Today { now_ms, contexts } => self.query_today(db, now_ms, &contexts),

@@ -764,18 +764,21 @@ impl std::fmt::Debug for Keychain {
 impl Keychain {
     /// Load the device identity, or create it on first open.
     ///
-    /// Five cases, and the third is the one that carries the migration:
+    /// Five cases, and the fourth is the one that carries the migration:
     ///
     /// 1. **Fresh vault** — mint `ID_S`/`ID_D`, mint `D_S`/`D_D`, issue a cert
     ///    signed by `ID_S_priv`, persist both rows.
-    /// 2. **Fresh vault + [`IdentitySeed::Paired`]** — adopt the identity out
-    ///    of the pairing payload, mint this device's own keys, self-issue a
-    ///    cert *under the account identity* (the payload carries `ID_S_priv`,
-    ///    which is what makes that legitimate), and import every Stream key it
-    ///    carries.
-    /// 3. **Fresh vault + [`IdentitySeed::Recovered`]** — the same, from an
-    ///    opened recovery blob instead, and with one difference that is the
-    ///    whole of `docs/03-crypto/recovery.md` §Recovery flow step 8: the
+    /// 2. **Fresh vault + [`IdentitySeed::Paired`]** — adopt the identity's
+    ///    public halves out of the pairing payload (`ID_S` is held as
+    ///    `PublicOnly`, so this device can certify nothing, itself included:
+    ///    `#105`), adopt the device keys and the cert its sponsor granted
+    ///    them (`adopt_granted_device_keys`), and import every Stream key the
+    ///    payload carries.
+    /// 3. **Fresh vault + [`IdentitySeed::Recovered`]** — adopt the identity
+    ///    out of an opened recovery blob instead, which restores `ID_S_priv`,
+    ///    so this device mints its own keys and signs its own cert as case 1
+    ///    does. One more difference is the whole of
+    ///    `docs/03-crypto/recovery.md` §Recovery flow step 8: the
     ///    blob carries `ID_D_priv`, so this vault **keeps** it and can
     ///    therefore open the identity-addressed copy of every `key_envelope`
     ///    in the op log. It imports no Stream keys, because there is no
@@ -805,7 +808,7 @@ impl Keychain {
         Ok(kc)
     }
 
-    /// Case 4: both rows present.
+    /// Case 5: both rows present.
     fn load(
         db: &Db,
         vault_root: VaultRootKey,
@@ -1094,7 +1097,7 @@ impl Keychain {
         ))
     }
 
-    /// Case 3: a vault written before ADR-0024.
+    /// Case 4: a vault written before ADR-0024.
     ///
     /// Such a vault has a device, a self-signed cert whose `identity_id` was
     /// derived from the *device* key, ops sealed under keys derived from the

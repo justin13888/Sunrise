@@ -118,8 +118,8 @@ impl Engine {
         // could not have come from `sort_order::between` never reaches the
         // column. Note what this is NOT doing: no sibling is read, and none is
         // rewritten. That is the fractional index paying for itself, and it is
-        // also why a reorder merges as one entity-level LWW write — see
-        // `Stream::sort_order`.
+        // also why a reorder merges as one write to the Stream's own
+        // `sort_order` register (ADR-0044).
         if let Some(k) = patch.sort_order {
             stream.sort_order = k;
         }
@@ -130,7 +130,7 @@ impl Engine {
             stream.paused = p;
         }
         if let Some(pu) = patch.paused_until {
-            // TODO(#506): a non-instant expiry needs a `stream.civil_times`
+            // TODO(#788): a non-instant expiry needs a `stream.civil_times`
             // feature, as the routine's does: a build before `DOC_SCHEMA_V` 15
             // reads only the bare instant this field held.
             if pu
