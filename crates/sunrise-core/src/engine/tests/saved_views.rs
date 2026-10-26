@@ -571,6 +571,7 @@ fn a_view_is_found_by_its_name() {
 #[test]
 fn a_draft_that_does_not_validate_writes_nothing() {
     let mut p = pair();
+    let ops = op_count(&p.dba);
     assert!(p
         .ea
         .apply(
@@ -578,5 +579,62 @@ fn a_draft_that_does_not_validate_writes_nothing() {
             Command::CreateSavedView(draft(" ", ViewKind::Today, ViewFilter::default()))
         )
         .is_err());
+    assert!(views(&p.ea, &p.dba).is_empty());
+    assert_eq!(op_count(&p.dba), ops, "no op was logged");
+}
+
+/// An edit that names no field is refused as `Invalid`, and writes nothing.
+#[test]
+fn an_edit_that_changes_nothing_is_refused_and_writes_nothing() {
+    let mut p = pair();
+    let id = save(
+        &p.ea,
+        &mut p.dba,
+        draft("Errands", ViewKind::Today, ViewFilter::default()),
+    );
+    let before = views(&p.ea, &p.dba);
+    let ops = op_count(&p.dba);
+    let err =
+        p.ea.apply(
+            &mut p.dba,
+            Command::UpdateSavedView {
+                id,
+                patch: SavedViewPatch::default(),
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_eq!(op_count(&p.dba), ops);
+    assert_eq!(views(&p.ea, &p.dba), before);
+}
+
+/// A view this replica never held, and one it holds deleted, is not found
+/// to an edit or a delete, and neither writes anything.
+#[test]
+fn an_edit_or_delete_of_a_view_not_held_is_not_found() {
+    let mut p = pair();
+    let gone = save(
+        &p.ea,
+        &mut p.dba,
+        draft("Gone", ViewKind::Today, ViewFilter::default()),
+    );
+    p.ea.apply(&mut p.dba, Command::DeleteSavedView(gone))
+        .unwrap();
+    let never = EntityRef::new(EntityKind::SavedView, [0x5a; 16]);
+    let ops = op_count(&p.dba);
+    for id in [never, gone] {
+        let rename = SavedViewPatch {
+            name: Some("Renamed".into()),
+            ..Default::default()
+        };
+        for cmd in [
+            Command::UpdateSavedView { id, patch: rename },
+            Command::DeleteSavedView(id),
+        ] {
+            let err = p.ea.apply(&mut p.dba, cmd).unwrap_err();
+            assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
+        }
+    }
+    assert_eq!(op_count(&p.dba), ops);
     assert!(views(&p.ea, &p.dba).is_empty());
 }

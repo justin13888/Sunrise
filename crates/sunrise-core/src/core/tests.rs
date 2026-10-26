@@ -1089,6 +1089,60 @@ async fn capture_resolves_streams_from_the_vault() {
     core.close().await.unwrap();
 }
 
+/// `Core::capture_aside` is `capture` with the stream dropped
+/// (`docs/08-features/focus-mode.md` §Capture-aside): a `#stream` that
+/// resolves is consumed from the title as `capture` consumes it, but the
+/// draft lands in the Inbox; its context and priority are kept.
+#[tokio::test]
+async fn capture_aside_drops_the_stream_and_keeps_the_rest() {
+    use sunrise_domain::{ContextDraft, StreamDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let travel = core
+        .submit(Command::CreateStream(StreamDraft {
+            name: "travel".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let errands = core
+        .submit(Command::CreateContext(ContextDraft {
+            name: "errands".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let tz = jiff::tz::TimeZone::UTC;
+    let line = "Renew passport #travel @errands !2";
+
+    let plain = core.capture(line, &tz).await.unwrap();
+    assert_eq!(plain.draft.stream_id, Some(travel), "capture files it");
+    let aside = core.capture_aside(line, &tz).await.unwrap();
+    assert_eq!(aside.draft.stream_id, None, "an aside lands in the Inbox");
+    assert_eq!(aside.draft.title, plain.draft.title);
+    assert_eq!(aside.draft.title, "Renew passport");
+    assert_eq!(aside.draft.contexts, vec![errands]);
+    assert_eq!(aside.draft.priority, Some(2));
+    assert_eq!(aside.unresolved, plain.unresolved);
+    assert!(aside.unresolved.is_empty(), "{:?}", aside.unresolved);
+
+    // Committed, it is an Inbox task.
+    let task = core
+        .submit(Command::CreateTask(aside.draft))
+        .await
+        .unwrap()
+        .entity;
+    match core.query(Query::EntityById(task)).await.unwrap() {
+        QueryResult::Task(t) => assert_eq!(t.stream_id, None),
+        other => panic!("expected Task, got {other:?}"),
+    }
+
+    core.close().await.unwrap();
+}
+
 /// `@context` must resolve end to end: create a Context, capture a line
 /// mentioning it, submit the draft, and find the task carrying it.
 #[tokio::test]
