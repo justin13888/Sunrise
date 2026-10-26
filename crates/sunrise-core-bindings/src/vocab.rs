@@ -430,14 +430,7 @@ pub fn merged_block_draft(
 ) -> Result<BlockDraftIn, BindingError> {
     let draft = vocab::merged_block_draft(&a.block.to_domain(), &b.block.to_domain(), &tz)
         .map_err(|e| BindingError::Core(e.to_string()))?;
-    Ok(BlockDraftIn {
-        stream_id: sunrise_domain::stream_key(draft.stream_id),
-        starts_at: TimeValue::from(&draft.starts_at),
-        ends_at: TimeValue::from(&draft.ends_at),
-        title: draft.title,
-        title_track_task: draft.title_track_task,
-        tasks: draft.tasks,
-    })
+    Ok(BlockDraftIn::from(&draft))
 }
 
 /// When a "defer an hour" / "until tomorrow" / "next week" lands, epoch ms.

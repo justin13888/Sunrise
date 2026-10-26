@@ -173,14 +173,7 @@ pub fn grid_block_draft(
     let home = sunrise_domain::home_stream(Some(stream_id));
     let d = calendar::new_block_draft(from_ms, to_ms, kind, home, title, tasks, &zone(&tz)?)
         .map_err(civil_error)?;
-    Ok(BlockDraftIn {
-        stream_id: sunrise_domain::stream_key(d.stream_id),
-        starts_at: TimeValue::from(&d.starts_at),
-        ends_at: TimeValue::from(&d.ends_at),
-        title: d.title,
-        title_track_task: d.title_track_task,
-        tasks: d.tasks,
-    })
+    Ok(BlockDraftIn::from(&d))
 }
 
 /// The edit a drag that moved or resized `block` to `[start_ms, end_ms)`

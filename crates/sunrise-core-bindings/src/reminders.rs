@@ -16,6 +16,7 @@ use sunrise_domain::{ReminderIntent, ReminderKind, SnoozeSpan};
 use sunrise_id::EntityRef;
 
 use crate::dto::{NotificationSettings, QuietWindow, Reminder};
+use crate::editing::zone;
 use crate::{BindingError, SunriseCore};
 
 /// See [`sunrise_client_core::reminders::ReminderCategory`]: which action
@@ -422,10 +423,7 @@ pub fn plan_reminder_notifications(
     clock: ClockStyle,
     limit: u32,
 ) -> Result<Vec<ReminderNotification>, BindingError> {
-    let zone = jiff::tz::TimeZone::get(&tz).map_err(|e| BindingError::BadTime {
-        value: tz.clone(),
-        cause: e.to_string(),
-    })?;
+    let zone = zone(&tz)?;
     let intents: Vec<ReminderIntent> = reminders.into_iter().map(Into::into).collect();
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     Ok(plan::plan(&intents, &zone, clock.into(), limit)
