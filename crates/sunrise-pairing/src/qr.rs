@@ -43,7 +43,7 @@ pub struct QrPayload {
     pub n_static_pub: String,
     /// 8 hex chars of the 4-byte email hash.
     pub account_email_hash: String,
-    /// HTTPS or WSS URL, ≤ 256 bytes.
+    /// The relay origin (HTTPS), ≤ 256 bytes; the scheme is not checked here.
     pub relay_url: String,
 }
 

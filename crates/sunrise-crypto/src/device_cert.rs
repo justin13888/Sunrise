@@ -303,7 +303,9 @@ impl DeviceCert {
     /// Build a new device cert; sign the body with the identity signing key.
     ///
     /// # Errors
-    /// CBOR / validation errors.
+    /// [`DeviceCertError::Validation`] when `body.nickname` is empty or longer
+    /// than [`MAX_NICKNAME_BYTES`] bytes, [`DeviceCertError::Cbor`] when the body
+    /// fails to encode.
     pub fn issue(
         body: DeviceCertInner,
         identity_signing: &IdentitySigningKeyPair,
@@ -398,10 +400,23 @@ impl DeviceCert {
         Ok(out)
     }
 
-    /// Decode from canonical CBOR.
+    /// Parse a cert from its CBOR encoding `{1: body_bytes, 2: sig}`.
+    ///
+    /// This parses and does **not** verify: call [`Self::verify`] or
+    /// [`Self::verify_binding`] before trusting the result. Map keys are
+    /// accepted in any order, in the outer map and in the body, and integer
+    /// keys this build does not know are skipped. `body_bytes` is kept as it
+    /// arrived, so a non-canonical body still verifies against the bytes its
+    /// signature covers. Bytes after the cert, or after the body inside
+    /// `body_bytes`, are refused.
     ///
     /// # Errors
-    /// CBOR / field-shape failures.
+    /// [`DeviceCertError::Cbor`] when the input is not one CBOR item, has
+    /// trailing bytes, is not a map, or has a non-integer key, and likewise
+    /// for the body. [`DeviceCertError::BadField`] when a known field has the
+    /// wrong type or length, or the body or signature or any of the eight body
+    /// fields is missing. [`DeviceCertError::Validation`] when the nickname is
+    /// empty or longer than [`MAX_NICKNAME_BYTES`] bytes.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DeviceCertError> {
         // `sunrise_cbor::decode_value` reads **one** item and stops, so without
         // this a cert blob may carry anything at all after it — including
