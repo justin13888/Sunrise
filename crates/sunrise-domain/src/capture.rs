@@ -316,7 +316,7 @@ fn parse_duration_s(s: &str) -> Option<u64> {
         return None;
     }
     if let Ok(mins) = s.parse::<u64>() {
-        return Some(mins * 60);
+        return mins.checked_mul(60);
     }
     let mut total = 0u64;
     let mut num = String::new();
@@ -327,12 +327,12 @@ fn parse_duration_s(s: &str) -> Option<u64> {
         } else {
             let n: u64 = num.parse().ok()?;
             num.clear();
-            total += match c {
+            total = total.checked_add(match c {
                 'h' => n.checked_mul(3600)?,
                 'm' => n.checked_mul(60)?,
                 'd' => n.checked_mul(86_400)?,
                 _ => return None,
-            };
+            })?;
             saw_unit = true;
         }
     }
