@@ -117,13 +117,12 @@ macro_rules! for_each_entity {
                     /// Tombstone a task, carrying the task's **full state** with `deleted`
                     /// set — not just its id.
                     ///
-                    /// A delete is an op like any other in a full-state op model, and
-                    /// entity-level LWW (ADR-0014) is defined as "the winning op's state
-                    /// replaces the entity". An id-only delete has no state to contribute, so
-                    /// when it won it set the tombstone and left every other column at
-                    /// whatever the local replica happened to hold — permanently divergent
-                    /// across replicas that had applied different updates, and stable, because
-                    /// both then carried the same winning stamp.
+                    /// A full-state op writes every field it carries (ADR-0044 §7), so an
+                    /// id-only delete would write none (ADR-0014): when it won it set the
+                    /// tombstone and left every other column at whatever the local replica
+                    /// happened to hold — permanently divergent across replicas that had
+                    /// applied different updates, and stable, because both then carried the
+                    /// same winning stamp.
                     TaskDelete(Task) = "task.delete", Delete, id;
                 ],
                 records: [
