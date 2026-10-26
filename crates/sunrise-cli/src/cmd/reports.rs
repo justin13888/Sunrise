@@ -377,7 +377,7 @@ async fn ical_import(core: &Core, rest: &[String]) -> CmdResult {
     Ok(())
 }
 
-/// `ical export [today|week] [path]`.
+/// `ical export [today|day|week] [path]`.
 ///
 /// With no path the document goes to stdout, exactly as `sunrise export`
 /// does — `sunrise ical export week | pbcopy` has to work.
