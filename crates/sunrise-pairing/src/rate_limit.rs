@@ -1,8 +1,6 @@
-//! Pairing rate limits + email-hash helper.
+//! Pairing rate limits.
 //!
 //! Per `docs/03-crypto/pairing-and-onboarding.md`.
-
-const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
 
 /// Pair attempts per rolling hour per account; the relay buckets them by
 /// `account_id`.
@@ -123,32 +121,9 @@ impl AttemptWindow {
     }
 }
 
-/// Compute the 4-byte (8 hex chars) `account_email_hash`. Email is normalized
-/// (lowercase + trim) before hashing. The hash is non-reversible and is the
-/// account tag a pairing QR carries, so a screen can say which account it is
-/// pairing without holding the address. It is not a rate-limit key: the
-/// relay buckets attempts by `account_id`. Never use it to identify a user
-/// across accounts.
-#[must_use]
-pub fn account_email_hash(email: &str) -> [u8; 4] {
-    let normalized = email.trim().to_ascii_lowercase();
-    let mut hasher = blake3::Hasher::new_derive_key(EMAIL_HASH_DOMAIN);
-    hasher.update(normalized.as_bytes());
-    let mut out = [0u8; 4];
-    hasher.finalize_xof().fill(&mut out);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn deterministic_normalized() {
-        let a = account_email_hash("Justin@Example.com");
-        let b = account_email_hash(" justin@example.com  ");
-        assert_eq!(a, b);
-    }
 
     const T0: u64 = 1_800_000_000_000;
 
@@ -243,12 +218,5 @@ mod tests {
         w.try_admit(AttemptLimit::PER_ACCOUNT, T0).unwrap();
         assert!(!w.is_idle(T0 + DAY_MS - 1));
         assert!(w.is_idle(T0 + DAY_MS));
-    }
-
-    #[test]
-    fn different_emails_diverge() {
-        let a = account_email_hash("a@example.com");
-        let b = account_email_hash("b@example.com");
-        assert_ne!(a, b);
     }
 }

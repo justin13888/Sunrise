@@ -336,12 +336,6 @@ BASELINE: dict[str, str] = {
         "enforced against the files rustc compiled, read from dep-info: 25 "
         "tests over one shared reading of the build. Not audited for a split."
     ),
-    # --- sunrise-pairing ----------------------------------------------------
-    "crates/sunrise-pairing/src/protocol.rs": (
-        "793 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The three messages of the pairing protocol "
-        "and the transitions between them."
-    ),
     # --- sunrise-storage ----------------------------------------------------
     "crates/sunrise-storage/src/vault_fixtures.rs": (
         "A `#[cfg(test)]` module, all of it test code: the checked-in old "

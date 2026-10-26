@@ -42,6 +42,7 @@
 #![warn(missing_docs)]
 #![allow(clippy::doc_markdown, clippy::missing_errors_doc)]
 
+mod codec;
 mod error;
 pub mod handshake;
 pub mod payload;
@@ -62,9 +63,11 @@ pub use protocol::{
     decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingGrant,
     PairingJoiner, PairingOffer, PairingRequest,
 };
-pub use qr::{decode_qr_payload, encode_qr_payload, QrPayload, QrPayloadError, MAGIC_V1_HEX};
+pub use qr::{
+    account_email_hash, decode_qr_payload, encode_qr_payload, QrPayload, QrPayloadError,
+    MAGIC_V1_HEX,
+};
 pub use rate_limit::{
-    account_email_hash, AttemptLimit, AttemptWindow, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY,
-    RATE_LIMIT_PER_ADDRESS_HOURLY,
+    AttemptLimit, AttemptWindow, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY, RATE_LIMIT_PER_ADDRESS_HOURLY,
 };
 pub use sas::{compute_sas, SAS_LEN};
