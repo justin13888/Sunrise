@@ -24,10 +24,20 @@
 //! # The device binding
 //!
 //! Every one of those operations is bound to a [`DeviceSigner`] when the caller
-//! supplies one. Six routes are reached from here — the four `POST`s above, the
-//! revocation `DELETE`, and the `GET /sync/events` that opens the stream — and
-//! `sunrise_server::api::signed` demands a binding on all six under
-//! `require_device_sig`. The two bootstrap routes are not reached from here:
+//! supplies one, and so is every other request this module makes. The route
+//! families reached from here are:
+//!
+//! - `/sync`: the four `POST`s above and the `GET /sync/events` that opens the
+//!   stream;
+//! - `/devices/by-vault-id/{id}`: the revocation `DELETE`;
+//! - `/blobs`: upload init, chunk `PUT`, finalize, and the blob `GET`;
+//! - `/snapshots/{stream}`: `GET` and `PUT`;
+//! - `/accounts/me`: the key bundle and identity chain (`GET` and `PUT`) and
+//!   the recovery blob `PUT`.
+//!
+//! The relay verifies each binding through `sunrise_server::api::signed`; grep
+//! this file for `/api/v1/` for the exact routes rather than trusting a count
+//! here. The two bootstrap routes are not reached from here:
 //! `sunrise_relay_client::bootstrap` makes those, and a device cannot sign
 //! before the relay has a row for it, which is the exemption ADR-0022 records.
 //!
@@ -1729,6 +1739,10 @@ fn field_u64(v: &serde_json::Value, key: &str) -> u64 {
 /// A negotiated version that does not fit a `u32` is a malformed reply rather
 /// than a number to quietly truncate: the whole point of negotiation is that
 /// both sides agree on the value.
+///
+/// Only an out-of-range value is refused. An absent or non-integer key reads
+/// as 0, as [`field_u64`] reads it, so this reader is total over a missing
+/// field; negotiation then sees a 0 rather than an error.
 fn field_u32(v: &serde_json::Value, key: &str) -> Result<u32, TransportError> {
     u32::try_from(field_u64(v, key))
         .map_err(|_| TransportError::Protocol(format!("{key} does not fit a u32")))
