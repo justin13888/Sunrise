@@ -130,6 +130,30 @@ mod tests {
         assert_eq!(u.timestamp_ms(), 0x0000_ffff_ffff_ffff);
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Any ULID renders and parses back to itself.
+        #[test]
+        fn any_ulid_round_trips(bytes in proptest::prelude::any::<[u8; 16]>()) {
+            let u = Ulid::from_bytes(bytes);
+            proptest::prop_assert_eq!(Ulid::parse(&u.to_str()), Ok(u));
+        }
+
+        /// The string form sorts as the ULID does.
+        #[test]
+        fn str_order_matches_ulid_order(
+            a in proptest::prelude::any::<[u8; 16]>(),
+            b in proptest::prelude::any::<[u8; 16]>(),
+        ) {
+            let (a, b) = (Ulid::from_bytes(a), Ulid::from_bytes(b));
+            proptest::prop_assert_eq!(a.to_str().cmp(&b.to_str()), a.cmp(&b));
+        }
+    }
+
     #[test]
     fn parse_rejects_bad_length() {
         assert_eq!(Ulid::parse(""), Err(UlidParseError::BadLength));
