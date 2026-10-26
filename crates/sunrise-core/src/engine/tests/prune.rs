@@ -5,7 +5,9 @@
 //! compaction knows (`merge::prune::passed`), tested first on hand-built
 //! inputs. The rest drive real engines: devices that edit, sync, publish
 //! their digests and compact in any order, a replica that never prunes and
-//! takes every op in another order, and the cases the rule names.
+//! takes every op in another order, a replica that joins a snapshot of
+//! one of them, and the cases the rule names. Last, a snapshot's
+//! `doc_state` made hostile, whose refused join must leave nothing behind.
 
 use super::compaction::{ack_outbox, all_envs, digest_op, DAY, INBOX};
 use super::conflicts::conflicts_of;
@@ -515,10 +517,60 @@ fn priority(n: usize) -> TaskPatch {
     }
 }
 
+/// Add `ctx` to `task`'s contexts as `who` holds them, or, with `on`
+/// false, take it away: an OR-set add or remove. Nothing when the set is
+/// already so.
+fn tag(d: &mut Devices, who: usize, task: EntityRef, ctx: EntityRef, on: bool) {
+    let mut held = task_of(&d.engines[who], &d.dbs[who], task).contexts;
+    let changed = if on {
+        held.insert(ctx)
+    } else {
+        held.remove(&ctx)
+    };
+    if changed {
+        d.edit(
+            who,
+            task,
+            TaskPatch {
+                contexts: Some(held.into_iter().collect()),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+/// Retitle both `tasks` in one command: a group of two members (D14).
+fn group_retitle(d: &mut Devices, who: usize, tasks: [EntityRef; 2], n: usize) {
+    use crate::commands::{BulkTaskAction, BulkTaskItem};
+    let items = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, id)| BulkTaskItem {
+            id: *id,
+            action: BulkTaskAction::Update(Box::new(TaskPatch {
+                title: Some(format!("g{n}.{i}")),
+                ..Default::default()
+            })),
+        })
+        .collect();
+    d.engines[who]
+        .apply(&mut d.dbs[who], Command::BulkTasks(items))
+        .unwrap();
+}
+
 #[derive(Debug, Clone)]
 enum Step {
     Title(usize),
     Priority(usize),
+    /// Add the context at this index to the first task.
+    Tag(usize, usize),
+    /// Take the context at this index off the first task.
+    Untag(usize, usize),
+    /// Retitle both tasks in one group.
+    Group(usize),
+    /// Write this device's snapshots of the vault-meta stream and the
+    /// Inbox, for a replica to join at the end.
+    Snapshot(usize),
     Sync {
         from: usize,
         to: usize,
@@ -530,10 +582,17 @@ enum Step {
     Settle,
 }
 
+/// How many contexts the property tags the task with.
+const CONTEXTS: usize = 3;
+
 fn arb_step() -> impl Strategy<Value = Step> {
     prop_oneof![
         3 => (0usize..3).prop_map(Step::Title),
         1 => (0usize..3).prop_map(Step::Priority),
+        2 => (0usize..3, 0usize..CONTEXTS).prop_map(|(who, c)| Step::Tag(who, c)),
+        1 => (0usize..3, 0usize..CONTEXTS).prop_map(|(who, c)| Step::Untag(who, c)),
+        1 => (0usize..3).prop_map(Step::Group),
+        1 => (0usize..3).prop_map(Step::Snapshot),
         4 => (0usize..3, 0usize..3)
             .prop_filter("another device", |(a, b)| a != b)
             .prop_map(|(from, to)| Step::Sync { from, to }),
@@ -557,21 +616,32 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// Three devices edit one task's title and priority, catch up on each
-    /// other, publish their digests and compact, pruning their version rows,
-    /// all at random. Every op any of them wrote is kept as it was written.
-    /// Once they have all caught up, each holds the rows, registers, losers,
-    /// conflicts and heads that a replica holds which never pruned and took
-    /// every op in another order, and a rebuild of each lands on its rows
-    /// (checked after every delivery and every compaction).
+    /// Three devices edit one task's title and priority, tag and untag it
+    /// with three contexts, retitle it in a group with a second task, catch
+    /// up on each other, publish their digests, compact, pruning their
+    /// version rows, and write snapshots, all at random. Every op any of
+    /// them wrote is kept as it was written. Once they have all caught up,
+    /// each holds the rows, registers, losers, conflicts and heads that a
+    /// replica holds which never pruned and took every op in another order,
+    /// and a rebuild of each lands on its rows (checked after every delivery
+    /// and every compaction). So does a replica that held a random subset of
+    /// the ops, joined one of the snapshots and then took every op: the
+    /// state of a set of ops is the join of the states of any cover of it
+    /// (ADR-0065 §8).
     #[test]
     fn pruning_at_any_point_changes_nothing_any_delivery_order_folds(
         patch in any::<bool>(),
         steps in proptest::collection::vec(arb_step(), 1..32),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..48),
+        joiner_held in proptest::collection::vec(any::<prop::sample::Index>(), 0..16),
+        joined in any::<prop::sample::Index>(),
     ) {
         let mut d = Devices::new(3, patch);
         let task = new_task(&d.engines[0], &mut d.dbs[0], "t");
+        let second = new_task(&d.engines[0], &mut d.dbs[0], "u");
+        let contexts: Vec<EntityRef> = (0..CONTEXTS)
+            .map(|c| new_context(&d.engines[0], &mut d.dbs[0], &format!("c{c}")))
+            .collect();
         d.sync_all();
         for i in 0..3 {
             d.digest(i);
@@ -585,6 +655,7 @@ proptest! {
             }
         };
         keep(&d, &mut written);
+        let mut snapshots: Vec<[Vec<u8>; 2]> = Vec::new();
         for (n, step) in steps.iter().enumerate() {
             let ms = T0 + 1_000 + u64::try_from(n).unwrap() * 7;
             match step {
@@ -595,6 +666,25 @@ proptest! {
                 Step::Priority(who) => {
                     d.at(*who, ms);
                     d.edit(*who, task, priority(n));
+                }
+                Step::Tag(who, c) | Step::Untag(who, c) => {
+                    d.at(*who, ms);
+                    tag(&mut d, *who, task, contexts[*c], matches!(step, Step::Tag(..)));
+                }
+                Step::Group(who) => {
+                    d.at(*who, ms);
+                    group_retitle(&mut d, *who, [task, second], n);
+                }
+                Step::Snapshot(who) => {
+                    d.at(*who, ms);
+                    let mut write = |stream: &[u8; 16]| {
+                        d.engines[*who]
+                            .write_stream_snapshot(&mut d.dbs[*who], stream)
+                            .unwrap()
+                    };
+                    if let (Some(meta), Some(inbox)) = (write(&META_STREAM), write(&INBOX)) {
+                        snapshots.push([meta, inbox]);
+                    }
                 }
                 Step::Sync { from, to } => d.sync(*from, *to),
                 Step::Digest(who) => {
@@ -632,6 +722,25 @@ proptest! {
             prop_assert_eq!(&outcome(db), &want);
             prop_assert_eq!(&conflicts_of(e, db, true), &want_conflicts);
             e.assert_rebuild_identity(db);
+        }
+
+        // A snapshot taken at a random point, joined into a replica that
+        // holds a random subset of the ops, then the tail.
+        if !snapshots.is_empty() {
+            let records = &snapshots[joined.index(snapshots.len())];
+            let (j, mut jdb) = receiver(&d.engines);
+            for ix in &joiner_held {
+                j.apply_remote_all(&mut jdb, &written[ix.index(written.len())]).unwrap();
+            }
+            for record in records {
+                j.apply_snapshot(&mut jdb, record).unwrap();
+            }
+            for env in &written {
+                j.apply_remote_all(&mut jdb, env).unwrap();
+            }
+            prop_assert_eq!(&outcome(&jdb), &want);
+            prop_assert_eq!(&conflicts_of(&j, &jdb, true), &want_conflicts);
+            j.assert_rebuild_identity(&jdb);
         }
     }
 }
@@ -1158,4 +1267,203 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
         k.apply_remote_all(&mut kdb, &env).unwrap();
     }
     assert!(held(&kdb) >= 2, "{}", held(&kdb));
+}
+
+// ---- a hostile doc_state ----
+
+/// Every row of every table, each table's rows sorted.
+fn every_row(db: &Db) -> Vec<(String, Vec<String>)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap();
+    let tables: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|t| {
+            let mut stmt = db
+                .conn()
+                .prepare(&format!("SELECT * FROM \"{t}\""))
+                .unwrap();
+            let n = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    (0..n)
+                        .map(|i| {
+                            r.get::<_, rusqlite::types::Value>(i)
+                                .map(|v| format!("{v:?}"))
+                        })
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map(|cols| cols.join(" | "))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            rows.sort();
+            (t, rows)
+        })
+        .collect()
+}
+
+/// The lists of an entity that `doc_state` version 2 carries.
+const ENTITY_LISTS: [&str; 8] = [
+    "stamps",
+    "registers",
+    "losers",
+    "maps",
+    "adds",
+    "removes",
+    "deltas",
+    "versions",
+];
+
+/// An entry no list of `doc_state` accepts: not an array, an empty one, or
+/// one whose every item is an index past any stamp or version.
+fn arb_hostile_entry() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        Just(Value::Bool(true)),
+        Just(Value::Array(Vec::new())),
+        Just(Value::Array(vec![Value::Integer(u64::MAX.into()); 8])),
+    ]
+}
+
+#[derive(Debug, Clone)]
+enum Hostile {
+    /// Put `entry` into the list `ENTITY_LISTS[list]` of one entity, or its
+    /// `frontier`, at a position in it.
+    Entry {
+        entity: prop::sample::Index,
+        list: Option<usize>,
+        at: prop::sample::Index,
+        entry: Value,
+    },
+    /// Name, as an entity's kind, a tag this build does not merge.
+    Kind(prop::sample::Index),
+    /// A `members` entry that is not `[group, size, stamp]`.
+    Member(Value),
+}
+
+fn arb_hostile() -> impl Strategy<Value = Hostile> {
+    prop_oneof![
+        6 => (
+            any::<prop::sample::Index>(),
+            proptest::option::of(0..ENTITY_LISTS.len()),
+            any::<prop::sample::Index>(),
+            arb_hostile_entry(),
+        )
+            .prop_map(|(entity, list, at, entry)| Hostile::Entry { entity, list, at, entry }),
+        1 => any::<prop::sample::Index>().prop_map(Hostile::Kind),
+        1 => arb_hostile_entry().prop_map(Hostile::Member),
+    ]
+}
+
+/// `doc` with `h` applied to it.
+fn corrupt(doc: &Value, h: &Hostile) -> Value {
+    let Value::Map(mut top) = doc.clone() else {
+        panic!("a map")
+    };
+    let field = |entries: &mut Vec<(Value, Value)>, name: &str| -> usize {
+        entries
+            .iter()
+            .position(|(k, _)| k.as_text() == Some(name))
+            .unwrap_or_else(|| {
+                entries.push((Value::Text(name.into()), Value::Array(Vec::new())));
+                entries.len() - 1
+            })
+    };
+    match h {
+        Hostile::Member(entry) => {
+            let i = field(&mut top, "members");
+            top[i].1.as_array_mut().unwrap().push(entry.clone());
+        }
+        Hostile::Entry { entity, .. } | Hostile::Kind(entity) => {
+            let i = field(&mut top, "entities");
+            let entities = top[i].1.as_array_mut().unwrap();
+            let at_entity = entity.index(entities.len());
+            let Value::Map(e) = &mut entities[at_entity] else {
+                panic!("an entity is a map")
+            };
+            if let Hostile::Entry {
+                list, at, entry, ..
+            } = h
+            {
+                let name = list.map_or("frontier", |l| ENTITY_LISTS[l]);
+                let j = field(e, name);
+                let items = e[j].1.as_array_mut().unwrap();
+                items.insert(at.index(items.len() + 1), entry.clone());
+            } else {
+                let j = field(e, "kind");
+                e[j].1 = Value::Text("no such kind".into());
+            }
+        }
+    }
+    Value::Map(top)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/prune.txt",
+            ),
+        )),
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..ProptestConfig::default()
+    })]
+
+    /// A `doc_state` made hostile in one place, anywhere in it, is refused,
+    /// and the refused join leaves no row behind once the snapshot apply
+    /// path's transaction rolls back, however much of the document was
+    /// joined before the refusal and whatever the replica held. The same
+    /// document unharmed joins.
+    #[test]
+    fn a_refused_join_leaves_no_trace(
+        patch in any::<bool>(),
+        meta in any::<bool>(),
+        held in proptest::collection::vec(any::<prop::sample::Index>(), 0..12),
+        hostile in arb_hostile(),
+    ) {
+        let mut d = Devices::new(2, patch);
+        let task = new_task(&d.engines[0], &mut d.dbs[0], "t");
+        let second = new_task(&d.engines[0], &mut d.dbs[0], "u");
+        let ctx = new_context(&d.engines[0], &mut d.dbs[0], "c");
+        new_context(&d.engines[0], &mut d.dbs[0], "d");
+        d.sync_all();
+        // Concurrent writes, so the document carries losers and a version
+        // antichain; a tag; and a group.
+        d.at(0, T0 + 1_000);
+        d.edit(0, task, title(1));
+        d.at(1, T0 + 1_001);
+        d.edit(1, task, title(2));
+        tag(&mut d, 1, task, ctx, true);
+        group_retitle(&mut d, 0, [task, second], 3);
+        d.sync_all();
+
+        let stream = if meta { META_STREAM } else { INBOX };
+        let doc = d.dbs[0]
+            .with_tx(|tx| crate::engine::merge::dump_stream_state(tx, &stream))
+            .unwrap();
+        let bad = corrupt(&doc, &hostile);
+        let written = all_envs(&d.dbs[0]);
+        let (r, mut rdb) = receiver(&d.engines);
+        for ix in &held {
+            r.apply_remote_all(&mut rdb, &written[ix.index(written.len())]).unwrap();
+        }
+
+        let before = every_row(&rdb);
+        let refused = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
+            crate::engine::merge::join_stream_state(tx, &bad)
+        });
+        prop_assert!(matches!(refused, Err(EngineError::Invalid(_))), "{:?}", refused);
+        prop_assert_eq!(every_row(&rdb), before);
+        let unharmed = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
+            crate::engine::merge::join_stream_state(tx, &doc)
+        });
+        prop_assert!(unharmed.is_ok(), "{:?}", unharmed);
+    }
 }
