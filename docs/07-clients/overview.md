@@ -34,8 +34,12 @@ There is no Windows or Linux desktop client
 vault, do the thing, print the result, exit. It links the core directly — no
 daemon, no socket, no second process.
 
-`sunrise help` is the command list: every verb, its arguments and a line on
-what it does. Its text is `[cli.usage]` in `i18n/en.toml`. This page states the
+`sunrise help` is the command list: each verb, its arguments and a line on
+what it does. Its text is `[cli.usage]` in `i18n/en.toml`. It does not yet list
+everything the CLI parses: `note --force` and `ical export day` are accepted
+but missing from it, and
+[#638](https://github.com/justin13888/Sunrise/issues/638) makes the help list
+what the CLI parses. This page states the
 contracts the list cannot: the JSON output, the reader's zone, pairing, undo,
 and the rules each verb follows.
 
