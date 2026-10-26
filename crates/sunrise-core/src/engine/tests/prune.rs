@@ -800,7 +800,7 @@ fn the_property_prunes() {
     d.compact(1);
     // Not 16: the create always writes `stream_id` (ADR-0046 C1), so it is
     // that register's winner and is kept.
-    assert!(d.pruned >= 15, "{}", d.pruned);
+    assert_eq!(d.pruned, 15);
 }
 
 /// After `n` edits of one task, alternating between `devices` devices that
@@ -892,7 +892,10 @@ fn a_silent_device_holds_pruning_back_and_its_late_edit_folds_exactly() {
     d.sync(0, 1);
     d.sync(1, 0);
     let report = d.compact(0);
-    assert!(report.ops_removed > 0, "C no longer holds the op log back");
+    assert_eq!(
+        report.ops_removed, 10,
+        "C no longer holds the op log back: {report:?}"
+    );
     assert_eq!(
         report.versions_pruned, 0,
         "but C may still name anything it held"
@@ -974,7 +977,7 @@ fn a_late_version_naming_a_pruned_parent_folds_by_the_documented_rule() {
     };
     ack_outbox(&mut d.dbs[0]);
     let report = d.engines[0].compact_op_log(&mut d.dbs[0], &short).unwrap();
-    assert!(report.versions_pruned > 0, "{report:?}");
+    assert_eq!(report.versions_pruned, 5, "{report:?}");
 
     for who in 0..2 {
         d.engines[who]
@@ -1033,7 +1036,7 @@ fn a_version_whose_op_compaction_kept_is_not_pruned() {
     let report = d.engines[0]
         .compact_op_log(&mut d.dbs[0], &policy())
         .unwrap();
-    assert!(report.floors_raised > 0, "{report:?}");
+    assert_eq!(report.floors_raised, 1, "{report:?}");
     assert_eq!(report.versions_pruned, 0, "every op of A's is still unsent");
     d.engines[0].assert_rebuild_identity(&d.dbs[0]);
 }
@@ -1097,7 +1100,7 @@ fn a_rebuild_after_pruning_equals_one_before() {
     d.engines[0].rebuild_projection(&mut d.dbs[0]).unwrap();
     let before = outcome(&d.dbs[0]);
     let report = d.compact(0);
-    assert!(report.versions_pruned > 0, "{report:?}");
+    assert_eq!(report.versions_pruned, 7, "{report:?}");
     assert_eq!(outcome(&d.dbs[0]), before);
     d.engines[0].rebuild_projection(&mut d.dbs[0]).unwrap();
     assert_eq!(outcome(&d.dbs[0]), before);
@@ -1128,7 +1131,7 @@ fn a_snapshot_from_a_pruned_replica_bootstraps_a_full_replay() {
     }
     d.sync_all();
     let report = d.compact(0);
-    assert!(report.versions_pruned > 0, "{report:?}");
+    assert_eq!(report.versions_pruned, 5, "{report:?}");
     let meta = d.engines[0]
         .write_stream_snapshot(&mut d.dbs[0], &META_STREAM)
         .unwrap()
@@ -1216,10 +1219,7 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
     let before = versions_of(&d.dbs[0], rid).0;
     d.compact(0);
     let after = versions_of(&d.dbs[0], rid).0;
-    assert!(
-        after < before && after <= 3,
-        "the routine's versions: {before} -> {after}"
-    );
+    assert_eq!((before, after), (6, 3), "the routine's versions");
 
     let meta = d.engines[0]
         .write_stream_snapshot(&mut d.dbs[0], &META_STREAM)
@@ -1235,7 +1235,7 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
             .find(|(k, _)| k.as_text() == Some("members"))
             .map_or(0, |(_, v)| v.as_array().unwrap().len())
     };
-    assert!(members(&doc) >= 2, "{doc:?}");
+    assert_eq!(members(&doc), 3, "{doc:?}");
     let stream_ops = |db: &Db| -> Vec<Vec<u8>> {
         all_envs(db)
             .into_iter()
@@ -1275,7 +1275,7 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
     );
     assert_eq!(joined.streak_keys, replayed.streak_keys);
     assert_eq!(joined.streak_counter, replayed.streak_counter);
-    assert!(replayed.streak_counter > 0);
+    assert_eq!(replayed.streak_counter, 4);
     // The row a joined state first projects carries the routine's last
     // edit, not its create: the compacted base and a snapshot both project
     // a routine with no row yet.
@@ -1299,7 +1299,7 @@ fn a_pruned_group_member_is_still_present_to_a_joiner() {
     for env in stream_ops(&d.dbs[1]) {
         k.apply_remote_all(&mut kdb, &env).unwrap();
     }
-    assert!(held(&kdb) >= 2, "{}", held(&kdb));
+    assert_eq!(held(&kdb), 3);
 }
 
 // ---- a hostile doc_state ----

@@ -451,6 +451,8 @@ fn nothing_changes_a_task_without_a_command() {
             .unwrap();
         e.apply(&mut db, Command::MaterializeRoutines { now_ms: now })
             .unwrap();
+        e.compact_op_log(&mut db, &super::compaction::policy())
+            .unwrap();
     }
     e.rebuild_projection(&mut db).unwrap();
     assert_eq!(task_ops(&db), ops, "no task op was written");

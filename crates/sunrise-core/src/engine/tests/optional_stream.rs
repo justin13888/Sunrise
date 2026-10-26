@@ -384,7 +384,11 @@ fn the_inbox_is_a_view_nothing_has_to_clear() {
     e.apply(&mut db, Command::MarkTriaged { ids: vec![t] })
         .unwrap();
     assert!(inbox(&e, &db).is_empty(), "triaged, it leaves");
-    assert!(read_task_t(&e, &db, t).triaged_at.is_some());
+    assert_eq!(
+        read_task_t(&e, &db, t).triaged_at,
+        Some(ms_to_ts(1_700_000_000_000)),
+        "triaged at the engine's now"
+    );
     e.apply(&mut db, Command::ReturnToInbox { ids: vec![t] })
         .unwrap();
     assert_eq!(inbox(&e, &db), vec![t]);
@@ -610,29 +614,43 @@ fn a_stream_cannot_be_deleted_into_itself_or_a_tombstone() {
 }
 
 /// The deletion is one group (ADR-0065 §6): a replica that holds some of its
-/// members shows none of them, and shows all of them once the last arrives.
+/// members shows none of them, and shows all of them once the last arrives,
+/// whichever member that is.
 #[test]
 fn a_stream_deletion_is_never_half_visible() {
     for patches in [false, true] {
-        let mut p = pair_in(patches);
-        let h = holding(&p.ea, &mut p.dba, "Old");
-        sync(&mut p);
-        let before = own_envelopes(&p.ea, &p.dba).len();
-        delete(&p.ea, &mut p.dba, h.stream, Disposition::Detach);
-        let envs = own_envelopes(&p.ea, &p.dba);
-        let members = &envs[before..];
-        assert!(members.len() >= 5, "{patches}: {}", members.len());
-        // Everything but the last member: B shows the stream as it was.
-        for env in &members[..members.len() - 1] {
-            p.eb.apply_remote_all(&mut p.dbb, env).unwrap();
+        let mut withheld = 0;
+        loop {
+            let mut p = pair_in(patches);
+            let h = holding(&p.ea, &mut p.dba, "Old");
+            sync(&mut p);
+            let before = own_envelopes(&p.ea, &p.dba).len();
+            delete(&p.ea, &mut p.dba, h.stream, Disposition::Detach);
+            let envs = own_envelopes(&p.ea, &p.dba);
+            let members = &envs[before..];
+            assert!(members.len() >= 5, "{patches}: {}", members.len());
+            // Every member but one: B shows the stream as it was.
+            for (i, env) in members.iter().enumerate() {
+                if i != withheld {
+                    p.eb.apply_remote_all(&mut p.dbb, env).unwrap();
+                }
+            }
+            assert_eq!(
+                home(&p.dbb, h.task),
+                Some(h.stream),
+                "{patches}: member {withheld} withheld"
+            );
+            assert!(!stream_row(&p.dbb, h.stream).deleted, "{withheld}");
+            p.eb.apply_remote_all(&mut p.dbb, &members[withheld])
+                .unwrap();
+            assert_eq!(home(&p.dbb, h.task), None, "{withheld}");
+            assert!(stream_row(&p.dbb, h.stream).deleted, "{withheld}");
+            converged(&p);
+            withheld += 1;
+            if withheld == members.len() {
+                break;
+            }
         }
-        assert_eq!(home(&p.dbb, h.task), Some(h.stream), "{patches}");
-        assert!(!stream_row(&p.dbb, h.stream).deleted);
-        p.eb.apply_remote_all(&mut p.dbb, &members[members.len() - 1])
-            .unwrap();
-        assert_eq!(home(&p.dbb, h.task), None);
-        assert!(stream_row(&p.dbb, h.stream).deleted);
-        converged(&p);
     }
 }
 
