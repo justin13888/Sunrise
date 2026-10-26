@@ -319,13 +319,6 @@ BASELINE: dict[str, str] = {
         "own; the rest is tests. The reference projection the no-loss "
         "property compares each replica against."
     ),
-    # --- sunrise-id ---------------------------------------------------------
-    "crates/sunrise-id/src/registry.rs": (
-        "807 implementation lines, most of them one declaration: the "
-        "`for_each_entity!` x-macro that states every entity kind, its ops "
-        "and every field's wire name once (ADR-0044). Splitting the "
-        "declaration would defeat the reason it exists."
-    ),
     # --- sunrise-integrations -----------------------------------------------
     "crates/sunrise-integrations/src/ical.rs": (
         "631 implementation lines -- below this package's threshold on its "
