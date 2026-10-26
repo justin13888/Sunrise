@@ -194,6 +194,7 @@ pub(crate) async fn recover<T: Transport + ?Sized>(core: &Core, transport: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use sunrise_crypto::ManifestEntry;
 
     fn m(entries: &[(u8, u32)]) -> Vec<ManifestEntry> {
@@ -247,5 +248,77 @@ mod tests {
             ),
             Decision::Replace
         );
+    }
+
+    /// A manifest over a few streams and epochs, so generated pairs overlap
+    /// often enough to land in every arm of [`decide`].
+    fn manifest() -> impl Strategy<Value = Vec<ManifestEntry>> {
+        proptest::collection::btree_map((0u8..3, 0u32..4), 1u32..3, 0..6).prop_map(|entries| {
+            entries
+                .into_iter()
+                .map(|((s, epoch), keys)| ManifestEntry {
+                    stream_id: [s; 16],
+                    epoch,
+                    keys,
+                })
+                .collect()
+        })
+    }
+
+    proptest::proptest! {
+        /// Whatever the two manifests, a device whose keys the pin covers
+        /// never replaces it: a strict subset and an equal set are `Covered`,
+        /// so no honest publisher rolls the pin back.
+        #[test]
+        fn a_covered_manifest_never_replaces_the_pin(mine in manifest(), theirs in manifest()) {
+            let decision = decide(&mine, &PinnedKeyBundle::Valid(theirs.clone()));
+            if manifest_covers(&theirs, &mine) {
+                proptest::prop_assert_eq!(decision, Decision::Covered);
+            }
+            if decision == Decision::Replace {
+                proptest::prop_assert!(manifest_covers(&mine, &theirs));
+                proptest::prop_assert!(!manifest_covers(&theirs, &mine));
+            }
+        }
+
+        /// Drop one entry from a manifest and the two are a strict subset and
+        /// its superset: the superset replaces the subset's pin, and the
+        /// subset leaves the superset's alone.
+        #[test]
+        fn a_strict_subset_is_replaced_and_never_replaces(
+            full in manifest().prop_filter("non-empty", |m| !m.is_empty()),
+            drop in proptest::prelude::any::<proptest::sample::Index>(),
+        ) {
+            let mut subset = full.clone();
+            subset.remove(drop.index(full.len()));
+            proptest::prop_assert_eq!(
+                decide(&full, &PinnedKeyBundle::Valid(subset.clone())),
+                Decision::Replace
+            );
+            proptest::prop_assert_eq!(
+                decide(&subset, &PinnedKeyBundle::Valid(full)),
+                Decision::Covered
+            );
+        }
+
+        /// Two manifests that each hold an entry the other lacks wait, from
+        /// either side.
+        #[test]
+        fn manifests_that_each_hold_a_key_the_other_lacks_wait(
+            shared in manifest(),
+            ours in 0u32..4,
+            theirs in 0u32..4,
+        ) {
+            let only = |stream: u8, epoch: u32| ManifestEntry { stream_id: [stream; 16], epoch, keys: 1 };
+            let mut mine = shared.clone();
+            mine.push(only(10, ours));
+            let mut pinned = shared;
+            pinned.push(only(11, theirs));
+            proptest::prop_assert_eq!(
+                decide(&mine, &PinnedKeyBundle::Valid(pinned.clone())),
+                Decision::Wait
+            );
+            proptest::prop_assert_eq!(decide(&pinned, &PinnedKeyBundle::Valid(mine)), Decision::Wait);
+        }
     }
 }
