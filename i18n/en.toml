@@ -2288,6 +2288,9 @@ nothing_to_redo = "nothing to redo"
 discarded = "the undo history could not be read ({reason}); starting a new one"
 # stderr, at exit. {error} says why the history was not written.
 unsaved = "the undo history was not saved: {error}"
+# stderr, after a write that went through but left nothing to undo, behind
+# the general `note:` prefix. {action} is one of the step names below.
+not_undoable = "{action} cannot be undone"
 # Step names, inserted as {action} above. {title} is a task's title, {name}
 # a stream's, context's or routine's name or an id.
 capture = "capture “{title}”"

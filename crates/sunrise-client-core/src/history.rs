@@ -167,7 +167,12 @@ fn wanted(cmds: &[Command]) -> Wanted {
             | Command::UpdateTask { id, .. }
             | Command::PromoteToStream { id, .. } => wanted.tasks.push(*id),
             Command::BulkTasks(items) => wanted.tasks.extend(items.iter().map(|i| i.id)),
-            Command::MoveTasks { ids, .. } | Command::Triage { ids, .. } => {
+            // The triage pair inverts by each task's `triaged_at`, so it
+            // reads the tasks it names like every other task write.
+            Command::MoveTasks { ids, .. }
+            | Command::Triage { ids, .. }
+            | Command::MarkTriaged { ids }
+            | Command::ReturnToInbox { ids } => {
                 wanted.tasks.extend(ids.iter().copied());
             }
             Command::UpdateSavedView { id, .. } => wanted.saved_views.push(*id),
@@ -505,6 +510,28 @@ mod tests {
                 ..Wanted::default()
             }
         );
+    }
+
+    /// The triage pair inverts by reading each task's `triaged_at`, so both
+    /// read the tasks they name.
+    #[test]
+    fn a_triage_and_its_undo_read_the_tasks_they_name() {
+        for cmd in [
+            Command::MarkTriaged {
+                ids: vec![id(1), id(2)],
+            },
+            Command::ReturnToInbox {
+                ids: vec![id(1), id(2)],
+            },
+        ] {
+            assert_eq!(
+                wanted(&[cmd]),
+                Wanted {
+                    tasks: vec![id(1), id(2)],
+                    ..Wanted::default()
+                }
+            );
+        }
     }
 
     #[test]

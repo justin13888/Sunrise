@@ -211,7 +211,7 @@ until the preview closes. A row shows its thumbnail once it has arrived.
 Attachments are not pre-fetched on sync. Each device pulls on first view,
 verifies and keeps the sealed chunks in its local blob store.
 
-- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:166#AUTO_FETCH_MAX_BYTES`).
+- **Auto-fetch threshold: 10 MiB** (`crates/sunrise-core/src/blob_sync.rs:167#AUTO_FETCH_MAX_BYTES`).
   Smaller attachments fetch without asking on first view.
 - Larger attachments show an inline placeholder with file name, size and a
   **Download** button. **Cancel** during transfer aborts and marks the request
@@ -259,7 +259,7 @@ The 10 MiB threshold bounds only what is fetched *unasked*
 asks for one named attachment whatever its size: it writes a `blob_fetches`
 row, the sync driver drains it with no size predicate, and the call returns
 when the chunks are here. `Core::cancel_attachment_fetch`
-(`crates/sunrise-core/src/blob_fetch.rs:349#cancel_attachment_fetch`) is the
+(`crates/sunrise-core/src/blob_fetch.rs:350#cancel_attachment_fetch`) is the
 Cancel button, and it marks the request `partial` without needing the relay to
 agree, because a stalled transfer is what people cancel. Both are on the seam,
 behind the pane's Download and Cancel controls

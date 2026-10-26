@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1c56dc31cd9c1ab7f29e635f914473a437aef01c30db9c550df0470b7ecf35c3 # shrinks to views = [SavedView { name: " ", view: Today, query: "", contexts: [] }]

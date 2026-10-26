@@ -118,6 +118,7 @@
 use crate::blob_cache::BlobRef;
 use crate::core::{Core, CoreError};
 use crate::engine::read_attachment;
+use crate::keychain::{to16, to32};
 use sunrise_crypto::blob_chunk::{open_chunk, split_sealed, verify_content};
 use sunrise_domain::Attachment;
 use sunrise_id::EntityRef;
@@ -271,18 +272,57 @@ impl Core {
                     i64::try_from(MAX_UPLOADS_PER_DRAIN).unwrap_or(i64::MAX)
                 ],
                 |r| {
-                    Ok(PendingUpload {
-                        blob_id: sixteen(&r.get::<_, Vec<u8>>(0)?),
-                        stream_id: sixteen(&r.get::<_, Vec<u8>>(1)?),
-                        chunk_count: r.get::<_, i64>(2)?.try_into().unwrap_or(0),
-                        size_bytes: r.get::<_, i64>(3)?.try_into().unwrap_or(0),
-                        ciphertext_hash: thirty_two(&r.get::<_, Vec<u8>>(4)?),
-                        upload_id: r.get::<_, Option<String>>(5)?,
-                    })
+                    Ok((
+                        r.get::<_, Vec<u8>>(0)?,
+                        r.get::<_, Vec<u8>>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, Vec<u8>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
                 },
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        drop(stmt);
+        let mut out = Vec::with_capacity(rows.len());
+        for (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, upload_id) in rows {
+            let (Some(id), Some(stream), Some(hash)) =
+                (to16(&blob_id), to16(&stream_id), to32(&ciphertext_hash))
+            else {
+                // A wrong-width column is a corrupt row, not an id to pad
+                // (`to16`'s doc). It is marked out of attempts rather than
+                // skipped, so it leaves the `LIMIT` window instead of taking a
+                // slot in every drain, and the row stays inspectable.
+                let (reason, n_bytes) = if to16(&blob_id).is_none() {
+                    ("blob_id", blob_id.len())
+                } else if to16(&stream_id).is_none() {
+                    ("stream_id", stream_id.len())
+                } else {
+                    ("ciphertext_hash", ciphertext_hash.len())
+                };
+                tracing::warn!(
+                    ev = "sync.blob.upload_row_corrupt",
+                    reason = reason,
+                    n_bytes = n_bytes,
+                    "a queued upload's row holds a column of the wrong width; \
+                     it is marked out of attempts and not uploaded"
+                );
+                db.conn().execute(
+                    "UPDATE blob_uploads SET attempts = ? WHERE blob_id = ?",
+                    rusqlite::params![i64::from(MAX_UPLOAD_ATTEMPTS), &blob_id[..]],
+                )?;
+                continue;
+            };
+            out.push(PendingUpload {
+                blob_id: id,
+                stream_id: stream,
+                chunk_count: chunk_count.try_into().unwrap_or(0),
+                size_bytes: size_bytes.try_into().unwrap_or(0),
+                ciphertext_hash: hash,
+                upload_id,
+            });
+        }
+        Ok(out)
     }
 
     /// Remember the upload id `init` reserved.
@@ -409,7 +449,10 @@ impl Core {
                     rusqlite::params![scan],
                 )?;
                 for raw in ids {
-                    if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
+                    let Some(id) = attachment_id(&raw) else {
+                        continue;
+                    };
+                    if let Some(a) = read_attachment(db.conn(), &id)? {
                         candidates.extend(BlobRef::thumbnail(&a));
                     }
                 }
@@ -433,7 +476,10 @@ impl Core {
                     ],
                 )?;
                 for raw in ids {
-                    if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
+                    let Some(id) = attachment_id(&raw) else {
+                        continue;
+                    };
+                    if let Some(a) = read_attachment(db.conn(), &id)? {
                         if a.is_fetchable() {
                             candidates.push(BlobRef::original(&a));
                         }
@@ -534,21 +580,19 @@ fn ids_where(
     Ok(rows)
 }
 
-/// A stored blob narrowed to the 16 bytes it is; short or long is padded or
-/// truncated, the way `engine::ids` already treats one.
-fn sixteen(raw: &[u8]) -> [u8; 16] {
-    let mut a = [0u8; 16];
-    let take = raw.len().min(16);
-    a[..take].copy_from_slice(&raw[..take]);
-    a
-}
-
-/// [`sixteen`] at digest width.
-fn thirty_two(raw: &[u8]) -> [u8; 32] {
-    let mut a = [0u8; 32];
-    let take = raw.len().min(32);
-    a[..take].copy_from_slice(&raw[..take]);
-    a
+/// An `attachments.id` read through [`to16`], or `None`, with a warning, for a
+/// row whose id is not 16 bytes: padding it would look up some other
+/// attachment's id, or one that never existed.
+fn attachment_id(raw: &[u8]) -> Option<[u8; 16]> {
+    let id = to16(raw);
+    if id.is_none() {
+        tracing::warn!(
+            ev = "sync.blob.fetch_row_corrupt",
+            n_bytes = raw.len(),
+            "an attachment row's id is not 16 bytes; its bytes are not fetched"
+        );
+    }
+    id
 }
 
 #[cfg(test)]
@@ -749,5 +793,94 @@ mod tests {
             core.attachment_bytes(att.id).await.expect("read"),
             b"hello".to_vec()
         );
+    }
+
+    /// A queued row whose `blob_id` is 15 bytes is a corrupt row. It is not
+    /// padded into a 16-byte id and offered for upload; it is marked out of
+    /// attempts, stays in the table, and the well-formed row beside it is
+    /// still offered.
+    #[tokio::test]
+    async fn a_queued_upload_with_a_short_blob_id_is_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "form.pdf".into(), "application/pdf".into(), b"hello")
+            .await
+            .expect("attach");
+        let short = [0xabu8; 15];
+        core.db()
+            .conn()
+            .execute(
+                "INSERT INTO blob_uploads
+                 (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
+                 VALUES (?, ?, 1, 5, ?, 0)",
+                rusqlite::params![&short[..], &[0u8; 16][..], &[0u8; 32][..]],
+            )
+            .expect("plant a corrupt row");
+
+        let queued = core.pending_blob_uploads().expect("read the queue");
+        assert_eq!(queued.len(), 1, "only the well-formed row: {queued:?}");
+        assert_eq!(queued[0].blob_id, att.blob_id);
+
+        let attempts: i64 = core
+            .db()
+            .conn()
+            .query_row(
+                "SELECT attempts FROM blob_uploads WHERE blob_id = ?",
+                rusqlite::params![&short[..]],
+                |r| r.get(0),
+            )
+            .expect("the corrupt row stays in the table");
+        assert_eq!(attempts, i64::from(MAX_UPLOAD_ATTEMPTS));
+    }
+
+    /// The same for the other two fixed-width columns: a short `stream_id` or
+    /// a long `ciphertext_hash` is refused, not padded or truncated.
+    #[tokio::test]
+    async fn a_queued_upload_with_a_wrong_width_stream_or_hash_is_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        for (blob_id, stream_id, hash) in [
+            ([1u8; 16], vec![0u8; 15], vec![0u8; 32]),
+            ([2u8; 16], vec![0u8; 16], vec![0u8; 33]),
+        ] {
+            core.db()
+                .conn()
+                .execute(
+                    "INSERT INTO blob_uploads
+                     (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
+                     VALUES (?, ?, 1, 5, ?, 0)",
+                    rusqlite::params![&blob_id[..], stream_id, hash],
+                )
+                .expect("plant a corrupt row");
+        }
+        assert!(core.pending_blob_uploads().expect("read").is_empty());
+    }
+
+    /// An attachment row whose id is 17 bytes is not truncated into its
+    /// neighbour's id, which would offer that attachment's blob twice.
+    #[tokio::test]
+    async fn an_attachment_row_with_a_wrong_width_id_is_not_offered_for_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "form.pdf".into(), "application/pdf".into(), b"hello")
+            .await
+            .expect("attach");
+        core.db()
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TABLE long_id AS SELECT * FROM attachments;
+                 UPDATE long_id SET id = CAST(id || x'00' AS BLOB);
+                 INSERT INTO attachments SELECT * FROM long_id;",
+            )
+            .expect("plant a row with a 17-byte id");
+        std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
+
+        let wanted = core.attachments_awaiting_bytes().expect("scan");
+        assert_eq!(wanted.len(), 1, "the real row only: {wanted:?}");
+        assert_eq!(wanted[0].attachment, att.id);
     }
 }

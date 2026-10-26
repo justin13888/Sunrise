@@ -28,11 +28,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # The owner-only write the credential file goes through, on every platform.
 sunrise-private-file = { workspace = true }
-# The loopback login listener (`login.rs`) is a `TcpListener` on a spawned task.
-tokio = { workspace = true, features = ["rt", "net"] }
+# The loopback login listener (`login.rs`) is a `TcpListener` on a spawned task;
+# `time` is the deadline on an issuer exchange (`http.rs`, `REQUEST_TIMEOUT`).
+tokio = { workspace = true, features = ["rt", "net", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

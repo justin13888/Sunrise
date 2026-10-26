@@ -296,12 +296,12 @@ pub(in crate::engine) fn index_attachment(
     }
 }
 
+/// Carry an engine error out through a transaction closure, boxed as itself
+/// so `snapshot::in_tx` can hand the caller the original variant.
 fn to_sql(e: EngineError) -> rusqlite::Error {
     match e {
         EngineError::Sqlite(e) => e,
-        other => rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
-            other.to_string(),
-        ))),
+        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
     }
 }
 

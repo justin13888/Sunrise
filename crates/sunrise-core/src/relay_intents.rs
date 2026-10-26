@@ -94,6 +94,7 @@ impl Core {
     /// # Errors
     /// Storage failures.
     pub fn relay_revocation_pending(&self, device_id: &[u8; 16]) -> Result<bool, CoreError> {
+        self.ensure_open()?;
         Ok(self.pending_relay_revocations()?.contains(device_id))
     }
 

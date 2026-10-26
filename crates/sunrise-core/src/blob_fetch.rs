@@ -248,6 +248,7 @@ impl Core {
     /// [`AttachError::FetchUnavailable`] for the two ways a started transfer
     /// ends without bytes.
     pub async fn fetch_attachment(&self, id: EntityRef) -> Result<(), AttachError> {
+        self.ensure_open()?;
         let att = self.attachment_row(id).await?;
         if self.attachment_is_local(&att)? {
             // Nothing to ask for. Clearing any stale row here rather than
@@ -347,6 +348,7 @@ impl Core {
     ///
     /// Storage failures.
     pub fn cancel_attachment_fetch(&self, id: EntityRef) -> Result<(), AttachError> {
+        self.ensure_open()?;
         // The flag first. A transfer already running in the driver is watching
         // it, and must be able to see it set the instant the wake arrives.
         self.blob_fetch_signals().request_cancel(id);
@@ -372,6 +374,7 @@ impl Core {
         &self,
         id: EntityRef,
     ) -> Result<AttachmentFetchState, AttachError> {
+        self.ensure_open()?;
         let db = self.db();
         let state: Option<String> = db
             .conn()

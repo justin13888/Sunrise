@@ -2425,6 +2425,15 @@ pub mod undo {
         out
     }
 
+    /// {action} cannot be undone
+    #[must_use]
+    pub fn not_undoable(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str(action);
+        out.push_str(" cannot be undone");
+        out
+    }
+
     /// capture “{title}”
     #[must_use]
     pub fn capture(title: &str) -> String {

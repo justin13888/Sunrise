@@ -1493,3 +1493,7 @@ async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
     assert!(events.try_recv().is_err());
     core.close().await.unwrap();
 }
+
+/// Every public storage method after `Core::close`.
+#[cfg(test)]
+mod closed;

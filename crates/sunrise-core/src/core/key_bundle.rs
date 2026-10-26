@@ -25,9 +25,7 @@ impl Core {
     /// open; [`crate::EngineError::Keychain`] on a vault that holds no
     /// `ID_D_priv`, which is every vault pairing admitted.
     pub fn apply_key_bundle(&self, bytes: &[u8]) -> Result<KeyBundleApplied, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let (outcome, events) = {
             let mut db = self.db.lock();
             self.engine.apply_key_bundle(&mut db, bytes)?
@@ -41,9 +39,7 @@ impl Core {
     /// The bundle this replica would publish, unless this process already saw
     /// the relay hold one with the same manifest.
     pub(crate) fn key_bundle_plan(&self) -> Result<Option<KeyBundlePlan>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let plan = {
             let mut db = self.db.lock();
             self.engine.key_bundle_plan(&mut db)?

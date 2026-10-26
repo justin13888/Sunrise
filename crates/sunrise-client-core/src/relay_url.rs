@@ -23,7 +23,8 @@
 //!   silently discarding part of what a user typed would connect them
 //!   somewhere they did not say. A trailing `/` is not a path.
 //! * **At most [`MAX_RELAY_URL_LEN`] bytes**, the pairing QR's `relay_url`
-//!   bound, so any relay a device is configured for fits in a code.
+//!   bound, so any relay a device is configured for fits in a code. Both what
+//!   was typed and the origin it serialises to, which IDNA can lengthen.
 //! * **Not `ws://` or `wss://`.** Sync left the WebSocket for an SSE stream over
 //!   HTTP (ADR-0023); a URL from before that is answered with its own code so
 //!   a client can say what to change rather than only that it is wrong.
@@ -71,7 +72,8 @@ pub enum RelayUrlIssue {
     /// Nothing, or only whitespace: no relay is configured.
     #[error("no relay URL is set")]
     Empty,
-    /// Longer than [`MAX_RELAY_URL_LEN`] bytes.
+    /// Longer than [`MAX_RELAY_URL_LEN`] bytes, as typed or as its origin
+    /// serialises.
     #[error("the relay URL is longer than 256 bytes")]
     TooLong,
     /// Not an absolute URL with a host.
@@ -97,7 +99,8 @@ pub enum RelayUrlIssue {
 /// # Errors
 ///
 /// The [`RelayUrlIssue`] that applies, checked in the order its variants are
-/// declared.
+/// declared, except that an origin IDNA lengthens past the bound is
+/// [`RelayUrlIssue::TooLong`] once every other check has passed.
 pub fn parse_relay_url(input: &str) -> Result<RelayOrigin, RelayUrlIssue> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -128,7 +131,14 @@ pub fn parse_relay_url(input: &str) -> Result<RelayOrigin, RelayUrlIssue> {
     if parsed.scheme() == "http" && !loopback {
         return Err(RelayUrlIssue::InsecureRemote);
     }
-    Ok(RelayOrigin(parsed.origin().ascii_serialization()))
+    // Checked again on what comes back: IDNA writes a non-ASCII label as
+    // `xn--…`, which can be longer than the label typed, and the bound is on
+    // the origin a QR carries.
+    let origin = parsed.origin().ascii_serialization();
+    if origin.len() > MAX_RELAY_URL_LEN {
+        return Err(RelayUrlIssue::TooLong);
+    }
+    Ok(RelayOrigin(origin))
 }
 
 #[cfg(test)]

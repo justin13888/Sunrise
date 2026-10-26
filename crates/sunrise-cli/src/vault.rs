@@ -432,7 +432,10 @@ fn register(keystore: &Path, id: &str, vault_dir: &Path) -> Result<(), VaultErro
     body.push(' ');
     body.push_str(path);
     body.push('\n');
-    write_line(&file, body.trim_end_matches('\n'))
+    // Staged and renamed into place, so a crash mid-write leaves the previous
+    // listing whole instead of truncated. That makes the file owner-only too,
+    // which a list of this user's vault paths can be.
+    write_private(&file, body.trim_end_matches('\n'))
 }
 
 /// Read one line of `N * 2` hex characters, or `None` when the file is absent.
@@ -671,6 +674,30 @@ mod tests {
         assert!(rows.iter().any(|e| e.path == a.path()));
         assert!(rows.iter().any(|e| e.path == b.path()));
         assert_ne!(rows[0].id, rows[1].id);
+    }
+
+    /// A registration stages the new registry and renames it over the old
+    /// one, so the old file is never truncated and rewritten in place: a crash
+    /// mid-write leaves the previous listing whole. A hard link to the old
+    /// file is how a test sees that: an in-place write changes what it reads.
+    #[test]
+    fn a_registration_replaces_the_registry_rather_than_rewriting_it_in_place() {
+        let keys = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        open_or_create(a.path(), keys.path(), &SystemRng).unwrap();
+        let registry = keys.path().join(REGISTRY_FILE);
+        let before = std::fs::read_to_string(&registry).unwrap();
+        let old = keys.path().join("old-registry");
+        std::fs::hard_link(&registry, &old).unwrap();
+
+        open_or_create(b.path(), keys.path(), &SystemRng).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&old).unwrap(),
+            before,
+            "the file the old listing was in was written in place"
+        );
+        assert_eq!(registered(keys.path()).len(), 2);
+        sunrise_private_file::verify_owner_only(&registry).unwrap();
     }
 
     #[test]

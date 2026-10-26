@@ -275,6 +275,7 @@ impl Core {
     /// # Errors
     /// [`AttachError::NotFound`] for an unknown or tombstoned id.
     pub async fn pin_attachment(&self, id: EntityRef) -> Result<(), AttachError> {
+        self.ensure_open()?;
         let att = self.attachment_row(id).await?;
         self.cache_signals()
             .pins
@@ -320,6 +321,7 @@ impl Core {
     /// # Errors
     /// Storage failures.
     pub fn attachment_cache_usage(&self) -> Result<CacheUsage, AttachError> {
+        self.ensure_open()?;
         let limit_bytes = self.cache_limit_bytes();
         let db = self.db();
         let used: i64 = db
@@ -349,6 +351,7 @@ impl Core {
     /// # Errors
     /// Storage or blob store failures.
     pub fn clear_attachment_cache(&self) -> Result<u64, AttachError> {
+        self.ensure_open()?;
         Ok(self.evict_down_to(0)?)
     }
 
@@ -362,6 +365,7 @@ impl Core {
     /// # Errors
     /// Storage or blob store failures.
     pub fn enforce_attachment_cache(&self) -> Result<u64, AttachError> {
+        self.ensure_open()?;
         self.index_untracked_blobs()?;
         let limit = self.cache_limit_bytes();
         Ok(self.evict_down_to(limit)?)
