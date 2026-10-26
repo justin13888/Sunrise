@@ -603,6 +603,9 @@ impl Engine {
     ///   covers. The refusal is made where each op is sealed, so it covers
     ///   every op a command writes, and the transaction it aborts leaves
     ///   nothing behind.
+    /// - [`EngineError::FeatureUnsupportedByDevices`] when the command
+    ///   would make the vault require a feature another device lacks, and
+    ///   the caller has not confirmed it.
     /// - [`EngineError::Validation`] for a draft or patch the domain rejects.
     /// - [`EngineError::NotFound`] for a command naming an entity this
     ///   replica does not hold.
