@@ -37,7 +37,12 @@ fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
     let envs: Vec<Vec<u8>> = {
         let mut stmt = from_db
             .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
+            // The certificate first: it makes the device known, and the
+            // receiver refuses every other op of a device it does not know.
+            .prepare(
+                "SELECT envelope FROM ops WHERE device_id = ?
+                 ORDER BY inner_kind <> 'device.cert', stream_id, seq",
+            )
             .unwrap();
         stmt.query_map(params![&device[..]], |r| r.get(0))
             .unwrap()
@@ -45,7 +50,7 @@ fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
             .unwrap()
     };
     for env in envs {
-        let _ = to.apply_remote_all(to_db, &env);
+        to.apply_remote_all(to_db, &env).unwrap();
     }
 }
 
@@ -112,17 +117,17 @@ fn security_events_are_what_happened_after_this_device_joined() {
     deliver(&a, &adb, &b, &mut bdb);
     assert_eq!(kinds(&b, &bdb), vec![(K::RecoveryCodeRetired, head)]);
 
-    // A revocation, as the fold leaves it, names its subject on each device.
-    for db in [&adb, &bdb] {
-        db.conn()
-            .execute(
-                "INSERT INTO device_revocations
-                 (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
-                 VALUES (?, ?, 0, X'', 'Lost', ?)",
-                params![&b_id[..], T0 + 240_000, T0 + 240_000],
-            )
-            .unwrap();
-    }
+    // A revocation names its subject on each device.
+    *a_clock.0.lock() = T0 + 240_000;
+    a.apply(
+        &mut adb,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, b_id),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .unwrap();
+    deliver(&a, &adb, &b, &mut bdb);
     let on_b = b.security_events(&bdb).unwrap();
     assert_eq!(
         on_b.last().map(|e| (e.kind, e.this_device)),
@@ -178,36 +183,53 @@ fn deadlines_are_the_open_tasks_with_a_hard_one_and_routines_plan_as_routines() 
     );
 
     // A routine occurrence's reminder is the routine's, never also a task's.
-    let soon = SunriseTime::instant(ms_to_ts(T0 as i64 + 600_000));
-    for id in [soft, hard] {
-        let patch = TaskPatch {
-            planned_at: Some(Some(soon.clone())),
-            ..TaskPatch::default()
-        };
-        e.apply(&mut db, Command::UpdateTask { id, patch }).unwrap();
-    }
-    db.conn()
-        .execute(
-            "UPDATE tasks SET routine_id = ? WHERE id = ?",
-            params![&[7u8; 16][..], &soft.bytes()[..]],
-        )
+    let soon_ms = T0 as i64 + 600_000;
+    let patch = TaskPatch {
+        planned_at: Some(Some(SunriseTime::instant(ms_to_ts(soon_ms)))),
+        ..TaskPatch::default()
+    };
+    e.apply(&mut db, Command::UpdateTask { id: hard, patch })
         .unwrap();
+    let routine = e
+        .apply(
+            &mut db,
+            Command::CreateRoutine(routine_draft(
+                inbox_stream_ref(),
+                "FREQ=DAILY",
+                soon_ms,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            )),
+        )
+        .unwrap()
+        .entity;
+    e.apply(&mut db, Command::MaterializeRoutines { now_ms: T0 })
+        .unwrap();
+    let (occurrence, occurrence_at) = occurrence_tasks(&routine_of(&e, &db, routine), 1)[0];
+    assert_eq!(occurrence_at, soon_ms);
     let plan = e
         .reminder_plan(&db, T0, T0 + 86_400_000, &ReminderSettings::default())
         .unwrap();
     let kind_of = |id| plan.intents.iter().find(|i| i.entity == id).map(|i| i.kind);
-    assert_eq!(plan.intents.len(), 2);
-    assert_eq!(kind_of(soft), Some(sunrise_domain::ReminderKind::Routine));
+    assert_eq!(plan.intents.len(), 2, "{:?}", plan.intents);
+    assert_eq!(
+        kind_of(occurrence),
+        Some(sunrise_domain::ReminderKind::Routine)
+    );
     assert_eq!(kind_of(hard), Some(sunrise_domain::ReminderKind::Task));
 
     // The outbox's oldest unacknowledged op is the first write's.
-    let oldest = e.oldest_unacked_ms(&db).unwrap();
-    assert!(
-        oldest.is_some_and(|ms| ms <= e.clock.now_ms()),
-        "{oldest:?}"
-    );
-    db.conn()
-        .execute("UPDATE outbox SET acked_at_ms = 1", [])
-        .unwrap();
+    assert_eq!(e.oldest_unacked_ms(&db).unwrap(), Some(T0));
+    // The relay acknowledges every op, as a sync session records it.
+    let pending = Outbox::list_unacked(&db).unwrap();
+    assert!(!pending.is_empty());
+    db.with_tx(|tx| {
+        for entry in &pending {
+            Outbox::mark_acked(tx, &entry.op_id, T0)
+                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        }
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(e.oldest_unacked_ms(&db).unwrap(), None);
 }

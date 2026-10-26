@@ -530,6 +530,8 @@ fn full_state_ops_alone_reproduce_entity_level_lww() {
     assert_eq!(merged.priority, Some(5));
 }
 
+/// The OR-set add rows `id` holds. A deliberate white-box read: what the
+/// garbage collection below deletes is storage no public read shows.
 fn orset_adds(db: &Db, id: EntityRef) -> i64 {
     db.conn()
         .query_row(
@@ -687,6 +689,7 @@ fn a_generated_occurrence_is_generated_on_every_replica() {
         ),
     );
     p.eb.apply_remote(&mut p.dbb, &edit).unwrap();
+    // A deliberate white-box read: a register's origin has no public read.
     let origin = |db: &Db, field: &str| -> String {
         db.conn()
             .query_row(
