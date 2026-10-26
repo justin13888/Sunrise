@@ -143,12 +143,17 @@ mod tests {
             proptest::prop_assert_eq!(Ulid::parse(&u.to_str()), Ok(u));
         }
 
-        /// The string form sorts as the ULID does.
+        /// The string form sorts as the ULID does. `b` shares its first
+        /// `shared` bytes with `a`, so the first difference falls in the
+        /// random part as well as the timestamp, rather than almost always
+        /// byte 0.
         #[test]
         fn str_order_matches_ulid_order(
             a in proptest::prelude::any::<[u8; 16]>(),
-            b in proptest::prelude::any::<[u8; 16]>(),
+            mut b in proptest::prelude::any::<[u8; 16]>(),
+            shared in 0usize..=16,
         ) {
+            b[..shared].copy_from_slice(&a[..shared]);
             let (a, b) = (Ulid::from_bytes(a), Ulid::from_bytes(b));
             proptest::prop_assert_eq!(a.to_str().cmp(&b.to_str()), a.cmp(&b));
         }
