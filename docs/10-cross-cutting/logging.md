@@ -294,7 +294,7 @@ shipped source is missing from it. Which files count is taken from
 walk.
 
 Implemented today: `sunrise-server` (startup, request lifecycle, auth outcome,
-WebSocket session, relay fan-out), `sunrise-storage` (migrations),
+sync session and SSE stream lifecycle, relay fan-out), `sunrise-storage` (migrations),
 `sunrise-core::sync_driver` + `sunrise-cli::livesync` (session lifecycle,
 backoff), and `sunrise-cli` (startup, dev pairing).
 
@@ -316,8 +316,9 @@ events, quota and push (no such features), and integrations (no provider).
 | capture | NDJSON | Tests (`sunrise_log::Capture`), so assertions are on the exact bytes a sink would receive. |
 
 **Rotation** is a size roll at 16 MiB keeping one previous generation
-(`<name>.ndjson.1`), so a runaway loop costs at most 32 MiB rather than a
-partition. Not gzipped, not time-based, no 14-day retention sweep — see the
+(`<name>.ndjson.1`), so a runaway loop costs at most 32 MiB plus one record
+per generation (the record that crosses the cap is written whole before the
+roll) rather than a partition. Not gzipped, not time-based, no 14-day retention sweep — see the
 throttling note in §9 for why the size cap is the part that had to exist.
 
 **Removed: the `ring` and `remote` sinks.** `remote` was never implemented and
