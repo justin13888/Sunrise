@@ -51,7 +51,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::relay::{CursorGap, FrameHead, StreamKey};
 use crate::store::{Store, StoreError};
 
-/// The tables this module is the only reader and writer of.
+/// The tables this module is, apart from migrations, the only reader and
+/// writer of.
 ///
 /// Declared here rather than with the account and device DDL because the
 /// statements over them are here: a table whose schema lives in one file and
@@ -227,7 +228,7 @@ impl Store {
     ///
     /// `batch_id` is recorded beside the hash for diagnostics only. It is
     /// deliberately not part of the key — see the `relay_batches` comment in
-    /// [`crate::store`] for why keying on it loses data.
+    /// this module's `SCHEMA` for why keying on it loses data.
     ///
     /// `n_ops` is how many ops the frame carries, stored beside it so a
     /// replay can count what it delivers without decoding the frame.
@@ -331,6 +332,9 @@ impl Store {
     /// frame whose heads could not be read is never skipped, because
     /// over-delivery costs one idempotent no-op and under-delivery is data
     /// loss.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] if any read fails.
     pub fn relay_replay(
         &self,
         key: StreamKey,
@@ -363,6 +367,9 @@ impl Store {
     /// statements never race here and the id-only selection below cannot skip
     /// what a cursor asked for. Any future caller passing a non-zero
     /// `after_id` owes the same check.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] if any read fails.
     pub fn relay_replay_after(
         &self,
         key: StreamKey,
@@ -496,6 +503,9 @@ impl Store {
     }
 
     /// Number of retained frames for a channel (tests and diagnostics).
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] if the count cannot be read.
     pub fn relay_len(&self, key: StreamKey) -> Result<usize, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.tx("store.relay_len");

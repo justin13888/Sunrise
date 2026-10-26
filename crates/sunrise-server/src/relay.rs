@@ -62,8 +62,8 @@
 //! still bounds its own memory, but the gap a *client* is told about comes
 //! from durable retention, not from this.
 //!
-//! Multi-node servers swap the fan-out for a Postgres NOTIFY / Redis backend
-//! (Phase 17) without touching the WS handler.
+//! Multi-node fan-out is ADR-0062 §2 (#481): Postgres `LISTEN/NOTIFY` as a
+//! wake-up, with the durable relay log as the payload.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

@@ -1,7 +1,7 @@
 //! Blob two-phase commit on the typed surface (`/api/v1/blobs/...`).
 //!
 //! Per `docs/06-server/api.md` §Blobs and `docs/02-domain/attachments.md`.
-//! Three phases and a read:
+//! Three phases, a read, and a delete:
 //!
 //! 1. `POST /blobs/init` reserves an upload id and hands back one URL per chunk.
 //! 2. `PUT /blobs/{upload_id}/{chunk_idx}` stores one chunk of **opaque
@@ -11,6 +11,8 @@
 //!    the client's `content_hash`, and only then commits under the content
 //!    address.
 //! 4. `GET /blobs/{blob_id}` streams the committed chunks back.
+//! 5. `DELETE /blobs/{blob_id}` tombstones a committed blob; its ciphertext
+//!    stays readable until maintenance collects it.
 //!
 //! Everything here is E2EE ciphertext. The server never holds a key and can
 //! never read a byte of it; hashing is an *integrity* check, not a content
