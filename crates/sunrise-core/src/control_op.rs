@@ -864,4 +864,106 @@ mod tests {
         let back: DeviceRevokePayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
         assert_eq!(back, p);
     }
+
+    /// Encode `p` and decode it back, as the op codec does.
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned>(p: &T) -> T {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(p, &mut buf).unwrap();
+        ciborium::de::from_reader(buf.as_slice()).unwrap()
+    }
+
+    mod generated {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn blob() -> impl Strategy<Value = Vec<u8>> {
+            proptest::collection::vec(any::<u8>(), 0..96)
+        }
+
+        fn recipient() -> impl Strategy<Value = Recipient> {
+            prop_oneof![
+                any::<[u8; 16]>().prop_map(Recipient::Device),
+                any::<[u8; 16]>().prop_map(Recipient::Identity),
+            ]
+        }
+
+        fn reason() -> impl Strategy<Value = RevokeReason> {
+            prop_oneof![
+                Just(RevokeReason::Lost),
+                Just(RevokeReason::Stolen),
+                Just(RevokeReason::Retired),
+                Just(RevokeReason::Compromised),
+            ]
+        }
+
+        fn features() -> impl Strategy<Value = Vec<String>> {
+            proptest::collection::vec("[a-z][a-z0-9_]{0,8}(\\.[a-z0-9_]{1,8}){1,2}", 0..4)
+        }
+
+        proptest! {
+            #[test]
+            fn every_key_envelope_payload_round_trips(
+                stream_id in any::<[u8; 16]>(),
+                epoch in any::<u32>(),
+                recipient in recipient(),
+                key_id in any::<[u8; 8]>(),
+                hpke_ciphertext in blob(),
+            ) {
+                let p = KeyEnvelopePayload { stream_id, epoch, recipient, key_id, hpke_ciphertext };
+                prop_assert_eq!(round_trip(&p), p);
+            }
+
+            #[test]
+            fn every_device_revoke_payload_round_trips(
+                revoked_device_id in any::<[u8; 16]>(),
+                reason_code in reason(),
+            ) {
+                let p = DeviceRevokePayload { revoked_device_id, reason_code };
+                prop_assert_eq!(round_trip(&p), p);
+                prop_assert_eq!(RevokeReason::parse(reason_code.as_str()), Some(reason_code));
+            }
+
+            /// Including an absent carry share against an empty one, which
+            /// `shares_digest` tells apart.
+            #[test]
+            fn every_identity_transition_payload_round_trips(
+                ids in any::<([u8; 16], [u8; 16])>(),
+                pubs in any::<([u8; 32], [u8; 32])>(),
+                sigs in any::<([u8; 32], [u8; 32], [u8; 32], [u8; 32])>(),
+                roster in proptest::collection::vec(blob(), 0..3),
+                shares in proptest::collection::vec((any::<[u8; 16]>(), blob()), 0..3),
+                identity_share in proptest::option::of(blob()),
+            ) {
+                let sig = |a: [u8; 32], b: [u8; 32]| {
+                    let mut s = [0u8; 64];
+                    s[..32].copy_from_slice(&a);
+                    s[32..].copy_from_slice(&b);
+                    s
+                };
+                let p = IdentityTransitionPayload {
+                    from_identity_id: ids.0,
+                    to_identity_id: ids.1,
+                    to_id_s_pub: pubs.0,
+                    to_id_d_pub: pubs.1,
+                    roster: roster.into_iter().map(|cert| RosterEntry { cert }).collect(),
+                    device_shares: shares
+                        .into_iter()
+                        .map(|(device_id, hpke_ciphertext)| KeyShare { device_id, hpke_ciphertext })
+                        .collect(),
+                    identity_share: identity_share.map(ByteBuf::from),
+                    prev_sig: sig(sigs.0, sigs.1),
+                    next_sig: sig(sigs.2, sigs.3),
+                };
+                prop_assert_eq!(round_trip(&p), p);
+            }
+
+            #[test]
+            fn every_feature_payload_round_trips(features in features()) {
+                let d = DeviceFeaturesPayload { features: features.clone(), unknown: Unknowns::new() };
+                prop_assert_eq!(round_trip(&d), d);
+                let v = VaultRequiresPayload { features, unknown: Unknowns::new() };
+                prop_assert_eq!(round_trip(&v), v);
+            }
+        }
+    }
 }

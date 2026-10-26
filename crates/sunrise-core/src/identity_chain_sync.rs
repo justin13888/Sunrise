@@ -90,3 +90,100 @@ pub(crate) async fn publish<T: Transport + ?Sized>(core: &Core, transport: &mut 
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_crypto::{
+        identity_id_from_pub, sign_identity_transition, ChainLink, IdentityDhKeyPair,
+        IdentitySigningKeyPair, IdentityTransitionBody,
+    };
+
+    fn signer(seed: u8) -> IdentitySigningKeyPair {
+        IdentitySigningKeyPair::from_secret_bytes(&[seed; 32])
+    }
+
+    /// A link from the identity seeded `from` to the one seeded `to`, signed
+    /// by both, as a rotation writes it.
+    fn link(from: u8, to: u8) -> ChainLink {
+        let (from_s, to_s) = (signer(from), signer(to));
+        let body = IdentityTransitionBody {
+            from_identity_id: identity_id_from_pub(&from_s.public_bytes()),
+            to_identity_id: identity_id_from_pub(&to_s.public_bytes()),
+            to_id_s_pub: to_s.public_bytes(),
+            to_id_d_pub: IdentityDhKeyPair::from_secret_bytes([to; 32]).public_bytes(),
+            roster_digest: [1; 32],
+            shares_digest: [2; 32],
+        };
+        let sigs = sign_identity_transition(&body, &from_s, &to_s).unwrap();
+        ChainLink {
+            body,
+            sigs,
+            meta_epoch: 2,
+            hlc_physical_ms: 1_700_000_000_000,
+            hlc_logical: 0,
+            emitter_device_id: [9; 16],
+            carry_share: None,
+        }
+    }
+
+    /// The chain whose genesis is seeded `path[0]` and which rotates through
+    /// each later seed in turn.
+    fn chain(path: &[u8]) -> IdentityChain {
+        IdentityChain {
+            genesis_id_s_pub: signer(path[0]).public_bytes(),
+            links: path.windows(2).map(|w| link(w[0], w[1])).collect(),
+        }
+    }
+
+    fn covers(mine: &[u8], pinned: &IdentityChain) -> bool {
+        pinned_covers(&chain(mine), &pinned.encode().unwrap())
+    }
+
+    #[test]
+    fn the_same_record_or_one_that_extends_it_covers_this_devices() {
+        assert!(covers(&[1, 2, 3], &chain(&[1, 2, 3])));
+        assert!(covers(&[1, 2], &chain(&[1, 2, 3, 4])));
+        assert!(covers(&[1], &chain(&[1, 2])));
+    }
+
+    /// A pin that stops short of this device's chain is behind: replaced.
+    #[test]
+    fn a_shorter_record_does_not_cover() {
+        assert!(!covers(&[1, 2, 3], &chain(&[1, 2])));
+        assert!(!covers(&[1, 2], &chain(&[1])));
+    }
+
+    /// Two chains from one genesis that rotated to different successors: the
+    /// pin is not this device's history, however long it is.
+    #[test]
+    fn a_divergent_record_does_not_cover_even_when_longer() {
+        assert!(!covers(&[1, 2, 3], &chain(&[1, 2, 7])));
+        assert!(!covers(&[1, 2, 3], &chain(&[1, 5, 6, 7])));
+    }
+
+    #[test]
+    fn another_accounts_record_does_not_cover() {
+        assert!(!covers(&[1, 2], &chain(&[8, 2, 3])));
+    }
+
+    /// A pin whose link does not verify is not kept, even where every link
+    /// this device holds matches it.
+    #[test]
+    fn an_unverifiable_record_does_not_cover() {
+        let mut forged = chain(&[1, 2, 3]);
+        forged.links[1].body.roster_digest = [7; 32];
+        assert!(forged.verify(&chain(&[1]).genesis_identity_id()).is_err());
+        assert!(!covers(&[1, 2], &forged));
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_record_do_not_cover() {
+        let mine = chain(&[1, 2]);
+        assert!(!pinned_covers(&mine, &[]));
+        assert!(!pinned_covers(&mine, b"not a chain record"));
+        let mut cut = chain(&[1, 2, 3]).encode().unwrap();
+        cut.truncate(cut.len() - 1);
+        assert!(!pinned_covers(&mine, &cut));
+    }
+}

@@ -418,3 +418,53 @@ pub(super) fn prune_below_floor(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// `n` one-element arrays around the integer 1: `n` levels deep.
+    fn nest(n: usize) -> Value {
+        let mut v = Value::Integer(1.into());
+        for _ in 0..n {
+            v = Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn a_stored_value_reads_back_as_written() {
+        let v = Value::Map(vec![(Value::Text("k".into()), nest(3))]);
+        assert_eq!(dec(&enc(&v).unwrap()), v);
+        assert_eq!(dec(&enc(&Value::Null).unwrap()), Value::Null);
+    }
+
+    /// The fallback the doc names: bytes that do not decode read as a stored
+    /// null, never as an error.
+    #[test]
+    fn bytes_that_do_not_decode_read_as_null() {
+        let mut truncated = enc(&Value::Text("a field".into())).unwrap();
+        truncated.pop();
+        for bytes in [&[][..], &[0xff, 0x00], &[0x1c], &truncated[..]] {
+            assert_eq!(dec(bytes), Value::Null, "{bytes:02x?}");
+        }
+    }
+
+    /// A value nested to the bound decodes; one level past it reads as null.
+    #[test]
+    fn a_value_nested_past_the_document_depth_reads_as_null() {
+        let at = nest(sunrise_cbor::MAX_DOC_DEPTH);
+        assert_eq!(dec(&enc(&at).unwrap()), at);
+        let past = enc(&nest(sunrise_cbor::MAX_DOC_DEPTH + 1)).unwrap();
+        assert_eq!(dec(&past), Value::Null);
+    }
+
+    proptest! {
+        /// `dec` is total: any bytes at all yield a value, and no input panics.
+        #[test]
+        fn dec_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = dec(&bytes);
+        }
+    }
+}
