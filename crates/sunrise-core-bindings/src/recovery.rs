@@ -191,6 +191,15 @@ mod tests {
         )));
         assert!(matches!(code, BindingError::RecoveryCode(_)), "{code:?}");
 
+        // Words that were right once: still the code's problem, not a refusal.
+        for retired_at_ms in [Some(1_793_000_000_000), None] {
+            let retired = BindingError::from(RestoreError::CodeRetired { retired_at_ms });
+            assert!(
+                matches!(&retired, BindingError::RecoveryCode(m) if m.contains("retired")),
+                "{retired:?}"
+            );
+        }
+
         let step_up = BindingError::from(RestoreError::StepUpRequired("403".into()));
         assert!(
             matches!(step_up, BindingError::StepUpRequired(_)),
