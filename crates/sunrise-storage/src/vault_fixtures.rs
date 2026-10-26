@@ -2034,3 +2034,31 @@ fn a_v45_vaults_tasks_gain_an_empty_drop_reason_and_keep_after_0046() {
         "0045's columns are kept"
     );
 }
+
+/// Migration 0047 (#331) over a real v46 vault: every existing task gains a
+/// hard-constraint flag of 0, none having been generated with it, and every
+/// existing routine a `split_from` of NULL, none having been split. The
+/// fixture holds tasks and routines, so neither assertion is vacuous.
+#[test]
+fn a_v46_vaults_tasks_gain_an_unviolated_hard_constraint_and_routines_no_split_after_0047() {
+    let (_dir, db) = open_migrated(&fixture_name(46));
+    let count = |sql: &str| -> i64 {
+        db.conn()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+    };
+    let tasks = row_count(&db, "tasks");
+    assert!(tasks > 0, "the fixture's tasks survive");
+    assert_eq!(
+        count("SELECT count(*) FROM tasks WHERE hard_constraint_violated = 0"),
+        tasks,
+        "every task starts unviolated"
+    );
+    let routines = row_count(&db, "routines");
+    assert!(routines > 0, "the fixture's routines survive");
+    assert_eq!(
+        count("SELECT count(*) FROM routines WHERE split_from IS NULL"),
+        routines,
+        "no routine starts split"
+    );
+}
