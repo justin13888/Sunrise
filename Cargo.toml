@@ -276,3 +276,9 @@ debug = "line-tables-only"
 # Keep test deps (proptest, etc.) optimized — property runs go from minutes to seconds.
 [profile.dev.package."*"]
 opt-level = 1
+# No debug info for dependencies, under the same target/ pressure as the line
+# tables above: their frames keep symbol names but lose file:line, while
+# Sunrise frames keep both. For full debug info in a debugger, override per
+# build: `CARGO_PROFILE_DEV_DEBUG=2` (workspace crates) or
+# `cargo --config 'profile.dev.package."*".debug=2' ...` (dependencies).
+debug = false
