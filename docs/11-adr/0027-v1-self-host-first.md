@@ -143,7 +143,7 @@ enforces are fixed operator constants, not per-account accounting:
 | Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES` |
 | Blob chunk count | 4096 | `api/blobs/mod.rs:77` |
 | Blob size | 100 MB | `api/blobs/mod.rs:81` |
-| Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log.rs:121,130` |
+| Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log/append.rs:11,18` |
 
 No `plan_tier` metric label. No `AUTH_QUOTA_EXCEEDED` or `AUTH_RATE_LIMITED` on
 the typed error surface, and none planned for v1. (`sunrise-error`'s

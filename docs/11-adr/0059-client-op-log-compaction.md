@@ -15,7 +15,7 @@ stream digest), [ADR-0044](./0044-per-field-ops.md) (per-field merge state) and
 
 Every op a device received stayed in its local `ops` table forever. The relay
 trims its own copy at 30 days or 256 MiB per channel
-(`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`), so a device
+(`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`), so a device
 offline for longer than that, or a new device joining an old account, could
 catch up only from what the relay still held.
 

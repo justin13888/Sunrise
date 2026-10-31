@@ -169,6 +169,7 @@ fn civil_time(s: &str) -> Option<jiff::civil::Time> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_domain::{DeviceClass, PREFERENCE_KEYS};
 
     fn key(k: &str) -> &'static PrefSpec {
         spec(k).unwrap()
@@ -229,5 +230,106 @@ mod tests {
             }),
             "22:00-07:00"
         );
+
+        // Read back, through the keys of those types.
+        let of_type = |wanted: fn(PrefType) -> bool| {
+            PREFERENCE_KEYS
+                .iter()
+                .find(|s| wanted(s.ty))
+                .expect("the table has a key of this type")
+        };
+        assert_eq!(
+            parse(of_type(|t| matches!(t, PrefType::Cadence)), "MO 09:00").unwrap(),
+            PrefValue::Cadence {
+                day: Weekday::Mo,
+                at
+            }
+        );
+        assert_eq!(
+            parse(
+                of_type(|t| matches!(t, PrefType::TimeWindow)),
+                "22:00-07:00"
+            )
+            .unwrap(),
+            PrefValue::TimeWindow {
+                start: jiff::civil::time(22, 0, 0, 0),
+                end: jiff::civil::time(7, 0, 0, 0)
+            }
+        );
+    }
+
+    /// Values of `ty` covering each shape it takes and both ends of its range.
+    fn samples(ty: PrefType) -> Vec<PrefValue> {
+        let time = |h, m| jiff::civil::time(h, m, 0, 0);
+        match ty {
+            PrefType::Bool => vec![PrefValue::Bool(true), PrefValue::Bool(false)],
+            PrefType::Uint { min, max } => vec![PrefValue::Uint(min), PrefValue::Uint(max)],
+            PrefType::UintOneOf(allowed) => allowed.iter().copied().map(PrefValue::Uint).collect(),
+            PrefType::Int { min, max } => vec![PrefValue::Int(min), PrefValue::Int(max)],
+            PrefType::OneOf(allowed) => allowed
+                .iter()
+                .map(|a| PrefValue::Text((*a).to_owned()))
+                .collect(),
+            PrefType::Url => vec![PrefValue::Text("https://relay.example/sync".into())],
+            PrefType::Text => vec![PrefValue::Text("two words".into())],
+            PrefType::TimeZone => vec![PrefValue::Text("Asia/Kolkata".into())],
+            PrefType::LanguageTag => vec![PrefValue::Text("fr-CA".into())],
+            PrefType::Ref(kind) => vec![PrefValue::Text(
+                sunrise_id::EntityRef::new(kind, [7; 16]).to_str(),
+            )],
+            PrefType::Weekday => sunrise_domain::day_schedule::WEEKDAYS
+                .iter()
+                .cloned()
+                .map(PrefValue::Weekday)
+                .collect(),
+            PrefType::Cadence => sunrise_domain::day_schedule::WEEKDAYS
+                .iter()
+                .cloned()
+                .map(|day| PrefValue::Cadence {
+                    day,
+                    at: time(9, 5),
+                })
+                .collect(),
+            PrefType::TimeWindow => vec![PrefValue::TimeWindow {
+                start: time(22, 0),
+                end: time(7, 30),
+            }],
+            PrefType::DayWindow => vec![PrefValue::DayWindow {
+                wake: time(7, 0),
+                sleep: time(1, 0),
+            }],
+            PrefType::DayOverride => vec![
+                PrefValue::DayWindow {
+                    wake: time(7, 0),
+                    sleep: time(23, 30),
+                },
+                PrefValue::NoSchedule,
+            ],
+        }
+    }
+
+    /// The module's promise, for the whole key table rather than a sample of
+    /// it: what `prefs get` shows is what `prefs set` accepts, and reads back
+    /// as the same value. That holds for each key's default too, since a
+    /// default is what `prefs get` shows on a fresh vault.
+    #[test]
+    fn every_key_reads_back_what_it_prints() {
+        assert!(!PREFERENCE_KEYS.is_empty());
+        for s in PREFERENCE_KEYS {
+            let mut values = samples(s.ty);
+            assert!(!values.is_empty(), "{} has nothing to try", s.key);
+            for class in [DeviceClass::Desktop, DeviceClass::Handheld] {
+                values.extend(s.default.value(class));
+            }
+            for value in values {
+                let text = render(&value);
+                assert_eq!(
+                    parse(s, &text),
+                    Ok(value),
+                    "{} does not read back {text:?}",
+                    s.key
+                );
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@
 //! vault, one process per command, so a command that only works inside one
 //! process — undo is the obvious one — fails here.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -323,12 +324,33 @@ fn a_saved_view_is_recalled_by_name_and_preferences_round_trip() {
 fn the_daily_reports_run_on_a_fresh_vault() {
     let dir = tempfile::tempdir().unwrap();
     let v = dir.path();
-    ok(v, &["capture", "Pay rent ^today"]);
+    let rent = first_id(&ok(v, &["capture", "Pay rent ^today"]));
     assert!(ok(v, &["brief", "morning"]).contains("To triage"));
     assert!(ok(v, &["brief", "evening"]).contains("Still open today"));
-    ok(v, &["review", "daily"]);
+    assert_eq!(
+        ok(v, &["review", "daily"]),
+        format!(
+            "Captured since yesterday\n  Nothing new in the Inbox.\n\
+             Today's plan\n  {rent}  Pay rent\n\
+             Blocked\n  Nothing in today's plan is blocked.\n"
+        )
+    );
     assert!(ok(v, &["review", "save", "a calm week"]).starts_with("rvw_"));
-    ok(v, &["reminders", "plan"]);
+
+    // Two hours from now is inside the plan's 24-hour horizon at any hour of
+    // the day, which "tomorrow 9am" is not. The all-day task sets no reminder.
+    let soon = first_id(&ok(v, &["capture", "Call the bank ^+2h"]));
+    let plan = ok(v, &["reminders", "plan"]);
+    let row = plan
+        .lines()
+        .find(|l| l.contains(&soon))
+        .unwrap_or_else(|| panic!("the reminder is planned: {plan}"));
+    assert!(
+        row.contains("task") && row.contains("Call the bank"),
+        "{row}"
+    );
+    assert!(!plan.contains(&rent), "{plan}");
+    assert!(plan.contains("evening_plan"), "{plan}");
 }
 
 /// Every kind of the catalog is listed with its state; a kind is turned off
@@ -490,6 +512,499 @@ fn every_query_command_prints_one_json_document_with_the_documented_fields() {
         "default"
     );
     assert_eq!(json_of(v, &["brief", "evening"])["brief"], "evening");
+}
+
+/// `docs/07-clients/overview.md`, its lines joined, so a group the prose wraps
+/// reads as the one written here.
+fn json_contract() -> String {
+    include_str!("../../../docs/07-clients/overview.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The names at the top level of a documented `{a, b: {c}, d: [{e}]}`.
+fn documented_keys(group: &str) -> BTreeSet<String> {
+    let inner = group
+        .strip_prefix('{')
+        .and_then(|g| g.strip_suffix('}'))
+        .unwrap_or_else(|| panic!("not a group: {group}"));
+    let mut entries = vec![String::new()];
+    let mut depth = 0;
+    for c in inner.chars() {
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            ',' if depth == 0 => entries.push(String::new()),
+            c if depth == 0 => entries.last_mut().unwrap().push(c),
+            _ => {}
+        }
+    }
+    entries
+        .iter()
+        .map(|e| e.split(':').next().unwrap().trim().to_owned())
+        .collect()
+}
+
+const TASK: &str = "{id, title, state, stream, contexts, priority, energy, estimate_s, \
+                    scheduled_at, due_at, target_at, completed_at, deferred_count, blocked_by, \
+                    note, updated_at_ms, sort_order, cancel_reason, late_acknowledged_at_ms, \
+                    routine, hard_constraint_violated}";
+const TIME: &str = "{kind, value, zone, at_ms}";
+const LATENESS: &str = "{state, since_ms}";
+const BLOCK: &str = "{id, title, stream, starts_at, ends_at, tasks}";
+
+/// Stand-ins in [`JSON_OBJECTS`] for the ids [`vault_for_the_json_table`]
+/// returns.
+const FIRST: &str = "<first>";
+const SECOND: &str = "<second>";
+
+/// The fixed-offset zone in which it is now between 12:00 and 12:59.
+///
+/// The positions in [`JSON_OBJECTS`] hold only by day: before the planner day
+/// turns over, `upcoming` still starts on yesterday and `today` lists no
+/// planned task first. The binary reads the real clock, so the fixture moves
+/// the reader to midday rather than the clock.
+fn zone_where_it_is_midday() -> String {
+    let hour = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .hour();
+    let hours_east = 12 - hour;
+    // The tzdb's `Etc` names have the POSIX sign: `Etc/GMT-3` is three hours east.
+    if hours_east > 0 {
+        format!("Etc/GMT-{hours_east}")
+    } else {
+        format!("Etc/GMT+{}", -hours_east)
+    }
+}
+
+/// A vault in which every object of [`JSON_OBJECTS`] exists, and the ids of
+/// two tasks in one stream.
+fn vault_for_the_json_table(v: &Path) -> (String, String) {
+    ok(v, &["tz", "set", &zone_where_it_is_midday()]);
+    ok(v, &["streams", "create", "Home"]);
+    ok(v, &["contexts", "create", "errands"]);
+    for day in ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] {
+        let key = format!("day_schedule.weekday.{day}");
+        ok(v, &["prefs", "set", &key, "07:00-23:00"]);
+    }
+    let first = first_id(&ok(v, &["capture", "Call the bank ^today #home @errands"]));
+    let second = first_id(&ok(v, &["capture", "Pay the bank #home"]));
+    let late = first_id(&ok(v, &["capture", "File the taxes"]));
+    ok(v, &["edit", &late, "due:2020-01-01"]);
+    ok(v, &["capture", "Find the passport"]);
+    ok(v, &["capture", "Phone home ^+2h"]);
+    ok(v, &["capture", "Fly out ^tomorrow 9am"]);
+    ok(
+        v,
+        &["routines", "create", "Stretch", "--rule", "FREQ=DAILY"],
+    );
+    ok(
+        v,
+        &[
+            "block",
+            "create",
+            "--from",
+            "tomorrow 9am",
+            "--for",
+            "1h",
+            "--title",
+            "Focus",
+        ],
+    );
+    ok(v, &["views", "save", "papers", "search", "--query", "bank"]);
+    ok(v, &["views", "save", "loose", "inbox"]);
+    let file = v.join("lease.txt");
+    std::fs::write(&file, b"the lease").unwrap();
+    ok(v, &["attachment", "add", &first, file.to_str().unwrap()]);
+    (first, second)
+}
+
+/// The command, where in its document, the group the page gives that object,
+/// and the keys the page adds to the group in words.
+type JsonObject = (
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+);
+
+const PLAIN: &[&str] = &[];
+const WITH_LATENESS: &[&str] = &["lateness"];
+
+const JSON_OBJECTS: &[JsonObject] = &[
+    (
+        &["today"],
+        "/0",
+        TASK,
+        &["today_group", "deadline", "lateness"],
+    ),
+    (&["today"], "/0/scheduled_at", TIME, PLAIN),
+    (&["today"], "/0/lateness", LATENESS, PLAIN),
+    (&["inbox"], "/0", TASK, PLAIN),
+    (&["stream", "Home"], "/0", TASK, PLAIN),
+    (&["context", "errands"], "/0", TASK, PLAIN),
+    (&["views", "apply", "loose"], "/0", TASK, PLAIN),
+    (&["move", FIRST, "after", SECOND], "/0", TASK, PLAIN),
+    (&["show", FIRST], "", TASK, WITH_LATENESS),
+    (&["triage"], "/0", TASK, WITH_LATENESS),
+    (&["triage", "list"], "/0", TASK, WITH_LATENESS),
+    (
+        &["search", "bank"],
+        "",
+        "{canonical, notices: [{code, start, end, detail}], groups: [{kind, total, hits: \
+             [{id, opens, title, snippet, task}]}]}",
+        PLAIN,
+    ),
+    (
+        &["search", "bank"],
+        "/groups/0",
+        "{kind, total, hits: [{id, opens, title, snippet, task}]}",
+        PLAIN,
+    ),
+    (
+        &["search", "bank"],
+        "/groups/0/hits/0",
+        "{id, opens, title, snippet, task}",
+        PLAIN,
+    ),
+    (
+        &["search", "bank"],
+        "/groups/0/hits/0/title",
+        "{text, ranges}",
+        PLAIN,
+    ),
+    (&["search", "bank"], "/groups/0/hits/0/task", TASK, PLAIN),
+    (
+        &["search", "stream:nosuch bank"],
+        "/notices/0",
+        "{code, start, end, detail}",
+        PLAIN,
+    ),
+    (
+        &["upcoming"],
+        "",
+        "{today, span_days, days: [{date, start_ms, end_ms, blocks, planned, due, targets}], \
+             no_date: [{stream, no_stream, tasks, total}]}",
+        PLAIN,
+    ),
+    (
+        &["upcoming"],
+        "/days/0",
+        "{date, start_ms, end_ms, blocks, planned, due, targets}",
+        PLAIN,
+    ),
+    (&["upcoming"], "/days/1/blocks/0", BLOCK, PLAIN),
+    (&["upcoming"], "/days/1/planned/0", TASK, PLAIN),
+    (
+        &["upcoming"],
+        "/no_date/0",
+        "{stream, no_stream, tasks, total}",
+        PLAIN,
+    ),
+    (&["next"], "/0", "{task, unblocks}", PLAIN),
+    (&["next"], "/0/task", TASK, PLAIN),
+    (
+        &["streams"],
+        "/0",
+        "{id, name, color, open_tasks, archived, paused, sort_order}",
+        PLAIN,
+    ),
+    (
+        &["contexts"],
+        "/0",
+        "{id, name, description, tasks, archived}",
+        PLAIN,
+    ),
+    (
+        &["routines"],
+        "/0",
+        "{id, title, rule, next_ms, paused, streak}",
+        PLAIN,
+    ),
+    (&["blocks", "tomorrow"], "/0", BLOCK, PLAIN),
+    (&["blocks", "tomorrow"], "/0/starts_at", TIME, PLAIN),
+    (
+        &["devices"],
+        "/0",
+        "{id, nickname, platform, this_device, revoked, read_bounded, current, \
+             admitted_after_revocation}",
+        PLAIN,
+    ),
+    (
+        &["identity"],
+        "",
+        "{account, current, rotations, this_device_is_current, holds_recovery_key, \
+             can_sponsor}",
+        PLAIN,
+    ),
+    (
+        &["attachments", FIRST],
+        "/0",
+        "{id, filename, mime_type, size_bytes, state}",
+        PLAIN,
+    ),
+    (
+        &["review"],
+        "",
+        "{window: {start_ms, end_ms}, totals: {completed, deferred, dropped, created, \
+             reopened}, streams: [{id, name, completed, deferred, untouched}], slipped: [task]}",
+        PLAIN,
+    ),
+    (&["review"], "/window", "{start_ms, end_ms}", PLAIN),
+    (
+        &["review"],
+        "/totals",
+        "{completed, deferred, dropped, created, reopened}",
+        PLAIN,
+    ),
+    (
+        &["review"],
+        "/streams/0",
+        "{id, name, completed, deferred, untouched}",
+        PLAIN,
+    ),
+    (
+        &["review", "daily"],
+        "",
+        "{since_ms, inbox, today, blocked}",
+        PLAIN,
+    ),
+    (&["review", "daily"], "/inbox/0", TASK, PLAIN),
+    (&["review", "daily"], "/today/0", TASK, PLAIN),
+    (
+        &["brief", "morning"],
+        "",
+        "{brief, headline, sections: [{id, title, tasks}]}",
+        PLAIN,
+    ),
+    (
+        &["brief", "evening"],
+        "/sections/0",
+        "{id, title, tasks}",
+        PLAIN,
+    ),
+    (
+        &["reminders", "plan"],
+        "",
+        "{enabled, zone_unknown, planned: [{identifier, fire_at_ms, kind, entity, title, \
+             body}], unscheduled: [{entity, kind, reason}], wind_down, catalog: [notification], \
+             alerts: [notification]}",
+        PLAIN,
+    ),
+    (
+        &["reminders", "plan"],
+        "/planned/0",
+        "{identifier, fire_at_ms, kind, entity, title, body}",
+        PLAIN,
+    ),
+    (
+        &["reminders", "plan"],
+        "/wind_down",
+        "{identifier, date, fire_at_ms, sleep_at_ms}",
+        PLAIN,
+    ),
+    (
+        &["reminders", "plan"],
+        "/catalog/0",
+        "{identifier, kind, fire_at_ms, deferred_from_ms, entity, device, subject, count, \
+             title, body, link, level, actions}",
+        PLAIN,
+    ),
+    (
+        &["reminders", "kinds"],
+        "/0",
+        "{kind, enabled, always, key, level, delivery, audience, actions}",
+        PLAIN,
+    ),
+    (
+        &["day-schedule"],
+        "",
+        "{date, start_ms, end_ms, window, plannable, wind_down_ms, schedule}",
+        PLAIN,
+    ),
+    (&["day-schedule"], "/window", "{wake, sleep}", PLAIN),
+    (&["day-schedule"], "/plannable", "{start_ms, end_ms}", PLAIN),
+    (
+        &["day-schedule"],
+        "/schedule",
+        r#"{weekday: {MO: window, …}, month_day: {"1": window, "-1": window, …}, date: {"2026-12-25": window \| "none", …}}"#,
+        PLAIN,
+    ),
+    (
+        &["day-schedule"],
+        "/schedule/weekday/MO",
+        "{wake, sleep}",
+        PLAIN,
+    ),
+    (
+        &["views"],
+        "/0",
+        "{id, name, view, spec, query, contexts, context_ids, streams, sort, sort_order}",
+        PLAIN,
+    ),
+    (&["prefs"], "/0", "{key, value, source, scope}", PLAIN),
+    (
+        &["prefs", "get", "week_start"],
+        "",
+        "{key, value, source, scope}",
+        PLAIN,
+    ),
+    (&["tz"], "", "{zone, source, zone_unknown}", PLAIN),
+    (
+        &["sync", "status"],
+        "",
+        "{badge, pending, known_incomplete}",
+        PLAIN,
+    ),
+];
+
+/// Every command path a row of the page's table names: each code span of its
+/// first cell, up to the first word that is an operand or an option, with
+/// `brief morning\|evening` read as both of its paths.
+fn documented_commands(section: &str) -> BTreeSet<Vec<String>> {
+    let mut commands = BTreeSet::new();
+    for line in section.lines().filter(|l| l.starts_with("| `")) {
+        let cell = line[2..].split(" | ").next().unwrap();
+        for span in cell.split('`').skip(1).step_by(2) {
+            let is_word =
+                |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+            let mut paths = vec![Vec::new()];
+            for token in span.split_whitespace() {
+                let words: Vec<&str> = token.split("\\|").collect();
+                if !words.iter().copied().all(is_word) {
+                    break;
+                }
+                paths = paths
+                    .iter()
+                    .flat_map(|path: &Vec<String>| {
+                        words.iter().map(|word| {
+                            let mut path = path.clone();
+                            path.push((*word).to_owned());
+                            path
+                        })
+                    })
+                    .collect();
+            }
+            commands.extend(paths);
+        }
+    }
+    commands
+}
+
+/// The page path `args` runs: the longest one it starts with, word by word, so
+/// `review daily` never counts for `review`, nor `streams` for `stream`.
+fn page_command_of<'a>(
+    args: &[&str],
+    documented: &'a BTreeSet<Vec<String>>,
+) -> Option<&'a Vec<String>> {
+    documented
+        .iter()
+        .filter(|path| path.len() <= args.len() && path.iter().zip(args).all(|(p, a)| p == a))
+        .max_by_key(|path| path.len())
+}
+
+#[test]
+fn a_row_of_the_page_is_read_as_every_command_it_names() {
+    let section = "| Command | Document |\n\
+         | `inbox`, `views apply` (task views) | array of `tasks` |\n\
+         | `move <id>... before\\|after <id>` | a \\| b |\n\
+         | `brief morning\\|evening` | `{brief}` |\n\
+         | `blocks [day\\|week]` | array |\n\
+         Prose with `not a row`.\n";
+    let paths: Vec<&str> = vec![
+        "blocks",
+        "brief evening",
+        "brief morning",
+        "inbox",
+        "move",
+        "views apply",
+    ];
+    let read: Vec<String> = documented_commands(section)
+        .iter()
+        .map(|path| path.join(" "))
+        .collect();
+    assert_eq!(read, paths);
+
+    let documented = documented_commands("| `review`, `review daily`, `streams` | x |\n");
+    let of = |args: &[&str]| page_command_of(args, &documented).map(|path| path.join(" "));
+    assert_eq!(of(&["review", "daily"]).as_deref(), Some("review daily"));
+    assert_eq!(of(&["review"]).as_deref(), Some("review"));
+    assert_eq!(of(&["stream", "Home"]), None);
+}
+
+/// §JSON output is a contract: a name is added, never renamed or removed, and
+/// every name is documented. So each object a query prints has exactly the
+/// keys the page gives it, and each group the table holds is quoted from the
+/// page, so neither can move without the other.
+///
+/// Every command path of the page's table must have a row, and every row a
+/// command path on the page. `conflicts` is the one whose objects need a second
+/// device to exist, so it is only read empty.
+#[test]
+fn every_json_object_has_exactly_the_documented_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let (first, second) = vault_for_the_json_table(v);
+
+    let contract = json_contract();
+    for (args, pointer, group, extra) in JSON_OBJECTS {
+        let args: Vec<&str> = args
+            .iter()
+            .map(|a| match *a {
+                FIRST => first.as_str(),
+                SECOND => second.as_str(),
+                a => a,
+            })
+            .collect();
+        let args = args.as_slice();
+        let command = args.join(" ");
+        assert!(
+            contract.contains(group),
+            "`{command}`: the page does not document {group}"
+        );
+        let doc = json_of(v, args);
+        let object = doc
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| panic!("`{command}` has no object at {pointer:?}: {doc}"));
+        let printed: BTreeSet<String> = object.keys().cloned().collect();
+        let mut documented = documented_keys(group);
+        for key in *extra {
+            assert!(
+                contract.contains(&format!("`{key}`")),
+                "{key} is undocumented"
+            );
+            documented.insert((*key).to_owned());
+        }
+        assert_eq!(printed, documented, "`{command}` at {pointer:?}");
+    }
+    assert_eq!(json_of(v, &["conflicts"]), serde_json::json!([]));
+
+    // A command the page's table gains cannot go unpinned.
+    let page = include_str!("../../../docs/07-clients/overview.md");
+    let section = page
+        .split("### JSON output")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("the page has a JSON output section");
+    let documented = documented_commands(section);
+    let pinned: BTreeSet<&Vec<String>> = JSON_OBJECTS
+        .iter()
+        .map(|(args, ..)| {
+            page_command_of(args, &documented)
+                .unwrap_or_else(|| panic!("the page does not document `{}`", args.join(" ")))
+        })
+        .collect();
+    let unpinned: Vec<String> = documented
+        .iter()
+        .filter(|path| !pinned.contains(path) && path.join(" ") != "conflicts")
+        .map(|path| path.join(" "))
+        .collect();
+    assert!(
+        unpinned.is_empty(),
+        "the page documents commands with no row here: {unpinned:?}"
+    );
 }
 
 #[test]
