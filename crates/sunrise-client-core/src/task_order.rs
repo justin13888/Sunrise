@@ -195,6 +195,7 @@ pub fn import_list_order(stored: &[EntityRef], list: &[OrderedRow]) -> Option<Ta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use sunrise_id::EntityKind;
 
     fn id(n: u8) -> EntityRef {
@@ -349,5 +350,139 @@ mod tests {
             Command::MoveTasks { ids, after: Some(a), before: None }
                 if ids == vec![id(1), id(2)] && a == id(3)
         ));
+    }
+
+    /// A list as it is shown in manual order: placed rows by key, ties
+    /// included, then unplaced ones. Ids run from 1, so the highest few a
+    /// [`scenario`] names are in no list.
+    fn shown_list() -> impl Strategy<Value = Vec<OrderedRow>> {
+        (
+            proptest::collection::vec(proptest::sample::select(vec!["D", "G", "N"]), 0..=6),
+            0usize..=4,
+        )
+            .prop_map(|(mut keys, unplaced)| {
+                keys.sort_unstable();
+                keys.into_iter()
+                    .map(Some)
+                    .chain(std::iter::repeat_n(None, unplaced))
+                    .zip(1u8..)
+                    .map(|(key, n)| row(n, key))
+                    .collect()
+            })
+    }
+
+    /// A list, what is dragged, named in any order, and where it lands.
+    fn scenario() -> impl Strategy<Value = (Vec<OrderedRow>, Vec<EntityRef>, Drop)> {
+        let drop = prop_oneof![
+            Just(Drop::Top),
+            Just(Drop::Bottom),
+            (1u8..=12).prop_map(|n| Drop::Before(id(n))),
+            (1u8..=12).prop_map(|n| Drop::After(id(n))),
+        ];
+        (
+            shown_list(),
+            proptest::collection::vec((1u8..=12).prop_map(id), 0..5),
+            drop,
+        )
+    }
+
+    /// The rows left above the drop and those left below it, once the dragged
+    /// rows are lifted out; `None` for a target that is dragged or absent.
+    fn split_at_drop<'a>(
+        rest: &[&'a OrderedRow],
+        to: Drop,
+    ) -> Option<(Vec<&'a OrderedRow>, Vec<&'a OrderedRow>)> {
+        let at = match to {
+            Drop::Top => 0,
+            Drop::Bottom => rest.len(),
+            Drop::Before(t) => rest.iter().position(|r| r.id == t)?,
+            Drop::After(t) => rest.iter().position(|r| r.id == t)? + 1,
+        };
+        let (above, below) = rest.split_at(at);
+        Some((above.to_vec(), below.to_vec()))
+    }
+
+    fn ids_of(rows: &[&OrderedRow]) -> Vec<EntityRef> {
+        rows.iter().map(|r| r.id).collect()
+    }
+
+    proptest! {
+        // `Direct`, the shape docs/10-cross-cutting/testing.md section 2 names.
+        #![proptest_config(ProptestConfig {
+            cases: 2048,
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::Direct(
+                    "proptest-regressions/task_order.txt",
+                ),
+            )),
+            ..ProptestConfig::default()
+        })]
+
+        /// The module's rules, over the whole input space: a drop that names
+        /// no rows, no landing or no change is no move; otherwise a run keeps
+        /// its order, unplaced rows above the drop join ahead of it, tied
+        /// neighbours join behind it until bounded, and the keys it lands
+        /// between leave room for it.
+        #[test]
+        fn a_drop_obeys_the_rules((list, moved, to) in scenario()) {
+            let plan = plan_move(&list, &moved, to);
+            let dragged: Vec<&OrderedRow> =
+                list.iter().filter(|r| moved.contains(&r.id)).collect();
+            let rest: Vec<&OrderedRow> = list.iter().filter(|r| !moved.contains(&r.id)).collect();
+            let Some((above, below)) = split_at_drop(&rest, to) else {
+                prop_assert_eq!(plan, None, "a target dragged or absent");
+                return Ok(());
+            };
+            let intended: Vec<EntityRef> = ids_of(&above)
+                .into_iter()
+                .chain(ids_of(&dragged))
+                .chain(ids_of(&below))
+                .collect();
+            let shown: Vec<EntityRef> = list.iter().map(|r| r.id).collect();
+            if dragged.is_empty() || intended == shown {
+                prop_assert_eq!(plan, None, "nothing dragged or nothing changes");
+                return Ok(());
+            }
+            prop_assert!(plan.is_some(), "a drop that changes the list is a move");
+            let plan = plan.expect("asserted above");
+
+            // Everything placed above the drop stays, and the last of it
+            // bounds the keys from below.
+            let (placed, unplaced): (Vec<&OrderedRow>, Vec<&OrderedRow>) =
+                above.iter().copied().partition(|r| r.sort_order.is_some());
+            prop_assert_eq!(plan.after, placed.last().map(|r| r.id));
+
+            // Ahead: the unplaced rows above the drop as shown, then the run
+            // in the order the list holds it.
+            let head: Vec<EntityRef> = ids_of(&unplaced).into_iter().chain(ids_of(&dragged)).collect();
+            prop_assert!(plan.ids.starts_with(&head), "{:?} then {:?}", plan.ids, head);
+
+            // Behind: the rows directly below the drop, each placed and not
+            // above the floor, which admit no key between.
+            let joined = plan.ids.len() - head.len();
+            prop_assert!(joined <= below.len());
+            prop_assert_eq!(plan.ids[head.len()..].to_vec(), ids_of(&below[..joined]));
+            let floor = placed.last().and_then(|r| r.sort_order.as_deref());
+            for row in &below[..joined] {
+                let key = row.sort_order.as_deref();
+                prop_assert!(key.is_some() && floor.is_some() && key <= floor, "{row:?} joined");
+            }
+
+            // What stops the walk: a greater key bounds it, an unplaced row or
+            // the end of the list leaves it unbounded.
+            let next = below.get(joined).filter(|r| r.sort_order.is_some());
+            prop_assert_eq!(plan.before, next.map(|r| r.id));
+            let bound = next.and_then(|r| r.sort_order.as_deref());
+            prop_assert!(floor.is_none() || bound.is_none() || bound > floor, "{bound:?} over {floor:?}");
+
+            // The move makes the arrangement the drop asked for.
+            let arranged: Vec<EntityRef> = ids_of(&placed)
+                .into_iter()
+                .chain(plan.ids.iter().copied())
+                .chain(ids_of(&below[joined..]))
+                .collect();
+            prop_assert_eq!(arranged, intended);
+        }
     }
 }

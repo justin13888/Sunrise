@@ -160,6 +160,7 @@ pub fn parse_relay_url(input: &str) -> Result<RelayOrigin, RelayUrlIssue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// The shared cases: `{"input": …, "origin": …}` for an accepted URL and
     /// `{"input": …, "issue": …}` for a refused one. The web client's
@@ -222,5 +223,78 @@ mod tests {
             parse_relay_url(&format!("https://{host}a.example")),
             Err(RelayUrlIssue::TooLong)
         );
+    }
+
+    /// A label over ASCII and characters IDNA maps or encodes, up to 16 of
+    /// them, so a run of these can cross the bound once serialised.
+    fn label() -> impl Strategy<Value = String> {
+        proptest::collection::vec(
+            proptest::sample::select(vec!["a", "Z", "0", "-", "ü", "ß", "東", "ａ", "Ж", "🙂"]),
+            1..16,
+        )
+        .prop_map(|parts| parts.concat())
+    }
+
+    /// A URL of every spelling the rule accepts: any case of scheme, a domain,
+    /// a loopback host or address, any port, a trailing `/`, stray whitespace.
+    fn spelling() -> impl Strategy<Value = String> {
+        let host = prop_oneof![
+            proptest::collection::vec(label(), 1..32).prop_map(|labels| labels.join(".")),
+            proptest::sample::select(vec![
+                "localhost",
+                "LOCALHOST",
+                "127.0.0.1",
+                "127.1.2.3",
+                "[::1]",
+                "[0:0:0:0:0:0:0:1]",
+            ])
+            .prop_map(str::to_owned),
+        ];
+        (
+            proptest::sample::select(vec!["https", "HTTPS", "http", "Http"]),
+            host,
+            proptest::option::of(any::<u16>()),
+            proptest::sample::select(vec!["", "/"]),
+            proptest::sample::select(vec!["", " ", "\t\n"]),
+        )
+            .prop_map(|(scheme, host, port, slash, space)| {
+                let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+                format!("{space}{scheme}://{host}{port}{slash}{space}")
+            })
+    }
+
+    proptest! {
+        // `Direct`, the shape docs/10-cross-cutting/testing.md section 2 names.
+        #![proptest_config(ProptestConfig {
+            cases: 2048,
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::Direct(
+                    "proptest-regressions/relay_url.txt",
+                ),
+            )),
+            ..ProptestConfig::default()
+        })]
+
+        /// What is accepted is at most the bound as it comes back, and is
+        /// already its own normal form: reading it again changes nothing, so
+        /// two clients that exchange an origin hold the same one.
+        #[test]
+        fn an_accepted_origin_is_bounded_and_its_own_normal_form(input in spelling()) {
+            if let Ok(origin) = parse_relay_url(&input) {
+                prop_assert!(origin.as_str().len() <= MAX_RELAY_URL_LEN, "{input:?}: {origin}");
+                prop_assert_eq!(parse_relay_url(origin.as_str()), Ok(origin.clone()), "{:?}", input);
+            }
+        }
+
+        /// The law above is not met by refusing everything: a plain host is
+        /// always accepted, and so is a loopback address on any port.
+        #[test]
+        fn a_plain_host_is_accepted(host in "[a-z]{1,20}", port in 1u16..) {
+            let origin = format!("https://{host}.example:{port}");
+            prop_assert!(parse_relay_url(&origin).is_ok(), "{origin}");
+            let loopback = format!("http://127.0.0.1:{port}");
+            prop_assert!(parse_relay_url(&loopback).is_ok(), "{loopback}");
+        }
     }
 }
