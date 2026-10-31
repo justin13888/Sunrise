@@ -830,7 +830,7 @@ What is wired today, in one place:
 | Check | Where | Runs on |
 |---|---|---|
 | Nine fuzz targets, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
-| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
+| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
 | No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
 | External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
 
