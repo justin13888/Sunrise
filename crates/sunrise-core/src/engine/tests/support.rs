@@ -1656,3 +1656,111 @@ pub(super) fn relay(from: &Db, to: &Engine, to_db: &mut Db) {
         }
     }
 }
+
+/// A helper for the four tests below: the device list row for one id.
+pub(super) fn device_list_row(e: &Engine, db: &Db, id: &[u8; 16]) -> crate::queries::DeviceRow {
+    let QueryResult::Devices(rows) = e.query(db, Query::DeviceList).unwrap() else {
+        panic!("expected Devices")
+    };
+    rows.into_iter()
+        .find(|r| &r.device_id == id)
+        .expect("the device is listed")
+}
+
+/// A made-up device id no engine owns, distinct for each `n`.
+pub(super) fn made_up_device(n: u64) -> [u8; 16] {
+    let mut id = [0xF0u8; 16];
+    id[8..].copy_from_slice(&n.to_be_bytes());
+    id
+}
+
+/// Emit, as `sender`, a genuine sealed and signed op on `stream` whose inner
+/// CBOR is `inner`, and return its envelope. This is how a newer build's op
+/// family looks to this one: every envelope check passes, and only the
+/// payload is foreign.
+pub(super) fn emit_raw_inner(
+    sender: &Engine,
+    db: &mut Db,
+    stream: &[u8; 16],
+    inner: &[u8],
+) -> Vec<u8> {
+    let device = sender.keychain.device_id();
+    // Sealed as the newer build that wrote it would have, whatever this
+    // vault requires: what is under test is the receiver.
+    let op_id = super::features::sealing_as_peer(|| {
+        db.with_tx(|tx| {
+            let seq = sender.next_seq_tx(tx, stream)?;
+            let op_id = remote_op_id(stream, &device, seq);
+            sender.ops_insert(
+                tx,
+                &op_id,
+                stream,
+                seq,
+                sender.hlc.send(),
+                inner,
+                "future.kind",
+                "future",
+                None,
+                Some(T0),
+                None,
+                T0,
+                &[],
+            )?;
+            Ok(op_id)
+        })
+    })
+    .unwrap();
+    env_bytes(db, &op_id)
+}
+
+pub(super) fn future_kind_inner(name: &str) -> Vec<u8> {
+    use ciborium::value::Value;
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(
+        &Value::Map(vec![(
+            Value::Text(name.into()),
+            Value::Map(vec![(Value::Text("title".into()), Value::Text("x".into()))]),
+        )]),
+        &mut buf,
+    )
+    .unwrap();
+    buf
+}
+
+/// `(reason, kind, parked_under_doc_schema_v)` of every parked row.
+pub(super) fn parked_rows(db: &Db) -> Vec<(String, String, i64)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT reason, kind, parked_under_doc_schema_v FROM parked_ops")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// `(inner_kind, applied_at)` of the `ops` row for `op_id`.
+pub(super) fn op_row(db: &Db, op_id: &[u8; 16]) -> (String, Option<i64>) {
+    db.conn()
+        .query_row(
+            "SELECT inner_kind, applied_at FROM ops WHERE op_id = ?",
+            params![&op_id[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// Set a task's state to one this build does not know.
+pub(super) fn set_unknown_state(e: &Engine, db: &mut Db, task: EntityRef, raw: &str) {
+    e.apply(
+        db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw(raw)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+}

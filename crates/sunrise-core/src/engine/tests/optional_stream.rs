@@ -1092,3 +1092,87 @@ proptest! {
         p.eb.assert_rebuild_identity(&p.dbb);
     }
 }
+
+/// A pre-0017 op naming the Inbox by its old id — sixteen zero bytes, which
+/// are also the vault-meta stream — materializes into the Inbox, not into a
+/// `streams` row for the one stream that must never have one.
+///
+/// Migration 0017 rewrites exactly these rows on a vault that upgrades. It
+/// cannot rewrite the signed envelopes, so a device paired *after* the
+/// upgrade replays that history and is the only other place the same rows
+/// can be born.
+#[test]
+fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    legacy_peer(&dba);
+    let mut dbb = db_root(ROOT);
+    legacy_peer(&dbb);
+    trust(&eb, &mut dbb, &ea);
+
+    let res = ea
+        .apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "captured before the split".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+    // Rewrite the op's payload to name the Inbox the way a pre-0017 build
+    // did, and re-seal it: the signature covers the payload, so a legacy op
+    // has to be built rather than patched.
+    let env = env_bytes(&dba, &res.op_id);
+    let mut inner = decode_inner_op(&ea.keychain.open_op(&env).unwrap()).unwrap();
+    let InnerOp::TaskCreate(task) = &mut inner else {
+        panic!("expected a task.create");
+    };
+    task.stream_id = Some(EntityRef::new(EntityKind::Stream, META_STREAM));
+    let meta_key = dba
+        .with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &META_STREAM))
+        .unwrap()
+        .expect("A holds the vault-meta key");
+    let legacy_env = ea
+        .keychain
+        .seal_op_at(
+            META_STREAM,
+            // A seq of its own in the vault-meta space, which is where a
+            // pre-0017 Inbox op was logged: the two shared an id.
+            900,
+            ea.hlc.send(),
+            &encode_inner_op(&inner).unwrap(),
+            ea.rng.as_ref(),
+            meta_key.0,
+            &meta_key.1,
+        )
+        .unwrap();
+
+    eb.apply_remote(&mut dbb, &legacy_env)
+        .expect("a legacy Inbox op still applies");
+    let stored: Option<Vec<u8>> = dbb
+        .conn()
+        .query_row(
+            "SELECT stream_id FROM tasks WHERE id = ?",
+            params![&res.entity.bytes()[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, None,
+        "the task belongs to no stream, where 0017 and then 0044 put it locally"
+    );
+    let meta_rows: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM streams WHERE stream_id = ?",
+            params![&META_STREAM[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        meta_rows, 0,
+        "and the vault-meta stream still has no `streams` row"
+    );
+}

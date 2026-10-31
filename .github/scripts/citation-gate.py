@@ -188,11 +188,11 @@ Two rules keep line-bearing citations honest where no check reaches. Neither
 is enforced; both are written here because this docstring is where the
 citation convention lives.
 
-* **`crates/sunrise-core/src/engine/tests/mod.rs` is append-only.** Documents cite
-  its tests by line, and a unit inserted among them moves every citation below
-  it. A new test goes below every existing one, never between two. The same
-  holds for any file a document cites densely by line: add at the end, or add
-  a `#symbol` to the citations the insertion moves.
+* **`crates/sunrise-core/src/engine/tests/revocation_cursor.rs` is append-only.**
+  Documents cite its tests by line, and a unit inserted among them moves every
+  citation below it. A new test goes below every existing one, never between
+  two. The same holds for any file a document cites densely by line: add at the
+  end, or add a `#symbol` to the citations the insertion moves.
 * **Never reflow unrelated prose to hold a line where a citation points.** When
   an edit moves an item a citation names, repoint the citation, or drop its
   line and keep the `#symbol`. Reflowing lines above the item for no editorial
