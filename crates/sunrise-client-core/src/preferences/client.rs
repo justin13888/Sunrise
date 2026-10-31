@@ -178,7 +178,10 @@ mod tests {
             read_client_settings(dir.path()).unwrap().focus_scope(),
             None
         );
-        assert!(!dir.path().join("client-settings.json.tmp").exists());
+        assert_eq!(
+            crate::preferences::tests::entries(dir.path()),
+            [CLIENT_SETTINGS_FILE]
+        );
     }
 
     #[test]
