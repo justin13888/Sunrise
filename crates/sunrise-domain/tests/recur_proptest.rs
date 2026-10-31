@@ -160,6 +160,57 @@ fn phrase_strategy() -> impl Strategy<Value = String> {
     ]
 }
 
+/// Pieces the recurrence grammar gives meaning to, values at its limits, and
+/// characters wider than a byte.
+const PHRASE_FRAGMENTS: &[&str] = &[
+    "every",
+    "on",
+    "the",
+    "day",
+    "days",
+    "weekly",
+    "months",
+    "yearly",
+    "weekdays",
+    "weekends",
+    "last",
+    "mon",
+    "friday",
+    "1",
+    "15th",
+    "0",
+    "32",
+    "-1",
+    "4294967296",
+    "x",
+    "x0",
+    "x12",
+    ",",
+    "FREQ=",
+    "freq=DAILY",
+    "RRULE:",
+    "rrule:",
+    "INTERVAL=",
+    "COUNT=",
+    "BYDAY=",
+    ";",
+    "\u{e9}",
+    "\u{65e5}",
+    "\u{1f600}",
+];
+
+/// Phrases the grammar mostly cannot read, built from what it can.
+fn phrase_input() -> impl Strategy<Value = String> {
+    proptest::collection::vec(
+        prop_oneof![
+            4 => proptest::sample::select(PHRASE_FRAGMENTS).prop_map(str::to_owned),
+            1 => any::<char>().prop_map(String::from),
+        ],
+        0..12,
+    )
+    .prop_map(|parts| parts.join(" "))
+}
+
 proptest! {
     // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
     // holds a `lib.rs` or `main.rs`, so the default warns and drops the
@@ -203,5 +254,18 @@ proptest! {
         let reparsed = RRule::parse(&body)
             .map_err(|e| TestCaseError::fail(format!("{phrase:?} -> {body}: {e}")))?;
         prop_assert_eq!(reparsed, rule, "{:?} -> {}", phrase, body);
+    }
+
+    /// Every string is a rule or a refusal, never a panic.
+    #[test]
+    fn any_string_is_read_without_panicking(s in any::<String>()) {
+        let _ = parse_recurrence(&s);
+    }
+
+    /// Every string built from the grammar's own pieces is a rule or a refusal,
+    /// never a panic.
+    #[test]
+    fn phrase_input_is_read_without_panicking(s in phrase_input()) {
+        let _ = parse_recurrence(&s);
     }
 }
