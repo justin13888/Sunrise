@@ -949,25 +949,16 @@ impl Core {
             QueryResult::Contexts(rows) => rows,
             _ => Vec::new(),
         };
-        let mut stream_refs: Vec<NamedRef<'_>> = streams
-            .iter()
-            .filter(|s| !s.archived)
-            .map(|s| NamedRef {
-                id: s.id,
-                name: s.name.as_str(),
-            })
-            .collect();
-        // `#inbox` still names "no stream", as it named the Inbox sentinel
-        // stream before ADR-0046, unless a real stream is called that.
-        if !stream_refs
-            .iter()
-            .any(|r| r.name.eq_ignore_ascii_case("inbox"))
-        {
-            stream_refs.push(NamedRef {
-                id: sunrise_domain::inbox_stream_ref(),
-                name: "Inbox",
-            });
-        }
+        let stream_refs = sunrise_domain::with_inbox_alias(
+            streams
+                .iter()
+                .filter(|s| !s.archived)
+                .map(|s| NamedRef {
+                    id: s.id,
+                    name: s.name.as_str(),
+                })
+                .collect(),
+        );
         let context_refs: Vec<NamedRef<'_>> = contexts
             .iter()
             .filter(|c| !c.archived)
