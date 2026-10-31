@@ -255,10 +255,11 @@ what `source` and `external_id` serve. Not built; ranked on the roadmap
 
 Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
 per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
-OR-set; `exceptions` is a map of registers, one per occurrence key. That is a
-`core.field_ops` vault; a legacy vault merges the whole Block as one full-state
-unit, so a concurrent bind on one device and unbind on another resolves by
-timestamp there.
+OR-set; `exceptions` is a map of registers, one per occurrence key. A
+`core.field_ops` vault merges the scalar fields that exist and `tasks` this way;
+`exceptions` does not exist yet (§Fields, Status in the tree). A legacy vault
+merges the whole Block as one full-state unit, so a concurrent bind on one
+device and unbind on another resolves by timestamp there.
 
 The `block_tasks` projection is the sole writer of the binding relation and
 `Task.blocks` is derived from it, so the two never disagree — see §Symmetry

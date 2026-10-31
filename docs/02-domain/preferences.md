@@ -237,8 +237,11 @@ Not built yet:
   `AppSettings` and `NotificationPreferences` still hold their values in
   `UserDefaults`, and the one-time migration out of it has not run. That is
   [#489](https://github.com/justin13888/Sunrise/issues/489).
-- **The notification keys have no core reader yet.** They reach the reminder
-  planner with [#347](https://github.com/justin13888/Sunrise/issues/347). The
+- **The reminder planner reads no notification key yet.** The keys reach it
+  with [#347](https://github.com/justin13888/Sunrise/issues/347). One key
+  already has an engine reader: `notifications.timezone_changed.enabled`, read
+  when a zone change is assessed
+  (`crates/sunrise-core/src/engine/query.rs#time_zone_impact`). The
   attachment cache resolves the two attachment keys when it enforces its limit
   and when the fetch drain decides what to fetch on cellular
   (`crates/sunrise-core/src/blob_cache.rs`). The engine reads `week_start` for

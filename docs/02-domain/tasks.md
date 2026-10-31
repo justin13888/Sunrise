@@ -327,5 +327,3 @@ shape, and each gap is tracked:
   `UserDefaults` until its one-time import
   (`sunrise_client_core::task_order::import_list_order`) is wired:
   [#340](https://github.com/justin13888/Sunrise/issues/340).
-- `routine_occurrence` is an instant, not the civil key; the key is derived from
-  the task id (`crates/sunrise-domain/src/routine_gen/series.rs#occurrence_key_of`).
