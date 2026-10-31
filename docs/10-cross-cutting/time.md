@@ -12,9 +12,10 @@ and [ADR-0017](../11-adr/0017-sunrise-time-representation.md) (the four-kind
 routine anchors are no longer instants, `index_ms` is no longer a comparison
 key, and a civil time in a DST gap resolves by one stated rule.
 
-The work that brings the tree in line is tracked in [#336](https://github.com/justin13888/Sunrise/issues/336). Routines follow in
-[#331](https://github.com/justin13888/Sunrise/issues/331), constraints in [#333](https://github.com/justin13888/Sunrise/issues/333), deadlines in [#334](https://github.com/justin13888/Sunrise/issues/334), the day schedule in
-[#338](https://github.com/justin13888/Sunrise/issues/338), and blocks in [#342](https://github.com/justin13888/Sunrise/issues/342).
+The work still open against these rules: constraints in
+[#333](https://github.com/justin13888/Sunrise/issues/333), the day schedule in
+[#338](https://github.com/justin13888/Sunrise/issues/338), and blocks in
+[#342](https://github.com/justin13888/Sunrise/issues/342).
 
 ## 1. Every stored time is a `SunriseTime`
 
@@ -182,8 +183,6 @@ the OS names no zone.
 `jiff::tz::TimeZone::system()` is called in one place, `SystemClock`
 (`crates/sunrise-core/src/config.rs#system_iana_name`). `clippy.toml` forbids
 it, `TimeZone::try_system` and `Zoned::now` everywhere else (ADR-0066 §5).
-The CLI still reads the host zone at three sites under a
-`TODO(ADR-0066 §5)` allow, until it reports its zone through the core's clock.
 
 ## 3. One DST rule
 
