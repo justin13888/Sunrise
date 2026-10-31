@@ -399,19 +399,9 @@ fn stopped(result: &'static str, why: String) -> Box<dyn std::error::Error> {
 /// The bearer this vault's commands present: `SUNRISE_SYNC_TOKEN`, else a
 /// stored sign-in that has not expired.
 fn stored_bearer(vault_dir: &Path, now_ms: u64) -> Option<String> {
-    bearer_of(
-        livesync::SyncEnv::from_process_env().with_stored(&login::store_for(vault_dir), now_ms),
-    )
-}
-
-/// [`stored_bearer`]'s choice over explicit inputs, so it is tested without
-/// the process environment: the env token trimmed, if it is not blank, else
-/// the stored token as stored.
-fn bearer_of(env: livesync::SyncEnv) -> Option<String> {
-    env.token
-        .map(|t| t.trim().to_owned())
-        .filter(|t| !t.is_empty())
-        .or(env.stored_token)
+    livesync::SyncEnv::from_process_env()
+        .with_stored(&login::store_for(vault_dir), now_ms)
+        .bearer()
 }
 
 /// The bearer on the device being added, which has no vault for
@@ -537,11 +527,13 @@ mod tests {
     #[test]
     fn the_env_token_beats_a_stored_login() {
         assert_eq!(
-            bearer_of(env_with(Some("  from-env  "), Some("stored-access"))).as_deref(),
+            env_with(Some("  from-env  "), Some("stored-access"))
+                .bearer()
+                .as_deref(),
             Some("from-env")
         );
         assert_eq!(
-            bearer_of(env_with(Some("from-env"), None)).as_deref(),
+            env_with(Some("from-env"), None).bearer().as_deref(),
             Some("from-env")
         );
     }
@@ -552,29 +544,34 @@ mod tests {
     fn a_blank_env_token_falls_back_to_the_stored_login() {
         for blank in ["", "   "] {
             assert_eq!(
-                bearer_of(env_with(Some(blank), Some("stored-access"))).as_deref(),
+                env_with(Some(blank), Some("stored-access"))
+                    .bearer()
+                    .as_deref(),
                 Some("stored-access"),
                 "{blank:?}"
             );
-            assert_eq!(bearer_of(env_with(Some(blank), None)), None, "{blank:?}");
+            assert_eq!(env_with(Some(blank), None).bearer(), None, "{blank:?}");
         }
-        assert_eq!(bearer_of(env_with(None, None)), None);
+        assert_eq!(env_with(None, None).bearer(), None);
     }
 
     /// Pinned as it behaves today, which is not as
     /// [`livesync::plan_from_env`] behaves: the stored token is taken as
     /// stored, neither trimmed nor dropped when blank, where the plan drops a
-    /// blank one. A change that routes this through the plan's precedence
-    /// flips these assertions, and should mean to.
+    /// blank one. A change that cleans the stored token in
+    /// [`livesync::SyncEnv::bearer`] flips these assertions, and should mean
+    /// to.
     #[test]
     fn a_stored_token_is_taken_as_stored_even_when_blank() {
         assert_eq!(
-            bearer_of(env_with(None, Some("  stored-access  "))).as_deref(),
+            env_with(None, Some("  stored-access  "))
+                .bearer()
+                .as_deref(),
             Some("  stored-access  ")
         );
         for blank in ["", "   "] {
             assert_eq!(
-                bearer_of(env_with(None, Some(blank))).as_deref(),
+                env_with(None, Some(blank)).bearer().as_deref(),
                 Some(blank),
                 "{blank:?}"
             );

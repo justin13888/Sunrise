@@ -102,7 +102,7 @@ bytes) — the rule `validate_title` enforces.
 
 ## Hard rules
 
-- A **Task** belongs to exactly **one Stream** at a time. Tasks not yet assigned live in a special pseudo-stream `Inbox`.
+- A **Task** belongs to at most **one Stream**; with none it is in the Inbox view ([ADR-0046](../11-adr/0046-optional-stream.md)).
 - A **Task** can be tagged with **0..N Contexts**.
 - A **Block** can bind to **0..N Tasks**. Tasks can have **0..N Blocks** scheduled.
 - **Notes** are children of an entity; they cannot float free.
@@ -138,11 +138,10 @@ When sharing, only Persons with linked cryptographic identities can be granted a
 ## Relationship to CRDT shape
 
 > **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
-> ops).** The merge model of record is ADR-0044's, not built yet
-> ([#319](https://github.com/justin13888/Sunrise/issues/319)). Today the core
-> merges each entity as one unit by last-writer-wins
-> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded), and the
-> rules in force are
+> ops).** A `core.field_ops` vault merges per field, as ADR-0044 says. A legacy
+> vault merges an entity as one last-writer-wins unit
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). The rules
+> in force are
 > [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 
 Under ADR-0044 the workspace still ships **no CRDT library**. Each entity is a

@@ -105,8 +105,8 @@ pub use focus::{
 };
 pub use import::{block_uid, imported_block_id, uid_to_block, SUNRISE_UID_HOST};
 pub use inbox::{
-    home_stream, inbox_stream_ref, names_no_stream, stream_key, INBOX_STREAM_BYTES,
-    INBOX_STREAM_ID, META_DOMAIN_BYTES, PRIVATE_DOMAIN_BYTES,
+    home_stream, inbox_stream_ref, names_no_stream, stream_key, with_inbox_alias,
+    INBOX_STREAM_BYTES, INBOX_STREAM_ID, META_DOMAIN_BYTES, PRIVATE_DOMAIN_BYTES,
 };
 pub use key_domain::{
     effective_stream, Disposition, KeyDomain, StreamFate, StreamId, MAX_REHOME_CHAIN,

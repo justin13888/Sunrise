@@ -12,8 +12,7 @@ A Routine is a template plus a recurrence rule. It generates Tasks (occurrences)
 > OR-sets), [ADR-0046](../11-adr/0046-optional-stream.md) (the template's
 > stream is optional) and [ADR-0047](../11-adr/0047-deadlines-and-lateness.md)
 > (occurrences are planned with `planned_at`; nothing is changed
-> automatically). This revision also fixes the defects recorded in [#331](https://github.com/justin13888/Sunrise/issues/331);
-> §Status in the tree lists what the code does today.
+> automatically). §Status in the tree lists what the code does today.
 
 ## Fields
 
@@ -125,7 +124,8 @@ It is never derived from the resolved instant. So on a spring-forward night a
 - the materialized task's id is `occurrence_task_id(series_root, key)`;
 - a skip adds `key` to `skipped_keys`;
 - an on-time completion adds `key` to `streak_keys`;
-- the task records `routine_occurrence_key = key`.
+- the task records the occurrence's instant in `routine_occurrence`, and the key
+  is derived from the task id.
 
 A key is resolved to an instant only when something needs an instant: in the
 anchor's `tz` for a `zoned` anchor, and in the reader's zone for a `floating`
@@ -226,7 +226,7 @@ For each key in `[watermark, now + horizon]`, in the series that owns the key
    at generation: `skip` generates nothing; `merge` generates only the latest
    such key; `queue` generates every one.
 4. Otherwise create the Task from the template, with `routine_id =
-   series_root`, `routine_occurrence_key = key`, `planned_at` = the key in the
+   series_root`, `routine_occurrence` = the key's instant, `planned_at` = the key in the
    anchor's kind (`zoned` with the anchor's `tz`, or `floating`), `target_at`
    and `hard_due_at` from the template's offsets if set, and the template's
    `stream_id` resolved through `effective_stream`
@@ -470,11 +470,9 @@ To converge under concurrent completions on multiple devices:
 
 ## Status in the tree
 
-The shape above is the design of record. [#331](https://github.com/justin13888/Sunrise/issues/331)
-delivered its behaviour; what the tree still stores differently, or does not
-do yet, is below (with [#336](https://github.com/justin13888/Sunrise/issues/336)
-for the time fields and [#319](https://github.com/justin13888/Sunrise/issues/319)
-for the merge):
+The shape above is the design of record. A legacy vault merges a Routine as one
+last-writer-wins unit; a `core.field_ops` vault merges it per field. What the
+tree stores differently, or does not do yet, is below:
 
 - The anchor is still `starts_at` beside a `timezone` string rather than one
   `anchor` field, but it is a `SunriseTime` (#506): `floating` by default,

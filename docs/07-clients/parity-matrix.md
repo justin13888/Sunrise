@@ -26,7 +26,7 @@ clients in a class carry the **same marks**:
 | Desktop | macOS; Windows and Linux when built | macOS built |
 | Phone / tablet | iOS / iPadOS; Android when built | iOS built |
 | CLI | `sunrise` | built |
-| Web | browser client | not built ([#52](https://github.com/justin13888/Sunrise/issues/52), [#11](https://github.com/justin13888/Sunrise/issues/11)) |
+| Web | browser client | wasm core over OPFS, no sync ([ADR-0055](../11-adr/0055-web-wasm-core.md)) |
 
 macOS leads: a capability is firmed up on the desktop first, then moved into the
 narrower phone form factor, where iOS carries MUSTs on the same terms as macOS.
@@ -40,7 +40,7 @@ losing it.
 
 | Capability | macOS | CLI | iOS | Android | Web | TUI |
 |---|---|---|---|---|---|---|
-| | *desktop* | *CLI* | *phone / tablet* | *phone / tablet, not built* | *web, not built* | *removed* |
+| | *desktop* | *CLI* | *phone / tablet* | *phone / tablet, not built* | *web, local core, not graded* | *removed* |
 | Read/write tasks | MUST | MUST | MUST | — | — | — |
 | Streams, contexts, routines | MUST | MUST (read + capture) | MUST | — | — | — |
 | Today / Inbox / Stream views | MUST | MUST (list form) | MUST | — | — | — |

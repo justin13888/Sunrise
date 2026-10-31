@@ -17,7 +17,7 @@ ctx_01HZX2W8P6E5Q4R7Y9N1M0AGHI
 …
 ```
 
-Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`, `rvw_`). Reserved and not yet built: `prf_` for the `Preferences` singleton ([ADR-0050](../11-adr/0050-preferences-and-day-schedule.md)), `plc_` for a `Place` ([ADR-0051](../11-adr/0051-places.md)), `evt_` for an `ExternalEvent` and `iac_` for an `IntegrationAccount` ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)), and `svw_` for a `SavedView` ([#341](https://github.com/justin13888/Sunrise/issues/341)). An `evt_` id is not a random ULID: ADR-0049 derives its 16 bytes deterministically, as `BLAKE3-128("sunrise.external-event.v1" ‖ account_subject ‖ calendar_id ‖ uid ‖ recurrence_id_utc_or_empty)`, so two devices fetching the same occurrence mint the same id (the same fold §Foreign IDs describes for `.ics` Blocks). It therefore carries no time-ordered prefix.
+Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`, `rvw_`, `prf_` for the `Preferences` singleton, `svw_` for a `SavedView`). Reserved and not yet built: `plc_` for a `Place` ([ADR-0051](../11-adr/0051-places.md)), and `evt_` for an `ExternalEvent` and `iac_` for an `IntegrationAccount` ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). An `evt_` id is not a random ULID: ADR-0049 derives its 16 bytes deterministically, as `BLAKE3-128("sunrise.external-event.v1" ‖ account_subject ‖ calendar_id ‖ uid ‖ recurrence_id_utc_or_empty)`, so two devices fetching the same occurrence mint the same id (the same fold §Foreign IDs describes for `.ics` Blocks). It therefore carries no time-ordered prefix.
 
 ## Why ULID, not UUID
 
@@ -49,12 +49,11 @@ Code uses a typed reference, not raw strings, except at I/O boundaries:
 ```rust
 pub struct EntityRef { kind: EntityKind, bytes: [u8; 16] }
 
-pub enum EntityKind { Task, Stream, Context, Routine, Block, Note, Attachment, Person, Device, Identity, FocusSession, ReviewSnapshot }
+pub enum EntityKind { Task, Stream, Context, Routine, Block, Note, Attachment, Person, Device, Identity, FocusSession, ReviewSnapshot, Preferences, SavedView }
 ```
 
 Both fields are **private**; `kind()`, `bytes()` and `ulid()` read them and
-`new()` / `from_ulid()` build one. It was specified here as a tuple struct with
-positional public fields and has never been written that way.
+`new()` / `from_ulid()` build one.
 
 Parsing a string ID:
 
@@ -63,11 +62,9 @@ Parsing a string ID:
 
 ## Foreign IDs
 
-**No foreign id is stored alongside a Sunrise id today.** This section used to
-say external ids are "stored alongside the Sunrise ID, never replacing it" when
-integrating with Google Calendar or CalDAV. That was untrue, and the design
-has since moved: calendar integrations (Google Calendar, Microsoft Graph and
-CalDAV) are read-only and write `ExternalEvent`s, whose ids are derived from
+**No foreign id is stored alongside a Sunrise id today.** Calendar integrations
+(Google Calendar, Microsoft Graph and CalDAV) are read-only and write
+`ExternalEvent`s, whose ids are derived from
 the provider's own identifiers rather than stored beside them
 ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). None of
 that is built; it is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as

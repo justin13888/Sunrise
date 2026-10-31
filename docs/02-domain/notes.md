@@ -120,7 +120,7 @@ up names this file specifically. Character-level merge is the target state.
 | Platform | Editor |
 |---|---|
 | macOS | SwiftUI text editing, schema-locked to NoteBody |
-| Web (not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
+| Web (the core runs; no note editor yet) | Tiptap or ProseMirror, schema-locked to NoteBody |
 | iOS / iPadOS | The same SwiftUI `NoteBodyEditor` the Mac uses, schema-locked to NoteBody. The one deliberate difference is the checklist tick: macOS draws `.checkbox`, which iOS does not have, and iOS's default `Toggle` is a switch — so it draws a circle that fills instead, because a switch says "this setting is on" where a checklist row means "this is done" |
 | Android (not built) | Native EditText with custom toolbar |
 | `sunrise` CLI | Plain text only; no structured-body editing |

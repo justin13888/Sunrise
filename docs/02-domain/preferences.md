@@ -237,14 +237,28 @@ Not built yet:
   `AppSettings` and `NotificationPreferences` still hold their values in
   `UserDefaults`, and the one-time migration out of it has not run. That is
   [#489](https://github.com/justin13888/Sunrise/issues/489).
-- **The attachment cache is the only core reader.** It resolves the two
-  attachment keys when it enforces its limit and when the fetch drain decides
-  what to fetch on cellular (`crates/sunrise-core/src/blob_cache.rs`).
-  `week_start` reaches the week views with
-  [#336](https://github.com/justin13888/Sunrise/issues/336), the notification
-  keys reach the reminder planner with
-  [#347](https://github.com/justin13888/Sunrise/issues/347). `day_schedule`
-  is read by every planner-day view and by the wind-down plan
+- **The notification keys reach the client core's planner, not the Apple
+  client's.** `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`)
+  hands `core.reminder_plan` the settings `reminder_policy`
+  (`crates/sunrise-client-core/src/reminders/policy.rs`) builds from
+  `notifications.task_reminder.lead_s`, `notifications.quiet_hours.*` and
+  `notifications.primary_device`, and only plans when
+  `notifications.enabled` is on. `catalog_policy` (`reminders/catalog.rs`) reads
+  the catalog's toggles, leads and offsets. Two things wait on
+  [#347](https://github.com/justin13888/Sunrise/issues/347): the Apple client
+  does not call `schedule_notifications` and plans from
+  `NotificationPreferences`, and `notifications.block_start.lead_s` has no
+  reader, so the block lead is still `BLOCK_DEFAULT_LEAD_S`
+  (`crates/sunrise-domain/src/notify.rs`). One key
+  has an engine reader: `notifications.timezone_changed.enabled`, read
+  when a zone change is assessed
+  (`crates/sunrise-core/src/engine/query.rs#time_zone_impact`). The
+  attachment cache resolves the two attachment keys when it enforces its limit
+  and when the fetch drain decides what to fetch on cellular
+  (`crates/sunrise-core/src/blob_cache.rs`). The engine reads `week_start` for
+  the week's blocks, the review's week grid and search's date spans
+  (`crates/sunrise-core/src/engine/block.rs`, `engine/review.rs`,
+  `engine/search.rs`). `day_schedule` is read by every planner-day view and by the wind-down plan
   ([#338](https://github.com/justin13888/Sunrise/issues/338),
   [`day-schedule.md`](./day-schedule.md) §In the tree).
 - **No cross-version run covers the entity.** The baseline build the

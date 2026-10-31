@@ -5,8 +5,8 @@
 //! `vault_lock` module.
 //!
 //! Storage is per-device and per-account. Encryption at rest is provided
-//! by SQLCipher; the key is derived from the vault root via
-//! `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`.
+//! by SQLCipher; the key is derived from the vault root through
+//! `sunrise_crypto::derive_key` under the context `sunrise.sqlcipher_key.v1`.
 //!
 //! The schema is a migration chain under `migrations/`, listed in
 //! [`migrations::MIGRATIONS`] and applied in id order. It starts at the

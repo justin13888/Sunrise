@@ -52,8 +52,7 @@ ReviewCadence = "weekly" / "biweekly" / "monthly" / "none" / tstr
   device's global default is the floor. See
   [`../08-features/notifications.md`](../08-features/notifications.md).
 - **There is no `integrations` map**, and no `IntegrationKey` /
-  `IntegrationConfig` type. Earlier revisions declared one; nothing has ever
-  serialized it, and the field was deleted rather than deferred. Integration
+  `IntegrationConfig` type. Integration
   credentials are **account-scoped**, not Stream-scoped: they belong to
   [ADR-0025](../11-adr/0025-integration-account-entity.md)'s
   `IntegrationAccount` entity, because one Google authorization backs many
@@ -185,10 +184,6 @@ The string is bounded by a defrag rule:
 > roughly a digit per 26 insertions, without limit — and
 > `sort_order::DEFRAG_THRESHOLD_BYTES` records the bound that nothing reads
 > yet. Adding the op is a `DOC_SCHEMA_V` bump, not a breaking change.
->
-> The *write path* is implemented, and that is a change from an earlier
-> revision of this section, which claimed `sort_order` was "written and read"
-> while every construction site hardcoded `"a0"`.
 
 ## Sharing
 
@@ -203,8 +198,8 @@ See [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 Every Stream field is a per-field LWW register on `(hlc, device_id, seq)`
 ([ADR-0044](../11-adr/0044-per-field-ops.md),
 [ADR-0016](../11-adr/0016-hlc-timestamps.md)). Renaming a stream on one device
-and recolouring it on another both survive. The tree still merges the whole
-Stream as one full-state unit until [#319](https://github.com/justin13888/Sunrise/issues/319) lands.
+and recolouring it on another both survive. That is a `core.field_ops` vault; a
+legacy vault merges the whole Stream as one full-state unit.
 
 `sort_order` is worth calling out: it is one register per stream, so two
 devices moving the *same* stream concurrently produce one survivor, and two
