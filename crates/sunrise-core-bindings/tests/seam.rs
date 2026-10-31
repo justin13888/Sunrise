@@ -13,8 +13,8 @@
 //! proving deadlocks under the multi-threaded runtime `UniFFI` actually
 //! supplies.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use sunrise_core::{AttachmentFetchState, CommandResult, DeviceRow};
 use sunrise_core_bindings::dto::{
@@ -250,32 +250,49 @@ fn a_bad_id_is_rejected_by_the_custom_type_rather_than_guessed_at() {
     );
 }
 
-/// Records what the pump delivers.
-#[derive(Default)]
-struct Recorder {
-    events: Mutex<Vec<ChangeEvent>>,
-    lagged: AtomicU64,
-    closed: AtomicBool,
+/// One call the pump made on its listener.
+#[derive(Debug)]
+enum Delivery {
+    Change(ChangeEvent),
+    Lagged,
+    Closed,
 }
 
-impl ChangeListener for Recorder {
+/// Sends what the pump delivers down a channel.
+///
+/// The listener holds the only sender, and the pump holds the only reference
+/// to the listener, so the receiver reads `None` exactly when the pump's future
+/// has been dropped. That is what makes a cancel observable: nothing can be
+/// delivered after that `None`, and a pump that ignored the cancel never
+/// produces it.
+struct Forward(tokio::sync::mpsc::UnboundedSender<Delivery>);
+
+// A failed send means the test already gave up on the receiver, and panicking
+// here would panic the pump task instead of the test.
+impl ChangeListener for Forward {
     fn on_change(&self, event: ChangeEvent) {
-        if let Ok(mut g) = self.events.lock() {
-            g.push(event);
-        }
+        let _ = self.0.send(Delivery::Change(event));
     }
-    fn on_lagged(&self, skipped: u64) {
-        self.lagged.fetch_add(skipped, Ordering::SeqCst);
+    fn on_lagged(&self, _skipped: u64) {
+        let _ = self.0.send(Delivery::Lagged);
     }
     fn on_closed(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        let _ = self.0.send(Delivery::Closed);
     }
 }
 
-impl Recorder {
-    fn count(&self) -> usize {
-        self.events.lock().map(|g| g.len()).unwrap_or(0)
-    }
+/// How long a delivery may take before the test fails. Only a broken pump ever
+/// spends it: a delivery ends the wait the moment it arrives, so this is a
+/// ceiling on a failure rather than a duration a passing run sits through.
+const DELIVERY_CEILING: Duration = Duration::from_secs(60);
+
+/// The pump's next call on its listener, or `None` once the pump is gone.
+async fn next_delivery(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Delivery>,
+) -> Option<Delivery> {
+    tokio::time::timeout(DELIVERY_CEILING, rx.recv())
+        .await
+        .expect("the pump neither delivered nor stopped")
 }
 
 /// A latch the test closes over the pump and opens once, by hand.
@@ -336,43 +353,34 @@ impl Drop for GateGuard {
 }
 
 /// Holds the pump on its first event until the test opens the gate, then
-/// forwards everything to `rec` as fast as it arrives.
+/// forwards everything as fast as it arrives.
 struct Gated {
-    rec: Arc<Recorder>,
+    forward: Forward,
     gate: Arc<Gate>,
 }
 
 impl ChangeListener for Gated {
     fn on_change(&self, event: ChangeEvent) {
         self.gate.wait();
-        self.rec.on_change(event);
+        self.forward.on_change(event);
     }
     fn on_lagged(&self, skipped: u64) {
-        self.rec.on_lagged(skipped);
+        self.forward.on_lagged(skipped);
     }
     fn on_closed(&self) {
-        self.rec.on_closed();
+        self.forward.on_closed();
     }
-}
-
-/// Poll until `f` holds or the budget runs out. The pump is a spawned task, so
-/// delivery is asynchronous by construction; a bare sleep would either be flaky
-/// or slow.
-async fn until(mut f: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if f() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    false
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_change_stream_delivers_and_cancels() {
     let (_dir, core) = open_core().await;
-    let rec = Arc::new(Recorder::default());
-    let sub = core.subscribe_changes(rec.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let sub = core.subscribe_changes(Arc::new(Forward(tx)));
+    // A second subscription nobody cancels: what says the write after the
+    // cancel was published at all, and that the cancel stopped only its own.
+    let (control_tx, mut control) = tokio::sync::mpsc::unbounded_channel();
+    let control_sub = core.subscribe_changes(Arc::new(Forward(control_tx)));
 
     for i in 0..3 {
         core.submit(CoreCommand::CreateTask {
@@ -381,31 +389,45 @@ async fn the_change_stream_delivers_and_cancels() {
         .await
         .expect("create");
     }
-    assert!(
-        until(|| rec.count() >= 3).await,
-        "three writes must reach the listener, saw {}",
-        rec.count()
-    );
-    assert!(matches!(
-        rec.events.lock().expect("lock")[0],
-        ChangeEvent::Created { .. }
-    ));
+    for rx in [&mut rx, &mut control] {
+        for _ in 0..3 {
+            let delivery = next_delivery(rx).await;
+            assert!(
+                matches!(
+                    delivery,
+                    Some(Delivery::Change(ChangeEvent::Created { .. }))
+                ),
+                "each write reaches the listener as a creation, got {delivery:?}"
+            );
+        }
+    }
 
     sub.cancel();
-    let after_cancel = rec.count();
-    core.submit(CoreCommand::CreateTask {
-        draft: draft("after cancel"),
-    })
-    .await
-    .expect("create");
-    // Give the pump every chance to wrongly deliver.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert_eq!(
-        rec.count(),
-        after_cancel,
+    // The barrier: the abort dropped the pump, and the listener and its sender
+    // with it, so from this `None` on nothing can reach this listener. A pump
+    // that ignored the cancel keeps the sender and fails here, however slow.
+    let delivery = next_delivery(&mut rx).await;
+    assert!(
+        delivery.is_none(),
         "cancel stops the pump; a cancelled subscription that keeps firing \
-         would keep a deallocated view model alive"
+         would keep a deallocated view model alive, got {delivery:?}"
     );
+
+    let after = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("after cancel"),
+        })
+        .await
+        .expect("create");
+    let delivery = next_delivery(&mut control).await;
+    assert!(
+        matches!(
+            &delivery,
+            Some(Delivery::Change(ChangeEvent::Created { entity })) if *entity == after.entity
+        ),
+        "the write after the cancel still reaches a live subscription, got {delivery:?}"
+    );
+    control_sub.cancel();
     core.shutdown().await;
 }
 
@@ -444,12 +466,12 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // is `GateGuard`, whose `Drop` opens the gate whatever happens.
     let (_dir, core) = open_core().await;
 
-    let rec = Arc::new(Recorder::default());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let gate = Arc::new(Gate::default());
     // Armed before the pump can possibly park, and covering everything below.
     let release = GateGuard(gate.clone());
     let sub = core.subscribe_changes(Arc::new(Gated {
-        rec: rec.clone(),
+        forward: Forward(tx),
         gate,
     }));
 
@@ -465,12 +487,16 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // would otherwise fall out of scope.
     drop(release);
 
-    assert!(
-        until(|| rec.lagged.load(Ordering::SeqCst) > 0).await,
-        "a slow listener must be told it fell behind; seen {}, lagged {}",
-        rec.count(),
-        rec.lagged.load(Ordering::SeqCst)
-    );
+    // At most one event can precede the `Lagged`: the one the pump parked on.
+    let mut seen = 0;
+    loop {
+        match next_delivery(&mut rx).await {
+            Some(Delivery::Lagged) => break,
+            Some(Delivery::Change(_)) => seen += 1,
+            other => panic!("a slow listener must be told it fell behind; {seen} seen, {other:?}"),
+        }
+    }
+    assert!(seen <= 1, "the burst overran the pump, yet {seen} arrived");
     sub.cancel();
     core.shutdown().await;
 }
