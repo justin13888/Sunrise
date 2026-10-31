@@ -385,7 +385,7 @@ async fn relay_transport(ctx: &Ctx<'_>) -> CmdResult<sunrise_core::BoxTransport>
         .or_else(|| sunrise_cli::livesync::load_relay_device_id(ctx.vault_dir))
         .ok_or_else(needs)?;
     let signer = ctx.shared.device_signer(device);
-    let factory = sunrise_cli::livesync::ws_factory(&url, Some(signer));
+    let factory = sunrise_cli::livesync::sse_factory(&url, Some(signer));
     Ok(factory(ctx.core.sync_credential().read()).await?)
 }
 

@@ -265,7 +265,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// and the one route where that matters most is the revocation `DELETE`, which
 /// runs on whatever connection the driver has at the time.
 #[must_use]
-pub fn ws_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
+pub fn sse_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
     sunrise_client_core::sync::sse_factory(url, signer, None)
 }
 
@@ -307,7 +307,7 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
             // registering — so the plan's bearer is handed to that cell here,
             // the way the FFI seam's `start_sync` does.
             core.sync_credential().set(sc.credential.get());
-            match core.start_sync(ws_factory(&sc.url, signer.clone())) {
+            match core.start_sync(sse_factory(&sc.url, signer.clone())) {
                 Ok(()) => {
                     // The relay *host* is the sanctioned connection-diagnostic
                     // identifier (logging.md §6.2); the full URL could carry a
