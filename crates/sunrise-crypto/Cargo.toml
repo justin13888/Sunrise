@@ -30,7 +30,6 @@ serde_bytes = { workspace = true }
 thiserror = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-error = { workspace = true }
-sunrise-id = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
