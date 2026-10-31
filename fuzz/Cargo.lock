@@ -1740,7 +1740,6 @@ dependencies = [
  "subtle",
  "sunrise-cbor",
  "sunrise-error",
- "sunrise-id",
  "thiserror 1.0.69",
  "x25519-dalek",
  "zeroize",
@@ -1786,6 +1785,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
  "sunrise-domain",
+ "sunrise-id",
  "sunrise-integrations",
  "sunrise-server",
  "sunrise-wire-protocol",
@@ -1811,7 +1811,6 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
- "zeroize",
 ]
 
 [[package]]
@@ -1903,10 +1902,8 @@ dependencies = [
 name = "sunrise-storage"
 version = "0.2.0"
 dependencies = [
- "blake3",
  "hex",
  "rusqlite",
- "serde",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-error",

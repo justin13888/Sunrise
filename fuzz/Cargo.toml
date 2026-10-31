@@ -7,7 +7,7 @@
 # `-Cpassess=sancov-*`, and the workspace pins 1.91.1 in `rust-toolchain.toml`
 # with an ADR guarding the pin. Folding this in would either break every
 # workspace command on a stable toolchain or force the whole tree onto nightly
-# for the sake of nine harnesses.
+# for the sake of eleven harnesses.
 #
 # The `[workspace]` table below is what makes this its own workspace root, so
 # `cargo` inside `fuzz/` does not walk up to the root manifest and refuse a
@@ -51,6 +51,7 @@ libfuzzer-sys = "0.4"
 sunrise-cbor ={ path = "../crates/sunrise-cbor" }
 sunrise-crypto = { path = "../crates/sunrise-crypto" }
 sunrise-domain = { path = "../crates/sunrise-domain" }
+sunrise-id = { path = "../crates/sunrise-id" }
 sunrise-integrations = { path = "../crates/sunrise-integrations" }
 sunrise-server = { path = "../crates/sunrise-server" }
 sunrise-wire-protocol = { path = "../crates/sunrise-wire-protocol" }
@@ -81,7 +82,7 @@ async-trait = { version = "0.1", default-features = false }
 # nothing and therefore a gate that checks nothing. The module comment on each
 # harness is where the property that target asserts is written down, so a
 # broken intra-doc link there flattens the one explanation of what the fuzzer
-# is for. `mise run rust-doc` builds all nine.
+# is for. `mise run rust-doc` builds all eleven.
 
 [[bin]]
 name = "op_envelope"
@@ -142,6 +143,20 @@ bench = false
 [[bin]]
 name = "key_envelope"
 path = "fuzz_targets/key_envelope.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "capture"
+path = "fuzz_targets/capture.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "annotate"
+path = "fuzz_targets/annotate.rs"
 test = false
 doc = true
 bench = false
