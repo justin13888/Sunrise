@@ -8,7 +8,7 @@ back out of it.
 
 | File | Pins | Why it exists |
 |---|---|---|
-| `keychain_vault_suite_v5.db` | `CRYPTO_SUITE_V = 5` | The wrapping side of the key hierarchy had no test that was not self-consistent. Both "legacy vault" tests in `keychain/mod.rs` wrap their secrets in-process with the same AAD they then unwrap with, and `sunrise-storage`'s fixtures assert rows without ever unwrapping one. |
+| `keychain_vault_suite_v5.db` | `CRYPTO_SUITE_V = 5` | The wrapping side of the key hierarchy had no test that was not self-consistent. Both "legacy vault" tests in `keychain/tests/legacy.rs` wrap their secrets in-process with the same AAD they then unwrap with, and `sunrise-storage`'s fixtures assert rows without ever unwrapping one. |
 
 Named for `CRYPTO_SUITE_V` and not for `STORAGE_V`: what it pins is the key
 hierarchy. The migration chain has its own fixtures next door in
