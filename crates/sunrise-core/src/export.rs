@@ -26,6 +26,7 @@ use sunrise_domain::{
 };
 use sunrise_id::EntityRef;
 
+use crate::bytes::hex_bytes;
 use crate::queries::BlockRow;
 
 /// The `format` a manifest names. Stable: a reader keys on it.
@@ -266,7 +267,7 @@ impl Manifest {
             format_v: EXPORT_FORMAT_V,
             doc_schema_v: DOC_SCHEMA_V,
             doc_schema_fingerprint: doc_schema_fingerprint(u32::from(DOC_SCHEMA_V))
-                .map(|fp| hex(&fp)),
+                .map(|fp| hex_bytes(&fp)),
             storage_v: STORAGE_V,
             exported_at: at.to_string(),
             exported_at_ms,
@@ -320,14 +321,6 @@ impl Manifest {
 #[must_use]
 pub fn digest_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 /// Where an attachment's bytes go: `attachments/<id>/<filename>`, the

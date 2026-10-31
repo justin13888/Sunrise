@@ -69,7 +69,7 @@ use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_flo
 use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
 use super::groups::event_of;
 use super::ids::hex_short;
-use super::merge::{dump_stream_state, join_stream_state};
+use super::merge::{dump_stream_state, join_stream_state, to_sql};
 use super::oplog::upsert_sync_cursor;
 use super::{Engine, EngineError};
 use crate::events::DomainEvent;
@@ -731,13 +731,7 @@ pub(super) fn in_tx<R>(
     db: &mut Db,
     f: impl FnOnce(&Transaction<'_>) -> Result<R, EngineError>,
 ) -> Result<R, EngineError> {
-    db.with_tx(|tx| {
-        f(tx).map_err(|e| match e {
-            EngineError::Sqlite(e) => e,
-            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
-        })
-    })
-    .map_err(|e| match e {
+    db.with_tx(|tx| f(tx).map_err(to_sql)).map_err(|e| match e {
         DbError::Sqlite(rusqlite::Error::ToSqlConversionFailure(b)) => {
             match b.downcast::<EngineError>() {
                 Ok(e) => *e,

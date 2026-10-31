@@ -27,6 +27,7 @@
 
 use super::ids::time_from_parts;
 use super::ids::{decode_unknowns, domain_bytes, home_of, ms_to_ts, require_kind};
+use super::merge::to_sql;
 use super::snapshot::in_tx;
 use super::task::{decode_constraints, read_task};
 use super::write::{Appended, PatchBuilder, WriteMode};
@@ -642,10 +643,7 @@ impl Engine {
         if mode == WriteMode::Legacy {
             return Ok(Some((op, stream)));
         }
-        let patch = super::write::as_patch(self, tx, &op, &[]).map_err(|e| match e {
-            EngineError::Sqlite(e) => e,
-            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
-        })?;
+        let patch = super::write::as_patch(self, tx, &op, &[]).map_err(to_sql)?;
         Ok(patch.map(|op| match op {
             InnerOp::Patch(mut p) => {
                 p.origin = Some(crate::inner_op::PatchPayload::GENERATED.to_owned());

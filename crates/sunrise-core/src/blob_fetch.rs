@@ -78,8 +78,9 @@ use tokio::sync::{broadcast, Notify};
 
 use crate::attach::AttachError;
 use crate::blob_sync::{MAX_FETCHES_PER_DRAIN, MAX_FETCH_SCAN};
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, read_attachment};
+use crate::engine::read_attachment;
 use crate::events::{AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState};
 use sunrise_domain::Attachment;
 use sunrise_id::EntityRef;
@@ -807,37 +808,11 @@ fn park(core: &Core, att: &Attachment, reason: &'static str) {
 mod tests {
     use super::*;
     use crate::blob_sync::AUTO_FETCH_MAX_BYTES;
-    use crate::commands::Command;
     use crate::config::CoreConfig;
+    use crate::test_support::{a_task, open_vault};
     use crate::unlock::Unlock;
     use std::sync::Arc;
     use sunrise_crypto::keys::VaultRootKey;
-    use sunrise_domain::TaskDraft;
-
-    async fn open_vault(dir: &std::path::Path) -> Arc<Core> {
-        let cfg = CoreConfig::production(dir.to_path_buf(), "0.1.0+test");
-        Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes([7u8; 32]),
-                    paired: None,
-                },
-            )
-            .await
-            .expect("open"),
-        )
-    }
-
-    async fn a_task(core: &Core) -> EntityRef {
-        core.submit(Command::CreateTask(TaskDraft {
-            title: "Countersign the lease".into(),
-            ..Default::default()
-        }))
-        .await
-        .expect("create task")
-        .entity
-    }
 
     /// Attach `bytes` and then take the chunks away, which is exactly the state
     /// a replica that received the metadata op and not the ciphertext is in.

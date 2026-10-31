@@ -51,6 +51,7 @@ pub mod attach;
 mod blob_cache;
 mod blob_fetch;
 mod blob_sync;
+mod bytes;
 pub mod commands;
 pub mod config;
 pub mod conflicts;
@@ -72,6 +73,8 @@ pub mod queries;
 mod relay_intents;
 mod snapshot_sync;
 pub mod sync_driver;
+#[cfg(test)]
+mod test_support;
 pub mod unlock;
 pub mod vault_lock;
 

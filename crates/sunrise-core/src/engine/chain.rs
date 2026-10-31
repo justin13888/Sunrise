@@ -55,8 +55,9 @@ use sunrise_crypto::{
 };
 
 use super::compaction::{floor_of, floor_seq, record_peer_frontier, Floor};
-use super::ids::hex_short;
+use super::ids::i64_of;
 use super::{Engine, EngineError};
+use crate::bytes::{hex_short, to32};
 use crate::inner_op::{encode_inner_op, FrontierWire, InnerOp, StreamDigestPayload};
 use sunrise_domain::Unknowns;
 use sunrise_storage::Db;
@@ -95,14 +96,6 @@ pub struct ChainIntegrity {
     /// Ops this replica knows it should hold and does not: rows of
     /// `chain_expected` and `chain_claims`.
     pub wanted: u64,
-}
-
-fn to32(v: &[u8]) -> Option<[u8; 32]> {
-    v.try_into().ok()
-}
-
-fn i64_of(n: u64) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 /// The [`op_hash`] of stored envelope bytes. Bytes this build cannot decode

@@ -16,7 +16,7 @@ use super::groups::{event_of, Folded};
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::hex_short;
 use super::lww::{remap_legacy_inbox, LwwStamp};
-use super::merge::{check_patch, PatchProblem};
+use super::merge::{check_patch, to_sql, PatchProblem};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::park::{diagnostic_kind, schema_fp_mismatch};
 use super::{
@@ -511,10 +511,7 @@ impl Engine {
                 //    folds every one (ADR-0065 §6).
                 folded = self
                     .fold_received(tx, &inner, &lww, &env.stream_id, now_ms)
-                    .map_err(|e| match e {
-                        EngineError::Sqlite(e) => e,
-                        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
-                    })?;
+                    .map_err(to_sql)?;
             }
             // g. Advance the sync cursor to the end of the contiguous prefix.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id, now_ms)?;

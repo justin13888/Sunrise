@@ -6,6 +6,7 @@
 //! conflicts, and a write that descends from every member of a field's set
 //! clears it everywhere it is applied. See `docs/05-sync/conflict-resolution.md`.
 
+use crate::bytes::{hex_bytes, unhex16};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -28,32 +29,13 @@ pub struct VersionRef {
     pub seq: u64,
 }
 
-fn hex(b: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(32), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-fn unhex(s: &str) -> Option<[u8; 16]> {
-    if s.len() != 32 || !s.is_ascii() {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
-    }
-    Some(out)
-}
-
 impl fmt::Display for VersionRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}.{}.{}",
-            hex(&self.stream),
-            hex(&self.device),
+            hex_bytes(&self.stream),
+            hex_bytes(&self.device),
             self.seq
         )
     }
@@ -82,8 +64,8 @@ impl FromStr for VersionRef {
             return Err(BadVersionRef);
         };
         Ok(Self {
-            stream: unhex(stream).ok_or(BadVersionRef)?,
-            device: unhex(device).ok_or(BadVersionRef)?,
+            stream: unhex16(stream).ok_or(BadVersionRef)?,
+            device: unhex16(device).ok_or(BadVersionRef)?,
             seq: seq.parse().map_err(|_| BadVersionRef)?,
         })
     }

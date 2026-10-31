@@ -116,9 +116,9 @@
 //! storage.
 
 use crate::blob_cache::BlobRef;
+use crate::bytes::{hex_short, to16, to32};
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, read_attachment};
-use crate::keychain::{to16, to32};
+use crate::engine::read_attachment;
 use sunrise_crypto::blob_chunk::{open_chunk, split_sealed, verify_content};
 use sunrise_domain::Attachment;
 use sunrise_error::ErrorCode;
@@ -795,38 +795,7 @@ async fn fetch_missing_blobs<T: Transport + ?Sized>(core: &Core, transport: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::Command;
-    use crate::config::CoreConfig;
-    use crate::unlock::Unlock;
-    use std::sync::Arc;
-    use sunrise_crypto::keys::VaultRootKey;
-    use sunrise_domain::TaskDraft;
-    use sunrise_id::EntityRef;
-
-    async fn open_vault(dir: &std::path::Path) -> Arc<Core> {
-        let cfg = CoreConfig::production(dir.to_path_buf(), "0.1.0+test");
-        Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes([7u8; 32]),
-                    paired: None,
-                },
-            )
-            .await
-            .expect("open"),
-        )
-    }
-
-    async fn a_task(core: &Core) -> EntityRef {
-        core.submit(Command::CreateTask(TaskDraft {
-            title: "Renew the passport".into(),
-            ..Default::default()
-        }))
-        .await
-        .expect("create task")
-        .entity
-    }
+    use crate::test_support::{a_task, open_vault};
 
     /// Attaching a file queues its blob, and the queued row carries everything
     /// `init` and `finalize` need — so a driver that picks it up needs no

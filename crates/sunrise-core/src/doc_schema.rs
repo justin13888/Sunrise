@@ -72,6 +72,7 @@
 //! Never edit an existing registry entry to make the failure go away: an
 //! entry is what every build that shipped it believes the version means.
 
+use crate::bytes::hex_bytes;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use sunrise_cbor::version::{DOC_SCHEMA_FINGERPRINTS, DOC_SCHEMA_FP_DOMAIN};
@@ -468,20 +469,12 @@ pub(crate) fn render_schema() -> String {
 pub(crate) fn render_registry() -> String {
     let entries: serde_json::Map<String, Value> = DOC_SCHEMA_FINGERPRINTS
         .iter()
-        .map(|(v, fp)| (v.to_string(), Value::String(hex_lower(fp))))
+        .map(|(v, fp)| (v.to_string(), Value::String(hex_bytes(fp))))
         .collect();
     let mut out =
         serde_json::to_string_pretty(&Value::Object(entries)).expect("a JSON value serializes");
     out.push('\n');
     out
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 fn committed_path(file: &str) -> PathBuf {
@@ -541,15 +534,15 @@ mod tests {
         let fp = fingerprint(&canonical_schema());
         let registered = doc_schema_fingerprint(u32::from(DOC_SCHEMA_V));
         assert_eq!(
-            registered.map(|r| hex_lower(&r)),
-            Some(hex_lower(&fp)),
+            registered.map(|r| hex_bytes(&r)),
+            Some(hex_bytes(&fp)),
             "the document schema does not match the fingerprint registered for \
              DOC_SCHEMA_V {DOC_SCHEMA_V}. A shape changed: bump DOC_SCHEMA_V, append \
              ({next}, {fp}) to DOC_SCHEMA_FINGERPRINTS and to \
              sunrise_crypto_test_vectors::protocol::DOC_SCHEMA_REGISTRY, then regenerate \
              schemas/doc-schema/. Never edit an existing entry.",
             next = DOC_SCHEMA_V + 1,
-            fp = hex_lower(&fp),
+            fp = hex_bytes(&fp),
         );
     }
 

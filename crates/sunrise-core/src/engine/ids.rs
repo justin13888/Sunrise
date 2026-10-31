@@ -296,41 +296,14 @@ pub(super) fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
-/// The first four bytes of a 16-byte id as lowercase hex — **8 characters**,
-/// not a full encoding.
-///
-/// The canonical producer of the `sender_h` and `subject_h` log fields (see
-/// `sunrise_log::field`), and the short form every `Debug` impl in
-/// [`crate::keychain`] prints.
-///
-/// Named for what it does, deliberately: the unqualified name `hex16`
-/// elsewhere in this workspace (`sunrise_domain::export`,
-/// `sunrise_core_bindings::dto`) takes the same `&[u8; 16]` and emits all
-/// **32** characters. A `hex16` that emitted 8 read like a complete id in a
-/// debug dump, which is why that spelling no longer exists here.
-pub(crate) fn hex_short(b: &[u8; 16]) -> String {
-    let mut s = String::with_capacity(8);
-    for byte in b.iter().take(4) {
-        use core::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
-}
+// The hex encoders live in `crate::bytes`; the engine's modules still name them
+// through here.
+pub(crate) use crate::bytes::{hex_bytes, hex_short};
 
-/// A whole blob as lowercase hex.
-///
-/// Distinct from [`hex_short`], which truncates to four bytes because what it
-/// renders is an id and four bytes are enough to correlate one. This renders a
-/// column value that is *not* an id — the wrong-width `stream_id` of a row a
-/// revocation could not rotate — where truncating would throw away the only
-/// thing that distinguishes one such row from another.
-pub(crate) fn hex_bytes(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for byte in b {
-        use core::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
+/// An unsigned count or stamp as the `INTEGER` SQLite stores, clamped to
+/// `i64::MAX` rather than wrapping negative.
+pub(super) fn i64_of(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 /// Zero-pad on the right or truncate a stored blob into a 16-byte id: the
@@ -338,7 +311,7 @@ pub(crate) fn hex_bytes(b: &[u8]) -> String {
 ///
 /// The engine reads this from columns its own fold wrote, out of ids that
 /// are 16 bytes by construction, so a blob of any other length is a corrupt
-/// row. Padding one is the silent repair [`crate::keychain::to16`] argues
+/// row. Padding one is the silent repair [`crate::bytes::to16`] argues
 /// against, and is tolerated here only because refusing instead would change
 /// what the engine does on such a row; moving these reads to `to16` is a
 /// separate, behaviour-changing step.

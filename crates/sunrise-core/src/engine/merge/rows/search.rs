@@ -21,6 +21,7 @@ use crate::engine::attachment::read_attachment;
 use crate::engine::block::read_block;
 use crate::engine::context::read_context;
 use crate::engine::ids::blob16;
+use crate::engine::merge::to_sql;
 use crate::engine::stream::read_stream;
 use crate::engine::task::read_task;
 use crate::engine::EngineError;
@@ -293,15 +294,6 @@ pub(in crate::engine) fn index_attachment(
         unindex(tx, SearchKind::Attachment, a.id.bytes())
     } else {
         index_doc(tx, &doc_of_attachment(a))
-    }
-}
-
-/// Carry an engine error out through a transaction closure, boxed as itself
-/// so `snapshot::in_tx` can hand the caller the original variant.
-fn to_sql(e: EngineError) -> rusqlite::Error {
-    match e {
-        EngineError::Sqlite(e) => e,
-        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
     }
 }
 
