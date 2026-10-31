@@ -89,7 +89,7 @@ use schedule::{
     backoff_sleep, next_deadline, retransmit_due, rng_unit, Deadlines, Due, InflightBatch,
     LossEvidence, SessionSchedule,
 };
-use sunrise_error::{ErrorCode, ErrorKind};
+use sunrise_error::ErrorCode;
 use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
 
 pub(crate) use frames::{encode_subscribe_all, Outgoing};
@@ -579,7 +579,7 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Closed(close) if !end.is_terminal() => tracing::warn!(
             ev = "sync.session.error",
             err_code = close.code.as_str(),
-            err_kind = error_kind_str(close.code.default_kind()),
+            err_kind = close.code.default_kind().as_str(),
             retryable = true,
             result = "failed",
             cause = %close.reason,
@@ -588,22 +588,12 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Closed(close) => tracing::warn!(
             ev = "sync.session.error",
             err_code = close.code.as_str(),
-            err_kind = error_kind_str(close.code.default_kind()),
+            err_kind = close.code.default_kind().as_str(),
             retryable = false,
             result = "stopped",
             cause = %close.reason,
             "relay closed the session for a reason reconnecting cannot fix; waiting for a new credential"
         ),
-    }
-}
-
-/// The `err_kind` log value for `kind`, spelled as `codes.toml` spells it.
-const fn error_kind_str(kind: ErrorKind) -> &'static str {
-    match kind {
-        ErrorKind::Transient => "transient",
-        ErrorKind::Permanent => "permanent",
-        ErrorKind::User => "user",
-        ErrorKind::Internal => "internal",
     }
 }
 
