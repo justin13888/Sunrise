@@ -100,7 +100,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
   leaves it holding the signing key (§Revocation step 2, and its
   `core.identity.rotation_unavailable`). That residual is what ADR-0034
   §Consequences names as the unmitigated bypass, and it is the creator's alone.
-  `keychain::tests::a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id`
+  `keychain::tests::pairing::a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id`
   asserts the absence three ways that fail independently: behaviourally through
   `issue_cert_for`, at rest through an empty `identity.id_s_priv_wrapped`, and
   across a restart.

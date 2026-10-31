@@ -208,13 +208,6 @@ BASELINE: dict[str, str] = {
         "directory would move a path ten documents cite by name, to buy "
         "nothing the `scheduling` test module does not already have."
     ),
-    "crates/sunrise-core/src/keychain/mod.rs": (
-        "What remains of keychain.rs after its free-function tail was "
-        "extracted. The four `impl` groups were left deliberately: moving any "
-        "of them would require making Keychain's seven private fields "
-        "`pub(super)`, widening the visibility of key material to buy "
-        "navigation."
-    ),
     # --- sunrise-domain -----------------------------------------------------
     "crates/sunrise-domain/src/stats.rs": (
         "504 implementation lines; the rest is tests. A cohesive fold, with one "
