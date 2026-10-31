@@ -265,7 +265,13 @@ mod tests {
             ends_at: at(9),
             ..draft()
         };
-        assert!(d.validate(&TimeZone::UTC).is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     /// A range is compared on the storage index key, so mixed kinds order the
@@ -279,7 +285,13 @@ mod tests {
             ends_at: SunriseTime::floating(civil::date(2000, 1, 1).at(0, 0, 0, 0)),
             ..draft()
         };
-        assert!(d.validate(&TimeZone::UTC).is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     #[test]
@@ -311,7 +323,13 @@ mod tests {
             title: Some("x".repeat(MAX_BLOCK_TITLE_LEN + 1)),
             ..draft()
         };
-        assert!(d.validate(&TimeZone::UTC).is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.title",
+                constraint: "max_length"
+            })
+        );
     }
 
     #[test]
@@ -361,7 +379,13 @@ mod tests {
             ends_at: at(10),
             ..block()
         };
-        assert!(b.validate_invariants(&TimeZone::UTC).is_err());
+        assert_eq!(
+            b.validate_invariants(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     /// A time kind this build cannot place is compared with nothing.
