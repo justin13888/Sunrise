@@ -318,6 +318,171 @@ mod tests {
         sunrise_id::EntityRef::new(kind, [n; 16])
     }
 
+    fn utc_ms(s: &str) -> i64 {
+        s.parse::<Timestamp>().unwrap().as_millisecond()
+    }
+
+    fn now_ms(s: &str) -> u64 {
+        u64::try_from(utc_ms(s)).unwrap()
+    }
+
+    /// Daily, from 09:00 on 2026-03-02, anchored as `starts_at`.
+    fn daily_at_nine(starts_at: SunriseTime) -> Routine {
+        Routine {
+            id: eref(sunrise_id::EntityKind::Routine, 1),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
+            template: sunrise_domain::TaskTemplate {
+                title: "Stretch".into(),
+                stream_id: None,
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+                unknown: sunrise_domain::Unknowns::new(),
+            },
+            rrule: sunrise_domain::RRule::parse("FREQ=DAILY").unwrap(),
+            timezone: "UTC".into(),
+            starts_at,
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+            streak_counter: 0,
+            last_completed_at: None,
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            split_from: None,
+            streak_keys: Vec::new(),
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
+
+    fn nine() -> jiff::civil::DateTime {
+        jiff::civil::date(2026, 3, 2).at(9, 0, 0, 0)
+    }
+
+    /// 12:00Z on 2026-03-07 is 07:00 in Toronto and 13:00 in Berlin, so
+    /// Toronto's 09:00 is still ahead and Berlin's has passed for the day. A
+    /// name that is no zone reads as UTC, where 09:00 has passed as well.
+    #[test]
+    fn a_floating_routine_fires_at_its_wall_clock_in_the_readers_zone() {
+        let next = |reader| {
+            next_occurrence_ms(
+                daily_at_nine(SunriseTime::floating(nine())),
+                SAT_NOON_UTC,
+                reader,
+            )
+        };
+        assert_eq!(
+            next("America/Toronto"),
+            Some(utc_ms("2026-03-07T14:00Z")),
+            "09:00 EST today"
+        );
+        assert_eq!(
+            next("Europe/Berlin"),
+            Some(utc_ms("2026-03-08T08:00Z")),
+            "09:00 CET tomorrow"
+        );
+        assert_eq!(next("Not/AZone"), Some(utc_ms("2026-03-08T09:00Z")));
+    }
+
+    /// A floating 09:00 follows the clock across a DST change, the day after
+    /// spring-forward and the day of fall-back alike.
+    #[test]
+    fn a_floating_routine_keeps_its_wall_clock_across_dst() {
+        let next = |now| {
+            next_occurrence_ms(
+                daily_at_nine(SunriseTime::floating(nine())),
+                now_ms(now),
+                "America/Toronto",
+            )
+        };
+        assert_eq!(
+            next("2026-03-08T05:00Z"),
+            Some(utc_ms("2026-03-08T13:00Z")),
+            "09:00 EDT"
+        );
+        assert_eq!(
+            next("2026-11-01T04:00Z"),
+            Some(utc_ms("2026-11-01T14:00Z")),
+            "09:00 EST"
+        );
+    }
+
+    /// A zoned routine fires in its own zone, whoever reads it.
+    #[test]
+    fn a_zoned_routine_fires_in_its_own_zone_for_any_reader() {
+        let routine = daily_at_nine(SunriseTime::zoned(nine(), "Europe/Berlin"));
+        let want = Some(utc_ms("2026-03-08T08:00Z"));
+        for reader in ["America/Toronto", "Europe/Berlin", "Not/AZone"] {
+            assert_eq!(
+                next_occurrence_ms(routine.clone(), SAT_NOON_UTC, reader),
+                want,
+                "{reader}"
+            );
+        }
+    }
+
+    /// A paused routine answers `None` until its pause runs out, and a series
+    /// that ended before now answers `None` where it would otherwise fire.
+    #[test]
+    fn a_paused_or_ended_routine_has_no_next_occurrence() {
+        let live = daily_at_nine(SunriseTime::floating(nine()));
+        let next = |r: Routine| next_occurrence_ms(r, SAT_NOON_UTC, "UTC");
+        assert_eq!(next(live.clone()), Some(utc_ms("2026-03-08T09:00Z")));
+
+        let paused = Routine {
+            paused: true,
+            ..live.clone()
+        };
+        assert_eq!(next(paused.clone()), None);
+        let until = Routine {
+            paused_until: Some(SunriseTime::floating(
+                jiff::civil::date(2026, 3, 10).at(0, 0, 0, 0),
+            )),
+            ..paused
+        };
+        assert_eq!(next(until), Some(utc_ms("2026-03-10T09:00Z")));
+
+        let ended = Routine {
+            ends_at: Some(SunriseTime::all_day(jiff::civil::date(2026, 3, 6))),
+            ..live.clone()
+        };
+        assert_eq!(next(ended), None);
+        let ending_tomorrow = Routine {
+            ends_at: Some(SunriseTime::all_day(jiff::civil::date(2026, 3, 8))),
+            ..live
+        };
+        assert_eq!(
+            next(ending_tomorrow),
+            Some(utc_ms("2026-03-08T09:00Z")),
+            "the end is inclusive"
+        );
+    }
+
+    /// Each way `now_ms` overflows answers `None`: past `i64`, past the
+    /// timestamp range, and too close to its end to add the horizon.
+    #[test]
+    fn a_now_out_of_range_has_no_next_occurrence() {
+        let next =
+            |now| next_occurrence_ms(daily_at_nine(SunriseTime::floating(nine())), now, "UTC");
+        assert_eq!(next(u64::MAX), None);
+        assert_eq!(next(u64::try_from(i64::MAX).unwrap()), None);
+        assert_eq!(
+            next(u64::try_from(Timestamp::MAX.as_millisecond()).unwrap()),
+            None
+        );
+    }
+
     fn block(n: u8, from_ms: u64, to_ms: u64) -> Block {
         Block {
             id: eref(sunrise_id::EntityKind::Block, n),

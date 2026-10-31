@@ -450,6 +450,93 @@ fn the_dst_morning_brief_lands_at_the_wall_clock() {
     );
 }
 
+/// 2026-11-01 falls back in New York at 02:00 EDT, so the day has 25 hours and
+/// both briefs land on their wall clock in EST.
+#[test]
+fn the_fall_back_briefs_land_at_the_wall_clock() {
+    let c = Case {
+        now: ts("2026-11-01T04:00Z"),
+        ..Case::new()
+    };
+    assert_eq!(
+        c.kinds(),
+        vec![
+            (NotificationKind::MorningBrief, ms("2026-11-01T12:15Z")),
+            (NotificationKind::EveningPlan, ms("2026-11-02T02:00Z")),
+        ],
+        "07:15 and 21:00 EST"
+    );
+}
+
+/// A 01:30 wake is in the fold: the brief counts from its earlier instant, and
+/// once past it the next brief is tomorrow's, not the fold's second 01:45.
+#[test]
+fn a_wake_time_in_a_fold_briefs_once_from_its_earlier_instant() {
+    let wakes = |h: i8, m: i8| DaySchedule {
+        weekday: [DayWindow::new(time(h, m, 0, 0), time(23, 0, 0, 0)); 7],
+        ..DaySchedule::default()
+    };
+    let brief = |now: &str| {
+        Case {
+            now: ts(now),
+            schedule: wakes(1, 30),
+            horizon_s: 48 * 3600,
+            ..Case::new()
+        }
+        .kinds()
+        .into_iter()
+        .find(|(k, _)| *k == NotificationKind::MorningBrief)
+    };
+    assert_eq!(
+        brief("2026-11-01T04:00Z"),
+        Some((NotificationKind::MorningBrief, ms("2026-11-01T05:45Z"))),
+        "01:45 EDT"
+    );
+    assert_eq!(
+        brief("2026-11-01T05:50Z"),
+        Some((NotificationKind::MorningBrief, ms("2026-11-02T06:45Z"))),
+        "01:45 EST tomorrow"
+    );
+
+    // A 02:30 wake is in the spring-forward gap and moves to 03:30 EDT.
+    let gap = Case {
+        now: ts("2026-03-08T05:00Z"),
+        schedule: wakes(2, 30),
+        ..Case::new()
+    };
+    assert_eq!(
+        gap.kinds()[0],
+        (NotificationKind::MorningBrief, ms("2026-03-08T07:45Z"))
+    );
+}
+
+/// A plan on either DST day, armed and planned again, has nothing to do.
+#[test]
+fn a_second_reconcile_on_a_dst_day_is_empty() {
+    for now in ["2026-03-08T05:00Z", "2026-11-01T04:00Z"] {
+        let c = Case {
+            now: ts(now),
+            ..Case::new()
+        };
+        let plan = c.plan(&mut NotificationLedger::new());
+        assert_eq!(plan.len(), 2, "{now}");
+        let first = reconcile_catalog(&plan, &[]);
+        assert_eq!(first.add, plan, "{now}");
+        let held: Vec<PendingNotification> = first
+            .add
+            .iter()
+            .map(|n| PendingNotification {
+                identifier: n.identifier.clone(),
+                revision: Some(n.revision.clone()),
+            })
+            .collect();
+        let again = c.plan(&mut NotificationLedger::new());
+        let second = reconcile_catalog(&again, &held);
+        assert!(second.is_empty(), "{now}: {second:?}");
+        assert_eq!(second.kept.len(), 2, "{now}");
+    }
+}
+
 #[test]
 fn the_policy_reads_each_toggle_and_the_entries_list_every_kind() {
     let p = catalog_policy(&[off("notifications.deadline.enabled")]);

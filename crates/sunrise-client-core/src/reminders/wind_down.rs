@@ -193,6 +193,99 @@ mod tests {
         );
     }
 
+    fn sleeps_at(h: i8, m: i8) -> DaySchedule {
+        DaySchedule {
+            weekday: [DayWindow::new(time(7, 0, 0, 0), time(h, m, 0, 0)); 7],
+            ..DaySchedule::default()
+        }
+    }
+
+    fn toronto() -> TimeZone {
+        TimeZone::get("America/Toronto").unwrap()
+    }
+
+    fn held(n: &WindDownNotification) -> [PendingNotification; 1] {
+        [PendingNotification {
+            identifier: n.identifier.clone(),
+            revision: Some(n.revision.clone()),
+        }]
+    }
+
+    /// Toronto falls back on 2026-11-01. A 01:30 sleep is in the fold and
+    /// takes its earlier instant, 01:30 EDT; once that night's has fired, the
+    /// next is the following night's, not the fold's second 01:30.
+    #[test]
+    fn a_sleep_time_in_a_fold_fires_once_before_its_earlier_instant() {
+        let (tz, p, s) = (toronto(), policy(&[]), sleeps_at(1, 30));
+        let n = wind_down_notification(&p, &s, at("2026-11-01T02:00Z"), &tz).unwrap();
+        assert_eq!(n.date, jiff::civil::date(2026, 10, 31));
+        assert_eq!(n.sleep_at_ms, at("2026-11-01T05:30Z").as_millisecond());
+        assert_eq!(n.fire_at_ms, at("2026-11-01T04:30Z").as_millisecond());
+
+        let after = wind_down_notification(&p, &s, at("2026-11-01T04:31Z"), &tz).unwrap();
+        assert_eq!(after.date, jiff::civil::date(2026, 11, 1));
+        assert_eq!(
+            after.sleep_at_ms,
+            at("2026-11-02T06:30Z").as_millisecond(),
+            "01:30 EST"
+        );
+        assert_eq!(after.fire_at_ms, at("2026-11-02T05:30Z").as_millisecond());
+    }
+
+    /// The lead is elapsed time: an hour before 02:15 EST on the fold's night
+    /// is 01:15 EST, the fold's second pass, and not its first.
+    #[test]
+    fn the_lead_counts_back_on_the_timeline_through_a_fold() {
+        let n = wind_down_notification(
+            &policy(&[]),
+            &sleeps_at(2, 15),
+            at("2026-11-01T02:00Z"),
+            &toronto(),
+        )
+        .unwrap();
+        assert_eq!(n.sleep_at_ms, at("2026-11-01T07:15Z").as_millisecond());
+        assert_eq!(n.fire_at_ms, at("2026-11-01T06:15Z").as_millisecond());
+    }
+
+    /// Toronto springs forward on 2026-03-08. A 02:30 sleep is in the gap and
+    /// moves forward by its length, to 03:30 EDT.
+    #[test]
+    fn a_sleep_time_in_a_gap_moves_forward_by_the_gap() {
+        let n = wind_down_notification(
+            &policy(&[]),
+            &sleeps_at(2, 30),
+            at("2026-03-08T02:00Z"),
+            &toronto(),
+        )
+        .unwrap();
+        assert_eq!(n.date, jiff::civil::date(2026, 3, 7));
+        assert_eq!(n.sleep_at_ms, at("2026-03-08T07:30Z").as_millisecond());
+        assert_eq!(n.fire_at_ms, at("2026-03-08T06:30Z").as_millisecond());
+    }
+
+    /// A second reconcile on either DST night changes nothing, whenever before
+    /// the fire it re-plans.
+    #[test]
+    fn a_second_reconcile_on_a_dst_night_keeps_what_is_held() {
+        let (tz, p) = (toronto(), policy(&[]));
+        for (sleep, first, again) in [
+            (sleeps_at(1, 30), "2026-11-01T02:00Z", "2026-11-01T04:00Z"),
+            (sleeps_at(2, 30), "2026-03-08T02:00Z", "2026-03-08T06:00Z"),
+        ] {
+            let armed = wind_down_notification(&p, &sleep, at(first), &tz).unwrap();
+            assert_eq!(
+                reconcile_wind_down(Some(&armed), &[]),
+                WindDownChange::Add(armed.clone())
+            );
+            let replanned = wind_down_notification(&p, &sleep, at(again), &tz).unwrap();
+            assert_eq!(
+                reconcile_wind_down(Some(&replanned), &held(&armed)),
+                WindDownChange::Keep,
+                "{first}"
+            );
+        }
+    }
+
     /// A zone change moves the fire instant to the sleep time's wall clock in
     /// the new zone, under the same identifier and a new revision.
     #[test]
