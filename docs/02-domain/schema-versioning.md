@@ -135,11 +135,6 @@ signature and the AEAD open, and before the payload is decoded, it parks an
 op at a registered version whose field 13 differs or is missing, with reason
 `schema_fp_mismatch`, and logs `core.op.schema_fp_mismatch`.
 
-*Today:* one part of the design is not built yet.
-
-- **Field defaults are not in the schema**. They wait for
-  [#319](https://github.com/justin13888/Sunrise/issues/319).
-
 Value types and op payloads are covered from `DOC_SCHEMA_V` 12
 ([#439](https://github.com/justin13888/Sunrise/issues/439)). The schema's
 `values` list describes every value type a record carries
@@ -187,8 +182,7 @@ Each field has a CRDT type, declared in the entity registry
 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §7). A vault one
 of whose devices lacks the feature stays on full-state ops, under which a
 concurrent edit to a different field, a set addition or a counter increment
-can still be lost to a later full-state write
-([#319](https://github.com/justin13888/Sunrise/issues/319)).
+can still be lost to a later full-state write.
 
 ## Compatibility rules
 

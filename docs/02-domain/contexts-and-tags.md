@@ -33,8 +33,7 @@ Context = {
 
 **There is no `color` field, and no `ContextColor` type.** Contexts are
 rendered as text; colour is a Stream affordance, not a Context one
-([`streams.md`](./streams.md)). Earlier revisions of this spec declared one and
-nothing ever serialized it.
+([`streams.md`](./streams.md)).
 
 `description` is not length-capped in the domain — only `name` goes through
 `validate_title`, at 64 chars after trim. A client MAY impose its own limit.
@@ -63,12 +62,14 @@ In quick capture, `@context-name` adds an existing context (creating it if absen
 
 ## Merge mapping
 
-The Context entity is one last-writer-wins unit on `(hlc, device_id, seq)`
-([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). Membership
-(Task ↔ Context) lives on the Task side, in `Task.contexts`, and merges with
-the rest of the Task row — so a concurrent add on one device and remove on
-another resolves by timestamp, **not** add-wins. An observed-remove set is the
-target state; see [`tasks.md` §Merge mapping](./tasks.md#merge-mapping).
+A legacy vault merges the Context entity as one last-writer-wins unit on
+`(hlc, device_id, seq)` ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md));
+a `core.field_ops` vault merges it per field. Membership (Task ↔ Context) lives
+on the Task side, in `Task.contexts`. In a `core.field_ops` vault that is an
+observed-remove set, so a concurrent add on one device and remove on another
+is add-wins; in a legacy vault it merges with the rest of the Task row, so the
+same pair resolves by timestamp. See
+[`tasks.md` §Merge mapping](./tasks.md#merge-mapping).
 
 Deleting a Context emits **one** op (`context.delete`), not one Task op per
 membership. Each device, applying that op, purges the Context from its own
