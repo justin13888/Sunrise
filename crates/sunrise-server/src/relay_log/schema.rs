@@ -5,8 +5,9 @@
 /// and writer of.
 ///
 /// Declared here rather than with the account and device DDL because the
-/// statements over them are in this module: a table whose schema lives in one
-/// module and whose only queries live in another is a seam nothing enforces.
+/// statements over them are in `relay_log` and its child modules: a table whose
+/// schema lives outside `relay_log` while its only queries live inside it is a
+/// seam nothing enforces.
 /// Migration 0001 applies it, so it is frozen: change these tables by a new
 /// migration.
 ///
