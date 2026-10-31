@@ -76,8 +76,8 @@ The `fuzz-pr` CI job runs on a pull request that changes `crates/sunrise-cbor/`,
 `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`,
 `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/`, and
 only on one. It runs the targets those paths reach (for `crates/sunrise-cbor/`
-the six that decode through it: `op_envelope`, `recovery_blob`,
-`identity_transition`, `device_cert`, `key_envelope` and `wire_frame`), for
+the five that decode through it: `op_envelope`, `recovery_blob`,
+`identity_transition`, `device_cert` and `wire_frame`), for
 120 seconds each, from the committed seeds in `fuzz/seeds/`, on the nightly
 toolchain pinned in the job. A failure uploads the reproducer, and the reproducer joins the seed
 corpus with its fix. A nightly toolchain that cannot be installed, or cannot
