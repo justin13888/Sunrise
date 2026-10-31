@@ -132,7 +132,7 @@
 //!   and the `#[ignore]`d generator that writes it.
 //! - `tests` — the unit tests, one file per concern.
 //!
-//! `to16`, `to32` and `to64` live in [`crate::bytes`] and are re-exported here
+//! `to16`, `to32` and `to64` live in `crate::bytes` and are re-exported here
 //! for the callers that still name them through this module.
 
 mod crypto;
