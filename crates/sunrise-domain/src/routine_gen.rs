@@ -95,21 +95,6 @@ pub enum ExpandError {
     InvalidTimeZone(String),
 }
 
-/// Map a domain [`Weekday`] to a jiff civil weekday; `None` for a token this
-/// build does not know, which names no day.
-fn to_jiff_weekday(w: &Weekday) -> Option<JiffWeekday> {
-    Some(match w {
-        Weekday::Su => JiffWeekday::Sunday,
-        Weekday::Mo => JiffWeekday::Monday,
-        Weekday::Tu => JiffWeekday::Tuesday,
-        Weekday::We => JiffWeekday::Wednesday,
-        Weekday::Th => JiffWeekday::Thursday,
-        Weekday::Fr => JiffWeekday::Friday,
-        Weekday::Sa => JiffWeekday::Saturday,
-        Weekday::Unknown(_) => return None,
-    })
-}
-
 /// Start-of-week date for `date`, given the week-start weekday `wkst`.
 fn week_start(date: Date, wkst: JiffWeekday) -> Date {
     let cur = i64::from(date.weekday().to_monday_zero_offset());
@@ -146,7 +131,7 @@ fn matches_byday(date: Date, rrule: &RRule) -> bool {
     rrule
         .by_day
         .iter()
-        .any(|w| to_jiff_weekday(w) == Some(date.weekday()))
+        .any(|w| w.to_jiff() == Some(date.weekday()))
 }
 
 /// Does `date` satisfy the `BYMONTHDAY` filter (empty list = no constraint)?
@@ -434,7 +419,7 @@ pub fn expand(
     let wkst = rrule
         .wkst
         .as_ref()
-        .and_then(to_jiff_weekday)
+        .and_then(Weekday::to_jiff)
         .unwrap_or(JiffWeekday::Monday);
     let interval = i64::from(rrule.interval.max(1));
     // A period starting after the window's end in `tz` cannot hold an

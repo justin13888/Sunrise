@@ -16,15 +16,7 @@ use jiff::Span;
 /// (the first days of the calendar) is its own week's first day.
 #[must_use]
 pub fn first_day_of_week(day: civil::Date, week_start: &Weekday) -> civil::Date {
-    let first = match week_start {
-        Weekday::Mo => JiffWeekday::Monday,
-        Weekday::Tu => JiffWeekday::Tuesday,
-        Weekday::We => JiffWeekday::Wednesday,
-        Weekday::Th => JiffWeekday::Thursday,
-        Weekday::Fr => JiffWeekday::Friday,
-        Weekday::Sa => JiffWeekday::Saturday,
-        Weekday::Su | Weekday::Unknown(_) => JiffWeekday::Sunday,
-    };
+    let first = week_start.to_jiff().unwrap_or(JiffWeekday::Sunday);
     let back = i64::from(day.weekday().since(first).rem_euclid(7));
     day.checked_sub(Span::new().days(back)).unwrap_or(day)
 }
