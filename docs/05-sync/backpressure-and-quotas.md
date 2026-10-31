@@ -14,16 +14,21 @@ status: proposed
 > among them — refusing with `429 RATE_LIMITED` and `Retry-After`
 > ([`../06-server/api.md`](../06-server/api.md) §Rate limits). There is no quota
 > accounting, no `Throttle` frame, and no `AUTH_RATE_LIMITED` on the typed
-> error surface — [`wire-protocol.md`](./wire-protocol.md)`:233-238` lists it
+> error surface — [`wire-protocol.md`](./wire-protocol.md) §Error codes lists it
 > among the nine names the enum does not contain; the relay's code is
 > `RATE_LIMITED`.
 >
 > **Why it is not built:** quotas presuppose plan tiers, and plan tiers presuppose
 > billing; ADR-0027 defers all three. What the relay enforces instead is a small set of
 > fixed operator constants that need no per-account state: a 2 MiB request body
-> (`crates/sunrise-server/src/config/model.rs:109-110,115-117`), a 1 MiB ciphertext chunk /
-> 4096 chunks / 100 MB blob (`api/blobs/mod.rs:73,77,81`), and 30-day / 256 MiB
-> per-channel relay-log retention (`relay_log.rs:121,130`).
+> (`crates/sunrise-server/src/config/model.rs#default_max_body_bytes`), a 1 MiB
+> ciphertext chunk / 4096 chunks / 100 MB blob
+> (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES`,
+> `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_COUNT`,
+> `crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`), and 30-day /
+> 256 MiB per-channel relay-log retention
+> (`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
+> `crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`).
 >
 > **What holds regardless:** the backpressure *shape* below — clients respecting
 > a server signal rather than retrying blind — is the design any future limit

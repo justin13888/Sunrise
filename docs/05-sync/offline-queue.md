@@ -31,10 +31,12 @@ unacked.
   materialized state) and `INSERT OR IGNORE` into `outbox`, in the caller's
   transaction (`crates/sunrise-storage/src/sync_local.rs:42-51#enqueue`). The
   `OR IGNORE` makes enqueue idempotent.
-- Pending means `acked_at_ms IS NULL` (`sync_local.rs:61-62,95`), which the
+- Pending means `acked_at_ms IS NULL`
+  (`crates/sunrise-storage/src/sync_local.rs#list_unacked`,
+  `crates/sunrise-storage/src/sync_local.rs#pending_count`), which the
   partial index above serves directly.
 - An ack is a **soft** update — `UPDATE outbox SET acked_at_ms = ?`
-  (`sync_local.rs:79-87`) — not a delete. The row survives, so the outbox is an
+  (`crates/sunrise-storage/src/sync_local.rs#mark_acked`) — not a delete. The row survives, so the outbox is an
   append-only record of what was sent and when it was acknowledged.
 
 ## Backoff
@@ -44,18 +46,19 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:882#run` and `:938`, `ev = "sync.backoff"`).
+(`crates/sunrise-core/src/sync_driver.rs#run` and
+`crates/sunrise-core/src/sync_driver.rs#backoff_sleep`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
-(`sync_driver.rs:948-958`, `next_backoff_delay`); the attempt counter is then
+(`crates/sunrise-core/src/sync_driver.rs#next_backoff_delay`); the attempt counter is then
 back at zero and the
 sequence starts again at 100 ms. A client that cannot reach its relay for an hour
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
 that a long-lived client should never stop trying.
 
 The counter is otherwise reset only when the relay **answers the handshake**
-(`sync_driver.rs:797`), not when a transport is constructed: no transport
+(`crates/sunrise-core/src/sync_driver.rs#run`), not when a transport is constructed: no transport
 factory dials at construction, so a reset there would zero the counter on every
 attempt and pin the driver to the 100 ms step
 ([#283](https://github.com/justin13888/Sunrise/issues/283)). A session that did
@@ -123,7 +126,7 @@ code change that has not been made.
 
 The ack is `Ack { batch_id, stream_id, server_first_seen_ms }`
 (`crates/sunrise-wire-protocol/src/payloads.rs:91#AckPayload`). There is **no
-`applied_seq_range` field**; earlier revisions of this file specified one.
+`applied_seq_range` field**.
 
 On receipt the client stamps `acked_at_ms` on each of the batch's outbox rows.
 `server_first_seen_ms` is advisory and is not persisted ([`wire-protocol.md`](./wire-protocol.md)
@@ -144,7 +147,7 @@ many ops.
 - Local writes are not throttled by outbox size.
 - *Target state:* a daily housekeeping job warning the user (in-app banner) if
   the outbox exceeds 10k ops or 50 MB. No such job exists; `sync_pending()`
-  reports the count (`sync_driver.rs:1002-1004`) and nothing thresholds it.
+  reports the count (`crates/sunrise-core/src/core/mod.rs#sync_pending`) and nothing thresholds it.
 
 ## Optimistic UI implications
 
@@ -161,7 +164,7 @@ today.
 ## Crash safety
 
 The outbox row commits in the same SQLite transaction as the op insert
-(`sync_local.rs:42-51`). A crash mid-commit either commits both `ops` and
+(`crates/sunrise-storage/src/sync_local.rs#enqueue`). A crash mid-commit either commits both `ops` and
 `outbox` rows, or neither.
 
 ## Network changes
