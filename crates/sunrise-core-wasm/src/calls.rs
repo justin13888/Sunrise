@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use sunrise_core::{Command, CommandResult, Query, QueryResult};
-use sunrise_domain::TaskDraft;
+use sunrise_domain::{stream_key, TaskDraft};
 use sunrise_id::EntityRef;
 
 use crate::{WebCore, WebCoreError};
@@ -34,19 +34,15 @@ fn rows(result: &QueryResult) -> Result<Vec<WebTask>, WebCoreError> {
     let (QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = result else {
         return Err(WebCoreError::Unexpected("a task list"));
     };
-    tasks
+    Ok(tasks
         .iter()
-        .map(|task| {
-            let value = serde_json::to_value(task).map_err(WebCoreError::Response)?;
-            let text = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
-            Ok(WebTask {
-                id: text("id"),
-                title: text("title"),
-                state: text("state"),
-                stream_id: text("stream_id"),
-            })
+        .map(|task| WebTask {
+            id: task.id.to_str(),
+            title: task.title.clone(),
+            state: task.state.as_str().to_owned(),
+            stream_id: stream_key(task.stream_id).to_str(),
         })
-        .collect()
+        .collect())
 }
 
 impl WebCore {
@@ -146,14 +142,7 @@ mod web {
         #[wasm_bindgen(js_name = today)]
         pub fn today(&self, now_ms: f64) -> js_sys::Promise {
             let inner = Arc::clone(&self.inner);
-            // Integral milliseconds since the epoch; a negative or non-finite
-            // reading clamps to 0, as `Date.now()` does in `lib.rs`.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let now_ms = if now_ms.is_finite() && now_ms > 0.0 {
-                now_ms as u64
-            } else {
-                0
-            };
+            let now_ms = crate::clamp_ms(now_ms);
             wasm_bindgen_futures::future_to_promise(async move {
                 let rows = inner
                     .today(now_ms)
@@ -179,6 +168,8 @@ mod web {
 mod tests {
     use super::*;
     use crate::tests::{fixed_now, open};
+    use sunrise_domain::{inbox_stream_ref, Task, TaskState, UnknownVariant, INBOX_STREAM_ID};
+    use sunrise_id::EntityKind;
 
     /// The same walk as the JSON round trip in `lib.rs`, through the typed
     /// calls: capture, read back from the Inbox and Today, complete.
@@ -237,6 +228,58 @@ mod tests {
         let core = open(dir.path()).await;
         let err = core.complete_task("tsk_nope").await.unwrap_err();
         assert!(matches!(err, WebCoreError::BadId(_)), "{err}");
+    }
+
+    fn task(stream_id: Option<EntityRef>, state: TaskState) -> Task {
+        let draft = TaskDraft {
+            title: "Renew passport".to_owned(),
+            stream_id,
+            ..TaskDraft::default()
+        };
+        // The timestamp is the epoch: no row reads it, and naming its type
+        // would take a dependency this crate does not otherwise have.
+        #[allow(clippy::default_trait_access)]
+        let mut task = Task::from_draft(
+            EntityRef::new(EntityKind::Task, [1; 16]),
+            Default::default(),
+            draft,
+        );
+        task.state = state;
+        task
+    }
+
+    /// A row carries the task's own fields, whichever list it came in. A
+    /// state this build does not know stays verbatim, not its `todo` reading.
+    #[test]
+    fn a_row_is_built_from_the_tasks_fields() {
+        let stream = EntityRef::new(EntityKind::Stream, [2; 16]);
+        let tasks = vec![task(
+            Some(stream),
+            TaskState::Unknown(UnknownVariant::new("snoozed")),
+        )];
+        let expected = vec![WebTask {
+            id: EntityRef::new(EntityKind::Task, [1; 16]).to_str(),
+            title: "Renew passport".to_owned(),
+            state: "snoozed".to_owned(),
+            stream_id: stream.to_str(),
+        }];
+        assert_eq!(rows(&QueryResult::Tasks(tasks.clone())).unwrap(), expected);
+        assert_eq!(rows(&QueryResult::StreamTasks(tasks)).unwrap(), expected);
+    }
+
+    /// A task in no stream answers the private domain's id, which is what the
+    /// web has always been handed for one (ADR-0046 §5), never an empty string.
+    #[test]
+    fn a_task_in_no_stream_rows_under_the_inbox_id() {
+        let tasks = vec![
+            task(None, TaskState::InProgress),
+            task(Some(inbox_stream_ref()), TaskState::Done),
+        ];
+        let rows = rows(&QueryResult::Tasks(tasks)).unwrap();
+        assert_eq!(rows[0].stream_id, INBOX_STREAM_ID);
+        assert_eq!(rows[0].state, "in_progress");
+        assert_eq!(rows[1].stream_id, INBOX_STREAM_ID);
+        assert_eq!(rows[1].state, "done");
     }
 
     /// The rows serialise as the four fields `apps/web/src/wasm.ts` reads.

@@ -70,16 +70,7 @@ pub mod web {
     const POOL_DIRECTORY: &str = ".sunrise-sahpool";
 
     fn js_now() -> u64 {
-        // `Date.now()` is integral milliseconds since the epoch; a negative or
-        // non-finite reading (a host clock set before 1970) clamps to 0.
-        let now = js_sys::Date::now();
-        if now.is_finite() && now > 0.0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let ms = now as u64;
-            ms
-        } else {
-            0
-        }
+        super::clamp_ms(js_sys::Date::now())
     }
 
     pub(crate) fn js_err(e: impl std::fmt::Display) -> JsError {
@@ -165,6 +156,21 @@ pub mod web {
                     .map_err(|e| js_err(e).into())
             })
         }
+    }
+}
+
+/// A JS clock reading as integral milliseconds since the epoch.
+///
+/// A negative or non-finite reading (a host clock set before 1970) clamps to
+/// 0, and a fraction truncates. A finite reading past `u64::MAX` saturates.
+#[must_use]
+pub fn clamp_ms(ms: f64) -> u64 {
+    if ms.is_finite() && ms > 0.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = ms as u64;
+        ms
+    } else {
+        0
     }
 }
 
@@ -314,6 +320,19 @@ pub(crate) mod tests {
         WebCore::open(dir.to_path_buf(), &[7; 32], "0.1.0+test", clock())
             .await
             .expect("open")
+    }
+
+    #[test]
+    fn a_clock_reading_clamps_to_whole_non_negative_milliseconds() {
+        assert_eq!(clamp_ms(f64::NAN), 0);
+        assert_eq!(clamp_ms(f64::INFINITY), 0);
+        assert_eq!(clamp_ms(f64::NEG_INFINITY), 0);
+        assert_eq!(clamp_ms(-1.0), 0);
+        assert_eq!(clamp_ms(0.0), 0);
+        assert_eq!(clamp_ms(0.5), 0);
+        assert_eq!(clamp_ms(1.5), 1);
+        assert_eq!(clamp_ms(1.7e12), 1_700_000_000_000);
+        assert_eq!(clamp_ms(1e300), u64::MAX);
     }
 
     #[test]
