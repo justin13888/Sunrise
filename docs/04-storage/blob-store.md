@@ -19,8 +19,8 @@ The creating device computes it while sealing
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
 (`crates/sunrise-server/src/api/blobs/mod.rs:302-338#finalize`), takes the same first 16
-bytes as the storage key (`blob_key`, `blobs/mod.rs:466-474`), and returns it as
-`blb_` + 32 lowercase hex (`blobs/mod.rs:382`). The two values are equal by
+bytes as the storage key (`crates/sunrise-server/src/api/blobs/mod.rs:466-474#blob_key`), and returns it as
+`blb_` + 32 lowercase hex (`crates/sunrise-server/src/api/blobs/mod.rs:382#finalize`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.
 
 That one 16-byte value is `Attachment.blob_id`
@@ -46,17 +46,16 @@ per account (§Server-side storage below).
 
 ## Chunking
 
-- Chunk size: **256 KiB (262 144 bytes)**, per `crates/sunrise-domain/src/attachment.rs` and
+- Chunk size: **256 KiB (262 144 bytes)**, `CHUNK_PLAINTEXT_LEN`
+  (`crates/sunrise-crypto/src/blob_chunk.rs:62#CHUNK_PLAINTEXT_LEN`), per
   [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md).
-  This file said 1 MiB until the two were reconciled; note that **no shared
-  constant exists** — the size is written out in each place that needs it,
-  which is why they drifted apart in the first place and will again.
 - An attachment of N bytes produces ⌈N / 256 KiB⌉ chunks.
 - Chunks are streamed to/from the server independently.
 - **Two different numbers, often confused.** 256 KiB is the *plaintext* chunking
   unit. 1 MiB is the relay's ceiling on a single *ciphertext* chunk body
   (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES`), alongside a
-  4096-chunk cap (`:63`) and a 100 MB per-blob cap (`:67`). A 256 KiB plaintext
+  4096-chunk cap (`crates/sunrise-server/src/api/blobs/mod.rs:77#MAX_CHUNK_COUNT`) and a 100 MB per-blob cap
+  (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). A 256 KiB plaintext
   chunk seals to 256 KiB + a 16-byte tag, comfortably inside the ceiling; the
   ceiling is an anti-DoS bound on a request body, not a chunk size.
 
@@ -80,10 +79,7 @@ per account (§Server-side storage below).
 > over one keystream.
 
 Consequently there is **no dedup by key sharing**, at any scope. Two attachments
-of the same file are two blobs with two keys and two `blob_id`s. Earlier
-revisions of this file specified exactly the forbidden thing (a second
-attachment adopting the first's `blob_id` and keys); that section is deleted, not
-qualified.
+of the same file are two blobs with two keys and two `blob_id`s.
 
 What this buys, beyond not being broken: content-addressing over ciphertext never
 collides across attachments, which is what makes
@@ -106,7 +102,7 @@ The relay stores the same sealed chunks under the same `blob_id`, in the same
 <blob_root>/committed/<blake3(account_id)[..16] hex>/manifests/<blob_id_hex>
 ```
 
-The per-account root is deliberate and load-bearing (`blobs/mod.rs:31-39,447-458`):
+The per-account root is deliberate and load-bearing (`crates/sunrise-server/src/api/blobs/mod.rs:31-39`, `crates/sunrise-server/src/api/blobs/mod.rs:447-458#account`):
 content addressing without it would be a cross-tenant read primitive, since one
 account could name another's blob by its hash. A grantee naming an owner's
 `blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id
@@ -115,7 +111,7 @@ is one of the reasons cross-user sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 The manifest (`"<chunk_count> <size_bytes>"`) is written **after** every chunk
-(`blobs/mod.rs:345-379`), so a crash mid-commit leaves an invisible partial rather
+(`crates/sunrise-server/src/api/blobs/mod.rs:345-379#finalize`), so a crash mid-commit leaves an invisible partial rather
 than a short read: a reader that finds no manifest sees no blob.
 
 Upload is three calls, not one: `POST /blobs/init` reserves an `up_…` id and
@@ -180,9 +176,7 @@ There is no `BlobMeta` structure. The metadata a blob has is the `Attachment`
 entity itself — `{blob_key, blob_id, chunk_count, content_hash, size_bytes,
 mime_type, filename}`, specified at
 [`../02-domain/attachments.md`](../02-domain/attachments.md)`:17-33` and modelled
-at `crates/sunrise-domain/src/attachment.rs:23#Attachment`. Earlier revisions of this
-file specified a parallel CDDL with a per-chunk `chunk_id`; both the structure
-and the second id are gone.
+at `crates/sunrise-domain/src/attachment.rs:23#Attachment`.
 
 Integrity comes from three facts, each at a different layer:
 
@@ -191,8 +185,8 @@ Integrity comes from three facts, each at a different layer:
    guarantee, and it is the only hash the relay cannot compute.
 2. **`FinalizeRequest.chunk_hashes` are BLAKE3 of each *ciphertext* chunk**, and
    `FinalizeRequest.content_hash` is BLAKE3 of the concatenated ciphertext
-   (`blobs/mod.rs:116-121`). The relay re-hashes what is on disk and refuses on
-   mismatch (`blobs/mod.rs:325-338`, `sunrise_blob_hash_mismatch_total`), which
+   (`crates/sunrise-server/src/api/blobs/mod.rs:116-121#FinalizeRequest`). The relay re-hashes what is on disk and refuses on
+   mismatch (`crates/sunrise-server/src/api/blobs/mod.rs:325-338#finalize`, `sunrise_blob_hash_mismatch_total`), which
    catches a chunk that never arrived, arrived truncated, or arrived corrupted —
    at upload time, rather than months later on another device.
 3. **The XChaCha20-Poly1305 tag inside each sealed chunk** catches any
@@ -207,4 +201,4 @@ derivable from the other.
 
 - CLI: no attachment commands. `sunrise` is one-shot and does not fetch or
   write blobs; attachments are reachable only from the macOS client.
-- Web: uses OPFS for chunk storage when available; falls back to per-session in-memory cache otherwise. Disclosed in onboarding.
+- Web: attachments do not work yet. The blob store is plain `std::fs`, which the wasm target does not have, so adding one fails with an error ([ADR-0055](../11-adr/0055-web-wasm-core.md)).
