@@ -15,8 +15,15 @@ mod succession;
 
 use super::*;
 use crate::config::SystemRng;
+use crypto::wrap_secret;
 use device::mint_device_keys;
 use parking_lot::Mutex as PLMutex;
+use std::collections::BTreeSet;
+use sunrise_crypto::aead::AEAD_NONCE_LEN;
+use sunrise_crypto::op_envelope::open_envelope;
+use sunrise_crypto::{decode_envelope, stream_key_id, AeadAlgId, DeviceCert, DeviceCertInner};
+use sunrise_domain::PRIVATE_DOMAIN_BYTES;
+use sunrise_pairing::PairingPayload;
 use sunrise_storage::Db;
 
 #[derive(Debug)]
