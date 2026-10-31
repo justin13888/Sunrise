@@ -187,7 +187,13 @@ fn a_drop_reason_is_trimmed_bounded_and_shown_only_while_cancelled() {
     );
     let long = "é".repeat(MAX_CANCEL_REASON_LEN);
     assert_eq!(cancel_reason(Some(&long)), Ok(Some(long.clone())));
-    assert!(cancel_reason(Some(&format!("{long}x"))).is_err());
+    assert_eq!(
+        cancel_reason(Some(&format!("{long}x"))),
+        Err(ValidationError::Field {
+            field: "task.cancel_reason",
+            constraint: "max_512"
+        })
+    );
     let mut t = task(1, "2026-06-01T00:00:00Z");
     t.cancel_reason = Some("not mine".into());
     assert_eq!(t.drop_reason(), None, "a reason on an open task is ignored");
