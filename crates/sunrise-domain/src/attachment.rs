@@ -516,7 +516,13 @@ mod tests {
             }),
             ..draft()
         };
-        assert!(webp.validate().is_err());
+        assert_eq!(
+            webp.validate(),
+            Err(ValidationError::Field {
+                field: "attachment.thumbnail_mime",
+                constraint: "jpeg_or_png"
+            })
+        );
     }
 
     #[test]
@@ -586,7 +592,13 @@ mod tests {
             chunk_count: 0,
             ..draft()
         };
-        assert!(d.validate().is_err());
+        assert_eq!(
+            d.validate(),
+            Err(ValidationError::Field {
+                field: "attachment.chunk_count",
+                constraint: "at_least_one"
+            })
+        );
     }
 
     #[test]
