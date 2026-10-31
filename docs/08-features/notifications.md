@@ -91,7 +91,7 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | 5 | Morning brief | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 6 | Triage nudge | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 7 | Evening plan | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 8 | Wind-down | not built (the trigger is computed, `SunriseCore::wind_down_plan`; nothing schedules it) | not built (same) | no client | no client | no client |
+| 8 | Wind-down | not built (planned by the core (`SunriseCore::wind_down_plan`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |
 | 10 | Time zone changed | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 11 | Weekly review | not built | not built | no client | no client | no client |
@@ -170,8 +170,8 @@ What exists today, read from the tree:
   a fresh one adopts the events the vault already holds without posting them.
   Reminders and scheduled catalog kinds share the 56-request cap. The seam
   exports it all as `SunriseCore::schedule_notifications` and the catalog as
-  `notification_catalog`; `sunrise reminders plan` prints every kind, and
-  `sunrise reminders kinds|on|off` lists and toggles them.
+  `notification_catalog`; `sunrise reminders plan` prints the schedule, and
+  `sunrise reminders kinds|on|off` list and toggle the kinds.
 - **The keys** of §Preference keys are in the core's key table
   (`crates/sunrise-domain/src/preferences/keys.rs#PREFERENCE_KEYS`), stored and
   resolved there and served by `Query::Preferences` ([#337](https://github.com/justin13888/Sunrise/issues/337)).

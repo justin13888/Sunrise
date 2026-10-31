@@ -108,7 +108,7 @@ layer dedups it.
 ## Generation timing
 
 - On every app launch.
-- *Target state:* on a periodic core timer (every 6 hours when running). No such timer exists in `crates/sunrise-core`; generation is driven by launch, edit and post-sync only.
+- On a periodic core timer while the client runs. `Core::start_routine_timer` exists and is bound as `SunriseCore::start_routine_timer` (`crates/sunrise-core-bindings/src/lib.rs`). The caller picks the interval: the Apple app starts it every 15 minutes (`AppSurfaces.routineIntervalMs`), and no other client starts it.
 - On a Routine edit.
 - After bulk sync application (since new ops may have come from another device that already generated some occurrences).
 
