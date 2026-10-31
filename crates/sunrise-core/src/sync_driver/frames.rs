@@ -18,7 +18,8 @@ pub(crate) enum Outgoing {
     /// A frame sent as it is.
     Frame(Vec<u8>),
     /// An in-flight batch's frame, named by its `batch_id`. Sending it arms
-    /// the batch's [`Due`] deadline from the moment the send returns.
+    /// the batch's [`Due`](super::schedule::Due) deadline from the moment the
+    /// send returns.
     Batch(u64),
 }
 

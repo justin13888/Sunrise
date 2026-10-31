@@ -341,8 +341,8 @@ pub(crate) async fn run(
     let mut backoff = Backoff::canonical();
     // The production clock, constructed here rather than taken as a parameter:
     // `run`'s callers spawn the driver and have no opinion about time, and the
-    // seam exists for the scheduling unit tests below, which build `Deadlines`
-    // directly.
+    // seam exists for the scheduling unit tests in
+    // `sync_driver/tests/scheduling.rs`, which build `Deadlines` directly.
     let clock: Arc<dyn MonotonicClock> = Arc::new(TokioClock);
     let resync_interval = weak
         .upgrade()
