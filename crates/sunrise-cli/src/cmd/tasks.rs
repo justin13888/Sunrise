@@ -289,8 +289,9 @@ fn one_or_bulk(mut items: Vec<BulkTaskItem>) -> Command {
 ///
 /// The grammar is [`sunrise_domain::annotate`]'s, unchanged and unextended:
 /// `#stream @ctx @-ctx !N %energy ~30m ^when due:when`, with `-` clearing any
-/// of them. It is the same vocabulary the app's edit line uses, which is the
-/// point — `docs/07-clients/overview.md` §"What clients share" puts the
+/// of them. These are the same sigils `capture` uses, plus the `%energy` and
+/// `-` forms only an edit has. Sharing them is the point —
+/// `docs/07-clients/overview.md` §"What clients share" puts the
 /// annotate grammar in `sunrise-domain` so two surfaces cannot disagree about
 /// what `^next friday` means.
 ///
