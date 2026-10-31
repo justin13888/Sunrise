@@ -47,7 +47,7 @@ The tree breaks each of these:
   A tzdata rule change silently moves a stored 09:00. And an unknown zone name
   rebuilds the civil time in UTC, which the next write then re-emits as fact.
 - **Failures fall back silently.** An unknown zone becomes UTC
-  (`crates/sunrise-core/src/engine/block.rs#device_zone`), and a failed
+  (`crates/sunrise-core/src/engine/zone.rs#device_zone`), and a failed
   conversion becomes the Unix epoch (`SunriseTime::to_instant`). Neither is a
   time anyone meant.
 - **Some writes turn a civil time into an instant.** Defer writes an instant

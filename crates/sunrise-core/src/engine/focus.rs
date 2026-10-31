@@ -17,7 +17,7 @@ use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
 use super::task::{actionable_scan, read_task, ref_of};
 use super::write::Appended;
-use super::{Engine, EngineError, FOCUS_PLAN_SCAN_CAP, META_STREAM};
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::{CommandResult, FocusStartDraft};
 use crate::inner_op::InnerOp;
 use crate::queries::{FocusPlanRow, FocusSessionRow, QueryResult};
@@ -31,6 +31,14 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
+
+/// How many actionable tasks the Focus Planner scans before ranking.
+///
+/// The planner's ranking is energy-first, so it cannot be truncated in SQL
+/// without risking dropping the best-matching pick — the scan has to be wide
+/// enough that ranking sees every plausible candidate, and bounded so a huge
+/// vault cannot turn one keypress into a full-table sort.
+const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
 impl Engine {
     /// Open a focus session: ADR-0013's `start` op.

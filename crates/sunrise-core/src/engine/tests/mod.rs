@@ -30,6 +30,7 @@ use super::lww::*;
 use super::oplog::*;
 use super::routine::*;
 use super::stream::*;
+use super::sync::{DEFERRED_PER_EPOCH_CAP, DEFERRED_TTL_MS, MAX_EPOCH_LEAP};
 use super::task::*;
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::Clock;
