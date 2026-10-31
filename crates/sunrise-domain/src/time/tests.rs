@@ -389,7 +389,9 @@ fn any_ms_instant() -> impl Strategy<Value = Timestamp> {
     .prop_map(|ms| Timestamp::from_millisecond(ms).expect("in range"))
 }
 
-/// An instant at the full nanosecond resolution the wire carries.
+/// An instant at the full nanosecond resolution the wire carries, short of
+/// `Timestamp::MAX`'s second: storage cannot rebuild that one's key (#898), so
+/// only the wire-only property below draws from it.
 fn any_nano_instant() -> impl Strategy<Value = Timestamp> {
     let seconds = (Timestamp::MIN.as_second() + 1)..Timestamp::MAX.as_second();
     prop_oneof![seconds, -86_400i64..=86_400]
@@ -502,6 +504,19 @@ proptest! {
         let (ms, kind, tz) = t.to_parts();
         let stored = SunriseTime::from_parts(ms, kind, tz.as_deref(), None);
         prop_assert_eq!(stored.index_ms(), ms);
+    }
+
+    /// The last second of the range, `Timestamp::MAX` itself included, arrives
+    /// by decoding a peer's value, so the wire holds it to the nanosecond.
+    #[test]
+    fn an_instant_in_the_last_second_round_trips_over_the_wire(
+        nanos in prop_oneof![
+            8 => 0i32..1_000_000_000,
+            2 => Just(Timestamp::MAX.subsec_nanosecond()),
+        ],
+    ) {
+        let at = Timestamp::new(Timestamp::MAX.as_second(), nanos).expect("in range");
+        assert_wire_round_trip(&SunriseTime::instant(at));
     }
 
     /// A wall clock a zone skipped or repeated round-trips as written, and
