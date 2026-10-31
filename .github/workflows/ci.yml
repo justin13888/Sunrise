@@ -1373,7 +1373,7 @@ jobs:
             "determinism" \
             '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
             crates/*/src crates/*/tests crates/*/benches
-      - name: Reject filesystem access outside the core's storage seam
+      - name: Reject filesystem access outside the core's vault_dir seam
         # docs/01-architecture/shared-core.md §determinism-rules rule 2 — the
         # core reaches the disk only through `CoreConfig::vault_dir`, so a test
         # can point it at a temp directory and a vault is the only thing on disk.

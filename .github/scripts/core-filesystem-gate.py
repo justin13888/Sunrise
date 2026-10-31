@@ -53,7 +53,7 @@ advisory lock in terms of `std::fs::File::try_lock` -- does not red the build.
 
 `#[cfg(test)]` code is skipped too. Rule 2 is about what the core does when it
 runs, and a test that writes a fixture into a `tempdir` is not the core reaching
-past its storage handle. `vault_lock.rs`'s own tests do exactly that.
+past `CoreConfig::vault_dir`. `vault_lock.rs`'s own tests do exactly that.
 
 How `#[cfg(test)]` is skipped, and why it is not a `break`
 ---------------------------------------------------------
