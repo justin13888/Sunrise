@@ -247,6 +247,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
     use sunrise_core::{CoreConfig, SystemRng, Unlock};
     use sunrise_crypto::keys::VaultRootKey;
 
@@ -274,7 +275,7 @@ mod tests {
         }
     }
 
-    async fn founding(dir: &std::path::Path) -> Core {
+    async fn open_vault(dir: &std::path::Path, unlock: Unlock) -> Core {
         let cfg = CoreConfig::with_clock(
             dir.to_path_buf(),
             "0.1.0+test",
@@ -282,15 +283,18 @@ mod tests {
             Arc::new(SystemRng),
         );
 
-        Core::open(
-            cfg,
+        Core::open(cfg, unlock).await.expect("open a vault")
+    }
+
+    async fn founding(dir: &std::path::Path) -> Core {
+        open_vault(
+            dir,
             Unlock::DevicePaired {
                 root: VaultRootKey::from_bytes([3; 32]),
                 paired: None,
             },
         )
         .await
-        .expect("open a founding vault")
     }
 
     fn label() -> DeviceLabel {
@@ -348,5 +352,194 @@ mod tests {
         assert_eq!(opened.id_s_pub, core.identity_signing_pub());
         assert!(!format!("{sealed:?}").contains(sealed.code.reveal()));
         core.shutdown().await;
+    }
+
+    /// A relay as far as a reissue reaches it: every blob it was asked to
+    /// store. Every other route is the trait's `Unsupported`.
+    #[derive(Debug, Default)]
+    struct BlobRelay(Vec<Vec<u8>>);
+
+    #[async_trait::async_trait]
+    impl sunrise_sync::Transport for BlobRelay {
+        async fn send_frame(&mut self, _: Vec<u8>) -> Result<(), sunrise_sync::TransportError> {
+            Ok(())
+        }
+        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, sunrise_sync::TransportError> {
+            Ok(None)
+        }
+        async fn close(&mut self) -> Result<(), sunrise_sync::TransportError> {
+            Ok(())
+        }
+        async fn recovery_blob_replace(
+            &mut self,
+            blob: &[u8],
+        ) -> Result<(), sunrise_sync::TransportError> {
+            self.0.push(blob.to_vec());
+            Ok(())
+        }
+    }
+
+    /// The control the two refusals are read against: a device that holds the
+    /// recovery key and signs under the identity in force gets a code, and
+    /// the fake does see the blob that code opens.
+    #[tokio::test]
+    async fn a_current_founding_device_replaces_the_blob_its_new_code_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = founding(dir.path()).await;
+        let mut relay = BlobRelay::default();
+
+        let code = reissue_recovery_code(&core, &Fixed::default(), &mut relay)
+            .await
+            .expect("this device may issue a code");
+
+        assert_eq!(relay.0.len(), 1);
+        let identity_id = sunrise_crypto::identity_id_from_pub(&core.identity_signing_pub());
+        crate::recovery::recover_identity_from_code(&relay.0[0], code.reveal(), &identity_id)
+            .expect("the code opens the blob the relay holds");
+        core.shutdown().await;
+    }
+
+    /// A device admitted by pairing holds no `ID_D_priv`: it is current, so
+    /// only this refusal stands between it and a code that opens nothing.
+    #[tokio::test]
+    async fn a_paired_device_is_refused_and_sends_nothing() {
+        let sponsor_dir = tempfile::tempdir().unwrap();
+        let sponsor = founding(sponsor_dir.path()).await;
+        let grant = sponsor
+            .pair_device_in_process("phone".into(), "ios".into(), [0x71; 32], [0x72; 32])
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paired = open_vault(
+            dir.path(),
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes([4; 32]),
+                paired: Some(Box::new(grant)),
+            },
+        )
+        .await;
+        assert!(!paired.holds_identity_key());
+        let rng = Fixed::default();
+        let mut relay = BlobRelay::default();
+
+        let refused = reissue_recovery_code(&paired, &rng, &mut relay).await;
+
+        assert!(matches!(refused, Err(ReissueError::NoRecoveryKey)));
+        assert!(relay.0.is_empty(), "no blob reached the relay");
+        assert_eq!(rng.0.load(Ordering::SeqCst), 0, "no seed was drawn");
+        paired.shutdown().await;
+        sponsor.shutdown().await;
+    }
+
+    /// The transport a sync session opens on: a relay that says hello, holds
+    /// no identity chain, and hands over the first one a device pins.
+    struct ChainRelay {
+        /// Shared across reconnects: a session may end before its tick.
+        pinned: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>>,
+        frames: Vec<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl sunrise_sync::Transport for ChainRelay {
+        async fn send_frame(&mut self, _: Vec<u8>) -> Result<(), sunrise_sync::TransportError> {
+            Ok(())
+        }
+        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, sunrise_sync::TransportError> {
+            match self.frames.pop() {
+                Some(frame) => Ok(Some(frame)),
+                None => std::future::pending().await,
+            }
+        }
+        async fn close(&mut self) -> Result<(), sunrise_sync::TransportError> {
+            Ok(())
+        }
+        async fn identity_chain_latest(
+            &mut self,
+        ) -> Result<Option<Vec<u8>>, sunrise_sync::TransportError> {
+            Ok(None)
+        }
+        async fn identity_chain_pin(
+            &mut self,
+            chain: &[u8],
+            _: Option<&[u8; 32]>,
+        ) -> Result<sunrise_sync::IdentityChainPinned, sunrise_sync::TransportError> {
+            if let Some(pinned) = self.pinned.lock().unwrap().take() {
+                let _ = pinned.send(chain.to_vec());
+            }
+            Ok(sunrise_sync::IdentityChainPinned::Pinned)
+        }
+    }
+
+    /// The identity chain record `core` publishes, read off its sync driver's
+    /// resync tick, which the paused clock reaches at once.
+    async fn published_chain(core: Arc<Core>) -> Vec<u8> {
+        let (pinned, chain) = tokio::sync::oneshot::channel();
+        let pinned = Arc::new(std::sync::Mutex::new(Some(pinned)));
+        core.sync_credential().set(Some("token".into()));
+        core.start_sync(Arc::new(move |_| {
+            let relay = ChainRelay {
+                pinned: Arc::clone(&pinned),
+                frames: vec![crate::sync::tests::hello_ack()],
+            };
+            Box::pin(async move { Ok(Box::new(relay) as sunrise_core::BoxTransport) })
+        }))
+        .unwrap();
+        let chain = tokio::time::timeout(Duration::from_secs(600), chain)
+            .await
+            .expect("a resync tick publishes the chain")
+            .expect("the relay keeps the sender until a device pins");
+        core.shutdown().await;
+        chain
+    }
+
+    /// Copy a closed vault's files, so a second core holds what the first did
+    /// at that moment: the same identity, and no record of what came after.
+    fn copy_vault(from: &std::path::Path, to: &std::path::Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                std::fs::create_dir(&target).unwrap();
+                copy_vault(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// A device a rotation left behind still holds the old identity's
+    /// `ID_D_priv`, so this refusal alone stops it issuing a code for a
+    /// retired identity. The vault's copy from before a code-retiring rotation
+    /// is that device: the chain tells it the head moved and carries no share
+    /// that would take it there.
+    #[tokio::test(start_paused = true)]
+    async fn a_device_a_rotation_left_behind_is_refused_and_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = founding(dir.path()).await;
+        before.close().await.unwrap();
+        let behind_dir = tempfile::tempdir().unwrap();
+        copy_vault(dir.path(), behind_dir.path());
+
+        let rotated = founding(dir.path()).await;
+        rotated
+            .submit(sunrise_core::Command::RotateIdentity {
+                keep_recovery_code: false,
+            })
+            .await
+            .unwrap();
+        let chain = published_chain(Arc::new(rotated)).await;
+
+        let behind = founding(behind_dir.path()).await;
+        let seeded = behind.seed_identity_chain(&chain).unwrap();
+        assert!(!seeded.at_head, "no carry share reaches this device");
+        assert!(behind.holds_identity_key());
+        let rng = Fixed::default();
+        let mut relay = BlobRelay::default();
+
+        let refused = reissue_recovery_code(&behind, &rng, &mut relay).await;
+
+        assert!(matches!(refused, Err(ReissueError::NotCurrent)));
+        assert!(relay.0.is_empty(), "no blob reached the relay");
+        assert_eq!(rng.0.load(Ordering::SeqCst), 0, "no seed was drawn");
+        behind.shutdown().await;
     }
 }
