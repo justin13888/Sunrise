@@ -954,7 +954,8 @@ impl Engine {
     ///
     /// # Errors
     /// Storage failures.
-    pub fn publish_stream_digest(
+    #[cfg(test)]
+    pub(crate) fn publish_stream_digest(
         &self,
         db: &mut Db,
         stream_id: &[u8; 16],

@@ -72,7 +72,7 @@ impl Keychain {
     /// rather than a rare one — left the device with the payload's epochs and
     /// the current one, and a permanent hole where the epochs in between should
     /// have been. Ops sealed under those parked in `deferred_ops` until
-    /// [`DEFERRED_TTL_MS`](crate::engine) dropped them, and nothing surfaced
+    /// `engine::sync::DEFERRED_TTL_MS` dropped them, and nothing surfaced
     /// it: it presents as "some items from around when I set up this device
     /// never arrived". That was
     /// [#107](https://github.com/justin13888/Sunrise/issues/107).
@@ -274,7 +274,7 @@ impl Keychain {
     ///
     /// Minting counts from this and not from [`Self::current_epoch_tx`], so a
     /// fresh epoch lands above every key a read-bounded device delivered
-    /// rather than beside one of them. The `MAX_EPOCH_LEAP` bound on an
+    /// rather than beside one of them. The `engine::sync::MAX_EPOCH_LEAP` bound on an
     /// absorbed epoch reads it too: it is a bound on how far this device's
     /// epochs can be dragged, which is a question about every key it holds.
     ///

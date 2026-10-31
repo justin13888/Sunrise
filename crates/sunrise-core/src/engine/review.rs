@@ -14,7 +14,7 @@ use super::merge::{check_patch, set_field, FieldOp};
 use super::routine::read_routines;
 use super::stream::{paused_streams, stream_member_tasks};
 use super::task::{actionable_scan, read_task};
-use super::{Engine, EngineError, MAX_TREND_WEEKS, META_STREAM};
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::inner_op::{decode_inner_op, InnerOp, PatchPayload};
 use crate::queries::QueryResult;
@@ -33,6 +33,25 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
+
+/// Upper end of the trend window, applied as a silent clamp at **both** ends.
+///
+/// Enforcement is the single `weeks.clamp(1, MAX_TREND_WEEKS)` in the trend
+/// query, and nothing above it validates: a caller asking for 500 weeks gets
+/// 104 and a caller asking for 0 gets 1, each with no error and no signal that
+/// the request was rewritten. It is a bound on what the fold will *do*, not on
+/// what a caller may *ask*.
+///
+/// Deliberately unlike [`MAX_EPOCH_LEAP`](super::sync::MAX_EPOCH_LEAP), which
+/// refuses what it cannot accept and documents the residual that refusal leaves
+/// behind. A rewritten chart window still renders a correct chart of a
+/// different size, so there is nothing for a caller to recover from; a rewritten
+/// epoch would be a key the caller silently does not hold.
+///
+/// The trend fold re-reads and decrypts op history, so an unbounded `weeks`
+/// would turn one keypress into a full-log scan. Two years is far past the
+/// point where a weekly chart is still readable.
+const MAX_TREND_WEEKS: u32 = 104;
 
 impl Engine {
     /// Record a completed weekly review as an append-only `rvw_` record.

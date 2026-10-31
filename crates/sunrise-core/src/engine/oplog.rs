@@ -918,7 +918,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/sync.rs:350#apply_remote_all_unchecked` when the
 /// sender's clock is outside the drift window, and
 /// `crates/sunrise-core/src/engine/sync.rs:951#apply_control_op` when a key
-/// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
+/// envelope names an epoch above `sync::MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the
 /// prefix exactly like an applied one.

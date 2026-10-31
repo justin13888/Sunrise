@@ -90,10 +90,6 @@ impl CoreError {
     }
 }
 
-/// Default routine-materialization interval, per
-/// `docs/08-features/recurrence-engine.md` §generation-timing.
-pub const ROUTINE_TIMER_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-
 /// User-facing handle to the local vault.
 pub struct Core {
     cfg: CoreConfig,
