@@ -288,7 +288,7 @@ proptest::proptest! {
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
-                "proptest-regressions/tests/mod.txt",
+                "proptest-regressions/tests/lww.txt",
             ),
         )),
         ..proptest::prelude::ProptestConfig::default()
