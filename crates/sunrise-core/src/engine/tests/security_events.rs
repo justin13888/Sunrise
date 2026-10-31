@@ -233,3 +233,387 @@ fn deadlines_are_the_open_tasks_with_a_hard_one_and_routines_plan_as_routines() 
     .unwrap();
     assert_eq!(e.oldest_unacked_ms(&db).unwrap(), None);
 }
+
+// ---- reminder lead time (docs/08-features/notifications.md) ----
+
+/// A per-task lead time survives the materialized row. It used to be the
+/// case for `Stream.icon` that it did not, and the field read back `None`
+/// forever; this is the same shape of bug and the same shape of test.
+#[test]
+fn a_tasks_reminder_lead_time_survives_a_reread() {
+    let mut db = db();
+    let e = engine();
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Standup".into(),
+                reminder_lead_s: Some(900),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(
+        read_task(db.conn(), task.bytes())
+            .unwrap()
+            .unwrap()
+            .reminder_lead_s,
+        Some(900)
+    );
+
+    // `Some(0)` is a real answer -- "fire at the scheduled time" -- and
+    // must not read back as "not set".
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                reminder_lead_s: Some(Some(0)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_task(db.conn(), task.bytes())
+            .unwrap()
+            .unwrap()
+            .reminder_lead_s,
+        Some(0)
+    );
+
+    // Clearing falls back to the Stream's.
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                reminder_lead_s: Some(None),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_task(db.conn(), task.bytes())
+            .unwrap()
+            .unwrap()
+            .reminder_lead_s,
+        None
+    );
+}
+
+#[test]
+fn a_streams_reminder_lead_time_survives_a_reread() {
+    let mut db = db();
+    let e = engine();
+    let stream = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                reminder_lead_s: Some(1_800),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(
+        read_stream(db.conn(), stream.bytes())
+            .unwrap()
+            .unwrap()
+            .reminder_lead_s,
+        Some(1_800)
+    );
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id: stream,
+            patch: StreamPatch {
+                reminder_lead_s: Some(None),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_stream(db.conn(), stream.bytes())
+            .unwrap()
+            .unwrap()
+            .reminder_lead_s,
+        None
+    );
+}
+
+// ---- notification reads (issue #9) ----
+
+#[test]
+fn the_morning_summary_reads_the_previous_calendar_date() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    // Completed yesterday afternoon.
+    let done = new_task(&e, &mut db, "Ship the thing");
+    e.apply(&mut db, Command::CompleteTask(done)).unwrap();
+    // Sitting in the Inbox, awaiting a decision.
+    let inbox = new_task(&e, &mut db, "Read this later");
+    // Filed and scheduled for next month, so on neither list.
+    let later = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Renew passport".into(),
+                stream_id: Some(stream_ref(3)),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(
+                    NOTIFY_NOON + 30 * 86_400_000,
+                ))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+
+    let s = morning(&e, &db, NOTIFY_NOON);
+    assert_eq!(
+        s.completed.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![done]
+    );
+    assert_eq!(
+        s.to_triage.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![inbox],
+        "an Inbox task is the triage queue; a filed one is not"
+    );
+    assert!(s.due_today.iter().all(|t| t.id != later));
+    // Yesterday's midnight, and today's, in the device zone (UTC here).
+    assert_eq!(s.today_start.as_millisecond(), 1_772_582_400_000);
+    assert_eq!(s.since.as_millisecond(), 1_772_496_000_000);
+}
+
+#[test]
+fn the_end_of_day_plan_covers_today_then_the_week() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    let day = 86_400_000i64;
+    let today = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "This evening".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 6 * 3_600_000))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let midweek = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Thursday".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3 * day))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let far = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Next month".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 30 * day))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let floating = new_task(&e, &mut db, "Someday");
+
+    let p = evening(&e, &db, NOTIFY_NOON);
+    assert_eq!(
+        p.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![today]
+    );
+    assert_eq!(
+        p.week_ahead.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![midweek],
+        "the week ahead is the seven civil days after today"
+    );
+    assert!(p.week_ahead.iter().all(|t| t.id != far));
+    assert_eq!(
+        p.unscheduled.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![floating]
+    );
+}
+
+#[test]
+fn a_scheduled_task_and_a_block_both_produce_reminders() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    let at = NOTIFY_NOON + 2 * 3_600_000;
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let block = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                stream_id: None,
+                starts_at: SunriseTime::instant(ms_to_ts(at)),
+                ends_at: SunriseTime::instant(ms_to_ts(at + 3_600_000)),
+                title: Some("Deep work".into()),
+                title_track_task: false,
+                tasks: Vec::new(),
+            }),
+        )
+        .unwrap()
+        .entity;
+
+    let out = reminders(
+        &e,
+        &db,
+        NOTIFY_NOON,
+        NOTIFY_NOON + 86_400_000,
+        ReminderSettings::default(),
+    );
+    assert_eq!(out.len(), 2);
+    // The block leads by 15 minutes, so it sorts first.
+    assert_eq!(out[0].entity, block);
+    assert_eq!(out[0].fire_at.as_millisecond(), at - 900_000);
+    assert_eq!(out[0].title, "Deep work");
+    assert_eq!(out[1].entity, task);
+    assert_eq!(out[1].fire_at.as_millisecond(), at);
+}
+
+/// The lead-time hierarchy end to end: the Task's own value beats the
+/// Stream's, which beats the device default.
+#[test]
+fn the_lead_time_hierarchy_resolves_against_real_rows() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    let at = NOTIFY_NOON + 6 * 3_600_000;
+    let stream = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                reminder_lead_s: Some(1_800),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let inherits = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Inherits the stream's".into(),
+                stream_id: Some(stream),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let overrides = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Sets its own".into(),
+                stream_id: Some(stream),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                reminder_lead_s: Some(60),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let global = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Falls all the way through".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+
+    let settings = ReminderSettings {
+        default_lead_s: 300,
+        ..ReminderSettings::default()
+    };
+    let out = reminders(&e, &db, NOTIFY_NOON, NOTIFY_NOON + 86_400_000, settings);
+    let fired = |id: EntityRef| {
+        out.iter()
+            .find(|r| r.entity == id)
+            .unwrap_or_else(|| panic!("no reminder for {id}"))
+            .fire_at
+            .as_millisecond()
+    };
+    assert_eq!(fired(overrides), at - 60_000, "per-task wins");
+    assert_eq!(fired(inherits), at - 1_800_000, "per-stream next");
+    assert_eq!(fired(global), at - 300_000, "device default last");
+}
+
+#[test]
+fn a_completed_task_stops_producing_reminders() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    let at = NOTIFY_NOON + 3_600_000;
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                planned_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(
+        reminders(
+            &e,
+            &db,
+            NOTIFY_NOON,
+            NOTIFY_NOON + 86_400_000,
+            ReminderSettings::default()
+        )
+        .len(),
+        1
+    );
+    e.apply(&mut db, Command::CompleteTask(task)).unwrap();
+    assert!(reminders(
+        &e,
+        &db,
+        NOTIFY_NOON,
+        NOTIFY_NOON + 86_400_000,
+        ReminderSettings::default()
+    )
+    .is_empty());
+}
+
+/// The spec's dedup rule, enforced before a single row is read.
+#[test]
+fn a_non_primary_device_is_handed_nothing_to_schedule() {
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
+    e.apply(
+        &mut db,
+        Command::CreateTask(TaskDraft {
+            title: "Call the bank".into(),
+            planned_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let settings = ReminderSettings {
+        is_primary_device: false,
+        ..ReminderSettings::default()
+    };
+    assert!(reminders(&e, &db, NOTIFY_NOON, NOTIFY_NOON + 86_400_000, settings).is_empty());
+}

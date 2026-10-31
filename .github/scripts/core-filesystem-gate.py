@@ -76,7 +76,7 @@ So the attribute is resolved against the item it is attached to:
 * `#[cfg(test)] mod tests;` — the body is another file. That file is test code
   in its entirety and carries no marker of its own, so `scan` resolves the
   declaration to a path and skips the file. After the engine split this is how
-  `engine/tests/mod.rs` — eighteen thousand lines of it — reaches the scanner.
+  `engine/tests/mod.rs` and the themed files it declares reach the scanner.
 
 Nothing here is a heuristic about where tests "usually" live. Every rule above
 is the meaning of the attribute.

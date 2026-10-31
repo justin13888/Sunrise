@@ -1055,3 +1055,134 @@ proptest::proptest! {
         proptest::prop_assert_eq!(found, vec![seeded]);
     }
 }
+
+#[test]
+fn search_matches_title_and_body_excludes_deleted_and_respects_limit() {
+    let mut db = db();
+    let e = engine();
+
+    // Title hit.
+    e.apply(
+        &mut db,
+        Command::CreateTask(TaskDraft {
+            title: "quarterly kangaroo report".into(),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    // Body hit (unique term only in the body).
+    e.apply(
+        &mut db,
+        Command::CreateTask(TaskDraft {
+            title: "misc notes".into(),
+            body: Some(NoteBody(b"remember the kangaroo".to_vec())),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    // Deleted task that would otherwise match.
+    let del = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "kangaroo obsolete".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    e.apply(&mut db, Command::DeleteTask(del)).unwrap();
+
+    let hits = match e
+        .query(
+            &db,
+            Query::Search {
+                text: "kangaroo".into(),
+                limit: 10,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Tasks(v) => v,
+        _ => panic!("wrong variant"),
+    };
+    let titles: Vec<_> = hits.iter().map(|t| t.title.clone()).collect();
+    assert_eq!(
+        hits.len(),
+        2,
+        "title + body hits, deleted excluded: {titles:?}"
+    );
+    assert!(titles.contains(&"quarterly kangaroo report".to_string()));
+    assert!(titles.contains(&"misc notes".to_string()));
+    assert!(!titles.contains(&"kangaroo obsolete".to_string()));
+
+    // Limit is honored.
+    let limited = match e
+        .query(
+            &db,
+            Query::Search {
+                text: "kangaroo".into(),
+                limit: 1,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Tasks(v) => v,
+        _ => panic!(),
+    };
+    assert_eq!(limited.len(), 1);
+
+    // Empty / whitespace-only input returns nothing without touching FTS.
+    let empty = match e
+        .query(
+            &db,
+            Query::Search {
+                text: "   ".into(),
+                limit: 10,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Tasks(v) => v,
+        _ => panic!(),
+    };
+    assert!(empty.is_empty());
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/mod.txt",
+            ),
+        )),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// `Query::Search` must never surface an FTS5 syntax error, no matter
+    /// how hostile the input (quotes, colons, stars, unbalanced quotes,
+    /// `NEAR`, hyphens, parentheses).
+    #[test]
+    fn search_never_errors_on_hostile_input(s in ".*") {
+        begin_case();
+        let mut db = db();
+        let e = engine();
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "haystack".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let res = e.query(
+            &db,
+            Query::Search {
+                text: s,
+                limit: 20,
+            },
+        );
+        proptest::prop_assert!(res.is_ok());
+    }
+}

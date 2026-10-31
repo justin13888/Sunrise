@@ -607,3 +607,106 @@ fn defer_past_the_deadline_is_kept_and_warned_like_an_edit() {
     assert_eq!(edit.ordering_warnings, deferred.ordering_warnings);
     assert!(op_count(&db) > ops, "both writes are logged");
 }
+
+/// #6: the three zone-less kinds must survive being written on one device
+/// and read on another in a different zone. A `Timestamp` could not
+/// express any of them, so all three used to collapse into "some UTC
+/// instant" and moved when the reader did.
+#[test]
+fn zone_less_times_survive_a_device_timezone_change() {
+    use jiff::civil;
+
+    let cases = [
+        SunriseTime::floating(civil::date(2026, 3, 3).at(9, 0, 0, 0)),
+        SunriseTime::all_day(civil::date(2026, 7, 4)),
+        SunriseTime::zoned(civil::date(2026, 3, 3).at(9, 0, 0, 0), "America/New_York"),
+    ];
+
+    for want in cases {
+        let kc = Arc::new(Keychain::for_test_seeded(
+            VaultRootKey::from_bytes(ROOT),
+            [1u8; 32],
+        ));
+        let writer = Engine::from_clock(
+            Arc::new(ZonedClock(T0, "Europe/Berlin")),
+            seeded_rng(),
+            Arc::clone(&kc),
+        );
+        let mut db = db_root(ROOT);
+        let res = writer
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "t".into(),
+                    planned_at: Some(want.clone()),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // The same vault, read by a device in a different zone.
+        let reader = Engine::from_clock(
+            Arc::new(ZonedClock(T0, "Pacific/Auckland")),
+            seeded_rng(),
+            kc,
+        );
+        let got = read_task_t(&reader, &db, res.entity).planned_at;
+        assert_eq!(
+            got,
+            Some(want.clone()),
+            "the stored value must not depend on who reads it"
+        );
+
+        // ...and the resolution follows the reader for the zone-less kinds
+        // while staying put for the zoned one — which is the entire point
+        // of keeping the kinds apart.
+        let berlin = jiff::tz::TimeZone::get("Europe/Berlin").unwrap();
+        let auckland = jiff::tz::TimeZone::get("Pacific/Auckland").unwrap();
+        let moves = want.to_instant(&berlin) != want.to_instant(&auckland);
+        assert_eq!(
+            moves,
+            !matches!(want, SunriseTime::Zoned { .. }),
+            "only zone-less kinds follow the reader ({want:?})"
+        );
+    }
+}
+
+/// ...and the kind survives the op envelope, not just the local table:
+/// a replica that only ever saw the CBOR must reconstruct the same value.
+#[test]
+fn zone_less_times_round_trip_through_op_cbor() {
+    use jiff::civil;
+
+    for want in [
+        SunriseTime::floating(civil::date(2026, 3, 3).at(9, 0, 0, 0)),
+        SunriseTime::all_day(civil::date(2026, 7, 4)),
+        SunriseTime::zoned(civil::date(2026, 3, 3).at(9, 0, 0, 0), "America/New_York"),
+    ] {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "t".into(),
+                    hard_due_at: Some(want.clone()),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .unwrap();
+
+        assert_eq!(
+            read_task_t(&eb, &dbb, created.entity).hard_due_at,
+            Some(want.clone()),
+            "kind lost in transit for {want:?}"
+        );
+    }
+}
