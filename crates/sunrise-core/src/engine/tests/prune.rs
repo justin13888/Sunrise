@@ -9,7 +9,7 @@
 //! one of them, and the cases the rule names. Last, a snapshot's
 //! `doc_state` made hostile, whose refused join must leave nothing behind.
 
-use super::compaction::{ack_outbox, all_envs, digest_op, DAY, INBOX};
+use super::compaction::{ack_outbox, digest_op, DAY, INBOX};
 use super::conflicts::conflicts_of;
 use super::*;
 use crate::engine::merge::{passed, Node, OpRef, Passage, Stamp};

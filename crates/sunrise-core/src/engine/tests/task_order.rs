@@ -1,8 +1,8 @@
 //! Manual task order: `Command::MoveTasks` and the listings that honour
 //! `Task.sort_order` (issue #340, `docs/02-domain/tasks.md`).
 
-use super::field_merge::{pair, task_at, Pair};
-use super::testutil::*;
+use super::field_merge::task_at;
+use super::support::*;
 use super::*;
 use proptest::prelude::*;
 
@@ -39,30 +39,6 @@ fn mv(
 /// `n` inbox tasks on one replica, created in order, none placed.
 fn tasks(e: &Engine, db: &mut Db, n: usize) -> Vec<EntityRef> {
     (0..n).map(|i| new_task(e, db, &format!("t{i}"))).collect()
-}
-
-/// Every op `from` logged under its own device, delivered to `to` in seq
-/// order. Re-delivering one `to` already holds is a no-op.
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(rusqlite::params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        to.apply_remote_all(to_db, &env).unwrap();
-    }
-}
-
-fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
 }
 
 /// Ops in `db`'s log, all of them.

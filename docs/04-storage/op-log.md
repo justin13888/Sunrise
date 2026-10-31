@@ -9,12 +9,10 @@ The op log is the canonical history. Materialized state is derivable from the lo
 > **`deps` are specified, not implemented — and every section below that rests
 > on them describes the target.** `OpLog::insert` in
 > `crates/sunrise-storage/src/oplog.rs` takes a `deps: &[[u8; 16]]` and writes
-> each entry into `op_dep`, and **every caller in the workspace passes `&[]`** —
-> the twenty-seven `self.ops_insert` sites spread across
-> `crates/sunrise-core/src/engine/`, the two `self.ops_insert_at` sites in
-> `engine/oplog.rs` and `engine/sync.rs`, the remote-apply path in
-> `engine/sync.rs`, and the storage crate's own tests. The loop therefore never
-> runs and `op_dep` has **zero rows and zero readers**.
+> each entry into `op_dep`, and **no caller outside tests passes a dep**. The loop
+> therefore never runs and `op_dep` holds **no rows**. Nothing resolves a dep from
+> it: compaction's `DELETE` and the rebuild's source classification only name the
+> table.
 >
 > Downstream: causal apply ordering (§Op application order) reduces to "apply on
 > arrival", because "all deps present" is vacuously true; there are no orphans
@@ -23,10 +21,10 @@ The op log is the canonical history. Materialized state is derivable from the lo
 > neither name appears anywhere in `crates/`.
 >
 > Convergence does not depend on any of it. Under
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) every op is full-state
-> and merges by `(hlc, device_id, seq)`, so out-of-order arrival converges
-> regardless; what deps would buy is *intermediate* states a user would
-> recognize, not a different final state.
+> [ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) registers merge per
+> field over the version DAG, whose `parents` travel on the op rather than in
+> `op_dep`, so out-of-order arrival converges regardless; what deps would buy is
+> *intermediate* states a user would recognize, not a different final state.
 
 ## Schema
 
@@ -63,16 +61,15 @@ command whose own op also routes to vault-meta must not read its `seq` before
 the mint that may spend it — and `INSERT OR IGNORE` means it does not get an
 error, it gets silence, followed by a foreign-key failure on its outbox row.
 
-The engine no longer relies on remembering that. `Engine::meta_slot` resolves
+`Engine::meta_slot` makes that unstatable: it resolves
 the epoch, reads the sequence number and takes the LWW stamp, in that order, and
 it is the only thing that hands out a vault-meta `seq`. Commands routed to a
 Task's own Stream are unaffected and read `next_seq` outside their transaction:
 their counter is not the one the envelopes consume.
 
-This is [#214](https://github.com/justin13888/Sunrise/issues/214), and it was
-fixed twice as a one-off (`60ee61d`, then `create_stream`) before being made
-unstatable. `Core::open` runs `ensure_base_epochs`, so no released build could
-reach it; an engine constructed directly can.
+See [#214](https://github.com/justin13888/Sunrise/issues/214). `Core::open` runs
+`ensure_base_epochs`, so no released build can reach it; an engine constructed
+directly can.
 
 ### Naming the vault-meta stream
 

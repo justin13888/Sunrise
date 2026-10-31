@@ -81,20 +81,25 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
+Applies only to errors whose code the registry gives `kind: transient` AND `retryable: true` (`crates/sunrise-error/codes.toml`; `CoreError` itself carries neither), and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
+
+**Target state, not built.** The core has no `catch_unwind`, the release profile in the root `Cargo.toml` sets `panic = "abort"`, and the crash report does not exist ([`telemetry-and-privacy.md`](./telemetry-and-privacy.md)). A panic in a release build ends the process. The target is:
 
 - Rust panics in the core are caught at the FFI boundary and surfaced as `CoreError(FATAL_INTERNAL, …)` rather than crashing the host.
 - A panic generates a crash report (off-by-default; user opt-in for delivery).
 
 ## Validation errors
 
-- Validation runs at the command boundary in the core.
-- Returns `VALIDATION_*` codes with a structured `diagnostic` object.
+Validation runs at the command boundary in the core and returns `VALIDATION_*` codes.
+
+**The structured shape below is target state, not built.** Today `CoreError.diagnostic` is a `String` and `CoreError` has no `kind` or `retryable` field; those two are per-code registry attributes. `ValidationError::Field` (`crates/sunrise-domain/src/validation.rs#ValidationError`) carries a `field` and a `constraint` and no operands. The target is:
+
+- Validation errors carry a structured `diagnostic` object.
 - UI surfaces inline at the offending field, keying off `diagnostic.field`.
 
-The wire shape of a validation error:
+The target wire shape of a validation error:
 
 ```json
 {

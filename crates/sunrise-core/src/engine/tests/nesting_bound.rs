@@ -10,7 +10,7 @@
 //! The snapshot record, read before anything about it is verified, is held to
 //! the tighter framing bound instead.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use ciborium::value::Value;
 use sunrise_cbor::MAX_DOC_DEPTH;

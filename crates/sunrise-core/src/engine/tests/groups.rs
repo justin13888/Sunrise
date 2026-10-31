@@ -6,8 +6,8 @@
 //! [`FULL_STATE_GROUP_KEY`], and `Patch` versions naming a `group`, sealed
 //! the way a build that writes them will.
 
-use super::field_merge::{emit_patch, pair, set, task_at, text, Pair};
-use super::testutil::*;
+use super::field_merge::{emit_patch, set, task_at, text};
+use super::support::*;
 use super::*;
 use crate::commands::{BulkTaskAction, BulkTaskItem};
 use crate::engine::merge::OpRef;

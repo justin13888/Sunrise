@@ -66,24 +66,6 @@ fn device(seed: u8, clock: Arc<TravelClock>) -> Engine {
     Engine::from_clock(clock, Arc::new(SystemRng), kc)
 }
 
-/// Deliver every op `from` wrote to `to`, in log order, as a relay would.
-/// Delivery is idempotent, so the whole of it is offered every time.
-fn sync(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let me = from.keychain.device_id();
-    let mut stmt = from_db
-        .conn()
-        .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY rowid")
-        .unwrap();
-    let envs: Vec<Vec<u8>> = stmt
-        .query_map(params![&me[..]], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    for env in envs {
-        to.apply_remote(to_db, &env).unwrap();
-    }
-}
-
 /// Sync the two devices both ways. Each keeps its own zone; their clocks
 /// meet at the later of the two instants first, as two devices' clocks do
 /// in the world, because a receiver refuses an op stamped minutes in its
@@ -97,8 +79,8 @@ fn sync_both(
     let now = ca.now_ms().max(cb.now_ms());
     *ca.now.lock() = now;
     *cb.now.lock() = now;
-    sync(ea, dba, eb, dbb);
-    sync(eb, dbb, ea, dba);
+    deliver(ea, dba, eb, dbb, true);
+    deliver(eb, dbb, ea, dba, true);
 }
 
 fn routine(e: &Engine, db: &mut Db, title: &str, anchor: SunriseTime, tz: &str) -> EntityRef {

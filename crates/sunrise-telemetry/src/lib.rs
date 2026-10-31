@@ -505,8 +505,10 @@ mod tests {
             drop(held);
             let _ = done.send(());
         });
+        // Under the exporter's 3 s, so waiting on it still fails, with room for
+        // a spawn and a drop on a loaded host.
         assert!(
-            finished.recv_timeout(Duration::from_secs(1)).is_ok(),
+            finished.recv_timeout(Duration::from_millis(2500)).is_ok(),
             "abandon, or the drop after it, waited on the collector"
         );
     }

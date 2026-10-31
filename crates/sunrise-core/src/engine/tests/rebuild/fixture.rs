@@ -38,7 +38,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::super::testutil::*;
+use super::super::support::*;
 use super::super::*;
 use super::rich_history;
 use sunrise_cbor::version::STORAGE_V;

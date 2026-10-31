@@ -6,8 +6,8 @@
 //! writes here are `Patch` versions naming parents, sealed the way a build
 //! that writes them will ([`emit_patch`]), and handed to the other replica.
 
-use super::field_merge::{emit_patch, inbox, pair, set, shared_task, task_at, text, Pair};
-use super::testutil::*;
+use super::field_merge::{emit_patch, inbox, set, shared_task, task_at, text};
+use super::support::*;
 use super::*;
 use crate::conflicts::{ConflictClass, EntityConflict, WriteOrigin};
 use crate::engine::merge::{heads, OpRef};
@@ -121,7 +121,7 @@ fn register_state(db: &Db, task: EntityRef) -> Vec<String> {
     out
 }
 
-fn deliver(to: &Engine, db: &mut Db, envs: &[&Vec<u8>]) {
+fn deliver_envs(to: &Engine, db: &mut Db, envs: &[&Vec<u8>]) {
     for env in envs {
         to.apply_remote(db, env).unwrap();
     }
@@ -151,8 +151,8 @@ fn draft(title: &str) -> TaskDraft {
 /// the same register state and the same conflicts, and each rebuilds to
 /// exactly what it holds.
 fn exchange(p: &mut Pair, task: EntityRef, from_a: &[&Vec<u8>], from_b: &[&Vec<u8>]) {
-    deliver(&p.eb, &mut p.dbb, from_a);
-    deliver(&p.ea, &mut p.dba, from_b);
+    deliver_envs(&p.eb, &mut p.dbb, from_a);
+    deliver_envs(&p.ea, &mut p.dba, from_b);
     assert_eq!(task_at(&p.dba, task), task_at(&p.dbb, task));
     assert_eq!(register_state(&p.dba, task), register_state(&p.dbb, task));
     assert_eq!(
@@ -196,7 +196,7 @@ fn a_reopen_that_saw_the_completion_wins() {
     let mut p = pair();
     let task = shared_task(&mut p, draft("t"));
     let (done, _) = write_on(&mut p, 0, 1_000, task, &[("state", state("done"))]);
-    deliver(&p.eb, &mut p.dbb, &[&done]);
+    deliver_envs(&p.eb, &mut p.dbb, &[&done]);
     let (reopen, _) = write_on(&mut p, 1, 2_000, task, &[("state", state("todo"))]);
     exchange(&mut p, task, &[], &[&reopen]);
 
@@ -246,8 +246,8 @@ fn the_fold_is_order_independent_when_a_precedes_c_and_b_is_concurrent_with_both
     let mut seen = Vec::new();
     for order in orders {
         let (receiver, mut db) = third(&p);
-        deliver(&receiver, &mut db, &[&create]);
-        deliver(&receiver, &mut db, &order);
+        deliver_envs(&receiver, &mut db, &[&create]);
+        deliver_envs(&receiver, &mut db, &order);
         assert_eq!(
             task_at(&db, task).state,
             TaskState::Todo,
@@ -399,8 +399,8 @@ fn each_deleted_entity_reports_its_own_branches() {
         from_b.push(write_on(&mut p, 1, 2_000, task, &b_fields).0);
     }
     let (a, b): (Vec<&Vec<u8>>, Vec<&Vec<u8>>) = (from_a.iter().collect(), from_b.iter().collect());
-    deliver(&p.eb, &mut p.dbb, &a);
-    deliver(&p.ea, &mut p.dba, &b);
+    deliver_envs(&p.eb, &mut p.dbb, &a);
+    deliver_envs(&p.ea, &mut p.dba, &b);
 
     let found = conflicts_of(&p.ea, &p.dba, false);
     let row = |task: EntityRef| {
@@ -431,7 +431,7 @@ fn a_register_reports_every_loser_in_one_row() {
     trust(&third_e, &mut third_db, &p.ea);
     trust(&p.ea, &mut p.dba, &third_e);
     trust(&p.eb, &mut p.dbb, &third_e);
-    deliver(
+    deliver_envs(
         &third_e,
         &mut third_db,
         &[&create_env_for(&p.dba, task.bytes())],
@@ -458,7 +458,7 @@ fn a_register_reports_every_loser_in_one_row() {
         &inbox(),
         &versioned(task, &[("title", text("c"))], Some(&parents), false),
     );
-    deliver(&p.ea, &mut p.dba, &[&from_b, &from_c]);
+    deliver_envs(&p.ea, &mut p.dba, &[&from_b, &from_c]);
 
     let found = conflicts_of(&p.ea, &p.dba, true);
     let fields: Vec<&str> = found.iter().map(|c| c.field.as_str()).collect();
@@ -548,8 +548,8 @@ fn resolve_conflict_clears_the_unresolved_set_on_every_replica() {
 
     for order in [[&resolve, &from_a, &from_b], [&from_b, &resolve, &from_a]] {
         let (receiver, mut db) = third(&p);
-        deliver(&receiver, &mut db, &[&create]);
-        deliver(&receiver, &mut db, &order);
+        deliver_envs(&receiver, &mut db, &[&create]);
+        deliver_envs(&receiver, &mut db, &order);
         assert_eq!(task_at(&db, task).title, "from a");
         assert!(conflicts_of(&receiver, &db, true).is_empty());
         assert_eq!(register_state(&db, task), register_state(&p.dba, task));
@@ -797,14 +797,14 @@ fn a_late_parent_retires_the_losers_it_orders() {
     let task = shared_task(&mut p, draft("t"));
     let create = create_env_for(&p.dba, task.bytes());
     let (parent, _) = write_on(&mut p, 0, 1_000, task, &[("title", text("a"))]);
-    deliver(&p.eb, &mut p.dbb, &[&parent]);
+    deliver_envs(&p.eb, &mut p.dbb, &[&parent]);
     let (child, _) = write_on(&mut p, 1, 2_000, task, &[("title", text("b"))]);
 
     let (late, mut late_db) = third(&p);
-    deliver(&late, &mut late_db, &[&create, &child]);
+    deliver_envs(&late, &mut late_db, &[&create, &child]);
     let (in_order, mut in_order_db) = third(&p);
-    deliver(&in_order, &mut in_order_db, &[&create, &parent, &child]);
-    deliver(&late, &mut late_db, &[&parent]);
+    deliver_envs(&in_order, &mut in_order_db, &[&create, &parent, &child]);
+    deliver_envs(&late, &mut late_db, &[&parent]);
 
     assert_eq!(
         register_state(&late_db, task),

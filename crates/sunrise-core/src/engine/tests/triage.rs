@@ -355,7 +355,7 @@ fn a_backdated_completion_feeds_the_stats_and_the_streak() {
     );
     // A completion stamped at the click, as `CompleteTask` would, misses.
     let (e2, clock2) = clocked();
-    let mut db2 = super::testutil::db();
+    let mut db2 = super::support::db();
     let (rid2, occ2) = seed_routine(&e2, &mut db2);
     set_clock(&clock2, (occ2[0].1 + 3_600_000) as u64);
     e2.apply(&mut db2, Command::CompleteTask(occ2[0].0))
@@ -367,7 +367,7 @@ fn a_backdated_completion_feeds_the_stats_and_the_streak() {
 
     // The stats read the completion as written.
     let (e3, clock3) = clocked();
-    let mut db3 = super::testutil::db();
+    let mut db3 = super::support::db();
     let t = add(&e3, &mut db3, "done yesterday", None, None);
     set_clock(&clock3, (NOW + 2 * DAY_MS) as u64);
     let yesterday = SunriseTime::all_day(jiff::civil::date(2023, 11, 15));
