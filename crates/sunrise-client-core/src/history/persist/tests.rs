@@ -307,8 +307,9 @@ fn a_history_an_older_build_wrote_still_reads() {
     same(&from_json(LEGACY_HISTORY).expect("reads"), &legacy_stacks());
 }
 
-/// The current encoder keeps the older names and forms, so a history rewritten
-/// by this build stays in the shape the fixture holds.
+/// The current encoder keeps the `scheduled_at` and `due_at` names, writes an
+/// `All` scope as absent and keeps a detaching `delete_stream` bare. It does not
+/// keep every form the fixture holds: a `starts_at` is written tagged.
 #[test]
 fn a_rewritten_older_history_keeps_the_older_names() {
     let (json, dropped) = to_json(&legacy_stacks()).expect("writes");
