@@ -185,6 +185,26 @@ impl SyncEnv {
         self.stored_device_id = load_relay_device_id(vault_dir);
         self
     }
+
+    /// The bearer these inputs choose: the env token trimmed, if it is not
+    /// blank, else the stored token as stored.
+    ///
+    /// The env var beats a stored login: `SUNRISE_SYNC_TOKEN` stays as the
+    /// override for CI and for a relay whose token comes from somewhere else,
+    /// but a user who ran `sunrise login` should not have to also export it.
+    ///
+    /// A stored token is deliberately not cleaned here: [`plan_from_env`]
+    /// cleans the choice, so it never presents a blank one, and pairing over
+    /// the relay takes it as it is.
+    #[must_use]
+    pub fn bearer(&self) -> Option<String> {
+        clean(self.token.as_deref()).or_else(|| self.stored_token.clone())
+    }
+}
+
+/// `s` trimmed, a blank or whitespace-only value collapsing to `None`.
+fn clean(s: Option<&str>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// Parsed, validated live-sync plan the runtime executes on startup.
@@ -215,14 +235,7 @@ impl SyncPlan {
 /// `None`, so an exported-but-empty env var behaves as unset.
 #[must_use]
 pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
-    fn clean(s: Option<&str>) -> Option<String> {
-        s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-    }
-    // The env var beats a stored login: `SUNRISE_SYNC_TOKEN` stays as the
-    // override for CI and for a relay whose token comes from somewhere else,
-    // but a user who ran `sunrise login` should not have to also export it.
-    let token = clean(env.token.as_deref()).or_else(|| clean(env.stored_token.as_deref()));
-    let credential = TokenSource::new(token);
+    let credential = TokenSource::new(clean(env.bearer().as_deref()));
     SyncPlan {
         sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
         // Same precedence as the bearer, for the same reason: the override is
@@ -714,6 +727,27 @@ mod tests {
                 "a blank stored token {blank:?} must not be presented"
             );
         }
+    }
+
+    /// The plan cleans what [`SyncEnv::bearer`] chose, so a stored token that
+    /// the bearer hands over as stored reaches the relay trimmed.
+    #[test]
+    fn the_plan_trims_the_stored_token_the_bearer_chose() {
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            stored_token: Some("  stored-access  ".into()),
+            ..SyncEnv::default()
+        };
+        assert_eq!(env.bearer().as_deref(), Some("  stored-access  "));
+        assert_eq!(
+            plan_from_env(&env)
+                .sync
+                .unwrap()
+                .credential
+                .get()
+                .as_deref(),
+            Some("stored-access")
+        );
     }
 
     /// An expired stored token is not offered. Presenting it earns a `401` and
