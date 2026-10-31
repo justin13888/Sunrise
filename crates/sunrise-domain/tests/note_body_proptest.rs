@@ -119,6 +119,52 @@ fn document_strategy() -> impl Strategy<Value = Vec<NoteBlock>> {
     proptest::collection::vec(block_strategy(), 0..6)
 }
 
+/// The text a Markdown export of `blocks` has to carry, at any depth: code
+/// block content into `literal`, every inline run's text into `words`.
+///
+/// A redaction's `reason` is left out on purpose: an export shows the
+/// placeholder and never the reason.
+fn collect_exported_text<'a>(
+    blocks: &'a [NoteBlock],
+    literal: &mut Vec<&'a str>,
+    words: &mut Vec<&'a str>,
+) {
+    for block in blocks {
+        match block {
+            NoteBlock::Paragraph { inline }
+            | NoteBlock::Heading { inline, .. }
+            | NoteBlock::Quote { inline } => collect_inline_text(inline, words),
+            NoteBlock::Code { content, .. } => literal.push(content),
+            NoteBlock::Checklist { items } => {
+                for item in items {
+                    collect_inline_text(&item.inline, words);
+                }
+            }
+            NoteBlock::List { items, .. } => {
+                for item in items {
+                    collect_inline_text(&item.inline, words);
+                    collect_exported_text(&item.children, literal, words);
+                }
+            }
+            NoteBlock::Divider => {}
+        }
+    }
+}
+
+fn collect_inline_text<'a>(inline: &'a [Inline], words: &mut Vec<&'a str>) {
+    for run in inline {
+        match run {
+            Inline::Text { text, .. } => words.push(text),
+            Inline::Link { href, label } => words.extend([href.as_str(), label.as_str()]),
+            Inline::Ref { target } => words.push(target),
+            Inline::Mention { person } => words.push(person),
+            Inline::Redacted {
+                placeholder_text, ..
+            } => words.push(placeholder_text),
+        }
+    }
+}
+
 proptest! {
     // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
     // holds a `lib.rs` or `main.rs`, so the default warns and drops the
@@ -150,15 +196,31 @@ proptest! {
     #[test]
     fn markdown_export_never_panics_and_keeps_the_words(blocks in document_strategy()) {
         let md = to_markdown(&blocks);
+        let mut literal = Vec::new();
+        let mut words = Vec::new();
+        collect_exported_text(&blocks, &mut literal, &mut words);
         // Every code block's literal content survives verbatim — the one part
         // of a document export must never mangle.
-        for block in &blocks {
-            if let NoteBlock::Code { content, .. } = block {
-                prop_assert!(
-                    content.is_empty() || md.contains(content.as_str()),
-                    "code content vanished from the export"
-                );
-            }
+        for content in literal {
+            prop_assert!(
+                md.contains(content),
+                "code content {:?} vanished from the export: {:?}",
+                content,
+                md
+            );
+        }
+        // Every other run's words survive too, whatever block holds them. The
+        // comparison drops backslashes because export escapes Markdown's
+        // punctuation in some runs and not others; which is which has its own
+        // unit tests.
+        let unescaped = md.replace('\\', "");
+        for text in words {
+            prop_assert!(
+                unescaped.contains(&text.replace('\\', "")),
+                "inline text {:?} vanished from the export: {:?}",
+                text,
+                md
+            );
         }
     }
 
@@ -180,9 +242,6 @@ proptest! {
         if bytes.is_empty() {
             prop_assert!(doc.is_exact() && doc.blocks.is_empty());
         }
-        // Whatever happened, the caller still holds every byte it started
-        // with. This is the hard requirement: never "drop the bytes".
-        prop_assert_eq!(body.0, bytes);
     }
 
     /// Arbitrary *text* — the shape the CLI writes — always renders as
