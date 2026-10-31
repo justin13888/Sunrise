@@ -3453,7 +3453,6 @@ dependencies = [
  "serde_json",
  "sunrise-test-seed",
  "thiserror 1.0.69",
- "zeroize",
 ]
 
 [[package]]
