@@ -9,6 +9,8 @@
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
+use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sunrise_core_bindings::{BindingError, RelayPairing, SunriseCore};
@@ -17,6 +19,8 @@ use sunrise_e2e::spawn_relay;
 const ROOT: [u8; 32] = [0x5a; 32];
 const BEARER: &str = "e2e";
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// Long enough for a device to have polled the relay a few times.
+const STILL_WAITING: Duration = Duration::from_secs(2);
 
 fn seed(byte: u8) -> Vec<u8> {
     // Distinct, and fixed only because the test asserts nothing about them;
@@ -149,6 +153,94 @@ async fn a_tampered_static_key_in_the_code_is_refused_before_the_sas() {
         matches!(joined, Err(BindingError::Pairing(_))),
         "the new device learns the session is over: {joined:?}"
     );
+
+    relay.abort();
+}
+
+/// Both devices of a fresh session, showing the same SAS.
+async fn devices_at_the_sas(base_url: String) -> (Arc<RelayPairing>, Arc<RelayPairing>) {
+    let joiner = RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
+        .await
+        .expect("the new device opens a session");
+    let scanned = joiner.qr_payload().expect("the new device shows a code");
+    let sponsor = RelayPairing::accept(scanned, base_url, BEARER.into())
+        .expect("the existing device reads the code");
+
+    let (sas_new, sas_existing) = tokio::time::timeout(TIMEOUT, async {
+        tokio::join!(joiner.handshake(), sponsor.handshake())
+    })
+    .await
+    .expect("the handshake completes");
+    assert_eq!(
+        sas_new.expect("the new device reaches the SAS"),
+        sas_existing.expect("the existing device reaches the SAS"),
+    );
+    (joiner, sponsor)
+}
+
+/// Prove `peer` is still waiting, have `rejecter` answer "don't match", and
+/// require the wait to end in the relay's word that the session is gone: the
+/// peer stops at a poll, well inside the session's 300 s lifetime.
+async fn rejecting_ends_the_wait<T: std::fmt::Debug>(
+    rejecter: &RelayPairing,
+    peer: impl Future<Output = Result<T, BindingError>>,
+) {
+    tokio::pin!(peer);
+    let early = tokio::time::timeout(STILL_WAITING, &mut peer).await;
+    assert!(
+        early.is_err(),
+        "nothing has answered the peer yet, so it must still be waiting: {early:?}"
+    );
+
+    rejecter.reject().await;
+
+    let ended = tokio::time::timeout(TIMEOUT, peer)
+        .await
+        .expect("the peer stops waiting once the other side rejects");
+    match ended {
+        Err(BindingError::Pairing(why)) => assert!(
+            why.contains("the pairing ended"),
+            "the peer ended for the wrong reason: {why}"
+        ),
+        other => panic!("a rejected pairing must fail on the peer, got {other:?}"),
+    }
+}
+
+/// The new device says the digits differ while the existing one, having said
+/// they match, waits for the cert request.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejecting_on_the_new_device_ends_the_sponsors_wait() {
+    let (addr, relay) = spawn_relay().await;
+    let (joiner, sponsor) = devices_at_the_sas(format!("http://{addr}")).await;
+
+    let dir = tempfile::tempdir().expect("a vault dir");
+    let core = SunriseCore::open(
+        dir.path().to_string_lossy().into_owned(),
+        ROOT.to_vec(),
+        "e2e".into(),
+        None,
+    )
+    .await
+    .expect("the existing device opens its vault");
+
+    rejecting_ends_the_wait(&joiner, sponsor.sponsor(core.clone())).await;
+
+    core.shutdown().await;
+    relay.abort();
+}
+
+/// The existing device says the digits differ while the new one, having said
+/// they match, waits for the offer.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejecting_on_the_existing_device_ends_the_joiners_wait() {
+    let (addr, relay) = spawn_relay().await;
+    let (joiner, sponsor) = devices_at_the_sas(format!("http://{addr}")).await;
+
+    rejecting_ends_the_wait(
+        &sponsor,
+        joiner.join("the new device".into(), "test".into(), seed(1), seed(2)),
+    )
+    .await;
 
     relay.abort();
 }

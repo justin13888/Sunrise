@@ -4,14 +4,14 @@
 Why this file exists
 --------------------
 
-The gate's own `--self-test` is a very good test of `slugify`: 23 cases,
-including a derivation of github-slugger's Unicode deletion ranges. It is
-not a test of anything else. `check()` — the listing, the resolution of a
-relative destination against the citing file's directory, the difference
-between a file link and a directory link, the two exit codes and the
-annotation a reader follows back to a line — is exercised by nothing but
-the repository's own 1,239 links, which is a fixture that changes every
-week and can only ever prove the gate is green.
+The gate's own `--self-test` is a very good test of `slugify`, including a
+derivation of github-slugger's Unicode deletion ranges. It is not a test of
+anything else. `check()` — the listing, the resolution of a relative
+destination against the citing file's directory, the difference between a
+file link and a directory link, the two exit codes and the annotation a
+reader follows back to a line — is exercised by nothing but the repository's
+own links, which is a fixture that changes every week and can only ever
+prove the gate is green.
 
 Both directions are here. `Rejects` pins the four ways a link can resolve
 to nothing; `Accepts` pins the shapes a plausible tightening would start
