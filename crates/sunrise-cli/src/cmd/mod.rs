@@ -243,17 +243,18 @@ pub(crate) async fn stream_names(
     let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
         return Err(strings::general::unexpected_result().into());
     };
-    let mut out: Vec<(EntityRef, String)> = rows
-        .into_iter()
+    let listed = rows
+        .iter()
         .filter(|s| archived == Archived::Include || !s.archived)
-        .map(|s| (s.id, s.name))
+        .map(|s| sunrise_domain::NamedRef {
+            id: s.id,
+            name: s.name.as_str(),
+        })
         .collect();
-    // `#inbox` and `inbox` still name "no stream", as they named the Inbox
-    // sentinel stream before ADR-0046: the core reads its reference so.
-    if !out.iter().any(|(_, n)| n.eq_ignore_ascii_case("inbox")) {
-        out.push((sunrise_domain::inbox_stream_ref(), "Inbox".to_owned()));
-    }
-    Ok(out)
+    Ok(sunrise_domain::with_inbox_alias(listed)
+        .into_iter()
+        .map(|r| (r.id, r.name.to_owned()))
+        .collect())
 }
 
 /// Whether `typed` is a word that names "no stream" where a command takes a

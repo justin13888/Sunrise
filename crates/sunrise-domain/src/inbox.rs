@@ -29,6 +29,8 @@
 
 use sunrise_id::{EntityKind, EntityRef};
 
+use crate::capture::NamedRef;
+
 /// The private key domain's id: three zero bytes then ASCII `sunrise.inbox`.
 ///
 /// It used to be sixteen zero bytes, which is also the id sunrise-core uses
@@ -63,6 +65,24 @@ pub const META_DOMAIN_BYTES: [u8; 16] = [0u8; 16];
 #[must_use]
 pub fn inbox_stream_ref() -> EntityRef {
     EntityRef::new(EntityKind::Stream, PRIVATE_DOMAIN_BYTES)
+}
+
+/// `streams` with the candidate that lets `#inbox` and `inbox` name "no
+/// stream", as they named the Inbox sentinel stream before ADR-0046, unless a
+/// real stream is called that in any ASCII case.
+///
+/// The rule capture and the CLI's stream arguments share. `stream:Inbox` in a
+/// search keeps a rule of its own, which adds the candidate even beside a real
+/// stream of that name.
+#[must_use]
+pub fn with_inbox_alias(mut streams: Vec<NamedRef<'_>>) -> Vec<NamedRef<'_>> {
+    if !streams.iter().any(|s| s.name.eq_ignore_ascii_case("inbox")) {
+        streams.push(NamedRef {
+            id: inbox_stream_ref(),
+            name: "Inbox",
+        });
+    }
+    streams
 }
 
 /// Display form of [`inbox_stream_ref`].
@@ -149,6 +169,39 @@ mod tests {
     #[test]
     fn the_bytes_are_ascii_sunrise_inbox() {
         assert_eq!(&PRIVATE_DOMAIN_BYTES[3..], b"sunrise.inbox");
+    }
+
+    /// With no stream of that name, the alias joins the end of the candidates
+    /// and the rows before it stay as they were.
+    #[test]
+    fn the_inbox_alias_follows_the_streams() {
+        let work = EntityRef::new(EntityKind::Stream, [7; 16]);
+        let got = with_inbox_alias(vec![NamedRef {
+            id: work,
+            name: "Work",
+        }]);
+        let rows: Vec<_> = got.iter().map(|r| (r.id, r.name)).collect();
+        assert_eq!(rows, [(work, "Work"), (inbox_stream_ref(), "Inbox")]);
+        let alone = with_inbox_alias(Vec::new());
+        let rows: Vec<_> = alone.iter().map(|r| (r.id, r.name)).collect();
+        assert_eq!(rows, [(inbox_stream_ref(), "Inbox")]);
+    }
+
+    /// A real stream called inbox, in any ASCII case, keeps the name to
+    /// itself. A name that merely starts with it does not.
+    #[test]
+    fn a_stream_called_inbox_takes_the_name_from_the_alias() {
+        let real = EntityRef::new(EntityKind::Stream, [7; 16]);
+        for name in ["Inbox", "inbox", "INBOX", "iNbOx"] {
+            let got = with_inbox_alias(vec![NamedRef { id: real, name }]);
+            let rows: Vec<_> = got.iter().map(|r| (r.id, r.name)).collect();
+            assert_eq!(rows, [(real, name)], "{name}");
+        }
+        let got = with_inbox_alias(vec![NamedRef {
+            id: real,
+            name: "Inbox zero",
+        }]);
+        assert_eq!(got.len(), 2);
     }
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
