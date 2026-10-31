@@ -302,22 +302,10 @@ BASELINE: dict[str, str] = {
         "certificate type."
     ),
     # --- sunrise-e2e --------------------------------------------------------
-    "crates/sunrise-e2e/src/cross_version/mod.rs": (
-        "The cross-version merge harness's driver (ADR-0057): the step "
-        "vocabulary, the run loop and the replica plumbing. Its parts with a "
-        "boundary of their own (`baseline`, `events`, `future`, `gaps`, "
-        "`model`) are already sibling modules. Test-harness code; not audited "
-        "for a split."
-    ),
     "crates/sunrise-e2e/src/lib.rs": (
         "The crate's whole helper surface for booting a relay, opening wired "
         "`Core`s and waiting on convergence. Test-harness code; not audited "
         "for a split."
-    ),
-    "crates/sunrise-e2e/src/cross_version/model.rs": (
-        "494 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The reference projection the no-loss "
-        "property compares each replica against."
     ),
     # --- sunrise-integrations -----------------------------------------------
     "crates/sunrise-integrations/src/ical.rs": (
