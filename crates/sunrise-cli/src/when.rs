@@ -84,6 +84,7 @@ pub fn describe(value: &SunriseTime, reader: &TimeZone) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jiff::tz::Offset;
 
     fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
@@ -203,18 +204,74 @@ mod tests {
         }
     }
 
-    /// The ends of time are where "today" has no tomorrow and a day count no
-    /// room, so the table's phrases must still return there.
+    /// The ends of time are where a day count has no room, so the table's
+    /// phrases must still return there. `Timestamp::MAX` is 9999-12-30 in UTC;
+    /// only the widest offset makes it the last civil day, and only the
+    /// narrowest makes `Timestamp::MIN` the first.
     #[test]
     fn every_edge_phrase_returns_at_the_ends_of_time() {
         let phrases = EDGE_PHRASES.iter().map(|&(phrase, _)| phrase);
         for phrase in phrases.chain(["today", "tomorrow", "tonight", "next friday", "+1m"]) {
             for now in [Timestamp::MIN, Timestamp::MAX] {
-                for reader in [ny(), TimeZone::UTC] {
+                for reader in [
+                    ny(),
+                    TimeZone::UTC,
+                    TimeZone::fixed(Offset::MAX),
+                    TimeZone::fixed(Offset::MIN),
+                ] {
                     let _ = read(phrase, now, &reader);
                 }
             }
         }
+    }
+
+    /// On the last civil day "today" is a date and "tomorrow" is not; in UTC
+    /// the same instant is a day earlier and still has a tomorrow.
+    #[test]
+    fn the_last_civil_day_has_a_today_and_no_tomorrow() {
+        let last_day = TimeZone::fixed(Offset::MAX);
+        assert_eq!(
+            read("today", Timestamp::MAX, &last_day),
+            Some(When::Days(0))
+        );
+        assert_eq!(read("tomorrow", Timestamp::MAX, &last_day), None);
+        assert_eq!(
+            read("tomorrow", Timestamp::MAX, &TimeZone::UTC),
+            Some(When::Days(1))
+        );
+    }
+
+    /// Counts for a relative phrase. Uniform `i128`s almost never fit the `i64`
+    /// the parser reads, so most draws are ones that do: in-range spans, and
+    /// each bound the count crosses on its way to a value (jiff's span limit
+    /// for each unit, then `i32` and `i64`), with its neighbours and negation.
+    fn relative_count() -> impl proptest::strategy::Strategy<Value = i128> {
+        use proptest::prelude::{any, Strategy};
+
+        const MINUTES: i128 = 10_518_456_960;
+        let bounds = vec![
+            7_304_484,
+            1_043_497,
+            175_307_616,
+            MINUTES,
+            i128::from(i32::MAX),
+            i128::from(i64::MAX),
+        ];
+        proptest::prop_oneof![
+            any::<i128>(),
+            any::<i64>().prop_map(i128::from),
+            -MINUTES..=MINUTES,
+            (proptest::sample::select(bounds), -1i128..=1, any::<bool>()).prop_map(
+                |(bound, step, negate)| {
+                    let count = bound + step;
+                    if negate {
+                        -count
+                    } else {
+                        count
+                    }
+                }
+            ),
+        ]
     }
 
     proptest::proptest! {
@@ -226,7 +283,7 @@ mod tests {
         /// Any integer the phrase can carry, in any unit, is a value or none.
         #[test]
         fn a_relative_phrase_with_any_count_is_read_without_panicking(
-            n in proptest::prelude::any::<i128>(),
+            n in relative_count(),
             unit in proptest::sample::select(vec!['d', 'w', 'h', 'm']),
         ) {
             let _ = read(&format!("+{n}{unit}"), at("2026-10-24T03:00:00Z"), &ny());
