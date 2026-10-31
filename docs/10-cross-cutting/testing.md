@@ -836,7 +836,7 @@ What is wired today, in one place:
 | Check | Where | Runs on |
 |---|---|---|
 | Nine fuzz targets, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
-| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
+| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
 | No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
 | External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
 
@@ -1010,8 +1010,11 @@ wires a narrower version of it:
   and the job's comment says so.
 - **A pull request that touches a decoder — wired, path-filtered.**
   `fuzz-pr-plan` reads the merge commit's diff against its base and names the
-  targets the changed paths reach: `crates/sunrise-crypto/` the five crypto
-  targets, `crates/sunrise-wire-protocol/` `wire_frame`,
+  targets the changed paths reach: `crates/sunrise-cbor/` the five that
+  decode through it (`op_envelope`, `recovery_blob`, `identity_transition`,
+  `device_cert` and `wire_frame`), `crates/sunrise-crypto/` the five crypto
+  targets,
+  `crates/sunrise-wire-protocol/` `wire_frame`,
   `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
   seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` all nine.
   `fuzz-pr` then runs each named target for 120 seconds from the committed
