@@ -1096,8 +1096,8 @@ jobs:
     #
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
-    # Nightly and on demand, never on a pull request. The four scoped crates
-    # generate 3,269 mutants — the sum of the four populations recorded on
+    # Nightly and on demand, never on a pull request. The six scoped crates
+    # generate 3,512 mutants — the sum of the six populations recorded on
     # the matrix below — and each one is an incremental rebuild plus a test
     # run; a full pass is hours, which is exactly why
     # docs/10-cross-cutting/testing.md scopes this to release candidates rather
@@ -1105,7 +1105,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       # Not fail-fast: a regression in one crate should not hide the scores of
-      # the other three, and the gate below needs every shard's outcomes to
+      # the others, and the gate below needs every shard's outcomes to
       # compute a crate's rate correctly.
       fail-fast: false
       matrix:
@@ -1115,10 +1115,11 @@ jobs:
         # `1d4b484` with `cargo mutants --list -p <crate> --all-features`:
         # sunrise-domain 1356, sunrise-core 1259, sunrise-crypto 519,
         # sunrise-sync 135. The figures here were 1352/740/296/94 and had
-        # drifted with the crates.
+        # drifted with the crates. sunrise-cbor 134 and sunrise-id 109 joined
+        # the scope later, counted the same way at `b94bcd5`.
         #
         # Shard counts are not proportional to those populations, and should
-        # not be: per-mutant cost spans a factor of eight across the four, so
+        # not be: per-mutant cost spans a factor of eight across the first four, so
         # the population is not the cost. The table above is what they balance
         # against — sunrise-core at 4 shards is 315 mutants at ~15.4 s, the
         # longest shard at about 81 minutes, where sunrise-domain at 6 is 226
@@ -1141,6 +1142,8 @@ jobs:
           - { crate: sunrise-crypto, shard: 0/2 }
           - { crate: sunrise-crypto, shard: 1/2 }
           - { crate: sunrise-sync, shard: 0/1 }
+          - { crate: sunrise-cbor, shard: 0/1 }
+          - { crate: sunrise-id, shard: 0/1 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1279,7 +1282,7 @@ jobs:
         # a short crate is reported as a broken run and left unscored.
         run: |
           .github/scripts/mutants-gate.py outcomes/*/outcomes.json \
-            --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1
+            --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1,sunrise-cbor=1,sunrise-id=1
 
   mutants-gate-contract:
     name: Mutation gate contract
