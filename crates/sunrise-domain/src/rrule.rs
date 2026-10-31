@@ -10,6 +10,7 @@
 
 use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
+use jiff::civil::Weekday as JiffWeekday;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -89,6 +90,22 @@ impl Weekday {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Some(Self::from_raw(s)).filter(|w| !w.is_unknown())
+    }
+
+    /// The jiff civil weekday this token names; `None` for a token this build
+    /// does not know, which names no day.
+    #[must_use]
+    pub fn to_jiff(&self) -> Option<JiffWeekday> {
+        Some(match self {
+            Self::Su => JiffWeekday::Sunday,
+            Self::Mo => JiffWeekday::Monday,
+            Self::Tu => JiffWeekday::Tuesday,
+            Self::We => JiffWeekday::Wednesday,
+            Self::Th => JiffWeekday::Thursday,
+            Self::Fr => JiffWeekday::Friday,
+            Self::Sa => JiffWeekday::Saturday,
+            Self::Unknown(_) => return None,
+        })
     }
 }
 
@@ -395,6 +412,24 @@ mod tests {
         assert_eq!(r.freq, Frequency::Daily);
         assert_eq!(r.interval, 1);
         assert!(r.by_day.is_empty());
+    }
+
+    /// Each token names its own day, and an unknown one names none.
+    #[test]
+    fn to_jiff_maps_every_token_and_refuses_an_unknown_one() {
+        let cases = [
+            (Weekday::Su, Some(JiffWeekday::Sunday)),
+            (Weekday::Mo, Some(JiffWeekday::Monday)),
+            (Weekday::Tu, Some(JiffWeekday::Tuesday)),
+            (Weekday::We, Some(JiffWeekday::Wednesday)),
+            (Weekday::Th, Some(JiffWeekday::Thursday)),
+            (Weekday::Fr, Some(JiffWeekday::Friday)),
+            (Weekday::Sa, Some(JiffWeekday::Saturday)),
+            (Weekday::from_raw("XX"), None),
+        ];
+        for (token, want) in cases {
+            assert_eq!(token.to_jiff(), want, "{token:?}");
+        }
     }
 
     #[test]

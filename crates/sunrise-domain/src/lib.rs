@@ -50,7 +50,6 @@ pub mod routine;
 pub mod routine_gen;
 pub mod rrule;
 pub mod saved_view;
-pub mod schema;
 pub mod search;
 pub mod sort_order;
 pub mod stats;
@@ -165,7 +164,6 @@ pub use saved_view::{
     DateWindow, LatenessPart, PriorityRange, SavedView, SavedViewDraft, SavedViewPatch, ViewFilter,
     ViewKind, ViewSort, WindowField,
 };
-pub use schema::DOC_SCHEMA_V;
 pub use sort_order::{
     append_after as sort_order_append_after, between as sort_order_between, SortOrderError,
     DEFRAG_THRESHOLD_BYTES as SORT_ORDER_DEFRAG_THRESHOLD_BYTES,
