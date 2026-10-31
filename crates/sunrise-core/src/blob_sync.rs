@@ -107,7 +107,7 @@
 //! | Rows scanned per fetch drain | [`MAX_FETCH_SCAN`] | Bounds the filesystem work one drain does looking for missing chunks. |
 //!
 //! The upload queue itself needs no cap, and the reason is the one
-//! `DEFERRED_TOTAL_CAP` documents from the other side: that cap exists because
+//! `engine::sync::DEFERRED_TOTAL_CAP` documents from the other side: that cap exists because
 //! `defer_op` is reached before anything about the payload is checked, so a
 //! *peer* could park bytes of its choosing on every device in the account. A
 //! `blob_uploads` row is written only by this device's own `attach_file`, only

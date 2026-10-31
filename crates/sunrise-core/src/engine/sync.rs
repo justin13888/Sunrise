@@ -19,10 +19,7 @@ use super::lww::{remap_legacy_inbox, LwwStamp};
 use super::merge::{check_patch, to_sql, PatchProblem};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::park::{diagnostic_kind, schema_fp_mismatch};
-use super::{
-    Engine, EngineError, DEFERRED_PER_EPOCH_CAP, DEFERRED_TOTAL_CAP, DEFERRED_TTL_MS,
-    MAX_EPOCH_LEAP, META_STREAM,
-};
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::control_op::Recipient;
 use crate::events::DomainEvent;
@@ -1620,3 +1617,125 @@ impl Engine {
         Ok(blob)
     }
 }
+
+/// How far above the highest epoch this replica holds an absorbed Stream key
+/// may sit.
+///
+/// `epoch` is a plain field of the signed envelope, so a member chooses it
+/// freely, and `mint_epoch` counts from the highest epoch held
+/// (`Keychain::max_epoch_tx`). Without a bound a single `key_envelope` at
+/// `u32::MAX` does two things at once:
+/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
+/// so rotation can never advance past it again, and, from a sender this
+/// replica has not read-bounded, whose key `current_epoch_tx` adopts as live,
+/// every op this device seals from then on is sealed under a key only the
+/// sender holds — the victim goes
+/// dark to its own account, permanently, from one op.
+///
+/// The window can be this tight because a legitimate epoch is *walked*, never
+/// leapt. Each rotation raises one stream's epoch by exactly one and emits its
+/// `key_envelope` sealed under the meta epoch current at the time; a replica
+/// catching up absorbs the meta key for epoch n, drains the ops that key
+/// releases, and only then sees the envelopes for n+1. So the gap this has to
+/// tolerate is what can arrive out of order within one drain, not the number of
+/// rotations an account has ever performed. Sixty-four is far past that and far
+/// short of anything that would strand `mint_epoch`.
+///
+/// The residual is that a key genuinely more than 64 epochs ahead is refused
+/// and not retried. The refusal is a dropped *payload*, not a dropped op: the
+/// envelope still enters `ops`, and the op counts toward the contiguous prefix
+/// exactly like an applied one. Whether the cursor then moves past it is a
+/// question about the seqs *below* it and never about the refusal — see
+/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`. Once it
+/// does, the relay will not re-send the op and nothing re-offers the key. Ops
+/// sealed under that `(stream, epoch)` therefore stay unreadable on this
+/// replica until the device is re-paired, which is what hands it every Stream
+/// key the inviting device holds. That is the recovery, and it is the same one that covers a
+/// device whose `deferred_ops` entry aged out.
+///
+/// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
+/// only ways to reach it are a hostile sender and a bug.
+pub(super) const MAX_EPOCH_LEAP: u32 = 64;
+
+/// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
+///
+/// A deferred op is one that arrived before the key that opens it, which is a
+/// real and ordinary race — but a *transient* one: the very next absorb of that
+/// key releases the whole bucket. So the honest population of one bucket is
+/// whatever a peer wrote in the gap between minting a key and its
+/// `key_envelope` reaching here, which is a burst, not a backlog. 256 covers a
+/// peer that wrote a full working session into the gap.
+pub(super) const DEFERRED_PER_EPOCH_CAP: i64 = 256;
+
+/// How many ops may sit in `deferred_ops` across the whole vault.
+///
+/// A revocation rotates *every* stream at once, so several buckets can fill
+/// legitimately at the same moment; the total is sized for that rather than for
+/// one stream. 4096 is sixteen full buckets.
+///
+/// Both caps exist because `epoch` is attacker-chosen (see [`MAX_EPOCH_LEAP`])
+/// and `defer_op` is reached *before* anything about the payload is checked: a
+/// member could otherwise park bytes of its choosing on every peer in the
+/// account, at any `(stream, epoch)` it liked, with no ceiling.
+///
+/// # "Attacker-chosen" is about this `epoch` and not the one the fold sorts by
+///
+/// The `epoch` above is the number in an envelope header, read on the deferral
+/// path — which is reached precisely because no key at that `(stream, epoch)`
+/// is held, so nothing has been opened and nothing has been checked. Any `u32`
+/// at all can appear there.
+///
+/// `identity_transitions.meta_epoch`, which ADR-0037 §4 calls the security
+/// component of the fold's ordering, is a different value with a different
+/// provenance despite coming off the same field. A row is written only by
+/// `apply_control_op`, which is reached only after the envelope **opened**
+/// under a key this replica holds at that exact `(stream, epoch)`. A sender
+/// that writes an epoch it has no key for produces ciphertext that fails the
+/// tag, so the op is refused and no row exists; one that writes an epoch
+/// nobody holds parks here instead and expires.
+///
+/// So the two statements are both true and are not in tension: an *unopened*
+/// op's epoch is a free claim, and an *applied* op's epoch is a key the sender
+/// demonstrably held. The audit that raised this read the two as contradictory
+/// because the word is the same in both places; it is the same field and not
+/// the same fact.
+///
+/// Overflow evicts the **oldest** rows. Both directions lose something, and it
+/// is worth being plain about which:
+///
+/// * *Oldest-first*, what this does: a flood of fresh junk at one
+///   `(stream, epoch)` pushes out the honest ops already waiting there.
+/// * *Newest-first*, the alternative: the flood's own first 256 rows occupy the
+///   bucket and every honest op arriving behind it is turned away instead.
+///
+/// Oldest-first wins on two counts. A row that has waited longest is the one
+/// whose key is least likely to still be in flight, so it is the cheapest to
+/// lose; and the bucket **self-heals** — ordinary traffic pushes the junk out
+/// again — where newest-first leaves it poisoned until the TTL sweeps it.
+///
+/// Either way an evicted op is recoverable, which is what makes this a
+/// tolerable trade at all: a deferred op never reached `ops` and never advanced
+/// the sync cursor, so the relay still counts it as undelivered and re-sends it
+/// on the next reconnect, by which time the key that opens it has almost
+/// certainly arrived.
+const DEFERRED_TOTAL_CAP: i64 = 4096;
+
+/// How long a parked op is kept before a drain sweeps it away.
+///
+/// Nothing re-delivers the key for an op this old: the relay's op ring has long
+/// since evicted the `key_envelope` that would have released it, and no replica
+/// re-emits one on request. Keeping it is keeping ciphertext this device will
+/// never read. Thirty days is generous against every offline window a person
+/// actually has and still bounds a slow drip that never reaches either cap.
+///
+/// # Neither this nor the two caps bound `parked_ops`
+///
+/// An op of a kind this build does not know parks in `parked_ops` instead
+/// (`Engine::park_op`, issue #320), and that table has no TTL and no cap on
+/// purpose. Everything that justifies the three bounds above is false of it:
+/// its op verified and opened, so its epoch is not a free claim and its bytes
+/// are not ciphertext this device may never read; and it advanced the sync
+/// cursor, so the relay will never re-send it, and an evicted row would be an
+/// op lost rather than one fetched again. What bounds it is what bounds `ops`:
+/// only a member can write one.
+pub(super) const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;

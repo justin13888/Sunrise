@@ -173,7 +173,7 @@ range, never the epoch.
 zone a client last reported through `on_time_zone_changed` (§7), and the
 injected clock's own until one has. It is always passed in explicitly; no
 domain function reads an ambient zone. A name the tzdb cannot resolve is never
-read as UTC (`crates/sunrise-core/src/engine/block.rs#device_zone`). The engine
+read as UTC (`crates/sunrise-core/src/engine/zone.rs#device_zone`). The engine
 keeps reading in the last zone it resolved. Only an engine that has never
 resolved one reads in UTC, and `Core::zone_unknown` then says so. That memory
 lasts as long as the process, because the clients report the zone on every
