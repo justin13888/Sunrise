@@ -128,7 +128,7 @@ run = [
   "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
-# The second invocation is #167. The six `fuzz/` harnesses were the only Rust
+# The second invocation is #167. The `fuzz/` harnesses were the only Rust
 # in the tree that was formatted and then linted by nothing, which matters more
 # for them than for ordinary test code: a warning there is the shape — a `let _
 # =` swallowing a result, a branch nothing reaches — that makes a target
@@ -508,7 +508,7 @@ cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$usage_tar
 """
 
 [tasks.bench]
-description = "Run the Criterion benchmark suite (submit / query_today / fts / sync_session)"
+description = "Run the Criterion benchmark suite"
 run = "cargo bench -p sunrise-bench"
 
 [tasks.bench-baseline]
@@ -858,7 +858,7 @@ echo "out/$ffi_fw.xcframework (macOS + iOS + iOS Simulator) + out/swift/$ffi_lib
 # would put a missing SwiftLint several minutes of release builds behind the
 # command that could have named it.
 [tasks.macos-app]
-description = "Generate the Xcode project, build the macOS app, and run its tests"
+description = "Generate the Xcode project, lint with swiftlint --strict, build the macOS app, and run its tests"
 dir = "apps/apple"
 shell = "bash -c"
 run = """
@@ -895,7 +895,7 @@ fi
 # below. The framework is a step rather than a `depends` for the reason given
 # above `macos-app`, and the simulator is checked with the tools.
 [tasks.ios-app]
-description = "Generate the Xcode project, build the iOS app, and run its tests"
+description = "Generate the Xcode project, lint with swiftlint --strict, build the iOS app, and run its tests"
 dir = "apps/apple"
 shell = "bash -c"
 run = """
@@ -1047,7 +1047,7 @@ description = "Both Apple apps, back to back. What CI runs across two of its thr
 run = ["mise run macos-app", "mise run ios-app"]
 
 [tasks.ios-open]
-description = "Generate the Xcode project and open it, with the iOS scheme selected"
+description = "Same as macos-open: generate the Xcode project and open it; pick the iOS scheme in Xcode"
 depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
@@ -1528,10 +1528,7 @@ done
 [tasks.mutants-gate-test]
 description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
 # Runs in about a second: it synthesises outcomes.json fixtures in a temp
-# directory and never invokes cargo. That is the point — the gate's contract is
-# what CI and the printed remedies depend on, and it had drifted twice before
-# anything asserted it, because the only way to exercise it was a full mutation
-# run nobody waits for.
+# directory and never invokes cargo. Why: the script's docstring.
 run = "python3 .github/scripts/test_mutants_gate.py"
 
 [tasks.mutants-flags-gate]
@@ -1554,39 +1551,28 @@ run = "python3 .github/scripts/mutants-flags-gate.py"
 [tasks.mutants-flags-gate-test]
 description = "Assert the flag gate's exit-code contract (fast, no cargo)"
 # Runs in a few seconds: it synthesises a mise.toml and a ci.yml in a
-# temp directory and points the gate at those, so seeing the gate go red
-# never means editing the real files to find out. One case is the
-# exception and runs the gate against this repository, because the
-# invocation count the gate states is otherwise asserted nowhere a
-# developer runs — `Mutation flag gate` in ci.yml is not a required
-# check. That case costs a coupling to working-tree state: an untracked
-# .github/**/*.sh holding a cargo-mutants line fails this suite locally
-# while the tracked tree is perfectly in step.
+# temp directory and points the gate at those. Why, and the cases that read
+# this repository instead: the script's docstring.
 run = "python3 .github/scripts/test_mutants_flags_gate.py"
 
 [tasks.core-filesystem-gate-test]
 description = "Assert the core filesystem gate still reports (fast, no cargo)"
 # Runs in about a second: it synthesises a `crates/sunrise-core/src` in a temp
-# directory and never invokes cargo. It exists because the gate's first scanner
-# stopped reading at the first `#[cfg(test)]` line in a file, which after the
-# engine and keychain splits meant it read 3% of engine/oplog.rs and reported OK.
+# directory and never invokes cargo. Why: the script's docstring.
 run = "python3 .github/scripts/test_core_filesystem_gate.py"
 
 [tasks.file-size-gate-test]
 description = "Assert the file size gate's exit-code contract (fast, no cargo)"
 # Runs in under a second: it synthesises package trees in a temp directory and
 # overrides the gate's two tables, so it never reads the repository's own crates.
-# The gate shipped with three failure modes and no fixtures for any of them.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_file_size_gate.py"
 
 [tasks.appcast-gate-test]
 description = "Assert the Sparkle appcast generator's rules (fast, no network)"
 # Runs in under a second: it synthesises a Releases API body and the per-release
-# signature sidecars in a temp directory, so it never touches GitHub. What it
-# asserts has no other check -- which release lands on which Sparkle channel,
-# and whether the signature in hand describes the bytes being advertised -- and
-# the only other way to find out is to publish a release and watch every
-# installed copy either update or stop updating. See ADR-0038.
+# signature sidecars in a temp directory, so it never touches GitHub. Why: the
+# script's docstring, and ADR-0038.
 run = "python3 .github/scripts/test_appcast.py"
 
 [tasks.orphan-crate-gate-test]
@@ -1594,8 +1580,8 @@ description = "Assert the orphan crate gate's exit-code contract (fast, synthesi
 # A second or two: it synthesises Cargo workspaces of two to four one-line
 # crates in a temp directory and drives the gate at them with --manifest-path,
 # so it never reads this workspace. It does run `cargo metadata --no-deps`,
-# which reads manifests without resolving or compiling. The gate prints the
-# reachable count that overview.md cites and nothing checked the walk behind it.
+# which reads manifests without resolving or compiling. Why: the script's
+# docstring.
 run = "python3 .github/scripts/test_orphan_crate_gate.py"
 
 [tasks.swift-logic-gate-test]
@@ -1607,71 +1593,53 @@ run = "python3 .github/scripts/test_swift_logic_gate.py"
 
 [tasks.publish-gate-test]
 description = "Assert the publish gate's exit-code contract (fast, synthesised repositories)"
-# Under five seconds: it builds repositories of three to six manifests in a
-# temp directory and drives the gate at them with --root, so it never reads
-# this one. Each pass case asserts the counts the gate prints, because a rule
-# that stopped matching shows up as a smaller count, not as a red run.
+# Under five seconds: it builds repositories of manifests in a temp directory
+# and drives the gate at them with --root, so it never reads this one. Why: the
+# script's docstring.
 run = "python3 .github/scripts/test_publish_gate.py"
 
 [tasks.kynos-waiver-gate-test]
 description = "Assert the kynos waiver gate's exit-code contract (fast, synthesised workspaces)"
 # About a second: it synthesises a workspace with a stand-in `kynos` path
 # dependency in a temp directory and runs the gate with its cwd inside it,
-# which is the only thing that steers the gate — it takes no arguments. The
-# feature set it reads has already changed shape once under it.
+# which is the only thing that steers the gate — it takes no arguments. Why: the
+# script's docstring.
 run = "python3 .github/scripts/test_kynos_waiver_gate.py"
 
 [tasks.citation-gate-test]
 description = "Assert the citation gate's exit-code and discrimination contract (fast, synthesised repos)"
 # A few seconds: it synthesises git repositories in a temp directory, so it
-# never reads this tree. Half of it is the near-misses — `Vec<u8>`,
-# `cargo test --workspace`, a prose filename — because a gate that fires on
-# everything is as useless as one that fires on nothing, and the two halves fail
-# in opposite directions from the same edit to the regex.
+# never reads this tree. Why: the script's docstring.
 run = "python3 .github/scripts/test_citation_gate.py"
 
 [tasks.doc-comment-gate-test]
 description = "Assert the doc comment gate's exit-code contract (fast, synthesised crates)"
-# The gate's own --self-test runs scan_text over six string literals and reaches
-# nothing else: not the listing, not the 50-file floor that says "the scan is
-# broken" rather than "the tree is clean", not the exit codes those produce.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_doc_comment_gate.py"
 
 [tasks.docs-link-gate-test]
 description = "Assert the docs link gate's exit-code contract (fast, synthesised repos)"
-# The gate's own --self-test is an excellent test of `slugify` and no test at
-# all of `check()`, which was exercised only by this repository's own 1,239
-# links — a fixture that changes every week and can only prove the gate green.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_docs_link_gate.py"
 
 [tasks.observability-catalog-gate-test]
 description = "Assert the observability catalogue gate's exit-code contract (fast, synthesised docs)"
-# This gate reads its extraction command out of the document and runs it, which
-# is a second surface that can rot: a marker that loses its `grep` line, a path
-# that stops being a directory, a provenance ref that names no commit. The
-# gate's own self-test reaches none of those routes.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_observability_catalog_gate.py"
 
 [tasks.proptest-persistence-gate-test]
 description = "Assert the proptest persistence gate's exit-code contract (fast, synthesised crates)"
-# Three of the five codes this gate emits — ignored, untracked and flat — are
-# decided by the filesystem and the index rather than by the source text, so the
-# gate's own self-test cannot reach them from a string literal.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_proptest_persistence_gate.py"
 
 [tasks.apply-refusal-gate-test]
 description = "Assert the apply-path refusal gate can still say no (fast, synthesised engine files)"
-# On the real tree the gate exits 0, which is also what a gate that reads
-# nothing exits. These cases plant the `?` and `return Err` #298 describes and
-# assert exit 1, and keep the caught-and-logged shapes at 0.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_apply_refusal_gate.py"
 
 [tasks.constant-time-gate-test]
 description = "Assert the constant-time gate can still say no (fast, synthesised crates)"
-# On the real tree the gate exits 0, which is also what a gate that reads
-# nothing exits. These cases plant a `==` over a `[u8; 32]` tag in
-# `sunrise-crypto` and assert exit 1, cover every operand shape and searched
-# crate, and refuse a stale, reasonless, missing or empty allowlist.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_constant_time_gate.py"
 
 [tasks.workflow-hardening]
@@ -1683,10 +1651,7 @@ run = ".github/scripts/workflow-hardening-gate.py"
 
 [tasks.workflow-hardening-gate-test]
 description = "Assert the workflow hardening gate's exit-code contract (fast, synthesised .github trees)"
-# The gate is a regex over YAML because nothing in CPython parses YAML and the
-# runners install nothing extra. These cases are where a regex is wrong if it
-# is wrong: a `uses:` inside a `run: |` block, and a job-level `permissions:`
-# mistaken for a top-level one.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_workflow_hardening_gate.py"
 
 [tasks.reverses-gate]
@@ -1698,10 +1663,7 @@ run = ".github/scripts/reverses-gate.py"
 
 [tasks.reverses-gate-test]
 description = "Assert the reverses gate's exit-code contract (fast, synthesised bodies and event payloads)"
-# The gate is a line reader over markdown, and a reader over prose goes quietly
-# green when its reading is wrong. These cases plant the two `Reverses:` lines
-# that closed #282 and #297 and assert exit 1, and keep the shapes #300 names
-# as safe at 0.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_reverses_gate.py"
 
 # --- Release artifacts ---
