@@ -559,9 +559,29 @@ const BLOCK: &str = "{id, title, stream, starts_at, ends_at, tasks}";
 const FIRST: &str = "<first>";
 const SECOND: &str = "<second>";
 
+/// The fixed-offset zone in which it is now between 12:00 and 12:59.
+///
+/// The positions in [`JSON_OBJECTS`] hold only by day: before the planner day
+/// turns over, `upcoming` still starts on yesterday and `today` lists no
+/// planned task first. The binary reads the real clock, so the fixture moves
+/// the reader to midday rather than the clock.
+fn zone_where_it_is_midday() -> String {
+    let hour = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .hour();
+    let hours_east = 12 - hour;
+    // The tzdb's `Etc` names have the POSIX sign: `Etc/GMT-3` is three hours east.
+    if hours_east > 0 {
+        format!("Etc/GMT-{hours_east}")
+    } else {
+        format!("Etc/GMT+{}", -hours_east)
+    }
+}
+
 /// A vault in which every object of [`JSON_OBJECTS`] exists, and the ids of
 /// two tasks in one stream.
 fn vault_for_the_json_table(v: &Path) -> (String, String) {
+    ok(v, &["tz", "set", &zone_where_it_is_midday()]);
     ok(v, &["streams", "create", "Home"]);
     ok(v, &["contexts", "create", "errands"]);
     for day in ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] {
@@ -628,6 +648,7 @@ const JSON_OBJECTS: &[JsonObject] = &[
     (&["move", FIRST, "after", SECOND], "/0", TASK, PLAIN),
     (&["show", FIRST], "", TASK, WITH_LATENESS),
     (&["triage"], "/0", TASK, WITH_LATENESS),
+    (&["triage", "list"], "/0", TASK, WITH_LATENESS),
     (
         &["search", "bank"],
         "",
@@ -838,13 +859,88 @@ const JSON_OBJECTS: &[JsonObject] = &[
     ),
 ];
 
+/// Every command path a row of the page's table names: each code span of its
+/// first cell, up to the first word that is an operand or an option, with
+/// `brief morning\|evening` read as both of its paths.
+fn documented_commands(section: &str) -> BTreeSet<Vec<String>> {
+    let mut commands = BTreeSet::new();
+    for line in section.lines().filter(|l| l.starts_with("| `")) {
+        let cell = line[2..].split(" | ").next().unwrap();
+        for span in cell.split('`').skip(1).step_by(2) {
+            let is_word =
+                |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+            let mut paths = vec![Vec::new()];
+            for token in span.split_whitespace() {
+                let words: Vec<&str> = token.split("\\|").collect();
+                if !words.iter().copied().all(is_word) {
+                    break;
+                }
+                paths = paths
+                    .iter()
+                    .flat_map(|path: &Vec<String>| {
+                        words.iter().map(|word| {
+                            let mut path = path.clone();
+                            path.push((*word).to_owned());
+                            path
+                        })
+                    })
+                    .collect();
+            }
+            commands.extend(paths);
+        }
+    }
+    commands
+}
+
+/// The page path `args` runs: the longest one it starts with, word by word, so
+/// `review daily` never counts for `review`, nor `streams` for `stream`.
+fn page_command_of<'a>(
+    args: &[&str],
+    documented: &'a BTreeSet<Vec<String>>,
+) -> Option<&'a Vec<String>> {
+    documented
+        .iter()
+        .filter(|path| path.len() <= args.len() && path.iter().zip(args).all(|(p, a)| p == a))
+        .max_by_key(|path| path.len())
+}
+
+#[test]
+fn a_row_of_the_page_is_read_as_every_command_it_names() {
+    let section = "| Command | Document |\n\
+         | `inbox`, `views apply` (task views) | array of `tasks` |\n\
+         | `move <id>... before\\|after <id>` | a \\| b |\n\
+         | `brief morning\\|evening` | `{brief}` |\n\
+         | `blocks [day\\|week]` | array |\n\
+         Prose with `not a row`.\n";
+    let paths: Vec<&str> = vec![
+        "blocks",
+        "brief evening",
+        "brief morning",
+        "inbox",
+        "move",
+        "views apply",
+    ];
+    let read: Vec<String> = documented_commands(section)
+        .iter()
+        .map(|path| path.join(" "))
+        .collect();
+    assert_eq!(read, paths);
+
+    let documented = documented_commands("| `review`, `review daily`, `streams` | x |\n");
+    let of = |args: &[&str]| page_command_of(args, &documented).map(|path| path.join(" "));
+    assert_eq!(of(&["review", "daily"]).as_deref(), Some("review daily"));
+    assert_eq!(of(&["review"]).as_deref(), Some("review"));
+    assert_eq!(of(&["stream", "Home"]), None);
+}
+
 /// §JSON output is a contract: a name is added, never renamed or removed, and
 /// every name is documented. So each object a query prints has exactly the
 /// keys the page gives it, and each group the table holds is quoted from the
 /// page, so neither can move without the other.
 ///
-/// Every command of the page's table must have a row. `conflicts` is the one
-/// whose objects need a second device to exist, so it is only read empty.
+/// Every command path of the page's table must have a row, and every row a
+/// command path on the page. `conflicts` is the one whose objects need a second
+/// device to exist, so it is only read empty.
 #[test]
 fn every_json_object_has_exactly_the_documented_keys() {
     let dir = tempfile::tempdir().unwrap();
@@ -892,17 +988,23 @@ fn every_json_object_has_exactly_the_documented_keys() {
         .nth(1)
         .and_then(|rest| rest.split("\n### ").next())
         .expect("the page has a JSON output section");
-    let pinned: BTreeSet<&str> = JSON_OBJECTS.iter().map(|(args, ..)| args[0]).collect();
-    for line in section.lines().filter(|l| l.starts_with("| `")) {
-        let command = line[3..]
-            .split(|c: char| !(c.is_ascii_lowercase() || c == '-'))
-            .next()
-            .unwrap();
-        assert!(
-            command == "conflicts" || pinned.contains(command),
-            "the page documents `{command}`, which has no row here"
-        );
-    }
+    let documented = documented_commands(section);
+    let pinned: BTreeSet<&Vec<String>> = JSON_OBJECTS
+        .iter()
+        .map(|(args, ..)| {
+            page_command_of(args, &documented)
+                .unwrap_or_else(|| panic!("the page does not document `{}`", args.join(" ")))
+        })
+        .collect();
+    let unpinned: Vec<String> = documented
+        .iter()
+        .filter(|path| !pinned.contains(path) && path.join(" ") != "conflicts")
+        .map(|path| path.join(" "))
+        .collect();
+    assert!(
+        unpinned.is_empty(),
+        "the page documents commands with no row here: {unpinned:?}"
+    );
 }
 
 #[test]
