@@ -18,11 +18,8 @@ status: accepted
 > [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/),
 > and `migrations.rs`'s `current_storage_v_matches_the_version_constant` fails
 > the build if those two ever disagree. So is the number of migrations: it is
-> the file count of that directory. A count in prose has to be hand-edited every
-> time a migration lands, which means it is wrong from the next merge until
-> someone notices — this page carried "`STORAGE_V` is **16** … four files"
-> through four appends, which is the whole argument for not saying it again.
-> Read the directory; it cannot drift from itself.
+> the file count of that directory. Read the directory; it cannot drift from
+> itself.
 >
 > Every file after 0013 was appended, and 0013 was not touched to make room for
 > any of them — which is exactly the append-only rule the reset reinstated. The
@@ -47,8 +44,7 @@ Each migration:
 
 ### Who provides the no-op
 
-This page used to say each migration "is idempotent (re-running is a no-op)".
-**That is false of the SQL and always was.** Not one migration in the tree is
+A migration's SQL **is not idempotent.** Not one migration in the tree is
 re-runnable on its own: they are bare `ALTER TABLE … ADD COLUMN` and
 `CREATE TABLE` statements, and SQLite fails the second one with "duplicate
 column name" or "table already exists". Replay 0017 and it renames a
@@ -501,17 +497,7 @@ The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-
 > macOS app does not offer the repair yet
 > ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
-The design of record for the rebuild is §Migration rigor rule 4, which
-supersedes the outline below where they differ (canonical order, parked ops,
-source/projection classification).
-
-If a migration is irrecoverable (a corrupt index, a bug), the user can trigger "rebuild from log":
-
-1. Wipe materialized tables.
-2. Re-apply ops in causal order.
-3. Rebuild FTS index.
-
-This is an internal capability used by the app on first launch after an upgrade that changes materialization logic.
+The design of record for the rebuild is §Migration rigor rule 4.
 
 ## No op-log migration
 

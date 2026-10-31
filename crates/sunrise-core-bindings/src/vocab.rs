@@ -401,12 +401,15 @@ pub fn block_conflicts(rows: Vec<BlockGridRow>, tz: String) -> Vec<BlockConflict
         .collect()
 }
 
-/// The draft the Resolve menu's **Merge** action creates.
+/// A preview of the block the Resolve menu's **Merge** action creates. Writes
+/// nothing.
 ///
 /// `docs/02-domain/time-blocks.md` §Conflicts defines merge as "tombstone the
 /// two original Blocks and create a new one with the union time range and
-/// concatenated tasks". This is the create half; the caller submits the two
-/// deletes alongside it.
+/// concatenated tasks". To commit one, call
+/// [`SunriseCore::merge_blocks`](crate::SunriseCore::merge_blocks), which
+/// writes the union and both tombstones as one commit; this draft is not an
+/// input to it.
 ///
 /// The interesting part is not the union but **which time kind survives it**,
 /// and that is a domain decision: two bounds of the same kind stay that kind,

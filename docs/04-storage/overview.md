@@ -17,6 +17,7 @@ $VAULT/
 ├── vault.db                        # SQLite (SQLCipher): ops + materialized state + FTS index
 ├── core.lock                       # single-writer lock
 ├── core.lock.owner                 # pid//owner of the held lock
+├── vault.db.pre-v<N>.bak …         # upgrade and rebuild backups, and .replaced-<n> (see migrations.md)
 └── blobs/
     └── 0a/0a3f…/<chunk_idx>.bin    # ciphertext chunks, keyed by 16-byte blob_id
 ```
@@ -43,7 +44,7 @@ The op envelope is encrypted (per [`../03-crypto/data-encryption-format.md`](../
 | Windows | `%LOCALAPPDATA%\Sunrise\<account>\` |
 | iOS | App container `Library/Sunrise/` (excluded from iCloud, included in iOS device backup if user opts in) |
 | Android *(not built, [ADR-0027](../11-adr/0027-v1-self-host-first.md))* | `Context.filesDir/sunrise/<account>/` (private) |
-| Web *(not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md))* | OPFS root + per-origin IndexedDB; same logical structure |
+| Web *([ADR-0055](../11-adr/0055-web-wasm-core.md))* | OPFS: `vault.db` in plaintext SQLite, with the vault root stored beside it; no sync and no attachments yet |
 | CLI | `$SUNRISE_VAULT`, default `~/.sunrise/vault` |
 
 ## Multi-account
@@ -59,3 +60,4 @@ A single device may host multiple accounts (work + personal). Each account is a 
 | [`blob-store.md`](./blob-store.md) | Encrypted blob layout |
 | [`compaction.md`](./compaction.md) | When and how the op log shrinks |
 | [`migrations.md`](./migrations.md) | Migration framework |
+| [`export-format.md`](./export-format.md) | Vault export format |
