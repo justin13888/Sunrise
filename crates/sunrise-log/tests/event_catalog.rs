@@ -68,7 +68,7 @@
 //! — `target/debug/libsunrise_bench.d` names 95 files across 10 crates — so its
 //! first path is not a crate root, and two such files began with a path that is
 //! a real target's `src_path`. Being newest, they won the selection: coverage
-//! of `crates/sunrise-sync/src/sse.rs` rested on `sunrise-bench` enabling the
+//! of `crates/sunrise-sync/src/sse/mod.rs` rested on `sunrise-bench` enabling the
 //! `sse` feature and on cargo's topological ordering, neither of which anyone
 //! intended to depend on.
 //!
@@ -105,7 +105,7 @@
 //!   This no longer *hides*, which is the whole of the change. Every `.rs` file
 //!   git tracks under a workspace crate's `src/` is checked against the union
 //!   by [`the_scan_reaches_what_cargo_compiles`], and one the union misses is
-//!   named with what to build. `crates/sunrise-sync/src/sse.rs`, behind
+//!   named with what to build. `crates/sunrise-sync/src/sse/mod.rs`, behind
 //!   `#[cfg(feature = "sse")]` and off by default, is the standing instance:
 //!   it is in the set because `sunrise-cli` and `sunrise-bench` turn the feature
 //!   on and cargo recorded those units, and if that ever stops being true the
@@ -874,7 +874,7 @@ fn read_dep_info(path: &Path) -> Option<DepInfo> {
 /// names 95 files across 10 crates, and two such files begin with a path that is
 /// a real target's `src_path`. Indexing those by their first path filed a
 /// ten-crate closure under one target, and being newest they won the selection —
-/// which is how `crates/sunrise-sync/src/sse.rs` came to be covered by a
+/// which is how `crates/sunrise-sync/src/sse/mod.rs` came to be covered by a
 /// benchmark crate's artefact record rather than by sunrise-sync's own.
 ///
 /// `clippy-driver` also writes `.d` files whose first path is `clippy.toml`.
@@ -1794,7 +1794,7 @@ fn the_scan_reaches_what_cargo_compiles() {
         // it is the instance #84 turned on: before the union it was covered by
         // `sunrise-bench`'s uplifted artefact record, which is a fact about a
         // benchmark crate rather than about this gate.
-        "crates/sunrise-sync/src/sse.rs",
+        "crates/sunrise-sync/src/sse/mod.rs",
         // Behind `#[cfg(test)]` at its `mod` declaration, so it is absent from
         // any `cargo build --workspace` record and present in a `cargo test`
         // one. The union holds both.
