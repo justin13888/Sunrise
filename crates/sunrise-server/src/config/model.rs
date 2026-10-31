@@ -138,7 +138,7 @@ pub struct ServerConfig {
     /// The `[push]` table: the wake-up providers. Empty — the default — sends
     /// no push at all; see `docs/06-server/push-notifications.md`.
     #[serde(default)]
-    pub push: PushConfig,
+    pub push: super::push::PushConfig,
     /// The `[observability]` table: OpenTelemetry trace export. Absent — the
     /// default — exports nothing and starts no exporter; see
     /// `docs/06-server/observability.md` §Tracing.
@@ -161,63 +161,6 @@ pub struct ServerConfig {
     /// pending-upload sweep. `[storage] maintenance_interval_secs`.
     #[serde(default = "default_maintenance_interval_secs")]
     pub maintenance_interval_secs: u64,
-}
-
-/// The `[push]` table.
-///
-/// One sub-table per provider. Only APNs exists; FCM and Web Push are designed
-/// behind the same [`crate::push::PushProvider`] trait and not built.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PushConfig {
-    /// `[push.apns]`. `None` leaves iOS devices to wake on their own schedule.
-    pub apns: Option<ApnsConfig>,
-}
-
-/// `[push.apns]`: token-based (`.p8`) authentication against APNs.
-///
-/// Every key is required. A partly written table is a refusal rather than a
-/// provider that fails on its first send, which an operator would only notice
-/// as phones that stopped syncing in the background.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ApnsConfig {
-    /// The `.p8` signing key Apple issued. Must not be readable by group or
-    /// others; the server refuses to start otherwise.
-    pub key_path: PathBuf,
-    /// The key's 10-character Key ID, the JWT `kid`.
-    pub key_id: String,
-    /// The 10-character Apple Developer Team ID, the JWT `iss`.
-    pub team_id: String,
-    /// The app's bundle id, sent as `apns-topic`.
-    pub topic: String,
-    /// Which APNs gateway the tokens were issued against.
-    pub environment: ApnsEnvironment,
-}
-
-/// The APNs gateway a device token belongs to.
-///
-/// A development build's token is valid only on the sandbox gateway and a
-/// release build's only on production, so this is a property of the app build
-/// the relay serves rather than a preference.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ApnsEnvironment {
-    /// `api.sandbox.push.apple.com`.
-    Sandbox,
-    /// `api.push.apple.com`.
-    Production,
-}
-
-impl ApnsEnvironment {
-    /// The gateway's origin.
-    #[must_use]
-    pub const fn endpoint(self) -> &'static str {
-        match self {
-            Self::Sandbox => "https://api.sandbox.push.apple.com",
-            Self::Production => "https://api.push.apple.com",
-        }
-    }
 }
 
 /// Whether `s` is an Apple 10-character identifier (Key ID, Team ID).
@@ -579,7 +522,7 @@ impl Default for ServerConfig {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             trusted_proxies: Vec::new(),
             limits: super::limits::LimitsConfig::default(),
-            push: PushConfig::default(),
+            push: super::push::PushConfig::default(),
             observability: None,
         }
     }
@@ -616,6 +559,7 @@ impl ServerConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::super::push::{ApnsConfig, ApnsEnvironment, PushConfig};
     use super::*;
 
     fn cfg(bind: &str) -> ServerConfig {
@@ -840,17 +784,5 @@ mod tests {
             ..apns
         });
         assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
-    }
-
-    #[test]
-    fn each_apns_environment_names_its_own_gateway() {
-        assert_eq!(
-            ApnsEnvironment::Sandbox.endpoint(),
-            "https://api.sandbox.push.apple.com"
-        );
-        assert_eq!(
-            ApnsEnvironment::Production.endpoint(),
-            "https://api.push.apple.com"
-        );
     }
 }
