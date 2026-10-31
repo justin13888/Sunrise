@@ -125,7 +125,8 @@ mod write;
 // `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
 // `keychain/` and `sync_driver.rs` — so the path they name has to keep
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
-// moved to `ids` and is re-exported here at its old name.
+// lives in `crate::bytes` and is re-exported here, through `ids`, at its old
+// name.
 pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
