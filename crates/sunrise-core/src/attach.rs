@@ -445,11 +445,11 @@ impl Core {
 mod tests {
     use super::*;
     use crate::config::CoreConfig;
+    use crate::test_support::a_task;
     use crate::unlock::Unlock;
     use parking_lot::Mutex as PLMutex;
     use std::sync::Arc;
     use sunrise_crypto::keys::VaultRootKey;
-    use sunrise_domain::TaskDraft;
 
     #[derive(Debug)]
     struct FakeClock(PLMutex<u64>);
@@ -490,16 +490,6 @@ mod tests {
         )
         .await
         .expect("open")
-    }
-
-    async fn a_task(core: &Core) -> EntityRef {
-        core.submit(Command::CreateTask(TaskDraft {
-            title: "Renew the passport".into(),
-            ..Default::default()
-        }))
-        .await
-        .expect("create task")
-        .entity
     }
 
     #[tokio::test]

@@ -73,6 +73,8 @@ pub mod queries;
 mod relay_intents;
 mod snapshot_sync;
 pub mod sync_driver;
+#[cfg(test)]
+mod test_support;
 pub mod unlock;
 pub mod vault_lock;
 
