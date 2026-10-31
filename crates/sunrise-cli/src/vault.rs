@@ -62,6 +62,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sunrise_client_core::ids::hex;
 use sunrise_core::Rng;
 
 use crate::i18n::strings;
@@ -305,7 +306,7 @@ pub fn open_or_create(
 
     let mut id_bytes = [0u8; ID_LEN];
     rng.fill_bytes(&mut id_bytes);
-    let id = to_hex(&id_bytes);
+    let id = hex(&id_bytes);
     let mut root = [0u8; ROOT_LEN];
     rng.fill_bytes(&mut root);
 
@@ -313,7 +314,7 @@ pub fn open_or_create(
     // and a directory that still reads as fresh, which the next run recovers
     // from by minting again; the other order would leave a vault naming a key
     // that was never written, which is indistinguishable from a lost key.
-    write_private(&key_path(keystore, &id), &to_hex(&root))?;
+    write_private(&key_path(keystore, &id), &hex(&root))?;
     write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
     register(keystore, &id, vault_dir)?;
     Ok(root)
@@ -349,13 +350,13 @@ pub fn adopt(
     }
     let mut id_bytes = [0u8; ID_LEN];
     rng.fill_bytes(&mut id_bytes);
-    let id = to_hex(&id_bytes);
+    let id = hex(&id_bytes);
     // Key first, marker second, for the reason `open_or_create` gives: the
     // other order leaves a vault naming a key that was never written, which is
     // indistinguishable from a lost key. The vault *id* is still minted here
     // and is still local — it names the keystore entry, not the account, and
     // two devices on one account have different ones.
-    write_private(&key_path(keystore, &id), &to_hex(&root))?;
+    write_private(&key_path(keystore, &id), &hex(&root))?;
     write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
     register(keystore, &id, vault_dir)?;
     Ok(())
@@ -487,14 +488,6 @@ fn write_line(path: &Path, line: &str) -> Result<(), VaultError> {
     std::fs::write(path, format!("{line}\n")).map_err(io)
 }
 
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
-}
-
 fn from_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
     if s.len() != N * 2 {
         return None;
@@ -568,7 +561,7 @@ mod tests {
     fn the_key_is_not_written_into_the_vault_directory() {
         let (vault, keys) = dirs();
         let root = open_or_create(vault.path(), keys.path(), &SystemRng).unwrap();
-        let hex = to_hex(&root);
+        let hex = hex(&root);
         for entry in std::fs::read_dir(vault.path()).unwrap() {
             let path = entry.unwrap().path();
             let body = std::fs::read_to_string(&path).unwrap_or_default();
@@ -730,7 +723,7 @@ mod tests {
     #[test]
     fn hex_round_trips_and_rejects_the_wrong_length() {
         let bytes = [0xab_u8; ROOT_LEN];
-        assert_eq!(from_hex::<ROOT_LEN>(&to_hex(&bytes)), Some(bytes));
+        assert_eq!(from_hex::<ROOT_LEN>(&hex(&bytes)), Some(bytes));
         assert_eq!(from_hex::<ROOT_LEN>("ab"), None);
         assert_eq!(from_hex::<ROOT_LEN>(&"zz".repeat(ROOT_LEN)), None);
         assert_eq!(
