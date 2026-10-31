@@ -288,11 +288,13 @@ fn one_or_bulk(mut items: Vec<BulkTaskItem>) -> Command {
 /// grammar.
 ///
 /// The grammar is [`sunrise_domain::annotate`]'s, unchanged and unextended:
-/// `#stream @ctx @-ctx !N %energy ~30m ^when due:when`, with `-` clearing any
-/// of them. These are the same sigils `capture` uses, plus the `%energy` and
-/// `-` forms only an edit has. Sharing them is the point —
-/// `docs/07-clients/overview.md` §"What clients share" puts the
-/// annotate grammar in `sunrise-domain` so two surfaces cannot disagree about
+/// `#stream @ctx @-ctx !N %energy ~30m ^when target:when due:when`, with
+/// `@- !- %- ~- ^- target:- due:-` clearing that facet; a stream has no clear
+/// form. `# @ ! ~ ^` are the sigils `capture` uses. `@-ctx`, `%energy`, the
+/// clear forms, and the bare `target:when` and `due:when` only an edit has:
+/// `capture` spells its deadlines `*target:when*` and `*due:when*`. Sharing the
+/// sigils is the point — `docs/07-clients/overview.md` §"What clients share"
+/// puts the annotate grammar in `sunrise-domain` so two surfaces cannot disagree about
 /// what `^next friday` means.
 ///
 /// **Nothing is written unless the whole line parses.** Capture's rule is the
