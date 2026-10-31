@@ -103,12 +103,11 @@ dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
 fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
 optional ([#332](https://github.com/justin13888/Sunrise/issues/332)). [#342](https://github.com/justin13888/Sunrise/issues/342) tracks them.
 
-Two notes against earlier revisions of this spec:
+Two notes on the shape:
 
 - **`stream_id` is optional** ([ADR-0046](../11-adr/0046-optional-stream.md)).
   A stream-less Block is sealed under the private key domain and drawn in the
-  neutral palette colour. An earlier revision made it required; that was the
-  Inbox-sentinel model, which ADR-0046 removes.
+  neutral palette colour.
 - **There is no `timezone` field.** `SunriseTime` subsumes it — a `zoned`
   bound carries its own IANA zone, and a `floating` or `all_day` bound
   deliberately carries none. A second, Block-level zone would be a third
@@ -256,9 +255,10 @@ what `source` and `external_id` serve. Not built; ranked on the roadmap
 
 Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
 per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
-OR-set; `exceptions` is a map of registers, one per occurrence key. The tree
-still merges the whole Block as one full-state unit until [#319](https://github.com/justin13888/Sunrise/issues/319) lands, so a
-concurrent bind on one device and unbind on another resolves by timestamp.
+OR-set; `exceptions` is a map of registers, one per occurrence key. That is a
+`core.field_ops` vault; a legacy vault merges the whole Block as one full-state
+unit, so a concurrent bind on one device and unbind on another resolves by
+timestamp there.
 
 The `block_tasks` projection is the sole writer of the binding relation and
 `Task.blocks` is derived from it, so the two never disagree — see §Symmetry
@@ -271,8 +271,8 @@ When two devices schedule overlapping Blocks for the same task, both Blocks coex
 Overlap is decided by resolving both blocks' bounds in the reader's zone
 ([`time.md` §2](../10-cross-cutting/time.md#2-comparisons-resolve-through-the-readers-zone-never-through-index_ms)),
 never on the storage index key, and recurring blocks overlap per occurrence.
-Today `overlaps` compares index keys
-(`crates/sunrise-domain/src/block/conflict.rs#overlaps`), tracked in [#336](https://github.com/justin13888/Sunrise/issues/336).
+`overlaps` resolves both bounds in the reader's zone
+(`crates/sunrise-domain/src/block/conflict.rs#overlaps`).
 A block with a bound this build cannot place (an unknown time kind with no
 `at` instant, or the 9999-01-01 instant a client mirror shows it as) conflicts
 with nothing, and loses a merge's union to the other block's bound.

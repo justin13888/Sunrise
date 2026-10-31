@@ -34,8 +34,9 @@ pub const MAX_CANCEL_REASON_LEN: usize = 512;
 /// ```
 ///
 /// `stream_paused` is whether the task's effective stream is paused now,
-/// which only the engine can read. A lapsed routine occurrence, the record's
-/// fifth clause, is not modelled in the tree yet (#331's catch-up).
+/// which only the engine can read. The record's fifth clause, that a lapsed
+/// routine occurrence is left out, is applied by the engine before it calls
+/// this (`sunrise-core`'s `engine/triage.rs`).
 #[must_use]
 pub fn in_triage(task: &Task, lateness: &LatenessState, stream_paused: bool) -> bool {
     if !task.is_open() || !lateness.state.needs_decision() || stream_paused {
