@@ -21,6 +21,13 @@
 //! into the field-id ordering at encode time, and a bug there shows up as a
 //! signature this process produced and cannot check.
 //!
+//! The relay reads the same bytes through a second decoder,
+//! `sunrise_cbor::decode_envelope_header`, and routes on what it returns. So an
+//! envelope the client decoder accepts must also pass the relay's, with the
+//! same `(stream_id, device_id, seq)`. The converse does not hold: the relay
+//! reads only the routing fields, so it accepts bytes the client refuses for a
+//! fault in any other field.
+//!
 //! The seed corpus is the two frozen vectors in `sunrise-crypto-test-vectors`
 //! — one signed-only envelope, one AEAD-sealed — so the fuzzer starts past the
 //! six-byte magic prefix and the CBOR map header instead of spending its budget
@@ -29,15 +36,27 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use sunrise_cbor::decode_envelope_header;
 use sunrise_crypto::{
     decode_envelope, open_envelope_unverified, sign_envelope, verify_envelope,
     DeviceSigningKeyPair, StreamKey,
 };
 
 fuzz_target!(|data: &[u8]| {
+    // Before the early return, so the relay's decoder sees the bytes the client
+    // decoder refuses as well: it reads them first, from an unauthenticated peer.
+    let header = decode_envelope_header(data);
+
     let Ok(env) = decode_envelope(data) else {
         return;
     };
+
+    let header = header.expect("the relay refused an envelope the client decoder accepts");
+    assert_eq!(
+        (header.stream_id, header.device_id, header.seq),
+        (env.stream_id, env.device_id, env.seq),
+        "the relay and the client decoder read different routing fields"
+    );
 
     // The device key the frozen vectors were signed with. Against a mutated
     // envelope this almost always fails, and that is the point: `verify` must
