@@ -12,7 +12,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 
 - Pure-function tests in `sunrise-core` for parsers, RRULE expansion, LWW merge, crypto envelopes.
 - Run on `cargo test`; <30 seconds in CI.
-- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::merge` and the materialization it drives). The 90% figure previously named "CRDT modules", which do not exist — `crates/sunrise-crdt` was deleted by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), so that half of the gate applied to nothing. No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
+- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::merge` and the materialization it drives). No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
 
 ### 2. Property tests (thinner, deep)
 
