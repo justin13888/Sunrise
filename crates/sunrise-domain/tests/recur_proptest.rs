@@ -16,13 +16,14 @@
 //!
 //! # Scope
 //!
-//! **Round-trip fidelity only.** Panic-freedom on arbitrary *strings* is not
-//! this file's job and is not asserted here: `fuzz/fuzz_targets/rrule.rs`
-//! already owns it, and `docs/10-cross-cutting/testing.md` §Convergence
-//! property-test determinism records that division of labour — a property test
-//! generates *valid* structures, a fuzzer generates arbitrary bytes. Adding a
-//! second, weaker version of it here would put two answers in the repository
-//! for one question.
+//! **Round-trip fidelity, and no panic from `parse_recurrence`.** Panic-freedom
+//! of `RRule::parse` on arbitrary *strings* is not asserted here:
+//! `fuzz/fuzz_targets/rrule.rs` already owns it, and
+//! `docs/10-cross-cutting/testing.md` §Convergence property-test determinism
+//! records that division of labour — a property test generates *valid*
+//! structures, a fuzzer generates arbitrary bytes. No fuzz target calls
+//! `parse_recurrence`, the phrase front end that runs on typed input, so its
+//! panic-freedom on arbitrary strings is asserted at the end of this file.
 //!
 //! **This file pins what `RRule::parse` accepts, which is more than RFC 5545
 //! allows.** The strategies below deliberately draw shapes the RFC forbids or

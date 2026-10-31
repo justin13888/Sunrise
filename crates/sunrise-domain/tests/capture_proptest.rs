@@ -161,6 +161,50 @@ fn read_as_date(words: &[&str], at: usize) -> bool {
     })
 }
 
+/// The date text an annotate token opens, if it is one that takes a date.
+fn annotate_date_head(word: &str) -> Option<&str> {
+    let non_empty = |body: &&str| !body.is_empty();
+    word.strip_prefix("target:")
+        .filter(non_empty)
+        .or_else(|| {
+            word.strip_prefix("*due:")
+                .and_then(|b| b.strip_suffix('*'))
+                .or_else(|| word.strip_prefix("due:"))
+                .filter(non_empty)
+        })
+        .or_else(|| word.strip_prefix('^'))
+}
+
+/// Whether the word at `at` opens or sits inside a phrase of several words that
+/// reads as a date, which annotate takes as one token.
+fn in_annotate_date(words: &[&str], at: usize) -> bool {
+    let tz = TimeZone::UTC;
+    (at.saturating_sub(MAX_DATE_WORDS - 1)..=at).any(|open| {
+        let Some(head) = annotate_date_head(words[open]) else {
+            return false;
+        };
+        (at.max(open + 1)..words.len().min(open + MAX_DATE_WORDS)).any(|last| {
+            let tail = words[open + 1..=last].join(" ");
+            parse_when_time(&format!("{head} {tail}"), now(), &tz).is_some()
+        })
+    })
+}
+
+/// The field an annotate token sets, where a later token replaces an earlier
+/// one. Contexts accumulate, so they have none.
+fn annotate_facet(word: &str) -> Option<&'static str> {
+    match word.chars().next() {
+        Some('#') => Some("stream"),
+        Some('!') => Some("priority"),
+        Some('%') => Some("energy"),
+        Some('~') => Some("estimate"),
+        Some('^') => Some("schedule"),
+        _ if word.starts_with("target:") => Some("target"),
+        _ if word.starts_with("due:") || word.starts_with("*due:") => Some("due"),
+        _ => None,
+    }
+}
+
 /// Whether the draft holds what the annotation `word` would have set.
 fn applied(word: &str, capture: &Capture) -> bool {
     let draft = &capture.draft;
@@ -296,5 +340,52 @@ proptest! {
         let edit = parse_annotate(&s, &refs, &refs, now(), &TimeZone::UTC);
         let blank = s.split_whitespace().next().is_none();
         prop_assert_eq!(edit.is_empty() && edit.errors.is_empty(), blank, "{:?}", s);
+    }
+
+    /// Each token does on the line what it does alone: what it reports is
+    /// reported, and what it applies is applied unless a later token replaced
+    /// that field. A word in a multi-word date is one token with the phrase, so
+    /// it is exempt.
+    #[test]
+    fn annotate_applies_or_reports_every_token(s in any_line()) {
+        let refs = named();
+        let tz = TimeZone::UTC;
+        let edit = parse_annotate(&s, &refs, &refs, now(), &tz);
+        let preview = edit.preview(&refs, &refs, &tz);
+        let parts: Vec<&str> = preview.split(" · ").collect();
+        let words: Vec<&str> = s.split_whitespace().collect();
+        let alone = |word: &str| parse_annotate(word, &refs, &refs, now(), &tz);
+        let mut unmatched = edit.errors.iter();
+        for (at, word) in words.iter().enumerate() {
+            if in_annotate_date(&words, at) {
+                continue;
+            }
+            let solo = alone(word);
+            for error in &solo.errors {
+                prop_assert!(
+                    unmatched.any(|e| e == error),
+                    "{:?}: {:?} went unreported in {:?}",
+                    s,
+                    word,
+                    edit.errors
+                );
+            }
+            let replaced = annotate_facet(word).is_some_and(|facet| {
+                (at + 1..words.len()).any(|later| {
+                    annotate_facet(words[later]) == Some(facet)
+                        && (in_annotate_date(&words, later) || !alone(words[later]).is_empty())
+                })
+            });
+            if !solo.is_empty() && !replaced {
+                let applied = solo.preview(&refs, &refs, &tz);
+                prop_assert!(
+                    parts.contains(&applied.as_str()),
+                    "{:?}: {:?} was not applied, the line previews {:?}",
+                    s,
+                    word,
+                    preview
+                );
+            }
+        }
     }
 }

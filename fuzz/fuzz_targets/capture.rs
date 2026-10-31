@@ -15,8 +15,9 @@ use libfuzzer_sys::fuzz_target;
 use sunrise_domain::capture::{parse, NamedRef};
 use sunrise_id::{EntityKind, EntityRef};
 
-/// 2024-03-10T02:25:00Z, the day New York's clocks spring forward.
-const NOW_S: i64 = 1_710_037_500;
+/// 2024-03-10T06:25:00Z, 01:25 in New York, 35 minutes before its clocks spring
+/// forward, so "today" is the transition's day in both zones.
+const NOW_S: i64 = 1_710_051_900;
 
 const ZONES: [&str; 2] = ["America/New_York", "UTC"];
 
