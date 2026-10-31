@@ -32,8 +32,7 @@ pub fn zone_or_utc(tz: &str) -> TimeZone {
 /// past `i64::MAX` — reads as the epoch rather than wrapping negative.
 #[must_use]
 pub fn instant_at(ms: u64) -> Timestamp {
-    Timestamp::from_millisecond(i64::try_from(ms).unwrap_or(i64::MAX))
-        .unwrap_or(Timestamp::UNIX_EPOCH)
+    sunrise_domain::epoch_ms::from_u64(ms)
 }
 
 /// Which section of Today a row belongs in, read in `tz`.
