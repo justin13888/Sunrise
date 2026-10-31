@@ -54,7 +54,7 @@ trigger and #82 as the re-entry point. It has landed, on both sides:
 
 - **Client.** `Command::RevokeDevice` records a durable intent in the same
   transaction as the op — `relay_revocation_intents`, migration 0020 — and
-  `sync_driver::drain_relay_revocations` drains it with retry on every connect
+  `relay_intents::drain` drains it with retry on every connect
   and reconnect, clearing the row on success and on a relay that never knew the
   device, and counting attempts otherwise. `Core::relay_revocation_pending`
   crosses the seam so a client can tell "revoked locally" from "the relay has

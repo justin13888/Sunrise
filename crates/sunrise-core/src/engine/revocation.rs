@@ -302,7 +302,7 @@ impl Engine {
             // command. The row goes in *this* transaction so the intent and the
             // op cannot diverge: a vault that believes it revoked a device and
             // never queued the telling is the failure this whole mechanism
-            // exists to prevent. `Core::drain_relay_revocations` makes the call
+            // exists to prevent. `relay_intents::drain` makes the call
             // when a session is up, and until then this row is what remembers
             // that it is owed.
             //

@@ -14,7 +14,7 @@ use super::*;
 /// The queue is a queue rather than a call because `revoke_device` has to
 /// work with no network at all: a device that is gone is the whole
 /// scenario, and it is exactly the moment a user is least likely to be
-/// online. `sync_driver::drain_relay_revocations` makes the call.
+/// online. `relay_intents::drain` makes the call.
 #[test]
 fn revoking_a_device_queues_the_relays_half_in_the_same_transaction() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));

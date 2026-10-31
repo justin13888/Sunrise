@@ -47,11 +47,11 @@ at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
 (`crates/sunrise-core/src/sync_driver.rs#run` and
-`crates/sunrise-core/src/sync_driver.rs#backoff_sleep`, `ev = "sync.backoff"`).
+`crates/sunrise-core/src/sync_driver/schedule.rs#backoff_sleep`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
-(`crates/sunrise-core/src/sync_driver.rs#next_backoff_delay`); the attempt counter is then
+(`crates/sunrise-core/src/sync_driver/schedule.rs#next_backoff_delay`); the attempt counter is then
 back at zero and the
 sequence starts again at 100 ms. A client that cannot reach its relay for an hour
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
@@ -63,7 +63,7 @@ factory dials at construction, so a reset there would zero the counter on every
 attempt and pin the driver to the 100 ms step
 ([#283](https://github.com/justin13888/Sunrise/issues/283)). A session that did
 handshake — however briefly — starts the next reconnect from 100 ms.
-`an_unanswered_reconnect_climbs_the_backoff_schedule` in `sync_driver.rs`
+`an_unanswered_reconnect_climbs_the_backoff_schedule` in `sync_driver/tests/credential.rs`
 drives the driver itself through unanswered and answered reconnects and asserts
 the `attempt` and `delay_ms` of every `sync.backoff` it emits.
 
@@ -82,7 +82,7 @@ is **unreachable on this policy**. With `max_retries = 5` the largest base is
 sleep on the exhausted branch.
 
 Every number in this section is asserted, not just described. The `scheduling`
-module in `sync_driver.rs` drives `next_backoff_delay` through a full cycle and
+module in `sync_driver/tests/` drives `next_backoff_delay` through a full cycle and
 pins the sequence to `[100, 200, 400, 800, 1600, 30000, 100]` ms at the jitter
 midpoint, checks the ±20% band at each base, and checks that the exhausted
 30 s is identical at every jitter value. It does this without sleeping: the
@@ -93,7 +93,7 @@ without changing this section reddens that module.
 
 **Per-batch retransmit.** Each in-flight `OpBatch` carries its own timer and
 `Backoff`; when the deadline passes the batch frame is sent again
-(`sync_driver::retransmit_due`, `ev = "sync.op.retransmit"`). Each deadline
+(`sync_driver::schedule::retransmit_due`, `ev = "sync.op.retransmit"`). Each deadline
 starts when that batch's send returns, not when the batch is built: on the SSE
 transport a send is a `POST` that holds the driver for a round trip, and its
 reply is the ack. The session pump also reads an inbound frame that has already
