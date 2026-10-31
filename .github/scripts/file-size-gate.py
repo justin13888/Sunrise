@@ -231,10 +231,6 @@ BASELINE: dict[str, str] = {
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
-    "crates/sunrise-domain/src/export.rs": (
-        "485 implementation lines. A renderer for the three folds it imports; "
-        "cohesive."
-    ),
     "crates/sunrise-domain/src/constraint.rs": (
         "399 implementation lines, and the only spec in the repository with a "
         "test that fails when the Rust and the CDDL disagree."
