@@ -594,12 +594,26 @@ impl SunriseCore {
     }
 
     /// Submit one mutating command.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] when the vault requires a feature this
+    /// build lacks and the command would edit what it covers.
+    /// [`BindingError::BadFixedBytes`] for an `AttachFile` whose key or digest
+    /// is the wrong width or not hex. [`BindingError::Core`] when the command
+    /// does not validate, the vault refuses the write, or a `ResolveConflict`
+    /// value is not canonical CBOR.
     pub async fn submit(&self, cmd: CoreCommand) -> Result<CommandOutcome, BindingError> {
         let res = self.inner.submit(cmd.into_core()?).await?;
         Ok(CommandOutcome::from(&res))
     }
 
     /// Run one read query.
+    ///
+    /// [`CoreQuery::StreamList`] answers with one row the core's list does not
+    /// have: a synthetic Inbox first, under the legacy Inbox id, whose
+    /// `open_task_count` counts the Inbox view. The core has no such row because
+    /// the Inbox is a view rather than a stream (ADR-0046 §3).
     pub async fn query(&self, q: CoreQuery) -> Result<CoreQueryResult, BindingError> {
         let stream_list = matches!(q, CoreQuery::StreamList);
         let res = self.inner.query(q.into_core()).await?;
@@ -636,8 +650,14 @@ impl SunriseCore {
     /// because it cannot be undone would be a worse client — and the returned
     /// [`client::UndoableOutcome`] carries why nothing went on the stack. Say
     /// that out loud rather than offering an undo that silently does nothing:
-    /// a delete writes a tombstone the core cannot restore, and that fact
-    /// belongs in front of the user *before* they rely on undo.
+    /// detaching an attachment, resolving a conflict, and any other command
+    /// that answers [`client::UndoRefusal::Unsupported`] stay done, and that
+    /// fact belongs in front of the user *before* they rely on undo. A delete
+    /// is not among them: its undo is a restore (ADR-0065 §3).
+    ///
+    /// # Errors
+    ///
+    /// As [`SunriseCore::submit`]; nothing goes on the stack then.
     pub async fn submit_undoable(
         &self,
         cmd: CoreCommand,
@@ -659,11 +679,22 @@ impl SunriseCore {
     /// This is a **new write**, not a rollback: it converges like any other
     /// op, and a device undoing what another has since changed loses the LWW
     /// tie exactly as a manual edit would.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] or [`BindingError::Core`], as
+    /// [`SunriseCore::submit`] raises them for the reversing write. The step
+    /// does not go back on either stack: it may have half applied, and
+    /// replaying it is not known to be safe.
     pub async fn undo(&self) -> Result<Option<String>, BindingError> {
         Ok(self.undo.undo(&self.inner).await?)
     }
 
     /// Replay the most recently undone step. Returns its label, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SunriseCore::undo`], for the replayed write.
     pub async fn redo(&self) -> Result<Option<String>, BindingError> {
         Ok(self.undo.redo(&self.inner).await?)
     }
@@ -682,6 +713,13 @@ impl SunriseCore {
     /// `tz` is an IANA zone name; an unknown one falls back to UTC rather than
     /// refusing the capture, because losing what someone typed is the worse
     /// failure.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] when the vault requires a feature this
+    /// build lacks and creating a task would edit what it covers.
+    /// [`BindingError::Core`] when the vault cannot be read to resolve names,
+    /// the parsed task does not validate, or the vault refuses the write.
     pub async fn capture(&self, text: String, tz: String) -> Result<CommandOutcome, BindingError> {
         let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         let parsed = self.inner.capture(&text, &zone).await?;
@@ -728,7 +766,8 @@ impl SunriseCore {
     /// therefore offer "import" without first asking the user whether they
     /// have already done it.
     ///
-    /// `stream_id` is where the Blocks land; `None` means the Inbox stream.
+    /// `stream_id` is where the Blocks land; `None`, or the legacy Inbox id,
+    /// imports into no stream.
     /// `source` distinguishes two calendars that happen to share a `UID` and
     /// should stay separate; `None` means the shared one-shot `.ics` source,
     /// which is what a file picker wants.
@@ -748,6 +787,9 @@ impl SunriseCore {
     /// at all, or when the vault refuses a write. A single unusable event is
     /// reported in the result instead, because refusing 200 good events over
     /// one bad one would make the feature useless.
+    ///
+    /// [`BindingError::BadId`] when `stream_id` names something other than a
+    /// stream; nothing is imported then.
     pub async fn import_ical(
         &self,
         text: String,
@@ -1406,6 +1448,11 @@ impl SunriseCore {
     /// runtime handle captured in the async constructor, not `tokio::spawn` —
     /// a sync exported method runs on the calling foreign thread with no
     /// reactor installed, and a bare `tokio::spawn` there panics at runtime.
+    ///
+    /// # Errors
+    ///
+    /// None today: a second call while a driver runs is a no-op, and the
+    /// driver's connection failures happen after this has returned.
     pub fn start_sync(
         &self,
         url: String,
@@ -1436,6 +1483,10 @@ impl SunriseCore {
     }
 
     /// Start the periodic routine-materialization timer.
+    ///
+    /// # Errors
+    ///
+    /// None today: a second call while the timer runs is a no-op.
     pub fn start_routine_timer(&self, interval_ms: u64) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
         self.inner
