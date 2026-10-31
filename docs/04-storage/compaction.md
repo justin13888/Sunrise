@@ -361,8 +361,8 @@ replica that applied it, and pinned on the relay.
 The relay does not compact and cannot: it never reads an op. It pins each
 stream's latest snapshot record (§Transport). Its op retention is
 unchanged, 30 days or 256 MiB per channel
-(`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
-`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`). Compaction makes
+(`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`,
+`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_BYTES`). Compaction makes
 that bound survivable: a device beyond it catches up from a snapshot rather
 than from ops nobody holds.
 

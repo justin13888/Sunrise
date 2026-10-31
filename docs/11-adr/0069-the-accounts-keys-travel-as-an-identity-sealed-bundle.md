@@ -20,7 +20,7 @@ the identity, so the first epoch was always reachable; every later one was
 reachable only through those ops.
 
 The relay trims a channel's frames past 30 days or 256 MiB
-(`crates/sunrise-server/src/relay_log.rs`). Once it has trimmed the vault-meta
+(`crates/sunrise-server/src/relay_log/append.rs`). Once it has trimmed the vault-meta
 frames that carried a rotated key, a recovery holds the identity and no key
 past the genesis. ADR-0068's snapshot records do not help: the vault-meta
 record is sealed under the current vault-meta key, which is the key the

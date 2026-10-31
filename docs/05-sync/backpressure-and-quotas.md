@@ -27,8 +27,8 @@ status: proposed
 > `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_COUNT`,
 > `crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`), and 30-day /
 > 256 MiB per-channel relay-log retention
-> (`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
-> `crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`).
+> (`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`,
+> `crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_BYTES`).
 >
 > **What holds regardless:** the backpressure *shape* below — clients respecting
 > a server signal rather than retrying blind — is the design any future limit
