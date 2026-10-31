@@ -237,9 +237,20 @@ Not built yet:
   `AppSettings` and `NotificationPreferences` still hold their values in
   `UserDefaults`, and the one-time migration out of it has not run. That is
   [#489](https://github.com/justin13888/Sunrise/issues/489).
-- **The reminder planner reads no notification key yet.** The keys reach it
-  with [#347](https://github.com/justin13888/Sunrise/issues/347). One key
-  already has an engine reader: `notifications.timezone_changed.enabled`, read
+- **The notification keys reach the client core's planner, not the Apple
+  client's.** `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`)
+  hands `core.reminder_plan` the settings `reminder_policy`
+  (`crates/sunrise-client-core/src/reminders/policy.rs`) builds from
+  `notifications.task_reminder.lead_s`, `notifications.quiet_hours.*` and
+  `notifications.primary_device`, and only plans when
+  `notifications.enabled` is on. `catalog_policy` (`reminders/catalog.rs`) reads
+  the catalog's toggles, leads and offsets. Two things wait on
+  [#347](https://github.com/justin13888/Sunrise/issues/347): the Apple client
+  does not call `schedule_notifications` and plans from
+  `NotificationPreferences`, and `notifications.block_start.lead_s` has no
+  reader, so the block lead is still `BLOCK_DEFAULT_LEAD_S`
+  (`crates/sunrise-domain/src/notify.rs`). One key
+  has an engine reader: `notifications.timezone_changed.enabled`, read
   when a zone change is assessed
   (`crates/sunrise-core/src/engine/query.rs#time_zone_impact`). The
   attachment cache resolves the two attachment keys when it enforces its limit
