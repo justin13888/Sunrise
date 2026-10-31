@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(next("Not/AZone"), Some(utc_ms("2026-03-08T09:00Z")));
     }
 
-    /// A floating 09:00 follows the clock across a DST change, the day after
+    /// A floating 09:00 follows the clock across a DST change, the day of
     /// spring-forward and the day of fall-back alike.
     #[test]
     fn a_floating_routine_keeps_its_wall_clock_across_dst() {
@@ -432,10 +432,11 @@ mod tests {
         }
     }
 
-    /// A paused routine answers `None` until its pause runs out, and a series
-    /// that ended before now answers `None` where it would otherwise fire.
+    /// Only an open-ended pause answers `None`; a dated pause answers its first
+    /// occurrence after the date. A series that ended before now answers `None`
+    /// where it would otherwise fire.
     #[test]
-    fn a_paused_or_ended_routine_has_no_next_occurrence() {
+    fn a_pause_or_an_end_bounds_the_next_occurrence() {
         let live = daily_at_nine(SunriseTime::floating(nine()));
         let next = |r: Routine| next_occurrence_ms(r, SAT_NOON_UTC, "UTC");
         assert_eq!(next(live.clone()), Some(utc_ms("2026-03-08T09:00Z")));
