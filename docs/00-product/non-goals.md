@@ -73,7 +73,7 @@ The product is opinionated. Every shipped feature is on for every user on every 
 
 ## No LAN-only / no-server topology
 
-Pairing and sync always go through a server (managed or self-hosted). Reason: an extra "no-server" code path doubles the transport-layer test matrix while serving a vanishingly small audience. Self-hosters who want LAN-only operation run the server on the LAN.
+Sync always goes through a server (managed or self-hosted). Pairing goes through the relay's rendezvous or, for a device with no relay, a file exchange (`sunrise pair offer`, `request`, `issue`, `accept`; see [`../05-sync/transports.md`](../05-sync/transports.md)); that exchange adds no way to sync without a server. Reason: an extra "no-server" sync path doubles the transport-layer test matrix while serving a vanishingly small audience. Self-hosters who want LAN-only operation run the server on the LAN.
 
 ---
 
