@@ -159,7 +159,7 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
 /// that merges both. The origin has no LWW gate on its own writes, so it keeps
 /// the new value while everyone else keeps the old: silent, permanent
 /// divergence, inside a five-minute window after every restart.
-/// `engine/tests.rs`'s `a_restart_does_not_make_this_device_emit_beneath_its_own_ops`
+/// `engine/tests/mod.rs`'s `a_restart_does_not_make_this_device_emit_beneath_its_own_ops`
 /// is that scenario.
 ///
 /// # What is left after priming

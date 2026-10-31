@@ -213,7 +213,7 @@ keeps a single reorder from rewriting every sibling.
 
 Under today's full-state merge the test
 `concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge`
-in `crates/sunrise-core/src/engine/tests.rs` has two devices drag the same stream at
+in `crates/sunrise-core/src/engine/tests/mod.rs` has two devices drag the same stream at
 the same instant and asserts that both land on one of the two keys and never on
 a third. Two rows can also end up *sharing* a key that way — a device can only
 lose a reorder wholesale, so it can lose it onto a key a sibling already holds —

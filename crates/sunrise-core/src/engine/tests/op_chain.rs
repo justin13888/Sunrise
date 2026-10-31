@@ -6,7 +6,7 @@
 //! `apply_remote_all`. A relay that omits, reorders or equivocates is played
 //! by the test choosing which envelopes to hand over and in what order.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::chain::{digest_payload, ForkKind};
 use crate::ChainIntegrity;

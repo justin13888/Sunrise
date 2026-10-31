@@ -16,62 +16,8 @@ use sunrise_domain::{ActivityKind, StreamPatch};
 const ROOT: [u8; 32] = [0x47; 32];
 
 /// Two trusting replicas that have told each other what they support.
-struct Peers {
-    ea: Engine,
-    eb: Engine,
-    ca: Arc<FakeClock>,
-    cb: Arc<FakeClock>,
-    dba: Db,
-    dbb: Db,
-}
-
-fn peers(advertise: bool) -> Peers {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    if advertise {
-        assert!(ea.advertise_features(&mut dba).unwrap());
-        assert!(eb.advertise_features(&mut dbb).unwrap());
-    }
-    let mut p = Peers {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    };
-    sync(&mut p);
-    p
-}
-
-/// Every op each side logged under its own device id, delivered to the
-/// other in seq order. Re-delivery is a no-op.
-fn sync(p: &mut Peers) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
-}
-
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        to.apply_remote(to_db, &env).unwrap();
-    }
+fn peers(advertise: bool) -> Pair {
+    synced_pair(ROOT, advertise)
 }
 
 fn kinds_logged(db: &Db, target: EntityRef) -> Vec<String> {

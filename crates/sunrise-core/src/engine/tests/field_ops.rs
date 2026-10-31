@@ -1116,7 +1116,7 @@ fn a_preferences_patch_names_its_heads_only_in_a_field_ops_vault() {
     let p = only_patch(&e, &db, since);
     assert_eq!(p.parents.as_ref().map(Vec::len), Some(1), "{p:?}");
 
-    let (e, mut db) = (engine(), super::testutil::db());
+    let (e, mut db) = (engine(), super::support::db());
     legacy_peer(&db);
     e.require_features(&mut db, &["preferences.entity"], true)
         .unwrap();

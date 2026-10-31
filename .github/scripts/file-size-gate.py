@@ -199,11 +199,10 @@ UNGATED: dict[str, str] = {
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
     # --- sunrise-core -------------------------------------------------------
-    "crates/sunrise-core/src/engine/tests.rs": (
-        "The engine's whole test module, moved intact when engine.rs was split "
-        "so the split's diff carried no test changes. 198 tests and 95 shared "
-        "fixtures. Redistributing them across the sixteen engine modules is a "
-        "change of its own."
+    "crates/sunrise-core/src/engine/tests/mod.rs": (
+        "The tests the engine split has not yet moved into a themed module "
+        "beside this one; the shared fixtures are in `tests/support.rs`. "
+        "Redistributing the rest is a change of its own."
     ),
     "crates/sunrise-core/src/sync_driver.rs": (
         "One async state machine plus its transport harness. Deliberately not "

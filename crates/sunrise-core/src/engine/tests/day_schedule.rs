@@ -6,17 +6,9 @@ use super::*;
 use jiff::civil::date;
 use sunrise_domain::{PrefTarget, PrefValue};
 
+/// The one vault root, so two engines read the same database as one device at
+/// two moments.
 const ROOT: [u8; 32] = [0x38; 32];
-
-/// An engine whose clock reads `local` in `zone`, over the one vault root,
-/// so two of them read the same database as one device at two moments.
-fn engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine, u64) {
-    let tz = jiff::tz::TimeZone::get(zone).unwrap();
-    let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
-    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
-    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), Arc::new(SystemRng), kc);
-    (e, now)
-}
 
 fn sleep_at_one(e: &Engine, db: &mut Db) {
     for day in ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] {
@@ -89,7 +81,7 @@ fn ts(s: &str) -> jiff::Timestamp {
 /// on Tuesday is not here yet. At 08:00 Tuesday it is.
 #[test]
 fn today_is_the_planner_day_so_a_late_night_is_still_the_day_before() {
-    let (late, late_now) = engine_at("America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
+    let (late, late_now) = engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
     let mut db = db_root(ROOT);
     sleep_at_one(&late, &mut db);
     task(
@@ -144,7 +136,8 @@ fn today_is_the_planner_day_so_a_late_night_is_still_the_day_before() {
         Some((ts("2026-03-02T12:00Z"), ts("2026-03-03T06:00Z")))
     );
 
-    let (morning, morning_now) = engine_at("America/New_York", date(2026, 3, 3).at(8, 0, 0, 0));
+    let (morning, morning_now) =
+        engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(8, 0, 0, 0));
     let titles = today(&morning, &db, morning_now);
     for t in ["tuesday morning", "due tuesday", "due monday"] {
         assert!(titles.contains(&t.to_owned()), "{t}: {titles:?}");
@@ -156,13 +149,13 @@ fn today_is_the_planner_day_so_a_late_night_is_still_the_day_before() {
 /// The evening plan's day and week end are planner-day bounds too.
 #[test]
 fn the_briefs_read_planner_day_bounds() {
-    let (late, _) = engine_at("America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
+    let (late, _) = engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
     let mut db = db_root(ROOT);
     sleep_at_one(&late, &mut db);
     let done = task(&late, &mut db, "late one", None, None);
     late.apply(&mut db, Command::CompleteTask(done)).unwrap();
 
-    let (morning, now) = engine_at("America/New_York", date(2026, 3, 3).at(8, 0, 0, 0));
+    let (morning, now) = engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(8, 0, 0, 0));
     let QueryResult::MorningSummary(s) = morning
         .query(&db, Query::MorningSummary { now_ms: now })
         .unwrap()
@@ -199,7 +192,7 @@ fn the_briefs_read_planner_day_bounds() {
 /// schedule's boundaries.
 #[test]
 fn upcoming_days_are_planner_days() {
-    let (late, now) = engine_at("America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
+    let (late, now) = engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
     let mut db = db_root(ROOT);
     sleep_at_one(&late, &mut db);
     let QueryResult::Upcoming(u) = late
@@ -230,7 +223,7 @@ fn upcoming_days_are_planner_days() {
 /// it is Tuesday afternoon.
 #[test]
 fn a_zone_change_moves_the_planner_day_and_rewrites_nothing() {
-    let (ny, now) = engine_at("America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
+    let (ny, now) = engine_at(ROOT, "America/New_York", date(2026, 3, 3).at(0, 30, 0, 0));
     let mut db = db_root(ROOT);
     sleep_at_one(&ny, &mut db);
     let before = stored(&db);

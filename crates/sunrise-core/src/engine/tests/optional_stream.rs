@@ -1,8 +1,7 @@
 //! Optional streams, the private key domain, the Inbox view and what deleting
 //! a stream does to what it held (ADR-0046, issue #332).
 
-use super::field_merge::{pair, Pair};
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::block::read_block;
 use crate::engine::routine::read_routine;
@@ -108,17 +107,6 @@ fn own_envelopes(from: &Engine, db: &Db) -> Vec<Vec<u8>> {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
-}
-
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    for env in own_envelopes(from, from_db) {
-        to.apply_remote_all(to_db, &env).unwrap();
-    }
-}
-
-fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
 }
 
 /// [`pair`] with both devices advertising their features, so the vault

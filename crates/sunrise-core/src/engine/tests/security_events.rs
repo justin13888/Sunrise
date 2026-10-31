@@ -5,7 +5,7 @@
 //! Real vaults: `Keychain::open` writes the identity and the certificate a
 //! shipping build writes, and a rotation is the command a user runs.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::alerts::SecurityEventKind as K;
 use crate::unlock::IdentitySeed;
@@ -32,7 +32,7 @@ fn open_at(root: [u8; 32], seed: &IdentitySeed, at: u64) -> (Engine, Db, Arc<Fak
     (e, db, c)
 }
 
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
+fn deliver_cert_first(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
     let device = from.keychain.device_id();
     let envs: Vec<Vec<u8>> = {
         let mut stmt = from_db
@@ -80,8 +80,8 @@ fn security_events_are_what_happened_after_this_device_joined() {
         T0 + 60_000,
     );
     let b_id = b.keychain.device_id();
-    deliver(&b, &bdb, &a, &mut adb);
-    deliver(&a, &adb, &b, &mut bdb);
+    deliver_cert_first(&b, &bdb, &a, &mut adb);
+    deliver_cert_first(&a, &adb, &b, &mut bdb);
     assert_eq!(kinds(&a, &adb), vec![(K::DeviceJoined, b_id)]);
     let joined = &a.security_events(&adb).unwrap()[0];
     assert_eq!(joined.at_ms, T0 + 60_000, "the certificate's own time");
@@ -114,7 +114,7 @@ fn security_events_are_what_happened_after_this_device_joined() {
         kinds(&a, &adb),
         vec![(K::DeviceJoined, b_id), (K::RecoveryCodeRetired, head)]
     );
-    deliver(&a, &adb, &b, &mut bdb);
+    deliver_cert_first(&a, &adb, &b, &mut bdb);
     assert_eq!(kinds(&b, &bdb), vec![(K::RecoveryCodeRetired, head)]);
 
     // A revocation names its subject on each device.
@@ -127,7 +127,7 @@ fn security_events_are_what_happened_after_this_device_joined() {
         },
     )
     .unwrap();
-    deliver(&a, &adb, &b, &mut bdb);
+    deliver_cert_first(&a, &adb, &b, &mut bdb);
     let on_b = b.security_events(&bdb).unwrap();
     assert_eq!(
         on_b.last().map(|e| (e.kind, e.this_device)),

@@ -74,7 +74,7 @@ and rejected: the closure is some 150 functions across the keychain and the
 entity writers, with dozens of legitimate encoding-failure conversions and
 same-named methods in unrelated modules, and a gate that has to be taught
 that much noise stops being read. The regression unit
-`a_losing_lww_write_keeps_its_op_row_and_is_counted` in `engine/tests.rs`, and
+`a_losing_lww_write_keeps_its_op_row_and_is_counted` in `engine/tests/mod.rs`, and
 the two cursor units it sits beside, hold the behaviour end to end for the
 refusals that exist today.
 
