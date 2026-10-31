@@ -8,8 +8,8 @@
 //! The queue is what connects them, and it is a table rather than a direct call
 //! because `revoke_device` must work offline — a device that is gone is the
 //! whole scenario. `crates/sunrise-storage/migrations/0020_relay_revocation_intents.sql`
-//! carries the rest of the reasoning; the drain is
-//! [`crate::sync_driver`]'s `drain_relay_revocations`.
+//! carries the rest of the reasoning; the drain is [`drain`], which the sync
+//! driver runs over the transport it holds.
 //!
 //! These four methods moved off `Core` rather than being written here: they are
 //! the symbols that share one table, which is the cohesion boundary the
@@ -41,7 +41,96 @@
 //! releases either: an unwound device is not back in at either bound.
 //! `docs/03-crypto/key-rotation.md` §Revocation states it for a reader.
 
+use sunrise_sync::{RevokeOutcome, Transport, TransportError};
+
 use crate::core::{Core, CoreError};
+use crate::engine::hex_short;
+
+/// Tell the relay about every device this vault has revoked and not yet
+/// reported.
+///
+/// The relay cannot learn this from the op stream — `device_revoke` is sealed
+/// under the vault-meta key and the relay holds no Stream keys — so the two
+/// halves of a revocation travel separately, and this is the second one. Until
+/// it lands the relay keeps accepting the revoked device's uploads and keeps
+/// streaming it everyone else's, which is `#80`.
+///
+/// It sends only what the register still agrees with. A re-fold can unwind the
+/// register row an intent was queued beside, and an intent sent after that
+/// would have the relay refuse a device every replica shows as current (#257).
+/// Such a row is skipped, not deleted, so it is sent after all if a later fold
+/// revokes the device again; [`OWED_RELAY_REVOCATIONS_SQL`] holds the one
+/// definition.
+/// The check is repeated for each device immediately before its send, not
+/// read once for the whole drain: the sends await the network, and a local
+/// command can unwind a device while an earlier one is in flight. An unwind
+/// that lands during a device's own send is the case the module doc names:
+/// the relay has been told, and nothing takes that back.
+///
+/// Failures leave the row in place, deliberately. The device this is about is
+/// typically lost or stolen; giving up after one refused call would mean the
+/// revocation silently never reached the relay, which is the failure this whole
+/// mechanism exists to prevent. `attempts` is what makes a relay that keeps
+/// refusing visible in the log rather than retried in silence.
+///
+/// [`RevokeOutcome::Unknown`] clears the row and warns rather than reporting
+/// success. It is terminal — the relay holds no active row with that vault id
+/// and retrying cannot make one appear — but it is *not* the outcome the user
+/// asked for: it is also the answer for a device that registered before
+/// `vault_device_id` existed, which the relay is still accepting under a row
+/// this vault cannot name. Reading it as success is the exact defect PR #86
+/// withdrew.
+///
+/// A [`TransportError::Unsupported`] transport is not an attempt: the loopback
+/// and in-process transports have no account API, and counting them would
+/// inflate `attempts` on every convergence test that revokes anything.
+pub(crate) async fn drain<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    let Ok(pending) = core.pending_relay_revocations() else {
+        return;
+    };
+    for device_id in pending {
+        // The snapshot above is taken once, and every send below awaits the
+        // network, so a local command can unwind a later device's register row
+        // while an earlier one is in flight. Ask again right before each send.
+        match core.relay_revocation_pending(&device_id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => return,
+        }
+        match transport.revoke_device(device_id).await {
+            Ok(RevokeOutcome::Revoked) => {
+                let _ = core.clear_relay_revocation(device_id);
+                tracing::info!(
+                    ev = "sync.device.revoke_relayed",
+                    subject_h = hex_short(&device_id),
+                    "the relay has been told to stop accepting a revoked device"
+                );
+            }
+            Ok(RevokeOutcome::Unknown) => {
+                let _ = core.clear_relay_revocation(device_id);
+                tracing::warn!(
+                    ev = "sync.device.revoke_unknown_to_relay",
+                    subject_h = hex_short(&device_id),
+                    "the relay holds no device bound to this vault device id; if that device \
+                     registered before it sent one, the relay is still accepting it"
+                );
+            }
+            Err(TransportError::Unsupported) => return,
+            Err(e) => {
+                let attempts = core
+                    .note_relay_revocation_attempt(device_id, core.now_ms())
+                    .unwrap_or(0);
+                tracing::warn!(
+                    ev = "sync.device.revoke_not_relayed",
+                    subject_h = hex_short(&device_id),
+                    attempt = attempts,
+                    cause = %e,
+                    "the relay has not accepted a device revocation; it still accepts that device"
+                );
+            }
+        }
+    }
+}
 
 /// The intents the relay is owed, oldest first: rows of
 /// `relay_revocation_intents` whose device the register currently calls
