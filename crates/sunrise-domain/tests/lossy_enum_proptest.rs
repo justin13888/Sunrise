@@ -166,7 +166,8 @@ fn lossy_enum_users(dir: &Path, users: &mut BTreeSet<String>) {
             lossy_enum_users(&path, users);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = std::fs::read_to_string(&path).expect("read source");
-            for call in text.split("crate::unknown::lossy_enum!(").skip(1) {
+            // Unqualified, so a call through `pub(crate) use lossy_enum` counts.
+            for call in text.split("lossy_enum!(").skip(1) {
                 // The macro's own recursive call names `$ty`, not an enum.
                 let name: String = call
                     .chars()
