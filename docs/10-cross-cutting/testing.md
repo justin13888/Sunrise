@@ -1010,8 +1010,9 @@ wires a narrower version of it:
   and the job's comment says so.
 - **A pull request that touches a decoder — wired, path-filtered.**
   `fuzz-pr-plan` reads the merge commit's diff against its base and names the
-  targets the changed paths reach: `crates/sunrise-crypto/` the five crypto
-  targets, `crates/sunrise-wire-protocol/` `wire_frame`,
+  targets the changed paths reach: `crates/sunrise-cbor/` the five crypto
+  targets and `wire_frame`, `crates/sunrise-crypto/` the five crypto targets,
+  `crates/sunrise-wire-protocol/` `wire_frame`,
   `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
   seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` all nine.
   `fuzz-pr` then runs each named target for 120 seconds from the committed
