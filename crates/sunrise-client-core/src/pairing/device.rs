@@ -436,13 +436,7 @@ impl PairingDevice {
 /// holding the address.
 #[must_use]
 pub fn account_tag(account_email: &str) -> String {
-    account_email_hash(account_email)
-        .iter()
-        .fold(String::new(), |mut acc, b| {
-            use std::fmt::Write;
-            let _ = write!(acc, "{b:02x}");
-            acc
-        })
+    crate::ids::hex(&account_email_hash(account_email))
 }
 
 fn over() -> PairingFault {

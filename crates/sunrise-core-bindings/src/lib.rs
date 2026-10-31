@@ -1201,14 +1201,7 @@ impl SunriseCore {
     /// binds the token to.
     #[must_use]
     pub fn device_id(&self) -> String {
-        self.inner
-            .device_id()
-            .iter()
-            .fold(String::new(), |mut acc, b| {
-                use std::fmt::Write;
-                let _ = write!(acc, "{b:02x}");
-                acc
-            })
+        sunrise_client_core::ids::hex_id(&self.inner.device_id())
     }
 
     /// This device's certificate (canonical CBOR), for pairing.

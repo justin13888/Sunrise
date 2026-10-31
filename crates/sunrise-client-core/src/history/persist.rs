@@ -230,12 +230,7 @@ struct Cbor<T>(T);
 impl<T: Serialize> Serialize for Cbor<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let bytes = sunrise_cbor::encode_canonical(&self.0).map_err(serde::ser::Error::custom)?;
-        let hex = bytes.iter().fold(String::new(), |mut out, x| {
-            use std::fmt::Write;
-            let _ = write!(out, "{x:02x}");
-            out
-        });
-        s.serialize_str(&hex)
+        s.serialize_str(&crate::ids::hex(&bytes))
     }
 }
 
