@@ -271,6 +271,111 @@ fn the_clock_style_follows_the_time_format_preference() {
     assert_eq!(ClockStyle::from_time_format(None, false), ClockStyle::H12);
 }
 
+fn toronto_candidate(n: u8, at: SunriseTime) -> ReminderCandidate {
+    ReminderCandidate {
+        entity: EntityRef::new(EntityKind::Task, [n; 16]),
+        kind: ReminderKind::Task,
+        at,
+        title: format!("task {n}"),
+        own_lead_s: None,
+        stream_lead_s: None,
+    }
+}
+
+/// `candidates` planned by a reader in Toronto over `[now, to]`.
+fn toronto_plan(candidates: &[ReminderCandidate], now: &str, to: &str) -> Vec<PlannedNotification> {
+    let toronto = TimeZone::get("America/Toronto").unwrap();
+    let intents = plan_reminders(
+        candidates,
+        now.parse().unwrap(),
+        to.parse().unwrap(),
+        &toronto,
+        &ReminderSettings::default(),
+    );
+    plan(&intents, &toronto, ClockStyle::H24, MAX_SCHEDULED)
+}
+
+/// A floating and a zoned reminder at the wall clock `at`.
+fn both_kinds_at(n: u8, at: civil::DateTime) -> [ReminderCandidate; 2] {
+    [
+        toronto_candidate(n, SunriseTime::floating(at)),
+        toronto_candidate(n + 1, SunriseTime::zoned(at, "America/Toronto")),
+    ]
+}
+
+fn ms_of(s: &str) -> i64 {
+    s.parse::<Timestamp>().unwrap().as_millisecond()
+}
+
+/// 2026-11-01 falls back in Toronto: a reminder at 01:30 fires at the earlier
+/// instant, 01:30 EDT, and one at 09:00 at 09:00 EST.
+#[test]
+fn a_reminder_in_a_fold_fires_at_the_earlier_instant() {
+    let day = civil::date(2026, 11, 1);
+    let candidates = [
+        both_kinds_at(1, day.at(1, 30, 0, 0)),
+        both_kinds_at(3, day.at(9, 0, 0, 0)),
+    ]
+    .concat();
+    let planned = toronto_plan(&candidates, "2026-11-01T04:00Z", "2026-11-01T20:00Z");
+    let fires: Vec<i64> = planned.iter().map(|n| n.fire_at_ms).collect();
+    let (fold, morning) = (ms_of("2026-11-01T05:30Z"), ms_of("2026-11-01T14:00Z"));
+    assert_eq!(fires, [fold, fold, morning, morning]);
+}
+
+/// Once the earlier instant has passed, the fold's second 01:30 is not a
+/// second firing: the reminder has gone from the plan.
+#[test]
+fn a_reminder_in_a_fold_is_not_planned_again_at_the_later_instant() {
+    let candidates = both_kinds_at(1, civil::date(2026, 11, 1).at(1, 30, 0, 0));
+    assert!(toronto_plan(&candidates, "2026-11-01T05:31Z", "2026-11-01T20:00Z").is_empty());
+}
+
+/// 2026-03-08 springs forward in Toronto: a reminder at 02:30 moves forward by
+/// the gap to 03:30 EDT, and one at 09:00 is 09:00 EDT.
+#[test]
+fn a_reminder_in_a_gap_moves_forward_by_the_gap() {
+    let day = civil::date(2026, 3, 8);
+    let candidates = [
+        both_kinds_at(1, day.at(2, 30, 0, 0)),
+        both_kinds_at(3, day.at(9, 0, 0, 0)),
+    ]
+    .concat();
+    let planned = toronto_plan(&candidates, "2026-03-08T05:00Z", "2026-03-08T20:00Z");
+    let fires: Vec<i64> = planned.iter().map(|n| n.fire_at_ms).collect();
+    let (gap, morning) = (ms_of("2026-03-08T07:30Z"), ms_of("2026-03-08T13:00Z"));
+    assert_eq!(fires, [gap, gap, morning, morning]);
+}
+
+/// Re-planning later on a DST day, before anything fires, gives the same
+/// requests, so the second reconcile has nothing to do.
+#[test]
+fn a_second_reconcile_on_a_dst_day_is_empty() {
+    for (at, first, again, to) in [
+        (
+            civil::date(2026, 11, 1).at(1, 30, 0, 0),
+            "2026-11-01T04:00Z",
+            "2026-11-01T05:00Z",
+            "2026-11-01T20:00Z",
+        ),
+        (
+            civil::date(2026, 3, 8).at(2, 30, 0, 0),
+            "2026-03-08T05:00Z",
+            "2026-03-08T07:00Z",
+            "2026-03-08T20:00Z",
+        ),
+    ] {
+        let candidates = both_kinds_at(1, at);
+        let armed = toronto_plan(&candidates, first, to);
+        let added = reconcile(&armed, &[]);
+        assert_eq!(added.add, armed, "{first}");
+        let replanned = toronto_plan(&candidates, again, to);
+        let second = reconcile(&replanned, &pending_of(&added.add));
+        assert!(second.is_empty(), "{first}: {second:?}");
+        assert_eq!(second.kept.len(), 2, "{first}");
+    }
+}
+
 /// A zone change re-plans a floating reminder to its wall clock in the new
 /// zone, and the reconcile replaces it under the same identifier — the core
 /// half of #520. A zoned reminder keeps its instant and its revision.

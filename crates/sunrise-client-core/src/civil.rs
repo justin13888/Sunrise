@@ -121,8 +121,12 @@ pub fn seed_ms(value: &SunriseTime, reader: &TimeZone) -> i64 {
 /// | `Floating` | its wall-clock time in `reader`, and no zone |
 /// | `AllDay` | its date in `reader` |
 ///
-/// The wall clock keeps the moment's milliseconds, so a value written here
-/// resolves back to `ms` in `reader`.
+/// The wall clock keeps the moment's milliseconds, so a `Zoned` or `Floating`
+/// value written here resolves back to `ms` in `reader`, except the later
+/// instant of a fall-back fold: it reads the same wall clock as the earlier
+/// instant, and a wall clock in a fold resolves to the earlier one
+/// (`docs/10-cross-cutting/time.md` §3). An `Instant` is always `ms`, and an
+/// `AllDay` date resolves to the start of its day.
 ///
 /// # Errors
 /// [`CivilError::OutOfRange`] for milliseconds no timestamp holds.
@@ -247,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn each_kind_is_written_as_asked_and_reads_back_to_the_moment() {
+    fn each_kind_is_written_as_asked() {
         let tz = toronto();
         let nine = date(2026, 3, 7).at(9, 0, 0, 0);
         let cases = [
@@ -264,6 +268,115 @@ mod tests {
             assert_eq!(got, want, "{kind:?}");
             assert_eq!(TimeKind::of(&got), Some(kind));
         }
+    }
+
+    fn utc_ms(s: &str) -> i64 {
+        s.parse::<Timestamp>().unwrap().as_millisecond()
+    }
+
+    /// Every moment outside a fold reads back, to the millisecond: an
+    /// ordinary one, either side of the spring-forward gap, the earlier
+    /// instant of the fold, and the first moment past it.
+    #[test]
+    fn a_wall_clock_value_resolves_back_to_its_moment_outside_a_fold() {
+        let tz = toronto();
+        for at in [
+            "2026-03-07T14:00:00.123Z",
+            "2026-03-08T06:59:59.999Z",
+            "2026-03-08T07:00:00Z",
+            "2026-11-01T05:30:00.123Z",
+            "2026-11-01T07:00:00Z",
+        ] {
+            let ms = utc_ms(at);
+            for kind in [TimeKind::Instant, TimeKind::Zoned, TimeKind::Floating] {
+                let value = value_at(ms, kind, &tz).unwrap();
+                assert_eq!(
+                    value.to_instant(&tz).unwrap().as_millisecond(),
+                    ms,
+                    "{at} {kind:?}"
+                );
+            }
+        }
+    }
+
+    /// The gap's edges are one millisecond apart on the timeline and an hour
+    /// apart on the wall clock, so nothing here writes a time inside the gap.
+    #[test]
+    fn no_moment_reads_as_a_wall_clock_inside_the_gap() {
+        let tz = toronto();
+        let floating = |at: &str| value_at(utc_ms(at), TimeKind::Floating, &tz).unwrap();
+        assert_eq!(
+            floating("2026-03-08T06:59:59.999Z"),
+            SunriseTime::floating(date(2026, 3, 8).at(1, 59, 59, 999_000_000))
+        );
+        assert_eq!(
+            floating("2026-03-08T07:00:00Z"),
+            SunriseTime::floating(date(2026, 3, 8).at(3, 0, 0, 0))
+        );
+    }
+
+    /// Toronto falls back on 2026-11-01: 01:30 EDT is 05:30Z and 01:30 EST is
+    /// 06:30Z. Both write 01:30, which resolves to the earlier, so the later
+    /// instant is the one moment a wall clock cannot read back.
+    #[test]
+    fn the_later_instant_of_a_fold_resolves_to_the_earlier() {
+        let tz = toronto();
+        let earlier = utc_ms("2026-11-01T05:30Z");
+        let later = utc_ms("2026-11-01T06:30Z");
+        let half_past_one = date(2026, 11, 1).at(1, 30, 0, 0);
+        for (kind, want) in [
+            (
+                TimeKind::Zoned,
+                SunriseTime::zoned(half_past_one, "America/Toronto"),
+            ),
+            (TimeKind::Floating, SunriseTime::floating(half_past_one)),
+        ] {
+            for ms in [earlier, later] {
+                let value = value_at(ms, kind, &tz).unwrap();
+                assert_eq!(value, want, "{ms} {kind:?}");
+                assert_eq!(
+                    value.to_instant(&tz).unwrap().as_millisecond(),
+                    earlier,
+                    "{ms} {kind:?}"
+                );
+            }
+        }
+        let fixed = value_at(later, TimeKind::Instant, &tz).unwrap();
+        assert_eq!(
+            fixed.to_instant(&tz).unwrap().as_millisecond(),
+            later,
+            "an instant is outside the rule"
+        );
+    }
+
+    /// An all-day date resolves to the start of its day, not to the moment
+    /// it was written from.
+    #[test]
+    fn an_all_day_value_resolves_to_the_start_of_its_day() {
+        let tz = toronto();
+        let value = value_at(utc_ms("2026-11-01T06:30Z"), TimeKind::AllDay, &tz).unwrap();
+        assert_eq!(value, SunriseTime::all_day(date(2026, 11, 1)));
+        assert_eq!(
+            value.to_instant(&tz).unwrap().as_millisecond(),
+            utc_ms("2026-11-01T04:00Z"),
+            "midnight EDT"
+        );
+    }
+
+    /// Dragging a stored 01:30 to the fold's later instant writes the same
+    /// wall clock, so it is no edit rather than a rewrite of the same value.
+    #[test]
+    fn moving_a_field_to_the_folds_later_instant_is_no_edit() {
+        let tz = toronto();
+        let stored = SunriseTime::floating(date(2026, 11, 1).at(1, 30, 0, 0));
+        let picked = PickedTime {
+            ms: utc_ms("2026-11-01T06:30Z"),
+            kind: None,
+        };
+        assert_eq!(
+            field_edit(Some(&stored), Some(picked), TimeKind::Floating, &tz).unwrap(),
+            None
+        );
     }
 
     /// A zoned value moved on a device elsewhere keeps its own zone and
