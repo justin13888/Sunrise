@@ -27,29 +27,37 @@
 //! Known violations are expected failures that name their issue ([`gaps`]).
 
 pub mod baseline;
+mod delivery;
 pub mod events;
 pub mod future;
 pub mod gaps;
 pub mod model;
+pub mod projection;
+mod replica;
+mod step;
+pub mod violation;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sunrise_core::{
-    Clock, Command, CommandResult, Core, CoreError, EngineError, Query, QueryResult, SystemClock,
-    Unlock,
-};
+use sunrise_core::{Clock, Core, SystemClock, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_domain::{Task, TaskDraft, TaskPatch, INBOX_STREAM_BYTES};
+use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_id::{EntityKind, EntityRef};
 
 use self::baseline::BaselineReplica;
+use self::delivery::Delivery;
 use self::events::{take_head_events, LoggedEvent};
-use self::future::{FutureWrite, FutureWriter};
-use self::model::{project, Classified, Field, Model, Projection, Violation, Who, Writer};
+use self::future::FutureWriter;
+use self::model::Model;
+use self::projection::project;
+pub use self::replica::Applied;
+use self::replica::{Closed, HeadReplica, Replica};
+pub use self::step::{Mode, Side, Step};
+use self::violation::{Classified, Violation, Who};
 
 /// The shared vault root every run's account is created under. Each run has
 /// its own relay and its own directories, so nothing is shared through it.
@@ -58,229 +66,7 @@ const ROOT: [u8; 32] = [0x26; 32];
 /// How long setup may take to reach a synced three-device account.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long one settle may take before the run reports a stall.
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How long a settle that cannot reach equality waits for nothing to change
-/// before it accepts the difference and moves on. Only tasks a newer op left
-/// the baseline unable to read are allowed to differ; anything else that
-/// differs is reported by the final check.
-const SETTLE_QUIET: Duration = Duration::from_millis(1_500);
-
 const POLL: Duration = Duration::from_millis(25);
-
-/// Every task's projection on A and on B, in model order.
-type Snapshot = Vec<(Option<Projection>, Option<Projection>)>;
-
-/// What an `apply_remote` did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Applied {
-    /// Applied, parked, or an idempotent repeat: nothing wrong.
-    Accepted,
-    /// Refused.
-    Refused {
-        /// Whether the refusal is the one the sync driver counts as corruption.
-        corruption: bool,
-        /// The refusal.
-        error: String,
-    },
-}
-
-/// One replica of the two the property compares.
-#[async_trait::async_trait]
-pub(crate) trait Replica: Send {
-    async fn create_task(
-        &mut self,
-        title: &str,
-        priority: Option<u8>,
-        stream: EntityRef,
-    ) -> Result<EntityRef, String>;
-    async fn set_title(&mut self, id: EntityRef, title: &str) -> Result<(), String>;
-    async fn set_priority(&mut self, id: EntityRef, priority: Option<u8>) -> Result<(), String>;
-    async fn delete(&mut self, id: EntityRef) -> Result<(), String>;
-    async fn apply_remote(&mut self, envelope: &[u8]) -> Applied;
-    async fn task(&mut self, id: EntityRef) -> Option<Task>;
-    async fn status(&mut self) -> Result<(String, u32), String>;
-    async fn knows(&mut self, devices: &[[u8; 16]]) -> bool;
-    /// Whether this replica holds a `DeviceFeatures` naming `core.field_ops`
-    /// from each of `devices`. A baseline has no notion of one, and says yes.
-    async fn holds_field_ops_of(&mut self, devices: &[[u8; 16]]) -> bool;
-    async fn take_events(&mut self) -> Vec<LoggedEvent>;
-    async fn close(self: Box<Self>);
-}
-
-/// A `HEAD` core in this process.
-#[derive(Debug)]
-pub(crate) struct HeadReplica(Arc<Core>);
-
-impl HeadReplica {
-    async fn submit(&self, cmd: Command) -> Result<CommandResult, String> {
-        self.0.submit(cmd).await.map_err(|e| e.to_string())
-    }
-}
-
-#[async_trait::async_trait]
-impl Replica for HeadReplica {
-    async fn create_task(
-        &mut self,
-        title: &str,
-        priority: Option<u8>,
-        stream: EntityRef,
-    ) -> Result<EntityRef, String> {
-        let draft = TaskDraft {
-            title: title.to_owned(),
-            stream_id: Some(stream),
-            priority,
-            ..TaskDraft::default()
-        };
-        Ok(self.submit(Command::CreateTask(draft)).await?.entity)
-    }
-
-    async fn set_title(&mut self, id: EntityRef, title: &str) -> Result<(), String> {
-        let patch = TaskPatch {
-            title: Some(title.to_owned()),
-            ..TaskPatch::default()
-        };
-        self.submit(Command::UpdateTask { id, patch })
-            .await
-            .map(drop)
-    }
-
-    async fn set_priority(&mut self, id: EntityRef, priority: Option<u8>) -> Result<(), String> {
-        let patch = TaskPatch {
-            priority: Some(priority),
-            ..TaskPatch::default()
-        };
-        self.submit(Command::UpdateTask { id, patch })
-            .await
-            .map(drop)
-    }
-
-    async fn delete(&mut self, id: EntityRef) -> Result<(), String> {
-        self.submit(Command::DeleteTask(id)).await.map(drop)
-    }
-
-    async fn apply_remote(&mut self, envelope: &[u8]) -> Applied {
-        match self.0.apply_remote(envelope).await {
-            Ok(_) => Applied::Accepted,
-            Err(e) => Applied::Refused {
-                corruption: matches!(e, CoreError::Engine(EngineError::RemoteOpInvalid(_))),
-                error: e.to_string(),
-            },
-        }
-    }
-
-    async fn task(&mut self, id: EntityRef) -> Option<Task> {
-        match self.0.query(Query::EntityById(id)).await {
-            Ok(QueryResult::Task(t)) => Some(*t),
-            _ => None,
-        }
-    }
-
-    async fn status(&mut self) -> Result<(String, u32), String> {
-        match self.0.query(Query::SyncStatus).await {
-            Ok(QueryResult::SyncStatus(s)) => Ok((format!("{:?}", s.state), s.outbox_pending)),
-            Ok(other) => Err(format!("expected SyncStatus, got {other:?}")),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    async fn knows(&mut self, devices: &[[u8; 16]]) -> bool {
-        let Ok(QueryResult::Devices(rows)) = self.0.query(Query::DeviceList).await else {
-            return false;
-        };
-        devices
-            .iter()
-            .all(|d| rows.iter().any(|r| r.device_id == *d))
-    }
-
-    async fn holds_field_ops_of(&mut self, devices: &[[u8; 16]]) -> bool {
-        self.0
-            .devices_lacking_feature(sunrise_core::FIELD_OPS_FEATURE)
-            .is_ok_and(|lacking| !devices.iter().any(|d| lacking.contains(d)))
-    }
-
-    async fn take_events(&mut self) -> Vec<LoggedEvent> {
-        // `HEAD` cores share one process and one capture; the run reads it
-        // once for all of them rather than per replica.
-        Vec::new()
-    }
-
-    async fn close(self: Box<Self>) {
-        self.0.shutdown().await;
-    }
-}
-
-/// One side of the pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Side {
-    /// Replica A.
-    A,
-    /// Replica B.
-    B,
-}
-
-/// One step of a scenario. A task is chosen by index into the tasks every
-/// replica already holds and nobody has deleted, so no command targets a task
-/// its replica cannot have heard of; a step with nothing to target is skipped.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
-    /// Create a task in the shared Stream.
-    Create {
-        /// Where.
-        on: Side,
-        /// Distinguishes the title.
-        title: u8,
-        /// Initial priority.
-        priority: Option<u8>,
-    },
-    /// Rename a task.
-    SetTitle {
-        /// Where.
-        on: Side,
-        /// Which task.
-        task: usize,
-        /// Distinguishes the title.
-        title: u8,
-    },
-    /// Set or clear a task's priority.
-    SetPriority {
-        /// Where.
-        on: Side,
-        /// Which task.
-        task: usize,
-        /// The new priority.
-        priority: Option<u8>,
-    },
-    /// Delete a task.
-    Delete {
-        /// Where.
-        on: Side,
-        /// Which task.
-        task: usize,
-    },
-    /// Settle, then have the newer build write a task, handing the op to
-    /// `first` now and to the other side at the next settle.
-    Future {
-        /// Which task.
-        task: usize,
-        /// What the newer build writes.
-        write: FutureWrite,
-        /// Who hears it first.
-        first: Side,
-    },
-    /// Wait until both sides have exchanged everything.
-    Settle,
-}
-
-/// Which builds run.
-#[derive(Debug, Clone)]
-pub enum Mode {
-    /// `HEAD` against `HEAD`: the control run.
-    HeadOnly,
-    /// The baseline driver at this path against `HEAD`.
-    Baseline(PathBuf),
-}
 
 /// Everything a run found.
 #[derive(Debug)]
@@ -310,17 +96,6 @@ impl Report {
         v.dedup();
         v
     }
-}
-
-/// One newer op on its way to one side.
-#[derive(Debug, Clone)]
-struct Delivery {
-    to: Side,
-    task: EntityRef,
-    write: FutureWrite,
-    /// What the op sets its field to, as [`project`] reads it back.
-    value: Option<String>,
-    envelope: Vec<u8>,
 }
 
 struct Run {
@@ -600,246 +375,6 @@ impl Run {
         a && b
     }
 
-    fn pick(&self, index: usize) -> Option<EntityRef> {
-        if self.live.is_empty() {
-            None
-        } else {
-            Some(self.live[index % self.live.len()])
-        }
-    }
-
-    fn side(&mut self, side: Side) -> &mut dyn Replica {
-        match side {
-            Side::A => self.a.as_mut(),
-            Side::B => &mut self.b,
-        }
-    }
-
-    fn who(side: Side) -> Who {
-        match side {
-            Side::A => Who::A,
-            Side::B => Who::B,
-        }
-    }
-
-    fn writer(side: Side) -> Writer {
-        match side {
-            Side::A => Writer::A,
-            Side::B => Writer::B,
-        }
-    }
-
-    fn failed(&mut self, side: Side, command: String, error: String) {
-        self.violations.push(Violation::CommandFailed {
-            who: Self::who(side),
-            command,
-            error,
-        });
-    }
-
-    async fn step(&mut self, step: &Step) {
-        match *step {
-            Step::Create {
-                on,
-                title,
-                priority,
-            } => {
-                let title = format!("task {title}");
-                let inbox = self.inbox;
-                match self.side(on).create_task(&title, priority, inbox).await {
-                    Ok(id) => {
-                        self.model.record(
-                            Self::writer(on),
-                            id,
-                            &[
-                                (Field::Title, Some(title)),
-                                (Field::Priority, priority.map(|p| p.to_string())),
-                                (Field::Deleted, Some("false".into())),
-                                (Field::State, Some("todo".into())),
-                                (Field::DueKind, None),
-                                (Field::Note, None),
-                                (Field::Stream, None),
-                            ],
-                        );
-                        self.fresh.push(id);
-                    }
-                    Err(e) => self.failed(on, format!("create {title:?}"), e),
-                }
-            }
-            Step::SetTitle { on, task, title } => {
-                let Some(id) = self.pick(task) else { return };
-                let title = format!("renamed {title}");
-                match self.side(on).set_title(id, &title).await {
-                    Ok(()) => {
-                        self.model
-                            .record(Self::writer(on), id, &[(Field::Title, Some(title))]);
-                    }
-                    Err(e) => self.failed(on, format!("rename {id}"), e),
-                }
-            }
-            Step::SetPriority { on, task, priority } => {
-                let Some(id) = self.pick(task) else { return };
-                match self.side(on).set_priority(id, priority).await {
-                    Ok(()) => self.model.record(
-                        Self::writer(on),
-                        id,
-                        &[(Field::Priority, priority.map(|p| p.to_string()))],
-                    ),
-                    Err(e) => self.failed(on, format!("set priority of {id}"), e),
-                }
-            }
-            Step::Delete { on, task } => {
-                let Some(id) = self.pick(task) else { return };
-                match self.side(on).delete(id).await {
-                    Ok(()) => {
-                        self.model.record(
-                            Self::writer(on),
-                            id,
-                            &[(Field::Deleted, Some("true".into()))],
-                        );
-                        self.live.retain(|t| *t != id);
-                    }
-                    Err(e) => self.failed(on, format!("delete {id}"), e),
-                }
-            }
-            Step::Future { task, write, first } => self.future(task, write, first).await,
-            Step::Settle => self.settle().await,
-        }
-    }
-
-    /// Settle, have the newer build write a task, hand the op to `first` now
-    /// and owe it to the other side until the next settle.
-    async fn future(&mut self, task: usize, write: FutureWrite, first: Side) {
-        self.settle().await;
-        let Some(id) = self.pick(task) else { return };
-        // B is `HEAD` and has settled, so it holds every earlier write, newer
-        // ones included: the state a newer build would start from.
-        let Some(current) = self.b.task(id).await else {
-            self.violations.push(Violation::Missing {
-                who: Who::B,
-                task: id,
-            });
-            return;
-        };
-        self.future_count += 1;
-        let envelope = self
-            .future
-            .seal(write, &current, self.c.now_ms(), self.future_count);
-        let value = project_future(write, self.future_count);
-        let fields: Vec<(Field, Option<String>)> = write
-            .field()
-            .map(|f| (f, value.clone()))
-            .into_iter()
-            .collect();
-        self.model.record(Writer::Future, id, &fields);
-        let other = match first {
-            Side::A => Side::B,
-            Side::B => Side::A,
-        };
-        let now = Delivery {
-            to: first,
-            task: id,
-            write,
-            value,
-            envelope,
-        };
-        let later = Delivery {
-            to: other,
-            ..now.clone()
-        };
-        self.deliver(&now).await;
-        self.owed.push(later);
-    }
-
-    /// Hand one newer op to one side, and record what that side made of it.
-    ///
-    /// A baseline that accepts the op has not necessarily kept it: a build
-    /// that reads an unknown enum value as its fallback accepts the op and
-    /// stores the fallback. So acceptance is checked against what the baseline
-    /// then holds, and an op it did not keep is recorded the same as one it
-    /// refused.
-    async fn deliver(&mut self, d: &Delivery) {
-        let carried = self.model.carried(d.task);
-        match self.side(d.to).apply_remote(&d.envelope).await {
-            Applied::Accepted => {
-                if d.to == Side::B && self.a_is_baseline {
-                    self.model.tainted(d.task, d.write);
-                }
-                if d.to == Side::A && self.a_is_baseline {
-                    if let Some(field) = d.write.field() {
-                        let held = self.a.task(d.task).await.as_ref().map(project);
-                        let kept = held.and_then(|p| p.get(&field).cloned().flatten());
-                        if kept != d.value {
-                            self.model.unkept(d.task, d.write, &carried);
-                        }
-                    }
-                }
-            }
-            Applied::Refused { corruption, error } => {
-                if d.to == Side::A && self.a_is_baseline {
-                    self.model.unkept(d.task, d.write, &carried);
-                }
-                self.violations.push(Violation::Refused {
-                    who: Self::who(d.to),
-                    task: d.task,
-                    write: d.write,
-                    carried,
-                    corruption,
-                    error,
-                });
-            }
-        }
-    }
-
-    /// Hand every owed newer op over, then wait until A and B have exchanged
-    /// everything: outboxes empty, and every task they can both read equal.
-    async fn settle(&mut self) {
-        for d in std::mem::take(&mut self.owed) {
-            self.deliver(&d).await;
-        }
-        let deadline = tokio::time::Instant::now() + SETTLE_TIMEOUT;
-        let mut last: Option<Snapshot> = None;
-        let mut quiet_since = tokio::time::Instant::now();
-        loop {
-            let pending = self.pending_zero().await;
-            let tasks: Vec<EntityRef> = self.model.tasks().to_vec();
-            let mut pairs: Snapshot = Vec::new();
-            for t in &tasks {
-                let a = self.a.task(*t).await.as_ref().map(project);
-                let b = self.b.task(*t).await.as_ref().map(project);
-                pairs.push((a, b));
-            }
-            let equal = tasks
-                .iter()
-                .zip(&pairs)
-                .all(|(t, (x, y))| !self.model.comparable(*t) || x == y);
-            if pending && equal {
-                break;
-            }
-            let now = tokio::time::Instant::now();
-            let snapshot = Some(pairs);
-            if snapshot != last {
-                last = snapshot;
-                quiet_since = now;
-            } else if pending && now.duration_since(quiet_since) >= SETTLE_QUIET {
-                break;
-            }
-            if now >= deadline {
-                let status = self.a.status().await;
-                self.violations.push(Violation::StoppedSyncing {
-                    who: Who::A,
-                    detail: format!(
-                        "a settle did not finish in {SETTLE_TIMEOUT:?}; A status {status:?}"
-                    ),
-                });
-                break;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        self.model.settle();
-        self.live.append(&mut self.fresh);
-    }
-
     /// Read A's no-break evidence, upgrade A to `HEAD`, and compare both
     /// replicas with the reference.
     async fn finish(&mut self, dir_a: &Path, addr: SocketAddr, clock: &Arc<dyn Clock>) {
@@ -913,60 +448,4 @@ impl Run {
         let lost_b = self.model.check(Who::B, &fb);
         self.violations.extend(lost_b);
     }
-}
-
-/// The value a newer write gives its field, as [`project`] reads it back.
-fn project_future(write: FutureWrite, n: u32) -> Option<String> {
-    match write {
-        FutureWrite::Field => Some(format!("note {n}")),
-        FutureWrite::EnumValue => Some(future::FUTURE_STATE.to_owned()),
-        FutureWrite::NestedKind => Some(future::FUTURE_TIME_KIND.to_owned()),
-        FutureWrite::OpKind => None,
-    }
-}
-
-/// The placeholder A holds between closing the old build and opening `HEAD`.
-struct Closed;
-
-#[async_trait::async_trait]
-impl Replica for Closed {
-    async fn create_task(
-        &mut self,
-        _: &str,
-        _: Option<u8>,
-        _: EntityRef,
-    ) -> Result<EntityRef, String> {
-        Err("closed".into())
-    }
-    async fn set_title(&mut self, _: EntityRef, _: &str) -> Result<(), String> {
-        Err("closed".into())
-    }
-    async fn set_priority(&mut self, _: EntityRef, _: Option<u8>) -> Result<(), String> {
-        Err("closed".into())
-    }
-    async fn delete(&mut self, _: EntityRef) -> Result<(), String> {
-        Err("closed".into())
-    }
-    async fn apply_remote(&mut self, _: &[u8]) -> Applied {
-        Applied::Refused {
-            corruption: false,
-            error: "closed".into(),
-        }
-    }
-    async fn task(&mut self, _: EntityRef) -> Option<Task> {
-        None
-    }
-    async fn status(&mut self) -> Result<(String, u32), String> {
-        Err("closed".into())
-    }
-    async fn knows(&mut self, _: &[[u8; 16]]) -> bool {
-        false
-    }
-    async fn holds_field_ops_of(&mut self, _: &[[u8; 16]]) -> bool {
-        false
-    }
-    async fn take_events(&mut self) -> Vec<LoggedEvent> {
-        Vec::new()
-    }
-    async fn close(self: Box<Self>) {}
 }

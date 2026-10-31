@@ -572,18 +572,18 @@ mod tests {
 
     #[test]
     fn every_facet_the_patch_carries_is_reachable() {
-        let e = edit("!2 %high ~90m ^tomorrow target:friday due:tomorrow @home #travel");
+        // Three different days, so routing one date word to another's field
+        // fails: `now()` is Thursday 2026-01-01.
+        let e = edit("!2 %high ~90m ^tomorrow target:saturday due:monday @home #travel");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
         assert_eq!(p.priority, Some(Some(2)));
         assert_eq!(p.energy, Some(Some(Energy::High)));
         assert_eq!(p.estimated_duration_s, Some(Some(90 * 60)));
-        assert!(p.planned_at.is_some());
-        assert!(p.hard_due_at.is_some());
-        assert!(matches!(
-            p.target_at,
-            Some(Some(SunriseTime::AllDay { .. }))
-        ));
+        let day = |d| Some(Some(SunriseTime::all_day(jiff::civil::date(2026, 1, d))));
+        assert_eq!(p.planned_at, day(2));
+        assert_eq!(p.target_at, day(3));
+        assert_eq!(p.hard_due_at, day(5));
         assert_eq!(p.contexts, Some(vec![cid(1)]));
         assert_eq!(e.stream(), Some(sid(2)));
     }

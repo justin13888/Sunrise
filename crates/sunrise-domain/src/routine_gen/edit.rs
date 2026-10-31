@@ -410,6 +410,9 @@ pub fn catchup_title(title: &str, n: usize) -> String {
 }
 
 #[cfg(test)]
+mod split_properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::routine::TaskTemplate;
@@ -417,7 +420,7 @@ mod tests {
     use crate::time::SunriseTime;
     use crate::unknown::Unknowns;
 
-    fn routine(rule: &str, anchor: &str) -> Routine {
+    pub(super) fn routine(rule: &str, anchor: &str) -> Routine {
         let civil: DateTime = anchor.parse().expect("civil");
         Routine {
             id: EntityRef::new(EntityKind::Routine, [7; 16]),
@@ -457,7 +460,7 @@ mod tests {
         }
     }
 
-    fn now() -> Timestamp {
+    pub(super) fn now() -> Timestamp {
         "2026-03-05T12:00:00Z".parse().expect("ts")
     }
 
