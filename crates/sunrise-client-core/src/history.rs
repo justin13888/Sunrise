@@ -225,9 +225,7 @@ pub async fn snapshot_for(core: &Core, cmds: &[Command]) -> Result<VaultRows, Co
             // `RoutineRow` is what `EntityLookup` speaks, and the projection
             // that makes one is the domain's — not a shape invented here. The
             // instant is the core's injected clock, never an ambient one.
-            let now =
-                jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap_or(i64::MAX))
-                    .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+            let now = sunrise_domain::epoch_ms::from_u64(core.now_ms());
             rows.routines = sunrise_domain::routine_rows(&r, now, &core.reader_zone());
         }
     }

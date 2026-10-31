@@ -150,11 +150,7 @@ pub fn focus_filter_allows(stream: Option<EntityRef>, scope: Vec<EntityRef>) -> 
 #[uniffi::export]
 #[must_use]
 pub fn focus_filter_scoping(tasks: Vec<TaskItem>, scope: Vec<EntityRef>) -> Vec<TaskItem> {
-    let scope = focus::scope(scope);
-    tasks
-        .into_iter()
-        .filter(|t| focus::allows(Some(t.stream_id), scope.as_ref()))
-        .collect()
+    focus::scoping_by(tasks, focus::scope(scope).as_ref(), |t| Some(t.stream_id))
 }
 
 /// The line a Focus filter is described by. See
