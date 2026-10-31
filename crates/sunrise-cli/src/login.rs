@@ -56,11 +56,7 @@ impl LoginConfig {
 /// here is what makes a stolen token useless on another machine.
 #[must_use]
 pub fn device_id_hex(core: &sunrise_core::Core) -> String {
-    core.device_id().iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    sunrise_client_core::ids::hex_id(&core.device_id())
 }
 
 /// Run the full login flow and persist the result.
