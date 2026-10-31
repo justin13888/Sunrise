@@ -4297,12 +4297,12 @@ impl Mirrored for Preferences {
     type Dto = PreferencesItem;
 }
 
-/// Requires [`Mirrored`] of every record of every entity that syncs.
-/// `Unsynced` entities reach no foreign caller; `Control` ones have no record.
 // The saved view's mirror lives in `saved_views.rs`.
 #[allow(unused_imports)]
 use sunrise_domain::SavedView;
 
+/// Requires [`Mirrored`] of every record of every entity that syncs.
+/// `Unsynced` entities reach no foreign caller; `Control` ones have no record.
 macro_rules! require_mirrors {
     (@merge Unsynced $($record:ident)*) => {};
     (@merge $merge:ident $($record:ident)*) => {
