@@ -297,51 +297,8 @@ fn a_split_at_a_key_the_series_lacks_is_refused() {
 }
 
 /// Two replicas that fold field ops.
-struct Pair {
-    ea: Engine,
-    eb: Engine,
-    dba: Db,
-    dbb: Db,
-}
-
 fn pair(advertise: bool) -> Pair {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT_331, [1u8; 32], ca);
-    let eb = engine_seeded(ROOT_331, [2u8; 32], cb);
-    let mut dba = db_root(ROOT_331);
-    let mut dbb = db_root(ROOT_331);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    if advertise {
-        assert!(ea.advertise_features(&mut dba).unwrap());
-        assert!(eb.advertise_features(&mut dbb).unwrap());
-    }
-    let mut p = Pair { ea, eb, dba, dbb };
-    sync(&mut p);
-    p
-}
-
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        to.apply_remote(to_db, &env).unwrap();
-    }
-}
-
-fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
+    synced_pair(ROOT_331, advertise)
 }
 
 /// A split syncs whole: the peer holds the same two routines and the same

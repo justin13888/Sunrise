@@ -6,14 +6,7 @@
 use super::*;
 use jiff::civil::date;
 
-/// An engine whose clock reads `local` in `zone`.
-fn engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine, u64) {
-    let tz = jiff::tz::TimeZone::get(zone).unwrap();
-    let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
-    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x36; 32])));
-    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), Arc::new(SystemRng), kc);
-    (e, now)
-}
+const ZONE_ROOT: [u8; 32] = [0x36; 32];
 
 fn task(
     e: &Engine,
@@ -55,7 +48,11 @@ fn today(e: &Engine, db: &Db, now: u64) -> Vec<String> {
 /// does not contain them.
 #[test]
 fn today_is_the_readers_civil_day_in_honolulu() {
-    let (e, now) = engine_at("Pacific/Honolulu", date(2026, 3, 4).at(8, 0, 0, 0));
+    let (e, now) = engine_at(
+        ZONE_ROOT,
+        "Pacific/Honolulu",
+        date(2026, 3, 4).at(8, 0, 0, 0),
+    );
     let mut db = db();
     let d = date(2026, 3, 4);
     let next = date(2026, 3, 5);
@@ -103,7 +100,7 @@ fn today_is_the_readers_civil_day_in_honolulu() {
 #[test]
 fn today_is_the_readers_civil_day_in_kiritimati() {
     let zone = "Pacific/Kiritimati";
-    let (e, now) = engine_at(zone, date(2026, 3, 4).at(23, 30, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, zone, date(2026, 3, 4).at(23, 30, 0, 0));
     let mut db = db();
     let d = date(2026, 3, 4);
     let next = date(2026, 3, 5);
@@ -137,7 +134,7 @@ fn today_is_the_readers_civil_day_in_kiritimati() {
 /// (`docs/10-cross-cutting/time.md` §2 rule 3).
 #[test]
 fn today_sorts_an_all_day_value_before_a_timed_one_at_the_same_instant() {
-    let (e, now) = engine_at("Asia/Kolkata", date(2026, 3, 4).at(12, 0, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, "Asia/Kolkata", date(2026, 3, 4).at(12, 0, 0, 0));
     let mut db = db();
     let d = date(2026, 3, 4);
     task(
@@ -178,7 +175,11 @@ fn titles(rows: Vec<BlockRow>) -> Vec<String> {
 /// three hours before the local day begins on the timeline.
 #[test]
 fn the_day_grid_keeps_a_morning_block_west_of_utc() {
-    let (e, now) = engine_at("Pacific/Honolulu", date(2026, 3, 4).at(12, 0, 0, 0));
+    let (e, now) = engine_at(
+        ZONE_ROOT,
+        "Pacific/Honolulu",
+        date(2026, 3, 4).at(12, 0, 0, 0),
+    );
     let mut db = db();
     let d = date(2026, 3, 4);
     block(&e, &mut db, "breakfast", d.at(7, 0, 0, 0), d.at(8, 0, 0, 0));
@@ -196,7 +197,11 @@ fn the_day_grid_keeps_a_morning_block_west_of_utc() {
 /// window on the timeline; it is not on today's grid.
 #[test]
 fn the_day_grid_drops_yesterday_evening_east_of_utc() {
-    let (e, now) = engine_at("Pacific/Kiritimati", date(2026, 3, 4).at(12, 0, 0, 0));
+    let (e, now) = engine_at(
+        ZONE_ROOT,
+        "Pacific/Kiritimati",
+        date(2026, 3, 4).at(12, 0, 0, 0),
+    );
     let mut db = db();
     let d = date(2026, 3, 4);
     block(
@@ -222,12 +227,12 @@ fn the_ordering_warning_is_decided_in_the_readers_zone() {
         hard_due_at: Some(SunriseTime::floating(d.at(11, 0, 0, 0))),
         ..Default::default()
     };
-    let (ny, _) = engine_at("America/New_York", d.at(8, 0, 0, 0));
+    let (ny, _) = engine_at(ZONE_ROOT, "America/New_York", d.at(8, 0, 0, 0));
     let in_ny = ny
         .apply(&mut db(), Command::CreateTask(draft.clone()))
         .unwrap();
     assert!(in_ny.ordering_warnings.is_empty());
-    let (kolkata, _) = engine_at("Asia/Kolkata", d.at(8, 0, 0, 0));
+    let (kolkata, _) = engine_at(ZONE_ROOT, "Asia/Kolkata", d.at(8, 0, 0, 0));
     let in_kolkata = kolkata
         .apply(&mut db(), Command::CreateTask(draft))
         .expect("an ordering warns, and never refuses (ADR-0047 §1)");
@@ -244,7 +249,11 @@ fn the_ordering_warning_is_decided_in_the_readers_zone() {
 /// A task with no time leads, as it did.
 #[test]
 fn stream_and_context_lists_order_in_the_readers_zone() {
-    let (e, _) = engine_at("America/Los_Angeles", date(2026, 3, 4).at(8, 0, 0, 0));
+    let (e, _) = engine_at(
+        ZONE_ROOT,
+        "America/Los_Angeles",
+        date(2026, 3, 4).at(8, 0, 0, 0),
+    );
     let mut db = db();
     let ctx = e
         .apply(

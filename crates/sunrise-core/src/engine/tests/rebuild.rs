@@ -7,7 +7,6 @@ use super::*;
 use crate::engine::rebuild::check::{dump, projection_tables};
 use crate::engine::rebuild::{TableClass, TABLE_CLASSES};
 use crate::engine::{CompactionPolicy, RebuildReport};
-use sunrise_crypto::decode_envelope;
 use sunrise_domain::{PrefTarget, PrefValue, INBOX_STREAM_BYTES};
 
 const INBOX: [u8; 16] = INBOX_STREAM_BYTES;
@@ -24,29 +23,9 @@ fn pair(clock: &Arc<FakeClock>) -> ((Engine, Db), (Engine, Db)) {
     trust(&eb, &mut dbb, &ea);
     assert!(ea.advertise_features(&mut dba).unwrap());
     assert!(eb.advertise_features(&mut dbb).unwrap());
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     ((ea, dba), (eb, dbb))
-}
-
-/// Deliver every envelope of `from` that `to` did not write to `to`, in
-/// relay order.
-fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
-    let me = to.keychain.device_id();
-    let mut stmt = from
-        .conn()
-        .prepare("SELECT envelope FROM ops ORDER BY stream_id, device_id, seq")
-        .unwrap();
-    let envs: Vec<Vec<u8>> = stmt
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    for env in envs {
-        if decode_envelope(&env).unwrap().device_id != me {
-            to.apply_remote_all(to_db, &env).unwrap();
-        }
-    }
 }
 
 /// The projection a reader sees: every projection table but the merge state
@@ -346,10 +325,10 @@ fn rebuild_projection_reproduces_every_projection_table() {
     rich_history(&ea, &mut dba);
     set_clock(&c, (NOW + 1_000) as u64);
     let from_b = new_task(&eb, &mut dbb, "from b");
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     rename(&ea, &mut dba, from_b, "from b, renamed on a");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
 
     for (e, db) in [(&ea, &mut dba), (&eb, &mut dbb)] {
         e.assert_rebuild_identity(db);
@@ -409,15 +388,15 @@ fn rebuild_after_compaction_keeps_the_compacted_state() {
     )
     .unwrap();
     new_task(&ea, &mut dba, "four");
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     dba.conn()
         .execute("UPDATE outbox SET acked_at_ms = 1", [])
         .unwrap();
     set_clock(&c, T0 + 2 * DAY);
     assert!(eb.publish_stream_digest(&mut dbb, &INBOX).unwrap());
     assert!(eb.publish_stream_digest(&mut dbb, &META_STREAM).unwrap());
-    sync(&dbb, &ea, &mut dba);
+    relay(&dbb, &ea, &mut dba);
     let policy = CompactionPolicy {
         retention_ms: DAY,
         ..CompactionPolicy::default()
@@ -452,7 +431,7 @@ fn a_conflict_outlives_the_ops_that_caused_it() {
     let c = Arc::new(FakeClock(PLMutex::new(T0)));
     let ((ea, mut dba), (eb, mut dbb)) = pair(&c);
     let task = new_task(&ea, &mut dba, "t");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     // B's write loses, and B's ops are the ones compaction folds here: A's
     // own `Patch` was never sent, so it stays in the log.
     for (at, e, db, title) in [
@@ -463,8 +442,8 @@ fn a_conflict_outlives_the_ops_that_caused_it() {
         let op = patch(task, false, vec![("title", set(text(title)))]);
         emit_patch(e, db, &INBOX, &op);
     }
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     let losers = |db: &Db| -> Vec<String> {
         dump(db.conn())
             .into_iter()
@@ -479,7 +458,7 @@ fn a_conflict_outlives_the_ops_that_caused_it() {
         .unwrap();
     set_clock(&c, T0 + 2 * DAY);
     assert!(eb.publish_stream_digest(&mut dbb, &INBOX).unwrap());
-    sync(&dbb, &ea, &mut dba);
+    relay(&dbb, &ea, &mut dba);
     let policy = CompactionPolicy {
         retention_ms: DAY,
         ..CompactionPolicy::default()
@@ -511,7 +490,7 @@ fn rebuild_skips_parked_ops_and_keeps_local_only_rows() {
         &INBOX,
         &super::future_kind_inner("FutureKind"),
     );
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     eb.apply(
         &mut dbb,
         Command::SetPreference {
@@ -641,10 +620,10 @@ fn a_legacy_only_vault_projects_identically_after_the_migration() {
     legacy_history(&ea, &mut dba);
     set_clock(&c, (NOW + 1_000) as u64);
     let from_b = new_task(&eb, &mut dbb, "from b");
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     rename(&ea, &mut dba, from_b, "from b, renamed on a");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let patches: i64 = dba
         .conn()
         .query_row(

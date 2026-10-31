@@ -79,59 +79,8 @@ fn patches_of(e: &Engine, db: &Db) -> Vec<PatchPayload> {
 
 /// Two trusting replicas of one vault, each having advertised what it
 /// supports to the other, as a fresh `Core::open` does.
-struct Pair {
-    ea: Engine,
-    eb: Engine,
-    ca: Arc<FakeClock>,
-    cb: Arc<FakeClock>,
-    dba: Db,
-    dbb: Db,
-}
-
 fn pair() -> Pair {
-    let (ca, cb) = (clock(), clock());
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    assert!(ea.advertise_features(&mut dba).unwrap());
-    assert!(eb.advertise_features(&mut dbb).unwrap());
-    let mut p = Pair {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    };
-    sync(&mut p);
-    p
-}
-
-/// Every op one replica logged under its own device id that the other has
-/// not applied, delivered in seq order. Both directions.
-fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
-}
-
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        to.apply_remote(to_db, &env).unwrap();
-    }
+    synced_pair(ROOT, true)
 }
 
 #[test]

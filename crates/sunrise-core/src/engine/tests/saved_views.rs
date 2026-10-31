@@ -11,59 +11,9 @@ use sunrise_domain::{
 
 const ROOT: [u8; 32] = [0x41; 32];
 
-struct Pair {
-    ea: Engine,
-    eb: Engine,
-    ca: Arc<FakeClock>,
-    cb: Arc<FakeClock>,
-    dba: Db,
-    dbb: Db,
-}
-
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        to.apply_remote_all(to_db, &env).unwrap();
-    }
-}
-
-fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba);
-}
-
 /// Two trusting replicas, each having advertised what it supports.
 fn pair() -> Pair {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    assert!(ea.advertise_features(&mut dba).unwrap());
-    assert!(eb.advertise_features(&mut dbb).unwrap());
-    let mut p = Pair {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    };
-    sync(&mut p);
-    p
+    synced_pair(ROOT, true)
 }
 
 fn draft(name: &str, view: ViewKind, filter: ViewFilter) -> SavedViewDraft {

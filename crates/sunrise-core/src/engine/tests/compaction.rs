@@ -51,19 +51,6 @@ pub(super) fn clock() -> Arc<FakeClock> {
     Arc::new(FakeClock(PLMutex::new(T0)))
 }
 
-/// Every envelope `db` holds, in the order a relay would hand them over:
-/// by stream, device and seq.
-pub(super) fn all_envs(db: &Db) -> Vec<Vec<u8>> {
-    let mut stmt = db
-        .conn()
-        .prepare("SELECT envelope FROM ops ORDER BY stream_id, device_id, seq")
-        .unwrap();
-    stmt.query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
-}
-
 /// `device`'s envelopes in `stream` with seq above `after`.
 pub(super) fn envs_after(
     db: &Db,
@@ -85,17 +72,6 @@ pub(super) fn envs_after(
     .unwrap()
     .collect::<rusqlite::Result<_>>()
     .unwrap()
-}
-
-/// Deliver every envelope of `from` to `to`, in relay order, except the
-/// ones `to` wrote itself, which a relay does not echo back.
-pub(super) fn sync(from: &Db, to: &Engine, to_db: &mut Db) {
-    let me = to.keychain.device_id();
-    for env in all_envs(from) {
-        if decode_envelope(&env).unwrap().device_id != me {
-            to.apply_remote_all(to_db, &env).unwrap();
-        }
-    }
 }
 
 /// Have `e` publish its digest of `stream`, and return the digest op.
@@ -217,8 +193,8 @@ fn compaction_waits_for_every_known_device_and_changes_nothing_visible() {
     for t in ["one", "two", "three", "four"] {
         new_task(&ea, &mut dba, t);
     }
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     ack_outbox(&mut dba);
     set_clock(&c, T0 + 2 * DAY);
 
@@ -273,7 +249,7 @@ fn a_compaction_run_returns_the_pages_it_freed() {
     for i in 0..200 {
         new_task(&ea, &mut dba, &format!("task {i:03} {}", "x".repeat(200)));
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     ack_outbox(&mut dba);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
     ea.apply_remote_all(&mut dba, &ack).unwrap();
@@ -319,7 +295,7 @@ fn the_retention_window_keeps_recent_ops() {
     for t in ["one", "two", "three"] {
         new_task(&ea, &mut dba, t);
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     ack_outbox(&mut dba);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
     ea.apply_remote_all(&mut dba, &ack).unwrap();
@@ -356,11 +332,11 @@ fn a_silent_or_revoked_device_is_not_waited_for() {
     let mut dbc = db_root(ROOT);
     trust(&ec, &mut dbc, &ea);
     new_task(&ec, &mut dbc, "from c");
-    sync(&dbc, &ea, &mut dba);
+    relay(&dbc, &ea, &mut dba);
     for t in ["one", "two", "three"] {
         new_task(&ea, &mut dba, t);
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     ack_outbox(&mut dba);
     set_clock(&c, T0 + 31 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
@@ -399,7 +375,7 @@ fn a_compacted_replica_keeps_writing_and_its_peer_finds_nothing_amiss() {
     for t in ["one", "two", "three"] {
         new_task(&ea, &mut dba, t);
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     ack_outbox(&mut dba);
     set_clock(&c, T0 + 2 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
@@ -437,7 +413,7 @@ fn a_delivery_below_the_floor_is_a_duplicate_and_a_different_one_at_it_is_a_fork
     for t in ["one", "two", "three"] {
         new_task(&eb, &mut dbb, t);
     }
-    sync(&dbb, &ea, &mut dba);
+    relay(&dbb, &ea, &mut dba);
     let b_envs = envs_after(&dbb, &INBOX, &b, 0);
     set_clock(&c, T0 + 2 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
@@ -494,7 +470,7 @@ fn an_unknown_kind_at_a_covered_position_is_dropped_not_parked() {
     for t in ["one", "two", "three"] {
         new_task(&eb, &mut dbb, t);
     }
-    sync(&dbb, &ea, &mut dba);
+    relay(&dbb, &ea, &mut dba);
     set_clock(&c, T0 + 2 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
     ea.apply_remote_all(&mut dba, &ack).unwrap();
@@ -580,7 +556,7 @@ fn a_snapshot_floor_judges_expectations_and_claims_at_it() {
     for env in &forged[..2] {
         ed.apply_remote_all(&mut dbd, env).unwrap();
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let mut dbe = db_root(ROOT);
     let ee = engine_seeded(ROOT, [5; 32], Arc::clone(&c));
     for other in [&ea, &eb, &ed] {
@@ -616,12 +592,12 @@ fn an_older_digest_never_lowers_a_peers_acknowledgement() {
     let a = ea.keychain.device_id();
     let b = eb.keychain.device_id();
     new_task(&ea, &mut dba, "one");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let older = digest_op(&eb, &mut dbb, &INBOX);
     for t in ["two", "three"] {
         new_task(&ea, &mut dba, t);
     }
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let newer = digest_op(&eb, &mut dbb, &INBOX);
     ack_outbox(&mut dba);
 
@@ -667,7 +643,7 @@ fn compaction_keeps_parked_append_only_and_unsent_ops() {
     );
     new_task(&ea, &mut dba, "two");
     new_task(&ea, &mut dba, "three");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     set_clock(&c, T0 + 2 * DAY);
     let b_ack = digest_op(&eb, &mut dbb, &INBOX);
     ea.apply_remote_all(&mut dba, &b_ack).unwrap();
@@ -731,7 +707,7 @@ fn a_defer_is_compacted_like_any_other_task_edit() {
             params![&INBOX[..], &a[..]],
         )
         .unwrap();
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     ack_outbox(&mut dba);
     set_clock(&c, T0 + 2 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
@@ -788,8 +764,8 @@ fn only_the_least_known_device_writes_the_snapshot() {
     let (ea, mut dba) = r.pop().unwrap();
     new_task(&ea, &mut dba, "one");
     new_task(&eb, &mut dbb, "two");
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     let ra = ea.compact_op_log(&mut dba, &policy()).unwrap();
     let rb = eb.compact_op_log(&mut dbb, &policy()).unwrap();
     let a_first = ea.keychain.device_id() < eb.keychain.device_id();
@@ -828,8 +804,8 @@ fn the_compactor_role_moves_past_a_silent_least_device_and_back() {
         };
     new_task(&least, &mut least_db, "from the least");
     new_task(&other, &mut other_db, "from the other");
-    sync(&least_db, &other, &mut other_db);
-    sync(&other_db, &least, &mut least_db);
+    relay(&least_db, &other, &mut other_db);
+    relay(&other_db, &least, &mut least_db);
     let policy = policy();
     let is = |e: &Engine, db: &mut Db| e.is_stream_compactor(db, &INBOX, &policy).unwrap();
     assert!(is(&least, &mut least_db), "the least known id compacts");
@@ -848,7 +824,7 @@ fn the_compactor_role_moves_past_a_silent_least_device_and_back() {
 
     // The least is heard from again: the role is its once more.
     new_task(&least, &mut least_db, "back again");
-    sync(&least_db, &other, &mut other_db);
+    relay(&least_db, &other, &mut other_db);
     assert!(!is(&other, &mut other_db), "the least is known again");
 }
 
@@ -871,7 +847,7 @@ fn a_device_bootstrapped_from_a_snapshot_equals_one_that_replayed_every_op() {
     let t1 = new_task(&ea, &mut dba, "one");
     let t2 = new_task(&ea, &mut dba, "two");
     let t3 = new_task(&ea, &mut dba, "three");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     rename(&ea, &mut dba, t1, "one from a");
     rename(&eb, &mut dbb, t1, "one from b");
     tag(&ea, &mut dba, t2, vec![errands]);
@@ -887,8 +863,8 @@ fn a_device_bootstrapped_from_a_snapshot_equals_one_that_replayed_every_op() {
     eb.apply(&mut dbb, Command::DeleteTask(t3)).unwrap();
     let session = open_session(&eb, &mut dbb, t1);
     end_session(&eb, &mut dbb, session, false);
-    sync(&dbb, &ea, &mut dba);
-    sync(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
 
     // A writes its snapshots, then the history goes on.
     let meta = ea
@@ -904,8 +880,8 @@ fn a_device_bootstrapped_from_a_snapshot_equals_one_that_replayed_every_op() {
         .collect();
     rename(&eb, &mut dbb, t2, "two, later");
     rename(&ea, &mut dba, t1, "one, later");
-    sync(&dbb, &ea, &mut dba);
-    sync(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
 
     // C: the snapshots, then only the tail above them.
     for record in [&meta, &inbox] {
@@ -925,7 +901,7 @@ fn a_device_bootstrapped_from_a_snapshot_equals_one_that_replayed_every_op() {
         }
     }
     // D: every op.
-    sync(&dba, &ed, &mut dbd);
+    relay(&dba, &ed, &mut dbd);
 
     assert_eq!(projection(&dbc), projection(&dbd));
     assert!(!projection(&dbc).is_empty());
@@ -946,7 +922,7 @@ fn a_device_bootstrapped_from_a_snapshot_equals_one_that_replayed_every_op() {
 
     // And C keeps writing above the floor, which A reads without complaint.
     let t4 = new_task(&ec, &mut dbc, "from c");
-    sync(&dbc, &ea, &mut dba);
+    relay(&dbc, &ea, &mut dba);
     assert_eq!(read_task_t(&ea, &dba, t4).title, "from c");
     assert_eq!(ea.chain_integrity(&dba).unwrap(), ChainIntegrity::default());
 }
@@ -968,8 +944,8 @@ fn a_snapshot_written_after_compaction_bootstraps_a_new_device() {
     new_task(&eb, &mut dbb, "three");
     rename(&ea, &mut dba, t1, "one, renamed");
     new_task(&ea, &mut dba, "four");
-    sync(&dba, &eb, &mut dbb);
-    sync(&dbb, &ea, &mut dba);
+    relay(&dba, &eb, &mut dbb);
+    relay(&dbb, &ea, &mut dba);
     ack_outbox(&mut dba);
     set_clock(&c, T0 + 2 * DAY);
     let ack = digest_op(&eb, &mut dbb, &INBOX);
@@ -1006,7 +982,7 @@ fn a_snapshot_carries_parked_ops_to_the_device_it_bootstraps() {
         &super::future_kind_inner("FutureKind"),
     );
     new_task(&ea, &mut dba, "two");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let record = eb.write_stream_snapshot(&mut dbb, &INBOX).unwrap().unwrap();
     let (outcome, _) = ec.apply_snapshot(&mut dbc, &record).unwrap();
     assert_eq!(
@@ -1057,7 +1033,7 @@ fn a_snapshot_already_covered_is_ignored() {
     let (eb, mut dbb) = r.pop().unwrap();
     let (ea, mut dba) = r.pop().unwrap();
     new_task(&ea, &mut dba, "one");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let record = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
     assert_eq!(
         eb.apply_snapshot(&mut dbb, &record).unwrap().0,
@@ -1119,7 +1095,7 @@ fn a_forged_foreign_or_divergent_snapshot_is_refused() {
     let mut dba2 = db_root(ROOT);
     new_task(&ea2, &mut dba2, "one");
     new_task(&ea2, &mut dba2, "not two");
-    sync(&dba2, &eb, &mut dbb);
+    relay(&dba2, &eb, &mut dbb);
     assert!(matches!(
         eb.apply_snapshot(&mut dbb, &record),
         Err(EngineError::Invalid(_))
@@ -1309,12 +1285,12 @@ fn ancestry_survives_compaction_of_the_parent_op() {
     let (eb, mut dbb) = r.pop().unwrap();
     let (ea, mut dba) = r.pop().unwrap();
     let task = new_task(&ea, &mut dba, "t");
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     let (first, v1) = retitle_versioned(&eb, &mut dbb, task, "from b");
     ea.apply_remote_all(&mut dba, &first).unwrap();
     // B's later op is what sits at the tip, so the first is below it.
     new_task(&eb, &mut dbb, "tip");
-    sync(&dbb, &ea, &mut dba);
+    relay(&dbb, &ea, &mut dba);
     ack_outbox(&mut dba);
     compact_after_ack(&c, (&eb, &mut dbb), &ea, &mut dba);
     let gone: i64 = dba
@@ -1371,7 +1347,7 @@ fn a_snapshot_join_then_ops_equals_a_full_replay() {
             .entity
         })
         .collect();
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
     // A conflict: two concurrent retitles naming the same head.
     let (from_a, _) = retitle_versioned(&ea, &mut dba, task, "from a");
     let (from_b, _) = retitle_versioned(&eb, &mut dbb, task, "from b");
@@ -1386,7 +1362,7 @@ fn a_snapshot_join_then_ops_equals_a_full_replay() {
         },
     )
     .unwrap();
-    sync(&dba, &eb, &mut dbb);
+    relay(&dba, &eb, &mut dbb);
 
     let inbox = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
     let (a, b) = (ea.keychain.device_id(), eb.keychain.device_id());
@@ -1409,7 +1385,7 @@ fn a_snapshot_join_then_ops_equals_a_full_replay() {
             ec.apply_remote_all(&mut dbc, &env).unwrap();
         }
     }
-    sync(&dba, &ed, &mut dbd);
+    relay(&dba, &ed, &mut dbd);
 
     assert_eq!(dag(&dbc), dag(&dbd));
     assert_eq!(projection(&dbc), projection(&dbd));

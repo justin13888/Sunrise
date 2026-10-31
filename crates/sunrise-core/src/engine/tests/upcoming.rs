@@ -10,14 +10,7 @@ type View = crate::queries::Upcoming;
 
 const NEW_YORK: &str = "America/New_York";
 
-/// An engine whose clock reads `local` in `zone`.
-fn engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine, u64) {
-    let tz = jiff::tz::TimeZone::get(zone).unwrap();
-    let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
-    let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x51; 32])));
-    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), Arc::new(SystemRng), kc);
-    (e, now)
-}
+const ZONE_ROOT: [u8; 32] = [0x51; 32];
 
 fn task(
     e: &Engine,
@@ -71,7 +64,7 @@ fn planned_on(v: &View, d: Date) -> Vec<String> {
 /// deadline are all on the days the reader sees them on.
 #[test]
 fn upcoming_is_civil_days_across_a_dst_change() {
-    let (e, now) = engine_at(NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
     let mut db = db();
     let spring = date(2026, 3, 8);
     task(
@@ -128,7 +121,7 @@ fn upcoming_is_civil_days_across_a_dst_change() {
 /// Tokyo, and nothing stored changed.
 #[test]
 fn a_zone_change_mid_span_moves_only_the_pinned_plan() {
-    let (ny, now) = engine_at(NEW_YORK, date(2026, 3, 9).at(9, 0, 0, 0));
+    let (ny, now) = engine_at(ZONE_ROOT, NEW_YORK, date(2026, 3, 9).at(9, 0, 0, 0));
     let mut db = db();
     let d = date(2026, 3, 11);
     task(
@@ -176,7 +169,7 @@ fn a_zone_change_mid_span_moves_only_the_pinned_plan() {
 /// view does not offer is refused rather than clamped.
 #[test]
 fn the_span_comes_from_the_query_then_the_device_preference() {
-    let (e, now) = engine_at(NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
     let mut db = db();
     assert_eq!(upcoming(&e, &db, now, None).days.len(), 7);
     assert_eq!(upcoming(&e, &db, now, Some(30)).days.len(), 30);
@@ -212,7 +205,7 @@ fn the_span_comes_from_the_query_then_the_device_preference() {
 #[test]
 fn the_last_day_is_decided_on_the_resolved_value_at_utc_plus_14() {
     let zone = "Pacific/Kiritimati";
-    let (e, now) = engine_at(zone, date(2026, 3, 4).at(23, 30, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, zone, date(2026, 3, 4).at(23, 30, 0, 0));
     let mut db = db();
     let last = date(2026, 3, 10);
     task(
@@ -250,7 +243,7 @@ fn the_last_day_is_decided_on_the_resolved_value_at_utc_plus_14() {
 /// after the named Streams.
 #[test]
 fn undated_tasks_are_in_the_no_date_lane_with_the_inbox_last() {
-    let (e, now) = engine_at(NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
+    let (e, now) = engine_at(ZONE_ROOT, NEW_YORK, date(2026, 3, 5).at(10, 0, 0, 0));
     let mut db = db();
     let work = e
         .apply(

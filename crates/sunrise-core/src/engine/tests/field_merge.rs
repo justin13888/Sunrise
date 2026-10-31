@@ -130,35 +130,6 @@ fn last_op_ref(db: &Db, target: &EntityRef) -> OpRef {
         .unwrap()
 }
 
-/// Two replicas of one vault that trust each other, on clocks of their own.
-pub(super) struct Pair {
-    pub(super) ea: Engine,
-    pub(super) eb: Engine,
-    pub(super) ca: Arc<FakeClock>,
-    pub(super) cb: Arc<FakeClock>,
-    pub(super) dba: Db,
-    pub(super) dbb: Db,
-}
-
-pub(super) fn pair() -> Pair {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    Pair {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    }
-}
-
 /// A task created on A with a full-state op and delivered to B.
 pub(super) fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
     let task =

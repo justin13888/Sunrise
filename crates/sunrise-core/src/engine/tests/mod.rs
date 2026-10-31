@@ -3729,7 +3729,7 @@ fn the_completion_is_an_ordinary_task_update_op() {
 
 #[test]
 fn the_morning_summary_reads_the_previous_calendar_date() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     // Completed yesterday afternoon.
     let done = new_task(&e, &mut db, "Ship the thing");
     e.apply(&mut db, Command::CompleteTask(done)).unwrap();
@@ -3769,7 +3769,7 @@ fn the_morning_summary_reads_the_previous_calendar_date() {
 
 #[test]
 fn the_end_of_day_plan_covers_today_then_the_week() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     let day = 86_400_000i64;
     let today = e
         .apply(
@@ -3825,7 +3825,7 @@ fn the_end_of_day_plan_covers_today_then_the_week() {
 
 #[test]
 fn a_scheduled_task_and_a_block_both_produce_reminders() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     let at = NOTIFY_NOON + 2 * 3_600_000;
     let task = e
         .apply(
@@ -3873,7 +3873,7 @@ fn a_scheduled_task_and_a_block_both_produce_reminders() {
 /// Stream's, which beats the device default.
 #[test]
 fn the_lead_time_hierarchy_resolves_against_real_rows() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     let at = NOTIFY_NOON + 6 * 3_600_000;
     let stream = e
         .apply(
@@ -3942,7 +3942,7 @@ fn the_lead_time_hierarchy_resolves_against_real_rows() {
 
 #[test]
 fn a_completed_task_stops_producing_reminders() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     let at = NOTIFY_NOON + 3_600_000;
     let task = e
         .apply(
@@ -3980,7 +3980,7 @@ fn a_completed_task_stops_producing_reminders() {
 /// The spec's dedup rule, enforced before a single row is read.
 #[test]
 fn a_non_primary_device_is_handed_nothing_to_schedule() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     e.apply(
         &mut db,
         Command::CreateTask(TaskDraft {
@@ -18002,7 +18002,7 @@ fn skipping_an_occurrence_tombstones_its_task_in_an_unknown_state() {
 /// produces a reminder.
 #[test]
 fn a_task_in_an_unknown_state_still_produces_a_reminder() {
-    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let (e, mut db) = engine_at_ms(NOTIFY_NOON);
     let task = e
         .apply(
             &mut db,

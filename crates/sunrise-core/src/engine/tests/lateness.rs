@@ -23,7 +23,7 @@ impl Clock for Moving {
 }
 
 /// An engine whose clock reads `local` in `zone`, and that clock.
-fn engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine, Arc<Moving>) {
+fn moving_engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine, Arc<Moving>) {
     let tz = jiff::tz::TimeZone::get(zone).unwrap();
     let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
     let clock = Arc::new(Moving(PLMutex::new(now), zone));
@@ -96,7 +96,7 @@ fn floating(d: jiff::civil::Date, h: i8) -> SunriseTime {
 #[test]
 fn today_view_groups_by_the_three_times_and_reads_each_lateness() {
     let d = date(2026, 3, 10);
-    let (e, _) = engine_at("America/New_York", d.at(15, 0, 0, 0));
+    let (e, _) = moving_engine_at("America/New_York", d.at(15, 0, 0, 0));
     let mut db = db();
     let yesterday = SunriseTime::all_day(date(2026, 3, 9));
     let tomorrow = SunriseTime::all_day(date(2026, 3, 11));
@@ -186,7 +186,7 @@ fn today_view_groups_by_the_three_times_and_reads_each_lateness() {
 #[test]
 fn lateness_reads_the_stale_after_days_preference() {
     let start = date(2026, 6, 1);
-    let (e, clock) = engine_at("UTC", start.at(12, 0, 0, 0));
+    let (e, clock) = moving_engine_at("UTC", start.at(12, 0, 0, 0));
     let mut db = db();
     let id = add(&e, &mut db, "undated", None, None, None);
     let at = |d: jiff::civil::Date| {
@@ -237,8 +237,8 @@ fn lateness_reads_the_stale_after_days_preference() {
 #[test]
 fn a_floating_target_is_late_in_one_zone_and_on_track_in_another() {
     let d = date(2026, 6, 1);
-    let (utc, _) = engine_at("UTC", d.at(10, 0, 0, 0));
-    let (ny, _) = engine_at("America/New_York", d.at(6, 0, 0, 0));
+    let (utc, _) = moving_engine_at("UTC", d.at(10, 0, 0, 0));
+    let (ny, _) = moving_engine_at("America/New_York", d.at(6, 0, 0, 0));
     assert_eq!(utc.clock.now_ms(), ny.clock.now_ms(), "one instant");
     let mut db = db();
     let id = add(
@@ -263,7 +263,7 @@ fn a_floating_target_is_late_in_one_zone_and_on_track_in_another() {
 #[test]
 fn a_zone_change_counts_a_task_whose_lateness_moved() {
     let d = date(2026, 6, 1);
-    let (e, _) = engine_at("UTC", d.at(20, 0, 0, 0));
+    let (e, _) = moving_engine_at("UTC", d.at(20, 0, 0, 0));
     let mut db = db();
     add(
         &e,
@@ -315,7 +315,7 @@ fn a_zone_change_counts_a_task_whose_lateness_moved() {
 /// New York.
 #[test]
 fn a_zone_change_counts_a_task_whose_staleness_moved() {
-    let (e, clock) = engine_at("UTC", date(2026, 6, 1).at(22, 0, 0, 0));
+    let (e, clock) = moving_engine_at("UTC", date(2026, 6, 1).at(22, 0, 0, 0));
     let mut db = db();
     e.apply(
         &mut db,
@@ -344,7 +344,7 @@ fn a_zone_change_counts_a_task_whose_staleness_moved() {
 #[test]
 fn upcoming_lists_a_target_on_its_day() {
     let d = date(2026, 3, 9);
-    let (e, _) = engine_at("UTC", d.at(8, 0, 0, 0));
+    let (e, _) = moving_engine_at("UTC", d.at(8, 0, 0, 0));
     let mut db = db();
     let friday = date(2026, 3, 13);
     add(
@@ -385,7 +385,7 @@ fn upcoming_lists_a_target_on_its_day() {
 #[test]
 fn defer_moves_a_zoned_plan_and_never_a_deadline() {
     let d = date(2026, 3, 6);
-    let (e, _) = engine_at("America/New_York", d.at(8, 0, 0, 0));
+    let (e, _) = moving_engine_at("America/New_York", d.at(8, 0, 0, 0));
     let mut db = db();
     let plan = SunriseTime::zoned(d.at(9, 0, 0, 0), "Europe/Paris");
     let target = SunriseTime::all_day(date(2026, 3, 10));
@@ -425,7 +425,7 @@ fn defer_moves_a_zoned_plan_and_never_a_deadline() {
 #[test]
 fn lateness_of_several_tasks_answers_in_the_order_asked() {
     let day = date(2026, 6, 1);
-    let (e, _) = engine_at("UTC", day.at(12, 0, 0, 0));
+    let (e, _) = moving_engine_at("UTC", day.at(12, 0, 0, 0));
     let mut db = db();
     let soft = add(&e, &mut db, "a", None, Some(floating(day, 9)), None);
     let quiet = add(&e, &mut db, "b", None, None, None);
@@ -486,7 +486,7 @@ proptest::proptest! {
         ),
     ) {
         let start = date(2026, 3, 1);
-        let (e, clock) = engine_at(zone, start.at(12, 0, 0, 0));
+        let (e, clock) = moving_engine_at(zone, start.at(12, 0, 0, 0));
         let mut db = db();
         e.apply(
             &mut db,

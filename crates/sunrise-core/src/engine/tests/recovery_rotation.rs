@@ -56,24 +56,9 @@ fn recover(payload: RecoveryPayload) -> (Engine, Db) {
     open_vault(ROOT_R, &IdentitySeed::Recovered(Box::new(payload)))
 }
 
-/// Every op `from` wrote, delivered to `to`, in each stream's order.
-fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        // An op refused here is the case under test, not the harness's.
-        let _ = to.apply_remote_all(to_db, &env);
-    }
-}
+/// [`deliver`]'s `strict` here: an op refused is the case under test, not the
+/// harness's.
+const STRICT: bool = false;
 
 fn rotate(e: &Engine, db: &mut Db, keep: bool) {
     e.apply(
@@ -137,8 +122,8 @@ fn a_code_carried_across_two_rotations_reaches_the_head_from_the_ops() {
 
     let (r, mut rdb) = recover(words);
     // Twice: the first pass meets A's earliest envelopes before A's cert.
-    deliver(&a, &adb, &r, &mut rdb);
-    deliver(&a, &adb, &r, &mut rdb);
+    deliver(&a, &adb, &r, &mut rdb, STRICT);
+    deliver(&a, &adb, &r, &mut rdb, STRICT);
 
     assert_eq!(head(&r, &rdb), head_a);
     assert_eq!(
@@ -151,7 +136,7 @@ fn a_code_carried_across_two_rotations_reaches_the_head_from_the_ops() {
     assert!(current(&r, &rdb), "R certified itself under the head");
     r.apply_key_bundle(&mut rdb, &bundle)
         .expect("the head's bundle opens under the walked identity");
-    deliver(&a, &adb, &r, &mut rdb);
+    deliver(&a, &adb, &r, &mut rdb, STRICT);
     let tasks = live_task_ids(&rdb);
     for t in [before, between, after] {
         assert!(tasks.contains(t.bytes()), "R reads {t:?}");
@@ -159,7 +144,7 @@ fn a_code_carried_across_two_rotations_reaches_the_head_from_the_ops() {
 
     // And A, meeting R's cert, holds it as a current device under the head:
     // R is a member, not a device that merely reads.
-    deliver(&r, &rdb, &a, &mut adb);
+    deliver(&r, &rdb, &a, &mut adb, STRICT);
     let QueryResult::Devices(rows) = a.query(&adb, Query::DeviceList).unwrap() else {
         panic!("expected Devices")
     };
@@ -194,7 +179,7 @@ fn the_chain_record_alone_takes_a_carried_code_to_the_head_and_its_bundle() {
 
     // The transitions' own ops, arriving later, replace the seeded rows'
     // missing roster and change nothing about the head.
-    deliver(&a, &adb, &r, &mut rdb);
+    deliver(&a, &adb, &r, &mut rdb, STRICT);
     assert_eq!(head(&r, &rdb), head_a);
     let links: i64 = rdb
         .conn()
@@ -333,14 +318,14 @@ fn the_reissued_code_restores_a_current_vault_of_the_same_account() {
     let seeded = r.seed_identity_chain(&mut rdb, &chain).unwrap();
     assert!(seeded.at_head);
     r.apply_key_bundle(&mut rdb, &bundle).unwrap();
-    deliver(&a, &adb, &r, &mut rdb);
+    deliver(&a, &adb, &r, &mut rdb, STRICT);
     assert!(current(&r, &rdb));
     let tasks = live_task_ids(&rdb);
     assert!(tasks.contains(before.bytes()) && tasks.contains(after.bytes()));
 
     // R's first write was sealed under the account's vault-meta genesis key,
     // which it was handed rather than derived, so A opens it.
-    deliver(&r, &rdb, &a, &mut adb);
+    deliver(&r, &rdb, &a, &mut adb, STRICT);
     let QueryResult::Devices(rows) = a.query(&adb, Query::DeviceList).unwrap() else {
         panic!("expected Devices")
     };
