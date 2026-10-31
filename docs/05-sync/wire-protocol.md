@@ -6,20 +6,20 @@ status: accepted
 
 A binary, length-prefixed message framing over a reliable byte stream, implemented in `crates/sunrise-wire-protocol/`.
 
-> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the transport under
-> this protocol, and the move has landed.** Sync is an SSE stream downstream and
-> typed `POST` operations upstream; the WebSocket this document was written
-> against is gone (see [`transports.md`](./transports.md)). The **payload types
-> and their canonical CBOR encoding survived unchanged** — `Hello::negotiate`,
-> the capability bitfield and the frozen fixtures all carried over. The frame
-> header below did not survive on the wire: magic, versions, `msg_kind`, flags
-> and length are subsumed by HTTP framing and SSE event types. It survives
-> *inside the client*, because `SseTransport` is the seam — the sync driver
-> still hands it whole encoded frames and still reads whole encoded frames back
-> — and it survives on the relay's own storage, which appends the rebuilt
-> `OpBatch` frame verbatim and streams those same bytes out again. So the
-> layout below still describes real bytes; it no longer describes a wire
-> protocol two peers speak to each other.
+> **Sync is an SSE stream downstream and typed `POST` operations upstream
+> ([ADR-0023](../11-adr/0023-sse-sync-transport.md), [`transports.md`](./transports.md)).**
+>
+> Peers share the **payload types and their canonical CBOR encoding**, along
+> with `Hello::negotiate`, the capability bitfield and the frozen fixtures that
+> pin them.
+>
+> The frame header below is not on the wire between them: magic, versions,
+> `msg_kind`, flags and length are carried by HTTP framing and SSE event types.
+> It exists *inside the client*, because `SseTransport` is the seam — the sync
+> driver hands it whole encoded frames and reads whole encoded frames back — and
+> in the relay's own storage, which appends the rebuilt `OpBatch` frame verbatim
+> and streams those same bytes out again. So the layout below describes real
+> bytes, not a wire protocol two peers speak to each other.
 
 ## Frame layout
 
@@ -53,7 +53,7 @@ The rule covers **all** payloads including the handshake. `Hello` and
 client-side: `crates/sunrise-core/src/sync_driver.rs` encodes the `Hello` frame
 with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
 `ciborium::de::from_reader` and writes the `HelloAck` frame the same way
-(`crates/sunrise-sync/src/sse.rs:860-910#send_frame`). Both bypass the canonicality check
+(`crates/sunrise-sync/src/sse.rs#send_frame`). Both bypass the canonicality check
 every other payload gets. The server sees neither frame — `POST /sync/session`
 takes a typed body and rebuilds a `Hello` from its fields
 (`crates/sunrise-server/src/api/sync/credential.rs`) — so the handshake's two hops through
@@ -172,7 +172,7 @@ load-bearing for anyone reading the code:
 |---|---|
 | `Hello`, `HelloAck`, `OpBatch`, `Ack`, `Subscribe`, `Ping`, `Pong`, `Error`, `Close`, `RefreshToken`, `RefreshTokenAck` | Handled end to end. |
 | `StreamUpdate` (`0x07`) | Carries `CaughtUpPayload` or `BacklogPayload`, **not** an `OpBatch`. The relay forwards live op frames **verbatim**, so they keep `msg_kind = OpBatch`; `StreamUpdate` is otherwise unused, which is why `CaughtUp` reuses it rather than claiming a fresh discriminator in a fully-allocated kind space. `BacklogPayload` (`{ ops, stream_id }`, #459) shares it and is told apart by shape: a reader decodes it first, since a `CaughtUpPayload` reader ignores the `ops` key and would accept it. |
-| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. The client half lands with ADR-0023's transport move. |
+| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. |
 | `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | Defined, unimplemented, and now **refused with a typed `Error`** rather than dropped. Dispatch is exhaustive over `MsgKind`: a client-sent server-to-client kind ends the session, and a defined-but-unserved kind is answered with `SYNC_OP_INVALID`. Adding a kind to `MsgKind` no longer compiles until it is placed on one side of that line. |
 
 **The contract, now implemented.** Dispatch MUST be exhaustive over

@@ -5,22 +5,12 @@ status: accepted
 # Transports
 
 **The transport is an SSE stream downstream and typed `POST` operations
-upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes
-[ADR-0005](../11-adr/0005-sync-transport.md)). That is no longer a decision
-waiting on an implementation: it is what runs. The client is `SseTransport`
-(`crates/sunrise-sync/src/sse.rs`), used by `sunrise-cli`, the Apple apps
-through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the server is
-`crates/sunrise-server/src/api/sync/` over `crates/sunrise-server/src/sync_session.rs`.
-
-The WebSocket is gone rather than being replaced. `crates/sunrise-server/src/ws.rs`
-was deleted, and neither `axum` nor `tokio-tungstenite` resolves in `Cargo.lock`
-any more. Earlier revisions of this page described the WebSocket as "what runs
-today"; it does not, and this revision is the correction.
-
-This page previously said the transport was "**WebSocket only**" and deferred
-HTTP fallbacks to a later version, which contradicted ADR-0005's own "primary
-WebSocket, fallback HTTP/2 long-poll" then on the record. ADR-0023 settled it in a
-third direction and retired both statements.
+upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). The client is
+`SseTransport` (`crates/sunrise-sync/src/sse.rs`), used by `sunrise-cli`, the
+Apple apps through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the
+server is `crates/sunrise-server/src/api/sync/` over
+`crates/sunrise-server/src/sync_session.rs`. There is no WebSocket:
+`crates/sunrise-server/src/ws.rs` was deleted.
 
 ## The decided transport (ADR-0023)
 
@@ -74,11 +64,7 @@ stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
 one, but neither sends one unprompted: a comment does the same job — stopping an
 intermediary from reaping an idle connection — with no frame type and nothing
 for the client to answer. `SseTransport` drops incoming comments before they
-reach the driver (`crates/sunrise-sync/src/sse.rs:663#take_event`).
-
-Earlier revisions of this page said keepalive was not implemented and that a
-dead peer holding a valid token would hold a session until the token expired.
-The migration closed that, exactly as the page predicted it would.
+reach the driver (`crates/sunrise-sync/src/sse.rs#take_event`).
 
 **Per-platform notes:**
 
@@ -93,8 +79,7 @@ The migration closed that, exactly as the page predicted it would.
 On connection failure the client backs off exponentially with jitter: initial
 **100 ms**, doubling, capped at **30 s**, jitter ±20%, and **`max_retries = 5`**
 (`crates/sunrise-sync/src/backoff.rs:31-63`). The schedule is therefore
-*exhaustible*, which is the part a reader most needs and which earlier revisions
-of this page did not mention at all: five jittered delays of 100, 200, 400, 800
+*exhaustible*: five jittered delays of 100, 200, 400, 800
 and 1600 ms, after which `next_delay` returns `None`. Exhausting it does not give
 up — the session loop resets the policy, sleeps a flat un-jittered 30 s and
 starts the sequence again, so a client that cannot reach its relay retries
@@ -106,13 +91,10 @@ forbids the latter. "Connection failure" includes TLS handshake, session open, o
 [`offline-queue.md`](./offline-queue.md) §Backoff owns these numbers, and this
 page defers to it rather than keeping a second copy: it also covers the
 per-batch retransmit timer that shares the same policy and why the 30 s cap
-inside `next_delay` is unreachable on it. An earlier revision here published a
-different pair — start 500 ms, cap 60 s — that matched no code, and
-[`wire-protocol.md`](./wire-protocol.md) §Error model already records that pair
-as the drift this consolidation exists to prevent.
+inside `next_delay` is unreachable on it.
 
-**Not built: the immediate-retry triggers.** Earlier revisions said the push
-wakeup signal (below) and OS network-change events trigger an immediate retry.
+**Not built: the immediate-retry triggers.** The push wakeup signal (below) and
+OS network-change events do not trigger an immediate retry.
 Neither seam exists — nothing in the workspace observes network reachability,
 and no client consumes a push wakeup — so reconnection is driven entirely by the
 backoff timer above, as [`offline-queue.md`](./offline-queue.md) §Network changes
@@ -133,8 +115,7 @@ Push is *not a transport*. Push is an out-of-band wakeup: the server sends a con
 
 ## Pairing does not run over the relay
 
-Earlier revisions of this page said all pairing is QR-over-server. **It is not,
-and the relay has no part in pairing at all.** There is no pairing route in
+**The relay has no part in pairing.** There is no pairing route in
 `crates/sunrise-server/src/api/`, and capability bit 4 `SRV_RELAY_PAIR`
 ("server forwards Noise-XX pairing transport") is defined in
 `crates/sunrise-wire-protocol/src/capability.rs` and **never advertised** — the

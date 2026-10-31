@@ -218,32 +218,16 @@ write below it leaves its register (D4), on every replica that applies it.
 That settles every field of the entity at once, on the values this device
 shows, which is what any edit in that mode already does.
 
-## Merge journal — removed
+## No merge history
 
-**There is no merge journal.** `merge_journal` was dropped by
-[ADR-0018](../11-adr/0018-storage-baseline-reset.md) and is absent from
-`0013_baseline.sql`, which records why: it was "a per-**FIELD** conflict journal
-for a merge model that is entity-level … Zero writers, zero readers, one index."
-Under [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) there is no losing
-*field* to record — the losing write is the whole entity — so the table had
-nothing to say.
-
-Its absence is asserted, not merely current: `baseline_omits_the_dead_schema`
-in `crates/sunrise-storage/src/db.rs` fails if `merge_journal` reappears, so a
-future migration cannot reintroduce it by copy-paste.
-
-What a journal was for is now the merge state's own: a register keeps every
-concurrent write that lost (`register_losers`, migration 0039, written from
-ADR-0065's fifth pull request), and `Query::Conflicts` reports them
-(§Seeing and settling a conflict). It is not a journal. It holds the writes no
-later write has superseded, not a history of merges, and a resolution removes
-them. A merge that settled without a conflict, two equal values or ordered
-writes, still leaves no record, so the "X edits merged automatically this
-week" review surface has no data behind it.
-[`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
-§Three-state view contract dropped its `conflict` state when nothing recorded
-a loss; a client can now read one from `Query::Conflicts`, and the Apple
-client's UI for it is follow-up work.
+A register keeps every concurrent write that lost (`register_losers`, migration
+0039), and `Query::Conflicts` reports them (§Seeing and settling a conflict).
+That is merge state, not a history of merges: it holds the writes no later write
+has superseded, and a resolution removes them. A merge that settled without a
+conflict, two equal values or ordered writes, leaves no record, so a "X edits
+merged automatically this week" review surface has no data behind it. A client
+can read a conflict state from `Query::Conflicts`; the Apple client's UI for it
+is follow-up work.
 
 ## Atomic batches
 
