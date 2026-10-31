@@ -606,12 +606,12 @@ impl Core {
 /// Pull the ciphertext for attachments a client has asked for, ignoring the
 /// auto-fetch threshold.
 ///
-/// Run by the sync driver before [`crate::sync_driver`]'s automatic fetch
-/// drain, because somebody is watching this one and nobody is watching that
-/// one. `Err(())` means this transport has no blob API, which is the caller's
-/// signal to stop rather than try the automatic half against it too.
+/// Run by [`crate::blob_sync::drain`] before its automatic fetch drain, because
+/// somebody is watching this one and nobody is watching that one. `Err(())`
+/// means this transport has no blob API, which is the caller's signal to stop
+/// rather than try the automatic half against it too.
 ///
-/// It lives here rather than beside its sibling in `sync_driver` because
+/// It lives here rather than beside its sibling in `blob_sync` because
 /// [`fetch_or_cancel`] is the subject of this module and the two are one
 /// mechanism read in one place.
 pub(crate) async fn drain_requested<T: Transport + ?Sized>(

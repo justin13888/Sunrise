@@ -18,7 +18,7 @@ with account deletion ([#359](https://github.com/justin13888/Sunrise/issues/359)
 The byte path works end to end: chunks are sealed on attach, uploaded by the
 sync driver, and fetched on demand
 (`crates/sunrise-core/src/blob_fetch.rs:250#fetch_attachment`); anything under
-`AUTO_FETCH_MAX_BYTES` (`crates/sunrise-core/src/blob_sync.rs:167#AUTO_FETCH_MAX_BYTES`,
+`AUTO_FETCH_MAX_BYTES` (`crates/sunrise-core/src/blob_sync.rs:169#AUTO_FETCH_MAX_BYTES`,
 10 MiB) is fetched unasked. What is missing is everything that makes
 attachments pleasant and bounded:
 

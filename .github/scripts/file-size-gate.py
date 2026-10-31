@@ -198,16 +198,6 @@ UNGATED: dict[str, str] = {
 
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
-    # --- sunrise-core -------------------------------------------------------
-    "crates/sunrise-core/src/sync_driver.rs": (
-        "One async state machine plus its transport harness. Deliberately not "
-        "split: `session` is the sole constructor of five of the types it "
-        "uses, and separating a state machine from types only it builds "
-        "produces two files that must be read together. #207's testability "
-        "work landed in place for the same reason -- a `sync_driver/` "
-        "directory would move a path ten documents cite by name, to buy "
-        "nothing the `scheduling` test module does not already have."
-    ),
     # --- sunrise-domain -----------------------------------------------------
     "crates/sunrise-domain/src/stats.rs": (
         "504 implementation lines; the rest is tests. A cohesive fold, with one "

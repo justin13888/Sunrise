@@ -15,16 +15,20 @@
 //!   stream's pinned record, checks it is the blob the pin names, and applies
 //!   it. Applying it raises the stream's floors and cursors to its frontier,
 //!   so the re-subscribe that follows asks the relay only for what it still
-//!   holds.
+//!   holds. [`recover_gaps`] runs that for every gap a session is told of.
 //!
 //! What the record proves is the engine's to check: its signature, its
 //! writer, its frontier against this replica's own chain. This module checks
 //! only that the bytes are the ones the relay pinned.
 
-use sunrise_sync::{Transport, TransportError};
+use std::collections::HashSet;
+
+use sunrise_error::ErrorCode;
+use sunrise_sync::{SyncState, Transport, TransportError};
 
 use crate::core::{Core, CoreError};
 use crate::engine::{hex_short, EngineError, SnapshotApplied};
+use crate::sync_driver::{encode_subscribe_all, Outgoing, SyncShared};
 
 /// The largest chunk a record is uploaded in: the relay's per-chunk ceiling
 /// (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES`).
@@ -201,4 +205,118 @@ pub(crate) async fn recover<T: Transport + ?Sized>(
         Recovery::Failed(_) => {}
     }
     outcome
+}
+
+/// What catching gapped streams up from their snapshot records came to in
+/// one session (ADR-0068).
+#[derive(Debug, Default)]
+pub(crate) struct GapRecovery {
+    /// Streams a record was applied for this session. A second gap on one of
+    /// them means the record's frontier is below what the relay still holds.
+    applied: HashSet<[u8; 16]>,
+    /// Streams whose record could not be applied yet; retried after any
+    /// other record applies, and on the next gap the relay reports.
+    deferred: HashSet<[u8; 16]>,
+    /// Streams nothing in this session can catch up.
+    failed: HashSet<[u8; 16]>,
+    /// Whether this session already fetched the account's key bundle
+    /// (ADR-0069). Once per session: the relay pins one, and asking again
+    /// inside the session cannot produce another.
+    pub(crate) key_bundle_tried: bool,
+}
+
+/// Catch each stream in `gaps` up from its snapshot record, and re-subscribe
+/// from the cursors the records set.
+///
+/// A stream that cannot be caught up latches [`SyncState::Degraded`], exactly
+/// as a gap did before snapshots travelled: the device is missing ops and
+/// must not claim otherwise. A deferred one latches it too, and the state
+/// goes back to catching up once every gapped stream of the session has been
+/// recovered.
+pub(crate) async fn recover_gaps<T: Transport + ?Sized>(
+    core: &Core,
+    shared: &SyncShared,
+    transport: &mut T,
+    gaps: &mut Vec<[u8; 16]>,
+    recovery: &mut GapRecovery,
+    pending_sends: &mut Vec<Outgoing>,
+    subscribed: &mut HashSet<[u8; 16]>,
+) {
+    let mut resubscribe = false;
+    while let Some(stream) = gaps.pop() {
+        let outcome = if recovery.applied.contains(&stream) {
+            Recovery::Failed("below_snapshot")
+        } else if recovery.failed.contains(&stream) {
+            // Already reported and latched; asking the relay again cannot
+            // change the answer inside this session.
+            shared.mark_degraded();
+            continue;
+        } else {
+            recover(core, transport, stream).await
+        };
+        match outcome {
+            Recovery::Applied => {
+                recovery.applied.insert(stream);
+                recovery.deferred.remove(&stream);
+                resubscribe = true;
+                // What the record carried — keys, certs, streams — may be
+                // what a deferred stream was waiting for.
+                gaps.extend(recovery.deferred.drain());
+            }
+            Recovery::Deferred(reason) => {
+                recovery.deferred.insert(stream);
+                shared.mark_degraded();
+                // A record sealed under a key this vault does not hold, on a
+                // vault that holds the identity's unwrapping key: a device
+                // restored from the recovery code, whose identity-addressed
+                // envelopes the relay has trimmed. The account's key bundle
+                // carries those keys (ADR-0069).
+                if matches!(reason, "no_key" | "pending")
+                    && !recovery.key_bundle_tried
+                    && core.holds_identity_key()
+                {
+                    recovery.key_bundle_tried = true;
+                    if let crate::key_bundle_sync::Recovery::Absorbed(n) =
+                        crate::key_bundle_sync::recover(core, transport).await
+                    {
+                        if n > 0 {
+                            gaps.extend(recovery.deferred.drain());
+                        }
+                    }
+                }
+            }
+            Recovery::Failed(reason) => {
+                recovery.failed.insert(stream);
+                tracing::warn!(
+                    ev = "sync.gap",
+                    err_code = %ErrorCode::SyncCursorGap,
+                    err_kind = "permanent",
+                    retryable = false,
+                    result = "degraded",
+                    stream_h = hex_short(&stream),
+                    reason,
+                    "relay cannot supply ops this device never received, and no snapshot covers them"
+                );
+                shared.mark_degraded();
+            }
+        }
+    }
+    if !resubscribe {
+        return;
+    }
+    if recovery.failed.is_empty()
+        && recovery.deferred.is_empty()
+        && shared.current_state() == SyncState::Degraded
+    {
+        shared.set_state(SyncState::CatchingUp);
+    }
+    // Every stream, with the cursors the records raised. A record of the
+    // vault-meta stream can name streams this device never subscribed to.
+    if let Ok(entries) = core.sync_subscribe_entries() {
+        subscribed.extend(entries.iter().map(|e| e.stream_id));
+    }
+    match encode_subscribe_all(core) {
+        Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
+        Err(()) => shared.mark_degraded(),
+    }
 }

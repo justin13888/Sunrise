@@ -38,7 +38,7 @@ construction, with no second sweep and nothing to keep in step by hand.
 `Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs:1413#sync_outbox_grouped`) groups
 **every** unacked op for a stream into one batch. There is no size cap, so the
 partition is "everything unacked at this instant", and the fresh-session drain
-(`crates/sunrise-core/src/sync_driver.rs:1230-1254#session`) re-runs it with an empty
+(`crates/sunrise-core/src/sync_driver.rs:790-808#session`) re-runs it with an empty
 `inflight_ops` skip set. So:
 
 1. Session 1 sends `[O1]`; the relay appends and acks; the ack dies with the
