@@ -869,7 +869,7 @@ def symbol_items(path: str, name: str) -> list[Item]:
 
     A `const` or `static` is the one item whose *initialiser* can hide both
     rules from the walk, and it is read through `code` for that reason. Its
-    value can be a string literal spanning lines — `relay_log.rs`'s `SCHEMA`
+    value can be a string literal spanning lines — `relay_log/schema.rs`'s `SCHEMA`
     is a raw string of SQL whose every statement ends in `;` — and a walk that
     reads those semicolons ends the item at its first `CREATE TABLE`, which
     red-lines a citation of the table the ADR is actually about. Its value can
@@ -1959,7 +1959,7 @@ def self_test() -> int:
 
         # The `;` inside `SCHEMA`'s raw string does not end it. Read as code,
         # line 42 ends the item and a citation of the second table -- the one
-        # `relay_log.rs`'s `relay_batches` is -- would be red.
+        # `relay_log/schema.rs`'s `relay_batches` is -- would be red.
         for line in (40, 42, 43):
             _, found = symbol_verdict(f"{main}:{line}#SCHEMA")
             wrong(found is not None, f"`{main}:{line}#SCHEMA` reported {found}, expected clean")

@@ -21,13 +21,13 @@ what an `Ack` means.
 
 `batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:370#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
-`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:239#relay_append`) looks that
+`Store::relay_append` (`crates/sunrise-server/src/relay_log/append.rs:92#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
 (`crates/sunrise-server/src/api/sync/publish.rs:210-223#ops`).
 
-`relay_batches` (`crates/sunrise-server/src/relay_log.rs:110-118#SCHEMA`) is keyed
+`relay_batches` (`crates/sunrise-server/src/relay_log/schema.rs:62-69#SCHEMA`) is keyed
 `(account_h, stream_id, ops_h)` and holds `frame_id` as a
 `REFERENCES relay_frames(id) ON DELETE CASCADE`. That is the property worth
 naming: the dedup window and the replay window are the same window by
@@ -69,8 +69,8 @@ per lost ack. It is bounded twice over: by how many ops are unacked at the momen
 an ack is lost (which is bounded by how long a session survives), and by
 retention — 30 days and 256 MiB per channel
 (`DEFAULT_MAX_AGE_MS`,
-`crates/sunrise-server/src/relay_log.rs:123#DEFAULT_MAX_AGE_MS`, and
-`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log.rs:130#DEFAULT_MAX_BYTES`), after which the frame and its
+`crates/sunrise-server/src/relay_log/append.rs:11#DEFAULT_MAX_AGE_MS`, and
+`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log/append.rs:18#DEFAULT_MAX_BYTES`), after which the frame and its
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
@@ -115,7 +115,7 @@ rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:1
 - `frame_heads` has to be recomputed after filtering, or the heads claim seqs the
   stored frame no longer carries — and the head is exactly what
   `relay_replay`'s skip test reads. Over-claiming a head is data loss
-  (`crates/sunrise-server/src/relay_log.rs:329-333#relay_replay`).
+  (`crates/sunrise-server/src/relay_log/replay.rs:34-38#relay_replay`).
 - A per-op table needs the `ON DELETE CASCADE` tie to `relay_frames` that
   `relay_batches` has, or the dedup window and the replay window drift apart —
   and forgetting an op id is precisely what lets a legitimate replay through.

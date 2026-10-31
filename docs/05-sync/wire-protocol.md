@@ -408,7 +408,7 @@ a reconnect that presents the last id it saw resumes after that frame instead of
 replaying the retained backlog from the start. When it does, the cursors stop
 selecting anything: `relay_replay_after` sends every frame with
 `id > after_id` and never consults `covered(&heads, cursors)` at all
-(`crates/sunrise-server/src/relay_log.rs`, whose own rustdoc states the
+(`crates/sunrise-server/src/relay_log/replay.rs`, whose own rustdoc states the
 precedence). Only `after_id == 0` — a first connection — replays what the
 cursors do not cover.
 

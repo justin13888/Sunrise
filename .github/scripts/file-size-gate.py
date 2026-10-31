@@ -227,11 +227,6 @@ BASELINE: dict[str, str] = {
         "routes mounted together, so splitting it to satisfy a line count "
         "would be churn."
     ),
-    "crates/sunrise-server/src/relay_log.rs": (
-        "It grew when the relay DDL moved here to "
-        "sit beside the only code that touches it — a net improvement that "
-        "shows up here as a larger file."
-    ),
     # --- sunrise-sync -------------------------------------------------------
     "crates/sunrise-sync/src/sse.rs": (
         "The SSE transport above one `#[cfg(test)] mod tests` that includes a "

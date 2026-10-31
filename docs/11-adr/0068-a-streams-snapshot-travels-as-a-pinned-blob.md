@@ -13,7 +13,7 @@ store's two-phase commit ([`../06-server/api.md`](../06-server/api.md) §Blobs).
 ADR-0059 gave each stream a signed, sealed snapshot record and let a replica
 write, store and apply one, but nothing carried a record between devices. A
 device the relay's op retention had passed (30 days or 256 MiB per channel,
-`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`) got
+`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`) got
 `SYNC_CURSOR_GAP` and latched `Degraded` with nothing to recover from, and so
 did a new device joining an old account, whose empty cursors are below
 everything retained.
