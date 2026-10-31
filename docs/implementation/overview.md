@@ -417,7 +417,7 @@ Recorded because each presented as something other than what it was:
   ±100% against its own baseline from scheduling noise alone, so `testing.md`'s
   >5% blocking gate needs dedicated hardware. `cargo-mutants` is wired, but
   nightly rather than per-pull-request: `ci.yml`'s `Mutation coverage` job runs
-  the four scoped crates as a per-crate shard matrix — the counts live in that
+  the six scoped crates as a per-crate shard matrix — the counts live in that
   matrix and are sized by mutant count — on `schedule` and `workflow_dispatch`
   only, and `Mutation coverage gate` feeds every shard's `outcomes.json` to
   `.github/scripts/mutants-gate.py`, which aggregates per crate and compares

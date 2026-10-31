@@ -1486,7 +1486,7 @@ class FloorProvenance(unittest.TestCase):
         self.assertEqual(json.loads(base.read_text())["crates"], {})
 
     def test_shards_agreeing_on_the_revision_may_differ_in_date(self):
-        # Thirteen CI shards start together and can finish either side of
+        # Fifteen CI shards start together and can finish either side of
         # midnight UTC. Refusing that would make the nightly unrecordable
         # for reasons that have nothing to do with the measurement.
         first = outcomes_file(
@@ -1563,7 +1563,7 @@ class FloorProvenance(unittest.TestCase):
 
     def test_one_dirty_shard_makes_the_whole_floor_dirty(self):
         # `dirty` is the union across the shards, not the last one read.
-        # Thirteen shards measure one crate between them, so one of them
+        # Up to six shards measure one crate between them, so one of them
         # seeing uncommitted changes is enough to make the floor they
         # produce unreproducible at the revision beside it — and the
         # single-shard case cannot tell a union from an overwrite.

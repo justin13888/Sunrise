@@ -1366,7 +1366,7 @@ set -euo pipefail
 # re-taken, and docs/10-cross-cutting/testing.md §"Cost, measured" now carries
 # the pass that supersedes it. Read the new figure as this crate's and nothing
 # else's: per-mutant cost does not transfer between crates and spans a factor
-# of eight across the four scoped ones, from `sunrise-crypto`'s ~1.9 s to
+# of eight across the four crates first measured, from `sunrise-crypto`'s ~1.9 s to
 # `sunrise-core`'s ~15.4 s. Deriving one crate's cost from another's is how the
 # CI job's timeout came to be set from the wrong crate.
 #
@@ -1443,8 +1443,8 @@ rc=0
 # See #193.
 #
 # Unconditional rather than a flag, because the failure it prevents is silent.
-# `sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
-# today, so this is a no-op for the other three — and it stays a no-op until
+# `sunrise-sync`'s `sse` is the only feature any of the six scoped crates has
+# today, so this is a no-op for the other five — and it stays a no-op until
 # someone adds a feature-gated module, which is exactly the moment the old
 # behaviour would have started under-reporting again with nothing to say so.
 # If a crate ever gains mutually exclusive features this fails the build
