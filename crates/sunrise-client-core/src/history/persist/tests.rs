@@ -1,5 +1,8 @@
 use super::*;
+use jiff::civil::date;
 use sunrise_id::EntityKind;
+
+mod round_trip;
 
 fn task(n: u8) -> EntityRef {
     EntityRef::new(EntityKind::Task, [n; 16])
@@ -224,4 +227,105 @@ fn another_version_and_garbage_are_refused_by_name() {
         from_json("not json"),
         Err(PersistError::Malformed(_))
     ));
+}
+
+/// A history in the shape the first build with this encoding wrote (5a9920a5).
+/// Frozen: never regenerate it from the current encoder, because the claims it
+/// pins are ones a round trip through that encoder cannot see.
+const LEGACY_HISTORY: &str = include_str!("../../../tests/fixtures/legacy_history.json");
+
+fn legacy_stacks() -> UndoStacks {
+    let task = task(1);
+    let stream = EntityRef::new(EntityKind::Stream, [2; 16]);
+    let routine = EntityRef::new(EntityKind::Routine, [4; 16]);
+    let at = |text: &str| SunriseTime::instant(text.parse().expect("an instant"));
+    let due = SunriseTime::all_day(date(2026, 3, 9));
+    let update_routine = |starts_at: &str, paused: bool| Command::UpdateRoutine {
+        id: routine,
+        scope: EditScope::All,
+        patch: RoutinePatch {
+            starts_at: Some(at(starts_at)),
+            paused: Some(paused),
+            ..RoutinePatch::default()
+        },
+    };
+    UndoStacks {
+        done: vec![
+            entry(
+                "plan",
+                vec![Command::UpdateTask {
+                    id: task,
+                    patch: TaskPatch {
+                        planned_at: Some(Some(SunriseTime::floating(
+                            date(2026, 3, 6).at(9, 0, 0, 0),
+                        ))),
+                        hard_due_at: Some(Some(due.clone())),
+                        ..TaskPatch::default()
+                    },
+                }],
+                vec![Command::UpdateTask {
+                    id: task,
+                    patch: TaskPatch {
+                        planned_at: Some(None),
+                        hard_due_at: Some(None),
+                        ..TaskPatch::default()
+                    },
+                }],
+            ),
+            entry(
+                "capture",
+                vec![Command::CreateTask(TaskDraft {
+                    title: "Renew passport".into(),
+                    planned_at: Some(at("2026-03-06T09:00:00Z")),
+                    hard_due_at: Some(due),
+                    ..TaskDraft::default()
+                })],
+                vec![Command::DeleteTask(task)],
+            ),
+            entry(
+                "move routine",
+                vec![update_routine("2026-03-06T09:00:00Z", true)],
+                vec![update_routine("2026-03-01T09:00:00Z", false)],
+            ),
+        ],
+        undone: vec![entry(
+            "delete stream",
+            vec![Command::DeleteStream {
+                id: stream,
+                disposition: Disposition::Detach,
+            }],
+            vec![Command::Restore(stream)],
+        )],
+    }
+}
+
+/// `scheduled_at` and `due_at` read as the plan and the hard deadline, an
+/// absent `scope` as `All`, a bare `delete_stream` as a detach and a bare
+/// `starts_at` as an instant.
+#[test]
+fn a_history_an_older_build_wrote_still_reads() {
+    same(&from_json(LEGACY_HISTORY).expect("reads"), &legacy_stacks());
+}
+
+/// The current encoder keeps the `scheduled_at` and `due_at` names, writes an
+/// `All` scope as absent and keeps a detaching `delete_stream` bare. It does not
+/// keep every form the fixture holds: a `starts_at` is written tagged.
+#[test]
+fn a_rewritten_older_history_keeps_the_older_names() {
+    let (json, dropped) = to_json(&legacy_stacks()).expect("writes");
+    assert_eq!(dropped, 0);
+    let file: serde_json::Value = serde_json::from_str(&json).expect("JSON");
+
+    let plan = &file["done"][0]["forward"][0]["update_task"]["patch"];
+    assert_eq!(plan["scheduled_at"]["kind"], "floating");
+    assert_eq!(plan["due_at"]["kind"], "all_day");
+    let draft = &file["done"][1]["forward"][0]["create_task"];
+    assert_eq!(draft["scheduled_at"]["kind"], "instant");
+    assert_eq!(draft["due_at"]["kind"], "all_day");
+    let routine = &file["done"][2]["forward"][0]["update_routine"];
+    assert!(routine.get("scope").is_none(), "`All` is written as absent");
+    assert_eq!(
+        file["undone"][0]["forward"][0]["delete_stream"],
+        "str_02081040G2081040G2081040G2",
+    );
 }
