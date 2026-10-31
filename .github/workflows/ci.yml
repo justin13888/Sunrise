@@ -1167,9 +1167,9 @@ jobs:
           # contents until the next manifest change — and cargo-mutants copies
           # the tree into temporary directories and builds there, so a leg's
           # `target/` at job end holds the baseline build and nothing else, the
-          # least representative snapshot of the thirteen. The other question is
-          # that there are thirteen legs: left saving, they would race for one
-          # immutable key, and twelve would upload ~700 MiB apiece to lose it.
+          # least representative snapshot of the fifteen. The other question is
+          # that there are fifteen legs: left saving, they would race for one
+          # immutable key, and fourteen would upload ~700 MiB apiece to lose it.
           save-if: false
       - name: Install cargo-mutants
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73  # v2.87.17
@@ -1216,7 +1216,7 @@ jobs:
           # it from there, so the floor a nightly's artifacts produce is
           # stamped with the revision the mutants actually ran against
           # rather than with whatever HEAD was when someone downloaded
-          # them. Thirteen shards write thirteen stamps and the gate
+          # them. Fifteen shards write fifteen stamps and the gate
           # refuses if they do not agree on a revision.
           .github/scripts/mutants-gate.py \
             --record-revision out/mutants/revision.json
@@ -1261,7 +1261,7 @@ jobs:
   mutants-gate:
     name: Mutation coverage gate
     runs-on: ubuntu-latest
-    # Downloads thirteen small artefacts and runs one Python script over them.
+    # Downloads fifteen small artefacts and runs one Python script over them.
     # Seconds of work; the artefact download is the only part that can stall.
     timeout-minutes: 10
     needs: mutants

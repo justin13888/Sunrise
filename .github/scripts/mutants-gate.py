@@ -42,7 +42,7 @@ reported and it fails.
 Sharding
 --------
 
-A full pass over the four scoped crates is several thousand mutants, so CI
+A full pass over the six scoped crates is several thousand mutants, so CI
 runs it in shards and each shard writes its own `outcomes.json`. This accepts
 any number of them and aggregates by crate before comparing, so a sharded run
 and a single-process run produce the same verdict.
@@ -427,7 +427,7 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
     are a floor assembled from two different trees, which is not one
     measurement at all.
 
-    Disagreement is judged on the sha alone. Thirteen CI shards start
+    Disagreement is judged on the sha alone. Fifteen CI shards start
     together and can finish either side of midnight UTC, so differing
     dates are ordinary; the earliest is the day the measurement began.
     `dirty` is true if any shard saw a modified tree, because one shard
