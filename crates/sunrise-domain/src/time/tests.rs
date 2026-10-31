@@ -3,6 +3,10 @@
 
 use super::*;
 use crate::unknown::CborValue;
+use ciborium::value::Value;
+use jiff::tz::AmbiguousOffset;
+use jiff::Span;
+use proptest::prelude::*;
 
 fn ny() -> TimeZone {
     TimeZone::get("America/New_York").unwrap()
@@ -327,5 +331,203 @@ fn cbor_round_trips_every_kind() {
         let bytes = sunrise_cbor::encode_canonical(&c).expect("encode");
         let back: SunriseTime = sunrise_cbor::decode_canonical(&bytes).expect("decode");
         assert_eq!(back, c);
+    }
+}
+
+/// Any date of the calendar, its two ends included.
+fn any_date() -> impl Strategy<Value = civil::Date> {
+    let general = (-9999i16..=9999, 1i8..=12, 1i8..=31)
+        .prop_map(|(y, m, d)| civil::date(y, m, d.min(civil::date(y, m, 1).days_in_month())));
+    prop_oneof![
+        8 => general,
+        1 => Just(civil::Date::MIN),
+        1 => Just(civil::Date::MAX),
+    ]
+}
+
+/// Any wall-clock time, sub-second included, on any date.
+fn any_civil() -> impl Strategy<Value = civil::DateTime> {
+    let nanos = prop_oneof![Just(0i32), 0i32..1_000_000_000];
+    let general =
+        (any_date(), 0i8..24, 0i8..60, 0i8..60, nanos).prop_map(|(d, h, m, s, n)| d.at(h, m, s, n));
+    prop_oneof![
+        8 => general,
+        1 => Just(civil::DateTime::MIN),
+        1 => Just(civil::DateTime::MAX),
+    ]
+}
+
+/// A zone name from the bundled tzdb.
+fn any_zone() -> impl Strategy<Value = String> {
+    let names: Vec<String> = jiff::tz::db()
+        .available()
+        .map(|name| name.to_string())
+        .collect();
+    assert!(!names.is_empty(), "the tzdb is bundled");
+    proptest::sample::select(names)
+}
+
+/// A zone name as a value can carry one: mostly real, sometimes not a zone.
+fn any_zone_name() -> impl Strategy<Value = String> {
+    prop_oneof![8 => any_zone(), 1 => Just("Mars/Olympus_Mons".to_owned()), 1 => any::<String>()]
+}
+
+/// An instant at millisecond resolution, which is what the index column holds:
+/// negative ones and both ends of the range `from_millisecond` admits included.
+/// That range stops at `Timestamp::MAX`'s whole second, short of its fraction.
+fn any_ms_instant() -> impl Strategy<Value = Timestamp> {
+    let (min, max) = (
+        Timestamp::MIN.as_millisecond(),
+        Timestamp::MAX.as_second() * 1000,
+    );
+    prop_oneof![
+        6 => min..=max,
+        2 => -86_400_000i64..=86_400_000,
+        1 => Just(min),
+        1 => Just(max),
+    ]
+    .prop_map(|ms| Timestamp::from_millisecond(ms).expect("in range"))
+}
+
+/// An instant at the full nanosecond resolution the wire carries.
+fn any_nano_instant() -> impl Strategy<Value = Timestamp> {
+    let seconds = (Timestamp::MIN.as_second() + 1)..Timestamp::MAX.as_second();
+    prop_oneof![seconds, -86_400i64..=86_400]
+        .prop_flat_map(|s| (Just(s), 0i32..1_000_000_000))
+        .prop_map(|(s, n)| Timestamp::new(s, n).expect("in range"))
+}
+
+/// A kind a newer build added, with whatever fields it chose.
+fn any_unknown() -> impl Strategy<Value = SunriseTime> {
+    let name = prop_oneof![
+        Just("at".to_owned()),
+        Just("phase".to_owned()),
+        any::<String>()
+    ]
+    .prop_filter("the kind has its own key", |k| k != "kind");
+    let value = prop_oneof![
+        any::<String>().prop_map(Value::Text),
+        any::<i64>().prop_map(|i| Value::Integer(i.into())),
+        any::<bool>().prop_map(Value::Bool),
+        proptest::collection::vec(any::<u8>(), 0..8).prop_map(Value::Bytes),
+        any_nano_instant().prop_map(|at| Value::Text(at.to_string())),
+    ];
+    let kind = any::<String>().prop_filter("a kind this build does not know", |k| {
+        !kind::KNOWN.contains(&k.as_str())
+    });
+    let raw = proptest::collection::btree_map(name, value.prop_map(CborValue), 0..4);
+    (kind, raw).prop_map(|(kind, raw)| SunriseTime::Unknown { kind, raw })
+}
+
+/// A value storage can hold exactly: an instant is at millisecond resolution.
+fn any_storable_time() -> impl Strategy<Value = SunriseTime> {
+    prop_oneof![
+        any_ms_instant().prop_map(SunriseTime::instant),
+        (any_civil(), any_zone_name()).prop_map(|(c, tz)| SunriseTime::zoned(c, tz)),
+        any_civil().prop_map(SunriseTime::floating),
+        any_date().prop_map(SunriseTime::all_day),
+        any_unknown(),
+    ]
+}
+
+/// A wall-clock time inside a real gap or fold of a tzdb zone: between where
+/// the clock stood and where it landed at the first offset change after a
+/// random instant. Values that turn out unambiguous are rejected, so every
+/// case that runs is a gap or a fold, and proptest fails the run if too few
+/// are.
+fn any_gap_or_fold() -> impl Strategy<Value = (String, civil::DateTime, AmbiguousOffset)> {
+    // 1900 to 2037: most zones change offset at least once from here.
+    let from = -2_208_988_800i64..2_114_380_800;
+    (any_zone(), from, 0i64..1000).prop_filter_map(
+        "no offset change to land in",
+        |(name, from, thousandths)| {
+            let zone = TimeZone::get(&name).ok()?;
+            let shift = zone.following(Timestamp::from_second(from).ok()?).next()?;
+            let at = shift.timestamp();
+            let before = zone.to_offset(at.checked_sub(Span::new().seconds(1)).ok()?);
+            let after = shift.offset();
+            let width = i64::from(after.seconds() - before.seconds());
+            let start = before.to_datetime(at).min(after.to_datetime(at));
+            let civil = start
+                .checked_add(Span::new().seconds(width.abs() * thousandths / 1000))
+                .ok()?;
+            let offset = zone.to_ambiguous_timestamp(civil).offset();
+            (!matches!(offset, AmbiguousOffset::Unambiguous { .. }))
+                .then_some((name, civil, offset))
+        },
+    )
+}
+
+#[track_caller]
+fn assert_storage_round_trip(t: &SunriseTime) {
+    let (ms, kind, tz) = t.to_parts();
+    let civil = t.civil_part();
+    let back = SunriseTime::from_parts(ms, kind, tz.as_deref(), civil.as_deref());
+    assert_eq!(&back, t);
+    assert_eq!(back.to_parts(), (ms, kind, tz), "the columns are stable");
+}
+
+#[track_caller]
+fn assert_wire_round_trip(t: &SunriseTime) {
+    let bytes = sunrise_cbor::encode_canonical(t).expect("encode");
+    let back: SunriseTime = sunrise_cbor::decode_canonical(&bytes).expect("decode");
+    assert_eq!(&back, t);
+    assert_eq!(
+        sunrise_cbor::encode_canonical(&back).expect("re-encode"),
+        bytes
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..ProptestConfig::default()
+    })]
+
+    /// Every kind, over the whole input space: the calendar's ends, any zone
+    /// name, any fields of an unknown kind.
+    #[test]
+    fn any_time_round_trips_through_storage_and_the_wire(t in any_storable_time()) {
+        assert_storage_round_trip(&t);
+        assert_wire_round_trip(&t);
+    }
+
+    /// The wire carries an instant to the nanosecond, negative ones included.
+    /// The index column holds milliseconds, so storage keeps the key stable
+    /// and nothing finer.
+    #[test]
+    fn any_instant_round_trips_at_the_resolution_of_its_carrier(at in any_nano_instant()) {
+        let t = SunriseTime::instant(at);
+        assert_wire_round_trip(&t);
+        let (ms, kind, tz) = t.to_parts();
+        let stored = SunriseTime::from_parts(ms, kind, tz.as_deref(), None);
+        prop_assert_eq!(stored.index_ms(), ms);
+    }
+
+    /// A wall clock a zone skipped or repeated round-trips as written, and
+    /// resolves as `to_instant` defines: forward by the gap's length, to the
+    /// earlier of a fold's two instants. Reading the civil time at the offset
+    /// in force before the change gives both.
+    #[test]
+    fn a_gap_or_fold_round_trips_and_resolves_as_defined(
+        (name, civil, offset) in any_gap_or_fold(),
+    ) {
+        let (AmbiguousOffset::Gap { before, .. } | AmbiguousOffset::Fold { before, .. }) = offset
+        else {
+            unreachable!("the strategy rejects an unambiguous value");
+        };
+        let expected = before.to_timestamp(civil).expect("in range");
+        let zone = TimeZone::get(&name).expect("from the tzdb");
+
+        let zoned = SunriseTime::zoned(civil, name);
+        assert_storage_round_trip(&zoned);
+        assert_wire_round_trip(&zoned);
+        prop_assert_eq!(zoned.to_instant(&TimeZone::UTC), Ok(expected));
+        prop_assert_eq!(zoned.index_ms(), expected.as_millisecond());
+
+        let floating = SunriseTime::floating(civil);
+        assert_storage_round_trip(&floating);
+        assert_wire_round_trip(&floating);
+        prop_assert_eq!(floating.to_instant(&zone), Ok(expected));
     }
 }
