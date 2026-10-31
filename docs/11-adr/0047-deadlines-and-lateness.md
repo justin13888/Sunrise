@@ -316,8 +316,7 @@ reason across sync and an older peer, the no-automation test (C14), the CLI
 surface (`CoreQuery.triage`, `CoreCommand.triage`, `TriageActionIn`,
 `TaskItem.cancelReason`/`lateAcknowledgedAt`).
 
-What is left: a deadline reminder (C8); the lapsed-occurrence clause of the
-queue (C9, with #331); `NextFreeSlot` from the planner (#343); and the Apple
-client's Today on `CoreQuery.todayView`, its editor's target picker, its
-lateness badges and its triage list with multi-select, the four actions and
-their key hints (#348), a Mac pass.
+What is left: Apple delivery of the deadline reminder (C8); `NextFreeSlot`
+from the planner (#343); and the Apple client's Today on `CoreQuery.todayView`,
+its editor's target picker, its lateness badges and its triage list with
+multi-select, the four actions and their key hints (#348), a Mac pass.
