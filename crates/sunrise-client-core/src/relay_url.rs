@@ -93,6 +93,22 @@ pub enum RelayUrlIssue {
     NotAnOrigin,
 }
 
+impl RelayUrlIssue {
+    /// The issue's code, as `vectors/relay-url.json` spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::TooLong => "too_long",
+            Self::NotAUrl => "not_a_url",
+            Self::WebSocket => "web_socket",
+            Self::UnsupportedScheme => "unsupported_scheme",
+            Self::InsecureRemote => "insecure_remote",
+            Self::NotAnOrigin => "not_an_origin",
+        }
+    }
+}
+
 /// `input` as a relay origin, or why it is not one. See the module comment
 /// for the rule.
 ///
@@ -150,19 +166,6 @@ mod tests {
     /// `server-url.test.ts` reads this same file.
     const VECTORS: &str = include_str!("../vectors/relay-url.json");
 
-    fn issue_named(name: &str) -> RelayUrlIssue {
-        match name {
-            "empty" => RelayUrlIssue::Empty,
-            "too_long" => RelayUrlIssue::TooLong,
-            "not_a_url" => RelayUrlIssue::NotAUrl,
-            "web_socket" => RelayUrlIssue::WebSocket,
-            "unsupported_scheme" => RelayUrlIssue::UnsupportedScheme,
-            "insecure_remote" => RelayUrlIssue::InsecureRemote,
-            "not_an_origin" => RelayUrlIssue::NotAnOrigin,
-            other => panic!("unknown issue {other} in relay-url.json"),
-        }
-    }
-
     #[test]
     fn every_shared_vector_holds() {
         let vectors: serde_json::Value = serde_json::from_str(VECTORS).expect("relay-url.json");
@@ -175,7 +178,9 @@ mod tests {
                 (Some(origin), None) => {
                     assert_eq!(got.as_ref().map(RelayOrigin::as_str), Ok(origin), "{input}");
                 }
-                (None, Some(issue)) => assert_eq!(got, Err(issue_named(issue)), "{input}"),
+                (None, Some(issue)) => {
+                    assert_eq!(got.map_err(RelayUrlIssue::as_str), Err(issue), "{input}");
+                }
                 _ => panic!("a vector names an origin or an issue: {case}"),
             }
         }

@@ -7,7 +7,7 @@
 //! relay-url.json`, the cases the Rust rule is tested against. This export is
 //! the rule itself, for any caller that already has the module loaded.
 
-use sunrise_client_core::relay_url::{parse_relay_url, RelayUrlIssue};
+use sunrise_client_core::relay_url::parse_relay_url;
 
 /// `{"origin":"https://relay.example"}` for a relay URL, or
 /// `{"issue":"insecure_remote"}` — the vectors' own spelling — for one that is
@@ -16,23 +16,9 @@ use sunrise_client_core::relay_url::{parse_relay_url, RelayUrlIssue};
 pub fn check_relay_url_json(input: &str) -> String {
     let value = match parse_relay_url(input) {
         Ok(origin) => serde_json::json!({ "origin": origin.as_str() }),
-        Err(issue) => serde_json::json!({ "issue": issue_name(issue) }),
+        Err(issue) => serde_json::json!({ "issue": issue.as_str() }),
     };
     value.to_string()
-}
-
-/// The vectors' name for `issue`.
-#[must_use]
-pub const fn issue_name(issue: RelayUrlIssue) -> &'static str {
-    match issue {
-        RelayUrlIssue::Empty => "empty",
-        RelayUrlIssue::TooLong => "too_long",
-        RelayUrlIssue::NotAUrl => "not_a_url",
-        RelayUrlIssue::WebSocket => "web_socket",
-        RelayUrlIssue::UnsupportedScheme => "unsupported_scheme",
-        RelayUrlIssue::InsecureRemote => "insecure_remote",
-        RelayUrlIssue::NotAnOrigin => "not_an_origin",
-    }
 }
 
 /// The browser export.
