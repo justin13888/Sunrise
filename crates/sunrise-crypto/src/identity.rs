@@ -10,7 +10,6 @@
 //! Stable forever; does not change on rotation.
 
 use crate::blake3_kdf::derive_key;
-use sunrise_id::{EntityKind, EntityRef};
 
 /// 16-byte raw identity id.
 pub type IdentityId = [u8; 16];
@@ -47,13 +46,6 @@ pub fn device_id_from_pub(d_s_pub: &[u8; 32]) -> DeviceId {
     out
 }
 
-/// Build a typed `EntityRef` for the identity from `ID_S_pub`.
-#[must_use]
-pub fn identity_entity_ref(id_s_pub: &[u8; 32]) -> EntityRef {
-    let id = identity_id_from_pub(id_s_pub);
-    EntityRef::new(EntityKind::Identity, id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,12 +77,5 @@ mod tests {
         // is also a valid identity id. A collision would let a device id name
         // an identity row.
         assert_ne!(device_id_from_pub(&pubk), identity_id_from_pub(&pubk));
-    }
-
-    #[test]
-    fn entity_ref_uses_identity_kind() {
-        let r = identity_entity_ref(&[7u8; 32]);
-        assert_eq!(r.kind(), EntityKind::Identity);
-        assert!(r.to_str().starts_with("idn_"));
     }
 }
