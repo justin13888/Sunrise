@@ -72,6 +72,7 @@
 //! Never edit an existing registry entry to make the failure go away: an
 //! entry is what every build that shipped it believes the version means.
 
+use crate::bytes::hex_bytes as hex_lower;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use sunrise_cbor::version::{DOC_SCHEMA_FINGERPRINTS, DOC_SCHEMA_FP_DOMAIN};
@@ -474,14 +475,6 @@ pub(crate) fn render_registry() -> String {
         serde_json::to_string_pretty(&Value::Object(entries)).expect("a JSON value serializes");
     out.push('\n');
     out
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 fn committed_path(file: &str) -> PathBuf {

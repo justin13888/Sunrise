@@ -40,7 +40,7 @@
 
 use super::groups::{mark, record_local, Group};
 use super::lww::{materialize_member, materialize_remote, LwwStamp};
-use super::merge::{encode_value, OpRef};
+use super::merge::{encode_value, to_sql, OpRef};
 use super::{Engine, EngineError};
 use crate::feature::FIELD_OPS_FEATURE;
 use crate::inner_op::{encode_inner_op, InnerOp, PatchPayload};
@@ -692,14 +692,6 @@ impl Engine {
             &slot.key,
         )?;
         Ok((Appended { op_id, seq }, lww))
-    }
-}
-
-/// Carry an engine error out through a transaction closure.
-fn to_sql(e: EngineError) -> rusqlite::Error {
-    match e {
-        EngineError::Sqlite(e) => e,
-        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
     }
 }
 

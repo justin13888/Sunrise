@@ -593,8 +593,9 @@ pub(super) fn merge_member(
 }
 
 /// Carry an engine error out through a transaction closure, which speaks
-/// `rusqlite::Error`.
-fn to_sql(e: EngineError) -> rusqlite::Error {
+/// `rusqlite::Error`, boxed as itself so `snapshot::in_tx` can hand the caller
+/// the original variant.
+pub(super) fn to_sql(e: EngineError) -> rusqlite::Error {
     match e {
         EngineError::Sqlite(e) => e,
         other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),

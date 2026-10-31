@@ -116,9 +116,9 @@
 //! storage.
 
 use crate::blob_cache::BlobRef;
+use crate::bytes::{hex_short, to16, to32};
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, read_attachment};
-use crate::keychain::{to16, to32};
+use crate::engine::read_attachment;
 use sunrise_crypto::blob_chunk::{open_chunk, split_sealed, verify_content};
 use sunrise_domain::Attachment;
 use sunrise_error::ErrorCode;

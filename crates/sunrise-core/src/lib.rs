@@ -51,6 +51,7 @@ pub mod attach;
 mod blob_cache;
 mod blob_fetch;
 mod blob_sync;
+mod bytes;
 pub mod commands;
 pub mod config;
 pub mod conflicts;

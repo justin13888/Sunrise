@@ -78,8 +78,9 @@ use tokio::sync::{broadcast, Notify};
 
 use crate::attach::AttachError;
 use crate::blob_sync::{MAX_FETCHES_PER_DRAIN, MAX_FETCH_SCAN};
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, read_attachment};
+use crate::engine::read_attachment;
 use crate::events::{AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState};
 use sunrise_domain::Attachment;
 use sunrise_id::EntityRef;

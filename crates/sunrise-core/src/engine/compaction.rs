@@ -57,9 +57,10 @@ use sunrise_crypto::decode_envelope;
 use sunrise_id::registry::Merge;
 
 use super::chain::{fold_chain, held_op_hash, root_at};
-use super::ids::hex_short;
+use super::ids::i64_of;
 use super::merge::{prune_versions, Passage};
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use sunrise_storage::Db;
 
 /// The op-log `inner_kind` of a stream digest, which carries no entity state
@@ -117,10 +118,6 @@ pub(super) struct Floor {
     pub(super) root: [u8; 32],
     /// The stamp of the op at `seq`, which bounds every op the floor covers.
     pub(super) hlc: Hlc,
-}
-
-fn i64_of(n: u64) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 fn u64_of(n: i64) -> u64 {

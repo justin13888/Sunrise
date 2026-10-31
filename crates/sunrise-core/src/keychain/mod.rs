@@ -132,8 +132,8 @@
 //!   and the `#[ignore]`d generator that writes it.
 //! - `tests` — the unit tests, one file per concern.
 //!
-//! `to16` and `to32` stay here: `to16` is the crate's blob-to-id decoder
-//! and `core` and `engine` reach it as `crate::keychain::to16`.
+//! `to16`, `to32` and `to64` live in [`crate::bytes`] and are re-exported here
+//! for the callers that still name them through this module.
 
 mod crypto;
 mod device;
@@ -151,8 +151,10 @@ mod succession;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use crate::bytes::{to16, to32, to64};
+
+use crate::bytes::hex_short;
 use crate::config::{Clock, Rng};
-use crate::engine::hex_short;
 use crate::unlock::IdentitySeed;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
@@ -1673,39 +1675,6 @@ impl Keychain {
             test_derived_keys,
         }
     }
-}
-
-/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
-///
-/// The crate's one blob-to-id decoder, and it lives here because this is where
-/// its reason does — next to [`to32`], whose doc points at it.
-///
-/// It used to zero-pad, and that was a silent way of manufacturing a *valid*
-/// value from a corrupt one: a truncated `identity_id` padded with zeros still
-/// compares equal to itself, so the vault opened and every cert bound to an
-/// identity that never existed. A short blob is a corrupt row, and the caller
-/// is in a position to say so — which is what every caller does: the
-/// Subscribe-frame builders in `core` skip a row that cannot name a stream or
-/// a device, and [`crate::Engine`]'s `emit_key_envelopes` skips a `devices`
-/// row rather than sealing a Stream key to a padded id.
-pub(crate) fn to16(raw: &[u8]) -> Option<[u8; 16]> {
-    raw.try_into().ok()
-}
-
-/// A 32-byte key read out of a DB blob, or `None` if the blob is not 32 bytes.
-/// See [`to16`] for why this is not a pad.
-pub(crate) fn to32(raw: &[u8]) -> Option<[u8; 32]> {
-    raw.try_into().ok()
-}
-
-/// A 64-byte signature read out of a DB blob, or `None` if the blob is not 64
-/// bytes. See [`to16`] for why this is not a pad.
-///
-/// Every caller is in the identity chain, where a signature that is the wrong
-/// width is a row the fold must refuse rather than one it can pad into
-/// verifying against nothing.
-pub(crate) fn to64(raw: &[u8]) -> Option<[u8; 64]> {
-    raw.try_into().ok()
 }
 
 /// Adapts the injected [`Rng`] (fill-only) to the `CryptoRngCore` interface the
