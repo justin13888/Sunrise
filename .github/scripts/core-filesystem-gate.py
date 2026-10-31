@@ -5,8 +5,9 @@ Why this gate exists
 --------------------
 
 `docs/01-architecture/shared-core.md` §determinism-rules states four rules the
-shared core holds to. Rule 2 is "no filesystem access except via
-`CoreConfig::storage`", and until this script existed it was enforced by nothing.
+shared core holds to. Rule 2 is that the core reaches the disk only through the
+injected `CoreConfig::vault_dir`, and until this script existed it was enforced
+by nothing.
 
 The document said otherwise. It named `std::fs::*` as an entry in
 `clippy.toml`'s deny list, and that entry has never been there. So the rule read
@@ -18,16 +19,16 @@ Why this is not in `clippy.toml`
 --------------------------------
 
 Because it cannot be. `clippy.toml` is a single workspace-level file with no
-per-crate scoping, and nine of the twenty crates here touch the filesystem on
-purpose -- `sunrise-storage` opens the vault, `sunrise-cli` writes the keystore,
+per-crate scoping, and many crates here touch the filesystem on purpose --
+`sunrise-storage` opens the vault, `sunrise-cli` writes the keystore,
 `sunrise-server` stores blobs, `sunrise-log` writes logs. A `disallowed-methods`
-entry for `std::fs` would fire in eight crates the rule was never about, and the
+entry for `std::fs` would fire in every crate the rule was never about, and the
 only way to quiet them is an `#[allow]` at every legitimate call site in all of
 them.
 
 `clippy.toml` already records where that road ends: the `rand` rules carry a
 comment about warning noise that "reads like the rule is dead". A rule whose
-enforcement has to be suppressed in eight of nine places it fires is that rule.
+enforcement has to be suppressed in most of the places it fires is that rule.
 
 So this gate is scoped the way the rule is scoped: one crate.
 
@@ -52,7 +53,7 @@ advisory lock in terms of `std::fs::File::try_lock` -- does not red the build.
 
 `#[cfg(test)]` code is skipped too. Rule 2 is about what the core does when it
 runs, and a test that writes a fixture into a `tempdir` is not the core reaching
-past its storage handle. `vault_lock.rs`'s own tests do exactly that.
+past `CoreConfig::vault_dir`. `vault_lock.rs`'s own tests do exactly that.
 
 How `#[cfg(test)]` is skipped, and why it is not a `break`
 ---------------------------------------------------------
@@ -104,8 +105,8 @@ CRATE_SRC = Path("crates/sunrise-core/src")
 ALLOWED: dict[str, str] = {
     "vault_lock.rs": (
         "The OS advisory lock on `<vault>/core.lock`. It is the cross-process "
-        "half of the single-writer guarantee, so it cannot go through "
-        "`CoreConfig::storage` -- the point is to hold a lock the OS releases "
+        "half of the single-writer guarantee, so it cannot be left to what "
+        "`CoreConfig::vault_dir` opens -- the point is to hold a lock the OS releases "
         "on process death by any means, including a kill. Documented in "
         "shared-core.md §Single-writer guarantee."
     ),
@@ -122,8 +123,8 @@ ALLOWED: dict[str, str] = {
 # What rule 2 covers, and what it does not
 # ----------------------------------------
 #
-# Rule 2 is "no filesystem access except via `CoreConfig::storage`". Everything
-# below performs a filesystem operation. Three things that look adjacent are
+# Rule 2 is that the core reaches the disk only through `CoreConfig::vault_dir`.
+# Everything below performs a filesystem operation. Three things that look adjacent are
 # deliberately absent, because the rule is about *access*:
 #
 # * `std::env::temp_dir` reads `TMPDIR`; it touches no filesystem. Code that
@@ -327,7 +328,7 @@ SELF_TESTS: list[tuple[str, bool]] = [
     ("    let real = p.canonicalize()?;", True),
     ("/// Enforced by `std::fs::File::try_lock`, which is an advisory lock.", False),
     ("// fs::write(p, b) would be a violation, which is why this is a comment", False),
-    ("    self.storage.read(p)?;", False),  # the injected seam is the point
+    ("    self.storage.read(p)?;", False),  # a handle's method is not a `fs::` call
     ("    let f = self.fs::read;", False),
     ("    cfg.storage.write(name, bytes)?;", False),
     # Out of scope on purpose -- see the note above BANNED.
@@ -398,15 +399,16 @@ def main() -> int:
     if hits:
         print(
             "::error::core-filesystem: sunrise-core reaches the filesystem "
-            "outside `CoreConfig::storage`."
+            "outside `CoreConfig::vault_dir`."
         )
         for path, n, line in hits:
             print(f"  {path}:{n}: {line}")
         print()
         print(
-            "Rule 2 of docs/01-architecture/shared-core.md: the core reads and "
-            "writes through the injected storage handle, so a test can supply "
-            "one and a vault is the only thing on disk."
+            "Rule 2 of docs/01-architecture/shared-core.md: the core reaches the "
+            "disk only through the injected `CoreConfig::vault_dir`, so a test "
+            "can point it at a temp directory and a vault is the only thing on "
+            "disk."
         )
         print(
             "If this really is a new, deliberate exception, it needs the rule "

@@ -6,7 +6,7 @@ Why this file exists
 
 The gate's whole value is a *discrimination*: it has to fire on
 `crates/sunrise-core/src/nonexistent.rs:1` and stay silent on `Vec<u8>`,
-`cargo test --workspace`, `task.update` and the 600 bare filenames in this
+`cargo test --workspace`, `task.update` and the many bare filenames in this
 repository that are shorthand rather than citations. Either half failing
 makes it worthless, and the two fail in opposite directions from the same
 edit — a rule loosened to catch one more real citation catches a hundred

@@ -1096,7 +1096,7 @@ def report_unlexable(unlexable: int) -> None:
     * **2** in `.github/workflows/ci.yml` at `:1369` and `:1395`, and
       **2** in `.github/workflows/release.yml` at `:121` and `:1046`.
       All four are `- name:` prose whose English apostrophe is an
-      unbalanced quotation: "the core's storage seam", "its package's
+      unbalanced quotation: "the core's vault_dir seam", "its package's
       threshold", "its train's version", "a user's Mac".
 
     Those last four are the visible half of the limit the module

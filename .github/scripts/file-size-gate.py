@@ -78,7 +78,7 @@ What is counted
 
 A file's **total length**. That is what a person means by "this file is six
 hundred lines", and what their editor's gutter shows them. A file that is mostly
-tests still costs a reader the scroll, and `engine/tests.rs` at 10,539 lines is
+tests still costs a reader the scroll, and a ten-thousand-line test module is
 worth seeing in a report even though every line of it is a test.
 
 The baseline is a ratchet
@@ -117,21 +117,18 @@ voice teaches people to read "file-size failed" as "a file is too long" and act
 on the wrong thing. This mirrors `mutants-gate.py`, which separates "scored, and
 the answer is no" from "nothing was scored" for the same reason.
 
-That distinction is doing real work here, because two entries sit three lines
-over their threshold: `sunrise-domain/src/constraint.rs` at 766 against 763, and
-`sunrise-server/src/relay_log.rs` at 860 against 857. Deleting four lines from
-either one turns CI red. The margins are not padded to hide that -- a threshold
-of "p90 plus a bit of slack" is exactly the imported, meaningless number this
-gate's own thresholds were derived to avoid, and padding would only move the
-cliff rather than remove it. What the padding was tempting for is fixed instead:
-the report says what happened and what to type.
+That distinction does real work, because a baseline entry can sit only a few
+lines over its threshold, and then deleting those lines turns CI red. The margins
+are not padded to hide that -- a threshold of "p90 plus a bit of slack" is exactly
+the imported, meaningless number this gate's own thresholds were derived to avoid,
+and padding would only move the cliff rather than remove it. What the padding was
+tempting for is fixed instead: the report says what happened and what to type.
 
-Two files sit exactly *at* their package's threshold (`sunrise-domain/src/activity.rs`
-at 763 and `sunrise-server/src/api/signed.rs` at 857; `sunrise-core/src/core.rs` was a
-third until identity rotation split it into `core/`) -- unavoidably, since each threshold is its package's p90 and therefore
-one of its own files. Adding a line to any of them is a genuine exit 1, which is
-the gate working: those three are the largest files the distribution calls
-ordinary, and the next line really is the one worth arguing about.
+A file can also sit exactly *at* its package's threshold -- unavoidably on the day
+the package enters, since each threshold is its package's p90 and therefore one of
+its own files. Adding a line to such a file is a genuine exit 1, which is the gate
+working: it is the largest file the distribution calls ordinary, and the next line
+really is the one worth arguing about.
 
 What checks this gate
 ---------------------
@@ -200,63 +197,61 @@ UNGATED: dict[str, str] = {
 BASELINE: dict[str, str] = {
     # --- sunrise-domain -----------------------------------------------------
     "crates/sunrise-domain/src/stats.rs": (
-        "504 implementation lines; the rest is tests. A cohesive fold, with one "
+        "A cohesive fold above its tests, with one "
         "worthwhile extraction identified but not urgent: `routine_drift` is "
         "the only reason this file imports `routine`, `routine_gen` and `rrule`."
     ),
     "crates/sunrise-domain/src/notify.rs": (
-        "481 implementation lines. Cohesive, with a clean three-way line "
+        "Cohesive, with a clean three-way line "
         "available (device policy / reminder pipeline / the two digest views) "
         "if it is ever wanted."
     ),
     "crates/sunrise-domain/src/review.rs": (
-        "537 implementation lines. One fold over one input struct; the module "
+        "One fold over one input struct; the module "
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
     "crates/sunrise-domain/src/constraint.rs": (
-        "399 implementation lines, and the only spec in the repository with a "
+        "The only spec in the repository with a "
         "test that fails when the Rust and the CDDL disagree."
     ),
     # --- sunrise-server -----------------------------------------------------
     "crates/sunrise-server/src/api/sync/suite.rs": (
         "The sync test suite, moved whole when api/sync.rs was split so the "
-        "split's diff carried no test changes. Everything below its eight-line "
-        "module doc is one `#[cfg(test)] mod tests`, so the 'implementation "
-        "lines' the other entries quote is eight here and means nothing: the "
-        "number worth knowing is that it is the whole suite in one file."
+        "split's diff carried no test changes. Everything below its module doc "
+        "is one `#[cfg(test)] mod tests`: it is the whole suite in one file."
     ),
     "crates/sunrise-server/src/api/devices.rs": (
-        "399 implementation lines — below this package's threshold on its own. "
+        "Its implementation alone is below this package's threshold. "
         "Deliberately not split: every symbol serves the five `/devices*` "
         "routes mounted together, so splitting it to satisfy a line count "
         "would be churn."
     ),
     "crates/sunrise-server/src/relay_log.rs": (
-        "570 implementation lines, and it grew when the relay DDL moved here to "
+        "It grew when the relay DDL moved here to "
         "sit beside the only code that touches it — a net improvement that "
         "shows up here as a larger file."
     ),
     # --- sunrise-sync -------------------------------------------------------
     "crates/sunrise-sync/src/sse.rs": (
-        "The SSE transport: 1,520 implementation lines above one "
-        "`#[cfg(test)] mod tests` of 3,619 that includes a loopback relay. "
-        "The tests sit in `src/` because what they pin -- `take_event`, "
-        "`frame_for`, `binding_bytes`, the stream buffer -- is private, so "
-        "`tests/` cannot reach it. Splitting the test module by the route it "
-        "exercises is a change of its own."
+        "The SSE transport above one `#[cfg(test)] mod tests` that includes a "
+        "loopback relay and is most of the file. What those tests pin -- "
+        "`take_event`, `frame_for`, `binding_bytes`, the stream buffer -- is "
+        "private, which rules out `tests/` but not a child module: splitting "
+        "the tests by the route they exercise, into files under `sse/`, keeps "
+        "that access and is a change of its own."
     ),
     # --- sunrise-client-core ------------------------------------------------
     "crates/sunrise-client-core/src/undo.rs": (
-        "380 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. One concern: the inverse command for each "
+        "Its implementation alone is below this package's threshold; the rest "
+        "is tests. One concern: the inverse command for each "
         "command a client submits, which the module doc argues is the only "
         "undo a client can build without a protocol change. Not audited for "
         "a split."
     ),
     # --- sunrise-core-bindings ----------------------------------------------
     "crates/sunrise-core-bindings/src/dto.rs": (
-        "The UniFFI mirror of the domain vocabulary: 69 records and enums and "
+        "The UniFFI mirror of the domain vocabulary: the records and enums and "
         "the exhaustively destructuring `From` impls that make a new domain "
         "field fail this crate's build. No test module. Its length tracks the "
         "domain's; splitting it by the domain module each mirror comes from "
@@ -264,14 +259,14 @@ BASELINE: dict[str, str] = {
     ),
     # --- sunrise-crypto -----------------------------------------------------
     "crates/sunrise-crypto/src/op_envelope.rs": (
-        "862 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The byte-exact CBOR "
+        "Its implementation alone is below this package's threshold; the rest "
+        "is tests. The byte-exact CBOR "
         "codec, signing, encryption, verification and decryption of one wire "
         "type. Not audited for a split."
     ),
     "crates/sunrise-crypto/src/device_cert.rs": (
-        "462 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The codec, signing and verification of one "
+        "Its implementation alone is below this package's threshold; the rest "
+        "is tests. The codec, signing and verification of one "
         "certificate type."
     ),
     # --- sunrise-e2e --------------------------------------------------------
@@ -282,20 +277,20 @@ BASELINE: dict[str, str] = {
     ),
     # --- sunrise-integrations -----------------------------------------------
     "crates/sunrise-integrations/src/ical.rs": (
-        "631 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The iCalendar syntax layer only; mapping and "
+        "Its implementation alone is below this package's threshold; the rest "
+        "is tests. The iCalendar syntax layer only; mapping and "
         "the vault driver are already separate modules."
     ),
     "crates/sunrise-integrations/src/gcal.rs": (
-        "514 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. Google Calendar OAuth and read-only import "
+        "Its implementation alone is below this package's threshold; the rest "
+        "is tests. Google Calendar OAuth and read-only import "
         "request building."
     ),
     # --- sunrise-log --------------------------------------------------------
     "crates/sunrise-log/tests/event_catalog.rs": (
         "An integration test: the event catalogue and log-field vocabulary "
-        "enforced against the files rustc compiled, read from dep-info: 25 "
-        "tests over one shared reading of the build. Not audited for a split."
+        "enforced against the files rustc compiled, read from dep-info: every "
+        "test over one shared reading of the build. Not audited for a split."
     ),
     # --- sunrise-storage ----------------------------------------------------
     "crates/sunrise-storage/src/vault_fixtures.rs": (
@@ -312,8 +307,8 @@ BASELINE: dict[str, str] = {
         "split."
     ),
     "crates/sunrise-storage/src/db.rs": (
-        "601 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The SQLCipher wrapper: keying, pragmas, "
+        "Its implementation alone is over this package's threshold, so moving "
+        "the tests out would not clear it. The SQLCipher wrapper: keying, pragmas, "
         "integrity check, pre-migration backups and the migration runner."
     ),
 }
