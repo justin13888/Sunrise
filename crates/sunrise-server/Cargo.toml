@@ -29,6 +29,14 @@ ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+# Reads response bodies in the JWKS fetcher and the APNs provider, and collects
+# a `kynos::http::Body` in the tests that drive `Service::call` directly.
+#
+# kynos ships a richer `TestClient` behind its `test-util` feature and the tests
+# deliberately do not use it: `test-util` pulls `jsonschema`, which needs a newer
+# `regex-automata` than criterion pins and brings `MIT-0` into a licence
+# allowlist `deny.toml` curates by hand. `Service::call` is documented as the
+# embedding seam, so `src/api/testing.rs` costs less than the policy change.
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 # `http2` for APNs, which speaks nothing else. `h2` is already in the lock
@@ -80,15 +88,6 @@ rustix = { workspace = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }
-futures-util = { workspace = true }
-# Collects a `kynos::http::Body` in tests that drive `Service::call` directly.
-#
-# kynos ships a richer `TestClient` behind its `test-util` feature and this is
-# deliberately not that: `test-util` pulls `jsonschema`, which needs a newer
-# `regex-automata` than criterion pins and brings `MIT-0` into a licence
-# allowlist `deny.toml` curates by hand. `Service::call` is documented as the
-# embedding seam, so the thirty lines below cost less than the policy change.
-http-body-util = { workspace = true }
 tempfile = "3"
 # Reads exported spans back in `tests/span-redaction.rs` and the span-tree
 # tests.
