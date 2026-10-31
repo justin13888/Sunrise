@@ -435,6 +435,9 @@ fn classify<E: std::fmt::Display>(e: &api::Error<E>) -> Fault {
 }
 
 #[cfg(test)]
+mod rendezvous_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

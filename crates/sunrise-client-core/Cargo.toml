@@ -89,4 +89,7 @@ serde_json = { workspace = true, features = ["std"] }
 sunrise-test-seed = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `net` and `test-util`: the pairing rendezvous's tests run against a loopback
+# fake relay on a paused clock (`src/pairing/rendezvous_tests.rs`). The
+# account tests' sync driver runs on that clock too (`src/account.rs`).
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "test-util", "time"] }
