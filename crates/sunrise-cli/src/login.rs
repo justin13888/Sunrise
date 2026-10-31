@@ -37,15 +37,22 @@ impl LoginConfig {
     /// Read both from the environment, reporting which one is missing rather
     /// than a generic failure — the two are configured in different places.
     pub fn from_env() -> Result<Self, String> {
-        let issuer = std::env::var(ENV_ISSUER)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| strings::login::not_set(ENV_ISSUER))?;
-        let client_id = std::env::var(ENV_CLIENT_ID)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| strings::login::not_set(ENV_CLIENT_ID))?;
-        Ok(Self { issuer, client_id })
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::from_env`] over any source of variables, so the rule can be
+    /// tested without the test process's own environment. A blank value is
+    /// the same as none.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let read = |name: &str| {
+            lookup(name)
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| strings::login::not_set(name))
+        };
+        Ok(Self {
+            issuer: read(ENV_ISSUER)?,
+            client_id: read(ENV_CLIENT_ID)?,
+        })
     }
 }
 
@@ -188,11 +195,31 @@ mod tests {
 
     #[test]
     fn a_missing_env_var_names_itself() {
-        // Both unset in this test process unless someone exported them.
-        if std::env::var(ENV_ISSUER).is_ok() {
-            return;
-        }
-        let e = LoginConfig::from_env().unwrap_err();
+        let with = |vars: &'static [(&'static str, &'static str)]| {
+            LoginConfig::from_lookup(move |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            })
+        };
+
+        let e = with(&[]).unwrap_err();
         assert!(e.contains(ENV_ISSUER), "{e}");
+        let e = with(&[(ENV_CLIENT_ID, "sunrise")]).unwrap_err();
+        assert!(e.contains(ENV_ISSUER) && !e.contains(ENV_CLIENT_ID), "{e}");
+        let e = with(&[(ENV_ISSUER, "https://id.example")]).unwrap_err();
+        assert!(e.contains(ENV_CLIENT_ID) && !e.contains(ENV_ISSUER), "{e}");
+
+        // Blank is not set: an exported-but-empty variable is the usual slip.
+        let e = with(&[(ENV_ISSUER, "  "), (ENV_CLIENT_ID, "sunrise")]).unwrap_err();
+        assert!(e.contains(ENV_ISSUER), "{e}");
+
+        let cfg = with(&[
+            (ENV_ISSUER, "https://id.example"),
+            (ENV_CLIENT_ID, "sunrise"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.issuer, "https://id.example");
+        assert_eq!(cfg.client_id, "sunrise");
     }
 }
