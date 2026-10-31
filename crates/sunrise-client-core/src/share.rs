@@ -21,10 +21,10 @@ use sunrise_domain::note_body::{Inline, NoteBlock};
 pub const TITLE_LIMIT: usize = 200;
 
 /// The largest image the core attaches: `AttachError::TooLarge` past it.
-pub const MAX_IMAGE_BYTES: u64 = 100_000_000;
+pub const MAX_IMAGE_BYTES: u64 = sunrise_domain::MAX_ATTACHMENT_BYTES;
 
 /// The longest attachment name the core takes, in Unicode scalars.
-pub const MAX_IMAGE_NAME_LEN: usize = 256;
+pub const MAX_IMAGE_NAME_LEN: usize = sunrise_domain::MAX_FILENAME_LEN;
 
 /// The task a share is filed as, before anything touches the vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +186,9 @@ fn paragraph(text: &str) -> NoteBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use sunrise_domain::validation::validate_title;
+    use sunrise_domain::MAX_FILENAME_LEN;
 
     fn link_block(href: &str) -> NoteBlock {
         NoteBlock::Paragraph {
@@ -298,5 +301,53 @@ mod tests {
         assert_eq!(attachment_name(&emoji).chars().count(), MAX_IMAGE_NAME_LEN);
         let odd = format!("{}.{}", "b".repeat(300), "x".repeat(20));
         assert_eq!(attachment_name(&odd).chars().count(), MAX_IMAGE_NAME_LEN);
+    }
+
+    /// Names a sharing app could hand over: anything at all, and long runs
+    /// over the characters the fitting treats specially, multi-byte ones and
+    /// whitespace that a cut can leave at the end of what is kept.
+    fn image_name() -> impl Strategy<Value = String> {
+        prop_oneof![
+            any::<String>(),
+            proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "a",
+                    "東",
+                    "\u{1f305}",
+                    " ",
+                    "\t",
+                    "\u{3000}",
+                    "\u{a0}",
+                    ".",
+                    ".png",
+                ]),
+                0..600,
+            )
+            .prop_map(|parts| parts.concat()),
+        ]
+    }
+
+    proptest! {
+        // `Direct`, the shape docs/10-cross-cutting/testing.md section 2 names.
+        #![proptest_config(ProptestConfig {
+            cases: 2048,
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::Direct(
+                    "proptest-regressions/share.txt",
+                ),
+            )),
+            ..ProptestConfig::default()
+        })]
+
+        /// Whatever an image was called, the name it is attached under passes
+        /// the check `Attachment::validate` makes of a filename, unchanged, so
+        /// the core never refuses a share for its name.
+        #[test]
+        fn an_attachment_name_always_validates(name in image_name()) {
+            let fitted = attachment_name(&name);
+            let validated = validate_title(&fitted, "attachment.filename", MAX_FILENAME_LEN);
+            prop_assert_eq!(validated, Ok(fitted));
+        }
     }
 }
