@@ -46,12 +46,24 @@ pub fn allows(stream: Option<EntityRef>, scope: Option<&BTreeSet<EntityRef>>) ->
 /// Today's tasks, narrowed to the scope, in the order they came.
 #[must_use]
 pub fn scoping(tasks: Vec<Task>, scope: Option<&BTreeSet<EntityRef>>) -> Vec<Task> {
+    scoping_by(tasks, scope, |t| {
+        Some(sunrise_domain::stream_key(t.stream_id))
+    })
+}
+
+/// `rows`, narrowed to the scope, in the order they came, for any row shape:
+/// `stream` reads where a row is filed, and [`allows`] decides.
+#[must_use]
+pub fn scoping_by<T>(
+    rows: Vec<T>,
+    scope: Option<&BTreeSet<EntityRef>>,
+    stream: impl Fn(&T) -> Option<EntityRef>,
+) -> Vec<T> {
     if scope.is_none() {
-        return tasks;
+        return rows;
     }
-    tasks
-        .into_iter()
-        .filter(|t| allows(Some(sunrise_domain::stream_key(t.stream_id)), scope))
+    rows.into_iter()
+        .filter(|row| allows(stream(row), scope))
         .collect()
 }
 
@@ -65,13 +77,7 @@ pub fn muting(
     scope: Option<&BTreeSet<EntityRef>>,
     streams: &BTreeMap<EntityRef, EntityRef>,
 ) -> Vec<ReminderIntent> {
-    if scope.is_none() {
-        return intents;
-    }
-    intents
-        .into_iter()
-        .filter(|i| allows(streams.get(&i.entity).copied(), scope))
-        .collect()
+    scoping_by(intents, scope, |i| streams.get(&i.entity).copied())
 }
 
 /// The line a Focus filter is described by: `All streams` with none picked,
@@ -127,6 +133,23 @@ mod tests {
         assert!(!allows(Some(stream(2)), work.as_ref()));
         assert!(allows(None, work.as_ref()));
         assert!(allows(Some(stream(2)), None));
+    }
+
+    /// Rows of any shape keep their order, a row outside the scope goes, one
+    /// whose stream is unknown stays, and no scope leaves all of them.
+    #[test]
+    fn scoping_by_reads_the_stream_through_the_accessor() {
+        let rows = vec![
+            ("Home", Some(stream(2))),
+            ("Work", Some(stream(1))),
+            ("Unread", None),
+            ("More work", Some(stream(1))),
+        ];
+        let work = scope([stream(1)]);
+        let kept = scoping_by(rows.clone(), work.as_ref(), |row| row.1);
+        let titles: Vec<_> = kept.iter().map(|row| row.0).collect();
+        assert_eq!(titles, ["Work", "Unread", "More work"]);
+        assert_eq!(scoping_by(rows.clone(), None, |row| row.1), rows);
     }
 
     #[test]

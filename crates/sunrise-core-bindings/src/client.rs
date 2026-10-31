@@ -419,7 +419,11 @@ mod bootstrap_tests {
             })
         );
         assert!(path.join(sunrise_core::BOOTSTRAP_FILE).exists());
-        assert!(!path.join("preferences.bootstrap.json.tmp").exists());
+        let names: Vec<_> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [sunrise_core::BOOTSTRAP_FILE]);
         assert!(set_bootstrap_preference(at, "week_start".into(), Some("MO".into())).is_err());
     }
 }

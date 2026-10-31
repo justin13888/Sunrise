@@ -28,6 +28,7 @@ pub use client::{
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sunrise_domain::ResolvedPref;
 
@@ -90,24 +91,46 @@ pub fn set_bootstrap_preference(
 
 /// Replace `dir/name` with `body`: written to a sibling, flushed to disk, and
 /// renamed over the old file, so a crash leaves one whole file or the other.
+///
+/// Each write stages through its own name, so two writers cannot clobber or
+/// rename away one staging file, and a write that fails removes what it staged.
 fn write_atomically(dir: &Path, name: &str, body: &[u8]) -> Result<(), std::io::Error> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(name);
-    let tmp = path.with_extension("json.tmp");
-    // Flushed before the rename: without it a power loss can make the rename
-    // durable ahead of the bytes, leaving a truncated file that reads as empty
-    // and loses the relay and sign-in settings.
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(body)?;
-        f.sync_all()?;
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!("{name}.{}.{write}.tmp", std::process::id()));
+    let replaced = write_staged(&tmp, body).and_then(|()| std::fs::rename(&tmp, dir.join(name)));
+    if replaced.is_err() {
+        // Best effort: the write's own error is the one worth reporting.
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, &path)
+    replaced
+}
+
+/// `body` at `tmp`, flushed. Flushed before the rename: without it a power loss
+/// can make the rename durable ahead of the bytes, leaving a truncated file
+/// that reads as empty and loses the relay and sign-in settings.
+fn write_staged(tmp: &Path, body: &[u8]) -> Result<(), std::io::Error> {
+    let mut f = std::fs::File::create(tmp)?;
+    f.write_all(body)?;
+    f.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The names in `dir`, which is how a test sees a staging file left behind
+    /// without knowing what a staging file is called.
+    pub(super) fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
 
     fn relay(dir: &Path) -> Option<sunrise_domain::PrefValue> {
         bootstrap_preferences(dir)
@@ -132,10 +155,45 @@ mod tests {
             ))
         );
         assert!(dir.join(sunrise_core::BOOTSTRAP_FILE).exists());
-        assert!(!dir.join("preferences.bootstrap.json.tmp").exists());
+        assert_eq!(entries(&dir), [sunrise_core::BOOTSTRAP_FILE]);
 
         set_bootstrap_preference(&dir, "sync.relay_url", None).unwrap();
         assert!(relay(&dir).is_none());
+    }
+
+    /// With one fixed staging name these writers rename the file away from
+    /// under each other, and the loser fails on a name that no longer exists.
+    #[test]
+    fn concurrent_writers_each_stage_through_their_own_name() {
+        const WRITERS: usize = 8;
+        let root = tempfile::tempdir().unwrap();
+        let start = std::sync::Barrier::new(WRITERS);
+        std::thread::scope(|s| {
+            for writer in 0..WRITERS {
+                let (dir, start) = (root.path(), &start);
+                s.spawn(move || {
+                    start.wait();
+                    for _ in 0..8 {
+                        let body = [u8::try_from(writer).unwrap(); 4096];
+                        write_atomically(dir, "settings.json", &body).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(entries(root.path()), ["settings.json"]);
+        let body = std::fs::read(root.path().join("settings.json")).unwrap();
+        assert_eq!(body.len(), 4096);
+        assert!(body.iter().all(|b| *b == body[0]), "a torn file");
+    }
+
+    /// A directory where the file should be makes the rename fail after the
+    /// staging file is whole, which is the last step that can.
+    #[test]
+    fn a_failed_write_reports_it_and_leaves_no_staging_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("settings.json")).unwrap();
+        write_atomically(root.path(), "settings.json", b"{}").unwrap_err();
+        assert_eq!(entries(root.path()), ["settings.json"]);
     }
 
     #[test]
