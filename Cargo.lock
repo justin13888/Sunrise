@@ -3353,7 +3353,6 @@ dependencies = [
  "sunrise-cbor",
  "sunrise-crypto-test-vectors",
  "sunrise-error",
- "sunrise-id",
  "sunrise-test-seed",
  "thiserror 1.0.69",
  "x25519-dalek",
