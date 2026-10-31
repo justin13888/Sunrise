@@ -9,7 +9,7 @@
 //! a recovery code; which code, and whether the rotation carried it, is what
 //! each test is about.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::control_op::Recipient;
 use crate::unlock::IdentitySeed;

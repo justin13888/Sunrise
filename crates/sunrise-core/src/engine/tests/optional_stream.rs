@@ -2,7 +2,7 @@
 //! a stream does to what it held (ADR-0046, issue #332).
 
 use super::field_merge::{pair, Pair};
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::block::read_block;
 use crate::engine::routine::read_routine;

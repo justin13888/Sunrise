@@ -11,7 +11,7 @@ use super::field_merge::{
     add, assert_converged, emit_patch, eref, inbox, op, pair, patch, remove, set, shared_task,
     task_at, text,
 };
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::rebuild::check::dump;
 use ciborium::value::Value;

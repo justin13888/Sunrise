@@ -7,7 +7,7 @@
 //! that writes them will ([`emit_patch`]), and handed to the other replica.
 
 use super::field_merge::{emit_patch, inbox, pair, set, shared_task, task_at, text, Pair};
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::conflicts::{ConflictClass, EntityConflict, WriteOrigin};
 use crate::engine::merge::{heads, OpRef};

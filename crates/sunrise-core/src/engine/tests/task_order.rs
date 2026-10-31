@@ -2,7 +2,7 @@
 //! `Task.sort_order` (issue #340, `docs/02-domain/tasks.md`).
 
 use super::field_merge::{pair, task_at, Pair};
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use proptest::prelude::*;
 

@@ -153,7 +153,7 @@ repetition, and from checking that the test still fails when the fix is
 reverted.
 
 **The better instrument is not to race at all.** `BlockDelete` and
-`AttachmentDelete` are covered by unit tests in `crates/sunrise-core/src/engine/tests.rs`
+`AttachmentDelete` are covered by unit tests in `crates/sunrise-core/src/engine/tests/mod.rs`
 that drive two `Engine`s on `FakeClock`s and *choose* the stamps so the delete
 always wins, plus a delete deliberately delivered ahead of its own create. Both
 of those are properties of the merge rule, not of the scheduler, so a single
@@ -170,7 +170,7 @@ whole materialized schema (`tasks`, `streams`, `routines`) is flat columns. For
 those entity shapes LWW is not an approximation of convergence; it *is*
 convergence, and it is tested as such:
 
-- **`convergence_under_random_interleaving`** (`crates/sunrise-core/src/engine/tests.rs`)
+- **`convergence_under_random_interleaving`** (`crates/sunrise-core/src/engine/tests/mod.rs`)
   — a 32-case proptest that applies a randomly generated op sequence to two
   independent databases under random reordering and duplication, then asserts a
   byte-identical canonical projection of the `tasks` table. This is the flagship

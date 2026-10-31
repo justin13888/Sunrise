@@ -28,7 +28,7 @@ persistence file, which every later run replays before generating anything new.
 Those files are **committed**: a shrunken counterexample is a test input the
 suite discovered by itself, and it is the one output of a property test that
 cannot be regenerated on demand.
-`crates/sunrise-core/proptest-regressions/engine/tests.txt` is the standing
+`crates/sunrise-core/proptest-regressions/tests/mod.txt` is the standing
 example — two cases from the control-op ordering bug, still replayed on every
 `cargo test`.
 

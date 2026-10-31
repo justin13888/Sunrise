@@ -6,7 +6,7 @@
 //! other op. A relay that re-sends, or a device that equivocates, is played
 //! by the test choosing which envelopes to hand over.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::chain::digest_payload;
 use crate::engine::compaction::floor_of;

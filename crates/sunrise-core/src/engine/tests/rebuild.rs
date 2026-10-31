@@ -2,7 +2,7 @@
 //! PR 2): what it re-derives, what it keeps, and what a compacted log hands
 //! it.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::rebuild::check::{dump, projection_tables};
 use crate::engine::rebuild::{TableClass, TABLE_CLASSES};

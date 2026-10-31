@@ -6,7 +6,7 @@
 //! [`emit_patch`], which also folds it into the writer's own state, and hand
 //! its envelope to another replica.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::merge::{check_patch, merge_op, OpRef, PatchProblem};
 use ciborium::value::Value;

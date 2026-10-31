@@ -3,7 +3,7 @@
 //! whatever order the versions arrive in.
 
 use super::field_merge::{emit_patch, inbox, pair, set, shared_task, text};
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::merge::{heads, precedes, OpRef};
 use crate::inner_op::{OpRefWire, PatchPayload};

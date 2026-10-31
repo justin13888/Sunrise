@@ -5,7 +5,7 @@
 //! Real vaults: `Keychain::open` writes the identity and the certificate a
 //! shipping build writes, and a rotation is the command a user runs.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::alerts::SecurityEventKind as K;
 use crate::unlock::IdentitySeed;

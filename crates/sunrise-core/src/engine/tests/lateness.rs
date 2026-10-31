@@ -300,7 +300,7 @@ fn a_zone_change_counts_a_task_whose_lateness_moved() {
         ("far hard", None, Some(floating(date(2026, 9, 1), 9))),
         ("far plan", Some(floating(date(2026, 9, 1), 9)), None),
     ] {
-        let mut db = super::testutil::db();
+        let mut db = super::support::db();
         add(&e, &mut db, title, planned, None, hard);
         let (affected, _) = e
             .time_zone_impact(&db, &ny, &kolkata, e.clock.now_ms())

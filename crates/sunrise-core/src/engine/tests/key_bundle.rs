@@ -5,7 +5,7 @@
 //! holds `ID_D_pub` and not `ID_D_priv`, and the reader is a vault restored
 //! from the recovery code, which holds `ID_D_priv` and nothing else.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::PinnedKeyBundle;
 use sunrise_domain::INBOX_STREAM_BYTES;
