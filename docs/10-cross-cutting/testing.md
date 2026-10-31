@@ -12,7 +12,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 
 - Pure-function tests in `sunrise-core` for parsers, RRULE expansion, LWW merge, crypto envelopes.
 - Run on `cargo test`; <30 seconds in CI.
-- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::lww_wins` and the materialization it guards). The 90% figure previously named "CRDT modules", which do not exist — `crates/sunrise-crdt` was deleted by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), so that half of the gate applied to nothing. No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
+- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::merge` and the materialization it drives). The 90% figure previously named "CRDT modules", which do not exist — `crates/sunrise-crdt` was deleted by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), so that half of the gate applied to nothing. No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
 
 ### 2. Property tests (thinner, deep)
 
@@ -92,8 +92,14 @@ The in-process scenarios above share one address space; these do not.
 `crates/sunrise-e2e/tests/cli_day_schedule.rs`,
 `crates/sunrise-e2e/tests/cli_pair_relay.rs`,
 `crates/sunrise-e2e/tests/cli_snapshot_catchup.rs`,
-`crates/sunrise-e2e/tests/cli_recover_trimmed.rs` and
-`crates/sunrise-e2e/tests/cli_recover_rotated.rs` boot the real relay and drive two or more
+`crates/sunrise-e2e/tests/cli_recover_trimmed.rs`,
+`crates/sunrise-e2e/tests/cli_recover_rotated.rs`,
+`crates/sunrise-e2e/tests/cli_lateness.rs`,
+`crates/sunrise-e2e/tests/cli_notifications.rs`,
+`crates/sunrise-e2e/tests/cli_optional_stream.rs`,
+`crates/sunrise-e2e/tests/cli_routine_series.rs`,
+`crates/sunrise-e2e/tests/cli_settle_outage.rs` and
+`crates/sunrise-e2e/tests/cli_triage.rs` boot the real relay and drive two or more
 vaults with the **real `sunrise` binary**, one process per command, through the
 harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
 a host with no Apple tooling: everything a user at two terminals does, with

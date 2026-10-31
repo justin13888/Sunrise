@@ -85,11 +85,13 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 17
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
 ```
+
+`DOC_SCHEMA_V` moves with every schema change, so it is not copied here. Read it
+at `crates/sunrise-cbor/src/version.rs#DOC_SCHEMA_V`.
 
 `ENVELOPE_FORMAT_FLOOR` is `3`, equal to `ENVELOPE_FORMAT_V` (ADR-0045 §5,
 [#329](https://github.com/justin13888/Sunrise/issues/329)). The two stay equal
@@ -179,7 +181,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `17`, because a schema-1 payload
+exists. It is `1`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
