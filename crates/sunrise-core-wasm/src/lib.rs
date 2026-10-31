@@ -361,6 +361,19 @@ pub(crate) mod tests {
         assert_eq!(tasks[0]["title"], "Renew passport");
         assert_eq!(tasks[0]["state"], "todo");
 
+        // A task planned at `fixed_now()` is in Today; the unplanned capture
+        // above stays out.
+        let planned: serde_json::Value = serde_json::from_str(
+            &core
+                .submit_json(
+                    r#"{"CreateTask":{"title":"Book flights","contexts":[],"scheduled_at":"2026-01-01T00:00:00Z"}}"#,
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let planned_id = planned["entity"].as_str().expect("entity id is a string");
+
         // Today answers `Tasks`, not `StreamTasks`; `apps/web/src/wasm.ts`
         // reads both.
         let today: serde_json::Value = serde_json::from_str(
@@ -373,7 +386,11 @@ pub(crate) mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(today["Tasks"].is_array(), "{today}");
+        let rows = today["Tasks"].as_array().expect("Today is Tasks");
+        assert_eq!(rows.len(), 1, "{today}");
+        assert_eq!(rows[0]["id"], planned_id);
+        assert_eq!(rows[0]["title"], "Book flights");
+        assert_eq!(rows[0]["state"], "todo");
 
         core.submit_json(&format!(r#"{{"CompleteTask":"{id}"}}"#))
             .await

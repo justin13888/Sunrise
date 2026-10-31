@@ -200,7 +200,29 @@ mod tests {
             (id.as_str(), "Renew passport", "todo")
         );
         assert!(inbox[0].stream_id.starts_with("str_"), "{:?}", inbox[0]);
-        core.today(fixed_now()).await.unwrap();
+
+        // `create_task` takes no plan, so the planned task goes through the
+        // JSON path on the same core. The unplanned capture stays out of Today.
+        let planned: serde_json::Value = serde_json::from_str(
+            &core
+                .submit_json(
+                    r#"{"CreateTask":{"title":"Book flights","contexts":[],"scheduled_at":"2026-01-01T00:00:00Z"}}"#,
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let planned_id = planned["entity"].as_str().expect("entity id is a string");
+        let today = core.today(fixed_now()).await.unwrap();
+        assert_eq!(today.len(), 1, "{today:?}");
+        assert_eq!(
+            (
+                today[0].id.as_str(),
+                today[0].title.as_str(),
+                today[0].state.as_str()
+            ),
+            (planned_id, "Book flights", "todo")
+        );
 
         core.complete_task(&id).await.unwrap();
         assert!(
