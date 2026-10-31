@@ -260,7 +260,7 @@ pub fn block(b: &Block, title: Option<&str>, reader: &TimeZone) -> Value {
 
 /// The Upcoming view: `{today, span_days, days, no_date}`.
 ///
-/// Each day is `{date, start_ms, end_ms, blocks, planned, due}`, its bounds
+/// Each day is `{date, start_ms, end_ms, blocks, planned, due, targets}`, its bounds
 /// in the reader's zone (23 or 25 hours apart on a DST day); each no-date
 /// group is `{stream, no_stream, tasks, total}`.
 #[must_use]
@@ -405,7 +405,13 @@ mod tests {
             ..sunrise_test_task()
         };
         let v = task(&t, &ny());
-        for key in [
+        let keys: std::collections::BTreeSet<&str> = v
+            .as_object()
+            .expect("a task is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let documented = std::collections::BTreeSet::from([
             "id",
             "title",
             "state",
@@ -416,18 +422,27 @@ mod tests {
             "estimate_s",
             "scheduled_at",
             "due_at",
+            "target_at",
             "completed_at",
             "deferred_count",
             "blocked_by",
             "note",
             "updated_at_ms",
             "sort_order",
-        ] {
-            assert!(v.get(key).is_some(), "missing {key}");
-        }
+            "cancel_reason",
+            "late_acknowledged_at_ms",
+            "routine",
+            "hard_constraint_violated",
+        ]);
+        assert_eq!(keys, documented);
         assert_eq!(v["title"], "Renew passport");
         assert_eq!(v["priority"], 1);
         assert_eq!(v["scheduled_at"], Value::Null);
+        assert_eq!(v["target_at"], Value::Null);
+        assert_eq!(v["cancel_reason"], Value::Null);
+        assert_eq!(v["late_acknowledged_at_ms"], Value::Null);
+        assert_eq!(v["routine"], Value::Null);
+        assert_eq!(v["hard_constraint_violated"], false);
     }
 
     /// A task with every field at its empty value.
