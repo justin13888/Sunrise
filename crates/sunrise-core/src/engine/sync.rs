@@ -322,7 +322,7 @@ impl Engine {
         //    below it and the relay replays it on the next `Subscribe` — but
         //    only while the relay's durable log still retains the frame (30
         //    days or 256 MiB per channel, whichever evicts first; see
-        //    `crates/sunrise-server/src/relay_log.rs`). Past that it is gone.
+        //    `crates/sunrise-server/src/relay_log/append.rs`). Past that it is gone.
         //    And until then a refusal is a cursor barrier: the key's arrival
         //    triggers no replay, so the op waits for the next resync or
         //    reconnect, and every later op from that device is re-sent with
