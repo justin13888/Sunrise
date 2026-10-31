@@ -1,6 +1,6 @@
 # 0065 — Entities are copy-on-write version DAGs; rows are a fold, and every conflict is kept and named
 
-**Status:** accepted
+**Status:** accepted, delivered
 
 **Amends** [ADR-0044](./0044-per-field-ops.md). Its op shape, its four field
 types, its legacy reading (§7) and its unknown-field rules (§8) stand. This
@@ -370,8 +370,7 @@ What is left, each tracked:
 - **Pending groups are not surfaced** (plan risk R10): a member whose stream
   key a replica never gets holds its group pending, and no query reports it.
   It belongs with shared streams (§What would force revisiting this, 2).
-- **#333 and #334** keep the boxes of theirs this record does not cover:
-  the plan and deadline split and lateness (#334). #331's (edit scopes,
-  template propagation and catch-up) were delivered on this record: a split is
+- **#333** keeps the boxes of its own this record does not cover. #331's (edit
+  scopes, template propagation and catch-up) were delivered on this record: a split is
   one group (§6), and an occurrence is untouched while every version of it is
   `"origin": "generated"` (§1, §3).
