@@ -4,8 +4,8 @@
 Why this file exists
 --------------------
 
-The gate's own `--self-test` runs `scan_source` over six string literals,
-which covers the `config` and `direct` rules and nothing else. Three of the
+The gate's own `--self-test` runs `scan_source` over string literals, which
+covers the `config` and `direct` rules and nothing else. Three of the
 five codes it can emit — `ignored`, `untracked` and `flat` — are decided by
 the *filesystem and the index* rather than by the source text, so they
 cannot be reached from a string literal at all, and nothing exercised them.
