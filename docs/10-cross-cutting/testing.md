@@ -577,6 +577,8 @@ changing the flags is told the third copy exists.
 | `sunrise-core` | 1 259 | 14.0 s |
 | `sunrise-crypto` | 519 | 2.7 s |
 | `sunrise-sync` | 135 | 1.2 s |
+| `sunrise-cbor` | 134 | — |
+| `sunrise-id` | 109 | — |
 
 Both columns are reproducible, and the left one is cheap enough that there is no
 excuse for it being wrong:
@@ -590,7 +592,8 @@ on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
 is the original measurement, taken 2026-09-07, and was **not** re-taken with it
 — which is why its heading carries that date. The two columns are from
 different commits, and the right one is a cost estimate rather than a number
-anything checks.
+anything checks. The `sunrise-cbor` and `sunrise-id` rows joined later and were
+counted at `ed50b37`; they have no right-hand figure because nobody took one.
 
 `--all-features` changes nothing about this command's output. `--list` returns
 an identical population with and without it for all six crates today: five
@@ -627,14 +630,19 @@ factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
 | `sunrise-sync` | 135 | 7 m | ~3.1 s |
 | `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
 | `sunrise-core` | 1 259 | — | ~15.4 s |
+| `sunrise-cbor` | 134 | 2 m | ~0.9 s |
+| `sunrise-id` | 109 | 72 s | ~0.7 s |
+
+The last two rows were measured on 2026-10-31 at `ed50b37`, and stretch the
+factor of eight above to about twenty across the six.
 
 The right-hand column is the `wall` column divided by the `mutants` column —
 full-pass wall clock ÷ mutants. It is an average over a whole pass, not a
 marginal cost per additional mutant, so everything `cargo mutants` spends
 inside one invocation is already amortised into it, **the unmutated baseline
-build it runs once before any mutant included**. The three completed rows
-recompute from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
-7 200 / 1 356 = 5.31. The `wall` column is rounded to whole minutes, which is
+build it runs once before any mutant included**. The completed rows recompute
+from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
+7 200 / 1 356 = 5.31, 120 / 134 = 0.90, 72 / 109 = 0.66. The `wall` column is rounded to whole minutes, which is
 the whole of the gap between 1.85 and the 1.9 recorded beside it.
 
 That definition is what the column means anywhere it is reused. Multiplying it
