@@ -13,7 +13,7 @@ checks are [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.
 ## Context
 
 Every two-replica test in `crates/sunrise-e2e/tests/` linked one build of
-`sunrise-core` into both replicas. `crates/sunrise-storage/src/vault_fixtures.rs`
+`sunrise-core` into both replicas. `crates/sunrise-storage/src/vault_fixtures/`
 opens old storage layouts with the current build, but no op ever crossed from
 one build to another. So nothing tested the invariant, and a fix for one way of
 breaking it (#320, #321, #322) could not be shown to hold.

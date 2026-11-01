@@ -159,7 +159,7 @@ goes wrong, and unable to destroy anything the op log cannot regenerate.
 *Today:* a fixture exists for every `STORAGE_V` from 13 to the one before the
 current version, which is wider than the rule: it does not wait for a version
 to ship in a tagged release. `every_fixture_keeps_every_row_through_every_later_migration`
-in `crates/sunrise-storage/src/vault_fixtures.rs` is the row-content check,
+in `crates/sunrise-storage/src/vault_fixtures/chain.rs` is the row-content check,
 and `every_migration_has_a_fixture_at_the_version_before_it` is the gate. They
 run in the `Storage migration fixtures` CI job and in the workspace suite.
 
@@ -371,7 +371,7 @@ beside the `planned_at_*` and `hard_due_at_*` columns it renames from
 `scheduled_at_*` and `due_at_*`, where a build before it kept a newer
 device's target in `extra`. The survival check over the old-vault fixtures
 reads a renamed column under its new name (`RENAMED_COLUMNS` in
-`crates/sunrise-storage/src/vault_fixtures.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
+`crates/sunrise-storage/src/vault_fixtures/chain.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
 and `Task.late_acknowledged_at` into the columns migration 0046 adds. `FOLD_V` 9 (#331) projects `Routine.split_from` and
 `Task.hard_constraint_violated` into the columns migration 0047 adds, and
 a later write of `Task.routine_id` into its column.
@@ -581,7 +581,7 @@ migrations had never run against the thing they exist for.
 
 `crates/sunrise-storage/fixtures/` holds encrypted SQLCipher vaults written at
 historical `STORAGE_V`s.
-[`src/vault_fixtures.rs`](../../crates/sunrise-storage/src/vault_fixtures.rs)
+[`src/vault_fixtures/`](../../crates/sunrise-storage/src/vault_fixtures/mod.rs)
 generates them, states their contents, copies each to a temporary directory,
 opens the copy with the ordinary public `Db::open`, and asserts on the contents
 afterwards — **not** on the open returning `Ok`. A migration that runs clean and
@@ -610,7 +610,7 @@ Three decisions are worth knowing before adding one.
   backfill and 0023's `genesis_id_s_pub` backfill — and the v13 fixture
   reaches the first two but structurally cannot reach the last three, because
   `identity` does not exist before 0017 and 0017 creates it empty. Every other
-  version is filled from one list, `src/vault_fixtures/seed.rs`, that puts a
+  version is filled from one list, `src/vault_fixtures/seed/`, that puts a
   row in every table the version has. A test fails when a migration adds a
   table the list does not fill.
 - **Every row is checked, not only the curated ones.** The survival test reads
