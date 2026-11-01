@@ -79,7 +79,7 @@ jobs:
     # shared dependency graph once more. Warm, this job runs in about 5m20s.
     timeout-minutes: 55
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/rust-checks
 
   rust-macos:
@@ -121,7 +121,7 @@ jobs:
       || github.event_name == 'workflow_dispatch'
       || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/rust-checks
 
   # The portable core on Windows (#369): the crates a Windows desktop client
@@ -164,11 +164,11 @@ jobs:
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           shared-key: rust-windows
           # As in the `rust` gate: only `master` writes, so a pull request
@@ -215,11 +215,11 @@ jobs:
       # clippy step holds the workspace's own warnings.
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           workspaces: |
             .
@@ -228,7 +228,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # The runner image's default JDK is what runs the compiler and the
       # program; the task fails naming it if there is none.
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
         with:
           install: false
           cache: false
@@ -268,12 +268,12 @@ jobs:
       # own warning discipline is enforced by the `rust` job's clippy step.
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # The toolchain file pins 1.91.1, which rustup installs on first use.
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # `macos-app` and `ios-app` each used to keep their own copy of this
           # entry — two 496 MiB caches of one dependency graph — because
@@ -335,7 +335,7 @@ jobs:
       # Info.plist, with no symlink and no executable bit, so a zip round trip
       # loses nothing.
       - name: Upload the framework and the bindings
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: apple-xcframework
           path: |
@@ -406,9 +406,9 @@ jobs:
         run: |
           echo "::error::apple-xcframework did not succeed (result: ${{ needs.apple-xcframework.result }}); there is no framework to download."
           exit 1
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Download the framework and the bindings
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: apple-xcframework
           path: out
@@ -501,9 +501,9 @@ jobs:
         run: |
           echo "::error::apple-xcframework did not succeed (result: ${{ needs.apple-xcframework.result }}); there is no framework to download."
           exit 1
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Download the framework and the bindings
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: apple-xcframework
           path: out
@@ -627,7 +627,7 @@ jobs:
       # half of that evidence arrived first.
       - name: Keep the result bundle a failed or cancelled run leaves behind
         if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ios-xcresult-${{ github.run_attempt }}
           path: out/test-results
@@ -643,7 +643,7 @@ jobs:
     # binary reading manifests.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25  # v2.1.1
         with:
           command: check
@@ -666,15 +666,15 @@ jobs:
     # margin the other Rust jobs carry.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
       - name: Add the wasm target to the pinned toolchain
         # Inside the checkout, so `rust-toolchain.toml` selects the toolchain
         # the target is added to.
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           shared-key: wasm-core
       - name: Lint the web core for wasm32 (warnings denied)
@@ -702,11 +702,11 @@ jobs:
     # compiled from source) is about two minutes locally.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           shared-key: storage-fixtures
       - name: Run every fixture through every later migration
@@ -758,11 +758,11 @@ jobs:
             # expected failures to it.
             ref: d9566ade714bf49714ea1b034625a5b6a1792984
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           shared-key: cross-version
       - name: Fetch the baseline commit
@@ -785,7 +785,7 @@ jobs:
         # proptest-persistence gate expects it to be committed; this is how it
         # leaves the runner.
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: cross-version-regressions-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: crates/sunrise-e2e/proptest-regressions/
@@ -797,10 +797,10 @@ jobs:
     # Measured max 19s across those twelve runs, `bun install` included.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -814,10 +814,10 @@ jobs:
     # Measured max 21s across those twelve runs, `bun install` included.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -834,10 +834,10 @@ jobs:
     # Measured max 17s across those twelve runs, `bun install` included.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -845,7 +845,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Run tests with coverage
         run: bun run test:coverage
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: coverage-report
@@ -865,10 +865,10 @@ jobs:
     # minute locally. No observation yet; the other Bun jobs' floor.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -932,11 +932,11 @@ jobs:
     # not noise.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # Reads the `rust` gate's entry rather than keeping one of its own.
           # Same runner image and the same workflow-level `RUSTFLAGS`, so the
@@ -993,11 +993,11 @@ jobs:
     timeout-minutes: 45
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # A reader of the `rust` gate's entry, as `bench-regression` is, and
           # for the same reasons. That entry is a debug build, so the release
@@ -1145,11 +1145,11 @@ jobs:
           - { crate: sunrise-cbor, shard: 0/1 }
           - { crate: sunrise-id, shard: 0/1 }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # Reads the `rust` gate's entry rather than keeping one of its own.
           # Same runner image and the same workflow-level `RUSTFLAGS`, so the
@@ -1172,7 +1172,7 @@ jobs:
           # immutable key, and fourteen would upload ~700 MiB apiece to lose it.
           save-if: false
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73  # v2.87.17
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cargo-mutants
       - name: Mutate ${{ matrix.crate }} (shard ${{ matrix.shard }})
@@ -1245,7 +1245,7 @@ jobs:
         # `end_time` and reports the crate as unfinished rather than
         # scoring it, which says more than a shard that is merely missing.
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: mutants-${{ matrix.crate }}-${{ strategy.job-index }}
           # Both files, and they have to travel together: the gate looks
@@ -1270,8 +1270,8 @@ jobs:
     # will say so, which is the honest outcome — silence would not be.
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: mutants-*
           path: outcomes
@@ -1295,7 +1295,7 @@ jobs:
     # workflow has, pull requests included. Why: the docstring of
     # `test_mutants_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
 
@@ -1319,7 +1319,7 @@ jobs:
     # 04:00, by which time a floor has already been compared against a
     # population that was measured differently.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Every cargo-mutants invocation carries --all-features
         run: python3 .github/scripts/mutants-flags-gate.py
 
@@ -1332,7 +1332,7 @@ jobs:
     # synthesises, with the exceptions its docstring names. Why both are
     # needed: the docstring of `test_mutants_flags_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_flags_gate.py
 
@@ -1347,7 +1347,7 @@ jobs:
     # below runs the gate; this one asserts the gate is a check. Why: the
     # docstring of `test_core_filesystem_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code and coverage contract
         run: python3 .github/scripts/test_core_filesystem_gate.py
 
@@ -1357,7 +1357,7 @@ jobs:
     # Checkout plus one grep. Measured max 7s across those twelve runs.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject ambient RNG in core crates
         run: |
           # docs/01-architecture/shared-core.md §determinism-rules — randomness
@@ -1398,7 +1398,7 @@ jobs:
     # gate here is its own check for the same reason -- orphan-crate-gate,
     # proptest-persistence, doc-comment, docs-link.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a file that grew past its package's threshold
         # No file in this repository had a bound until engine.rs reached 18,568
         # lines -- six impl blocks, ninety free functions and a ten-thousand-line
@@ -1427,7 +1427,7 @@ jobs:
     # No `if:`, like the other gate contracts, so it runs on pull requests. Why:
     # the docstring of `test_file_size_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_file_size_gate.py
 
@@ -1440,7 +1440,7 @@ jobs:
     # No `if:`, like the other gate contracts, so it runs on pull requests. Why:
     # the docstring of `test_appcast.py`, and ADR-0038.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Appcast rules
         run: python3 .github/scripts/test_appcast.py
 
@@ -1450,7 +1450,7 @@ jobs:
     # Checkout plus one grep. Measured max 8s across those twelve runs.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject .expose() in logging/telemetry/observability surfaces
         run: |
           # docs/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
@@ -1499,7 +1499,7 @@ jobs:
     # Checkout plus one grep over four source trees, like the two gates above.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a variable-time comparison over a secret-named value
         # ADR-0061. `subtle::ConstantTimeEq` is how sunrise-crypto,
         # sunrise-pairing, sunrise-http-sig and sunrise-server::auth compare a
@@ -1519,7 +1519,7 @@ jobs:
     # No `if:`, like the other gate contracts. Why: the docstring of
     # `test_constant_time_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_constant_time_gate.py
 
@@ -1530,10 +1530,10 @@ jobs:
     # `cargo metadata`, which resolves features without compiling.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # `cargo metadata` resolves features without compiling anything, so this
       # job needs a cargo on PATH and takes seconds.
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
       - name: Reject any escape hatch that would make the description opaque
@@ -1558,8 +1558,8 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. Why: the docstring of `test_kynos_waiver_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
       - name: Exit-code contract
@@ -1572,11 +1572,11 @@ jobs:
     # those twelve runs; the spread is one `cargo build` of `sunrise-server`.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # Reads the `rust` gate's entry rather than keeping one of its own.
           # Same runner image and the same workflow-level `RUSTFLAGS`, so the
@@ -1616,11 +1616,11 @@ jobs:
     # event-stream check holds a stream open for 20 s on purpose.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # A reader of the `rust` gate's entry, for the reason
           # `openapi-current` gives: this job builds one package, and an entry
@@ -1648,14 +1648,14 @@ jobs:
     # `bun-typecheck` (21s measured) plus a toolchain install.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
           components: rustfmt
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -1690,10 +1690,10 @@ jobs:
     # one TOML file — `bun-typecheck`'s 21s, measured, with room.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -1726,10 +1726,10 @@ jobs:
       matrix:
         locale: [en, pl, ar]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -1749,10 +1749,10 @@ jobs:
     # Measured at 5s locally for 166 pages, plus `bun install`.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
       - uses: ./.github/actions/pinned-node
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
@@ -1767,11 +1767,11 @@ jobs:
     # `cargo metadata --no-deps`, which reads manifests and nothing else.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # `cargo metadata --no-deps` reads the workspace manifests and nothing
       # else — no resolution, no registry, no compilation — so this job needs a
       # cargo on PATH and takes seconds. Nothing to cache.
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
       - name: Reject crates unreachable from every shipping binary
@@ -1794,8 +1794,8 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. Why: the docstring of `test_orphan_crate_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: stable
       - name: Exit-code contract
@@ -1809,7 +1809,7 @@ jobs:
     # sources a Linux runner can make. Seconds of work.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject non-view logic in Swift that is not on the allowlist
         # The logic the Apple app decides in Swift is moving into
         # `sunrise-client-core`, where every client links it and Linux tests
@@ -1826,7 +1826,7 @@ jobs:
     # Without an `if:`, like the other gate contracts, so it runs on pull
     # requests. Why: the docstring of `test_swift_logic_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_swift_logic_gate.py
 
@@ -1840,7 +1840,7 @@ jobs:
     # work, so `ci.yml`'s floor for a job whose real cost is the checkout.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject anything publishable, and an app train that disagrees with itself
         # ADR-0064: nothing in this repository publishes to a registry, and the
         # app train has one version, the root package.json's. Every crate with
@@ -1861,7 +1861,7 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. Why: the docstring of `test_publish_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_publish_gate.py
 
@@ -1875,7 +1875,7 @@ jobs:
     # which is why it needs the checkout and nothing else.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a tests/ proptest that does not set failure_persistence
         # A shrunken counterexample is the one output of a property test that
         # cannot be regenerated on demand, so #118 made these files tracked and
@@ -1895,7 +1895,7 @@ jobs:
     # to cache, no network call.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Full history, because the gate resolves each block's
           # `Last extracted:` marker to a commit. Under the default shallow
@@ -1923,7 +1923,7 @@ jobs:
     # a second locally.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a doc comment mangled into a shape rustdoc misreads
         # `cargo fmt` does not reflow comments — rustfmt says so deliberately —
         # and clippy has no rule for comment shape, so a doc comment folded onto
@@ -1944,7 +1944,7 @@ jobs:
     # and it runs in well under a second locally.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # `python3` is preinstalled on ubuntu-latest and the script imports only
       # the standard library, so there is no setup step and no dependency to
       # pin. The script shells out to `git ls-files`, which is why it needs the
@@ -1970,7 +1970,7 @@ jobs:
     # cache. Well under a second locally.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a backticked path:line#symbol citation that points at nothing
         # This repository cites its own source in inline code spans —
         # `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of
@@ -2041,7 +2041,7 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. Why: the docstring of `test_citation_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code and discrimination contract
         run: python3 .github/scripts/test_citation_gate.py
 
@@ -2055,7 +2055,7 @@ jobs:
     # on pull requests. Why the gate's own `--self-test` is not enough: the
     # docstring of `test_doc_comment_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_doc_comment_gate.py
 
@@ -2069,7 +2069,7 @@ jobs:
     # on pull requests. Why the gate's own `--self-test` is not enough: the
     # docstring of `test_docs_link_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_docs_link_gate.py
 
@@ -2085,7 +2085,7 @@ jobs:
     # on pull requests. Why the gate's own `--self-test` is not enough: the
     # docstring of `test_observability_catalog_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_observability_catalog_gate.py
 
@@ -2099,7 +2099,7 @@ jobs:
     # on pull requests. Why the gate's own `--self-test` is not enough: the
     # docstring of `test_proptest_persistence_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_proptest_persistence_gate.py
 
@@ -2110,7 +2110,7 @@ jobs:
     # files in `crates/sunrise-core/src/engine`. No toolchain, nothing to cache.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject a refusal below the idempotence gate that raises
         # #298. `upsert_sync_cursor`'s doc says a refusal below
         # `apply_remote_all`'s op-row insert declines a register write, a hint
@@ -2128,7 +2128,7 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts. Why: the
     # docstring of `test_apply_refusal_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_apply_refusal_gate.py
 
@@ -2138,7 +2138,7 @@ jobs:
     # One Python script over three YAML files, stdlib only. Under a second.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Reject an unpinned action or an unscoped workflow
         # Two rules that rot the same way if nothing holds them. Every `uses:`
         # ref must be a commit sha, because a tag or a branch is a name its
@@ -2162,7 +2162,7 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. Why: the docstring of `test_workflow_hardening_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_workflow_hardening_gate.py
 
@@ -2177,7 +2177,7 @@ jobs:
     # gate contracts and without an `if:`. Why: the docstring of
     # `test_reverses_gate.py`.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Exit-code contract
         run: python3 .github/scripts/test_reverses_gate.py
 
@@ -2199,7 +2199,7 @@ jobs:
       # its components first.
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Name every fuzz target
         id: plan
         # A name that is not `[A-Za-z0-9_]+`, or an empty list, fails the plan
@@ -2258,14 +2258,14 @@ jobs:
       # one `cargo fuzz` actually uses.
       RUSTUP_TOOLCHAIN: nightly
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
         with:
           toolchain: nightly
           # `-Zbuild-std` compiles the standard library from source, which is
           # what makes the sanitizer see inside it.
           components: rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           workspaces: fuzz
           # `fuzz` is the literal job id, which is what rust-cache uses when no
@@ -2304,7 +2304,7 @@ jobs:
         # this step the finding is a stack trace in a log and the input that
         # caused it is gone with the runner.
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
@@ -2324,7 +2324,7 @@ jobs:
     outputs:
       targets: ${{ steps.plan.outputs.targets }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # A pull_request run checks out GitHub's merge commit, whose first
           # parent is the base it would merge into. Depth 2 reaches that parent,
@@ -2401,7 +2401,7 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly-2026-10-01
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # The next three steps can fail for reasons that are facts about the
       # toolchain rather than about the change: a nightly that no longer
       # installs, a `cargo-fuzz` that no longer builds on it, a sanitizer build
@@ -2440,7 +2440,7 @@ jobs:
             -- -max_total_time=120
       - name: Upload the input a finding left behind
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: fuzz-pr-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
