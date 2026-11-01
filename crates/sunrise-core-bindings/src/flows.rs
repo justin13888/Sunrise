@@ -443,3 +443,6 @@ mod vault;
 
 pub use account::*;
 pub use vault::*;
+
+#[cfg(test)]
+mod tests;
