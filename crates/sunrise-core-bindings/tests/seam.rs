@@ -254,7 +254,7 @@ fn a_bad_id_is_rejected_by_the_custom_type_rather_than_guessed_at() {
 #[derive(Debug)]
 enum Delivery {
     Change(ChangeEvent),
-    Lagged,
+    Lagged(u64),
     Closed,
 }
 
@@ -273,8 +273,8 @@ impl ChangeListener for Forward {
     fn on_change(&self, event: ChangeEvent) {
         let _ = self.0.send(Delivery::Change(event));
     }
-    fn on_lagged(&self, _skipped: u64) {
-        let _ = self.0.send(Delivery::Lagged);
+    fn on_lagged(&self, skipped: u64) {
+        let _ = self.0.send(Delivery::Lagged(skipped));
     }
     fn on_closed(&self) {
         let _ = self.0.send(Delivery::Closed);
@@ -491,7 +491,10 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     let mut seen = 0;
     loop {
         match next_delivery(&mut rx).await {
-            Some(Delivery::Lagged) => break,
+            Some(Delivery::Lagged(skipped)) => {
+                assert!(skipped > 0, "a lag report must count what was missed");
+                break;
+            }
             Some(Delivery::Change(_)) => seen += 1,
             other => panic!("a slow listener must be told it fell behind; {seen} seen, {other:?}"),
         }
