@@ -287,12 +287,6 @@ BASELINE: dict[str, str] = {
         "enforced against the files rustc compiled, read from dep-info: every "
         "test over one shared reading of the build. Not audited for a split."
     ),
-    # --- sunrise-storage ----------------------------------------------------
-    "crates/sunrise-storage/src/db.rs": (
-        "Its implementation alone is over this package's threshold, so moving "
-        "the tests out would not clear it. The SQLCipher wrapper: keying, pragmas, "
-        "integrity check, pre-migration backups and the migration runner."
-    ),
 }
 
 SKIP_DIRS = {"target", "node_modules"}

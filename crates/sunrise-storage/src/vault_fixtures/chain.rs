@@ -53,7 +53,7 @@ const DELIBERATE_CHANGES: &[DeliberateChange] = &[
         column: Some("stream_id"),
     },
     // Blanked on a vault that did not mint the identity. Pinned, both ways,
-    // by `db.rs`'s
+    // by `db/tests.rs`'s
     // `migration_0019_clears_a_paired_devices_identity_key_and_keeps_the_creators`
     // and here by `a_v17_creator_vault_keeps_the_only_copy_of_its_identity_key`.
     DeliberateChange {
@@ -62,7 +62,7 @@ const DELIBERATE_CHANGES: &[DeliberateChange] = &[
         column: Some("id_d_priv_wrapped"),
     },
     // The task-only index is dropped, and the next open writes both new
-    // indexes from the entity rows. Pinned by `db.rs`'s
+    // indexes from the entity rows. Pinned by `db/tests.rs`'s
     // `migration_0040_replaces_the_task_index_with_two_empty_ones`.
     DeliberateChange {
         migration: 40,

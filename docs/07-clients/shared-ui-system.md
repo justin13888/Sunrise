@@ -241,7 +241,7 @@ Every view MUST implement three states. This is the canonical table; per-view fi
 [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
 §Merge journal — removed: `merge_journal` was dropped by
 [ADR-0018](../11-adr/0018-storage-baseline-reset.md), and
-`baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db.rs` fails if
+`baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db/tests.rs` fails if
 it returns. Nothing records that a concurrent edit lost, so a view has nothing to
 raise a toast about. This is not an omission to be filled in later by the UI: the
 state cannot exist until a journal does, and reinstating one needs an ADR

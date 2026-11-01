@@ -138,7 +138,7 @@ fn seed_v13_devices_and_keys(conn: &Connection) {
 /// `source = 'local'` on vault-meta epoch 1 makes this the account's
 /// **creator**, which is the branch of 0019 that must *not* lose data. The
 /// paired branch — where the column is deliberately blanked — is covered by
-/// `db.rs`'s `migration_0019_clears_a_paired_devices_identity_key_and_keeps_the_creators`,
+/// `db/tests.rs`'s `migration_0019_clears_a_paired_devices_identity_key_and_keeps_the_creators`,
 /// and cannot share a fixture with this one because `identity` holds exactly
 /// one row.
 pub(super) fn seed_v17(conn: &Connection) {

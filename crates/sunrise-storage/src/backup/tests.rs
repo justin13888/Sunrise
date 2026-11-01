@@ -363,3 +363,157 @@ fn each_open_failure_a_client_branches_on_has_its_own_code() {
         "a wrong key is not damage"
     );
 }
+
+// --- pre-migration backup (§Migration rigor rule 2) -------------------
+
+/// The version one migration behind this build, so every open below has
+/// exactly one migration to run.
+fn previous_v() -> u32 {
+    u32::from(STORAGE_V) - 1
+}
+
+/// A real vault file at [`previous_v`], holding one stream, closed.
+fn vault_one_behind(dir: &Path) -> PathBuf {
+    let path = dir.join("vault.db");
+    let db = Db::create_at_storage_v(&path, &key(), previous_v()).unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO streams
+                 (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+                 VALUES (X'01', X'00', 0, 'Kept in the copy', 0, 0)",
+            [],
+        )
+        .unwrap();
+    path
+}
+
+fn stamp(db: &Db) -> u32 {
+    db.conn()
+        .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn the_backup_path_sits_beside_the_vault_and_names_the_version() {
+    assert_eq!(
+        Db::backup_path(Path::new("/v/acct/vault.db"), 27),
+        PathBuf::from("/v/acct/vault.db.pre-v27.bak")
+    );
+}
+
+/// The copy is a whole vault at the version it was taken from, under the
+/// same SQLCipher key, and the live vault moves on without it.
+#[test]
+fn the_backup_is_encrypted_under_the_vaults_own_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = vault_one_behind(dir.path());
+
+    let db = Db::open(&path, &key()).unwrap();
+    assert_eq!(stamp(&db), u32::from(STORAGE_V));
+    drop(db);
+
+    let backup = Db::backup_path(&path, previous_v());
+    let bytes = fs::read(&backup).expect("the open must leave a copy");
+    assert!(
+        !bytes.starts_with(b"SQLite format 3\0"),
+        "the copy must be encrypted like the vault it copies"
+    );
+    assert!(
+        !bytes
+            .windows(b"Kept in the copy".len())
+            .any(|w| w == b"Kept in the copy"),
+        "the copy holds content in the clear"
+    );
+
+    let copy = Db::open_unmigrated(&backup, &key()).unwrap();
+    assert_eq!(stamp(&copy), previous_v(), "the copy is the old version");
+    let name: String = copy
+        .conn()
+        .query_row("SELECT name FROM streams", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(name, "Kept in the copy");
+    drop(copy);
+
+    let read_with_another_key = Db::open_unmigrated(&backup, &VaultRootKey::from_bytes([0; 32]))
+        .ok()
+        .and_then(|c| {
+            c.conn()
+                .query_row("SELECT storage_v FROM schema_meta", [], |r| {
+                    r.get::<_, u32>(0)
+                })
+                .ok()
+        });
+    assert!(
+        read_with_another_key.is_none(),
+        "another key must not read the copy"
+    );
+}
+
+/// Kept through the migrating open, deleted by the next one — the first
+/// open to prove the migrated vault usable. A half-written copy a crash
+/// left goes with it; a file that only resembles one does not.
+#[test]
+fn the_backup_is_kept_until_the_next_open_at_the_new_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = vault_one_behind(dir.path());
+    drop(Db::open(&path, &key()).unwrap());
+    let backup = Db::backup_path(&path, previous_v());
+    assert!(backup.exists(), "kept after the migrating open");
+
+    let stale_tmp = dir.path().join("vault.db.pre-v3.bak.tmp");
+    let unrelated = dir.path().join("vault.db.pre-vNOTES.bak");
+    let other_vault = dir.path().join("other.db.pre-v3.bak");
+    for f in [&stale_tmp, &unrelated, &other_vault] {
+        fs::write(f, b"x").unwrap();
+    }
+
+    drop(Db::open(&path, &key()).unwrap());
+    assert!(!backup.exists(), "removed by the next successful open");
+    assert!(!stale_tmp.exists(), "a crash's half-written copy goes too");
+    assert!(unrelated.exists(), "only `.pre-v<digits>.bak` is a copy");
+    assert!(
+        other_vault.exists(),
+        "another vault's copy is not this one's"
+    );
+}
+
+/// No backup, no migration: when the copy cannot be written the open
+/// fails with a typed error and the vault is still at its old version.
+#[test]
+fn a_vault_that_cannot_be_backed_up_is_not_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = vault_one_behind(dir.path());
+    // A directory where the temporary copy goes: removing it fails, and
+    // so would writing it. Portable, and unaffected by running as root,
+    // which a read-only directory is not.
+    let mut tmp = Db::backup_path(&path, previous_v()).into_os_string();
+    tmp.push(".tmp");
+    fs::create_dir(&tmp).unwrap();
+    fs::write(PathBuf::from(&tmp).join("occupant"), b"x").unwrap();
+
+    let err = Db::open(&path, &key()).unwrap_err();
+    assert!(
+        matches!(err, DbError::Backup { from_v, .. } if from_v == previous_v()),
+        "expected a backup failure, got {err:?}"
+    );
+    let raw = Db::open_unmigrated(&path, &key()).unwrap();
+    assert_eq!(
+        stamp(&raw),
+        previous_v(),
+        "the vault must be left untouched"
+    );
+}
+
+/// A fresh vault and an in-memory one have nothing to copy.
+#[test]
+fn a_fresh_vault_is_not_backed_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    drop(Db::open(&path, &key()).unwrap());
+    let names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".pre-v"))
+        .collect();
+    assert!(names.is_empty(), "unexpected copies: {names:?}");
+}
