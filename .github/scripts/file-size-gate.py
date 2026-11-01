@@ -196,11 +196,6 @@ UNGATED: dict[str, str] = {
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
     # --- sunrise-domain -----------------------------------------------------
-    "crates/sunrise-domain/src/stats.rs": (
-        "A cohesive fold above its tests, with one "
-        "worthwhile extraction identified but not urgent: `routine_drift` is "
-        "the only reason this file imports `routine`, `routine_gen` and `rrule`."
-    ),
     "crates/sunrise-domain/src/notify.rs": (
         "Cohesive, with a clean three-way line "
         "available (device policy / reminder pipeline / the two digest views) "

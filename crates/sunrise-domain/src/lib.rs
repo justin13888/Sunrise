@@ -169,8 +169,8 @@ pub use sort_order::{
     DEFRAG_THRESHOLD_BYTES as SORT_ORDER_DEFRAG_THRESHOLD_BYTES,
 };
 pub use stats::{
-    days_between, fold_trends, routine_drift, RoutineDrift, StatsError, StreamTrend, Trends,
-    WeekBucket, WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
+    fold_trends, routine_drift, RoutineDrift, StatsError, StreamTrend, Trends, WeekBucket,
+    WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
 };
 pub use streak::{
     DerivedStreak, StreakOutcome, StreakRow, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE,
