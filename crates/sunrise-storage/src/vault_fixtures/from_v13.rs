@@ -88,7 +88,7 @@ fn a_v13_vault_migrates_all_the_way_forward() {
 
 /// 0014's backfill, over rows that were written before it existed.
 ///
-/// The unit test in `db.rs` replays 0013 then 0014 into a bare connection; this
+/// The unit test in `db/tests.rs` replays 0013 then 0014 into a bare connection; this
 /// is the same property through `Db::open` on a real file, and it is the only
 /// place the backfill is observed after the *rest* of the chain has also run
 /// over it. The keys are exact rather than merely ordered: 0014's contract is

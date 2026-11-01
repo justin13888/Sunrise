@@ -57,7 +57,7 @@ pub struct VaultBackup {
 }
 
 /// `path` with `suffix` appended to its file name.
-pub(crate) fn sibling(path: &Path, suffix: &str) -> PathBuf {
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().map(OsString::from).unwrap_or_default();
     name.push(suffix);
     path.with_file_name(name)
@@ -74,7 +74,7 @@ fn parent_of(path: &Path) -> &Path {
 /// Make the directory entries under `path`'s directory durable: a rename is
 /// durable only once its directory is. A no-op off Unix, where a directory
 /// cannot be opened to be synced.
-pub(crate) fn sync_parent(path: &Path) -> std::io::Result<()> {
+fn sync_parent(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     fs::File::open(parent_of(path))?.sync_all()?;
     #[cfg(not(unix))]
@@ -102,7 +102,7 @@ fn kind_of(vault_name: &str, name: &str) -> Option<BackupKind> {
 /// Whether `name`, beside a vault named `vault_name`, is a copy of it, the
 /// `-wal` of one, or either half-written: what an open that finds the vault
 /// current deletes.
-pub(crate) fn is_backup_file(vault_name: &str, name: &str) -> bool {
+fn is_backup_file(vault_name: &str, name: &str) -> bool {
     let name = name.strip_suffix(".tmp").unwrap_or(name);
     let name = name.strip_suffix(WAL).unwrap_or(name);
     kind_of(vault_name, name).is_some()
@@ -144,6 +144,106 @@ fn rebuild_backup_failed(source: std::io::Error) -> DbError {
 }
 
 impl Db {
+    /// Where [`Self::open`] copies the vault at `vault` before migrating it
+    /// from `from_v`: `<vault>.pre-v<from_v>.bak`, beside it.
+    ///
+    /// The copy is a whole vault, encrypted under the same key, so restoring
+    /// it is replacing `vault` with it while nothing has the vault open.
+    #[must_use]
+    pub fn backup_path(vault: &Path, from_v: u32) -> PathBuf {
+        let mut name = vault.file_name().map(OsString::from).unwrap_or_default();
+        name.push(format!(".pre-v{from_v}.bak"));
+        vault.with_file_name(name)
+    }
+
+    /// Copy the vault to [`Self::backup_path`] with `VACUUM INTO`, durably.
+    ///
+    /// Written under a temporary name, fsynced, then renamed over any older
+    /// copy of the same version, so a crash mid-copy never leaves a truncated
+    /// file under the name a restore would trust. A copy already there from an
+    /// earlier attempt is a copy of the same version — that attempt's
+    /// migration rolled back — so replacing it loses nothing.
+    ///
+    /// `VACUUM INTO` writes the output under the connection's own SQLCipher
+    /// key, which `the_backup_is_encrypted_under_the_vaults_own_key` pins.
+    pub(crate) fn back_up(conn: &Connection, vault: &Path, from_v: u32) -> Result<(), DbError> {
+        let backup = Self::backup_path(vault, from_v);
+        if let Err(source) = Self::vacuum_into(conn, &backup) {
+            tracing::error!(
+                ev = "db.backup.failed",
+                from_v = u64::from(from_v),
+                err_code = %sunrise_error::ErrorCode::StorageBackupFailed,
+                err_kind = "user",
+                retryable = false,
+                cause = %source,
+                "could not back up the vault; it was not migrated"
+            );
+            return Err(DbError::Backup { from_v, source });
+        }
+        tracing::info!(
+            ev = "db.backup.ok",
+            from_v = u64::from(from_v),
+            "backed up the vault before migrating it"
+        );
+        Ok(())
+    }
+
+    /// Write `conn`'s database to `target` with `VACUUM INTO`, durably: under
+    /// a temporary name, fsynced, renamed over any older file of that name,
+    /// and the directory fsynced. See [`Self::back_up`].
+    pub(crate) fn vacuum_into(conn: &Connection, target: &Path) -> std::io::Result<()> {
+        let tmp = sibling(target, ".tmp");
+        let copy = || -> std::io::Result<()> {
+            match fs::remove_file(&tmp) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            let to = tmp.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the vault path is not UTF-8, which VACUUM INTO needs",
+                )
+            })?;
+            conn.execute("VACUUM INTO ?1", [to])
+                .map_err(std::io::Error::other)?;
+            fs::File::open(&tmp)?.sync_all()?;
+            fs::rename(&tmp, target)?;
+            sync_parent(target)
+        };
+        copy().inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
+    }
+
+    /// Delete every pre-migration and pre-rebuild copy beside `vault`, and
+    /// any half-written one a crash left ([`is_backup_file`]).
+    ///
+    /// Called only on an open that found the vault current. Best-effort: a
+    /// copy that cannot be deleted costs disk, never the open, and the next
+    /// open tries again.
+    pub(crate) fn remove_backups(vault: &Path) {
+        let Some(file_name) = vault.file_name().and_then(|n| n.to_str()) else {
+            return;
+        };
+        let Ok(entries) = fs::read_dir(parent_of(vault)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if is_backup_file(file_name, name) {
+                if let Err(e) = fs::remove_file(entry.path()) {
+                    tracing::warn!(
+                        ev = "db.backup.remove_failed",
+                        cause = %e,
+                        "could not delete a copy of the vault; the next open retries"
+                    );
+                }
+            }
+        }
+    }
+
     /// Where the vault at `vault` is copied before its projection is rebuilt
     /// or it is repaired: `<vault>.pre-rebuild.bak`, beside it.
     #[must_use]

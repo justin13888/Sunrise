@@ -184,7 +184,7 @@ none of them keeps a second list:
 | `sunrise-core` (`inner_op.rs`) | `InnerOp`'s entity variants and their `inner_kind`, `target_kind`, target, effect and kind | the build |
 | `sunrise-core` (`engine/lww.rs`) | the materializer's merge class, table and key column | the build: its per-op match is exhaustive |
 | `sunrise-core-bindings` (`dto.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
-| `sunrise-storage` (`db.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
+| `sunrise-storage` (`db/tests.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
 
 `ENTITIES` is also the input the canonical schema and its fingerprint are built
 from ([#323](https://github.com/justin13888/Sunrise/issues/323)), and the field
