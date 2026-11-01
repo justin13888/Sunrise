@@ -84,6 +84,7 @@ pub fn describe(value: &SunriseTime, reader: &TimeZone) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jiff::tz::Offset;
 
     fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
@@ -134,11 +135,168 @@ mod tests {
         }
     }
 
+    /// Phrases at the edges of `read`'s input space: every byte width of
+    /// character, and every integer and calendar bound the phrase crosses on
+    /// its way to a value. Each row pins the answer, so a row that stopped
+    /// panicking by returning something else would still fail.
+    const EDGE_PHRASES: &[(&str, Option<i32>)] = &[
+        // Nothing to read.
+        ("", None),
+        ("\u{3000}", None),
+        ("+", None),
+        ("+d", None),
+        // Multibyte characters in the unit, the number and the phrase.
+        ("+3\u{e9}", None),
+        ("+3\u{65e5}", None),
+        ("+3\u{1f600}", None),
+        ("+\u{e9}", None),
+        ("+\u{ff13}d", None),
+        ("+\u{663}d", None),
+        ("\u{130}", None),
+        ("\u{660}\u{661}:\u{662}\u{663}", None),
+        ("\u{660}pm", None),
+        ("next \u{65e5}\u{66dc}\u{65e5}", None),
+        ("2026-10-3\u{ff10}", None),
+        // Multibyte whitespace is trimmed, and a phrase inside it still reads.
+        ("\u{3000}tomorrow\u{3000}", Some(1)),
+        ("\u{3000}+3d\u{3000}", Some(3)),
+        // The day count fits `i32` up to its last value and not past it.
+        ("+2147483647d", Some(i32::MAX)),
+        ("+2147483648d", None),
+        ("+306783378w", Some(306_783_378 * 7)),
+        ("+306783379w", None),
+        // Past every integer `read` parses into, in every unit.
+        ("+9223372036854775807d", None),
+        ("+9223372036854775808d", None),
+        ("+9223372036854775807w", None),
+        ("+9223372036854775807h", None),
+        ("+9223372036854775807m", None),
+        ("+9223372036854775808h", None),
+        ("+340282366920938463463374607431768211456m", None),
+        // A span the type holds, whose sum falls off the end of time.
+        ("+175307616h", None),
+        // The ends of the calendar are dates; one step past them is not.
+        ("9999-12-31", Some(2_912_147)),
+        ("10000-01-01", None),
+        ("-009999-01-01", Some(-4_392_336)),
+        ("-010000-01-01", None),
+        ("2026-02-30", None),
+        // The `i8` a clock time parses into, and its pm sum.
+        ("128:00", None),
+        ("0:128", None),
+        ("24:00", None),
+        ("128pm", None),
+        ("127pm", None),
+        ("tomorrow 128:00", None),
+    ];
+
+    /// The instant the table's day counts are from: 2026-10-23 in New York.
+    const EDGE_NOW: &str = "2026-10-24T03:00:00Z";
+
+    #[test]
+    fn every_edge_phrase_has_its_pinned_answer() {
+        for &(phrase, days) in EDGE_PHRASES {
+            assert_eq!(
+                read(phrase, at(EDGE_NOW), &ny()),
+                days.map(When::Days),
+                "{phrase:?}"
+            );
+        }
+    }
+
+    /// The ends of time are where a day count has no room, so the table's
+    /// phrases must still return there. `Timestamp::MAX` is 9999-12-30 in UTC;
+    /// only the widest offset makes it the last civil day, and only the
+    /// narrowest makes `Timestamp::MIN` the first.
+    #[test]
+    fn every_edge_phrase_returns_at_the_ends_of_time() {
+        let phrases = EDGE_PHRASES.iter().map(|&(phrase, _)| phrase);
+        for phrase in phrases.chain(["today", "tomorrow", "tonight", "next friday", "+1m"]) {
+            for now in [Timestamp::MIN, Timestamp::MAX] {
+                for reader in [
+                    ny(),
+                    TimeZone::UTC,
+                    TimeZone::fixed(Offset::MAX),
+                    TimeZone::fixed(Offset::MIN),
+                ] {
+                    let _ = read(phrase, now, &reader);
+                }
+            }
+        }
+    }
+
+    /// On the last civil day "today" is a date and "tomorrow" is not; in UTC
+    /// the same instant is a day earlier and still has a tomorrow.
+    #[test]
+    fn the_last_civil_day_has_a_today_and_no_tomorrow() {
+        let last_day = TimeZone::fixed(Offset::MAX);
+        assert_eq!(
+            read("today", Timestamp::MAX, &last_day),
+            Some(When::Days(0))
+        );
+        assert_eq!(read("tomorrow", Timestamp::MAX, &last_day), None);
+        assert_eq!(
+            read("tomorrow", Timestamp::MAX, &TimeZone::UTC),
+            Some(When::Days(1))
+        );
+    }
+
+    /// Counts for a relative phrase. Uniform `i128`s almost never fit the `i64`
+    /// the parser reads, so most draws are ones that do: in-range spans, and
+    /// each bound the count crosses on its way to a value (jiff's span limit
+    /// for each unit, then `i32` and `i64`), with its neighbours and negation.
+    fn relative_count() -> impl proptest::strategy::Strategy<Value = i128> {
+        use proptest::prelude::{any, Strategy};
+
+        const MINUTES: i128 = 10_518_456_960;
+        let bounds = vec![
+            7_304_484,
+            1_043_497,
+            175_307_616,
+            MINUTES,
+            i128::from(i32::MAX),
+            i128::from(i64::MAX),
+        ];
+        proptest::prop_oneof![
+            any::<i128>(),
+            any::<i64>().prop_map(i128::from),
+            -MINUTES..=MINUTES,
+            (proptest::sample::select(bounds), -1i128..=1, any::<bool>()).prop_map(
+                |(bound, step, negate)| {
+                    let count = bound + step;
+                    if negate {
+                        -count
+                    } else {
+                        count
+                    }
+                }
+            ),
+        ]
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
             rng_seed: sunrise_test_seed::proptest_rng_seed(),
             ..proptest::prelude::ProptestConfig::default()
         })]
+
+        /// Any integer the phrase can carry, in any unit, is a value or none.
+        #[test]
+        fn a_relative_phrase_with_any_count_is_read_without_panicking(
+            n in relative_count(),
+            unit in proptest::sample::select(vec!['d', 'w', 'h', 'm']),
+        ) {
+            let _ = read(&format!("+{n}{unit}"), at("2026-10-24T03:00:00Z"), &ny());
+        }
+
+        /// Every day count that fits is that many days.
+        #[test]
+        fn a_relative_day_count_that_fits_is_that_many_days(n in 0..=i32::MAX) {
+            proptest::prop_assert_eq!(
+                read(&format!("+{n}d"), at("2026-10-24T03:00:00Z"), &ny()),
+                Some(When::Days(n))
+            );
+        }
 
         /// Any phrase is read as a date or as none, never a panic.
         #[test]
