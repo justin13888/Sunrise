@@ -550,7 +550,8 @@ files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
 
 ## Migration testing
 
-`crates/sunrise-storage/src/db/tests.rs` and `migrations.rs` assert:
+`crates/sunrise-storage/src/db/tests.rs`, `db/integrity.rs`, `backup/tests.rs`
+and `migrations.rs` assert:
 
 - a fresh vault applies all of them and lands at `STORAGE_V`, with the tables
   the collapse was supposed to preserve and without the schema it was supposed

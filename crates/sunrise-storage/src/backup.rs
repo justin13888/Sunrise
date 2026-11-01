@@ -151,9 +151,7 @@ impl Db {
     /// it is replacing `vault` with it while nothing has the vault open.
     #[must_use]
     pub fn backup_path(vault: &Path, from_v: u32) -> PathBuf {
-        let mut name = vault.file_name().map(OsString::from).unwrap_or_default();
-        name.push(format!(".pre-v{from_v}.bak"));
-        vault.with_file_name(name)
+        sibling(vault, &format!(".pre-v{from_v}.bak"))
     }
 
     /// Copy the vault to [`Self::backup_path`] with `VACUUM INTO`, durably.
