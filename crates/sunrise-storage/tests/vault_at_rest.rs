@@ -1,6 +1,6 @@
 //! What a caller of `sunrise-storage` depends on and cannot check for itself.
 //!
-//! The unit tests in `src/db.rs` reach `Db::ensure_schema`, `Db::apply_pragmas`
+//! The unit tests in `src/db/tests.rs` reach `Db::ensure_schema`, `Db::apply_pragmas`
 //! and `MIGRATIONS[n].sql` directly, and most of them run against
 //! `Db::open_memory`. Everything here is a dependent crate's view: one
 //! `Db::open` against a real path, and then either the public API or the raw

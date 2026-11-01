@@ -1,7 +1,7 @@
 //! Real old vaults, checked in, and the chain run over them.
 //!
 //! Everything else in this crate tests migrations against a schema this build
-//! just built. `db.rs` replays `MIGRATIONS[n].sql` by hand into a fresh
+//! just built. `db/tests.rs` replays `MIGRATIONS[n].sql` by hand into a fresh
 //! in-memory connection, and `tests/vault_at_rest.rs` opens a *current* vault
 //! whose version stamp has been lied down. Neither is a 13-era vault: the
 //! first never goes through `Db::open`, and the second has every column the
