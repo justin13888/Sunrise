@@ -138,7 +138,7 @@ runs:
     # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
     # rather than a partial one. That gate's file set is the dep-info rustc
     # wrote beside each artefact, so it can only see what has been compiled,
-    # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
+    # and `crates/sunrise-sync/src/sse/` (feature-gated off by default) and
     # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
     # by no plain `cargo build --workspace`. This command compiles every
     # target before running a test, so the records exist by the time the gate
