@@ -288,19 +288,6 @@ BASELINE: dict[str, str] = {
         "test over one shared reading of the build. Not audited for a split."
     ),
     # --- sunrise-storage ----------------------------------------------------
-    "crates/sunrise-storage/src/vault_fixtures.rs": (
-        "A `#[cfg(test)]` module, all of it test code: the checked-in old "
-        "vaults, the rows each one is stated to hold, and the migration chain "
-        "run over them. Its expectations are kept beside the fixtures they "
-        "describe on purpose."
-    ),
-    "crates/sunrise-storage/src/vault_fixtures/seed.rs": (
-        "A `#[cfg(test)]` module, nearly all of it one data table: `SEED`, a "
-        "row for every table any migration creates, which the fixtures "
-        "after v17 are filled with. One list on purpose, so the test that it "
-        "reaches every table and column reads it whole. Not audited for a "
-        "split."
-    ),
     "crates/sunrise-storage/src/db.rs": (
         "Its implementation alone is over this package's threshold, so moving "
         "the tests out would not clear it. The SQLCipher wrapper: keying, pragmas, "

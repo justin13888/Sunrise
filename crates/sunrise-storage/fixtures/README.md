@@ -3,8 +3,9 @@
 Encrypted SQLCipher vaults written at historical `STORAGE_V`s, so that the
 migration chain can be run against real old data rather than against a schema
 this build just created. Read
-[`../src/vault_fixtures.rs`](../src/vault_fixtures.rs) — it generates these
-files, states their contents, and asserts what survives.
+[`../src/vault_fixtures/mod.rs`](../src/vault_fixtures/mod.rs) and the modules
+beside it — they generate these files, state their contents, and assert what
+survives.
 
 There is one file for every `storage_v` a migration leaves a vault at, from
 13 to the version before the current `STORAGE_V`, named
@@ -22,14 +23,14 @@ Two of them were written with seeds of their own:
 | `vault_storage_v13.db` | 13 | The oldest supported version ([ADR-0018](../../../docs/11-adr/0018-storage-baseline-reset.md)'s baseline). Exercises 0014's `sort_order` backfill and everything 0017 moves. |
 | `vault_storage_v17.db` | 17 | 0019 reads an `identity` row, and a vault that started at 13 has none — 0017 creates that table empty. Without this file, the migration that can blank the only copy of `ID_D_priv` in existence is never run against a vault that has one. |
 
-Every other file holds the rows in `../src/vault_fixtures/seed.rs`: at least
+Every other file holds the rows in `../src/vault_fixtures/seed/`: at least
 one in every table that exists at its version, with a value in nearly every
 column.
 
 ## The key is committed, deliberately
 
 Every file is keyed with a vault root of **thirty-two `0x7e` bytes**, spelled
-out as `FIXTURE_VAULT_ROOT` in `../src/vault_fixtures.rs`.
+out as `FIXTURE_VAULT_ROOT` in `../src/vault_fixtures/mod.rs`.
 
 That is not a leak and it is not an oversight. A checked-in encrypted fixture
 is worthless without its key, and the fixture is worthless unencrypted — the
