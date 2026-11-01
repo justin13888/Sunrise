@@ -196,11 +196,6 @@ UNGATED: dict[str, str] = {
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
     # --- sunrise-domain -----------------------------------------------------
-    "crates/sunrise-domain/src/notify.rs": (
-        "Cohesive, with a clean three-way line "
-        "available (device policy / reminder pipeline / the two digest views) "
-        "if it is ever wanted."
-    ),
     "crates/sunrise-domain/src/review.rs": (
         "One fold over one input struct; the module "
         "doc argues for keeping it in one place, since it is the module that "

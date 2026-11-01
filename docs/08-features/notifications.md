@@ -16,7 +16,7 @@ from this page is wrong. [#347](https://github.com/justin13888/Sunrise/issues/34
 1. **Scheduling is computed in Rust.** Every kind is produced by the core as a
    `ReminderIntent` — what, when, which category, which actions, which deep
    link — by the pure `sunrise_domain::notify` functions (today
-   `crates/sunrise-domain/src/notify.rs:261#plan_reminders`), so the rules are the
+   `crates/sunrise-domain/src/notify/pipeline.rs:73#plan_reminders`), so the rules are the
    same on every client and testable without a device. A client only registers
    intents with the OS and routes the responses back as commands. It never
    decides whether or when something fires.
@@ -291,7 +291,7 @@ fires at the first minute outside quiet hours, capped at 4 hours after its
 original time; if still inside quiet hours then, it is dropped with a
 `notif.queued.dropped` log line. Several queued notifications collapse into one.
 The core applies quiet hours before it returns an intent
-(`crates/sunrise-domain/src/notify.rs#apply_quiet_hours`), and an intent moved by
+(`crates/sunrise-domain/src/notify/policy.rs#apply_quiet_hours`), and an intent moved by
 them carries `deferred_from` so the client can say "delayed from 06:15" only
 when that is true.
 
@@ -415,6 +415,6 @@ wake rather than restarting a countdown.
 - *Target:* an end-to-end test that a reminder set 1 minute ahead fires within
   ±5 s. What is covered today is the scheduling arithmetic
   (`a_task_reminder_fires_at_its_scheduled_time_by_default` in
-  `crates/sunrise-domain/src/notify.rs`), not delivery.
+  `crates/sunrise-domain/src/notify/pipeline.rs`), not delivery.
 - A manual regression check on each major OS release, because notification APIs
   change often.
