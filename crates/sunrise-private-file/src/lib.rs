@@ -266,6 +266,32 @@ mod tests {
         );
     }
 
+    /// A failed rename removes the staging file before the error comes back,
+    /// so the secret bytes do not stay on disk under a hidden name. A file
+    /// cannot be renamed over a non-empty directory on any platform, and the
+    /// staging file has already been written and flushed by then.
+    #[test]
+    fn a_failed_rename_leaves_no_staging_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        let occupant = path.join("occupant");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(&occupant, b"occupant").unwrap();
+
+        write_private(&path, b"secret").unwrap_err();
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            ["secret.key"],
+            "the directory holds only the rename's target"
+        );
+        assert_eq!(std::fs::read(&occupant).unwrap(), b"occupant");
+    }
+
     /// A rewrite goes through a fresh staging file, so its protection has to
     /// be right too, not just the first one's.
     #[test]
