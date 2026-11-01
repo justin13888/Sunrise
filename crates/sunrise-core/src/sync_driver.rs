@@ -83,8 +83,8 @@
 //!
 //! The work a session runs against a queue lives beside that queue, and this
 //! file only calls it: `blob_sync::drain`, `relay_intents::drain`,
-//! `snapshot_sync::recover_gaps`, and the `publish` and `recover_if_pinned`
-//! entry points of `snapshot_sync` and `key_bundle_sync`.
+//! `snapshot_sync::{publish, recover_gaps}`, `identity_chain_sync::publish` and
+//! `key_bundle_sync::{publish, recover_if_pinned}`.
 
 mod frames;
 mod schedule;
