@@ -66,6 +66,25 @@
 //! The timer is the guarantee and the evidence is the latency optimisation.
 //! Evidence alone would miss the case where the *last* frame in each direction
 //! is the one that vanished, leaving nothing to notice.
+//!
+//! # Module map
+//!
+//! The session state machine stays in this file. Its children hold what it
+//! leans on:
+//!
+//! - `frames` — the handshake and subscription frames, and the queue of frames
+//!   the pump owes the transport.
+//! - `schedule` — the resync deadline and its floor, each batch's retransmit
+//!   deadline, and the reconnect backoff.
+//! - `shared` — the driver's live state, shared with `Core` across the task
+//!   boundary.
+//! - `tests` — driver tests against an in-process fake relay, one file per
+//!   concern.
+//!
+//! The work a session runs against a queue lives beside that queue, and this
+//! file only calls it: `blob_sync::drain`, `relay_intents::drain`,
+//! `snapshot_sync::recover_gaps`, and the `publish` and `recover_if_pinned`
+//! entry points of `snapshot_sync` and `key_bundle_sync`.
 
 mod frames;
 mod schedule;

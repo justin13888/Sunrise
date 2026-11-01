@@ -13,7 +13,7 @@
 //!
 //! These four methods moved off `Core` rather than being written here: they are
 //! the symbols that share one table, which is the cohesion boundary the
-//! file-size gate names, and `core.rs` was at its threshold.
+//! file-size gate names, and `core.rs`, now `core/mod.rs`, was at its threshold.
 //!
 //! # A row is owed only while the register agrees
 //!
