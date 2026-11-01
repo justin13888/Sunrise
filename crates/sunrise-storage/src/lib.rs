@@ -42,7 +42,7 @@ pub use blob_store::{BlobStore, BlobStoreError};
 pub use db::{ensure_cipher_ready, Db, DbError};
 pub use migrations::{current_storage_v, MIGRATIONS};
 pub use oplog::{OpLog, OpLogError, ParkReason, ParkedCount, ParkedEnvelope, Parking, PARKED_KIND};
-pub use sync_local::{Outbox, OutboxEntry, SyncCursors, SyncLocalError};
+pub use sync_local::{Outbox, OutboxEntry, SyncLocalError};
 
 /// Re-export of `STORAGE_V` from `sunrise-cbor` for callers that don't
 /// otherwise depend on it.

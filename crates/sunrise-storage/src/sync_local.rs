@@ -1,15 +1,15 @@
-//! Local sync bookkeeping: outbox + per-(stream, device) cursors.
+//! Local sync bookkeeping: the outbox.
 //!
 //! Per `docs/04-storage/` and the op-envelope sealing slice. The outbox tracks
-//! which locally-emitted ops still need to be pushed to peers; cursors track
-//! the highest applied `seq` per `(stream_id, device_id)` for gap detection and
-//! pull resumption. Both follow [`crate::OpLog`]'s static-accessor style.
+//! which locally-emitted ops still need to be pushed to peers. It follows
+//! [`crate::OpLog`]'s static-accessor style. The `sync_cursors` table is not
+//! here: `sunrise-core`'s engine reads and writes it, and only lets it rise.
 
 use crate::db::{Db, DbError};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use thiserror::Error;
 
-/// Errors produced by the outbox / cursor accessors.
+/// Errors produced by the outbox accessors.
 #[derive(Debug, Error)]
 pub enum SyncLocalError {
     /// Underlying DB error.
@@ -100,47 +100,6 @@ impl Outbox {
     }
 }
 
-/// Per-(stream, device) applied-seq cursor accessor.
-#[derive(Debug)]
-pub struct SyncCursors;
-
-impl SyncCursors {
-    /// Read the highest applied seq for `(stream_id, device_id)`, if any.
-    pub fn get(
-        db: &Db,
-        stream_id: &[u8; 16],
-        device_id: &[u8; 16],
-    ) -> Result<Option<u64>, SyncLocalError> {
-        let v: Option<i64> = db
-            .conn()
-            .query_row(
-                "SELECT last_applied_seq FROM sync_cursors
-                 WHERE stream_id = ? AND device_id = ?",
-                params![&stream_id[..], &device_id[..]],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(v.map(|n| u64::try_from(n).unwrap_or(0)))
-    }
-
-    /// Set (upsert) the highest applied seq for `(stream_id, device_id)`.
-    pub fn set(
-        tx: &rusqlite::Transaction<'_>,
-        stream_id: &[u8; 16],
-        device_id: &[u8; 16],
-        last_applied_seq: u64,
-    ) -> Result<(), SyncLocalError> {
-        tx.execute(
-            "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
-             VALUES (?, ?, ?)
-             ON CONFLICT (stream_id, device_id)
-             DO UPDATE SET last_applied_seq = excluded.last_applied_seq",
-            params![&stream_id[..], &device_id[..], last_applied_seq],
-        )?;
-        Ok(())
-    }
-}
-
 fn blob16(b: &[u8]) -> [u8; 16] {
     let mut a = [0u8; 16];
     let take = b.len().min(16);
@@ -221,28 +180,5 @@ mod tests {
         })
         .unwrap();
         assert_eq!(Outbox::pending_count(&db).unwrap(), 1);
-    }
-
-    #[test]
-    fn cursors_get_set() {
-        let mut db = Db::open_memory(&vault_key()).unwrap();
-        let stream = [3u8; 16];
-        let device = [4u8; 16];
-        assert_eq!(SyncCursors::get(&db, &stream, &device).unwrap(), None);
-        db.with_tx(|tx| {
-            SyncCursors::set(tx, &stream, &device, 5)
-                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(SyncCursors::get(&db, &stream, &device).unwrap(), Some(5));
-        // Upsert overwrites.
-        db.with_tx(|tx| {
-            SyncCursors::set(tx, &stream, &device, 9)
-                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(SyncCursors::get(&db, &stream, &device).unwrap(), Some(9));
     }
 }

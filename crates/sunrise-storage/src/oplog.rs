@@ -93,7 +93,8 @@ impl OpLog {
     }
 
     /// All ops for a Stream in ascending `seq` order.
-    pub fn list_for_stream(
+    #[cfg(test)]
+    pub(crate) fn list_for_stream(
         db: &Db,
         stream_id: &[u8; 16],
     ) -> Result<Vec<(Vec<u8>, u64)>, OpLogError> {
@@ -108,19 +109,6 @@ impl OpLog {
             out.push(r?);
         }
         Ok(out)
-    }
-
-    /// Mark `op_id` as applied at `ts_ms`.
-    pub fn mark_applied(
-        tx: &rusqlite::Transaction<'_>,
-        op_id: &[u8; 16],
-        ts_ms: u64,
-    ) -> Result<(), OpLogError> {
-        tx.execute(
-            "UPDATE ops SET applied_at = ? WHERE op_id = ?",
-            params![ts_ms, op_id],
-        )?;
-        Ok(())
     }
 
     /// Mark an op already inserted into `ops` as parked (migration 0031,
