@@ -443,8 +443,8 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // inside its first `on_change` and holds it there until the whole burst has
     // been published, so 400 events are sent into a 256-slot channel with the
     // only reader stopped: whatever the pump does next, it has already missed
-    // at least 144 and its next `recv` can only be `Lagged`. If it never got a
-    // first event to park on, it missed them the same way. There is no
+    // at least 143 and its next `recv` can only be `Lagged`. If it never got a
+    // first event to park on, it missed 144 the same way. There is no
     // interleaving in which this passes on one machine and fails on another.
     //
     // What it replaced did race: a listener that slept 2 ms per event, hoping
