@@ -199,7 +199,7 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
 # actually compiled, so its coverage is a fact about what has been built. It
 # compiles every target before it runs a test, which is what puts a record on
 # disk for the two files a plain `cargo build --workspace` never compiles:
-# `crates/sunrise-sync/src/sse.rs`, behind a feature off by default, and
+# `crates/sunrise-sync/src/sse/`, behind a feature off by default, and
 # `crates/sunrise-server/src/api/testing.rs`, behind `#[cfg(test)]`. Drop the
 # flag and that gate fails naming them. See `log-fields` below for running it
 # on its own.
