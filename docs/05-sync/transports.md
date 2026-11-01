@@ -6,7 +6,7 @@ status: accepted
 
 **The transport is an SSE stream downstream and typed `POST` operations
 upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). The client is
-`SseTransport` (`crates/sunrise-sync/src/sse.rs`), used by `sunrise-cli`, the
+`SseTransport` (`crates/sunrise-sync/src/sse/`), used by `sunrise-cli`, the
 Apple apps through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the
 server is `crates/sunrise-server/src/api/sync/` over
 `crates/sunrise-server/src/sync_session.rs`. There is no WebSocket:
@@ -64,7 +64,7 @@ stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
 one, but neither sends one unprompted: a comment does the same job — stopping an
 intermediary from reaping an idle connection — with no frame type and nothing
 for the client to answer. `SseTransport` drops incoming comments before they
-reach the driver (`crates/sunrise-sync/src/sse.rs#take_event`).
+reach the driver (`crates/sunrise-sync/src/sse/events.rs#take_event`).
 
 **Per-platform notes:**
 

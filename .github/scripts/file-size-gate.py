@@ -31,8 +31,8 @@ when the distribution moves deliberately, the threshold moves with it.
 A package with fewer than ten Rust files has no p90 of its own: the
 nearest-rank p90 of eight files is the largest of them, so a threshold derived
 that way is whatever its biggest file happens to be and bounds nothing.
-`sunrise-sync` is such a package -- eight files, one of them `sse.rs` -- so its
-threshold is instead the pooled p90 of every Rust file in the packages still in
+`sunrise-sync` was such a package when it entered -- eight files, one of them
+`sse.rs` -- so its threshold is instead the pooled p90 of every Rust file in the packages still in
 `UNGATED` when it entered the gate: 708, nearest-rank over their 169 files. That is still this
 codebase's own distribution, drawn from the packages most like it, rather than a
 number from a style guide.
@@ -147,7 +147,7 @@ import sys
 from pathlib import Path
 
 # package root -> p90 of that package's Rust files when it entered the gate.
-# `sunrise-sync` has eight files, too few to have a p90 of its own, so its
+# `sunrise-sync` had eight files then, too few to have a p90 of its own, so its
 # number is the pooled p90 of the packages in UNGATED: see "Where the numbers
 # come from" above.
 THRESHOLDS: dict[str, int] = {
@@ -228,13 +228,13 @@ BASELINE: dict[str, str] = {
         "would be churn."
     ),
     # --- sunrise-sync -------------------------------------------------------
-    "crates/sunrise-sync/src/sse.rs": (
-        "The SSE transport above one `#[cfg(test)] mod tests` that includes a "
-        "loopback relay and is most of the file. What those tests pin -- "
-        "`take_event`, `frame_for`, `binding_bytes`, the stream buffer -- is "
-        "private, which rules out `tests/` but not a child module: splitting "
-        "the tests by the route they exercise, into files under `sse/`, keeps "
-        "that access and is a change of its own."
+    "crates/sunrise-sync/src/sse/tests.rs": (
+        "All test code: the SSE transport's `#[cfg(test)] mod tests`, moved out "
+        "of `sse.rs` unchanged, with the loopback relay it runs against. What "
+        "those tests pin -- `take_event`, `frame_for`, `binding_bytes`, the "
+        "stream buffer -- is private, which rules out `tests/` but not a child "
+        "module: splitting them along their own section markers keeps that "
+        "access and is a change of its own."
     ),
     # --- sunrise-client-core ------------------------------------------------
     "crates/sunrise-client-core/src/undo.rs": (
