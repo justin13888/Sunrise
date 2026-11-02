@@ -18,10 +18,6 @@ No messaging, comments threads, mentions-with-notifications, or activity feeds. 
 
 No deals, pipelines, or per-contact histories. People entities exist only as **shareable identities** and references in task assignment. Reason: CRM is a vertical product.
 
-## Not a calendar
-
-Sunrise *integrates* with calendars and supports time-blocking on top of them. It does not replace your calendar. Reason: calendaring (invites, RSVP, free/busy across orgs, calendar-aware OAuth) is a 10-year product on its own.
-
 ## Not a habit tracker (as the primary axis)
 
 Habits are modeled as routines — recurring tasks with streak tracking — but the app is not "open Sunrise to log your habits." Reason: habit-as-primary apps lose users who fall off; productivity-with-routines retains them.
@@ -50,18 +46,16 @@ No if-this-then-that rules, no scripting, no cron-driven actions, no outbound we
 
 No `you@in.sunrise.example` capture address. Reason: inbound email is operationally heavy (DKIM/SPF/DMARC, abuse handling, attachment storage) and breaks the E2EE story (the receiving server sees plaintext). The native share sheets on iOS / Android and a browser extension cover the "save this for later" use case.
 
-## Not a calendar protocol server, and not a calendar editor
+## Not a calendar protocol server
 
-We **read** Google Calendar, Microsoft 365 / Outlook / Exchange (through
-Microsoft Graph) and CalDAV servers (iCloud, Fastmail, Nextcloud, …), and we
-import and export iCalendar (.ics) files
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). We do
-not serve CalDAV, and we do not write to anyone's calendar: no creating,
-editing, moving or responding to external events. Reason: a calendar protocol
-server is its own product, and write access to someone's calendar is a much
-larger trust request and a conflict-resolution problem per provider. Sunrise
-plans *around* the calendar; the calendar stays the source of truth for
-meetings.
+We **read and write** Google Calendar, Microsoft 365 / Outlook / Exchange
+(through Microsoft Graph) and CalDAV servers (iCloud, Fastmail, Nextcloud, …),
+and we import and export iCalendar (.ics) files
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md),
+[`09-integrations/calendar-goals.md`](../09-integrations/calendar-goals.md)). We
+do not serve CalDAV. Reason: a calendar protocol server is its own product. The
+provider stays the source of truth for an event that lives there, and a Block
+stays private unless the user publishes it.
 
 ## Not a custom auth stack
 

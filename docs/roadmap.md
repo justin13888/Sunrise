@@ -97,19 +97,19 @@ Specified in [`10-cross-cutting/time.md`](./10-cross-cutting/time.md),
 8. [#333](https://github.com/justin13888/Sunrise/issues/333) Dependency cycles resolved at merge; a requirements model.
 9. [#340](https://github.com/justin13888/Sunrise/issues/340) Manual ordering as a fractional index in Rust.
 10. [#341](https://github.com/justin13888/Sunrise/issues/341) `SavedView` as a synced entity.
-11. [#342](https://github.com/justin13888/Sunrise/issues/342) Fixed, flexible and recurring blocks.
+11. [#342](https://github.com/justin13888/Sunrise/issues/342) Fixed, flexible and recurring blocks, with the ordinal `BYDAY` fix ([#928](https://github.com/justin13888/Sunrise/issues/928)).
 12. [#339](https://github.com/justin13888/Sunrise/issues/339) Places and on-device geofencing.
 
 ## P3 — macOS complete
 
-1. [#349](https://github.com/justin13888/Sunrise/issues/349) Restore from a recovery code. A lost device must not mean lost data.
-2. [#343](https://github.com/justin13888/Sunrise/issues/343) Planner solver and `plan_preview` ([ADR-0048](./11-adr/0048-interactive-planner.md)).
-3. [#344](https://github.com/justin13888/Sunrise/issues/344) Drag with a live preview, on the calendar and in lists.
-4. [#345](https://github.com/justin13888/Sunrise/issues/345) Search overhaul ([ADR-0052](./11-adr/0052-search-v2.md)).
-5. [#347](https://github.com/justin13888/Sunrise/issues/347) The notification catalogue, including wind-down ([#301](https://github.com/justin13888/Sunrise/issues/301)).
-6. [#348](https://github.com/justin13888/Sunrise/issues/348) Shortcut hints everywhere.
-7. [#351](https://github.com/justin13888/Sunrise/issues/351) Upcoming view.
-8. [#4](https://github.com/justin13888/Sunrise/issues/4) Read-only calendar sync from Google, Microsoft and CalDAV, authorised per device ([ADR-0049](./11-adr/0049-calendar-integrations-per-device-oauth.md)).
+1. [#924](https://github.com/justin13888/Sunrise/issues/924) First-class calendar read and write ([ADR-0071](./11-adr/0071-calendar-read-write-through-synced-intents.md), [goals](./09-integrations/calendar-goals.md)). In order: the conformance spike, benchmark and OAuth clients ([#925](https://github.com/justin13888/Sunrise/issues/925), [#926](https://github.com/justin13888/Sunrise/issues/926), [#927](https://github.com/justin13888/Sunrise/issues/927), [#660](https://github.com/justin13888/Sunrise/issues/660)); the entity ([#929](https://github.com/justin13888/Sunrise/issues/929)); Google read ([#930](https://github.com/justin13888/Sunrise/issues/930)); Microsoft and CalDAV read and ICS subscriptions ([#4](https://github.com/justin13888/Sunrise/issues/4), [#931](https://github.com/justin13888/Sunrise/issues/931)); intents, conflicts and Google writes ([#932](https://github.com/justin13888/Sunrise/issues/932), [#933](https://github.com/justin13888/Sunrise/issues/933), [#934](https://github.com/justin13888/Sunrise/issues/934)); recurring, Microsoft and CalDAV writes ([#935](https://github.com/justin13888/Sunrise/issues/935), [#936](https://github.com/justin13888/Sunrise/issues/936), [#937](https://github.com/justin13888/Sunrise/issues/937)); entry and publishing ([#938](https://github.com/justin13888/Sunrise/issues/938), [#939](https://github.com/justin13888/Sunrise/issues/939)).
+2. [#349](https://github.com/justin13888/Sunrise/issues/349) Restore from a recovery code. A lost device must not mean lost data.
+3. [#343](https://github.com/justin13888/Sunrise/issues/343) Planner solver and `plan_preview` ([ADR-0048](./11-adr/0048-interactive-planner.md)).
+4. [#344](https://github.com/justin13888/Sunrise/issues/344) Drag with a live preview, on the calendar and in lists.
+5. [#345](https://github.com/justin13888/Sunrise/issues/345) Search overhaul ([ADR-0052](./11-adr/0052-search-v2.md)).
+6. [#347](https://github.com/justin13888/Sunrise/issues/347) The notification catalogue, including wind-down ([#301](https://github.com/justin13888/Sunrise/issues/301)).
+7. [#348](https://github.com/justin13888/Sunrise/issues/348) Shortcut hints everywhere.
+8. [#351](https://github.com/justin13888/Sunrise/issues/351) Upcoming view.
 9. [#346](https://github.com/justin13888/Sunrise/issues/346) Attachments: thumbnails, native previews, cache ([ADR-0053](./11-adr/0053-attachment-thumbnails-and-native-rendering.md)).
 10. [#350](https://github.com/justin13888/Sunrise/issues/350) Full decrypted export.
 11. [#352](https://github.com/justin13888/Sunrise/issues/352) Context shift and travel.
@@ -141,6 +141,7 @@ the metric catalogue.
 2. [#376](https://github.com/justin13888/Sunrise/issues/376) The rest of the widgets: Lock Screen capture, the Stream tile, and macOS reach measured on a signed build. ([#14](https://github.com/justin13888/Sunrise/issues/14) shipped Next Up.)
 3. [#368](https://github.com/justin13888/Sunrise/issues/368) iOS system surfaces.
 4. [#12](https://github.com/justin13888/Sunrise/issues/12) Internationalisation.
+5. Calendar on the phone and system surfaces: leave alerts ([#940](https://github.com/justin13888/Sunrise/issues/940)), menu bar, widgets and lock screen ([#941](https://github.com/justin13888/Sunrise/issues/941)), other people's free/busy ([#942](https://github.com/justin13888/Sunrise/issues/942)), background refresh and the doorbell ADR ([#943](https://github.com/justin13888/Sunrise/issues/943)).
 
 ## P6 — More platforms
 
@@ -148,3 +149,5 @@ the metric catalogue.
 2. [#52](https://github.com/justin13888/Sunrise/issues/52) The WASM web core.
 3. [#11](https://github.com/justin13888/Sunrise/issues/11) Deploy the web client.
 4. [#133](https://github.com/justin13888/Sunrise/issues/133) Sharing streams with other people.
+5. [#944](https://github.com/justin13888/Sunrise/issues/944) The web calendar, a token-less editor first.
+6. [#945](https://github.com/justin13888/Sunrise/issues/945) The sealed scheduling links ADR.

@@ -48,9 +48,9 @@ older client from silently flattening a body it does not fully understand.
 
 **Not built here:** the free-standing `Note` entity
 ([ADR-0020](../11-adr/0020-v1-must-demotions.md)), stream sharing (a MUST in
-the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133)), and read-only calendar integrations
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), ranked as
-[#4](https://github.com/justin13888/Sunrise/issues/4)).
+the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133)), and calendar integrations
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md), ranked on
+the [roadmap](../roadmap.md)).
 
 **iCal import/export is built:** File → Import Calendar… (⌘⇧I) and Export
 Calendar ▸ Today | This Week call the seam's `import_ical` / `export_ical`

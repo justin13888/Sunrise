@@ -4,7 +4,7 @@ status: accepted
 
 # Time Blocks
 
-A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are the time the user schedules in Sunrise and carry its time-blocking workflows. Events fetched from an external calendar are **not** Blocks: they are read-only `ExternalEvent`s ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)), and see §Calendar integration.
+A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are the time the user schedules in Sunrise and carry its time-blocking workflows. Events fetched from an external calendar are **not** Blocks: they are `ExternalEvent`s ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)), and see §Calendar integration.
 
 > **Amended** by [ADR-0046](../11-adr/0046-optional-stream.md) (`stream_id` is
 > optional), [ADR-0048](../11-adr/0048-interactive-planner.md) (the planner
@@ -229,27 +229,27 @@ Decision: keep them distinct. A Block can *bind* one-or-more Tasks; completing a
 
 ## Calendar integration
 
-Calendar integrations are **read-only**
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), specified
-in [`../09-integrations/overview.md`](../09-integrations/overview.md)), and they
-never produce Blocks:
+Calendar integrations read and write
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md),
+specified in [`../09-integrations/overview.md`](../09-integrations/overview.md)),
+and they never produce Blocks:
 
 - An event fetched from Google Calendar, Microsoft Graph or CalDAV becomes an
-  **`ExternalEvent`**, a separate read-only entity. Recurring events are stored
-  as the occurrences the provider expanded inside the fetch window, each with a
-  deterministic id, so two devices fetching the same occurrence converge on one
+  **`ExternalEvent`**, a separate entity. A recurring event is one series with its
+  overrides, under a deterministic id, so two devices fetching it converge on one
   entity.
 - The planner treats every `ExternalEvent` as fixed
   ([ADR-0048](../11-adr/0048-interactive-planner.md)), and the calendar view
-  draws it beside the user's Blocks. No client edits it.
-- Nothing is pushed to an external calendar. A Block never becomes a provider
-  event, and there is no `import:gcal` source.
+  draws it beside the user's Blocks. A user edit reaches the provider as a synced
+  intent.
+- A Block reaches a provider only when the user publishes it. Publishing creates
+  a separate `BlockPublication`, not an `external_id`, is busy-only by default, and
+  leaves the Block as the source of truth. There is no `import:gcal` source.
 
 The only calendar path that writes Blocks is the one-shot `.ics` file import
 ([`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)), which is
 what `source` and `external_id` serve. Not built; ranked on the roadmap
-([`../roadmap.md`](../roadmap.md)) as
-[#4](https://github.com/justin13888/Sunrise/issues/4).
+([`../roadmap.md`](../roadmap.md)).
 
 ## Merge mapping
 

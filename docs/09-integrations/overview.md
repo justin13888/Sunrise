@@ -9,14 +9,18 @@ run **on-device**: each device holds its own credentials in its platform
 keychain, the vault syncs only configuration and the data fetched, and the
 server never holds a third-party credential or sees a fetched event in
 plaintext. [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)
-is the decision for calendars; it amends
+is the decision for calendar credentials and fetching; it amends
 [ADR-0025](../11-adr/0025-integration-account-entity.md).
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) adds
+writing and series storage, [`calendar-goals.md`](./calendar-goals.md) says what
+done means, and [`calendar-architecture.md`](./calendar-architecture.md) is the
+design, `proposed` until its conformance spike ends.
 
 | Integration | Direction | Status | Spec |
 |---|---|---|---|
-| Google Calendar | Read-only | **Not built.** `crates/sunrise-integrations/src/gcal.rs` implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
-| Microsoft Graph (Outlook.com, Microsoft 365, Exchange Online) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`microsoft-graph.md`](./microsoft-graph.md) |
-| CalDAV (iCloud, Fastmail, Nextcloud, any RFC 4791 server) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`caldav.md`](./caldav.md) |
+| Google Calendar | Read and write | **Not built.** `crates/sunrise-integrations/src/gcal.rs` implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#930](https://github.com/justin13888/Sunrise/issues/930)) | [`google-calendar.md`](./google-calendar.md) |
+| Microsoft Graph (Outlook.com, Microsoft 365, Exchange Online) | Read and write | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`microsoft-graph.md`](./microsoft-graph.md) |
+| CalDAV (iCloud, Fastmail, Nextcloud, any RFC 4791 server) | Read and write | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`caldav.md`](./caldav.md) |
 | iCalendar (.ics) | Import / export | **Live on both shipping clients**, a narrow subset: `sunrise ical import` / `export`, and the macOS File menu over the seam's `import_ical` / `export_ical` | [`icalendar.md`](./icalendar.md) |
 
 **`IntegrationProvider` has no implementor.** Neither built integration
@@ -26,8 +30,7 @@ and the UniFFI seam. Treat the trait as intended shape, not as a seam anything
 runs through yet.
 
 Outbound webhooks and inbound email-to-Sunrise remain non-goals
-([`../00-product/non-goals.md`](../00-product/non-goals.md)). Writing to an
-external calendar is not part of the design.
+([`../00-product/non-goals.md`](../00-product/non-goals.md)).
 
 ## Design principles
 
@@ -38,7 +41,9 @@ external calendar is not part of the design.
 3. **Share the data, not the secret.** Configuration and fetched events sync
    through the vault like any other entity, so every device sees every event
    whether or not it is connected.
-4. **Read-only.** Sunrise plans around external calendars. It never edits them.
+4. **Edits are synced intents.** A device edits offline, and any device of the
+   owner's holding a write grant carries the edit to the provider
+   ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)).
 5. **Failures are visible.** A failing account shows an in-app banner and, where
    the user can fix it, a notification. Never a silent log line.
 6. **Core logic in Rust.** Only the browser step of OAuth and the keychain read
@@ -79,33 +84,23 @@ pub struct CalendarSubscription {
 pub struct FetcherStatus {
     pub last_ok_at: Option<Timestamp>,
     pub state: FetcherState,               // Ok | NeedsReauth | Error { code }
+    pub can_write: bool,                   // this device holds a write grant (ADR-0071)
 }
 ```
 
 Every field merges per field ([ADR-0044](../11-adr/0044-per-field-ops.md));
 `calendars` and `fetchers` are maps merged per key.
 
-### `ExternalEvent` (synced, read-only)
+### `ExternalEvent` (synced)
 
-```rust
-pub struct ExternalEvent {
-    /// BLAKE3-128("sunrise.external-event.v1" ‖ subject ‖ calendar_id
-    ///            ‖ uid ‖ recurrence_id_utc_or_empty). Every device mints the same id.
-    pub id: EntityRef,
-    pub account: EntityRef,
-    pub calendar: CalendarId,
-    pub uid: String,
-    pub recurrence_id: Option<Timestamp>,
-    pub title: String,
-    pub starts_at: SunriseTime,            // Zoned, Floating (CalDAV only) or AllDay
-    pub ends_at: SunriseTime,
-    pub location: Option<String>,
-    pub transparency: Transparency,        // Opaque | Transparent
-    pub status: EventStatus,               // Confirmed | Tentative | Cancelled
-    pub url: Option<String>,               // provider's web link
-    pub deleted: bool,
-}
-```
+One entity per provider series or single event, with a map of override registers
+keyed by the provider's instance identity. Provider fields, revision and ids
+merge as one quiet register, never per field. The fields it normalizes include
+title, start and end (`SunriseTime`: zoned, floating for CalDAV, or all-day),
+recurrence, location, transparency, status and the provider's web link. The
+shape is in [`calendar-architecture.md`](./calendar-architecture.md), and
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) says why
+this is not ADR-0049's expanded occurrences.
 
 External events are sealed under their account's Stream key, or in the
 vault-private key domain when the account has no Stream
@@ -122,26 +117,29 @@ their calendar's busy treatment is `free` (drawn, never blocking) or `hidden`
 | Access token | Memory |
 | Sync cursor per calendar (`syncToken`, `deltaLink`, CalDAV `sync-token`) | Local table in the vault DB, outside the op log |
 | Next fetch time and back-off | Local table |
+| Last revision seen per event, raw payload cache, push attempt journal | Local table |
 
 ## Fetching
 
 - **Who fetches:** every device with a live token for the account. There is no
   election ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)
   §Decision 5).
-- **Window:** occurrences from 30 days before today to 365 days after. An
-  occurrence that slides out of the window is left alone, not deleted.
+- **Window:** a provider that requires a window is fetched from 30 days before
+  today to 365 days after. An event that slides out of the window is left alone,
+  not deleted.
 - **Cadence:** every 5 minutes while the app is in the foreground; on the
   platform's background refresh schedule otherwise; and on demand from
   Settings → Calendars → Refresh. Each device adds a random jitter of up to one
   minute so connected devices do not fetch in lockstep.
-- **Write-if-changed:** a device writes a field of an `ExternalEvent` only when
-  the fetched value differs from the stored value. Two devices fetching the same
-  data write nothing; two fetching the same change converge on the same value.
-- **Deletions:** an occurrence is tombstoned only on a positive deletion signal
-  from the provider (a delta entry marked removed, a `404` on re-fetch, or a
-  CalDAV `sync-collection` removal). An occurrence missing from a truncated or
-  failed listing is not a deletion; `gcal.rs`'s `diff` already enforces this
-  (`a_truncated_listing_suppresses_the_deletion_pass`).
+- **Write-if-changed:** a device writes an `ExternalEvent` register only when the
+  provider revision differs from the stored one, never because mapped fields
+  differ, so builds that map an event differently cannot overwrite each other.
+  Two devices fetching the same data write nothing.
+- **Deletions:** an event is marked absent only on a positive deletion signal from
+  the provider (a delta entry marked removed, a `404` on re-fetch, or a CalDAV
+  `sync-collection` removal). An event missing from a truncated or failed listing
+  is not a deletion. Graph's `@removed` also covers events outside the delta
+  window, so it is confirmed with a read.
 - **Liveness:** after each successful fetch a device updates its own
   `fetchers[device]` entry, at most once every 15 minutes, so liveness costs a
   bounded number of ops. The fetching device itself shows its own, exact time.
@@ -156,6 +154,7 @@ shows its state *on this device*:
 | Token held, last fetch OK | "Connected · fetched 3 min ago" | Refresh, Disconnect this device |
 | No token | "Not connected on this device · fetched 12 min ago by MacBook" | **Connect on this device** |
 | Token rejected | "Needs reconnect" (danger tint) | **Reconnect** |
+| Token held, read-only grant | "Connected · read-only on this device" | **Allow editing**, which re-runs consent for the write scope |
 | No device fetching for 24 h | "No device is fetching this account" | Connect on this device |
 
 **Connect on this device** runs the provider's authorization (or prompts for

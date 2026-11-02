@@ -38,19 +38,17 @@ Overlapping Blocks coexist (the user might intend to be at two places). UI shade
 
 ## External calendar integration
 
-Calendar integrations are **read-only**
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
+Calendar integrations read and write
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)).
 
 - **Fetched events are `ExternalEvent`s, never Blocks.** Events from Google
-  Calendar, Microsoft Graph and CalDAV become read-only `ExternalEvent`
-  entities: recurring events are stored as the occurrences the provider
-  expanded inside the fetch window, each with a deterministic id. The grid draws
-  them beside Blocks, the planner treats them as fixed, and no client edits
-  them or binds a Task to them. Not built; ranked on the roadmap
-  ([`../roadmap.md`](../roadmap.md)) as
-  [#4](https://github.com/justin13888/Sunrise/issues/4).
-- **Nothing is pushed out.** Sunrise writes to no external calendar, and there
-  is no `import:gcal` source.
+  Calendar, Microsoft Graph and CalDAV become `ExternalEvent` entities: a
+  recurring event is one series with its overrides. The grid draws them beside
+  Blocks and the planner treats them as fixed. A user edit reaches the provider
+  as a synced intent. Not built; ranked on the roadmap
+  ([`../roadmap.md`](../roadmap.md)).
+- **A Block stays private unless published.** Publishing is opt-in and busy-only
+  by default, and there is no `import:gcal` source.
 - **`.ics` files are the one path that writes Blocks.** One-shot `.ics` import
   yields `fixed` Blocks with `source = import:ics`, and `.ics` export writes
   Blocks back out; `external_id` serves only this round trip
