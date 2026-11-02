@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by** [ADR-0071](./0071-calendar-read-write-through-synced-intents.md):
+decisions 1 and 4 and the rejections of two-way sync and series storage are
+withdrawn. The rest stands.
+
 **Amends** [ADR-0025](./0025-integration-account-entity.md). The
 `IntegrationAccount` entity stays, and so does its rationale for being an entity
 rather than a Stream field. Its decision that "secrets ride as ordinary entity
