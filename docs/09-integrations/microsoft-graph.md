@@ -46,7 +46,9 @@ designed in [`calendar-architecture.md`](./calendar-architecture.md).
 
 > **Superseded in part by
 > [ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md).** The
-> delta flow and error handling below stand. Mapping each expanded occurrence to its
+> delta flow and error handling below stand, except that `@removed` also covers events
+> outside the window, so it is confirmed with a read before anything is deleted. Mapping
+> each expanded occurrence to its
 > own flat `ExternalEvent` does not: events are stored as a series with override
 > registers, assembled from the series master, keeping attendees. This section is
 > rewritten when the conformance spike ends.

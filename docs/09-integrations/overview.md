@@ -177,7 +177,10 @@ Other devices keep fetching.
 - **Remove account:** a modal with **"Keep imported events"** (unchecked by
   default). Tombstones the `IntegrationAccount`. Every device that observes the
   tombstone disconnects itself as above. Events are tombstoned, or, when the box
-  was ticked, kept as read-only orphans with a "source removed" badge.
+  was ticked, kept as read-only orphans with a "source removed" badge. The account's
+  open intents are abandoned: an executor that observes the tombstone starts no further
+  push, and one already in flight may still reach the provider, and Sunrise no longer tracks its result.
+  Disconnecting a device drops its write grant with its `fetchers` entry.
 - **Revoking a Sunrise device** does not revoke its provider grants. The device
   list shows which accounts the device was fetching (from `fetchers`), and the
   revoke flow links each provider's own grant-management page.
