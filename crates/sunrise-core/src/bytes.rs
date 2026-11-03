@@ -72,7 +72,8 @@ pub(crate) fn hex_bytes(b: &[u8]) -> String {
 
 /// The 16 bytes that 32 hex characters spell, or `None` for any other text.
 pub(crate) fn unhex16(s: &str) -> Option<[u8; 16]> {
-    if s.len() != 32 || !s.is_ascii() {
+    // `from_str_radix` alone would take a leading `+` in each pair.
+    if s.len() != 32 || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0u8; 16];
@@ -126,5 +127,6 @@ mod tests {
         assert_eq!(unhex16(&"0".repeat(34)), None, "too long");
         assert_eq!(unhex16(&"g".repeat(32)), None, "not hex");
         assert_eq!(unhex16(&"é".repeat(16)), None, "32 bytes, not ascii");
+        assert_eq!(unhex16(&"+a".repeat(16)), None, "a sign is not a digit");
     }
 }
