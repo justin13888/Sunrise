@@ -444,6 +444,57 @@ run = ".github/scripts/swift-logic-gate.py"
 description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
 run = ".github/scripts/publish-gate.py"
 
+# The CI gates below had no task, so the only way to run one locally was to copy
+# its command line out of ci.yml. Each `run` is that command line verbatim; the
+# job it mirrors is named in the description, and the reason for each gate is in
+# the comment above its step in ci.yml.
+[tasks.file-size]
+description = "Reject a Rust file that grew past its package threshold (the CI File size gate, run locally)"
+run = "python3 .github/scripts/file-size-gate.py"
+
+[tasks.core-filesystem]
+description = "Reject filesystem access outside the core vault_dir seam (the CI Determinism gate step, run locally)"
+run = "python3 .github/scripts/core-filesystem-gate.py"
+
+[tasks.determinism-rng]
+description = "Reject ambient RNG in the crates (the CI Determinism gate step, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "determinism" \
+  '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
+  crates/*/src crates/*/tests crates/*/benches
+'''
+
+[tasks.log-redaction]
+description = "Reject .expose() in logging and telemetry surfaces (the CI Log redaction gate, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "log-redaction" \
+  '\bplain[a-z_]*\.expose[[:space:]]*\(' \
+  crates/sunrise-log/src \
+  crates/sunrise-server/src \
+  crates/sunrise-cli/src \
+  crates/sunrise-storage/src \
+  crates/sunrise-core/src \
+  crates/sunrise-sync/src \
+  crates/sunrise-client-core/src \
+  crates/sunrise-core-bindings/src \
+  crates/sunrise-http-sig/src \
+  crates/sunrise-relay-client/src \
+  crates/sunrise-telemetry/src \
+  crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+'''
+
+[tasks.constant-time]
+description = "Reject a variable-time comparison over a secret-named value (the CI Constant-time comparison gate, run locally)"
+run = ".github/scripts/constant-time-gate.sh"
+
+[tasks.kynos-waiver]
+description = "Reject any kynos escape hatch that would make the OpenAPI description opaque (the CI Kynos waiver gate, run locally)"
+run = ".github/scripts/kynos-waiver-gate.py"
+
 # `spargen` reads the committed file, so it is an input rather than a report:
 # `the_committed_description_is_current` fails until this has been re-run.
 [tasks.openapi]
@@ -1761,6 +1812,13 @@ run = "python3 .github/scripts/test_prepush_scope.py"
 description = "Assert when the pre-commit hook lints fuzz/ for a set of staged files (fast, synthesised metadata)"
 # Why: the script's docstring.
 run = "python3 .github/scripts/test_fuzz_closure_touched.py"
+
+[tasks.gate-contracts]
+description = "Run every gate contract under .github/scripts at once (each test_*.py)"
+# The single-file tasks above stay, for running one contract. This one discovers
+# every `test_*.py`, so a new contract is covered the moment it lands. About two
+# minutes; the cargo-reading contracts need a cargo on PATH.
+run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
 
 # --- Release artifacts ---
 #
