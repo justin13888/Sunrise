@@ -13,9 +13,9 @@ status: accepted
 > - `vault_requires` feature gating, and a floor for the envelope container
 >
 > **Amended by [ADR-0044](../11-adr/0044-per-field-ops.md)**, which changes how
-> entity ops merge. This document **reserves envelope fields 14 and 15** for
-> the commit tree (§7.1), whose design, [ADR-0043](../11-adr/0043-commit-tree.md),
-> is proposed.
+> entity ops merge. **Envelope fields 14 and 15** carry the commit tree
+> (§7.1), whose design, [ADR-0043](../11-adr/0043-commit-tree.md), is accepted
+> and built.
 >
 > **Items marked *Today* describe the tree before those ADRs are built.**
 
@@ -167,7 +167,7 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   own bound (128) under the note grammar, past which it renders as nothing and
   is kept read-only rather than refused.
 - **Fields 13–15 need no container bump.** Field 13 is the schema fingerprint
-  (ADR-0045 §3), and 14–15 are reserved for the commit tree (§7.1). Every
+  (ADR-0045 §3), and 14–15 carry the commit tree (§7.1). Every
   build in the field already preserves and signs unknown envelope fields.
 
 **Transition.** Builds before the floor compare the prefix and field 1 with
@@ -614,11 +614,16 @@ Field 13 is additive: every build in the field already preserves an unknown
 envelope field and includes it in the AAD and the signature. So it needs no
 `ENVELOPE_FORMAT_V` bump.
 
-**Fields 14 and 15 are reserved** for the commit tree. No build writes them,
-and no other use may claim them. A reader that meets either preserves it like
-any unknown field. Their meaning is assigned only when
-[ADR-0043](../11-adr/0043-commit-tree.md), now proposed, is accepted; being
-additive, they will need no `ENVELOPE_FORMAT_V` bump either.
+**Fields 14 and 15 carry the commit tree** of
+[ADR-0043](../11-adr/0043-commit-tree.md), and no other use may claim them.
+Field 14, `prev_hash`, is the `op_hash` of the same device's op at `seq - 1`.
+Field 15, `heads`, names the tip of each other device's contiguous prefix in
+the stream that advanced since the writer's previous op there. Both are
+optional. `crates/sunrise-crypto/src/op_envelope.rs#encode_chained_envelope`
+stamps them and
+`decode_envelope` reads them into `OpEnvelope::prev_hash` and
+`OpEnvelope::heads`. Being additive, they needed no `ENVELOPE_FORMAT_V` bump
+either: a build that predates them preserves them like any unknown field.
 
 ### 7.2 Parking
 

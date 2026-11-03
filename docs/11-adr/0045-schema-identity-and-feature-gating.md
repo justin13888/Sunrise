@@ -245,7 +245,8 @@ non-canonical encoding, a failed signature, or a failed AEAD tag.
   Clients show it in diagnostics, and next to the read-only banner of §8 when
   the reason is a missing feature.
 - **The digest and snapshots include parked ops.** They are part of the op
-  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed) covers,
+  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed when this
+  record was written, since accepted) covers,
   and part of what a compaction snapshot must carry ([#330](https://github.com/justin13888/Sunrise/issues/330)).
 
 ### 5. The envelope container has a floor
@@ -479,7 +480,8 @@ first feature that is adds it.
 - **The losses [#320](https://github.com/justin13888/Sunrise/issues/320), [#321](https://github.com/justin13888/Sunrise/issues/321), [#322](https://github.com/justin13888/Sunrise/issues/322) and [#329](https://github.com/justin13888/Sunrise/issues/329) record are closed.**
   Overwrite by full-state ops is [ADR-0044](./0044-per-field-ops.md)'s to
   close, and detecting divergence at all is
-  [ADR-0043](./0043-commit-tree.md)'s (proposed).
+  [ADR-0043](./0043-commit-tree.md)'s (proposed when this record was written,
+  since accepted).
 - **`DOC_SCHEMA_FLOOR` stays at 1 indefinitely.** Old ops stay in logs and on
   relays, and their bytes remain the source of truth for rebuild. Raising the
   floor would strand them, so it needs its own ADR showing no live vault or
