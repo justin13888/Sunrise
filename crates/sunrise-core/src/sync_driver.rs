@@ -102,7 +102,7 @@ use crate::config::Rng;
 use crate::core::Core;
 use crate::snapshot_sync::{recover_gaps, GapRecovery};
 use frames::{
-    build_hello, decode_hello_ack, encode_hello, encode_subscribe_one, subscribe_to_new_streams,
+    build_hello, decode_hello_ack, encode_hello, encode_subscribe_session, subscribe_to_new_streams,
 };
 use schedule::{
     backoff_sleep, next_deadline, retransmit_due, rng_unit, Deadlines, Due, InflightBatch,
@@ -1191,7 +1191,7 @@ async fn handle_frame(
                 }
                 match core.apply_remote_all(env).await {
                     Ok(events) if !events.is_empty() => {
-                        subscribe_to_new_streams(&events, subscribed, pending_sends);
+                        subscribe_to_new_streams(core, &events, subscribed, pending_sends);
                         shared.mark_synced(core.now_ms());
                     }
                     // Idempotent re-receive, an op parked awaiting its key, or
@@ -1311,13 +1311,21 @@ fn build_outbox_frames(
     rng: &dyn Rng,
 ) -> Result<(), ()> {
     let groups = core.sync_outbox_grouped(inflight_ops).map_err(|_| ())?;
+    let mut grew = false;
+    for (stream_id, ops) in &groups {
+        if !ops.is_empty() {
+            grew |= subscribed.insert(*stream_id);
+        }
+    }
+    // One `Subscribe` for the whole set, ahead of the batches it covers, and
+    // never one naming the new stream alone: that replaces the set
+    // ([`encode_subscribe_session`]).
+    if grew {
+        out.push(Outgoing::Frame(encode_subscribe_session(core, subscribed)?));
+    }
     for (stream_id, ops) in groups {
         if ops.is_empty() {
             continue;
-        }
-        if subscribed.insert(stream_id) {
-            let frame = encode_subscribe_one(stream_id)?;
-            out.push(Outgoing::Frame(frame));
         }
         *batch_counter += 1;
         let batch_id = *batch_counter;

@@ -69,27 +69,65 @@ pub(super) fn encode_hello(h: &Hello) -> Result<Vec<u8>, ()> {
 /// anti-entropy resync frame.
 ///
 /// Identical in shape to the one the handshake sends, and safe to repeat: the
-/// relay replaces a stream's subscription rather than adding a second one, and
+/// relay replaces the session's stream set with the one named here, and
 /// replays only what the cursors do not already cover.
 pub(crate) fn encode_subscribe_all(core: &Core) -> Result<Vec<u8>, ()> {
     let entries = core.sync_subscribe_entries().map_err(|_| ())?;
-    let sub = SubscribePayload { streams: entries };
-    let bytes = sub.encode().map_err(|_| ())?;
+    encode_subscribe(entries)
+}
+
+/// A `Subscribe` for the whole of `subscribed`: every stream the vault knows,
+/// with its cursors, and any stream the session took on that the vault does
+/// not list yet, from the start.
+///
+/// Sent when a session takes on a stream mid-session, and never naming that
+/// stream alone. `POST /sync/subscribe` **replaces** the session's stream set
+/// (`docs/05-sync/wire-protocol.md`, "Replaces the session's stream set"), and
+/// the SSE transport drops the events it had buffered when the set changes. A
+/// `Subscribe` naming only the new stream therefore unsubscribed every other
+/// one: their `CaughtUp` never came, so `maybe_live` held the session in
+/// `CatchingUp` until the resync tick re-subscribed them all, 30 s later, and
+/// a peer's live ops on them went undelivered for as long (#1005).
+pub(super) fn encode_subscribe_session(
+    core: &Core,
+    subscribed: &HashSet<[u8; 16]>,
+) -> Result<Vec<u8>, ()> {
+    let mut entries = core.sync_subscribe_entries().map_err(|_| ())?;
+    let listed: HashSet<[u8; 16]> = entries.iter().map(|e| e.stream_id).collect();
+    let mut unlisted: Vec<[u8; 16]> = subscribed
+        .iter()
+        .filter(|s| !listed.contains(*s))
+        .copied()
+        .collect();
+    unlisted.sort_unstable();
+    entries.extend(unlisted.into_iter().map(|stream_id| SubscribeEntry {
+        cursors: Vec::new(),
+        stream_id,
+    }));
+    encode_subscribe(entries)
+}
+
+fn encode_subscribe(streams: Vec<SubscribeEntry>) -> Result<Vec<u8>, ()> {
+    let bytes = SubscribePayload { streams }.encode().map_err(|_| ())?;
     encode_frame(MsgKind::Subscribe, FrameFlags::EMPTY, &bytes).map_err(|_| ())
 }
 
-/// Queue a `Subscribe` for every Stream a delivery just taught this device
-/// about, so that Stream's task ops start flowing.
+/// Queue a `Subscribe` when a delivery just taught this device about a Stream,
+/// so that Stream's task ops start flowing.
 ///
 /// Scanned across **every** event one delivery produced, not just the first: a
 /// `key_envelope` op releases whatever was parked waiting for its key, and a
 /// `stream.create` can be among them. A driver that read only the first event
-/// would never subscribe, and the Stream's tasks would never arrive.
+/// would never subscribe, and the Stream's tasks would never arrive. However
+/// many Streams it names, one frame goes out, for the session's whole set
+/// ([`encode_subscribe_session`]).
 pub(super) fn subscribe_to_new_streams(
+    core: &Core,
     events: &[DomainEvent],
     subscribed: &mut HashSet<[u8; 16]>,
     pending_sends: &mut Vec<Outgoing>,
 ) {
+    let mut grew = false;
     for ev in events {
         let DomainEvent::Created(r) = ev else {
             continue;
@@ -97,22 +135,11 @@ pub(super) fn subscribe_to_new_streams(
         if r.kind() != EntityKind::Stream {
             continue;
         }
-        let sid = *r.bytes();
-        if subscribed.insert(sid) {
-            if let Ok(frame) = encode_subscribe_one(sid) {
-                pending_sends.push(Outgoing::Frame(frame));
-            }
+        grew |= subscribed.insert(*r.bytes());
+    }
+    if grew {
+        if let Ok(frame) = encode_subscribe_session(core, subscribed) {
+            pending_sends.push(Outgoing::Frame(frame));
         }
     }
-}
-
-pub(super) fn encode_subscribe_one(stream_id: [u8; 16]) -> Result<Vec<u8>, ()> {
-    let sub = SubscribePayload {
-        streams: vec![SubscribeEntry {
-            cursors: Vec::new(),
-            stream_id,
-        }],
-    };
-    let bytes = sub.encode().map_err(|_| ())?;
-    encode_frame(MsgKind::Subscribe, FrameFlags::EMPTY, &bytes).map_err(|_| ())
 }
