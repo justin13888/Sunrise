@@ -167,17 +167,27 @@ mod tests {
     }
 
     /// Against a real listener: liveness passes, readiness passes until the
-    /// drain begins, and a port nothing listens on fails.
+    /// drain begins, and a port nothing listens on fails. The blob store's disk
+    /// reports half its space free, so readiness does not depend on how full
+    /// the host's filesystem is.
     #[tokio::test]
     async fn probes_a_running_server_and_sees_the_drain() {
         let dir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bind = listener.local_addr().unwrap().to_string();
+        let root = dir.path().join("blobs");
+        let blobs = crate::blob::FsBlobs::new(&root).with_disk_space(|_| {
+            Ok(Some(crate::blob::DiskSpace {
+                available: 50,
+                total: 100,
+            }))
+        });
         let state = ServerState::new(ServerConfig {
             bind: bind.clone(),
-            blob_root: Some(dir.path().join("blobs")),
+            blob_root: Some(root),
             ..ServerConfig::default()
-        });
+        })
+        .with_blob_backend(std::sync::Arc::new(blobs));
         let drain = state.drain.clone();
         let server = tokio::spawn(crate::serve(state, listener));
 

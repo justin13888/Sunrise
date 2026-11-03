@@ -205,12 +205,22 @@ mod tests {
     use kynos::http::{Method, StatusCode};
     use std::sync::Arc;
 
-    /// A state whose blob root is a fresh, writable directory.
+    /// A state whose blob root is a fresh, writable directory on a filesystem
+    /// reporting half its space free, so a test that expects a ready relay
+    /// does not depend on how full the disk it runs on is.
     fn ready_state(dir: &tempfile::TempDir) -> ServerState {
+        let root = dir.path().join("blobs");
+        let blobs = crate::blob::FsBlobs::new(&root).with_disk_space(|_| {
+            Ok(Some(crate::blob::DiskSpace {
+                available: 50,
+                total: 100,
+            }))
+        });
         ServerState::new(ServerConfig {
-            blob_root: Some(dir.path().join("blobs")),
+            blob_root: Some(root),
             ..ServerConfig::default()
         })
+        .with_blob_backend(Arc::new(blobs))
     }
 
     /// Nothing asserted what this route returns, only that the router had one.
@@ -233,7 +243,8 @@ mod tests {
     /// from a closed one.
     #[tokio::test]
     async fn health_needs_no_credential() {
-        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+        let dir = tempfile::tempdir().unwrap();
+        let state = ready_state(&dir).with_verifier(Arc::new(
             StaticVerifier::default().with("test", Subject::new("https://idp.example", "alice")),
         ));
         let client = Client::from_state(state);
