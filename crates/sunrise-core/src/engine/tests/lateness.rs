@@ -29,7 +29,7 @@ fn moving_engine_at(zone: &'static str, local: jiff::civil::DateTime) -> (Engine
     let clock = Arc::new(Moving(PLMutex::new(now), zone));
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x36; 32])));
     crate::engine::rebuild::check::enable();
-    let e = Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc);
+    let e = Engine::from_clock(clock.clone(), seeded_rng(), kc);
     (e, clock)
 }
 

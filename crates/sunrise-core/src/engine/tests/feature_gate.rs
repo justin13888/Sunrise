@@ -379,10 +379,10 @@ fn an_op_that_uses_a_feature_the_vault_does_not_require_is_refused() {
 fn requiring_a_feature_this_build_lacks_is_invalid() {
     let e = engine_seeded(ROOT, [1u8; 32], clock());
     let mut db = db_root(ROOT);
-    assert!(matches!(
+    invalid(
         e.require_features(&mut db, &["task.probe"], true),
-        Err(EngineError::Invalid(_))
-    ));
+        "`task.probe` is not a feature this build supports",
+    );
 }
 
 /// `DeviceFeatures` is read as the latest per device, whatever order the ops

@@ -63,7 +63,7 @@ fn device(seed: u8, clock: Arc<TravelClock>) -> Engine {
         VaultRootKey::from_bytes(ROOT),
         [seed; 32],
     ));
-    Engine::from_clock(clock, Arc::new(SystemRng), kc)
+    Engine::from_clock(clock, seeded_rng(), kc)
 }
 
 /// Sync the two devices both ways. Each keeps its own zone; their clocks

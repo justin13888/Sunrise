@@ -230,20 +230,20 @@ fn a_merge_refuses_one_block_twice_a_missing_one_and_a_deleted_one() {
         .entity;
     let before = op_count(&p.dba);
     let missing = EntityRef::new(EntityKind::Block, [7u8; 16]);
-    assert!(matches!(
+    invalid(
         p.ea.apply(&mut p.dba, Command::MergeBlocks { a, b: a }),
-        Err(EngineError::Invalid(_))
-    ));
+        "cannot be merged with itself",
+    );
     assert!(matches!(
         p.ea.apply(&mut p.dba, Command::MergeBlocks { a, b: missing }),
         Err(EngineError::NotFound(_))
     ));
     p.ea.apply(&mut p.dba, Command::DeleteBlock(b)).unwrap();
     let after_delete = op_count(&p.dba);
-    assert!(matches!(
+    invalid(
         p.ea.apply(&mut p.dba, Command::MergeBlocks { a, b }),
-        Err(EngineError::Invalid(_))
-    ));
+        &format!("block {b} is deleted"),
+    );
     assert_eq!(op_count(&p.dba), after_delete);
     assert_eq!(after_delete, before + 1);
 }
@@ -258,23 +258,37 @@ fn a_bulk_command_is_all_or_nothing() {
     let t2 = new_task(&p.ea, &mut p.dba, "two");
     let before = op_count(&p.dba);
     let unknown = EntityRef::new(EntityKind::Task, [7u8; 16]);
+    let r = p.ea.apply(&mut p.dba, complete_all(&[t1, unknown]));
+    assert!(
+        matches!(&r, Err(EngineError::NotFound(what)) if *what == format!("task {unknown}")),
+        "{r:?}"
+    );
+    assert_eq!(op_count(&p.dba), before, "a refused batch writes nothing");
     let refusals = [
-        complete_all(&[t1, unknown]),
-        complete_all(&[t1, t1]),
-        Command::BulkTasks(vec![
-            BulkTaskItem {
-                id: t1,
-                action: BulkTaskAction::Complete,
-            },
-            BulkTaskItem {
-                id: t2,
-                action: BulkTaskAction::Restore,
-            },
-        ]),
-        Command::BulkTasks(Vec::new()),
+        (
+            complete_all(&[t1, t1]),
+            format!("{t1} appears twice in one bulk command"),
+        ),
+        (
+            Command::BulkTasks(vec![
+                BulkTaskItem {
+                    id: t1,
+                    action: BulkTaskAction::Complete,
+                },
+                BulkTaskItem {
+                    id: t2,
+                    action: BulkTaskAction::Restore,
+                },
+            ]),
+            format!("{t2} is not deleted"),
+        ),
+        (
+            Command::BulkTasks(Vec::new()),
+            "a bulk command needs at least one task".into(),
+        ),
     ];
-    for cmd in refusals {
-        assert!(p.ea.apply(&mut p.dba, cmd).is_err());
+    for (cmd, why) in refusals {
+        invalid(p.ea.apply(&mut p.dba, cmd), &why);
         assert_eq!(op_count(&p.dba), before, "a refused batch writes nothing");
     }
     assert_eq!(task_at(&p.dba, t1).state, TaskState::Todo);

@@ -88,7 +88,13 @@ fn an_invalid_draft_is_rejected_before_any_op_is_written() {
         size_bytes: 0,
         ..attachment_draft(task)
     };
-    assert!(e.apply(&mut db, Command::AttachFile(bad)).is_err());
+    assert!(matches!(
+        e.apply(&mut db, Command::AttachFile(bad)),
+        Err(EngineError::Validation(ValidationError::Field {
+            field: "attachment.size_bytes",
+            constraint: "size_policy",
+        }))
+    ));
     assert_eq!(op_count(&db), before, "a rejected draft writes no op");
 }
 
@@ -213,12 +219,13 @@ fn attachments_list_oldest_first_and_only_for_their_own_task() {
 fn task_attachments_rejects_a_non_task_id() {
     let db = db();
     let e = engine();
-    assert!(e
-        .query(
+    invalid(
+        e.query(
             &db,
-            Query::TaskAttachments(EntityRef::new(EntityKind::Stream, [1u8; 16]))
-        )
-        .is_err());
+            Query::TaskAttachments(EntityRef::new(EntityKind::Stream, [1u8; 16])),
+        ),
+        "expected Task, got Stream",
+    );
 }
 
 /// Attachment metadata that arrives before its parent task still lands:

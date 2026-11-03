@@ -233,11 +233,7 @@ fn a_zone_change_moves_the_planner_day_and_rewrites_nothing() {
     };
     assert_eq!(day(&ny), date(2026, 3, 2));
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
-    let tokyo = Engine::from_clock(
-        Arc::new(ZonedClock(now, "Asia/Tokyo")),
-        Arc::new(SystemRng),
-        kc,
-    );
+    let tokyo = Engine::from_clock(Arc::new(ZonedClock(now, "Asia/Tokyo")), seeded_rng(), kc);
     assert_eq!(day(&tokyo), date(2026, 3, 3));
     assert_eq!(stored(&db), before);
 }
@@ -250,7 +246,7 @@ fn ny_at(at: &str) -> (Engine, u64) {
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
     let e = Engine::from_clock(
         Arc::new(ZonedClock(now, "America/New_York")),
-        Arc::new(SystemRng),
+        seeded_rng(),
         kc,
     );
     (e, now)

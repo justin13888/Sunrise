@@ -8,7 +8,6 @@
 //! draw.
 
 use super::*;
-use crate::config::SystemRng;
 use crate::vault_lock::VaultLockError;
 use parking_lot::Mutex as PLMutex;
 use std::sync::Arc;
@@ -22,6 +21,38 @@ impl crate::config::Clock for FakeClock {
     }
 }
 
+/// The randomness a vault on [`FakeClock`] is opened with.
+///
+/// A frozen clock gives every ULID the vault mints one timestamp, so their
+/// order is the order of their random tails, which `SystemRng` changed from
+/// run to run. Each config a test builds draws its own seeded stream instead,
+/// seeded by its position among the configs its thread has built, so a test
+/// replays exactly and two opens of one test never mint the same id.
+#[derive(Debug)]
+struct SeededRng(PLMutex<rand::rngs::StdRng>);
+
+impl crate::config::Rng for SeededRng {
+    fn fill_bytes(&self, dest: &mut [u8]) {
+        rand_core::RngCore::fill_bytes(&mut *self.0.lock(), dest);
+    }
+}
+
+thread_local! {
+    static RNGS_BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The next seeded [`crate::config::Rng`] of this thread; see [`SeededRng`].
+fn seeded_rng() -> Arc<SeededRng> {
+    let n = RNGS_BUILT.with(|c| {
+        let n = c.get();
+        c.set(n + 1);
+        n
+    });
+    Arc::new(SeededRng(PLMutex::new(
+        <rand::rngs::StdRng as rand_core::SeedableRng>::seed_from_u64(0x5EED_0000 + n),
+    )))
+}
+
 /// A config for a vault in `dir`. Every command and delivery on this test's
 /// thread then also checks that a rebuild of the log lands on the rows it
 /// left (ADR-0065 §5), as the engine's own tests do.
@@ -31,7 +62,7 @@ fn cfg(dir: &std::path::Path) -> CoreConfig {
         dir.to_path_buf(),
         "0.1.0+test",
         Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-        Arc::new(SystemRng),
+        seeded_rng(),
     )
 }
 
@@ -413,7 +444,7 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
             dir.path().to_path_buf(),
             "0.1.0+test",
             Arc::clone(&clock) as Arc<dyn crate::config::Clock>,
-            Arc::new(SystemRng),
+            seeded_rng(),
         ),
         unlock(),
     )
@@ -451,7 +482,7 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
     );
     assert!(matches!(
         core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
-        Err(CoreError::Engine(EngineError::Invalid(_)))
+        Err(CoreError::Engine(EngineError::Invalid(why))) if why == "snapshot: not canonical CBOR"
     ));
     assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
     core.close().await.unwrap();
@@ -477,7 +508,7 @@ async fn open_rebuilds_the_projection_once_per_fold_version() {
             dir.path().to_path_buf(),
             "0.1.0+test",
             Arc::new(FakeClock(PLMutex::new(ms))),
-            Arc::new(SystemRng),
+            seeded_rng(),
         )
     };
     let read = |core: &Core, sql: &str| -> Vec<String> {
@@ -667,7 +698,7 @@ async fn a_failed_rebuild_never_fails_the_open() {
         dir.path().to_path_buf(),
         "0.1.0+test",
         Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-        Arc::new(SystemRng),
+        seeded_rng(),
     );
     let core = Core::open(damaged, unlock()).await.unwrap();
     let (marker, title): (i64, String) = {
@@ -985,7 +1016,7 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
         dir.path().to_path_buf(),
         "0.1.0+test",
         clock.clone(),
-        Arc::new(SystemRng),
+        seeded_rng(),
     );
     let core = Arc::new(Core::open(cfg, unlock()).await.unwrap());
 
@@ -1504,7 +1535,10 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     let same = core.on_time_zone_changed("Asia/Kolkata").unwrap();
     assert!(!same.changed);
     assert_eq!(same.affected_tasks, 0);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 
     // The same zone under an alias is no change either: no event, nothing
     // counted, so no spurious notification.
@@ -1512,7 +1546,10 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     assert_eq!(alias.previous, "Asia/Kolkata");
     assert!(!alias.changed);
     assert_eq!(alias.affected_tasks, 0);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     core.on_time_zone_changed("Asia/Kolkata").unwrap();
 
     // A name the tzdb does not know is refused, with a typed error, and
@@ -1553,7 +1590,10 @@ async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
     assert_eq!(first.previous, "UTC");
     assert!(!first.changed);
     assert!(!first.notify);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     core.close().await.unwrap();
 }
 

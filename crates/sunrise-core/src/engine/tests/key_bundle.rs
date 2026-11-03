@@ -18,7 +18,7 @@ fn clock() -> Arc<FakeClock> {
 fn paired(seed: u8) -> Engine {
     Engine::from_clock(
         clock(),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_paired(
             VaultRootKey::from_bytes(ROOT),
             [seed; 32],
@@ -119,10 +119,10 @@ fn a_tampered_bundle_is_refused() {
     bytes[last] ^= 1;
     let r = engine_random_keys(ROOT, [9; 32], clock());
     let mut rdb = db_root(ROOT);
-    assert!(matches!(
+    invalid(
         r.apply_key_bundle(&mut rdb, &bytes),
-        Err(EngineError::Invalid(_))
-    ));
+        "key bundle: the key bundle's signature does not verify",
+    );
 }
 
 /// Every key is credited to the publisher. Once the reader learns the

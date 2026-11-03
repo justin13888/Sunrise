@@ -341,8 +341,8 @@ fn a_patch_that_inverts_the_range_is_rejected() {
         .unwrap()
         .entity;
     let (before_start, _) = block_at(8, 1);
-    assert!(e
-        .apply(
+    assert!(matches!(
+        e.apply(
             &mut db,
             Command::UpdateBlock {
                 id: block,
@@ -351,8 +351,12 @@ fn a_patch_that_inverts_the_range_is_rejected() {
                     ..Default::default()
                 },
             },
-        )
-        .is_err());
+        ),
+        Err(EngineError::Validation(ValidationError::Field {
+            field: "block.ends_at",
+            constraint: "after_starts_at",
+        }))
+    ));
 }
 
 #[test]
@@ -511,19 +515,24 @@ fn block_commands_reject_a_non_block_id() {
     let mut db = db();
     let e = engine();
     let task = new_task(&e, &mut db, "not a block");
-    assert!(e.apply(&mut db, Command::DeleteBlock(task)).is_err());
-    assert!(e
-        .apply(
+    invalid(
+        e.apply(&mut db, Command::DeleteBlock(task)),
+        "expected Block, got Task",
+    );
+    invalid(
+        e.apply(
             &mut db,
             Command::UpdateBlock {
                 id: task,
-                patch: BlockPatch::default()
-            }
-        )
-        .is_err());
-    assert!(e
-        .apply(&mut db, Command::BindTask { block: task, task })
-        .is_err());
+                patch: BlockPatch::default(),
+            },
+        ),
+        "expected Block, got Task",
+    );
+    invalid(
+        e.apply(&mut db, Command::BindTask { block: task, task }),
+        "expected Block, got Task",
+    );
 }
 
 #[test]
@@ -750,9 +759,10 @@ fn a_re_import_resurrects_a_locally_deleted_block() {
 fn an_import_with_no_uid_is_refused() {
     let mut db = db();
     let e = engine();
-    assert!(e
-        .apply(&mut db, import("ics", "  ", block_draft(9, 1, Some("Gym"))))
-        .is_err());
+    invalid(
+        e.apply(&mut db, import("ics", "  ", block_draft(9, 1, Some("Gym")))),
+        "an external item needs a UID",
+    );
 }
 
 #[test]
@@ -764,5 +774,11 @@ fn an_import_validates_its_draft_like_any_other_write() {
         ends_at: block_at(9, 1).0,
         ..block_draft(9, 1, Some("Gym"))
     };
-    assert!(e.apply(&mut db, import("ics", "ev1", inverted)).is_err());
+    assert!(matches!(
+        e.apply(&mut db, import("ics", "ev1", inverted)),
+        Err(EngineError::Validation(ValidationError::Field {
+            field: "block.ends_at",
+            constraint: "after_starts_at",
+        }))
+    ));
 }
