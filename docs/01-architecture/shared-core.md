@@ -55,7 +55,7 @@ records onto these functions and does nothing else:
              +------> sunrise-client-core <-----+
                         |              |
                         |   (relay)    v
-                        |      sunrise-relay-client --> wire, http-sig, error
+                        |      sunrise-relay-client --> http-sig
                         v
                    sunrise-core --> sunrise-domain, sunrise-sync, ...
 ```
