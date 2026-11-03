@@ -51,14 +51,18 @@ libfuzzer-sys = "0.4"
 # `ciborium` is here for the `key_bundle` target, which rebuilds a decoded
 # bundle's CBOR map to compare with its input, `sunrise-crypto` having no
 # encoder for a bundle it did not seal. Features as the root workspace's entry.
+# `sunrise-core` and `sunrise-storage` are here for the `core_snapshot` target,
+# which drives `Engine::apply_snapshot` against an in-memory vault (`Db`).
 ciborium = { version = "0.2", default-features = false }
 sunrise-cbor ={ path = "../crates/sunrise-cbor" }
+sunrise-core = { path = "../crates/sunrise-core" }
 sunrise-crypto = { path = "../crates/sunrise-crypto" }
 sunrise-domain = { path = "../crates/sunrise-domain" }
 sunrise-id = { path = "../crates/sunrise-id" }
 sunrise-integrations = { path = "../crates/sunrise-integrations" }
 sunrise-pairing = { path = "../crates/sunrise-pairing" }
 sunrise-server = { path = "../crates/sunrise-server" }
+sunrise-storage = { path = "../crates/sunrise-storage" }
 sunrise-wire-protocol = { path = "../crates/sunrise-wire-protocol" }
 
 # The frozen vectors under `fuzz/seeds/op_envelope/`, `device_cert/`,
@@ -183,6 +187,13 @@ bench = false
 [[bin]]
 name = "identity_chain"
 path = "fuzz_targets/identity_chain.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "core_snapshot"
+path = "fuzz_targets/core_snapshot.rs"
 test = false
 doc = true
 bench = false
