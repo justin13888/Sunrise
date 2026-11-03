@@ -441,7 +441,7 @@ description = "Reject non-view logic in Swift that is not on the shrinking allow
 run = ".github/scripts/swift-logic-gate.py"
 
 [tasks.publish-gate]
-description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
+description = "Reject a publishable crate or package, an app-train version that disagrees, or a uniffi version the binding generator and its runtime disagree on (the CI gate, run locally)"
 run = ".github/scripts/publish-gate.py"
 
 # The CI gates below had no task, so the only way to run one locally was to copy
