@@ -310,6 +310,7 @@ impl SseTransport {
         let response = await_head(self.client.request(request), head).await?;
         let status = response.status();
         let date = server_date(response.headers());
+        let retry_after = retry_after(response.headers());
         // The status is already in hand, so the kind of body about to arrive is
         // known before a byte of it is read. The caller's bounds size the reply
         // it asked for; a refusal is a document on every route, and is read
@@ -323,6 +324,7 @@ impl SseTransport {
         Ok(Reply {
             status,
             date,
+            retry_after,
             bytes,
         })
     }
@@ -372,10 +374,12 @@ impl SseTransport {
         // outside any `tokio::select!`. An unbounded read here was not a retry
         // loop the driver eventually notices — it was the driver task parked
         // for good, with no error, no backoff and nothing in the log.
+        let retry_after = retry_after(response.headers());
         let bytes = read_body(response.into_body(), MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT).await?;
         Ok(Reply {
             status,
             date,
+            retry_after,
             bytes,
         })
     }
@@ -418,7 +422,11 @@ impl SseTransport {
                 self.signer.as_ref().map(|s| s.now_ms()),
             ));
         }
-        TransportError::Server { code, message }
+        TransportError::Server {
+            code,
+            message,
+            retry_after: reply.retry_after,
+        }
     }
 }
 
@@ -435,6 +443,11 @@ pub(super) struct Reply {
     /// requires it, so it is an `Option` and its absence degrades the advice
     /// rather than the diagnosis.
     pub(super) date: Option<String>,
+    /// The relay's `Retry-After`, when it sent one as delta-seconds.
+    ///
+    /// Carried onto the refusal [`SseTransport::refuse`] builds, so the sync
+    /// driver can wait out a `429 RATE_LIMITED` window rather than re-hit it.
+    pub(super) retry_after: Option<std::time::Duration>,
     /// The whole body.
     pub(super) bytes: Vec<u8>,
 }
@@ -543,6 +556,23 @@ pub(super) fn server_date(headers: &hyper::HeaderMap) -> Option<String> {
         .to_str()
         .ok()
         .map(ToOwned::to_owned)
+}
+
+/// The `Retry-After` header in its delta-seconds form.
+///
+/// The relay sends whole seconds (`RateLimited::after_secs`). The HTTP-date
+/// form, and anything else that is not a non-negative integer, reads as
+/// absent: the driver then falls back to its own backoff schedule, which is
+/// where it was before it read the header at all.
+pub(super) fn retry_after(headers: &hyper::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(hyper::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
 }
 
 /// What to tell a user whose device binding was refused.

@@ -200,18 +200,31 @@ impl Deadlines {
     }
 }
 
+/// The most a relay's `Retry-After` can stretch one reconnect delay.
+///
+/// The relay's own rate limits send whole seconds well under this. A larger
+/// value is a misconfigured or hostile relay, and honouring it as sent would
+/// park the driver for as long as the relay liked with nothing in the UI to
+/// say why; past this cap the driver retries anyway and the relay can refuse
+/// again. [`SyncShared::wake_reconnect`] still cuts any wait short.
+pub(super) const MAX_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+
 /// Sleep for the next backoff delay, interruptible by shutdown and cut short
 /// by [`SyncShared::wake_reconnect`]. Returns `false` if shutdown was
 /// requested (caller should stop).
+///
+/// `floor` is the relay's `Retry-After` from the refusal that ended the last
+/// attempt, if any; see [`reconnect_delay`].
 pub(super) async fn backoff_sleep(
     backoff: &mut Backoff,
     rng: &dyn Rng,
     shared: &SyncShared,
+    floor: Option<Duration>,
 ) -> bool {
     if shared.is_shutdown() {
         return false;
     }
-    let delay = next_backoff_delay(backoff, rng_unit(rng));
+    let delay = reconnect_delay(next_backoff_delay(backoff, rng_unit(rng)), floor);
     tracing::debug!(
         ev = "sync.backoff",
         attempt = u64::from(backoff.attempt()),
@@ -224,6 +237,18 @@ pub(super) async fn backoff_sleep(
         () = shared.reconnect.notified() => true,
         () = tokio::time::sleep(delay) => true,
     }
+}
+
+/// The backoff schedule's delay, raised to the relay's `Retry-After` where it
+/// asked for longer, with that floor capped at [`MAX_RETRY_AFTER`].
+///
+/// A floor, not a replacement: a `Retry-After` shorter than the schedule's
+/// own step does not shorten it, so a relay cannot pull a backed-off client
+/// into a tighter retry loop than the schedule allows. The attempt counter
+/// still advances, so the schedule resumes where it was once the floor is
+/// gone.
+pub(super) fn reconnect_delay(scheduled: Duration, floor: Option<Duration>) -> Duration {
+    floor.map_or(scheduled, |f| scheduled.max(f.min(MAX_RETRY_AFTER)))
 }
 
 /// How long the next reconnect waits, and the attempt bookkeeping that goes

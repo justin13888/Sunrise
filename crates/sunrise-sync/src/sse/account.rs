@@ -51,6 +51,7 @@ impl SseTransport {
                     self.signer.as_ref().map(|s| s.now_ms())
                 )
             ),
+            retry_after: reply.retry_after,
         })
     }
 

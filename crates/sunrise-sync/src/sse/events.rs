@@ -2,8 +2,8 @@
 //! event back into the frame the driver already knows how to handle.
 
 use super::http::{
-    await_head, protocol, read_body, server_date, Reply, BODY_IDLE_TIMEOUT, HEAD_TIMEOUT,
-    MAX_EVENT_BYTES,
+    await_head, protocol, read_body, retry_after, server_date, Reply, BODY_IDLE_TIMEOUT,
+    HEAD_TIMEOUT, MAX_EVENT_BYTES,
 };
 use super::SseTransport;
 use crate::transport::TransportError;
@@ -70,12 +70,14 @@ impl SseTransport {
             // that never arrived into an empty one that did, so it propagates.
             let status = response.status();
             let date = server_date(response.headers());
+            let retry_after = retry_after(response.headers());
             let bytes = read_body(response.into_body(), MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT)
                 .await
                 .unwrap_or_default();
             return Err(self.refuse(&Reply {
                 status,
                 date,
+                retry_after,
                 bytes,
             }));
         }

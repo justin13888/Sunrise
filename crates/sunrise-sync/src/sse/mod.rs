@@ -90,9 +90,9 @@ use std::sync::Arc;
 use self::events::parse_id;
 #[cfg(test)]
 use self::http::{
-    await_head, binding_advice, field_str, field_u32, field_u64, read_body, server_date, Reply,
-    BLOB_IDLE_TIMEOUT, BODY_IDLE_TIMEOUT, CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT, MAX_BLOB_BYTES,
-    MAX_EVENT_BYTES,
+    await_head, binding_advice, field_str, field_u32, field_u64, read_body, retry_after,
+    server_date, Reply, BLOB_IDLE_TIMEOUT, BODY_IDLE_TIMEOUT, CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT,
+    MAX_BLOB_BYTES, MAX_EVENT_BYTES,
 };
 #[cfg(test)]
 use self::session::cursor_json;

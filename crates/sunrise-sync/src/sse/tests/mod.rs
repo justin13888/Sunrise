@@ -20,10 +20,11 @@ mod stream;
 
 use super::{
     await_head, binding_advice, cursor_json, decode_frame, field_str, field_u32, field_u64,
-    parse_id, read_body, server_date, AckPayload, BacklogPayload, CaughtUpPayload, ClosePayload,
-    CursorEntry, ErrorPayload, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
-    RefreshTokenPayload, Reply, SseTransport, SubscribePayload, BLOB_IDLE_TIMEOUT,
-    BODY_IDLE_TIMEOUT, CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT, MAX_BLOB_BYTES, MAX_EVENT_BYTES,
+    parse_id, read_body, retry_after, server_date, AckPayload, BacklogPayload, CaughtUpPayload,
+    ClosePayload, CursorEntry, ErrorPayload, HelloAck, MsgKind, OpBatchPayload,
+    RefreshTokenAckPayload, RefreshTokenPayload, Reply, SseTransport, SubscribePayload,
+    BLOB_IDLE_TIMEOUT, BODY_IDLE_TIMEOUT, CHUNK_HEAD_TIMEOUT, HEAD_TIMEOUT, MAX_BLOB_BYTES,
+    MAX_EVENT_BYTES,
 };
 use crate::signer::DeviceSigner;
 use crate::transport::{Transport, TransportError};
@@ -67,6 +68,7 @@ fn reply(status: u16, body: &[u8], date: Option<&str>) -> Reply {
     Reply {
         status: hyper::StatusCode::from_u16(status).expect("a status"),
         date: date.map(ToOwned::to_owned),
+        retry_after: None,
         bytes: body.to_vec(),
     }
 }

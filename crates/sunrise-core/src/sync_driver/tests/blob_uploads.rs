@@ -91,6 +91,7 @@ async fn an_upload_refused_for_its_id_counts_an_attempt_and_drops_the_id() {
         refusal: || TransportError::Server {
             code: ErrorCode::SyncOpInvalid.as_str(),
             message: "unknown upload".into(),
+            retry_after: None,
         },
         inits: 0,
         puts: 0,
