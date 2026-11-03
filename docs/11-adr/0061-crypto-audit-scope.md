@@ -29,7 +29,7 @@ Two mechanical gaps sit beside that one.
   how `sunrise-crypto` compares an identity id, a content hash or a key
   (`crates/sunrise-crypto/src/keys.rs`,
   `crates/sunrise-crypto/src/blob_chunk.rs`,
-  `crates/sunrise-crypto/src/device_cert.rs`,
+  `crates/sunrise-crypto/src/device_cert/mod.rs#verify_binding`,
   `crates/sunrise-crypto/src/identity_transition.rs`), and nothing stopped the
   next `==` on a MAC or a tag. `clippy.toml` banned only clocks and RNGs.
 - **Fuzzing never ran on a pull request.** The six `cargo-fuzz` targets ran

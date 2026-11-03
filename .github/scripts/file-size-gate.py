@@ -201,12 +201,6 @@ BASELINE: dict[str, str] = {
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
-    # --- sunrise-crypto -----------------------------------------------------
-    "crates/sunrise-crypto/src/device_cert.rs": (
-        "Its implementation alone is below this package's threshold; the rest "
-        "is tests. The codec, signing and verification of one "
-        "certificate type."
-    ),
     # --- sunrise-e2e --------------------------------------------------------
     "crates/sunrise-e2e/src/lib.rs": (
         "The crate's whole helper surface for booting a relay, opening wired "
