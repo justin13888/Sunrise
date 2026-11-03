@@ -92,8 +92,11 @@ still stands, and is kept here:
   the `persons` table, and no `share_grant` op is implemented. Closing it is a
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.
-- **Calendar integration.** Only the Google request and response codec
-  exists (`crates/sunrise-integrations/src/gcal/mod.rs`), with no consumer. The
+- **Calendar integration.** Only the Google client logic exists, with no
+  consumer: the event types (`crates/sunrise-integrations/src/gcal/mod.rs`),
+  the OAuth flow and stored credential
+  (`crates/sunrise-integrations/src/gcal/oauth.rs`), and the transport trait
+  and change detection (`crates/sunrise-integrations/src/gcal/poll.rs`). The
   design is now read-only Google, Microsoft and CalDAV with per-device OAuth
   ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
 - **Notes (rich text)** (macOS) stays a **MUST**, and it is now **met** — this is

@@ -57,9 +57,13 @@ user can actually take today, and the only one that creates Blocks.
 > - **Imported entities are not marked read-only.** Nothing enforces it.
 >
 > What does hold as written: line unfolding and escapes both directions, CRLF
-> and LF input, the four RFC 5545 time forms preserved distinctly (UTC instant,
-> zoned civil, floating, whole date) all the way into `SunriseTime`, and the
-> rule that lossy imports are surfaced rather than dropped.
+> and LF input (the content-line lexer,
+> `crates/sunrise-integrations/src/ical/lex.rs`), the four RFC 5545 time forms
+> preserved distinctly (UTC instant, zoned civil, floating, whole date) all the
+> way into `SunriseTime` (the date and date-time grammar,
+> `crates/sunrise-integrations/src/ical/time.rs`), and the rule that lossy
+> imports are surfaced rather than dropped (the component parser and writer,
+> `crates/sunrise-integrations/src/ical/mod.rs`).
 
 ## Import
 
