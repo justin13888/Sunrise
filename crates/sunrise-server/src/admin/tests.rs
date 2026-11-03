@@ -610,13 +610,12 @@ async fn an_account_tree_loses_its_manifests_before_its_chunks() {
     assert!(locked.iter().all(|d| d.join("0").exists()));
 }
 
-/// Under the default blob root, a temp directory other processes share, a
-/// stale orphan-shaped directory is left in place: the sweep only runs under
-/// a root the operator named. The state's root is redirected to a private
-/// directory so the pass cannot reach the real shared one, while the config
-/// still names none.
+/// Under a blob root the operator did not name, a stale orphan-shaped
+/// directory is left in place: the sweep only runs under a root the config
+/// sets. The state's root is redirected to a directory the test plants the
+/// orphan in, while the config still names none.
 #[tokio::test]
-async fn the_orphan_sweep_skips_the_default_shared_root() {
+async fn the_orphan_sweep_skips_an_unnamed_root() {
     let dir = tempfile::tempdir().unwrap();
     let mut state = ServerState::with_clock(
         ServerConfig::default(),
@@ -633,10 +632,7 @@ async fn the_orphan_sweep_skips_the_default_shared_root() {
         .unwrap();
     assert_eq!(report.orphans_swept, 0);
     assert_eq!(report.failures, 0);
-    assert!(
-        orphan.exists(),
-        "an orphan under the default root was swept"
-    );
+    assert!(orphan.exists(), "an orphan under an unnamed root was swept");
 }
 
 /// A signed subscribe records the device's cursors; an unsigned one has no

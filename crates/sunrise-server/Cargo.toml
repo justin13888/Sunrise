@@ -78,6 +78,9 @@ sunrise-storage = { workspace = true }
 # Redacted trace export, off unless `[observability]` is written.
 sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
+# The private blob root a state with neither `blob_root` nor a database file
+# keeps for its lifetime (`state.rs`), so no two of them share a tree.
+tempfile = "3"
 # The relay database key is wiped when its holder drops (ADR-0060).
 zeroize = { workspace = true }
 
@@ -88,7 +91,6 @@ rustix = { workspace = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }
-tempfile = "3"
 # Reads exported spans back in `tests/span-redaction.rs` and the span-tree
 # tests.
 sunrise-telemetry = { workspace = true, features = ["testing"] }
