@@ -6,7 +6,7 @@
 //!
 //! v1 surface:
 //! - [`FrameHeader`] / [`encode_frame`] / [`decode_frame`] — framing.
-//! - [`MsgKind`] — discriminator for the 15 v1 message kinds.
+//! - [`MsgKind`] — discriminator for the v1 message kinds.
 //! - [`Hello`] / [`HelloAck`] — session negotiation.
 //! - [`Capability`] — capability bitfield with required-bits enforcement.
 //!
