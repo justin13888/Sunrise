@@ -251,11 +251,11 @@ enum SessionEnd {
     /// Transport dropped, or the session failed locally; reconnect after
     /// backoff.
     Disconnected,
-    /// The relay refused the stream and said why: `recv_frame` returned
-    /// [`TransportError::Server`] with the relay's own code. Reconnects after
-    /// backoff exactly as `Disconnected` does; it is a separate variant so the
-    /// code reaches `sync.session.error` instead of being discarded with the
-    /// error that carried it.
+    /// The relay refused the session and said why: the `Hello` send or a
+    /// `recv_frame` returned [`TransportError::Server`] with the relay's own
+    /// code. Reconnects after backoff exactly as `Disconnected` does; it is a
+    /// separate variant so the code reaches `sync.session.error` instead of
+    /// being discarded with the error that carried it.
     Refused { code: &'static str, message: String },
     /// The relay sent a `Close`. The code's catalogue `retryable` flag decides
     /// what happens next: a retryable close reconnects after backoff, any
@@ -265,9 +265,9 @@ enum SessionEnd {
 }
 
 impl SessionEnd {
-    /// The end a failed `recv_frame` means. A relay refusal keeps its code;
-    /// every other transport error is a drop.
-    fn from_recv_error(e: TransportError) -> Self {
+    /// The end a failed `Hello` send or `recv_frame` means. A relay refusal
+    /// keeps its code; every other transport error is a drop.
+    fn from_transport_error(e: TransportError) -> Self {
         match e {
             TransportError::Server { code, message } => Self::Refused { code, message },
             _ => Self::Disconnected,
@@ -591,7 +591,7 @@ fn log_session_end(end: &SessionEnd) {
             retryable = true,
             result = "failed",
             cause = %message,
-            "relay refused the event stream"
+            "relay refused the session"
         ),
         // `err_kind` and `retryable` are the catalogue's for the relay's code,
         // so this line agrees with the relay's own log of the same close.
@@ -706,8 +706,12 @@ async fn handshake(
     let Ok(hello_frame) = encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &hello_bytes) else {
         return Err(SessionEnd::Disconnected);
     };
-    if transport.send_frame(hello_frame).await.is_err() {
-        return Err(SessionEnd::Disconnected);
+    // The SSE transport opens the session on this send, so a relay that turns
+    // the session away (`RATE_LIMITED` from the per-device session budget, an
+    // auth failure) answers here, before any frame is received. Its code is
+    // kept for the log exactly as a refusal out of `recv_frame` is (#1003).
+    if let Err(e) = transport.send_frame(hello_frame).await {
+        return Err(SessionEnd::from_transport_error(e));
     }
     // Whether the relay agreed to take an in-band refresh. A relay that did
     // not gets no `0x12` at all: it would ignore the frame, and the client
@@ -743,7 +747,7 @@ async fn handshake(
                 Err(_) => return Err(SessionEnd::Disconnected),
             },
             Ok(None) => return Err(SessionEnd::Disconnected),
-            Err(e) => return Err(SessionEnd::from_recv_error(e)),
+            Err(e) => return Err(SessionEnd::from_transport_error(e)),
         }
     }
 }
@@ -1036,7 +1040,7 @@ async fn session(
                 .await;
             }
             SessionEvent::Recv(Ok(None)) => return SessionEnd::Disconnected,
-            SessionEvent::Recv(Err(e)) => return SessionEnd::from_recv_error(e),
+            SessionEvent::Recv(Err(e)) => return SessionEnd::from_transport_error(e),
         }
     }
 }
