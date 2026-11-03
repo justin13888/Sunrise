@@ -5,8 +5,9 @@
 //! account's private key domain; and on one device, `streams delete Old
 //! --move-to New` re-homes a task filed with `#old` and retitled, while
 //! `streams delete New` detaches it. How a deletion converges against an
-//! edit made apart is proved in `sunrise-core`'s
-//! `src/engine/tests/optional_stream.rs` and in `delete_defect_probe.rs`.
+//! edit made apart is proved in
+//! `crates/sunrise-core/src/engine/tests/optional_stream.rs` and in
+//! `delete_defect_probe.rs`.
 
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
