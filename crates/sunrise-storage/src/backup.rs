@@ -370,9 +370,9 @@ impl Db {
     /// first `n` not taken, and return where it went.
     ///
     /// What a client does before restoring an account into the same place
-    /// from its recovery code, which needs an empty directory: the vault that
-    /// would not open is kept, not deleted. The caller holds no connection on
-    /// it.
+    /// from its recovery code, which needs a directory holding no vault: the
+    /// vault that would not open is kept, not deleted. The caller holds no
+    /// connection on it.
     ///
     /// # Errors
     /// [`DbError::Restore`], naming `dir`, when it cannot be moved.
