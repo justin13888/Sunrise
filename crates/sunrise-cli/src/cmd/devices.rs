@@ -371,7 +371,7 @@ async fn push_rotation(core: &sunrise_core::Core) -> CmdResult {
         &mut |_| {},
     )
     .await?;
-    waited.map_err(|last| super::plumbing::not_caught_up(&last).into())
+    waited.map_err(|last| super::plumbing::not_caught_up(&last, core.sync_last_refusal()).into())
 }
 
 /// A transport to the relay bound to this device, for one account call

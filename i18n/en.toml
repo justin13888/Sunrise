@@ -2424,6 +2424,10 @@ stopped = "sync: stopped"
 needs_url = "sync needs SUNRISE_SYNC_URL"
 # {seconds} is how long `sync --once` waited.
 timed_out = "sync: outbox did not drain within {seconds, plural, one {#s} other {#s}}"
+# `sync --once`, when it ran out its deadline and the relay had refused the
+# latest session with a wire error code. {code} is that code as the relay sent
+# it (RATE_LIMITED, AUTH_TOKEN_INVALID, ...); {seconds} is how long it waited.
+refused = "sync: the relay refused the session ({code}); outbox did not drain within {seconds, plural, one {#s} other {#s}}"
 # `sync --once`, when the session reached a state waiting cannot leave, before
 # its deadline. {badge} is stopped (the relay refused this device's credential)
 # or changes_missing (the relay cannot supply changes this device lacks),
