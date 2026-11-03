@@ -9,7 +9,7 @@
 //! go through here, so the two clients read the same routes and classify the
 //! same refusals.
 
-use crate::api::{self, Credential, SecretString};
+use crate::api;
 use crate::bootstrap::{register_device, DeviceIdentity};
 
 /// Why the relay did not give a recovery what it asked for.
@@ -59,12 +59,8 @@ impl RelayRecovery {
     /// # Errors
     /// [`RelayRefusal::Other`] when `base_url` is not a usable origin.
     pub fn new(base_url: &str, bearer: &str) -> Result<Self, RelayRefusal> {
-        let client = api::Client::new(base_url)
-            .map_err(|e| RelayRefusal::Other(format!("not a relay origin: {e}")))?
-            .with_credential(
-                "AccountToken",
-                Credential::Bearer(SecretString::from(bearer.to_owned())),
-            );
+        let client = crate::client(base_url, bearer)
+            .map_err(|e| RelayRefusal::Other(format!("not a relay origin: {e}")))?;
         Ok(Self {
             client,
             base_url: base_url.to_owned(),

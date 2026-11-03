@@ -85,3 +85,37 @@ pub use account::{
 pub use bootstrap::{bootstrap, register_device, BootstrapError, BootstrapOutcome, DeviceIdentity};
 pub use push::{register_push_token, PushTokenError, PushTokenRegistration};
 pub use recovery::{RecoveryMaterial, RelayRecovery, RelayRefusal, RetiredCode};
+
+/// The generated client for the relay at `base_url`, carrying `bearer` as the
+/// account's bearer token.
+///
+/// `AccountToken` is the scheme's name in `components.securitySchemes`, which
+/// the generated client matches each operation's `security` requirement
+/// against. A missing required credential is a request-construction error
+/// rather than a silent 401.
+///
+/// # Errors
+/// What the generated client reports, in its own words, when `base_url` is not
+/// a usable origin. Every caller folds that into its own error as text, so the
+/// text is what this returns rather than the generated error's large enum.
+pub(crate) fn client(base_url: &str, bearer: &str) -> Result<api::Client, String> {
+    Ok(api::Client::new(base_url)
+        .map_err(|e| e.to_string())?
+        .with_credential(
+            "AccountToken",
+            api::Credential::Bearer(api::SecretString::from(bearer.to_owned())),
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_client_is_built_only_for_a_usable_origin() {
+        assert!(super::client("https://relay.example", "token").is_ok());
+        let refused = super::client("not an origin", "token").expect_err("no scheme or host");
+        assert!(
+            !refused.is_empty(),
+            "the refusal carries the client's words"
+        );
+    }
+}
