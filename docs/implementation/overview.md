@@ -132,7 +132,8 @@ list is `crates/sunrise-storage/migrations/`, the constant is
 [`../04-storage/migrations.md`](../04-storage/migrations.md) is the page that
 owns the subject. What is now tested against real old data rather than only
 asserted is the chain itself — `crates/sunrise-storage/fixtures/` holds
-a committed vault at every version a migration leaves one at, and the suite in
+a committed vault at every version a migration leaves one at, from 13 to the
+version before the current `STORAGE_V`, and the suite in
 `crates/sunrise-storage/src/vault_fixtures/` migrates them forward and checks
 their contents survive.
 

@@ -237,8 +237,12 @@ Every view MUST implement three states. This is the canonical table; per-view fi
 | `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
 | `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
 
-**There is no `conflict` view state yet.** Its data source exists: a register
-keeps every concurrent write that lost, and `Query::Conflicts` reports them
+**There is no `conflict` view state.**
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) deleted it, and a view shows the
+deterministic winner at once:
+[ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) makes a conflict "a
+badge, not a gate". The badge's data source exists: a register keeps every
+concurrent write that lost, and `Query::Conflicts` reports them
 ([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
 §No merge history). The Apple client's UI for it is follow-up work. The older
 `merge_journal` stays dropped by
