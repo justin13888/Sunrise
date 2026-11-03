@@ -16,11 +16,10 @@
 //!
 //! # What it depends on
 //!
-//! The wire and nothing above it: the generated client, `sunrise-http-sig` for
-//! the device binding, `sunrise-id` for the ids it names, `sunrise-error`. It
-//! names no engine. The flows that orchestrate a vault and the relay together
-//! (account bootstrap, recovery) are `sunrise-client-core`'s and call down
-//! into this crate, never the reverse.
+//! The wire and nothing above it: the generated client, and `sunrise-http-sig`
+//! for the device binding. It names no engine. The flows that orchestrate a
+//! vault and the relay together (account bootstrap, recovery) are
+//! `sunrise-client-core`'s and call down into this crate, never the reverse.
 //!
 //! # Generated, not written
 //!

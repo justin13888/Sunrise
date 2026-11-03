@@ -31,8 +31,11 @@
 #   sunrise-bench           Benchmarks. Not correctness code.
 #   sunrise-e2e             A test harness. Mutating a harness measures the
 #                           harness's own tests, which do not exist.
-#   sunrise-relay-client    Generated from the OpenAPI description by build.rs.
-#                           A mutant here is a change to a file nobody edits.
+#   sunrise-relay-client    Excluded for cost. The generated client is emitted
+#                           into OUT_DIR by build.rs, so cargo-mutants never
+#                           sees it; what it would mutate is the hand-written
+#                           src/ (bootstrap, account, push, recovery refusal
+#                           classification), and that is what this skips.
 #   sunrise-crypto-test-vectors
 #                           Frozen literals. There is nothing to mutate but the
 #                           constants the vectors exist to pin, and flipping one

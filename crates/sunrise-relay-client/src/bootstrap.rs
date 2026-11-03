@@ -70,12 +70,13 @@ pub struct BootstrapOutcome {
 
 /// Why a bootstrap did not complete.
 ///
-/// Deliberately three arms rather than one: a caller retries a transport
-/// failure, fixes a request the server refused, and reports a server fault. The
-/// generated client's own taxonomy is richer — it distinguishes construction,
-/// timeout, decode and protocol failures — and `Error::is_transient` is what
-/// classifies them, so the detail is preserved in the message rather than
-/// discarded.
+/// Two arms, split by which of the two calls failed: [`Self::Account`] for the
+/// first half (building the client for it, an acceptance timestamp the
+/// description cannot carry, or `POST /api/v1/accounts` itself), and
+/// [`Self::Device`] for the second ([`register_device`], which is also all a
+/// recovery calls). The generated client's own taxonomy is richer — it
+/// distinguishes construction, timeout, decode and protocol failures — and that
+/// detail is preserved in the arm's message rather than discarded.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     /// The account could not be created or read.
