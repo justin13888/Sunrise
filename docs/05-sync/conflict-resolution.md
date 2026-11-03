@@ -226,8 +226,8 @@ That is merge state, not a history of merges: it holds the writes no later write
 has superseded, and a resolution removes them. A merge that settled without a
 conflict, two equal values or ordered writes, leaves no record, so a "X edits
 merged automatically this week" review surface has no data behind it. A client
-can read a conflict state from `Query::Conflicts`; the Apple client's UI for it
-is follow-up work.
+can read a conflict state from `Query::Conflicts`. `sunrise conflicts` prints it;
+no app view reads it today.
 
 The per-field `merge_journal` stays dropped
 ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)):
