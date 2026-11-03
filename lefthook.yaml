@@ -3,9 +3,19 @@
 pre-commit:
   parallel: true
   commands:
+    # The two globs are the files each tool reads, so a commit staging only
+    # Rust, Swift or Markdown skips them; pre-push and CI still run both on
+    # every change. Biome's list follows what `biome.jsonc` handles (its
+    # defaults, which include GraphQL and leave HTML off): a language enabled
+    # there joins this glob in the same change.
     biome-check:
+      glob: "*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,jsonc,css,graphql,gql}"
       run: mise run fix
+    # `bun.lock` alone can move a dependency's types.
     bun-typecheck:
+      glob:
+        - "*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,jsonc}"
+        - "bun.lock"
       run: mise run typecheck
     rust-fmt:
       glob: "*.rs"
