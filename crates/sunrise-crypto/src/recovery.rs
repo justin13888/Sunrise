@@ -53,6 +53,19 @@
 //! prefix every payload starts with, so [`retired_check_matches`] can tell the
 //! code that opened the old blob from any other code, and the kept bytes say
 //! nothing about the keys it carried.
+//!
+//! # The `test-cheap-kdf` feature
+//!
+//! Tests that are not about the KDF can switch it to a cheap parameter set (8
+//! KiB, t=1, p=1) by building this crate with `test-cheap-kdf`. The set is
+//! compiled only where the feature and `debug_assertions` are both on, so a
+//! release build has the spec's parameters whatever features it was given.
+//! This crate's own unit tests keep the spec's parameters even with the
+//! feature on, and [`test_cheap_kdf::at_production_strength`] gives an
+//! integration test the same. The blob names no parameters, so a blob sealed
+//! under one set opens only under that set; a build with the feature reports
+//! a blob from the other set as [`RecoveryError::KdfParamsMismatch`] rather
+//! than as a wrong code. See `docs/10-cross-cutting/testing.md`.
 
 use crate::aead::{aead_open_xchacha, aead_seal_xchacha, AEAD_NONCE_LEN};
 use crate::keys::RecoveryKey;
@@ -91,6 +104,79 @@ pub const RETIRED_CHECK_LEN: usize =
 const ARGON2_M_KIB: u32 = 65536;
 const ARGON2_T: u32 = 3;
 const ARGON2_P: u32 = 1;
+
+/// One Argon2id parameter set: memory in KiB, passes, lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KdfParams {
+    m_kib: u32,
+    t: u32,
+    p: u32,
+}
+
+/// The spec's parameters, and the only set a release build has.
+const PRODUCTION_KDF: KdfParams = KdfParams {
+    m_kib: ARGON2_M_KIB,
+    t: ARGON2_T,
+    p: ARGON2_P,
+};
+
+/// The cheapest set Argon2id accepts (8 KiB per lane, one pass).
+#[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+const CHEAP_KDF: KdfParams = KdfParams {
+    m_kib: 8,
+    t: 1,
+    p: 1,
+};
+
+/// The set this build seals and opens under.
+fn active_kdf() -> KdfParams {
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions, not(test)))]
+    if !test_cheap_kdf::in_production_scope() {
+        return CHEAP_KDF;
+    }
+    PRODUCTION_KDF
+}
+
+/// The set a blob that failed under [`active_kdf`] may have been sealed with.
+#[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+fn other_kdf(active: KdfParams) -> KdfParams {
+    if active == CHEAP_KDF {
+        PRODUCTION_KDF
+    } else {
+        CHEAP_KDF
+    }
+}
+
+/// The test-only cheap Argon2id parameter set (see the module docs).
+#[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+pub mod test_cheap_kdf {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static PRODUCTION_SCOPE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Read by [`super::active_kdf`] everywhere but this crate's unit tests,
+    /// which use the spec's set unconditionally.
+    #[cfg(not(test))]
+    pub(super) fn in_production_scope() -> bool {
+        PRODUCTION_SCOPE.with(Cell::get)
+    }
+
+    /// Run `f` with this thread sealing and opening recovery blobs under the
+    /// spec's parameters, for a test that has to (a frozen vector, say) in a
+    /// build where `test-cheap-kdf` is on.
+    pub fn at_production_strength<T>(f: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                PRODUCTION_SCOPE.with(|s| s.set(self.0));
+            }
+        }
+        let _restore = Restore(PRODUCTION_SCOPE.with(|s| s.replace(true)));
+        f()
+    }
+}
 
 /// Plaintext payload of a recovery blob.
 ///
@@ -178,13 +264,23 @@ pub enum RecoveryError {
     /// field a newer build adds is held to the same bound, the map included.
     #[error("recovery payload CBOR nests too deep")]
     TooDeep,
+    /// The blob opens, but only under the Argon2id parameter set this build
+    /// is not using: one side of a test was built with `test-cheap-kdf` and
+    /// the other without it.
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+    #[error(
+        "recovery blob was sealed under the other Argon2id parameter set: one side was built \
+         with sunrise-crypto's `test-cheap-kdf` feature and the other without it"
+    )]
+    KdfParamsMismatch,
 }
 
 fn derive_recovery_key(
     seed: &[u8; 32],
     salt: &[u8; RECOVERY_SALT_LEN],
+    kdf: KdfParams,
 ) -> Result<RecoveryKey, RecoveryError> {
-    let params = argon2::Params::new(ARGON2_M_KIB, ARGON2_T, ARGON2_P, Some(32))
+    let params = argon2::Params::new(kdf.m_kib, kdf.t, kdf.p, Some(32))
         .map_err(|e| RecoveryError::Kdf(e.to_string()))?;
     let argon = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
     let mut out = [0u8; 32];
@@ -335,11 +431,20 @@ pub fn seal_recovery_blob<R: CryptoRngCore>(
     payload: &RecoveryPayload,
     rng: &mut R,
 ) -> Result<Vec<u8>, RecoveryError> {
+    seal_under(seed, payload, rng, active_kdf())
+}
+
+fn seal_under<R: CryptoRngCore>(
+    seed: &[u8; 32],
+    payload: &RecoveryPayload,
+    rng: &mut R,
+    kdf: KdfParams,
+) -> Result<Vec<u8>, RecoveryError> {
     let mut salt = [0u8; RECOVERY_SALT_LEN];
     rng.fill_bytes(&mut salt);
     let mut nonce = [0u8; RECOVERY_NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    let key = derive_recovery_key(seed, &salt)?;
+    let key = derive_recovery_key(seed, &salt, kdf)?;
     let pt = payload_to_cbor(payload)?;
     let mut aad = Vec::with_capacity(RECOVERY_AAD_PREFIX.len() + 16);
     aad.extend_from_slice(RECOVERY_AAD_PREFIX);
@@ -385,11 +490,32 @@ pub fn unseal_recovery_blob(
         .map_err(|_| RecoveryError::Truncated)?;
     let ct = &blob[nonce_start + RECOVERY_NONCE_LEN..];
 
-    let key = derive_recovery_key(seed, &salt)?;
+    let active = active_kdf();
+    let opened = open_under(seed, &salt, &nonce, ct, expected_identity_id, active);
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+    if matches!(opened, Err(RecoveryError::AuthFailed)) {
+        let other = other_kdf(active);
+        if let Ok(mut payload) = open_under(seed, &salt, &nonce, ct, expected_identity_id, other) {
+            payload.zeroize();
+            return Err(RecoveryError::KdfParamsMismatch);
+        }
+    }
+    opened
+}
+
+fn open_under(
+    seed: &[u8; 32],
+    salt: &[u8; RECOVERY_SALT_LEN],
+    nonce: &[u8; RECOVERY_NONCE_LEN],
+    ct: &[u8],
+    expected_identity_id: &[u8; 16],
+    kdf: KdfParams,
+) -> Result<RecoveryPayload, RecoveryError> {
+    let key = derive_recovery_key(seed, salt, kdf)?;
     let mut aad = Vec::with_capacity(RECOVERY_AAD_PREFIX.len() + 16);
     aad.extend_from_slice(RECOVERY_AAD_PREFIX);
     aad.extend_from_slice(expected_identity_id);
-    let pt = aead_open_xchacha(key.as_bytes(), &nonce, ct, &aad)
+    let pt = aead_open_xchacha(key.as_bytes(), nonce, ct, &aad)
         .map_err(|_| RecoveryError::AuthFailed)?;
     let mut payload = payload_from_cbor(&pt)?;
     if &payload.account_identity_id() != expected_identity_id {
@@ -428,8 +554,24 @@ const fn known_plaintext_prefixes() -> [[u8; RETIRED_CT_PREFIX_LEN]; 3] {
 ///
 /// # Errors
 /// [`RecoveryError::Truncated`] or [`RecoveryError::BadMagic`] for a check
-/// that is not one, and Argon2id failures.
+/// that is not one, and Argon2id failures. A build with `test-cheap-kdf`
+/// returns [`RecoveryError::KdfParamsMismatch`] for a check the code matches
+/// only under the other parameter set.
 pub fn retired_check_matches(check: &[u8], seed: &[u8; 32]) -> Result<bool, RecoveryError> {
+    let active = active_kdf();
+    let matched = retired_check_matches_under(check, seed, active)?;
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+    if !matched && retired_check_matches_under(check, seed, other_kdf(active))? {
+        return Err(RecoveryError::KdfParamsMismatch);
+    }
+    Ok(matched)
+}
+
+fn retired_check_matches_under(
+    check: &[u8],
+    seed: &[u8; 32],
+    kdf: KdfParams,
+) -> Result<bool, RecoveryError> {
     if check.len() < RETIRED_CHECK_LEN {
         return Err(RecoveryError::Truncated);
     }
@@ -445,7 +587,7 @@ pub fn retired_check_matches(check: &[u8], seed: &[u8; 32]) -> Result<bool, Reco
         .try_into()
         .map_err(|_| RecoveryError::Truncated)?;
     let kept = &check[nonce_start + RECOVERY_NONCE_LEN..RETIRED_CHECK_LEN];
-    let key = derive_recovery_key(seed, &salt)?;
+    let key = derive_recovery_key(seed, &salt, kdf)?;
     let mut matched = subtle::Choice::from(0u8);
     for candidate in known_plaintext_prefixes() {
         // XChaCha20-Poly1305 encrypts with the keystream from block 1 on,
@@ -597,5 +739,46 @@ mod tests {
             unseal_recovery_blob(&blob, &seed, &other),
             Err(RecoveryError::AuthFailed)
         ));
+    }
+
+    /// The spec's parameters, pinned: a change to them changes every blob ever
+    /// sealed. And this crate's own tests run under them, `test-cheap-kdf` or
+    /// not.
+    #[test]
+    fn the_kdf_is_the_specs_and_this_crates_tests_use_it() {
+        assert_eq!(
+            PRODUCTION_KDF,
+            KdfParams {
+                m_kib: 65536,
+                t: 3,
+                p: 1
+            }
+        );
+        assert_eq!(active_kdf(), PRODUCTION_KDF);
+    }
+
+    /// A blob sealed under the cheap set, opened by a build using the spec's,
+    /// says which mismatch it is instead of reading as a wrong code; so does
+    /// the check kept of it. A wrong code is still a wrong code.
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+    #[test]
+    fn a_blob_from_the_other_parameter_set_is_named_as_such() {
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let seed = [9u8; 32];
+        let payload = fixture();
+        let blob = seal_under(&seed, &payload, &mut rng, CHEAP_KDF).unwrap();
+        assert!(matches!(
+            unseal_recovery_blob(&blob, &seed, &payload.identity_id),
+            Err(RecoveryError::KdfParamsMismatch)
+        ));
+        assert!(matches!(
+            retired_check_matches(&blob[..RETIRED_CHECK_LEN], &seed),
+            Err(RecoveryError::KdfParamsMismatch)
+        ));
+        assert!(matches!(
+            unseal_recovery_blob(&blob, &[0u8; 32], &payload.identity_id),
+            Err(RecoveryError::AuthFailed)
+        ));
+        assert!(!retired_check_matches(&blob[..RETIRED_CHECK_LEN], &[0u8; 32]).unwrap());
     }
 }

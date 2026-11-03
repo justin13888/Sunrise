@@ -12,6 +12,17 @@ description = "Frozen v1 crypto suite: keys, OpEnvelope, share grants, recovery,
 [lints]
 workspace = true
 
+[features]
+# Seal and open recovery blobs under a cheap Argon2id set (8 KiB, t=1, p=1)
+# instead of the spec's 64 MiB, t=3, p=1, for the tests of other crates that
+# create or recover an account without being about the KDF. The set is
+# compiled only where `debug_assertions` is on too, so a release build has the
+# spec's parameters whatever features reach it; `tests/test_cheap_kdf.rs`
+# fails the test suite if a shipped package's normal dependency graph enables
+# this. This crate's own unit tests keep the spec's set with it on
+# (`src/recovery.rs`).
+test-cheap-kdf = []
+
 [dependencies]
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
