@@ -105,7 +105,10 @@ pub struct ServerConfig {
     /// the data dir. `[storage] key_file`.
     #[serde(default)]
     pub sqlite_key_file: Option<PathBuf>,
-    /// Self-host blob root (None = `<sqlite_dir>/blobs`).
+    /// Self-host blob root. `None` with a database file means `blobs` beside
+    /// it, `<sqlite_dir>/blobs`; `None` with an in-memory store means a
+    /// private temporary directory the state creates and removes when its
+    /// last clone drops. [`ServerConfig::resolved_blob_root`] holds the rule.
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
     /// origin is permitted, which is the correct default for a relay whose
@@ -555,6 +558,20 @@ impl ServerConfig {
             self.sqlite_path.as_deref().and_then(Path::parent),
         )
     }
+
+    /// The blob root this config names: [`ServerConfig::blob_root`], else
+    /// `blobs` beside the database file. `None` for an in-memory store with no
+    /// root set, which has no directory of its own to put blobs beside; the
+    /// state then keeps a private temporary one.
+    #[must_use]
+    pub fn resolved_blob_root(&self) -> Option<PathBuf> {
+        self.blob_root.clone().or_else(|| {
+            self.sqlite_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|dir| dir.join("blobs"))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -784,5 +801,32 @@ mod tests {
             ..apns
         });
         assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
+    }
+
+    /// A named root wins; with none, blobs go beside the database file; an
+    /// in-memory store with none resolves to no path at all, never to a
+    /// fixed one every server on the machine would share.
+    #[test]
+    fn the_blob_root_is_the_named_one_else_beside_the_database() {
+        let named = ServerConfig {
+            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
+            blob_root: Some("/srv/blobs".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            named.resolved_blob_root(),
+            Some(PathBuf::from("/srv/blobs"))
+        );
+
+        let beside = ServerConfig {
+            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            beside.resolved_blob_root(),
+            Some(PathBuf::from("/var/lib/sunrise/blobs"))
+        );
+
+        assert_eq!(ServerConfig::default().resolved_blob_root(), None);
     }
 }

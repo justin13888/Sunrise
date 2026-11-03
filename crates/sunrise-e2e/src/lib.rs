@@ -64,16 +64,32 @@ pub async fn spawn_relay() -> (SocketAddr, JoinHandle<()>) {
 
 /// Boot the relay with the config and state tweaks a scenario needs — a tiny
 /// retained ring, a file-backed `SQLite` path to survive a restart, and so on.
+///
+/// A config with no `blob_root` gets one of its own, under a fresh temporary
+/// directory that lives as long as the serving task: aborting the handle
+/// deletes it. Without this every relay fell back to the server's one fixed
+/// directory under the system temp directory, shared by every relay and every
+/// user on the machine (#850). A config that names a `blob_root` keeps it.
 pub async fn spawn_relay_with(
-    config: ServerConfig,
+    mut config: ServerConfig,
     tweak: impl FnOnce(ServerState) -> ServerState,
 ) -> (SocketAddr, JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
+    let blob_dir = if config.blob_root.is_none() {
+        let dir = tempfile::tempdir().expect("create the relay's blob directory");
+        config.blob_root = Some(dir.path().join("blobs"));
+        Some(dir)
+    } else {
+        None
+    };
     let state = tweak(ServerState::new(config));
     let handle = tokio::spawn(async move {
+        // Owned by the task so the directory is removed when it ends or is
+        // aborted, and not before.
+        let _blob_dir = blob_dir;
         let _ = sunrise_server::serve(state, listener).await;
     });
     (addr, handle)
@@ -691,4 +707,69 @@ pub async fn wait_streams_converge(a: &Core, b: &Core, expected_len: usize, time
             "streams did not converge to {expected_len} rows in time\n  A: {last_a:#?}\n  B: {last_b:#?}"
         );
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Boot a relay through the harness and hand back the blob root its state
+    /// was built with.
+    async fn relay_blob_root(config: ServerConfig) -> (Option<PathBuf>, JoinHandle<()>) {
+        let mut seen = None;
+        let (_, handle) = spawn_relay_with(config, |s| {
+            seen = Some(s.config.blob_root.clone());
+            s
+        })
+        .await;
+        (seen.expect("the harness runs the tweak"), handle)
+    }
+
+    /// #850: two relays never share a blob directory, neither uses the
+    /// server's fixed fallback under the system temp directory, and each one's
+    /// directory goes away with its relay.
+    #[tokio::test]
+    async fn each_relay_gets_its_own_blob_root_removed_on_abort() {
+        let (a, relay_a) = relay_blob_root(ServerConfig::default()).await;
+        let (b, relay_b) = relay_blob_root(ServerConfig::default()).await;
+        let a = a.expect("the harness sets a blob root");
+        let b = b.expect("the harness sets a blob root");
+        assert_ne!(a, b, "two relays share one blob root");
+        let shared = std::env::temp_dir().join("sunrise-self-host-blobs");
+        assert_ne!(a, shared);
+        assert_ne!(b, shared);
+
+        let parent_a = a.parent().expect("blob root has a parent").to_path_buf();
+        assert!(parent_a.is_dir(), "the blob directory exists while serving");
+        relay_a.abort();
+        let _ = relay_a.await;
+        assert!(
+            !parent_a.exists(),
+            "aborting the relay leaves its blob directory"
+        );
+
+        let parent_b = b.parent().expect("blob root has a parent").to_path_buf();
+        assert!(
+            parent_b.is_dir(),
+            "aborting one relay removed the other's directory"
+        );
+        relay_b.abort();
+        let _ = relay_b.await;
+    }
+
+    /// A config that names its own blob root keeps it.
+    #[tokio::test]
+    async fn an_explicit_blob_root_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mine");
+        let (seen, relay) = relay_blob_root(ServerConfig {
+            blob_root: Some(root.clone()),
+            ..ServerConfig::default()
+        })
+        .await;
+        assert_eq!(seen, Some(root));
+        relay.abort();
+        let _ = relay.await;
+    }
 }

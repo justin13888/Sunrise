@@ -150,8 +150,9 @@ pub async fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Repo
         }
     }
 
-    // Only under a root the operator named: the default is a shared temp
-    // directory, where another process's tree is not this store's orphan.
+    // Only under a root the operator named. A tree the server chose for
+    // itself, beside the database or in a private temp directory, is never
+    // swept as orphans.
     if state.config.blob_root.is_some() {
         sweep_orphans(state, now_ms, ttl, dry_run, &mut report).await?;
     }
