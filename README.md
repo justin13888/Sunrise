@@ -449,7 +449,7 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 
 Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and defined in `lefthook.yaml`, which simply calls mise tasks so there is a single source of truth:
 
-- **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy`. Run the lot with `mise run pre-commit`.
+- **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy-workspace`. The `fuzz/` clippy (`mise run rust-clippy-fuzz-staged`) runs only when the staged files reach it, as `.github/scripts/fuzz-closure-touched.py` decides: anything under `fuzz/`, a file in a workspace crate the fuzz package compiles, or `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*` or `clippy.toml`. Run the lot, both clippy halves always, with `mise run pre-commit`.
 - **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test-changed`, and `mise run rust-test-changed`. The last two run only what the push can affect, as `.github/scripts/prepush-scope.py` decides from the changed files: the changed crates, every crate depending on one, and the crates whose sources name a changed file, with the `event_catalog` gate always run in full (`mise run log-fields`); the Vitest suite whenever a file it reads changed. A change to `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*` or `clippy.toml` runs the whole Rust suite. `SUNRISE_FULL_PREPUSH=1 git push` runs both suites whole, and so does `mise run pre-push`; CI always does.
 
 ### Documentation site

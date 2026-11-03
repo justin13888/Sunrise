@@ -128,8 +128,9 @@ run = [
   "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
-# The second invocation is #167. The `fuzz/` harnesses were the only Rust
-# in the tree that was formatted and then linted by nothing, which matters more
+# `rust-clippy` runs both halves; the `fuzz/` one, `rust-clippy-fuzz`, is #167.
+# The `fuzz/` harnesses were the only Rust in the tree that was formatted and
+# then linted by nothing, which matters more
 # for them than for ordinary test code: a warning there is the shape — a `let _
 # =` swallowing a result, a branch nothing reaches — that makes a target
 # quietly stop exercising what its name claims. The pinned stable toolchain
@@ -137,10 +138,28 @@ run = [
 # The root `clippy.toml` binds here too, its lookup walking up out of `fuzz/`.
 [tasks.rust-clippy]
 description = "Lint Rust with Clippy (warnings denied), workspace and fuzz/"
-run = [
-  "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings",
-]
+run = ["mise run rust-clippy-workspace", "mise run rust-clippy-fuzz"]
+
+[tasks.rust-clippy-workspace]
+description = "Lint the Rust workspace with Clippy (warnings denied), not fuzz/"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.rust-clippy-fuzz]
+description = "Lint fuzz/ with Clippy (warnings denied)"
+run = "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings"
+
+# What the pre-commit hook runs for `fuzz/` (#954). `fuzz/` keeps its own
+# lockfile and target directory, so its clippy builds the shared dependency
+# graph a second time; the hook pays that only when the staged changes reach
+# the harnesses or a crate they compile, as `.github/scripts/fuzz-closure-touched.py`
+# decides. `mise run rust-clippy`, `mise run pre-commit` and CI always lint it.
+[tasks.rust-clippy-fuzz-staged]
+description = "Lint fuzz/ with Clippy when the staged changes reach it (the pre-commit hook's)"
+run = '''
+set -euo pipefail
+answer="$(.github/scripts/fuzz-closure-touched.py)"
+if [ "$answer" = run ]; then mise run rust-clippy-fuzz; fi
+'''
 
 [tasks.rust-check]
 description = "Type-check the Rust workspace"
@@ -1703,6 +1722,11 @@ run = "python3 .github/scripts/test_reverses_gate.py"
 description = "Assert what the pre-push scope script reaches for a set of changed files (fast, synthesised workspaces and git repos)"
 # Why: the script's docstring.
 run = "python3 .github/scripts/test_prepush_scope.py"
+
+[tasks.fuzz-closure-touched-test]
+description = "Assert when the pre-commit hook lints fuzz/ for a set of staged files (fast, synthesised metadata)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_fuzz_closure_touched.py"
 
 # --- Release artifacts ---
 #

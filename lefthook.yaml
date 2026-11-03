@@ -12,7 +12,11 @@ pre-commit:
       run: mise run rust-fmt-check
     rust-clippy:
       glob: "*.rs"
-      run: mise run rust-clippy
+      run: mise run rust-clippy-workspace
+    # No glob: a crate's manifest, `Cargo.lock` or the toolchain pin reach
+    # fuzz/ too, and the task's script decides from the staged files.
+    rust-clippy-fuzz:
+      run: mise run rust-clippy-fuzz-staged
 
 # The two test commands run only what the pushed changes can affect;
 # `SUNRISE_FULL_PREPUSH=1 git push` runs both suites whole, and
