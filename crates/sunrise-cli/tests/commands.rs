@@ -324,6 +324,12 @@ fn a_saved_view_is_recalled_by_name_and_preferences_round_trip() {
 fn the_daily_reports_run_on_a_fresh_vault() {
     let dir = tempfile::tempdir().unwrap();
     let v = dir.path();
+    // The plan's horizon is 24 hours of instants, not one civil day: in the
+    // host's zone, between 20:00 and 21:00 on the eve of a fall-back the next
+    // 20:00 evening plan is a 25-hour day away and falls outside it, leaving
+    // only the morning brief in the plan. Reading at midday in a zone
+    // with no DST puts both briefs inside the horizon whatever the host clock.
+    ok(v, &["tz", "set", &zone_where_it_is_midday()]);
     let rent = first_id(&ok(v, &["capture", "Pay rent ^today"]));
     assert!(ok(v, &["brief", "morning"]).contains("To triage"));
     assert!(ok(v, &["brief", "evening"]).contains("Still open today"));
@@ -360,6 +366,9 @@ fn the_daily_reports_run_on_a_fresh_vault() {
 fn notification_kinds_are_listed_toggled_and_planned() {
     let dir = tempfile::tempdir().unwrap();
     let v = dir.path();
+    // Midday in a zone with no DST, so the evening plan is inside the plan's
+    // 24-hour horizon at any host hour, as in the test above.
+    ok(v, &["tz", "set", &zone_where_it_is_midday()]);
     let kinds = json_of(v, &["reminders", "kinds"]);
     let kinds = kinds.as_array().unwrap();
     assert_eq!(kinds.len(), 18);
@@ -564,7 +573,8 @@ const SECOND: &str = "<second>";
 /// The positions in [`JSON_OBJECTS`] hold only by day: before the planner day
 /// turns over, `upcoming` still starts on yesterday and `today` lists no
 /// planned task first. The binary reads the real clock, so the fixture moves
-/// the reader to midday rather than the clock.
+/// the reader to midday rather than the clock. The zone is a fixed offset, so
+/// no day the tests read in is 23 or 25 hours long.
 fn zone_where_it_is_midday() -> String {
     let hour = jiff::Timestamp::now()
         .to_zoned(jiff::tz::TimeZone::UTC)
