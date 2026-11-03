@@ -48,7 +48,12 @@ async fn a_triage_batch_is_all_or_nothing_and_a_drop_reason_syncs() {
     let refused = a
         .run(&["triage", "drop", &late, &gone, "--reason", "not needed"])
         .await;
+    let err = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "a deleted id refuses the batch");
+    assert!(
+        err.contains(&format!("{gone} is deleted")),
+        "refused for the deleted id: {err}"
+    );
     assert_eq!(a.task(&late).await["state"], "todo");
     assert_eq!(queue(&a).await, vec![late.clone(), later.clone()]);
 

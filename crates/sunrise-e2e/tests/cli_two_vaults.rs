@@ -286,7 +286,12 @@ async fn a_merge_and_a_bulk_completion_reach_the_peer_whole() {
     let refused = a
         .run(&["done", &first, "tsk_01J00000000000000000000000"])
         .await;
+    let err = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success());
+    assert!(
+        err.contains("not found: task tsk_01J00000000000000000000000"),
+        "refused for the missing id: {err}"
+    );
     assert_eq!(a.task(&first).await["state"], "todo");
 
     a.ok(&["done", &first, &second]).await;
