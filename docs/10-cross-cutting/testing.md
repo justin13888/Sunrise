@@ -932,7 +932,7 @@ What is wired today, in one place:
 | Check | Where | Runs on |
 |---|---|---|
 | Every fuzz target, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
-| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
+| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-pairing/`, `crates/sunrise-core/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
 | No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
 | External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
 
@@ -1118,18 +1118,18 @@ wires a narrower version of it:
   and the job's comment says so.
 - **A pull request that touches a decoder — wired, path-filtered.**
   `fuzz-pr-plan` reads the merge commit's diff against its base and names the
-  targets the changed paths reach: `crates/sunrise-cbor/` the seven that
+  targets the changed paths reach: `crates/sunrise-cbor/` the eight that
   decode through it (`op_envelope`, `recovery_blob`, `identity_transition`,
-  `device_cert`, `key_bundle`, `identity_chain` and `wire_frame`),
-  `crates/sunrise-crypto/` the seven crypto targets (the same seven with
-  `key_envelope` in place of `wire_frame`),
+  `device_cert`, `key_bundle`, `identity_chain`, `wire_frame` and
+  `pairing_messages`),
+  `crates/sunrise-crypto/` the seven crypto targets (`op_envelope`,
+  `recovery_blob`, `identity_transition`, `device_cert`, `key_envelope`,
+  `key_bundle` and `identity_chain`),
   `crates/sunrise-wire-protocol/` `wire_frame`,
+  `crates/sunrise-pairing/` `pairing_messages`,
   `crates/sunrise-server/src/auth/` `oauth_state`,
   `crates/sunrise-core/` `core_snapshot`, a target's own harness or
   seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` every target.
-  No path maps to `pairing_messages` yet, so a change to
-  `crates/sunrise-pairing/` reaches it only nightly
-  ([#992](https://github.com/justin13888/Sunrise/issues/992)).
   `fuzz-pr` then runs each named target for 120 seconds from the committed
   seeds, and a pull request touching none of those paths runs no fuzzer at
   all. A finding uploads its reproducer, and the reproducer joins

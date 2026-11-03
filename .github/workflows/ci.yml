@@ -2378,8 +2378,9 @@ jobs:
           picked=""
           while IFS= read -r path; do
             case "$path" in
-              crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert key_bundle identity_chain wire_frame" ;;
+              crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert key_bundle identity_chain wire_frame pairing_messages" ;;
               crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
+              crates/sunrise-pairing/*)         picked="$picked pairing_messages" ;;
               crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
               crates/sunrise-core/*)            picked="$picked core_snapshot" ;;
               crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
