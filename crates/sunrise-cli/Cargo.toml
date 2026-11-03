@@ -19,6 +19,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# The cheap Argon2id set for recovery blobs (`sunrise-crypto`'s
+# `test-cheap-kdf`), for the `sunrise` binary the e2e suite builds and spawns
+# (`sunrise-e2e`'s `src/cli.rs`, `mise run e2e-cli`). Never a release build's:
+# without `debug_assertions` it changes nothing.
+test-cheap-kdf = ["sunrise-crypto/test-cheap-kdf"]
+
 [dependencies]
 jiff = { workspace = true }
 # The runtime `src/i18n.rs` gives the generated string binding: CLDR plural
@@ -52,6 +59,10 @@ serde_json = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# `tests/recover_command.rs` and every test that bootstraps an account seal a
+# recovery blob without being about the KDF; the binary those tests run is
+# built with the same features, so both sides use the cheap set.
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
 sunrise-test-seed = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
