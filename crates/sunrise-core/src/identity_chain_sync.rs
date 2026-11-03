@@ -16,8 +16,8 @@
 use sunrise_crypto::IdentityChain;
 use sunrise_sync::{IdentityChainPinned, Transport, TransportError};
 
+use crate::bytes::hex_short;
 use crate::core::Core;
-use crate::engine::hex_short;
 
 /// Whether the record the relay pins already reaches at least as far as
 /// `mine` along the same links. Anything else is replaced.

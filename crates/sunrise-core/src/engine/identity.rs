@@ -13,11 +13,11 @@
 //! mean anything. The fold is the only thing either of them agrees on, and a
 //! second reader of `identity_transitions` is exactly what should not exist.
 
-use super::ids::hex_short;
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::{hex_short, to16, to32, to64};
 use crate::control_op::{IdentityTransitionPayload, KeyShare, RosterEntry};
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
-use crate::keychain::{to16, to32, to64, Keychain, SuccessorPublics};
+use crate::keychain::{Keychain, SuccessorPublics};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use sunrise_crypto::identity_transition::{IdentityTransitionBody, IdentityTransitionSigs};

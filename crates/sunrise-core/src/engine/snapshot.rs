@@ -68,10 +68,10 @@ use sunrise_storage::{Db, DbError};
 use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_floor};
 use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
 use super::groups::event_of;
-use super::ids::hex_short;
 use super::merge::{dump_stream_state, join_stream_state, to_sql};
 use super::oplog::upsert_sync_cursor;
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use crate::events::DomainEvent;
 
 /// The snapshot record's format version, carried in its magic prefix.

@@ -22,12 +22,11 @@ use sunrise_crypto::{ChainLink, IdentityChain, IdentityTransitionBody, IdentityT
 use sunrise_storage::Db;
 
 use super::identity::{RotationOutcome, SiblingRank};
-use super::ids::hex_short;
 use super::oplog::EnvelopeRecipients;
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::{hex_short, to16, to32, to64};
 use crate::control_op::IdentityTransitionPayload;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
-use crate::keychain::{to16, to32, to64};
 
 /// What seeding a vault from the account's identity chain did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

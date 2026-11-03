@@ -32,6 +32,7 @@ use super::routine::*;
 use super::stream::*;
 use super::sync::{DEFERRED_PER_EPOCH_CAP, DEFERRED_TTL_MS, MAX_EPOCH_LEAP};
 use super::task::*;
+use crate::bytes::to16;
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::Clock;
 use crate::control_op::{
@@ -39,7 +40,7 @@ use crate::control_op::{
     RevokeReason, RosterEntry,
 };
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
-use crate::keychain::{to16, KeySource, Keychain};
+use crate::keychain::{KeySource, Keychain};
 use crate::queries::{ActionableTask, BlockRow, ContextRow, FocusSessionRow, Query, QueryResult};
 use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;

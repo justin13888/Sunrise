@@ -86,13 +86,14 @@
 //! [ADR-0059]: ../../../../docs/11-adr/0059-client-op-log-compaction.md
 //! [ADR-0065]: ../../../../docs/11-adr/0065-copy-on-write-entity-versions.md
 
-use super::ids::{blob16, hex_short};
+use super::ids::blob16;
 use super::lww::{remap_legacy_inbox, LwwStamp};
 use super::merge::{
     check_patch, dump_compacted_base, join_stream_state, PatchProblem, Stamp, FOLD_V,
 };
 use super::snapshot::in_tx;
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use crate::inner_op::{decode_inner_op, InnerOp};
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_crypto::decode_envelope;

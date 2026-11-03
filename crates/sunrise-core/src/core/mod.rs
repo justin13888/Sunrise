@@ -11,11 +11,12 @@
 //! (sync wire layer, server). This crate alone proves out the lifecycle,
 //! single-writer guarantee, and shape of the API.
 
+use crate::bytes::to16;
 use crate::commands::{Command, CommandResult};
 use crate::config::CoreConfig;
 use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
-use crate::keychain::{to16, Keychain, KeychainError};
+use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
 use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
 use crate::unlock::{IdentitySeed, Unlock};

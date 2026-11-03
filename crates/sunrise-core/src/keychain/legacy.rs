@@ -9,7 +9,7 @@
 //! over from its self-signed cert: nothing else in the keychain calls any of
 //! them, and all four are deleted together at 1.0.
 
-use super::to16;
+use crate::bytes::to16;
 use sunrise_crypto::blake3_kdf::derive_key_32;
 use sunrise_crypto::{DeviceCert, StreamKey, VaultRootKey};
 use sunrise_domain::PRIVATE_DOMAIN_BYTES;

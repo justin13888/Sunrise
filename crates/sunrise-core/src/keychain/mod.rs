@@ -151,9 +151,7 @@ mod succession;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use crate::bytes::{to16, to32, to64};
-
-use crate::bytes::hex_short;
+use crate::bytes::{hex_short, to16, to32};
 use crate::config::{Clock, Rng};
 use crate::unlock::IdentitySeed;
 use parking_lot::Mutex;

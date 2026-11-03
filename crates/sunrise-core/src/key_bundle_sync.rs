@@ -23,8 +23,9 @@
 use sunrise_crypto::manifest_covers;
 use sunrise_sync::{KeyBundlePinned, Transport, TransportError};
 
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, EngineError, KeyBundlePlan, PinnedKeyBundle, META_STREAM};
+use crate::engine::{EngineError, KeyBundlePlan, PinnedKeyBundle, META_STREAM};
 use crate::snapshot_sync::{blob_id_of, upload};
 
 /// What comparing this device's keys with the pinned bundle decided.

@@ -8,7 +8,8 @@ use sunrise_crypto::{
     key_envelope_info, verify_envelope, AeadAlgId, ChainLinks, OpEnvelopeError, StreamKey,
 };
 
-use super::{to16, EnvelopeRecipient, Keychain, KeychainError, RngAdapter, WRITABLE_KEY};
+use super::{EnvelopeRecipient, Keychain, KeychainError, RngAdapter, WRITABLE_KEY};
+use crate::bytes::to16;
 
 impl Keychain {
     // ---- key envelopes ----
