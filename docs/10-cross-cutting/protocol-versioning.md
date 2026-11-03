@@ -107,7 +107,7 @@ respective version constants.
 | Constant | Accept when | Otherwise | Why |
 |---|---|---|---|
 | `WIRE_PROTO_V`, `CRYPTO_SUITE_V` | The peers' supported lists intersect | Hard refusal at session start | The reader does not know the layout or the primitives, so there is nothing to salvage. |
-| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is within the reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `reader.ENVELOPE_FORMAT_FLOOR ≤ prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | A prefix outside the window: `PROTOCOL_BAD_MAGIC`. A field 1 below the prefix: `SYNC_OP_INVALID`. | The reader can locate the payload whenever it implements the writer's floor. One function states the rule, `crates/sunrise-cbor/src/envelope_header.rs#envelope_format_readable`, and both the client decoder (`crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`) and the relay's header decoder (`crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`) call it. |
+| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is within the reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `reader.ENVELOPE_FORMAT_FLOOR ≤ prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | A prefix outside the window: `PROTOCOL_BAD_MAGIC`. A field 1 below the prefix: `SYNC_OP_INVALID`. | The reader can locate the payload whenever it implements the writer's floor. One function states the rule, `crates/sunrise-cbor/src/envelope_header.rs#envelope_format_readable`, and both the client decoder (`crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope`) and the relay's header decoder (`crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`) call it. |
 | `DOC_SCHEMA_V` | Whenever it is `>= DOC_SCHEMA_FLOOR` | Refuse the envelope (`DOC_SCHEMA_TOO_OLD`) | The reader can authenticate and decrypt the payload. Whatever it cannot understand inside is preserved, or the whole op is **parked** (§7). It is never dropped. |
 
 `ENVELOPE_FORMAT_V` versions the op-envelope container and is carried in
@@ -120,7 +120,7 @@ already-signed envelope undecodable.
 
 A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
 `ENVELOPE_FORMAT_FLOOR` in the magic prefix
-(`crates/sunrise-crypto/src/op_envelope.rs#seal_envelope`).
+(`crates/sunrise-crypto/src/op_envelope/mod.rs#seal_envelope`).
 
 - **An additive container change bumps `ENVELOPE_FORMAT_V` alone.** Additive
   means a new field whose absence has a defined meaning. The AAD and the
@@ -130,9 +130,10 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   still passes.
 - **A change to the meaning of fields 1–12, to the AAD construction or to the
   signature input MUST raise `ENVELOPE_FORMAT_FLOOR`.** The AAD construction is
-  the `Omit` set in `crates/sunrise-crypto/src/op_envelope.rs`, and the
-  signature input is `SIG_DOMAIN` over the map without field 11.
-  `the_container_meaning_is_pinned_to_its_floor` in the same file pins all
+  the `Omit` set in `crates/sunrise-crypto/src/op_envelope/codec.rs#Omit`, and
+  the signature input is `SIG_DOMAIN` over the map without field 11.
+  `the_container_meaning_is_pinned_to_its_floor` in
+  `crates/sunrise-crypto/src/op_envelope/tests/versions.rs` pins all
   three to the floor they were frozen at: fields 1–12 by their exact encoding
   and decoding, the `Omit` sets field by field, and `SIG_DOMAIN` by value.
   Changing any of them without moving the floor fails that test. Moving the
@@ -175,7 +176,7 @@ their own container for equality. So writers MUST keep emitting `v = 3` and
 prefix `3` until `core.envelope_floor` is in `vault_requires` (§7.6) and the
 relay has agreed server capability bit 9, `SRV_ENVELOPE_FLOOR` (§5).
 `writers_still_emit_the_container_every_build_reads` in
-`crates/sunrise-crypto/src/op_envelope.rs` asserts that
+`crates/sunrise-crypto/src/op_envelope/tests/versions.rs` asserts that
 `ENVELOPE_FORMAT_V == ENVELOPE_FORMAT_FLOOR`, so a bump fails until the
 transition is lifted on purpose.
 
@@ -587,7 +588,7 @@ It is append-only and frozen entry by entry in `sunrise-crypto-test-vectors`.
 §Schema identity says where each piece lives and which test fails when a shape
 changes without a bump.
 
-`crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13
+`crates/sunrise-crypto/src/op_envelope/mod.rs#encode_envelope` stamps field 13
 from the registry. `decode_envelope` reads it as written into
 `OpEnvelope::schema_fp` and refuses one that is not an 8-byte byte string. It
 does not compare the value with the registry. That is the receiver's job, and
@@ -619,7 +620,7 @@ envelope field and includes it in the AAD and the signature. So it needs no
 Field 14, `prev_hash`, is the `op_hash` of the same device's op at `seq - 1`.
 Field 15, `heads`, names the tip of each other device's contiguous prefix in
 the stream that advanced since the writer's previous op there. Both are
-optional. `crates/sunrise-crypto/src/op_envelope.rs#encode_chained_envelope`
+optional. `crates/sunrise-crypto/src/op_envelope/mod.rs#encode_chained_envelope`
 stamps them and
 `decode_envelope` reads them into `OpEnvelope::prev_hash` and
 `OpEnvelope::heads`. Being additive, they needed no `ENVELOPE_FORMAT_V` bump

@@ -12,7 +12,7 @@ The relay is untrusted but is in the message path. We need to detect: dropped op
 
 Built ([#325](https://github.com/justin13888/Sunrise/issues/325)):
 
-* **Per-device hash chains.** Every op a current build writes carries envelope field 14, the `op_hash` of the same device's previous op in the stream, and field 15, the tips of other devices' prefixes its writer had seen since it last listed them (`crates/sunrise-crypto/src/op_envelope.rs#OpEnvelope`, written by `crates/sunrise-core/src/engine/chain.rs#writer_links`).
+* **Per-device hash chains.** Every op a current build writes carries envelope field 14, the `op_hash` of the same device's previous op in the stream, and field 15, the tips of other devices' prefixes its writer had seen since it last listed them (`crates/sunrise-crypto/src/op_envelope/mod.rs#OpEnvelope`, written by `crates/sunrise-core/src/engine/chain.rs#writer_links`).
 * **Link checks on receipt.** A receiver checks both fields, and what earlier ops said this one would be, against the ops it holds. A gap is recorded as an expected op, a mismatch as fork evidence, and the op is applied either way (`crates/sunrise-core/src/engine/chain.rs#check_links`).
 * **A running chain root per `(stream, device)`**, stored on each op inside the contiguous prefix and extended where the sync cursor moves (`crates/sunrise-core/src/engine/chain.rs#fold_chain`).
 * **A per-stream digest exchanged between replicas** as a `StreamDigest` control op, and compared entry by entry on receipt (`crates/sunrise-core/src/engine/chain.rs#reconcile`).

@@ -165,7 +165,7 @@ match a product version. Renaming any of them is a wire break, or a
   ([`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md)).
 - **Domain-separation strings.** Every `sunrise.<purpose>.vN` string used as a
   signature domain, KDF context, AAD prefix or hash personalization, for
-  example `sunrise.op_envelope.v1` (`SIG_DOMAIN` in `crates/sunrise-crypto/src/op_envelope.rs`),
+  example `sunrise.op_envelope.v1` (`SIG_DOMAIN` in `crates/sunrise-crypto/src/op_envelope/mod.rs`),
   `sunrise.stream_root.init.v1`, and `sunrise.blob_chunk_nonce.v2`. The full
   set is whatever `git grep 'sunrise\.[a-z0-9_.]*\.v[0-9]'` finds in `crates/`,
   and [`../03-crypto/primitives.md`](../03-crypto/primitives.md) is the
