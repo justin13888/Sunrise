@@ -187,7 +187,13 @@ async fn the_zone_is_chosen_by_flag_then_env_then_tz_set_and_an_unknown_one_is_r
         "an unknown zone is refused, never UTC"
     );
     assert!(String::from_utf8_lossy(&bad.stderr).contains("Mars/Olympus"));
-    assert!(!d.run(&["tz", "set", "Not/AZone"]).await.status.success());
+    let unset = d.run(&["tz", "set", "Not/AZone"]).await;
+    let err = String::from_utf8_lossy(&unset.stderr);
+    assert!(!unset.status.success(), "an unknown zone is never stored");
+    assert!(
+        err.contains("unknown time zone `Not/AZone`"),
+        "refused as an unknown zone: {err}"
+    );
 
     d.ok(&["tz", "clear"]).await;
     assert_eq!(d.json(&["tz"]).await["source"], "system");
