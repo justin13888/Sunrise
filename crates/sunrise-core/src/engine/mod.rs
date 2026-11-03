@@ -125,8 +125,8 @@ mod upcoming;
 mod write;
 mod zone;
 
-// `META_STREAM` is named from outside `engine` — `core.rs`, `keychain/` and
-// `sync_driver.rs` — so the path it names has to keep resolving across this
+// `META_STREAM` is named from outside `engine` — `core/`, `keychain/`,
+// `inner_op.rs` and `key_bundle_sync.rs` — so the path it names has to keep resolving across this
 // split. It stays defined below.
 pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
