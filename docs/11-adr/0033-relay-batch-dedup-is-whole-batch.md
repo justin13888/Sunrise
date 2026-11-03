@@ -114,8 +114,8 @@ rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:1
   and every caller of `relay_append` has to decide what it means.
 - `frame_heads` has to be recomputed after filtering, or the heads claim seqs the
   stored frame no longer carries — and the head is exactly what
-  `relay_replay`'s skip test reads. Over-claiming a head is data loss
-  (`crates/sunrise-server/src/relay_log/replay.rs:34-38#relay_replay`).
+  `relay_replay_after`'s skip test reads. Over-claiming a head is data loss
+  (`crates/sunrise-server/src/relay_log/replay.rs:50-54#relay_replay_after`).
 - A per-op table needs the `ON DELETE CASCADE` tie to `relay_frames` that
   `relay_batches` has, or the dedup window and the replay window drift apart —
   and forgetting an op id is precisely what lets a legitimate replay through.

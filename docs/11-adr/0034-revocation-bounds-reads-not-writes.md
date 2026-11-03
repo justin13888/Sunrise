@@ -267,7 +267,7 @@ took five review rounds to bottom out, and it is not about convergence:
   and under the fold nothing is — the skipped op stays in the ledger.
 - **Do not advance it** and the cursor freezes while the relay keeps accepting
   the revoked device's uploads. Within retention, eviction raises
-  `evicted_through` past the frozen cursor, `relay_replay`'s gap loop fires on
+  `evicted_through` past the frozen cursor, `relay_replay_after`'s gap loop fires on
   every subscribe, and `mark_degraded()` latches. Within 30 days of an ordinary
   revocation, every device in the account permanently reports data loss as the
   expected outcome of an administrative action.

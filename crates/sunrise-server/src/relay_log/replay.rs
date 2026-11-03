@@ -28,18 +28,13 @@ pub struct ReplayFrame {
 pub type Replay = (Vec<ReplayFrame>, Vec<CursorGap>);
 
 impl Store {
-    /// Every retained frame this subscriber's cursors do not already cover, in
-    /// arrival order, plus the gaps retention has made unrecoverable.
-    ///
-    /// Filtering matches the ring's rule exactly: a frame is skipped only when
-    /// it has heads and *every* head is at or below the matching cursor. A
-    /// frame whose heads could not be read is never skipped, because
-    /// over-delivery costs one idempotent no-op and under-delivery is data
-    /// loss.
+    /// [`relay_replay_after`](Self::relay_replay_after) from id 0, each frame
+    /// reduced to its bytes: the shape the relay log's own tests assert on.
     ///
     /// # Errors
     /// [`StoreError::Sqlite`] if any read fails.
-    pub fn relay_replay(
+    #[cfg(test)]
+    pub(crate) fn relay_replay(
         &self,
         key: StreamKey,
         cursors: &HashMap<[u8; 16], u64>,
@@ -48,8 +43,15 @@ impl Store {
         Ok((frames.into_iter().map(|f| f.bytes).collect(), gaps))
     }
 
-    /// [`relay_replay`](Self::relay_replay), keeping each frame's durable id and
-    /// resuming after `after_id`.
+    /// Every retained frame this subscriber has not already received, in
+    /// arrival order, with its durable id, plus the gaps retention has made
+    /// unrecoverable.
+    ///
+    /// Filtering by cursor matches the ring's rule exactly: a frame is skipped
+    /// only when it has heads and *every* head is at or below the matching
+    /// cursor. A frame whose heads could not be read is never skipped, because
+    /// over-delivery costs one idempotent no-op and under-delivery is data
+    /// loss.
     ///
     /// The id is `relay_frames.id`: durable, per-channel and monotonic in
     /// arrival order, which is exactly what an SSE `id:` field has to be for
@@ -342,6 +344,55 @@ mod tests {
         let (frames, gaps) = s.relay_replay(KEY, &cursors(5)).unwrap();
         assert!(gaps.is_empty(), "caught up past the watermark is not a gap");
         assert!(frames.is_empty());
+    }
+
+    /// `relay_replay(k, c)` is `relay_replay_after(k, 0, c)` with each frame
+    /// reduced to its bytes, for every case the store conformance suite
+    /// replays: no cursor, a cursor behind and past the eviction watermark,
+    /// and a frame with no heads. That equality is what lets the trait carry
+    /// only `relay_replay_after`.
+    #[test]
+    fn relay_replay_is_relay_replay_after_from_zero() {
+        let s = store();
+        let caps = DurableCaps {
+            max_bytes: 30,
+            max_age_ms: u64::MAX,
+        };
+        for seq in 1..=5 {
+            s.relay_append(
+                KEY,
+                &[u8::try_from(seq).unwrap(); 8],
+                &head(seq),
+                1,
+                None,
+                0,
+                1000,
+                caps,
+            )
+            .unwrap();
+        }
+        s.relay_append(KEY, b"opaque", &[], 0, None, 0, 1000, caps)
+            .unwrap();
+        // The cases below reach a gap, or the comparison proves nothing about
+        // the gap half.
+        let (_, gaps) = s.relay_replay_after(KEY, 0, &cursors(1)).unwrap();
+        assert!(!gaps.is_empty(), "cursor 1 is behind what was evicted");
+        for c in [
+            HashMap::new(),
+            cursors(1),
+            cursors(4),
+            cursors(5),
+            cursors(u64::MAX),
+        ] {
+            let (bytes, gaps) = s.relay_replay(KEY, &c).unwrap();
+            let (frames, gaps_after) = s.relay_replay_after(KEY, 0, &c).unwrap();
+            assert_eq!(
+                bytes,
+                frames.into_iter().map(|f| f.bytes).collect::<Vec<_>>(),
+                "{c:?}"
+            );
+            assert_eq!(gaps, gaps_after, "{c:?}");
+        }
     }
 
     #[test]
