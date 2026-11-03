@@ -38,10 +38,7 @@ Person = {
 }
 ```
 
-The wire key is **`identity_id`**, not `linked_identity`. Earlier revisions of
-this spec used the latter; the struct has never spelled it that way, so a
-reader implementing against the old name would have found the field absent on
-every payload.
+The wire key is **`identity_id`**.
 
 **`handle`, `avatar`, `notes` and `contact_methods` do not exist**, and neither
 does a `ContactMethod` type. They were specified and never modelled. Absent
