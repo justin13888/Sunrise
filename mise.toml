@@ -753,8 +753,9 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #     spells — a directory declares no items under any grammar, and it has no
 #     lines either, which is the same ground `dir:702` has always failed on.
 #   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
-#     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
-#     of it, which checks nothing; cite the `struct`, `trait` or `fn`.
+#     97.7% of `sync.rs` and `mod tests` in the since-split
+#     `api/sync/suite.rs` spanned 99.5% of it, which checks nothing; cite the
+#     `struct`, `trait` or `fn`.
 #   * A single-line `path:LINE#symbol` whose line is a `///` line of the
 #     item's doc comment below its summary line is a FAILURE, in every
 #     declaration of the name that contains it. That is where a line written
