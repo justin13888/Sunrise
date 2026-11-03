@@ -206,3 +206,33 @@ impl EntitySpec {
         self.records.iter().find(|r| r.name == name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::registry::ENTITIES;
+
+    #[test]
+    fn record_finds_each_registered_record_by_its_own_name() {
+        let mut multi = false;
+        for e in &ENTITIES {
+            multi |= e.records.len() > 1;
+            for r in e.records {
+                let found = e.record(r.name).unwrap_or_else(|| {
+                    panic!("{} has no record {}", e.tag, r.name);
+                });
+                assert!(std::ptr::eq(found, r), "{}: {}", e.tag, r.name);
+            }
+        }
+        // Without an entity holding two records, a lookup that answered with
+        // the first record whatever the name would pass the loop above.
+        assert!(multi, "no entity registers more than one record");
+    }
+
+    #[test]
+    fn record_misses_a_name_the_entity_does_not_register() {
+        for e in &ENTITIES {
+            assert!(e.record("NoSuchRecord").is_none(), "{}", e.tag);
+            assert!(e.record("").is_none(), "{}", e.tag);
+        }
+    }
+}

@@ -361,6 +361,23 @@ mod tests {
         );
     }
 
+    /// A valid envelope prefix with nothing after it has a good magic and no
+    /// map: the prefix is accepted and the empty CBOR is what is refused, so
+    /// the relay reports a malformed envelope rather than a foreign file.
+    #[test]
+    fn a_bare_envelope_prefix_is_malformed_cbor_not_bad_magic() {
+        let mut out = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
+        assert!(
+            matches!(
+                decode_envelope_header(&out),
+                Err(EnvelopeHeaderError::Cbor(_))
+            ),
+            "{:?}",
+            decode_envelope_header(&out)
+        );
+    }
+
     #[test]
     fn a_missing_routing_field_is_an_error_not_a_zero() {
         let entries: Vec<(Value, Value)> = vec![
