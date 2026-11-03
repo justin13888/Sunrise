@@ -59,9 +59,11 @@ use sunrise_core::{
 };
 use sunrise_crypto::blob_chunk::CHUNK_PLAINTEXT_LEN;
 use sunrise_domain::TaskDraft;
+use sunrise_e2e::chaos::{ToxicConfig, DEFAULT_FUZZ_SEED};
 use sunrise_e2e::{
-    open_core_offline, open_paired_core, open_paired_core_offline, open_synced_core,
-    signed_ws_factory, spawn_relay, spawn_relay_with, wait_live, wait_tasks_converge,
+    open_core_offline, open_paired_core, open_paired_core_offline, open_paired_core_with_factory,
+    open_synced_core, signed_ws_factory, spawn_relay, spawn_relay_with, toxic_ws_factory,
+    wait_live, wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
 use sunrise_server::store::NewDevice;
@@ -289,7 +291,9 @@ async fn an_attachment_over_the_auto_fetch_threshold_arrives_when_it_is_asked_fo
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, Arc::clone(&clock)).await;
-    let b = open_paired_core(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
+    // A fault-free toxic link, for its count of B's resync rounds.
+    let (fb, b_link) = toxic_ws_factory(addr, ToxicConfig::passthrough(), DEFAULT_FUZZ_SEED);
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, Arc::clone(&clock), fb).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -317,10 +321,15 @@ async fn an_attachment_over_the_auto_fetch_threshold_arrives_when_it_is_asked_fo
     // bytes, because the bytes are what must *not* arrive.
     wait_attachment_known(&b, att.id, TIMEOUT).await;
 
-    // The threshold, working. Two full resync periods of the harness's 200 ms
-    // backstop, so this is "B had every chance and declined" rather than "B has
-    // not got round to it".
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // The threshold, working. Two complete resync rounds of B's, each with
+    // its blob drain, observed rather than slept for, so this is "B had every
+    // chance and declined" rather than "B has not got round to it".
+    let rounds = b_link.subscribes_sent();
+    b_link
+        .wait_until("two resync rounds on B", TIMEOUT, |h| {
+            h.subscribes_sent() >= rounds + 2
+        })
+        .await;
     assert!(
         !b.attachment_is_local(&att).expect("locality"),
         "an attachment over the threshold must never be fetched unasked"
