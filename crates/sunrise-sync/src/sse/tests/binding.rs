@@ -32,6 +32,26 @@ fn a_typed_code_survives_the_status_map() {
     assert_eq!(code_of(&err), "AUTH_DEVICE_SIG_INVALID");
 }
 
+/// A refusal carries the relay's `Retry-After` onto the error the driver
+/// branches on, and one that sent none carries none.
+#[test]
+fn a_refusal_carries_its_retry_after() {
+    let t = SseTransport::connect("http://127.0.0.1:1");
+    let limited = br#"{"status":429,"code":"RATE_LIMITED"}"#;
+    let mut r = reply(429, limited, None);
+    r.retry_after = Some(std::time::Duration::from_secs(5));
+    match t.refuse(&r) {
+        TransportError::Server { retry_after, .. } => {
+            assert_eq!(retry_after, Some(std::time::Duration::from_secs(5)));
+        }
+        other => panic!("expected a server refusal, got {other}"),
+    }
+    match t.refuse(&reply(429, limited, None)) {
+        TransportError::Server { retry_after, .. } => assert_eq!(retry_after, None),
+        other => panic!("expected a server refusal, got {other}"),
+    }
+}
+
 /// And the fallback still holds, so a relay that answers with a code this
 /// build has never heard of — or with no body at all — is still classified
 /// rather than dropped on the floor.

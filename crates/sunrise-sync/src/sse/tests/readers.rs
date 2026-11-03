@@ -24,6 +24,28 @@ fn the_server_s_date_is_read_back_and_never_invented() {
     );
 }
 
+/// `Retry-After` is read in its delta-seconds form, the one the relay sends,
+/// and every other shape reads as absent so the driver falls back to its own
+/// backoff rather than to a guess.
+#[test]
+fn retry_after_reads_delta_seconds_and_nothing_else() {
+    let with = |value: &str| {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::RETRY_AFTER,
+            value.parse().expect("a header value"),
+        );
+        super::retry_after(&headers)
+    };
+    assert_eq!(with("5"), Some(std::time::Duration::from_secs(5)));
+    assert_eq!(with(" 120 "), Some(std::time::Duration::from_secs(120)));
+    assert_eq!(with("0"), Some(std::time::Duration::ZERO));
+    assert_eq!(with("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    assert_eq!(with("-1"), None);
+    assert_eq!(with("1.5"), None);
+    assert!(super::retry_after(&hyper::HeaderMap::new()).is_none());
+}
+
 /// The advisory reply fields are total: absent or wrongly typed reads as
 /// the type's zero, because a relay that omits a capability bitfield should
 /// not sink a session that does not use it.

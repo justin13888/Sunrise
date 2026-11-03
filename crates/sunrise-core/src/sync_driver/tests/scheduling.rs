@@ -15,8 +15,8 @@
 use crate::config::Rng;
 use crate::sync_driver::frames::Outgoing;
 use crate::sync_driver::schedule::{
-    backoff_sleep, next_backoff_delay, next_deadline, retransmit_due, Deadlines, Due,
-    InflightBatch, LossEvidence, MonotonicClock,
+    backoff_sleep, next_backoff_delay, next_deadline, reconnect_delay, retransmit_due, Deadlines,
+    Due, InflightBatch, LossEvidence, MonotonicClock, MAX_RETRY_AFTER,
 };
 use crate::sync_driver::{send_pending, SyncShared, MIN_RESYNC_GAP};
 use parking_lot::Mutex;
@@ -116,8 +116,31 @@ fn the_exhausted_arm_is_thirty_seconds_regardless_of_jitter() {
     }
 }
 
+/// A relay's `Retry-After` raises the scheduled delay, never lowers it, and is
+/// capped so a hostile value cannot park the driver indefinitely (#1052).
+#[test]
+fn retry_after_floors_the_reconnect_delay_up_to_a_cap() {
+    let step = Duration::from_millis(200);
+    assert_eq!(reconnect_delay(step, None), step);
+    assert_eq!(
+        reconnect_delay(step, Some(Duration::from_secs(5))),
+        Duration::from_secs(5)
+    );
+    assert_eq!(
+        reconnect_delay(Duration::from_secs(30), Some(Duration::from_secs(5))),
+        Duration::from_secs(30),
+        "a shorter Retry-After does not cut the schedule's own step"
+    );
+    assert_eq!(
+        reconnect_delay(step, Some(Duration::from_secs(u64::MAX))),
+        MAX_RETRY_AFTER,
+        "past the cap the driver retries anyway"
+    );
+}
+
 /// A wake ends the flat thirty-second wait at once, and the backoff still
-/// advances: the wake skips one delay, not the schedule.
+/// advances: the wake skips one delay, not the schedule. A relay's
+/// `Retry-After` floor is a delay like any other, so a wake skips it too.
 #[tokio::test]
 async fn a_reconnect_wake_cuts_the_backoff_short() {
     let (status_tx, _status_rx) = broadcast::channel(4);
@@ -133,7 +156,7 @@ async fn a_reconnect_wake_cuts_the_backoff_short() {
     shared.wake_reconnect();
     let woke = tokio::time::timeout(
         Duration::from_secs(5),
-        backoff_sleep(&mut backoff, &MidJitterRng, &shared),
+        backoff_sleep(&mut backoff, &MidJitterRng, &shared, Some(MAX_RETRY_AFTER)),
     )
     .await
     .expect("a woken backoff returns at once");

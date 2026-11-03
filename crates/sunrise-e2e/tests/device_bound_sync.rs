@@ -265,7 +265,7 @@ async fn an_unbound_client_is_refused_where_a_bound_one_is_accepted() {
     let mut t = SseTransport::connect_with_bearer(&format!("http://{addr}"), Some(BEARER));
 
     match handshake(&mut t).await {
-        Err(TransportError::Server { code, message }) => {
+        Err(TransportError::Server { code, message, .. }) => {
             assert_eq!(
                 code, "AUTH_DEVICE_SIG_INVALID",
                 "the relay must name the signature, not the bearer — the bearer is fine"
@@ -327,7 +327,7 @@ async fn a_client_whose_clock_is_wrong_is_told_it_is_its_clock() {
         .with_device_signer(core.device_signer(device_id));
 
     match handshake(&mut t).await {
-        Err(TransportError::Server { code, message }) => {
+        Err(TransportError::Server { code, message, .. }) => {
             assert_eq!(code, "AUTH_DEVICE_SIG_INVALID");
             assert!(
                 message.contains("clock is") && message.contains("set the system clock"),

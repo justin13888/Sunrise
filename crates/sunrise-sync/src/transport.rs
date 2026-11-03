@@ -21,6 +21,12 @@ pub enum TransportError {
         code: &'static str,
         /// Human-readable summary.
         message: String,
+        /// How long the relay asked the client to wait before trying again:
+        /// the refusal's `Retry-After`, when it sent one in the delta-seconds
+        /// form. The sync driver waits at least this long before its next
+        /// reconnect instead of re-hitting a rate-limited relay on its own
+        /// backoff schedule.
+        retry_after: Option<std::time::Duration>,
     },
     /// Encode/decode error somewhere in the framing or CBOR layer.
     #[error("protocol error: {0}")]

@@ -65,6 +65,7 @@ fn refusal(code: ErrorCode) -> Recv {
     Err(TransportError::Server {
         code: code.as_str(),
         message: "scripted refusal".into(),
+        retry_after: None,
     })
 }
 
@@ -187,9 +188,21 @@ fn only_a_non_retryable_close_is_terminal() {
         SessionEnd::from_transport_error(TransportError::Server {
             code: ErrorCode::AuthDeviceSigInvalid.as_str(),
             message: String::new(),
+            retry_after: None,
         }),
         SessionEnd::Refused { code, .. } if code == "AUTH_DEVICE_SIG_INVALID"
     ));
+    let limited = SessionEnd::from_transport_error(TransportError::Server {
+        code: ErrorCode::RateLimited.as_str(),
+        message: String::new(),
+        retry_after: Some(Duration::from_secs(5)),
+    });
+    assert_eq!(
+        limited.reconnect_floor(),
+        Some(Duration::from_secs(5)),
+        "a refusal keeps the relay's Retry-After for the next reconnect"
+    );
+    assert_eq!(SessionEnd::Disconnected.reconnect_floor(), None);
 }
 
 /// Driver-level: a terminal close stops the reconnect loop, and a new
@@ -428,6 +441,7 @@ impl Transport for RefusesHello {
         Err(TransportError::Server {
             code: self.0.as_str(),
             message: "scripted hello refusal".into(),
+            retry_after: None,
         })
     }
     async fn recv_frame(&mut self) -> Recv {
@@ -491,6 +505,48 @@ async fn a_refused_hello_is_logged_under_the_relays_code() {
         Some(ErrorCode::RateLimited.as_str()),
         "the refusal reaches readers, not only the log (#1036)"
     );
+    core.shutdown().await;
+}
+
+/// Driver-level: a refusal carrying `Retry-After: 5` holds the next reconnect
+/// off for at least five seconds (#1052).
+///
+/// The canonical schedule's first steps are 100 ms and 200 ms, so without the
+/// floor the second and third connects land well inside the window a
+/// rate-limited relay asked for.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_s_retry_after_floors_the_next_reconnect() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    let connects = Arc::new(parking_lot::Mutex::new(Vec::<tokio::time::Instant>::new()));
+    let seen = Arc::clone(&connects);
+    let factory: TransportFactory = Arc::new(move |_: CredentialRead| {
+        seen.lock().push(tokio::time::Instant::now());
+        let script: VecDeque<Recv> = VecDeque::from([Err(TransportError::Server {
+            code: ErrorCode::RateLimited.as_str(),
+            message: "scripted rate limit".into(),
+            retry_after: Some(Duration::from_secs(5)),
+        })]);
+        Box::pin(async move { Ok(Box::new(ScriptedTransport(script)) as BoxTransport) })
+            as ConnectFuture
+    });
+    let (shared, _log, _rx, driver) = drive(&core, factory);
+
+    until("two reconnects", || connects.lock().len() >= 3).await;
+    shared.request_shutdown();
+    timeout(Duration::from_secs(60), driver)
+        .await
+        .expect("the driver never stopped")
+        .unwrap();
+
+    let at = connects.lock().clone();
+    for pair in at.windows(2).take(2) {
+        let gap = pair[1] - pair[0];
+        assert!(
+            gap >= Duration::from_secs(5),
+            "reconnected {gap:?} after a refusal that asked for 5 s"
+        );
+    }
     core.shutdown().await;
 }
 

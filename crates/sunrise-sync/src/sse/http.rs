@@ -59,7 +59,7 @@ pub(super) const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 /// the client carries no timeout of its own (see
 /// [`SseTransport::connect_with_bearer`]), [`HEAD_TIMEOUT`] ends when the head
 /// arrives and so bounds none of the body, and
-/// `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits the `Hello` send
+/// `crates/sunrise-core/src/sync_driver.rs#handshake` awaits the `Hello` send
 /// bare, outside any `tokio::select!`. An unbounded read under that await parks
 /// the driver task with no error, no `SessionEnd::Disconnected`, no backoff and
 /// no log line. On the stream route the driver's `tokio::select!` *cancels*
@@ -106,9 +106,8 @@ pub(super) const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// `count_failure` records it and returns, and that crate's only `poke_sync()`
 /// fires once, when the request is made. The next attempt comes from the sync
 /// driver's anti-entropy backstop, which drains blob transfers and only then
-/// calls `deadlines.resynced()` (`crates/sunrise-core/src/sync_driver.rs:976#session`
-/// and `:977`) — so the next attempt is `DEFAULT_RESYNC_INTERVAL`, thirty
-/// seconds, after the last one *ended*. On a quiet vault the cycle is
+/// calls `deadlines.resynced()` (`crates/sunrise-core/src/sync_driver.rs#session`) —
+/// so the next attempt is `DEFAULT_RESYNC_INTERVAL`, thirty seconds, after the last one *ended*. On a quiet vault the cycle is
 /// therefore this bound plus thirty seconds, and the tenth attempt parks the
 /// row between six and seven minutes after the request. On a busy one an
 /// inbound batch or a local submit re-drives the drain sooner, so the span is
@@ -147,7 +146,7 @@ pub(super) const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// set. A relay, proxy or captive portal that completes TLS and then sends
 /// nothing therefore parked the awaiting task for good. On the `Hello` route
 /// that task is the sync driver, which awaits the send bare
-/// (`crates/sunrise-core/src/sync_driver.rs:709#handshake`), so the symptom was silence:
+/// (`crates/sunrise-core/src/sync_driver.rs#handshake`), so the symptom was silence:
 /// no error, no `SessionEnd::Disconnected`, no backoff and no log line.
 ///
 /// A **total** bound, not an idle one, because a head is not a stream: it is
@@ -310,6 +309,7 @@ impl SseTransport {
         let response = await_head(self.client.request(request), head).await?;
         let status = response.status();
         let date = server_date(response.headers());
+        let retry_after = retry_after(response.headers());
         // The status is already in hand, so the kind of body about to arrive is
         // known before a byte of it is read. The caller's bounds size the reply
         // it asked for; a refusal is a document on every route, and is read
@@ -323,6 +323,7 @@ impl SseTransport {
         Ok(Reply {
             status,
             date,
+            retry_after,
             bytes,
         })
     }
@@ -368,14 +369,16 @@ impl SseTransport {
         //
         // The deadline is the load-bearing half. This is the route the
         // handshake rides: `send_frame`'s `Hello` arm calls it, and
-        // `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits that send bare,
+        // `crates/sunrise-core/src/sync_driver.rs#handshake` awaits that send bare,
         // outside any `tokio::select!`. An unbounded read here was not a retry
         // loop the driver eventually notices — it was the driver task parked
         // for good, with no error, no backoff and nothing in the log.
+        let retry_after = retry_after(response.headers());
         let bytes = read_body(response.into_body(), MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT).await?;
         Ok(Reply {
             status,
             date,
+            retry_after,
             bytes,
         })
     }
@@ -418,7 +421,11 @@ impl SseTransport {
                 self.signer.as_ref().map(|s| s.now_ms()),
             ));
         }
-        TransportError::Server { code, message }
+        TransportError::Server {
+            code,
+            message,
+            retry_after: reply.retry_after,
+        }
     }
 }
 
@@ -435,6 +442,11 @@ pub(super) struct Reply {
     /// requires it, so it is an `Option` and its absence degrades the advice
     /// rather than the diagnosis.
     pub(super) date: Option<String>,
+    /// The relay's `Retry-After`, when it sent one as delta-seconds.
+    ///
+    /// Carried onto the refusal [`SseTransport::refuse`] builds, so the sync
+    /// driver can wait out a `429 RATE_LIMITED` window rather than re-hit it.
+    pub(super) retry_after: Option<std::time::Duration>,
     /// The whole body.
     pub(super) bytes: Vec<u8>,
 }
@@ -543,6 +555,23 @@ pub(super) fn server_date(headers: &hyper::HeaderMap) -> Option<String> {
         .to_str()
         .ok()
         .map(ToOwned::to_owned)
+}
+
+/// The `Retry-After` header in its delta-seconds form.
+///
+/// The relay sends whole seconds (`RateLimited::after_secs`). The HTTP-date
+/// form, and anything else that is not a non-negative integer, reads as
+/// absent: the driver then falls back to its own backoff schedule, which is
+/// where it was before it read the header at all.
+pub(super) fn retry_after(headers: &hyper::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(hyper::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
 }
 
 /// What to tell a user whose device binding was refused.

@@ -57,6 +57,22 @@ sequence starts again at 100 ms. A client that cannot reach its relay for an hou
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
 that a long-lived client should never stop trying.
 
+Those are the schedule's delays; a relay that refuses with `Retry-After` raises
+the next one. When the last attempt ended in a refusal carrying the header (for
+example `429 RATE_LIMITED`), the delay is
+`max(scheduled, min(retry_after, MAX_RETRY_AFTER))`
+(`crates/sunrise-core/src/sync_driver/schedule.rs#reconnect_delay`), with
+`MAX_RETRY_AFTER` = 15 min
+(`crates/sunrise-core/src/sync_driver/schedule.rs#MAX_RETRY_AFTER`). It is a
+floor, not a replacement: a `Retry-After` shorter than the current step does not
+shorten it, and the attempt counter still advances. The cap keeps a
+misconfigured or hostile relay from parking the driver indefinitely. Only the
+delta-seconds form is read (`crates/sunrise-sync/src/sse/http.rs#retry_after`);
+an HTTP-date reads as absent. `retry_after_floors_the_reconnect_delay_up_to_a_cap`
+in `sync_driver/tests/scheduling.rs` pins the raise, the no-lower and the cap, and
+`a_refusal_s_retry_after_floors_the_next_reconnect` in
+`sync_driver/tests/session_end.rs` drives the driver through refusals that ask for 5 s.
+
 The counter is otherwise reset only when the relay **answers the handshake**
 (`crates/sunrise-core/src/sync_driver.rs#run`), not when a transport is constructed: no transport
 factory dials at construction, so a reset there would zero the counter on every
@@ -78,8 +94,8 @@ the schedule, and at most one wake is held however many land.
 One consequence worth naming because it looks like a bug and is not: the
 `min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52#next_delay`)
 is **unreachable on this policy**. With `max_retries = 5` the largest base is
-1600 ms, so the cap never binds; the only 30 s that ever elapses is the flat
-sleep on the exhausted branch.
+1600 ms, so the cap never binds; the only 30 s the schedule itself ever waits
+is the flat sleep on the exhausted branch.
 
 Every number in this section is asserted, not just described. The `scheduling`
 module in `sync_driver/tests/` drives `next_backoff_delay` through a full cycle and

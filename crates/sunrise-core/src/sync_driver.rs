@@ -245,6 +245,15 @@ impl SyncConfig {
 // Driver task
 // ---------------------------------------------------------------------------
 
+/// The relay's `Retry-After` on a refusal, for a connect that failed before
+/// any session existed to end.
+fn retry_after_of(e: &TransportError) -> Option<Duration> {
+    match e {
+        TransportError::Server { retry_after, .. } => *retry_after,
+        _ => None,
+    }
+}
+
 enum SessionEnd {
     /// Shutdown requested; stop the driver.
     Shutdown,
@@ -256,7 +265,15 @@ enum SessionEnd {
     /// code. Reconnects after backoff exactly as `Disconnected` does; it is a
     /// separate variant so the code reaches `sync.session.error` instead of
     /// being discarded with the error that carried it.
-    Refused { code: &'static str, message: String },
+    ///
+    /// `retry_after` is the refusal's `Retry-After`: the next reconnect waits
+    /// at least that long (capped at [`schedule::MAX_RETRY_AFTER`]), so a
+    /// rate-limited relay is not re-hit inside the window it asked for.
+    Refused {
+        code: &'static str,
+        message: String,
+        retry_after: Option<Duration>,
+    },
     /// The relay sent a `Close`. The code's catalogue `retryable` flag decides
     /// what happens next: a retryable close reconnects after backoff, any
     /// other parks the driver in [`SyncState::Stopped`]. See
@@ -269,8 +286,25 @@ impl SessionEnd {
     /// keeps its code; every other transport error is a drop.
     fn from_transport_error(e: TransportError) -> Self {
         match e {
-            TransportError::Server { code, message } => Self::Refused { code, message },
+            TransportError::Server {
+                code,
+                message,
+                retry_after,
+            } => Self::Refused {
+                code,
+                message,
+                retry_after,
+            },
             _ => Self::Disconnected,
+        }
+    }
+
+    /// The least the next reconnect must wait: the relay's `Retry-After`,
+    /// when this end is a refusal that carried one.
+    fn reconnect_floor(&self) -> Option<Duration> {
+        match self {
+            Self::Refused { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -460,7 +494,7 @@ pub(crate) async fn run(
                         "relay connect failed"
                     ),
                 }
-                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared, retry_after_of(&e)).await {
                     break;
                 }
                 continue;
@@ -516,7 +550,7 @@ pub(crate) async fn run(
             marked_at_connect = Some(to_v);
             continue;
         }
-        if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+        if !backoff_sleep(&mut backoff, rng.as_ref(), &shared, end.reconnect_floor()).await {
             break;
         }
     }
@@ -583,7 +617,7 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Shutdown | SessionEnd::Disconnected => {}
         // Worded like the connect path's arm for the same code, because it
         // is the same refusal arriving by the other route.
-        SessionEnd::Refused { code, message }
+        SessionEnd::Refused { code, message, .. }
             if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
         {
             tracing::warn!(
@@ -601,7 +635,7 @@ fn log_session_end(end: &SessionEnd) {
         // is not a transient fault. `retryable` stays the driver's, which
         // reconnects after any refusal. A code outside the catalogue keeps
         // the old `transient`.
-        SessionEnd::Refused { code, message } => tracing::warn!(
+        SessionEnd::Refused { code, message, .. } => tracing::warn!(
             ev = "sync.session.error",
             err_code = *code,
             err_kind = ErrorCode::from_wire_str(code)
