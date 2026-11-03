@@ -11,7 +11,7 @@ decision, and [`overview.md`](./overview.md) specifies the entities, fetching
 and reconnect flow shared by every calendar provider. This page is what is
 specific to Google.
 
-> **Status: not built.** `crates/sunrise-integrations/src/gcal/mod.rs` implements
+> **Status: not built.** The `crates/sunrise-integrations/src/gcal/` module implements
 > the PKCE authorization-code exchange
 > (`crates/sunrise-integrations/src/gcal/oauth.rs#OAuthFlow`), refresh with the
 > durable-refresh-token rule

@@ -14,7 +14,7 @@ is the decision for calendars; it amends
 
 | Integration | Direction | Status | Spec |
 |---|---|---|---|
-| Google Calendar | Read-only | **Not built.** `crates/sunrise-integrations/src/gcal/mod.rs` implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
+| Google Calendar | Read-only | **Not built.** The `crates/sunrise-integrations/src/gcal/` module implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
 | Microsoft Graph (Outlook.com, Microsoft 365, Exchange Online) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`microsoft-graph.md`](./microsoft-graph.md) |
 | CalDAV (iCloud, Fastmail, Nextcloud, any RFC 4791 server) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`caldav.md`](./caldav.md) |
 | iCalendar (.ics) | Import / export | **Live on both shipping clients**, a narrow subset: `sunrise ical import` / `export`, and the macOS File menu over the seam's `import_ical` / `export_ical` | [`icalendar.md`](./icalendar.md) |
