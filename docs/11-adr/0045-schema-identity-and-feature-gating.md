@@ -54,7 +54,7 @@ issue.
    serde discards the keys it does not know. An unknown `SunriseTime` kind fails
    the enclosing op ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 4. **A container version one step newer is refused outright.**
-   `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope` requires both the
+   `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope` requires both the
    magic-prefix version and field 1 to equal `ENVELOPE_FORMAT_V`.
    `crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header` applies
    the same exact match at the relay. This holds even though the decoder
@@ -182,7 +182,7 @@ OpEnvelope = {
   decodes an unknown envelope field into `OpEnvelope.unknown`, re-emits it in
   its canonical position, and includes it in the AAD and the signature. See the
   `other =>` arm of
-  `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`. An old build
+  `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope`. An old build
   therefore reads, verifies, stores and relays an envelope carrying field 13
   without change.
 - **Field 13 is required from the first fingerprinted version.** Call that
