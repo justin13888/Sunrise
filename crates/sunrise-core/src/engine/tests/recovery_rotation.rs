@@ -38,7 +38,7 @@ fn open_vault(root: [u8; 32], seed: &IdentitySeed) -> (Engine, Db) {
         seed,
     )
     .unwrap();
-    let e = Engine::from_clock(c, Arc::new(SystemRng), Arc::new(kc));
+    let e = Engine::from_clock(c, seeded_rng(), Arc::new(kc));
     e.ensure_base_epochs(&mut db).unwrap();
     e.publish_device_cert(&mut db).unwrap();
     (e, db)

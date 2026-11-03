@@ -314,7 +314,7 @@ fn traveller(zone: &'static str, now: u64) -> (Engine, Arc<crate::config::Report
         now, zone,
     ))));
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x36; 32])));
-    let e = Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc);
+    let e = Engine::from_clock(clock.clone(), seeded_rng(), kc);
     (e, clock)
 }
 

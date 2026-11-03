@@ -108,18 +108,6 @@ fn a_move_into_an_empty_list() {
     assert_eq!(order[1..], unplaced[..], "the rest keep the order they had");
 }
 
-/// `r` is the `Invalid` refusal whose reason holds `why`, so a refusal from a
-/// different check than the one a case names fails it.
-#[track_caller]
-fn invalid(r: Result<CommandResult, EngineError>, why: &str) {
-    match r {
-        Err(EngineError::Invalid(reason)) => {
-            assert!(reason.contains(why), "refused for {reason:?}, not {why:?}");
-        }
-        other => panic!("expected Invalid({why:?}), got {other:?}"),
-    }
-}
-
 #[test]
 fn a_move_refuses_what_has_no_place() {
     let (e, mut db) = (engine(), db());

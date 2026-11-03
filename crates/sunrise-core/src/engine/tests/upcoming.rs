@@ -143,11 +143,7 @@ fn a_zone_change_mid_span_moves_only_the_pinned_plan() {
 
     // The same instant, read by a device now in Tokyo.
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0x51; 32])));
-    let tokyo = Engine::from_clock(
-        Arc::new(ZonedClock(now, "Asia/Tokyo")),
-        Arc::new(SystemRng),
-        kc,
-    );
+    let tokyo = Engine::from_clock(Arc::new(ZonedClock(now, "Asia/Tokyo")), seeded_rng(), kc);
     let after = upcoming(&tokyo, &db, now, Some(7));
     assert_eq!(
         after.today,

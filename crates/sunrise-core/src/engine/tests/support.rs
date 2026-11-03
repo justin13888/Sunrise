@@ -72,6 +72,28 @@ pub(super) fn engine() -> Engine {
     )
 }
 
+/// `err` is the `Invalid` refusal whose reason holds `why`, so a refusal from
+/// a different check than the one a case names fails it.
+#[track_caller]
+pub(super) fn assert_invalid(err: &EngineError, why: &str) {
+    match err {
+        EngineError::Invalid(reason) => {
+            assert!(reason.contains(why), "refused for {reason:?}, not {why:?}");
+        }
+        other => panic!("expected Invalid({why:?}), got {other:?}"),
+    }
+}
+
+/// `r` is the `Invalid` refusal whose reason holds `why`; see
+/// [`assert_invalid`].
+#[track_caller]
+pub(super) fn invalid<T: std::fmt::Debug>(r: Result<T, EngineError>, why: &str) {
+    match r {
+        Err(err) => assert_invalid(&err, why),
+        Ok(v) => panic!("expected Invalid({why:?}), got Ok({v:?})"),
+    }
+}
+
 pub(super) fn db() -> Db {
     Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
 }
@@ -1551,7 +1573,7 @@ pub(super) fn engine_at(
     let tz = jiff::tz::TimeZone::get(zone).unwrap();
     let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(root)));
-    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), Arc::new(SystemRng), kc);
+    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), seeded_rng(), kc);
     (e, now)
 }
 

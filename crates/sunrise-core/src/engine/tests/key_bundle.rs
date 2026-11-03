@@ -18,7 +18,7 @@ fn clock() -> Arc<FakeClock> {
 fn paired(seed: u8) -> Engine {
     Engine::from_clock(
         clock(),
-        Arc::new(SystemRng),
+        seeded_rng(),
         Arc::new(Keychain::for_test_paired(
             VaultRootKey::from_bytes(ROOT),
             [seed; 32],
