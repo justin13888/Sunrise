@@ -59,9 +59,9 @@ use proptest::test_runner::{Config as ProptestConfig, RngSeed};
 
 /// The environment variable naming the seed, for every harness in the
 /// workspace.
-pub const ENV_FUZZ_SEED: &str = "SUNRISE_FUZZ_SEED";
+const ENV_FUZZ_SEED: &str = "SUNRISE_FUZZ_SEED";
 
-/// Seed the chaos harness uses when [`ENV_FUZZ_SEED`] is unset and no explicit
+/// Seed the chaos harness uses when `SUNRISE_FUZZ_SEED` is unset and no explicit
 /// seed is supplied. Fixed so that harness is reproducible out of the box.
 pub const DEFAULT_FUZZ_SEED: u64 = 0x5352_5f43_4841_4f53; // "SR_CHAOS"
 
@@ -78,7 +78,7 @@ pub const DEFAULT_FUZZ_SEED: u64 = 0x5352_5f43_4841_4f53; // "SR_CHAOS"
 /// Pure over its argument: no environment, no process state. This is the whole
 /// of the parsing rule and it is unit-tested on its own.
 #[must_use]
-pub fn parse_seed(raw: &str) -> Option<u64> {
+fn parse_seed(raw: &str) -> Option<u64> {
     let t = raw.trim();
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).ok()
@@ -89,7 +89,7 @@ pub fn parse_seed(raw: &str) -> Option<u64> {
     }
 }
 
-/// Resolve the seed from [`ENV_FUZZ_SEED`], or `None` when it is unset or
+/// Resolve the seed from `SUNRISE_FUZZ_SEED`, or `None` when it is unset or
 /// unparseable.
 #[must_use]
 pub fn seed_from_env() -> Option<u64> {
@@ -111,7 +111,7 @@ pub fn seed_from_env() -> Option<u64> {
 /// * `sunrise` is [`seed_from_env`] — the workspace-wide convention.
 /// * `fallback` is used when neither variable is set.
 #[must_use]
-pub fn choose_rng_seed(native: RngSeed, sunrise: Option<u64>, fallback: u64) -> RngSeed {
+fn choose_rng_seed(native: RngSeed, sunrise: Option<u64>, fallback: u64) -> RngSeed {
     match (native, sunrise) {
         (RngSeed::Fixed(n), _) | (RngSeed::Random, Some(n)) => RngSeed::Fixed(n),
         (RngSeed::Random, None) => RngSeed::Fixed(fallback),
