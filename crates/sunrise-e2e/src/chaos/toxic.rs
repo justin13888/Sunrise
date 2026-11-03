@@ -19,6 +19,23 @@
 //! - **partition** — a runtime switch on [`FaultHandle`]; while partitioned all
 //!   sends and receives return a transport error, modelling a cut link.
 //!
+//! The faults apply to the frame stream. The account API beside it (blobs,
+//! snapshots, key bundle, identity chain, revocation) passes straight through
+//! to the inner transport, except that a partition refuses it too: a cut link
+//! carries nothing.
+//!
+//! ## Counters
+//!
+//! [`FaultHandle`] counts what the wrapper actually did, so a test can wait
+//! for a fault to fire before it heals and prove it fired, rather than
+//! sleeping and hoping: [`dropped`](FaultHandle::dropped),
+//! [`corrupted`](FaultHandle::corrupted) and
+//! [`refused_sends`](FaultHandle::refused_sends). It also counts the
+//! `Subscribe` frames it forwarded
+//! ([`subscribes_sent`](FaultHandle::subscribes_sent)): on an idle live
+//! session each one is an anti-entropy resync round, which is what an absence
+//! check waits on in place of a fixed sleep.
+//!
 //! ## Determinism
 //!
 //! All random decisions are drawn from a seeded `rand_chacha` `ChaCha20` RNG.
@@ -40,7 +57,11 @@ use async_trait::async_trait;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
-use sunrise_sync::transport::{Transport, TransportError};
+use sunrise_sync::transport::{
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
+    Transport, TransportError,
+};
+use sunrise_wire_protocol::{decode_frame, MsgKind};
 
 // The seed convention itself lives in `sunrise-test-seed`, which is the one
 // reader in the workspace: the property tests plumb the same resolved value
@@ -121,7 +142,18 @@ struct FaultState {
     drop_bits: AtomicU64,
     /// `f64` corrupt probability stored as raw bits.
     corrupt_bits: AtomicU64,
+    /// Frames the drop fault swallowed, both directions.
+    dropped: AtomicU64,
+    /// Frames the corrupt fault altered, both directions.
+    corrupted: AtomicU64,
+    /// Sends the partition refused.
+    refused_sends: AtomicU64,
+    /// `Subscribe` frames forwarded unaltered to the inner transport.
+    subscribes_sent: AtomicU64,
 }
+
+/// How often [`FaultHandle::wait_until`] re-reads the counters.
+const WAIT_POLL: Duration = Duration::from_millis(10);
 
 impl FaultHandle {
     fn new(drop_prob: f64, corrupt_prob: f64) -> Self {
@@ -130,7 +162,60 @@ impl FaultHandle {
                 partitioned: AtomicBool::new(false),
                 drop_bits: AtomicU64::new(clamp_prob(drop_prob).to_bits()),
                 corrupt_bits: AtomicU64::new(clamp_prob(corrupt_prob).to_bits()),
+                dropped: AtomicU64::new(0),
+                corrupted: AtomicU64::new(0),
+                refused_sends: AtomicU64::new(0),
+                subscribes_sent: AtomicU64::new(0),
             }),
+        }
+    }
+
+    /// Frames the drop fault has swallowed so far, sends and receives alike,
+    /// across every wrapper sharing this handle.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Frames the corrupt fault has altered so far, sends and receives alike,
+    /// across every wrapper sharing this handle.
+    #[must_use]
+    pub fn corrupted(&self) -> u64 {
+        self.inner.corrupted.load(Ordering::Relaxed)
+    }
+
+    /// Sends the partition has refused so far. A session's first act is a
+    /// send, so while partitioned each reconnect attempt refuses one.
+    #[must_use]
+    pub fn refused_sends(&self) -> u64 {
+        self.inner.refused_sends.load(Ordering::Relaxed)
+    }
+
+    /// `Subscribe` frames forwarded unaltered to the inner transport so far.
+    ///
+    /// A session sends one when it opens, one when it learns a new Stream,
+    /// and one per anti-entropy resync. The resync sends it after that
+    /// round's blob drain has run, so on an idle live session `n` more of
+    /// these is `n` complete resync rounds.
+    #[must_use]
+    pub fn subscribes_sent(&self) -> u64 {
+        self.inner.subscribes_sent.load(Ordering::Relaxed)
+    }
+
+    /// Poll until `done` holds of this handle, panicking with `what` if
+    /// `timeout` passes first.
+    ///
+    /// # Panics
+    ///
+    /// When `done` is still false after `timeout`.
+    pub async fn wait_until(&self, what: &str, timeout: Duration, done: impl Fn(&Self) -> bool) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !done(self) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out after {timeout:?} waiting for {what}: {self:?}"
+            );
+            tokio::time::sleep(WAIT_POLL).await;
         }
     }
 
@@ -188,6 +273,10 @@ impl fmt::Debug for FaultHandle {
             .field("partitioned", &self.is_partitioned())
             .field("drop_prob", &self.drop_prob())
             .field("corrupt_prob", &self.corrupt_prob())
+            .field("dropped", &self.dropped())
+            .field("corrupted", &self.corrupted())
+            .field("refused_sends", &self.refused_sends())
+            .field("subscribes_sent", &self.subscribes_sent())
             .finish()
     }
 }
@@ -290,17 +379,39 @@ impl<T: Transport> Toxic<T> {
 
     /// With probability `corrupt_prob`, flip a single bit of a single
     /// (RNG-chosen) byte. Length is preserved and, when it fires, exactly one
-    /// byte differs. Empty frames are left untouched.
-    fn maybe_corrupt(&mut self, mut frame: Vec<u8>) -> Vec<u8> {
+    /// byte differs. Empty frames are left untouched. Returns whether it
+    /// fired, having counted it on the handle.
+    fn maybe_corrupt(&mut self, frame: &mut [u8]) -> bool {
         if frame.is_empty() {
-            return frame;
+            return false;
         }
-        if self.rng.gen_bool(self.faults.corrupt_prob()) {
-            let idx = self.rng.gen_range(0..frame.len());
-            let bit = self.rng.gen_range(0u32..8);
-            frame[idx] ^= 1u8 << bit;
+        if !self.rng.gen_bool(self.faults.corrupt_prob()) {
+            return false;
         }
-        frame
+        let idx = self.rng.gen_range(0..frame.len());
+        let bit = self.rng.gen_range(0u32..8);
+        frame[idx] ^= 1u8 << bit;
+        self.faults.inner.corrupted.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Draw the drop fault for one frame, counting it on the handle when it
+    /// fires.
+    fn should_drop(&mut self) -> bool {
+        let drop = self.rng.gen_bool(self.faults.drop_prob());
+        if drop {
+            self.faults.inner.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        drop
+    }
+
+    /// Refuse a call while partitioned. Uncounted: only
+    /// [`send_frame`](Transport::send_frame) counts its refusals.
+    fn refuse_if_partitioned(&self) -> Result<(), TransportError> {
+        if self.faults.is_partitioned() {
+            return Err(TransportError::Unavailable("partitioned".into()));
+        }
+        Ok(())
     }
 
     /// Sample a uniform delay within the configured range (inclusive). Returns
@@ -320,20 +431,33 @@ impl<T: Transport> Toxic<T> {
 
 #[async_trait]
 impl<T: Transport> Transport for Toxic<T> {
-    async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
+    async fn send_frame(&mut self, mut frame: Vec<u8>) -> Result<(), TransportError> {
         if self.faults.is_partitioned() {
+            self.faults
+                .inner
+                .refused_sends
+                .fetch_add(1, Ordering::Relaxed);
             return Err(TransportError::Unavailable("partitioned".into()));
         }
         // Drop: the frame vanishes, but the send still "succeeds".
-        if self.rng.gen_bool(self.faults.drop_prob()) {
+        if self.should_drop() {
             return Ok(());
         }
-        let frame = self.maybe_corrupt(frame);
+        let subscribe =
+            decode_frame(&frame).is_ok_and(|(header, _)| header.msg_kind == MsgKind::Subscribe);
+        let corrupted = self.maybe_corrupt(&mut frame);
         let delay = self.sample_delay();
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        self.inner.send_frame(frame).await
+        self.inner.send_frame(frame).await?;
+        if subscribe && !corrupted {
+            self.faults
+                .inner
+                .subscribes_sent
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -345,14 +469,14 @@ impl<T: Transport> Transport for Toxic<T> {
             // frame and its due time are parked in `self.held` before either
             // one, so a cancelled poll costs latency and never a frame.
             if self.held.is_none() {
-                let Some(frame) = self.inner.recv_frame().await? else {
+                let Some(mut frame) = self.inner.recv_frame().await? else {
                     return Ok(None);
                 };
                 // Drop: swallow this inbound frame and keep waiting.
-                if self.rng.gen_bool(self.faults.drop_prob()) {
+                if self.should_drop() {
                     continue;
                 }
-                let frame = self.maybe_corrupt(frame);
+                self.maybe_corrupt(&mut frame);
                 let delay = if self.delay_send_only {
                     Duration::ZERO
                 } else {
@@ -375,6 +499,106 @@ impl<T: Transport> Transport for Toxic<T> {
     async fn close(&mut self) -> Result<(), TransportError> {
         self.inner.close().await
     }
+
+    async fn revoke_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<RevokeOutcome, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.revoke_device(device_id).await
+    }
+
+    async fn blob_init(
+        &mut self,
+        stream_id: &[u8; 16],
+        chunk_count: u32,
+        size_bytes: u64,
+    ) -> Result<String, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .blob_init(stream_id, chunk_count, size_bytes)
+            .await
+    }
+
+    async fn blob_put_chunk(
+        &mut self,
+        upload_id: &str,
+        chunk_idx: u32,
+        bytes: &[u8],
+    ) -> Result<(), TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.blob_put_chunk(upload_id, chunk_idx, bytes).await
+    }
+
+    async fn blob_finalize(
+        &mut self,
+        upload_id: &str,
+        ciphertext_hash: &[u8; 32],
+        chunk_hashes: &[[u8; 32]],
+    ) -> Result<BlobCommit, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .blob_finalize(upload_id, ciphertext_hash, chunk_hashes)
+            .await
+    }
+
+    async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.blob_fetch(blob_id).await
+    }
+
+    async fn snapshot_latest(
+        &mut self,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.snapshot_latest(stream_id).await
+    }
+
+    async fn snapshot_pin(
+        &mut self,
+        stream_id: &[u8; 16],
+        blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.snapshot_pin(stream_id, blob_id).await
+    }
+
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.key_bundle_latest().await
+    }
+
+    async fn key_bundle_pin(
+        &mut self,
+        blob_id: &[u8; 16],
+        manifest_digest: &[u8; 32],
+        replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .key_bundle_pin(blob_id, manifest_digest, replaces)
+            .await
+    }
+
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.identity_chain_latest().await
+    }
+
+    async fn identity_chain_pin(
+        &mut self,
+        chain: &[u8],
+        replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.identity_chain_pin(chain, replaces).await
+    }
+
+    async fn recovery_blob_replace(&mut self, blob: &[u8]) -> Result<(), TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.recovery_blob_replace(blob).await
+    }
 }
 
 #[cfg(test)]
@@ -388,5 +612,116 @@ mod tests {
         assert!(h.corrupt_prob().abs() < f64::EPSILON);
         h.set_drop_prob(0.5);
         assert!((h.drop_prob() - 0.5).abs() < f64::EPSILON);
+    }
+
+    fn a_frame(kind: MsgKind) -> Vec<u8> {
+        sunrise_wire_protocol::encode_frame(
+            kind,
+            sunrise_wire_protocol::FrameFlags::EMPTY,
+            &[1, 2, 3],
+        )
+        .expect("encode")
+    }
+
+    #[tokio::test]
+    async fn every_drop_is_counted_in_both_directions() {
+        let (a, mut b) = crate::chaos::loopback_pair();
+        let config = ToxicConfig {
+            drop_prob: 1.0,
+            ..ToxicConfig::passthrough()
+        };
+        let (mut toxic, faults) = Toxic::with_seed(a, config, 1);
+        for _ in 0..3 {
+            toxic
+                .send_frame(vec![7])
+                .await
+                .expect("a dropped send succeeds");
+        }
+        assert_eq!(faults.dropped(), 3);
+
+        b.send_frame(vec![8]).await.expect("peer send");
+        b.close().await.expect("peer close");
+        assert_eq!(toxic.recv_frame().await.expect("recv"), None);
+        assert_eq!(faults.dropped(), 4, "the inbound frame was swallowed");
+        assert_eq!(faults.corrupted(), 0);
+    }
+
+    #[tokio::test]
+    async fn every_corruption_is_counted_and_a_corrupted_subscribe_is_not() {
+        let (a, mut b) = crate::chaos::loopback_pair();
+        let config = ToxicConfig {
+            corrupt_prob: 1.0,
+            ..ToxicConfig::passthrough()
+        };
+        let (mut toxic, faults) = Toxic::with_seed(a, config, 2);
+        toxic
+            .send_frame(a_frame(MsgKind::Subscribe))
+            .await
+            .expect("send");
+        assert_eq!(faults.corrupted(), 1);
+        assert_eq!(
+            faults.subscribes_sent(),
+            0,
+            "a Subscribe the relay cannot read is no resync round"
+        );
+
+        b.send_frame(vec![9, 9]).await.expect("peer send");
+        toxic.recv_frame().await.expect("recv").expect("a frame");
+        assert_eq!(faults.corrupted(), 2);
+        assert_eq!(faults.dropped(), 0);
+    }
+
+    #[tokio::test]
+    async fn only_forwarded_subscribes_are_counted() {
+        let (a, _b) = crate::chaos::loopback_pair();
+        let (mut toxic, faults) = Toxic::with_seed(a, ToxicConfig::passthrough(), 3);
+        toxic
+            .send_frame(a_frame(MsgKind::Subscribe))
+            .await
+            .expect("send");
+        toxic
+            .send_frame(a_frame(MsgKind::OpBatch))
+            .await
+            .expect("send");
+        toxic.send_frame(vec![0; 4]).await.expect("send");
+        assert_eq!(faults.subscribes_sent(), 1);
+
+        faults.partition(true);
+        assert!(toxic.send_frame(a_frame(MsgKind::Subscribe)).await.is_err());
+        assert_eq!(faults.subscribes_sent(), 1, "a refused one never left");
+        assert_eq!(faults.refused_sends(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_account_api_reaches_the_inner_transport_unless_partitioned() {
+        let (a, _b) = crate::chaos::loopback_pair();
+        let (mut toxic, faults) = Toxic::with_seed(a, ToxicConfig::passthrough(), 4);
+        // The loopback has no account API, so reaching it answers Unsupported.
+        assert!(matches!(
+            toxic.blob_fetch(&[0; 16]).await,
+            Err(TransportError::Unsupported)
+        ));
+        faults.partition(true);
+        assert!(matches!(
+            toxic.blob_fetch(&[0; 16]).await,
+            Err(TransportError::Unavailable(_))
+        ));
+        assert_eq!(faults.refused_sends(), 0, "only sends are counted");
+    }
+
+    #[tokio::test]
+    async fn wait_until_returns_once_the_condition_holds() {
+        let h = FaultHandle::new(0.0, 0.0);
+        h.inner.dropped.fetch_add(1, Ordering::Relaxed);
+        h.wait_until("a drop", Duration::from_millis(50), |h| h.dropped() > 0)
+            .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "waiting for a drop")]
+    async fn wait_until_panics_at_its_timeout() {
+        let h = FaultHandle::new(0.0, 0.0);
+        h.wait_until("a drop", Duration::from_millis(30), |h| h.dropped() > 0)
+            .await;
     }
 }

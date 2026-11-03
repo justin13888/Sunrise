@@ -21,11 +21,13 @@ use std::time::Duration;
 
 use sunrise_core::{
     AttachError, AttachPreview, Clock, Command, Core, NetworkClass, SystemClock, ThumbnailImage,
-    AUTO_FETCH_MAX_BYTES,
+    TransportFactory, AUTO_FETCH_MAX_BYTES,
 };
 use sunrise_domain::TaskDraft;
+use sunrise_e2e::chaos::{FaultHandle, ToxicConfig, DEFAULT_FUZZ_SEED};
 use sunrise_e2e::{
-    open_paired_core, open_synced_core, spawn_relay, wait_live, wait_tasks_converge,
+    open_paired_core_with_factory, open_synced_core, spawn_relay, toxic_ws_factory, wait_live,
+    wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
 
@@ -50,6 +52,23 @@ async fn a_task(core: &Core, title: &str) -> EntityRef {
     .await
     .expect("create task")
     .entity
+}
+
+/// B's link to the relay: fault-free, kept for its count of B's resync rounds.
+fn b_link(addr: std::net::SocketAddr) -> (TransportFactory, FaultHandle) {
+    toxic_ws_factory(addr, ToxicConfig::passthrough(), DEFAULT_FUZZ_SEED)
+}
+
+/// Wait out two complete resync rounds on the device behind `link`, each with
+/// its blob drain: observed rather than slept for, so an absence asserted
+/// afterwards is "it had every chance and declined", not "it has not got
+/// round to it".
+async fn wait_two_rounds(link: &FaultHandle) {
+    let rounds = link.subscribes_sent();
+    link.wait_until("two resync rounds", TIMEOUT, |h| {
+        h.subscribes_sent() >= rounds + 2
+    })
+    .await;
 }
 
 /// Poll until `core` can read `id`'s thumbnail.
@@ -103,7 +122,8 @@ async fn a_second_device_shows_the_thumbnail_without_fetching_the_original() {
         "A is the only device; it keeps it"
     );
 
-    let b = open_paired_core(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
+    let (fb, b_rounds) = b_link(addr);
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, Arc::clone(&clock), fb).await;
     wait_live(&b, TIMEOUT).await;
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
 
@@ -111,9 +131,8 @@ async fn a_second_device_shows_the_thumbnail_without_fetching_the_original() {
     assert_eq!(mime, "image/jpeg");
     assert_eq!(bytes, a_jpeg().bytes);
 
-    // Two resync periods of the harness's backstop: B had every chance to
-    // fetch the original and did not.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // B had every chance to fetch the original and did not.
+    wait_two_rounds(&b_rounds).await;
     let on_b = b
         .query(sunrise_core::Query::EntityById(att.id))
         .await
@@ -144,7 +163,8 @@ async fn on_cellular_the_thumbnail_comes_and_a_small_original_waits() {
     wait_live(&a, TIMEOUT).await;
     let task = a_task(&a, "Survey the site").await;
 
-    let b = open_paired_core(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
+    let (fb, b_rounds) = b_link(addr);
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, Arc::clone(&clock), fb).await;
     b.set_network_class(NetworkClass::Cellular);
     wait_live(&b, TIMEOUT).await;
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
@@ -166,7 +186,7 @@ async fn on_cellular_the_thumbnail_comes_and_a_small_original_waits() {
 
     let (_, bytes) = wait_thumbnail(&b, att.id).await;
     assert_eq!(bytes, a_jpeg().bytes);
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    wait_two_rounds(&b_rounds).await;
     assert!(
         matches!(
             b.attachment_bytes(att.id).await,

@@ -170,13 +170,19 @@ async fn drop_heavy_converges() {
         b_tasks.push(create_task(&b, &format!("b{i}")).await);
     }
 
-    // Let the lossy exchange actually run so frames drop and ops strand.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // Let the lossy exchange run until both links have actually lost frames;
+    // a run that dropped nothing would pass below without recovering from
+    // anything.
+    ha.wait_until("A's link to drop a frame", TIMEOUT, |h| h.dropped() > 0)
+        .await;
+    hb.wait_until("B's link to drop a frame", TIMEOUT, |h| h.dropped() > 0)
+        .await;
 
     // Heal only. Both sessions stay up: retransmit drains what stranded
     // outbound, resync pulls back what was lost inbound.
     ha.set_drop_prob(0.0);
     hb.set_drop_prob(0.0);
+    assert!(ha.dropped() > 0 && hb.dropped() > 0, "the drop fault fired");
 
     // Converge, then assert at rest with faults off.
     wait_tasks_converge(&a, &b, 15, TIMEOUT).await;
@@ -233,11 +239,18 @@ async fn corruption_never_applies() {
 
     // Invariant during the corrupted run: B never materializes more than A made.
     assert_count_never_exceeds(&b, 10, Duration::from_millis(1500)).await;
+    // And the corruption actually reached B: a run that corrupted nothing
+    // would prove nothing about B rejecting tampered frames.
+    hb.wait_until("B's link to corrupt a frame", TIMEOUT, |h| {
+        h.corrupted() > 0
+    })
+    .await;
 
     // Heal only. B's session stays up; its resync re-subscribes with the
     // cursors it actually reached and the relay replays clean copies of every
     // frame the corruption made it skip.
     hb.set_corrupt_prob(0.0);
+    assert!(hb.corrupted() > 0, "the corrupt fault fired");
 
     wait_tasks_converge(&a, &b, 10, TIMEOUT).await;
     wait_pending_zero(&a, TIMEOUT).await;
@@ -334,7 +347,10 @@ async fn partition_then_heal() {
     // drops into its failing reconnect loop rather than staying parked in recv.
     hb.partition(true);
     set_title(&b, anchor, "b-partitioned").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    hb.wait_until("B's session to hit the partition", TIMEOUT, |h| {
+        h.refused_sends() > 0
+    })
+    .await;
 
     // A creates 5 tasks while B is cut off.
     for i in 0..5 {
@@ -342,8 +358,14 @@ async fn partition_then_heal() {
     }
     wait_pending_zero(&a, TIMEOUT).await; // A drained them to the relay.
 
-    // Settle window: B sees none of them — its count stays at the baseline (1).
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Settle window: B tries the link twice more after A's tasks reached the
+    // relay, and the partition refuses both, so B sees none of them — its
+    // count stays at the baseline (1).
+    let refused = hb.refused_sends();
+    hb.wait_until("two more refused reconnects from B", TIMEOUT, |h| {
+        h.refused_sends() >= refused + 2
+    })
+    .await;
     assert_eq!(
         task_count(&b).await,
         1,
