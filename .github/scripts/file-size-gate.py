@@ -195,12 +195,7 @@ UNGATED: dict[str, str] = {
 
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
-    # --- sunrise-e2e --------------------------------------------------------
-    "crates/sunrise-e2e/src/lib.rs": (
-        "The crate's whole helper surface for booting a relay, opening wired "
-        "`Core`s and waiting on convergence. Test-harness code; not audited "
-        "for a split."
-    ),
+    # Empty: no file is exempt from its package's threshold.
 }
 
 SKIP_DIRS = {"target", "node_modules"}

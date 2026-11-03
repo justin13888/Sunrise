@@ -30,7 +30,7 @@ const ALLOWED: &[(&str, &str)] = &[
         "storage: the key is what the `*_at_ms` columns hold",
     ),
     (
-        "crates/sunrise-e2e/src/lib.rs",
+        "crates/sunrise-e2e/src/canonical.rs",
         "projects a task onto the `tasks` row columns to compare two replicas' storage",
     ),
     (
