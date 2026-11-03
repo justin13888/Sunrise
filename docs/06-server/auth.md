@@ -278,7 +278,7 @@ Flow:
 
 OIDC alone cannot recover the vault — the recovery code is required to decrypt. This is the double-gate property: even if the IdP is fully compromised, an attacker still cannot read the user's data without the offline recovery code.
 
-The server stores recovery blobs **opaquely** — it does not validate internal format or version. The 10 MiB cap and the active-device signature belong to the unbuilt `PUT` route; the live `POST /accounts` path takes the blob under the bootstrap exemption, bounded only by `[server] max_body_bytes`. That column is **write-once**: a `POST /accounts` carrying a blob that differs from the stored one is `409 RECOVERY_BLOB_EXISTS` rather than a silent no-op, because a client that showed its user twenty-four words for a discarded blob has misled them. Rotation therefore has no route until the `PUT` exists.
+The server stores recovery blobs **opaquely** — it does not validate internal format or version. `POST /accounts` takes the blob under the bootstrap exemption, bounded only by `[server] max_body_bytes`, and through that route the column is **write-once**: a `POST /accounts` carrying a blob that differs from the stored one is `409 RECOVERY_BLOB_EXISTS` rather than a silent no-op, because a client that showed its user twenty-four words for a discarded blob has misled them. Rotation goes through `PUT /api/v1/accounts/me/recovery_blob` instead, which demands a registered device's signature whatever `require_device_sig` says, and keeps only a retired check of the blob it replaces ([`api.md`](./api.md) §Account; [ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
 
 ### The step-up in front of step 3
 
@@ -327,18 +327,14 @@ which accounts have one.
 Nothing about this adds an OTP secret, a mail path, or an MFA factor to the
 server. The list in §What we explicitly do not build stands unchanged.
 
-**Account deletion is not implemented**: neither
-`POST /api/v1/accounts/me/delete/initiate` nor `DELETE /api/v1/accounts/me` is
-mounted, no confirmation token is minted or stored, and
-`ACCOUNT_DELETE_PHRASE_INVALID` is not among `error.rs`'s codes. The target
-flow: a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL
-15 minutes) issued by `POST /api/v1/accounts/me/delete/initiate`; the OIDC
-issuer relays the token to the user's verified email, after which
-`DELETE /api/v1/accounts/me { confirm_phrase: "<token>" }` consumes it. A wrong
-or expired phrase returns `403 ACCOUNT_DELETE_PHRASE_INVALID`. Note that
-`devices.account_id` carries `ON DELETE CASCADE` with `PRAGMA foreign_keys = ON`,
-so the row-level machinery for an account delete exists even though no route
-triggers it.
+**Account deletion** sits behind the same step-up.
+`POST /api/v1/accounts/me/delete/initiate` returns a single-use confirmation
+phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) to the caller, and
+`DELETE /api/v1/accounts/me { confirm_phrase }` consumes it and marks the
+account; a wrong or expired phrase returns `403 ACCOUNT_DELETE_PHRASE_INVALID`.
+The maintenance pass erases a marked account after
+`[storage] account_delete_grace_days`. [`api.md`](./api.md) §Account deletion
+is the full flow.
 
 The user's only "Sunrise password" is the recovery code, and the server never sees it. Everything else (login factors, MFA, account deletion confirmations) is the IdP's responsibility.
 

@@ -6,17 +6,21 @@ status: accepted
 
 > **Implementation status.** The self-host single-binary path is built and is
 > the only one: one SQLite database (`store/` + `relay_log.rs`) and a
-> local-filesystem blob root (`api/blobs/` over `sunrise_storage::BlobStore`).
-> There is no Postgres, no object store, and no pub/sub; the "managed" sections
-> below describe a deployment that does not exist. Sections that describe built
-> behaviour are marked **(implemented)**.
+> local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
+> one implementation, `blob::fs::FsBlobs`, keeps chunks in
+> `sunrise_storage::BlobStore`). There is no Postgres, no object store, and no
+> pub/sub; the "managed" sections below describe a deployment that does not
+> exist. Sections that describe built behaviour are marked **(implemented)**.
 >
 > [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is the design of
 > record for the scaled deployment: the four storage traits, the `LISTEN/NOTIFY`
-> fan-out, shared sessions, and the order they are built in. Of those, only the
-> session seam is built: live sessions sit behind `SessionBackend`
-> (`crates/sunrise-server/src/sync_session.rs`), whose one implementation is
-> the in-process map.
+> fan-out, shared sessions, and the order they are built in. Three of the four
+> seams are built, each with its single-binary implementation only:
+> `MetadataStore` (`crates/sunrise-server/src/store/metadata.rs`, over SQLite),
+> `BlobBackend` (`crates/sunrise-server/src/blob/mod.rs`, over the filesystem)
+> and `SessionBackend` (`crates/sunrise-server/src/sync_session.rs`, the
+> in-process map). `FanoutBus` is not built, and neither are the Postgres and
+> S3 implementations.
 
 ## Relay model
 

@@ -10,11 +10,12 @@ Operate the server without violating the E2EE guarantee.
 > (`logging::account_h` / `id_h`), the request-log observer
 > (`api::observe::RequestLog`) with its redaction tests — in-module in
 > `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
-> and an in-process counter registry
-> exposed at `/metrics` (`metrics.rs`), and redacted OpenTelemetry tracing with
+> and an in-process registry of labelled counters, gauges and histograms
+> exposed at `/metrics` (`metrics.rs`, catalogued in [`metrics.md`](./metrics.md)),
+> and redacted OpenTelemetry tracing with
 > a capped sampler behind an off-by-default `[observability]` table
-> (`crates/sunrise-telemetry`, §Tracing). **Not built:** labelled metrics of any
-> kind, histograms, alerting, and the per-account audit log. Each section says which it is.
+> (`crates/sunrise-telemetry`, §Tracing). **Not built:** alerting, and the
+> per-account audit log. Each section says which it is.
 
 ## What we log
 
