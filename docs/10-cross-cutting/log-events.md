@@ -9,7 +9,7 @@ catalogue: adding a new `ev` value requires a one-line entry here so analysts
 can `grep` for meaning.
 
 That rule is **enforced**, not aspirational.
-`crates/sunrise-log/tests/event_catalog.rs` reads every `tracing::*!` call in
+`crates/sunrise-log/tests/event_catalog/` reads every `tracing::*!` call in
 shipped source and fails if an event it emits is missing from this file, or if
 a name in either place violates the grammar in [`logging.md`](./logging.md) §3.
 The file set is not a directory walk: it comes from `cargo metadata` plus the
