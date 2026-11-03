@@ -85,15 +85,15 @@ async fn a_hello_reply_this_build_cannot_read_is_refused_rather_than_acked() {
 ///
 /// The `Hello` route is the one with nothing above it. The stream route's
 /// stall, in `stream`, was at least *cancelled*:
-/// `crates/sunrise-core/src/sync_driver.rs:884-891#session` selects over the
+/// `crates/sunrise-core/src/sync_driver.rs#session` selects over the
 /// read, so a stalled refusal there became a silent retry loop. This one is
-/// not. `crates/sunrise-core/src/sync_driver.rs:744#handshake` awaits the
+/// not. `crates/sunrise-core/src/sync_driver.rs#handshake` awaits the
 /// `Hello` send bare, outside any `tokio::select!`, `session(...)` is itself
-/// awaited bare at `crates/sunrise-core/src/sync_driver.rs:474#run`, and
+/// awaited bare in `crates/sunrise-core/src/sync_driver.rs#run`, and
 /// `Client::builder(...).build(https)` sets no timeout — so an unbounded read
 /// here parks the driver task with no error, no `SessionEnd::Disconnected`, no
 /// backoff and no log line. That is the "the client isn't syncing" state
-/// `crates/sunrise-core/src/sync_driver.rs:422-424#run` calls the commonest
+/// `crates/sunrise-core/src/sync_driver.rs#run` calls the commonest
 /// support question, and the only symptom is silence.
 ///
 /// The relay answers `200` — a refusal is not needed to reach this, and a
