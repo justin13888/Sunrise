@@ -2188,6 +2188,20 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_reverses_gate.py
 
+  grep-gate-contract:
+    name: Grep gate contract
+    runs-on: ubuntu-latest
+    # One Python script over source trees it synthesises in a temp directory:
+    # no toolchain, no network past the checkout. Seconds.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts: `grep-gate.sh` runs the
+    # determinism, log-redaction and constant-time gates, and a runner that
+    # answers 0 without checking turns all three off at once. Why: the
+    # docstring of `test_grep_gate.py`.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_grep_gate.py
 
   # The nightly `fuzz` matrix, computed rather than written out: the targets
   # are the `[[bin]]` entries of `fuzz/Cargo.toml`, the one place a harness is
