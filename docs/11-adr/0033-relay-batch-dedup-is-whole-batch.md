@@ -69,8 +69,8 @@ per lost ack. It is bounded twice over: by how many ops are unacked at the momen
 an ack is lost (which is bounded by how long a session survives), and by
 retention — 30 days and 256 MiB per channel
 (`DEFAULT_MAX_AGE_MS`,
-`crates/sunrise-server/src/relay_log/append.rs:11#DEFAULT_MAX_AGE_MS`, and
-`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log/append.rs:18#DEFAULT_MAX_BYTES`), after which the frame and its
+`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`, and
+`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_BYTES`), after which the frame and its
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
