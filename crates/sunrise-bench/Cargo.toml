@@ -39,7 +39,6 @@ tempfile = "3"
 [dev-dependencies]
 criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
-futures-util = { workspace = true }
 ciborium = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }

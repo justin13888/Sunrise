@@ -3148,7 +3148,6 @@ version = "0.2.0"
 dependencies = [
  "ciborium",
  "criterion",
- "futures-util",
  "jiff",
  "parking_lot",
  "rand_chacha 0.3.1",
