@@ -301,7 +301,7 @@ can still be lost to a later full-state write.
 6. Add a case to the cross-version harness ([#326](https://github.com/justin13888/Sunrise/issues/326)): an older build merges
    ops that set the field, and the field survives. The case is a step that
    sets the field on B (`HEAD`) and a `Field` in
-   `crates/sunrise-e2e/src/cross_version/model.rs` that reads it back.
+   `crates/sunrise-e2e/src/cross_version/projection.rs` that reads it back.
 
 ## Adding an op kind or a field-op kind
 
