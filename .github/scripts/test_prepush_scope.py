@@ -8,7 +8,8 @@ routes that widen to the whole suite are asserted to widen.
 
 The cases build their workspaces as dicts shaped like `cargo metadata` output
 and their git histories in temporary repositories, so nothing here reads this
-repository. Run: `python3 .github/scripts/test_prepush_scope.py`.
+repository. Run it with `mise run prepush-scope-test`, or directly:
+`python3 .github/scripts/test_prepush_scope.py`.
 """
 
 from __future__ import annotations

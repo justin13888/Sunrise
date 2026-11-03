@@ -1699,6 +1699,11 @@ description = "Assert the reverses gate's exit-code contract (fast, synthesised 
 # Why: the script's docstring.
 run = "python3 .github/scripts/test_reverses_gate.py"
 
+[tasks.prepush-scope-test]
+description = "Assert what the pre-push scope script reaches for a set of changed files (fast, synthesised workspaces and git repos)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_prepush_scope.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
