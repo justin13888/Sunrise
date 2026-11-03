@@ -1793,6 +1793,7 @@ dependencies = [
  "sunrise-domain",
  "sunrise-id",
  "sunrise-integrations",
+ "sunrise-pairing",
  "sunrise-server",
  "sunrise-wire-protocol",
 ]
