@@ -1,0 +1,501 @@
+use super::*;
+use jiff::civil::{date, time};
+use jiff::tz::{offset, TimeZone};
+
+fn zoned(y: i16, m: i8, d: i8, hh: i8, mm: i8) -> Zoned {
+    date(y, m, d)
+        .at(hh, mm, 0, 0)
+        .to_zoned(TimeZone::fixed(offset(0)))
+        .unwrap()
+}
+
+fn tod(constraint: TimeOfDayRange, sev: ConstraintSeverity) -> ScheduleConstraint {
+    ScheduleConstraint {
+        time_of_day: Some(constraint),
+        days_of_week: WeekdaySet::new(),
+        date_range: None,
+        severity: sev,
+        unknown: Unknowns::new(),
+    }
+}
+
+#[test]
+fn empty_constraint_rejected() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::new(),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    assert_eq!(c.validate(), Err(ConstraintError::Empty));
+}
+
+#[test]
+fn a_window_may_wrap_midnight_but_not_be_empty() {
+    // `end` before `start` wraps past midnight (#333).
+    let c = tod(
+        TimeOfDayRange {
+            start: time(18, 0, 0, 0),
+            end: time(9, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    assert_eq!(c.validate(), Ok(()));
+
+    // Equal start/end names nothing (or everything), and is refused.
+    let c = tod(
+        TimeOfDayRange {
+            start: time(9, 0, 0, 0),
+            end: time(9, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    assert_eq!(c.validate(), Err(ConstraintError::TimeRange));
+}
+
+#[test]
+fn date_range_must_be_ordered() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::new(),
+        date_range: Some(DateRange {
+            start: date(2026, 8, 17),
+            end: Some(date(2026, 8, 3)),
+            unknown: Unknowns::new(),
+        }),
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    assert_eq!(c.validate(), Err(ConstraintError::DateRange));
+}
+
+#[test]
+fn open_ended_date_range_valid() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::new(),
+        date_range: Some(DateRange {
+            start: date(2026, 8, 3),
+            end: None,
+            unknown: Unknowns::new(),
+        }),
+        severity: ConstraintSeverity::Soft,
+        unknown: Unknowns::new(),
+    };
+    c.validate().unwrap();
+}
+
+#[test]
+fn days_only_constraint_valid() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We]),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    c.validate().unwrap();
+}
+
+#[test]
+fn list_max_16_enforced() {
+    let c = tod(
+        TimeOfDayRange {
+            start: time(9, 0, 0, 0),
+            end: time(17, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Soft,
+    );
+    let ok = vec![c.clone(); 16];
+    assert!(validate_list(&ok).is_ok());
+    let too_many = vec![c; 17];
+    assert_eq!(validate_list(&too_many), Err(ConstraintError::TooMany));
+}
+
+#[test]
+fn weekday_set_collapses_duplicates() {
+    let s = WeekdaySet::from_days([Weekday::Mo, Weekday::Mo, Weekday::Tu]);
+    assert_eq!(s.len(), 2);
+    assert!(s.contains(&Weekday::Mo));
+    assert!(s.contains(&Weekday::Tu));
+    assert!(!s.contains(&Weekday::We));
+}
+
+#[test]
+fn is_satisfied_time_of_day_half_open() {
+    let c = tod(
+        TimeOfDayRange {
+            start: time(9, 0, 0, 0),
+            end: time(17, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    // Aug 3 2026 is a Monday.
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 9, 0))); // inclusive start
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 16, 59)));
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 17, 0))); // exclusive end
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 8, 59)));
+}
+
+/// A `22:00–02:00` window holds both sides of midnight and belongs to the
+/// day it starts on (#333).
+#[test]
+fn a_wrapping_window_holds_both_sides_of_midnight_on_its_start_day() {
+    let mut c = tod(
+        TimeOfDayRange::new(time(22, 0, 0, 0), time(2, 0, 0, 0)),
+        ConstraintSeverity::Hard,
+    );
+    c.days_of_week = WeekdaySet::from_days([Weekday::Mo]);
+    assert!(c.validate().is_ok());
+    // Monday 2026-08-03 22:00 and 23:59, then Tuesday 01:59: all Monday's.
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 22, 0)));
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 23, 59)));
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 4, 1, 59)));
+    // The exclusive end, and the gap between the end and the start.
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 2, 0)));
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 12, 0)));
+    // Monday 01:00 is Sunday's window, which the weekday refuses.
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 1, 0)));
+    // Tuesday 22:00 starts Tuesday's window.
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 22, 0)));
+}
+
+/// Across a DST night the window is evaluated on the moment's civil time,
+/// and no bound is resolved: New York's spring-forward night has no 02:30,
+/// so a `02:00–03:00` window is empty, and `22:00–02:30` still ends at the
+/// first wall clock at or after 02:30, which is 03:00 EDT.
+#[test]
+fn a_wrapping_window_across_a_spring_forward_night() {
+    let ny = TimeZone::get("America/New_York").unwrap();
+    let at = |h: i8, m: i8, d: i8| {
+        date(2026, 3, d)
+            .at(h, m, 0, 0)
+            .to_zoned(ny.clone())
+            .unwrap()
+    };
+    let c = tod(
+        TimeOfDayRange::new(time(22, 0, 0, 0), time(2, 30, 0, 0)),
+        ConstraintSeverity::Hard,
+    );
+    assert!(c.is_satisfied_at(&at(23, 0, 7)));
+    assert!(c.is_satisfied_at(&at(1, 59, 8)));
+    // 02:00 does not exist; the next wall clock is 03:00, past the end.
+    assert!(!c.is_satisfied_at(&at(3, 0, 8)));
+    let gap = tod(
+        TimeOfDayRange::new(time(2, 0, 0, 0), time(3, 0, 0, 0)),
+        ConstraintSeverity::Hard,
+    );
+    let night: Vec<Zoned> = (0..240)
+        .map(|m| {
+            at(0, 0, 8)
+                .checked_add(jiff::SignedDuration::from_mins(m))
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        night.iter().all(|z| !gap.is_satisfied_at(z)),
+        "empty that night"
+    );
+}
+
+#[test]
+fn is_satisfied_weekday() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::from_days([Weekday::Mo]),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 12, 0))); // Monday
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 12, 0))); // Tuesday
+}
+
+#[test]
+fn is_satisfied_date_range_inclusive() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::new(),
+        date_range: Some(DateRange {
+            start: date(2026, 8, 3),
+            end: Some(date(2026, 8, 17)),
+            unknown: Unknowns::new(),
+        }),
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 0, 0))); // inclusive start
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 17, 23, 0))); // inclusive end
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 2, 12, 0)));
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 18, 12, 0)));
+}
+
+#[test]
+fn is_satisfied_all_dimensions_and() {
+    // Weekday mornings: Mon-Fri 09:00-12:00 in early August.
+    let c = ScheduleConstraint {
+        time_of_day: Some(TimeOfDayRange {
+            start: time(9, 0, 0, 0),
+            end: time(12, 0, 0, 0),
+            unknown: Unknowns::new(),
+        }),
+        days_of_week: WeekdaySet::from_days([
+            Weekday::Mo,
+            Weekday::Tu,
+            Weekday::We,
+            Weekday::Th,
+            Weekday::Fr,
+        ]),
+        date_range: Some(DateRange {
+            start: date(2026, 8, 1),
+            end: Some(date(2026, 8, 31)),
+            unknown: Unknowns::new(),
+        }),
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 10, 0))); // Mon 10:00 in range
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 13, 0))); // right day, wrong time
+    assert!(!c.is_satisfied_at(&zoned(2026, 8, 8, 10, 0))); // Saturday
+}
+
+#[test]
+fn list_violations_same_kind_or() {
+    // Two time-of-day constraints (same kind) OR together: morning OR
+    // evening. At 10:00 the morning one is satisfied, so neither is a
+    // violation.
+    let morning = tod(
+        TimeOfDayRange {
+            start: time(6, 0, 0, 0),
+            end: time(12, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    let evening = tod(
+        TimeOfDayRange {
+            start: time(18, 0, 0, 0),
+            end: time(22, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    let list = [morning, evening];
+    assert!(list_violations(&list, &zoned(2026, 8, 3, 10, 0)).is_empty());
+    // At 14:00 neither is satisfied → both violated.
+    assert_eq!(
+        list_violations(&list, &zoned(2026, 8, 3, 14, 0)),
+        vec![0, 1]
+    );
+}
+
+#[test]
+fn list_violations_different_kind_and() {
+    // Different kinds AND together: a time-of-day window AND a weekday set.
+    let after_six = tod(
+        TimeOfDayRange {
+            start: time(18, 0, 0, 0),
+            end: time(23, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    let weekdays = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::from_days([
+            Weekday::Mo,
+            Weekday::Tu,
+            Weekday::We,
+            Weekday::Th,
+            Weekday::Fr,
+        ]),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    let list = [after_six, weekdays];
+    // Mon 19:00: both satisfied → no violations.
+    assert!(list_violations(&list, &zoned(2026, 8, 3, 19, 0)).is_empty());
+    // Mon 12:00: weekday ok but time fails → only index 0 violated.
+    assert_eq!(list_violations(&list, &zoned(2026, 8, 3, 12, 0)), vec![0]);
+    // Sat 19:00: time ok but weekday fails → only index 1 violated.
+    assert_eq!(list_violations(&list, &zoned(2026, 8, 8, 19, 0)), vec![1]);
+}
+
+#[test]
+fn list_violations_same_kind_or_within_failing_group() {
+    // Same-kind group with a sibling that fails does not "save" the other
+    // if the whole group fails: both are reported.
+    let a = tod(
+        TimeOfDayRange {
+            start: time(6, 0, 0, 0),
+            end: time(8, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    let b = tod(
+        TimeOfDayRange {
+            start: time(20, 0, 0, 0),
+            end: time(22, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Hard,
+    );
+    assert_eq!(
+        list_violations(&[a, b], &zoned(2026, 8, 3, 12, 0)),
+        vec![0, 1]
+    );
+}
+
+#[test]
+fn violations_split_by_severity() {
+    // A hard weekday rule and a soft evening rule; Saturday 12:00 violates
+    // both, and the caller must be able to tell them apart.
+    let weekdays = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::from_days([
+            Weekday::Mo,
+            Weekday::Tu,
+            Weekday::We,
+            Weekday::Th,
+            Weekday::Fr,
+        ]),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    let evening = tod(
+        TimeOfDayRange {
+            start: time(18, 0, 0, 0),
+            end: time(22, 0, 0, 0),
+            unknown: Unknowns::new(),
+        },
+        ConstraintSeverity::Soft,
+    );
+    let list = [weekdays.clone(), evening.clone()];
+    let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 8, 12, 0));
+    assert_eq!(hard, vec![weekdays]);
+    assert_eq!(soft, vec![evening.clone()]);
+
+    // Monday 19:00 satisfies both.
+    let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 19, 0));
+    assert!(hard.is_empty() && soft.is_empty());
+
+    // Monday 12:00 breaks only the soft one.
+    let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 12, 0));
+    assert!(hard.is_empty());
+    assert_eq!(soft, vec![evening]);
+}
+
+#[test]
+fn serde_skips_empty_days_and_absent_ranges() {
+    let c = ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::from_days([Weekday::Sa, Weekday::Su]),
+        date_range: None,
+        severity: ConstraintSeverity::Soft,
+        unknown: Unknowns::new(),
+    };
+    let j = serde_json::to_value(c).unwrap();
+    assert!(j.get("time_of_day").is_none());
+    assert!(j.get("date_range").is_none());
+    assert_eq!(j["days_of_week"], serde_json::json!(["SA", "SU"]));
+    assert_eq!(j["severity"], "soft");
+}
+
+#[test]
+fn days_of_week_defaults_empty_on_decode() {
+    // Absent days_of_week decodes to the empty set.
+    let j = serde_json::json!({
+        "time_of_day": { "start": "09:00:00", "end": "17:00:00" },
+        "severity": "hard"
+    });
+    let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+    assert!(c.days_of_week.is_empty());
+}
+
+#[test]
+fn an_unknown_day_token_is_kept_and_lifts_the_day_restriction() {
+    let j = serde_json::json!({
+        "days_of_week": ["MO", "XX", "MO", "XX"],
+        "severity": "hard"
+    });
+    let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+    // Kept once each, and written back: known days first, then unknown.
+    assert_eq!(c.days_of_week.len(), 2);
+    assert!(c.days_of_week.contains(&Weekday::from_raw("XX")));
+    let back = serde_json::to_value(&c).unwrap();
+    assert_eq!(back["days_of_week"], serde_json::json!(["MO", "XX"]));
+
+    // A Saturday is not Monday, but the set holds a token this build
+    // cannot read, so it does not block the Saturday.
+    assert!(!c.days_of_week.restricts());
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 12, 0)));
+    let (hard, _) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 12, 0));
+    assert!(hard.is_empty(), "an unknown day never invents a hard block");
+}
+
+#[test]
+fn many_distinct_unknown_day_tokens_decode_in_linear_time_and_keep_order() {
+    // A peer controls this list. With a quadratic de-duplication, 100k
+    // distinct tokens would cost ~5e9 string comparisons and this test
+    // would not finish; indexed, it is 100k set inserts.
+    const N: usize = 100_000;
+    let mut days: Vec<String> = (0..N).map(|i| format!("X{i}")).collect();
+    // Every token repeated once more, after the first pass, plus a known day.
+    days.extend((0..N).map(|i| format!("X{i}")));
+    days.push("TU".to_owned());
+    let j = serde_json::json!({ "days_of_week": days, "severity": "hard" });
+    let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+
+    assert_eq!(c.days_of_week.len() as usize, N + 1);
+    assert!(c.days_of_week.contains(&Weekday::from_raw("X99999")));
+    assert!(!c.days_of_week.contains(&Weekday::from_raw("X100000")));
+    // Round trip: the known day first, then each unknown once, in arrival order.
+    let back = serde_json::to_value(&c).unwrap();
+    let back = back["days_of_week"].as_array().unwrap();
+    assert_eq!(back.len(), N + 1);
+    assert_eq!(back[0], "TU");
+    for (i, v) in back[1..].iter().enumerate() {
+        assert_eq!(v.as_str(), Some(format!("X{i}").as_str()));
+    }
+}
+
+/// A newer build's field at each nesting level survives decode and is
+/// written back byte for byte.
+#[test]
+fn unknown_fields_at_every_level_round_trip_byte_exact() {
+    let j = serde_json::json!({
+        "time_of_day": { "start": "09:00:00", "end": "17:00:00", "slack_m": 15 },
+        "date_range": { "start": "2026-08-03", "zz": [1, "a"] },
+        "severity": "soft",
+        "place": "office"
+    });
+    let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+    assert_eq!(c.unknown.len(), 1);
+    assert_eq!(c.time_of_day.as_ref().unwrap().unknown.len(), 1);
+    assert_eq!(c.date_range.as_ref().unwrap().unknown.len(), 1);
+
+    let bytes = sunrise_cbor::encode_canonical(&c).unwrap();
+    let back: ScheduleConstraint = sunrise_cbor::decode_canonical(&bytes).unwrap();
+    assert_eq!(back, c);
+    assert_eq!(sunrise_cbor::encode_canonical(&back).unwrap(), bytes);
+}
+
+/// A constraint whose only dimension is one this build does not know is
+/// valid, and restricts nothing here.
+#[test]
+fn a_constraint_of_only_unknown_fields_validates_and_never_blocks() {
+    let j = serde_json::json!({ "place": "office", "severity": "hard" });
+    let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+    c.validate().unwrap();
+    assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 3, 0)));
+    let (hard, soft) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 3, 0));
+    assert!(hard.is_empty() && soft.is_empty());
+}

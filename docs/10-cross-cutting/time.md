@@ -272,7 +272,7 @@ resolve their bounds) and tests each dimension against the civil value. A
 window whose end is before its start wraps midnight and ends on the next civil
 day; it belongs to the day it starts on, so the part after midnight is tested
 against the weekday and date range as the previous day
-(`crates/sunrise-domain/src/constraint.rs#TimeOfDayRange`, #333). A window
+(`crates/sunrise-domain/src/constraint/mod.rs#TimeOfDayRange`, #333). A window
 whose start equals its end is refused. The evaluation zone is
 `crates/sunrise-core/src/engine/task.rs#constraint_zone`: a routine occurrence
 planned `zoned` evaluates in that zone, everything else in the reader's.
@@ -395,7 +395,7 @@ vault (Today, lateness, reminders, defer, and nothing stored rewritten), in
 space, the key, skip and streak across a gap and a fold, a pause that runs
 out, a zone change, Lord Howe and the Apia date line, and the wire form older
 builds read) run in `crates/sunrise-domain/tests/routine_times.rs`, and the
-wrapping-window rows in `crates/sunrise-domain/src/constraint.rs`. The travel
+wrapping-window rows in `crates/sunrise-domain/src/constraint/tests.rs`. The travel
 scenarios run in the traveller harness,
 `crates/sunrise-core/src/engine/tests/traveller.rs`: a phone that crosses New
 York's spring-forward night, Kathmandu, Chatham, an offline stretch and Lord

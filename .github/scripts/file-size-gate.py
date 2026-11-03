@@ -201,10 +201,6 @@ BASELINE: dict[str, str] = {
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
-    "crates/sunrise-domain/src/constraint.rs": (
-        "The only spec in the repository with a "
-        "test that fails when the Rust and the CDDL disagree."
-    ),
     # --- sunrise-server -----------------------------------------------------
     "crates/sunrise-server/src/api/sync/suite.rs": (
         "The sync test suite, moved whole when api/sync.rs was split so the "
