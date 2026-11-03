@@ -241,10 +241,12 @@ Every view MUST implement three states. This is the canonical table; per-view fi
 [ADR-0027](../11-adr/0027-v1-self-host-first.md) deleted it, and a view shows the
 deterministic winner at once:
 [ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) makes a conflict "a
-badge, not a gate". The badge's data source exists: a register keeps every
-concurrent write that lost, and `Query::Conflicts` reports them
+badge, not a gate". The merge state behind that badge is recorded: a register
+keeps every concurrent write that lost (`register_losers`), and
+`Query::Conflicts` reports them
 ([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
-§No merge history). The Apple client's UI for it is follow-up work. The older
+§No merge history). `sunrise conflicts` prints it; no app view reads it today.
+The older
 `merge_journal` stays dropped by
 [ADR-0018](../11-adr/0018-storage-baseline-reset.md), and
 `baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db/tests.rs` fails if
