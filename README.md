@@ -212,7 +212,7 @@ cargo fmt --check                         # formatting clean
 cargo deny check                          # advisories, bans, licences, sources
 ```
 
-`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks (what `mise run pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
+`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks. `mise run pre-push` runs both suites whole too; the git hook runs only the tests a push can affect (see [Git hooks](#git-hooks)). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
 
 #### 3. Headless, no client at all
 
@@ -426,6 +426,8 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run rust-check`        | Type-check the Rust workspace                          |
 | `mise run rust-test`         | Run the Rust test suite                                |
 | `mise run log-fields`        | Run the log-event/field gate, building first what it reads from |
+| `mise run rust-test-changed` | Run the Rust tests the pushed changes can affect (the pre-push hook's) |
+| `mise run test-changed`      | Run the JS/TS test suite when the pushed changes can affect it |
 | `mise run rust-doc`          | Build the rustdoc for the workspace and `fuzz/`, every rustdoc warning denied |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
 | `mise run swift-logic`       | Fail on non-view logic in Swift under `apps/apple` that is not on the shrinking allowlist |
@@ -448,7 +450,7 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and defined in `lefthook.yaml`, which simply calls mise tasks so there is a single source of truth:
 
 - **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy`. Run the lot with `mise run pre-commit`.
-- **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test`, and `mise run rust-test`. Run the lot with `mise run pre-push`.
+- **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test-changed`, and `mise run rust-test-changed`. The last two run only what the push can affect, as `.github/scripts/prepush-scope.py` decides from the changed files: the changed crates, every crate depending on one, and the crates whose sources name a changed file, with the `event_catalog` gate always run in full (`mise run log-fields`); the Vitest suite whenever a file it reads changed. A change to `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*` or `clippy.toml` runs the whole Rust suite. `SUNRISE_FULL_PREPUSH=1 git push` runs both suites whole, and so does `mise run pre-push`; CI always does.
 
 ### Documentation site
 

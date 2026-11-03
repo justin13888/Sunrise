@@ -235,6 +235,39 @@ run = [
   "cargo test -p sunrise-log --test event_catalog",
 ]
 
+# What the pre-push hook runs instead of `rust-test` and `test`: only the tests
+# the push can affect (#953). `.github/scripts/prepush-scope.py` says which,
+# and why, from the files the push changes: the changed crates and every crate
+# depending on one (`cargo metadata`), and the crates whose sources name a
+# changed file. A change to the workspace manifest, `Cargo.lock`, `.cargo/`,
+# `rust-toolchain*` or `clippy.toml` runs `rust-test` whole. A scoped run still
+# runs the `event_catalog` gate at full coverage, through `log-fields`, before
+# the crates it picked. `SUNRISE_FULL_PREPUSH=1` runs everything, as
+# `mise run pre-push` and CI always do.
+[tasks.rust-test-changed]
+description = "Run the Rust tests the pushed changes can affect"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py rust)"
+case "$scope" in
+  none) ;;
+  all) mise run rust-test ;;
+  *)
+    mise run log-fields
+    # shellcheck disable=SC2086 # one `-p NAME` pair per word
+    cargo test $scope --all-targets
+    ;;
+esac
+'''
+
+[tasks.test-changed]
+description = "Run the JS/TS test suite when the pushed changes can affect it"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py bun)"
+if [ "$scope" = all ]; then mise run test; fi
+'''
+
 [tasks.apple-pairing-fixture]
 description = "Rewrite apps/apple/SunriseTests/PairingFixture.swift from the pairing encoder"
 # Swift has no constructor for a `PairingPayload` — one is built inside the core
@@ -1720,7 +1753,7 @@ run = [
 ]
 
 [tasks.pre-push]
-description = "Everything the pre-push hook runs"
+description = "Everything the pre-push hook can run, with both test suites whole"
 run = [
   "mise run ci",
   "mise run typecheck",
