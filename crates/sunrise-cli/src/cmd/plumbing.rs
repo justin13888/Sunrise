@@ -190,18 +190,25 @@ async fn once(core: &Core) -> CmdResult {
             println!("{}", strings::sync::live());
             Ok(())
         }
-        Err(last) => Err(not_caught_up(&last).into()),
+        Err(last) => Err(not_caught_up(&last, core.sync_last_refusal()).into()),
     }
 }
 
 /// Why a bounded wait did not end `Live`: the state that ended it early,
-/// named by its badge code, or the deadline it ran out.
-pub(super) fn not_caught_up(last: &sunrise_core::SyncStatus) -> String {
+/// named by its badge code; the code the relay refused the latest session
+/// with, when it ran out its deadline after one; or the deadline alone.
+///
+/// A refusal does not end the wait early: the driver reconnects after it, and
+/// a retryable one such as `RATE_LIMITED` may clear inside the deadline.
+pub(super) fn not_caught_up(last: &sunrise_core::SyncStatus, refusal: Option<&str>) -> String {
+    let seconds = i64::try_from(DEADLINE_MS / 1000).unwrap_or(i64::MAX);
     if sunrise_client_core::sync::ends_the_wait(last.state) {
         let b = sunrise_client_core::sync_status::sync_badge(last.state, last.outbox_pending);
         strings::sync::ended(badge_code(b.kind), i64::from(b.pending))
+    } else if let Some(code) = refusal {
+        strings::sync::refused(code, seconds)
     } else {
-        strings::sync::timed_out(i64::try_from(DEADLINE_MS / 1000).unwrap_or(i64::MAX))
+        strings::sync::timed_out(seconds)
     }
 }
 
@@ -226,11 +233,11 @@ mod tests {
     #[test]
     fn a_wait_that_did_not_go_live_says_why() {
         assert_eq!(
-            not_caught_up(&status(SyncState::Stopped, 2)),
+            not_caught_up(&status(SyncState::Stopped, 2), None),
             "sync: stopped, so the outbox cannot drain; 2 changes waiting"
         );
         assert_eq!(
-            not_caught_up(&status(SyncState::Degraded, 1)),
+            not_caught_up(&status(SyncState::Degraded, 1), None),
             "sync: changes_missing, so the outbox cannot drain; 1 change waiting"
         );
         for state in [
@@ -239,10 +246,25 @@ mod tests {
             SyncState::Live,
         ] {
             assert_eq!(
-                not_caught_up(&status(state, 3)),
+                not_caught_up(&status(state, 3), None),
                 strings::sync::timed_out(30),
                 "{state:?}"
             );
         }
+    }
+
+    /// A wait that ran out its deadline after the relay refused the session
+    /// names the refusal's code instead of the bare timeout (#1036); a state
+    /// that ended the wait early still names that state.
+    #[test]
+    fn a_wait_the_relay_refused_names_the_code() {
+        assert_eq!(
+            not_caught_up(&status(SyncState::Disconnected, 2), Some("RATE_LIMITED")),
+            "sync: the relay refused the session (RATE_LIMITED); outbox did not drain within 30s"
+        );
+        assert_eq!(
+            not_caught_up(&status(SyncState::Stopped, 2), Some("RATE_LIMITED")),
+            "sync: stopped, so the outbox cannot drain; 2 changes waiting"
+        );
     }
 }

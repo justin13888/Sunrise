@@ -3370,6 +3370,26 @@ pub mod sync {
         out
     }
 
+    /// sync: the relay refused the session ({code}); outbox did not drain within {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn refused(code: &str, seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: the relay refused the session (");
+        out.push_str(code);
+        out.push_str("); outbox did not drain within ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
     /// sync: {badge}, so the outbox cannot drain; {count, plural, one {# change waiting} other {# changes waiting}}
     #[must_use]
     pub fn ended(badge: &str, count: i64) -> String {

@@ -19,6 +19,10 @@ struct SharedState {
     peers: HashSet<[u8; 16]>,
     /// How far this session's replay has got, and how far it has to go.
     replay: ReplayLedger,
+    /// The code the relay refused the most recent attempt with, until a
+    /// session handshakes. Not part of [`SyncStatus`], which crosses the FFI:
+    /// it is read through `Core::sync_last_refusal` (#1036).
+    last_refusal: Option<&'static str>,
 }
 
 /// A session's catch-up, counted in ops (#459).
@@ -64,6 +68,7 @@ impl SyncShared {
                 last_sync_ms: None,
                 peers: HashSet::new(),
                 replay: ReplayLedger::default(),
+                last_refusal: None,
             }),
             sync_tx,
             submit: Notify::new(),
@@ -202,6 +207,22 @@ impl SyncShared {
             s.last_sync_ms,
             u32::try_from(s.peers.len()).unwrap_or(u32::MAX),
         )
+    }
+
+    /// The relay refused an attempt with `code`.
+    pub(super) fn note_refusal(&self, code: &'static str) {
+        self.inner.lock().last_refusal = Some(code);
+    }
+
+    /// A session handshaked: whatever refused an earlier attempt is over.
+    pub(super) fn clear_refusal(&self) {
+        self.inner.lock().last_refusal = None;
+    }
+
+    /// The code the relay refused the latest attempt with, while no session
+    /// has handshaked since.
+    pub(crate) fn last_refusal(&self) -> Option<&'static str> {
+        self.inner.lock().last_refusal
     }
 
     pub(crate) fn current_state(&self) -> SyncState {

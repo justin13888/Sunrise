@@ -736,6 +736,19 @@ impl Core {
         self.sync_tx.subscribe()
     }
 
+    /// The wire code the relay refused this vault's latest sync attempt with
+    /// (`RATE_LIMITED`, `AUTH_TOKEN_INVALID`, ...), or `None` once a session
+    /// has handshaked since, or when nothing was ever refused.
+    ///
+    /// The driver reconnects after a refusal and reports `Disconnected`, the
+    /// same as for a relay it cannot reach; this is what tells the two apart.
+    /// An accessor rather than a [`SyncStatus`] field so the status the
+    /// bindings carry is unchanged (#1036).
+    #[must_use]
+    pub fn sync_last_refusal(&self) -> Option<&'static str> {
+        self.sync_shared.last_refusal()
+    }
+
     /// Mark the core closed; subsequent submit/query calls fail with
     /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
     /// joins it, then drops the vault lock when this `Core` drops.
