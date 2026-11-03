@@ -17,7 +17,7 @@ by** [#339](https://github.com/justin13888/Sunrise/issues/339).
 
 A task cannot say where it can be done. The requirement model has three
 dimensions, all of them about time
-(`crates/sunrise-domain/src/constraint.rs#ScheduleConstraint`). "Buy stamps
+(`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`). "Buy stamps
 when I'm near the post office" and "only at the office" are inexpressible.
 Nothing in the tree models a location: there is no `Place` entity kind, and no
 crate or app references `CLLocationManager` or `CLRegion`. The contexts spec

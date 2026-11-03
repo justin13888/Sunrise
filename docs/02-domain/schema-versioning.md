@@ -404,7 +404,7 @@ gating. Nothing else is allowed.
 - **Per-enum round trip.** Any string must survive decode, storage and
   re-encode unchanged.
 - **Schema drift.** The fingerprint test above. The older per-entity
-  `serde_json_shape_matches_cddl` pattern (in `constraint.rs`) is subsumed once
+  `serde_json_shape_matches_cddl` pattern (in `constraint/mod.rs`) is subsumed once
   the CDDL blocks are generated from the same registry.
 
 ## Record: the CDDL re-derivation at `DOC_SCHEMA_V` 4–6
@@ -417,7 +417,7 @@ re-checked:
 
 | Spec | Was | Repair |
 |---|---|---|
-| `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
+| `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint/mod.rs`. |
 | `tasks.md` | drifted | Added `reminder_lead_s`. `estimated_duration` → `estimated_duration_s` (seconds). Dropped the `blocked` state and the `blocks_others` field, neither of which is serialized. `deferred_count` is `int`, not `uint`. |
 | `streams.md` | drifted | Added `reminder_lead_s`. Deleted the `integrations` map and the `StreamIcon`/`IntegrationConfig` types. `icon` is a free `tstr`. `review_cadence` is required. |
 | `contexts-and-tags.md` | drifted | Deleted the `color` field and `ContextColor`. |
