@@ -180,11 +180,11 @@ fn only_a_non_retryable_close_is_terminal() {
         "an undecodable close is a drop, not a verdict"
     );
     assert!(matches!(
-        SessionEnd::from_recv_error(TransportError::Unavailable("gone".into())),
+        SessionEnd::from_transport_error(TransportError::Unavailable("gone".into())),
         SessionEnd::Disconnected
     ));
     assert!(matches!(
-        SessionEnd::from_recv_error(TransportError::Server {
+        SessionEnd::from_transport_error(TransportError::Server {
             code: ErrorCode::AuthDeviceSigInvalid.as_str(),
             message: String::new(),
         }),
@@ -415,4 +415,132 @@ async fn a_refused_stream_is_logged_under_the_relays_code() {
         ]
     );
     core.shutdown().await;
+}
+
+/// A transport whose relay refuses the `Hello` itself with `code`, the way
+/// `SseTransport::send_frame` returns the relay's refusal of
+/// `POST /api/v1/sync/session`. Nothing is ever received.
+struct RefusesHello(ErrorCode);
+
+#[async_trait]
+impl Transport for RefusesHello {
+    async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
+        Err(TransportError::Server {
+            code: self.0.as_str(),
+            message: "scripted hello refusal".into(),
+        })
+    }
+    async fn recv_frame(&mut self) -> Recv {
+        std::future::pending().await
+    }
+    async fn close(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+/// Driver-level: a relay that refuses the `Hello` is logged under its code,
+/// and the driver reconnects as it does for a drop (#1003).
+///
+/// Before #1003 the handshake discarded the send's error, so a session the
+/// relay turned away with `RATE_LIMITED` logged `result=failed` with no
+/// `err_code` and no `sync.session.error` at all: the same lines a dropped
+/// connection writes.
+#[tokio::test(start_paused = true)]
+async fn a_refused_hello_is_logged_under_the_relays_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    let connects = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&connects);
+    let factory: TransportFactory = Arc::new(move |_: CredentialRead| {
+        counted.fetch_add(1, AtomicOrdering::SeqCst);
+        Box::pin(async { Ok(Box::new(RefusesHello(ErrorCode::RateLimited)) as BoxTransport) })
+            as ConnectFuture
+    });
+    let (shared, log, mut rx, driver) = drive(&core, factory);
+
+    until("two reconnects", || {
+        connects.load(AtomicOrdering::SeqCst) >= 3
+    })
+    .await;
+    shared.request_shutdown();
+    timeout(Duration::from_secs(60), driver)
+        .await
+        .expect("the driver never stopped")
+        .unwrap();
+
+    assert!(
+        !states_seen(&mut rx).contains(&SyncState::Stopped),
+        "a rate-limited Hello is retryable and must not park the driver"
+    );
+    assert_eq!(
+        fields_of(&log, "sync.session.closed")[..2],
+        [
+            named("failed", Some(ErrorCode::RateLimited)),
+            named("failed", Some(ErrorCode::RateLimited)),
+        ]
+    );
+    assert_eq!(
+        fields_of(&log, "sync.session.error")[..2],
+        [
+            named("failed", Some(ErrorCode::RateLimited)),
+            named("failed", Some(ErrorCode::RateLimited)),
+        ]
+    );
+    core.shutdown().await;
+}
+
+/// A `Hello` refused with an auth code (what `SseTransport::refuse` makes of
+/// a 401 or 403) logs the catalogue's `err_kind` for that code, as a `Close`
+/// does, rather than calling every refusal `transient`.
+#[tokio::test(start_paused = true)]
+async fn an_auth_refused_hello_logs_the_catalogues_kind() {
+    for code in [ErrorCode::AuthTokenInvalid, ErrorCode::AuthDeviceRevoked] {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let connects = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&connects);
+        let factory: TransportFactory = Arc::new(move |_: CredentialRead| {
+            counted.fetch_add(1, AtomicOrdering::SeqCst);
+            Box::pin(async move { Ok(Box::new(RefusesHello(code)) as BoxTransport) })
+                as ConnectFuture
+        });
+        let (shared, log, _rx, driver) = drive(&core, factory);
+
+        until("one reconnect", || {
+            connects.load(AtomicOrdering::SeqCst) >= 2
+        })
+        .await;
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("the driver never stopped")
+            .unwrap();
+
+        let error = log
+            .0
+            .lock()
+            .iter()
+            .find(|e| e.ev.as_deref() == Some("sync.session.error"))
+            .cloned()
+            .expect("the refusal is logged");
+        assert_eq!(
+            (
+                error.err_code.as_deref(),
+                error.err_kind.as_deref(),
+                error.retryable
+            ),
+            (
+                Some(code.as_str()),
+                Some(code.default_kind().as_str()),
+                Some(true)
+            ),
+            "{code}: err_kind is the catalogue's, retryable the driver's"
+        );
+        assert_ne!(
+            code.default_kind().as_str(),
+            "transient",
+            "{code}: the case must distinguish the catalogue from the old hardcoded kind"
+        );
+        core.shutdown().await;
+    }
 }
