@@ -3,7 +3,9 @@
 //! [`crate::capture::parse`] can set a Task's stream, contexts, priority,
 //! schedule, due date and estimate in one line, but only at creation. This is
 //! the other half: the same sigils, applied to a Task that already exists, so
-//! every field [`TaskPatch`] carries is reachable without a form.
+//! every field [`TaskPatch`] carries is reachable without a form. A `~duration`
+//! reads alike in both, refusals included: `~1h30` is a typo in either prompt,
+//! and `tests/annotate_capture_sigils.rs` holds the two parsers to that.
 //!
 //! | Token | Effect |
 //! |---|---|
@@ -473,11 +475,8 @@ fn parse_duration_s(s: &str) -> Option<u64> {
         };
         total = total.checked_add(n.checked_mul(unit)?)?;
     }
-    // A trailing bare number ("1h30") is minutes.
-    if !digits.is_empty() {
-        total = total.checked_add(digits.parse::<u64>().ok()?.checked_mul(60)?)?;
-    }
-    (total > 0).then_some(total)
+    // A trailing number with no unit ("1h30") is a typo, as it is in capture.
+    (digits.is_empty() && total > 0).then_some(total)
 }
 
 /// `5400` → `1h30m`.
