@@ -233,6 +233,7 @@ async fn resolve(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_support::keys;
 
     #[test]
     fn a_value_is_json_when_it_reads_as_json_and_text_otherwise() {
@@ -293,5 +294,60 @@ mod tests {
         let whole = c.winner.version.to_string();
         assert_eq!(picked(&c, &whole).unwrap().version.seq, 2);
         assert!(picked(&c, "bbbbbbbb/9").is_err());
+    }
+
+    /// `docs/07-clients/overview.md` §JSON output: a conflict is
+    /// `{entity, field, class, winner, losers, edited_while_deleted, cycle}`,
+    /// each write `{version, device, origin, at_ms, value}`, and each
+    /// edited-while-deleted branch `{version, device, fields}`. The binary
+    /// test only sees `[]`, since a conflict needs a second device.
+    #[test]
+    fn a_conflict_prints_exactly_the_documented_keys() {
+        let version = |device: u8, seq| VersionRef {
+            stream: [1; 16],
+            device: [device; 16],
+            seq,
+        };
+        let write = |device: u8, seq| ConflictWrite {
+            version: version(device, seq),
+            hlc_ms: 0,
+            hlc_logical: 0,
+            device: [device; 16],
+            origin: WriteOrigin::User,
+            value: Some(value_from("v").unwrap()),
+        };
+        let c = EntityConflict {
+            entity: EntityRef::new(sunrise_id::EntityKind::Task, [3; 16]),
+            field: "title".into(),
+            class: ConflictClass::Tombstone,
+            winner: write(0xaa, 2),
+            losers: vec![write(0xbb, 1)],
+            edited_while_deleted: vec![sunrise_core::DeletedEdit {
+                version: version(0xcc, 5),
+                device: [0xcc; 16],
+                fields: vec!["title".into()],
+            }],
+            cycle: Vec::new(),
+        };
+        let j = conflict_json(&c);
+        assert_eq!(
+            keys(&j),
+            [
+                "class",
+                "cycle",
+                "edited_while_deleted",
+                "entity",
+                "field",
+                "losers",
+                "winner"
+            ]
+        );
+        let write_keys = ["at_ms", "device", "origin", "value", "version"];
+        assert_eq!(keys(&j["winner"]), write_keys);
+        assert_eq!(keys(&j["losers"][0]), write_keys);
+        assert_eq!(
+            keys(&j["edited_while_deleted"][0]),
+            ["device", "fields", "version"]
+        );
     }
 }
