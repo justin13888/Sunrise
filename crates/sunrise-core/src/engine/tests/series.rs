@@ -793,7 +793,7 @@ const RULES: [&str; 4] = [
 
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/series.txt",

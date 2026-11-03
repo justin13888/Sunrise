@@ -52,6 +52,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Every property test runs the case count its call site names. Unset, as on
+  # a developer machine, `sunrise_test_seed::proptest_cases` caps each block at
+  # 48 so a local `cargo test` stays cheap. Workflow-wide rather than in the
+  # `rust-checks` action, so `rust-windows`, `mutants` and every other job
+  # that runs a proptest keeps the depth it ran before the dial existed.
+  # docs/10-cross-cutting/testing.md section 2.
+  SUNRISE_PROPTEST_DEPTH: full
 
 jobs:
   # The Rust gate runs twice, as two jobs naming one composite action, rather

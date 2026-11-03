@@ -74,6 +74,13 @@ replaced with a gate everywhere else.
     ```
 
   The chaos harness announces through the same function, so one grep over a CI log finds the reproduction for either half of the suite. This does not remove the need for the persistence file: a seed reproduces the run, the file replays the minimal case. Closed [#119](https://github.com/justin13888/Sunrise/issues/119).
+- **Case count**: a block that names its count takes it from `sunrise_test_seed::proptest_cases`, never from a literal, and the argument is the count CI runs:
+
+    ```rust
+    cases: sunrise_test_seed::proptest_cases(2048),
+    ```
+
+  Precedence is proptest's own `PROPTEST_CASES` first, when it is set to a number; then `SUNRISE_PROPTEST_DEPTH=full`, which runs the named count; otherwise the count is capped at `LOCAL_PROPTEST_CASES` (48), so a local `cargo test` pays for 48 cases where CI pays for 2048. `.github/workflows/ci.yml` sets `SUNRISE_PROPTEST_DEPTH: full` workflow-wide, so CI runs every block at exactly its named count. A value other than `local` or `full` panics rather than quietly running the local count. A block with no count of its own takes proptest's default (256, and `PROPTEST_CASES` already moves it), so it is the same locally and in CI. To reproduce CI's depth locally, export `SUNRISE_PROPTEST_DEPTH=full`.
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
 - **Assertion**: for every permutation of the same op set across N simulated devices, the final state is byte-identical (canonical CBOR comparison).
 

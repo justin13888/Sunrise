@@ -336,7 +336,7 @@ fn apply_step(e: &Engine, db: &mut Db, from: usize, to: usize) -> bool {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(

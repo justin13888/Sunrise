@@ -620,7 +620,7 @@ fn arb_step() -> impl Strategy<Value = Step> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 48,
+        cases: sunrise_test_seed::proptest_cases(48),
         // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
         // committed, at a path named here.
         failure_persistence: Some(Box::new(
@@ -1440,7 +1440,7 @@ fn corrupt(doc: &Value, h: &Hostile) -> Value {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 32,
+        cases: sunrise_test_seed::proptest_cases(32),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/prune.txt",

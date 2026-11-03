@@ -753,7 +753,7 @@ fn a_later_id_refused_in_planning_refuses_the_batch() {
 
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 32,
+        cases: sunrise_test_seed::proptest_cases(32),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
