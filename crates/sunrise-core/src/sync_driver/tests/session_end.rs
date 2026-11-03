@@ -488,3 +488,59 @@ async fn a_refused_hello_is_logged_under_the_relays_code() {
     );
     core.shutdown().await;
 }
+
+/// A `Hello` refused with an auth code (what `SseTransport::refuse` makes of
+/// a 401 or 403) logs the catalogue's `err_kind` for that code, as a `Close`
+/// does, rather than calling every refusal `transient`.
+#[tokio::test(start_paused = true)]
+async fn an_auth_refused_hello_logs_the_catalogues_kind() {
+    for code in [ErrorCode::AuthTokenInvalid, ErrorCode::AuthDeviceRevoked] {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let connects = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&connects);
+        let factory: TransportFactory = Arc::new(move |_: CredentialRead| {
+            counted.fetch_add(1, AtomicOrdering::SeqCst);
+            Box::pin(async move { Ok(Box::new(RefusesHello(code)) as BoxTransport) })
+                as ConnectFuture
+        });
+        let (shared, log, _rx, driver) = drive(&core, factory);
+
+        until("one reconnect", || {
+            connects.load(AtomicOrdering::SeqCst) >= 2
+        })
+        .await;
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("the driver never stopped")
+            .unwrap();
+
+        let error = log
+            .0
+            .lock()
+            .iter()
+            .find(|e| e.ev.as_deref() == Some("sync.session.error"))
+            .cloned()
+            .expect("the refusal is logged");
+        assert_eq!(
+            (
+                error.err_code.as_deref(),
+                error.err_kind.as_deref(),
+                error.retryable
+            ),
+            (
+                Some(code.as_str()),
+                Some(code.default_kind().as_str()),
+                Some(true)
+            ),
+            "{code}: err_kind is the catalogue's, retryable the driver's"
+        );
+        assert_ne!(
+            code.default_kind().as_str(),
+            "transient",
+            "{code}: the case must distinguish the catalogue from the old hardcoded kind"
+        );
+        core.shutdown().await;
+    }
+}

@@ -584,10 +584,16 @@ fn log_session_end(end: &SessionEnd) {
                 "relay refused this device's signature; check the clock, not the token"
             );
         }
+        // `err_kind` is the catalogue's for the relay's code, as for a close:
+        // a `Hello` refused with `AUTH_TOKEN_INVALID` or `AUTH_DEVICE_REVOKED`
+        // is not a transient fault. `retryable` stays the driver's, which
+        // reconnects after any refusal. A code outside the catalogue keeps
+        // the old `transient`.
         SessionEnd::Refused { code, message } => tracing::warn!(
             ev = "sync.session.error",
             err_code = *code,
-            err_kind = "transient",
+            err_kind = ErrorCode::from_wire_str(code)
+                .map_or("transient", |c| c.default_kind().as_str()),
             retryable = true,
             result = "failed",
             cause = %message,
