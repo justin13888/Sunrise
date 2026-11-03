@@ -8,8 +8,11 @@
 # A test that runs past the period is reported as SLOW, and after
 # `terminate-after` periods it is killed and reported as failed, naming
 # itself. Plain `cargo test` has no per-test timeout, so a test stuck in one of
-# the e2e harness's 30 s or 180 s waits held the whole run instead.
-slow-timeout = { period = "60s", terminate-after = 5 }
+# the e2e harness's 30 s or 180 s waits held the whole run instead. The kill
+# (8 min) is three times the slowest test measured beside the full e2e set
+# (`sunrise-core`'s compaction property test, 159 s), so load alone does not
+# reach it.
+slow-timeout = { period = "60s", terminate-after = 8 }
 # Never retry. A timeout or a failure is a failure: a retry would turn the
 # load-dependent flake #799 describes into a pass nobody sees.
 retries = 0
@@ -27,5 +30,6 @@ sunrise-e2e = { max-threads = 4 }
 filter = "package(sunrise-e2e)"
 test-group = "sunrise-e2e"
 # One CLI step can wait 180 s (`WAIT` in `crates/sunrise-e2e/src/cli.rs`) and a
-# scenario takes several, so the e2e kill comes later than the unit tests'.
+# scenario takes several, so the e2e kill (10 min) comes later than the unit
+# tests'. The slowest scenario measured under the cap took 127 s.
 slow-timeout = { period = "120s", terminate-after = 5 }

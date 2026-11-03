@@ -272,9 +272,12 @@ nothing they check reads `.config/nextest.toml`.
 What the profile in `.config/nextest.toml` changes:
 
 - **Per-test timeouts.** A test still running after 60 s is reported as `SLOW`,
-  and after five such periods (5 min) it is killed and reported as a failure
-  that names it. `sunrise-e2e` tests get 120 s periods (10 min), since one CLI
-  step can wait up to 180 s (`WAIT` in `crates/sunrise-e2e/src/cli.rs`). Plain
+  and after eight such periods (8 min) it is killed and reported as a failure
+  that names it. `sunrise-e2e` tests are killed after five 120 s periods
+  (10 min), since one CLI step can wait up to 180 s (`WAIT` in
+  `crates/sunrise-e2e/src/cli.rs`). Some property tests are legitimately slow
+  under load (the slowest measured beside the e2e set took 159 s), so a `SLOW`
+  line alone is not a failure. Plain
   `cargo test` has no per-test timeout: a scenario stuck in one of the
   harness's waits holds the whole run until the wait gives up.
 - **At most four `sunrise-e2e` tests at once.** Each one boots a relay, and the
