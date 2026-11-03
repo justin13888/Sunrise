@@ -213,7 +213,10 @@ catalogue per-field merge reads
    the merge.
 5. Write its `UniFFI` mirror and `From` conversion in its domain area's
    module under `crates/sunrise-core-bindings/src/dto/`, and add its
-   `Mirrored` impl in `crates/sunrise-core-bindings/src/dto/registry.rs`.
+   `Mirrored` impl in `crates/sunrise-core-bindings/src/dto/registry.rs`. The
+   saved view is the one exception: its mirror and its `Mirrored` impl live
+   in `crates/sunrise-core-bindings/src/saved_views.rs`, beside the rest of
+   its seam.
 6. Add the commands, queries and undo rules the feature needs. These are
    product surfaces rather than wiring, so the registry does not require them:
    an append-only entity has no delete command, and an attachment has no
