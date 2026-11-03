@@ -286,9 +286,10 @@ pub enum BindingError {
     ///
     /// No vault under the restored account exists, so the client must not
     /// keep the root it handed in: opening the directory under it would mint
-    /// a fresh, empty account. A vault that would not open may have left files
-    /// behind, which make the directory refuse the next recovery until they
-    /// are cleared.
+    /// a fresh, empty account. A directory holds a vault when it has `vault.db`
+    /// or a non-empty `vault-id` marker, and a vault that would not open may
+    /// have left either behind, which makes the directory refuse the next
+    /// recovery until it is cleared.
     #[error("recovery: {0}")]
     RecoveryRefused(String),
     /// The recovery wrote the vault and did not finish: the relay would not
@@ -483,8 +484,8 @@ impl SunriseCore {
         Ok(Self::wrap(core))
     }
 
-    /// Restore an account from its recovery code into the empty vault
-    /// directory `vault_dir`, and return the vault open.
+    /// Restore an account from its recovery code into `vault_dir`, a directory
+    /// holding no vault, and return the vault open.
     ///
     /// `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8, by the same
     /// implementation `sunrise recover` runs
@@ -1915,15 +1916,8 @@ async fn recover_account_reporting(
     } = request;
     let root = vault_root_bytes(&vault_root)?;
     let dir = PathBuf::from(vault_dir);
-    // The identity a vault belongs to is fixed when it is created, so a
-    // recovery into a directory that already holds one would either be
-    // refused by the keychain or keep the old identity.
-    if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
-        return Err(BindingError::RecoveryRefused(format!(
-            "{} already holds a vault; a recovery creates one and cannot merge into another",
-            dir.display()
-        )));
-    }
+    sunrise_client_core::recovery::check_recovery_directory(&dir)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
     let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
         .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
 
@@ -1970,6 +1964,48 @@ async fn recover_account_reporting(
     .await
     .map_err(recovery::reopen_failed)?;
     Ok(SunriseCore::wrap(core))
+}
+
+#[cfg(test)]
+mod recovery_directory_tests {
+    use super::{recover_account_reporting, BindingError, RecoveryRequest};
+
+    /// A recovery into `dir` with a code that fails its checksum, which is the
+    /// first thing the flow checks once the directory has passed.
+    async fn recover_into(dir: &std::path::Path) -> BindingError {
+        let request = RecoveryRequest {
+            vault_dir: dir.to_string_lossy().into_owned(),
+            vault_root: vec![7; 32],
+            app_version: "test".into(),
+            // Nothing listens here, and neither path below reaches it.
+            relay_url: "http://127.0.0.1:9".into(),
+            step_up_bearer: "bearer".into(),
+            code: "abandon".into(),
+            nickname: "phone".into(),
+            catch_up_ms: 1_000,
+        };
+        match recover_account_reporting(request, |_| {}).await {
+            Ok(_) => panic!("a one-word code cannot recover anything"),
+            Err(e) => e,
+        }
+    }
+
+    /// The seam runs the shared rule: a stray file gets as far as the code,
+    /// and a written marker is refused before it.
+    #[tokio::test]
+    async fn a_stray_file_passes_and_a_vault_marker_is_refused() {
+        let dir = tempfile::tempdir().expect("a vault dir");
+        std::fs::write(dir.path().join(".DS_Store"), b"stray").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(matches!(err, BindingError::RecoveryCode(_)), "{err:?}");
+
+        std::fs::write(dir.path().join("vault-id"), b"anything\n").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(
+            matches!(&err, BindingError::RecoveryRefused(m) if m.contains("already holds a vault")),
+            "{err:?}"
+        );
+    }
 }
 
 #[cfg(test)]
