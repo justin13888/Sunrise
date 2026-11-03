@@ -193,6 +193,10 @@ class Push(unittest.TestCase):
         git(self.repo, "commit", "-q", "-m", "mv")
         self.assertEqual(self.changed(), ["crates/a/src/old.rs", "crates/b/src/new.rs"])
 
+    def test_a_non_ascii_path_is_named_as_written(self):
+        self.commit("docs/résumé.md")
+        self.assertEqual(self.changed(), ["docs/résumé.md"])
+
     def test_no_remote_to_compare_with_is_no_base(self):
         git(self.repo, "remote", "remove", "origin")
         self.assertIsNone(scope.push_base(self.repo))

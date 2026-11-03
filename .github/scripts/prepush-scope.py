@@ -117,7 +117,7 @@ def push_base(repo: str) -> tuple[str, str] | None:
 
 
 def changed_files(repo: str, base: str) -> list[str]:
-    out = run(repo, "git", "diff", "--name-only", "--no-renames", base, "HEAD")
+    out = run(repo, "git", "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", base, "HEAD")
     if out is None:
         raise SystemExit(f"prepush-scope: git diff {base} HEAD failed")
     return sorted({line for line in out.splitlines() if line})
