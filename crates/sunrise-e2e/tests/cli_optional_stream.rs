@@ -5,12 +5,13 @@
 //! account's private key domain; and on one device, `streams delete Old
 //! --move-to New` re-homes a task filed with `#old` and retitled, while
 //! `streams delete New` detaches it. How a deletion converges against an
-//! edit made apart is proved in `sunrise-core`'s
-//! `src/engine/tests/optional_stream.rs` and in `delete_defect_probe.rs`.
+//! edit made apart is proved in
+//! `crates/sunrise-core/src/engine/tests/optional_stream.rs` and in
+//! `delete_defect_probe.rs`.
 
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// Two devices on one account.
 async fn two_devices(root: &std::path::Path, relay: &str) -> (Device, Device) {
@@ -42,7 +43,7 @@ async fn stream_id(device: &Device, name: &str) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_task_with_no_stream_syncs_between_two_vaults() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = two_devices(dir.path(), &format!("http://{addr}")).await;
 

@@ -92,7 +92,7 @@ the code rather than from the issue:
   (`crates/sunrise-core/src/engine/oplog.rs:358-360#emit_key_envelopes_to`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:474#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one

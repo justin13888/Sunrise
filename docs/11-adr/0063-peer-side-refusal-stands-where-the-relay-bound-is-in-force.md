@@ -32,12 +32,12 @@ line is load-bearing, and the argument in §Alternatives (a) turns on it."
 The first half has happened. [#363](https://github.com/justin13888/Sunrise/issues/363)
 made the flag an `Option<bool>`, and `ServerConfig::device_sig_required` resolves
 an unset one to whether an OIDC issuer is configured
-(`crates/sunrise-server/src/config/model.rs:455#device_sig_required`). The
+(`crates/sunrise-server/src/config/model.rs#device_sig_required`). The
 default is therefore no longer one value. It depends on the deployment:
 
 - **Single-tenant self-host**, which has no issuer. The flag resolves off, and
   `ServerConfig::validate` refuses to start with it on
-  (`crates/sunrise-server/src/config/model.rs:328#validate`), because every
+  (`crates/sunrise-server/src/config/model.rs#validate`), because every
   caller maps to one account and a device signature would bind nothing. A
   request with no binding comes back from the device check as "no device"
   rather than a refusal (`crates/sunrise-server/src/api/signed.rs:207#verify_binding`).
@@ -51,7 +51,7 @@ default is therefore no longer one value. It depends on the deployment:
   sends the request.
 - **A multi-tenant relay whose operator set `require_device_sig = false`.** The
   override still works. The relay logs `srv.start.device_sig_optional` when it
-  starts (`crates/sunrise-server/src/state.rs:150#assemble`), and a revoked
+  starts (`crates/sunrise-server/src/state.rs#assemble`), and a revoked
   device that stops signing keeps uploading.
 
 The second half of the trigger has not happened. Single-tenant self-host still

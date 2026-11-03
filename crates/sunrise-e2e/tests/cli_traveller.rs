@@ -9,14 +9,14 @@
 //! this is the core's rule observed through the binary.
 
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 const NEW_YORK: &str = "America/New_York";
 const KOLKATA: &str = "Asia/Kolkata";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn floating_times_keep_their_wall_clock_and_nothing_stored_is_rewritten() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
     let (ny, kolkata) = (a.in_zone(NEW_YORK), a.in_zone(KOLKATA));
@@ -92,7 +92,7 @@ async fn floating_times_keep_their_wall_clock_and_nothing_stored_is_rewritten() 
 /// 07:30 New York for everyone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_routine_follows_the_traveller_unless_it_is_pinned() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
     let (ny, kolkata) = (a.in_zone(NEW_YORK), a.in_zone(KOLKATA));

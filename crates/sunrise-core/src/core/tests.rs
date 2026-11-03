@@ -1,8 +1,8 @@
 //! `Core`'s own tests.
 //!
-//! Kept as one module across the `core/` split, on the same rule
-//! [`crate::engine::tests`] follows: the suite shares `cfg`, `unlock` and
-//! `vault_footprint`, so moving it whole is what keeps the test diff at zero.
+//! Kept as one module across the `core/` split: the suite shares `cfg`,
+//! `unlock` and `vault_footprint`, so moving it whole is what keeps the test
+//! diff at zero.
 //! `core.rs` sat exactly at its package's size threshold before identity
 //! rotation was added to it, and this is the boundary that cost nothing to
 //! draw.

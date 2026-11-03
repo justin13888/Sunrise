@@ -62,6 +62,20 @@ pub async fn spawn_relay() -> (SocketAddr, JoinHandle<()>) {
     spawn_relay_with(ServerConfig::default(), |s| s).await
 }
 
+/// Boot the relay as [`spawn_relay`] does, with its rate limits off.
+///
+/// For the CLI scenarios. Every `sunrise sync` subcommand, `sync status`
+/// included, opens a sync session, and `cli::settle` runs two per device
+/// each round. A scenario that converges slowly runs past the relay's
+/// default budget of 10 new sessions per device per five minutes, which
+/// refuses the rest `RATE_LIMITED` and costs a `sync --once` its whole 30 s
+/// budget (#799, #1004). Rate limits are not what those scenarios test.
+pub async fn spawn_relay_unlimited() -> (SocketAddr, JoinHandle<()>) {
+    let mut config = ServerConfig::default();
+    config.limits.enabled = false;
+    spawn_relay_with(config, |s| s).await
+}
+
 /// Boot the relay with the config and state tweaks a scenario needs — a tiny
 /// retained ring, a file-backed `SQLite` path to survive a restart, and so on.
 ///
