@@ -613,10 +613,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "docs/11-adr/0022-device-signature-canonical-json.md",
         "crates/sunrise-server/src/auth/device_sig.rs",
     ): "ADR-0022's Context describes the v1 module its own decision removed",
-    (
-        "docs/implementation/overview.md",
-        "tests/ws_cursors.rs",
-    ): "the sentence is 'they were this file until ADR-0023'; the marker survives, the file does not",
 }
 
 
