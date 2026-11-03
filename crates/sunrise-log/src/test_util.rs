@@ -3,7 +3,7 @@
 //! Other crates' tests assert that an event is emitted — a refusal that is
 //! announced rather than silent, an unwind that is reported — and all they
 //! need from the log line is its `ev` name, which is the only part of a record
-//! this repository treats as a contract (`tests/event_catalog.rs` is the gate
+//! this repository treats as a contract (`tests/event_catalog/` is the gate
 //! on that name). [`events_emitted_by`] gives them that without each one
 //! assembling a subscriber, and, more importantly, without each one
 //! re-deriving the interest-cache pin a capture needs to see anything at all.
@@ -90,7 +90,7 @@ pub fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {
     taken
 }
 
-/// `tests/event_catalog.rs` scans unit tests in this file as shipped code, so
+/// `tests/event_catalog/` scans unit tests in this file as shipped code, so
 /// every name below is one already catalogued and every field is allowlisted.
 #[cfg(test)]
 mod tests {

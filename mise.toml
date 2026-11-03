@@ -118,7 +118,7 @@ run = "bun run test:coverage"
 # manifest names", and `fuzz/` is deliberately its own workspace
 # root (see `fuzz/Cargo.toml`), so the root invocation cannot reach it. Naming
 # its manifest here is also what puts `fuzz/Cargo.toml` in front of
-# `crates/sunrise-log/tests/event_catalog.rs`, which derives the
+# `crates/sunrise-log/tests/event_catalog/`, which derives the
 # out-of-workspace half of its file set from the `--manifest-path` arguments
 # this file names.
 #
@@ -228,7 +228,7 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
 '''
 
 # `--all-targets` is load-bearing beyond "run the tests in the tree", and the
-# reason is `crates/sunrise-log/tests/event_catalog.rs`. That gate reads the
+# reason is `crates/sunrise-log/tests/event_catalog/`. That gate reads the
 # dep-info rustc leaves beside each artefact to learn which files the compiler
 # actually compiled, so its coverage is a fact about what has been built. It
 # compiles every target before it runs a test, which is what puts a record on
@@ -770,7 +770,7 @@ run = ".github/scripts/citation-gate.py"
 # --- Apple clients (Swift / UniFFI) ---
 #
 # `--manifest-path` arguments in this file are an input to a test in another
-# crate. `crates/sunrise-log/tests/event_catalog.rs` derives the out-of-workspace
+# crate. `crates/sunrise-log/tests/event_catalog/` derives the out-of-workspace
 # crates whose log vocabulary it gates by scanning this file for them, and it
 # refuses a path it cannot resolve — so every one of them has to stay a literal.
 # Factoring `tools/uniffi-bindgen/Cargo.toml` into a shell function parameter
@@ -898,7 +898,7 @@ mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 #    variable is set, its own `tools/uniffi-bindgen/target` when it is not.
 #
 #    Only the JSON reader is a shared function. The manifest cannot be a
-#    parameter: `event_catalog.rs` derives the set of out-of-workspace crates
+#    parameter: the `event_catalog` test derives the set of out-of-workspace crates
 #    whose log vocabulary it checks by scanning this file for the manifest
 #    paths its cargo calls name, and it refuses an interpolated one because
 #    it cannot tell which manifest that resolves to. So the bindgen manifest

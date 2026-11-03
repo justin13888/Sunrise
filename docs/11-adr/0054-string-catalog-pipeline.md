@@ -155,7 +155,7 @@ Each binding exposes the negotiated locale's direction (`dir` in
   matrix then checks it against its own messages. Which languages ship stays
   deferred, per the spec.
 - **Editing `i18n/en.toml` changes `strings.rs`,** which the CLI `include!`s.
-  The log-field gate (`crates/sunrise-log/tests/event_catalog.rs`) then wants
+  The log-field gate (`crates/sunrise-log/tests/event_catalog/`) then wants
   a rebuild before it runs, as it does after any source edit; the generator
   rewrites a file only when its bytes change, so a no-op regeneration does not
   trigger it.

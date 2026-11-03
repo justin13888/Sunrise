@@ -966,7 +966,7 @@ pub(super) fn revocation_row(db: &Db, device: &[u8; 16]) -> Option<RevocationRow
 /// The `ev` names of every event emitted while a closure runs, in order.
 ///
 /// Only the `ev` field is kept, which is the only part of a log line this
-/// repository treats as a contract — `crates/sunrise-log/tests/event_catalog.rs`
+/// repository treats as a contract — `crates/sunrise-log/tests/event_catalog/`
 /// is the gate on that name. The capture, and the tracing interest-cache
 /// pin it needs to see anything at all, are `sunrise-log`'s.
 pub(super) use sunrise_log::test_util::events_emitted_by;

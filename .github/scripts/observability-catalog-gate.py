@@ -77,7 +77,7 @@ stated counts, and their provenance markers.
   them checkable.
 * **`docs/10-cross-cutting/log-events.md`.** The event catalogue there is
   already enforced from the other side, by
-  `crates/sunrise-log/tests/event_catalog.rs`, which fails when an emitted event
+  `crates/sunrise-log/tests/event_catalog/`, which fails when an emitted event
   is not catalogued. Duplicating it here would mean two mechanisms that can
   disagree.
 * **Whether a name is *emitted* rather than merely written.** The grep sees a
