@@ -207,12 +207,6 @@ BASELINE: dict[str, str] = {
         "`Core`s and waiting on convergence. Test-harness code; not audited "
         "for a split."
     ),
-    # --- sunrise-log --------------------------------------------------------
-    "crates/sunrise-log/tests/event_catalog.rs": (
-        "An integration test: the event catalogue and log-field vocabulary "
-        "enforced against the files rustc compiled, read from dep-info: every "
-        "test over one shared reading of the build. Not audited for a split."
-    ),
 }
 
 SKIP_DIRS = {"target", "node_modules"}
