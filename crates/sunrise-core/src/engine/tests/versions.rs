@@ -657,7 +657,7 @@ fn model_precedes(db: &Db, task: EntityRef) -> BTreeSet<(OpRef, OpRef)> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
         // committed, at a path named here.
         failure_persistence: Some(Box::new(

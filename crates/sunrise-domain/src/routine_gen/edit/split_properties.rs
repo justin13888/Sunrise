@@ -141,7 +141,7 @@ fn series() -> impl Strategy<Value = Routine> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 128,
+        cases: sunrise_test_seed::proptest_cases(128),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         ..ProptestConfig::default()
     })]

@@ -1014,10 +1014,7 @@ fn step() -> impl Strategy<Value = Step> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: std::env::var("PROPTEST_CASES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(24),
+        cases: sunrise_test_seed::proptest_cases(24),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(

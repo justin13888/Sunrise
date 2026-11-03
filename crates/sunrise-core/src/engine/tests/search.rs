@@ -1003,7 +1003,7 @@ proptest::proptest! {
     // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
     // committed, at a path named here.
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 256,
+        cases: sunrise_test_seed::proptest_cases(256),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/search.txt",

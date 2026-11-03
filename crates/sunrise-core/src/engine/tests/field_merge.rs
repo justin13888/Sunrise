@@ -1318,7 +1318,7 @@ struct Oracle {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // The repository's convention (docs/10-cross-cutting/testing.md §2):
         // a shrunken counterexample is committed, at a path named here.

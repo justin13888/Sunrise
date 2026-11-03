@@ -173,7 +173,7 @@ proptest::proptest! {
                 "proptest-regressions/tests/apply_remote.txt",
             ),
         )),
-        ..proptest::prelude::ProptestConfig::with_cases(32)
+        ..proptest::prelude::ProptestConfig::with_cases(sunrise_test_seed::proptest_cases(32))
     })]
 
     /// Two mutually-trusting engines run random interleaved command streams
