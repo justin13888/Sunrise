@@ -594,10 +594,6 @@ CRATE_PREFIX = re.compile(r"^(crates/[^/]+)/")
 # list unnoticed.
 ALLOWED: dict[tuple[str, str], str] = {
     (
-        "docs/05-sync/transports.md",
-        "crates/sunrise-server/src/ws.rs",
-    ): "the sentence is that this module was deleted with the WebSocket; it names what is gone",
-    (
         "docs/11-adr/0019-swiftui-macos-client.md",
         "docs/07-clients/tui.md",
     ): "ADR-0019 deletes this spec; both of its citations record what it removed",
