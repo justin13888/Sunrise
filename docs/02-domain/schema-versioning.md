@@ -105,7 +105,7 @@ The details are in
 | The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs` |
 | The committed registry | `schemas/doc-schema/registry.json`, version (as a decimal string) to lowercase hex |
 | The frozen entries | `DOC_SCHEMA_REGISTRY` in `crates/sunrise-crypto-test-vectors/src/protocol.rs` |
-| The writer | `crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13 |
+| The writer | `crates/sunrise-crypto/src/op_envelope/mod.rs#encode_envelope` stamps field 13 |
 
 `DOC_SCHEMA_V` 7 is the first fingerprinted version (`DOC_SCHEMA_FP_FIRST`).
 Versions 1 through 6 have no entry. Their envelopes carry no field 13 and are

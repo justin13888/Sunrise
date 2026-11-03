@@ -2,7 +2,7 @@
 //!
 //! `docs/10-cross-cutting/testing.md` §2 lists "Op envelope round-trip
 //! (encode/decode/encrypt/decrypt/sign/verify)" among the properties this
-//! project holds. The unit tests in `op_envelope.rs` pin three or four
+//! project holds. The unit tests in `op_envelope/tests/` pin three or four
 //! hand-chosen envelopes; this file states the claim the document actually
 //! makes — that it holds for *any* well-formed envelope — and lets `proptest`
 //! look for the one that does not.
@@ -26,7 +26,7 @@
 //! actually uses and the full domain of the type. A `seq` drawn from
 //! `any::<u64>()` alone is below 2^32 with probability 2e-10, so it would
 //! encode in CBOR's 9-byte form in every single case and leave the 1-, 2-, 3-
-//! and 5-byte forms — the ones a real envelope uses, where `op_envelope.rs`
+//! and 5-byte forms — the ones a real envelope uses, where `op_envelope/mod.rs`
 //! documents "first op = 1" — untested. The tail into the full domain is kept
 //! because it is what catches a width truncation.
 //!
@@ -53,7 +53,7 @@ use sunrise_crypto::{
 ///
 /// Tampering only ever with `seq` would leave the claim "the AAD covers the
 /// whole header" resting on one field: dropping `doc_schema_v` from both
-/// `Omit` arms — the field `op_envelope.rs` singles out as the easy one to
+/// `Omit` arms — the field `op_envelope/mod.rs` singles out as the easy one to
 /// leave outside the signature and the AAD, because it sorts after `sig` — is
 /// invisible to a `seq`-only check.
 #[derive(Debug, Clone, Copy)]

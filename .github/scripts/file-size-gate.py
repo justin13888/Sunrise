@@ -202,12 +202,6 @@ BASELINE: dict[str, str] = {
         "must not re-derive numbers other folds own."
     ),
     # --- sunrise-crypto -----------------------------------------------------
-    "crates/sunrise-crypto/src/op_envelope.rs": (
-        "Its implementation alone is below this package's threshold; the rest "
-        "is tests. The byte-exact CBOR "
-        "codec, signing, encryption, verification and decryption of one wire "
-        "type. Not audited for a split."
-    ),
     "crates/sunrise-crypto/src/device_cert.rs": (
         "Its implementation alone is below this package's threshold; the rest "
         "is tests. The codec, signing and verification of one "

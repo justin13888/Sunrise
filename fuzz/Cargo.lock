@@ -1863,7 +1863,6 @@ dependencies = [
  "subtle",
  "sunrise-cbor",
  "sunrise-crypto",
- "sunrise-error",
  "thiserror 1.0.69",
  "zeroize",
 ]

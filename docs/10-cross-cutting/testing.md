@@ -565,16 +565,19 @@ is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
 apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
-so. On this repository it is 63: **48** of `mise.toml`'s triple-quote fences,
+so. On this repository it is 82: **60** of `mise.toml`'s triple-quote fences,
 the first and last lines of the single-quoted `python3 -c` program `ios-app`
-picks its simulator with, and `mise.toml:712` and `:1074`; **three** in
-`.github/scripts/sparkle-tools.sh` where one `awk` program's single-quoted body
-spans three lines inside a `$( )`, **four** in `.github/scripts/grep-gate.sh`
-where two such `awk` programs each count at their opening and closing line, and
-**four** `- name:` scalars whose English apostrophe is an unbalanced quotation
-— two in `ci.yml`, two in `release.yml`. Eleven of the 63 are not in `mise.toml`,
-which matters because the four workflow entries are the visible half of the
-limit two paragraphs up: the gate cannot tell an executable line from prose.
+picks its simulator with, and three unclosed `$(` at `mise.toml:618`, `:912`
+and `:1274`; **three** in `.github/scripts/sparkle-tools.sh` where one `awk`
+program's single-quoted body spans three lines inside a `$( )`, **four** in
+`.github/scripts/grep-gate.sh` where two such `awk` programs each count at their
+opening and closing line, **six** in `ci.yml` where the `fuzz-plan` and
+`fuzz-pr-plan` jobs each pipe `$(cargo metadata …` into a multi-line `jq`
+program, and **four** `- name:` scalars whose English apostrophe is an
+unbalanced quotation — two in `ci.yml`, two in `release.yml`. Seventeen of the
+82 are not in `mise.toml`, which matters because the four `- name:` entries are
+the visible half of the limit two paragraphs up: the gate cannot tell an
+executable line from prose.
 Prose that does not lex lands in this tally and is skipped, which is the safe
 direction; prose that *does* lex is counted as an invocation, which is the
 other one. The composition is asserted by the contract suite, not just the
