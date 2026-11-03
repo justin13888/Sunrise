@@ -25,7 +25,6 @@ zeroize = { workspace = true }
 sunrise-cbor = { workspace = true }
 subtle = { workspace = true }
 sunrise-crypto = { workspace = true }
-sunrise-error = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
