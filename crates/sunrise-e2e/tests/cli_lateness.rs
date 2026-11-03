@@ -8,11 +8,11 @@
 //! it is. Lateness is derived on read and never synced.
 
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_floating_target_is_late_in_one_zone_and_on_track_in_another() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
     // B reads five hours west of UTC (`Etc/GMT+5` is UTC−5).

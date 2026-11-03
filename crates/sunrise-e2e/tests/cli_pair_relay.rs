@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use sunrise_e2e::cli::{first_id, settle, sign_in, Device, SELF_HOST_BEARER};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// Generous: the host running these may be loaded, and every step is a
 /// process start against a relay.
@@ -128,7 +128,7 @@ fn other_than(sas: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_cli_vaults_pair_over_the_relay_and_then_sync() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let url = format!("http://{addr}");
     let dir = tempfile::tempdir().unwrap();
     let (a, before) = founding(dir.path(), &url).await;
@@ -194,7 +194,7 @@ async fn two_cli_vaults_pair_over_the_relay_and_then_sync() {
 /// shows, and the pairing ends on both devices with nothing handed over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn digits_typed_wrong_at_the_prompt_pair_nothing() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let url = format!("http://{addr}");
     let dir = tempfile::tempdir().unwrap();
     let (a, _) = founding(dir.path(), &url).await;
@@ -238,7 +238,7 @@ async fn digits_typed_wrong_at_the_prompt_pair_nothing() {
 /// show. The device with the vault, which accepted, is told and issues nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_device_that_declines_the_digits_is_not_added() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let url = format!("http://{addr}");
     let dir = tempfile::tempdir().unwrap();
     let (a, _) = founding(dir.path(), &url).await;
