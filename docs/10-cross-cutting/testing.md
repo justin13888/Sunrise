@@ -974,6 +974,7 @@ because a surface only a fuzzer can reach is one no attacker reaches either.
 | `device_cert` | device cert decode + verify (`sunrise-crypto`): `from_cbor`, `verify`, `verify_binding`. | Nothing but the frozen cert verifies under the frozen identity; `verify_binding` holds only for the identity that signed; `from_cbor(to_cbor(c)) == c`, signed bytes included. |
 | `key_envelope` | key-envelope / Stream-key unwrap (`sunrise-crypto`, ADR-0024): `hpke_open` under the `key_envelope` info, and `unwrap_stream_key` under the vault root. | Only the frozen blob opens on each path, to the frozen Stream key, and never for another `(stream_id, epoch)`. |
 | `pairing_messages` | the five pairing decoders that read the other device's or a camera's bytes (`sunrise-pairing`): `decode_pairing_offer`, `decode_pairing_request`, `decode_pairing_grant`, `decode_pairing_payload`, and `decode_qr_payload` on UTF-8 input. Every input goes through all five. | Whatever a decoder accepts, its encoder encodes, the encoding decodes to the same value, and encoding that yields the same bytes. Byte identity with the input is not asserted: each decoder skips unknown keys and none demands canonical input. |
+| `core_snapshot` | the snapshot record reader `Engine::apply_snapshot` (`sunrise-core`, ADR-0059): magic prefix, canonical map and frontier parse, writer lookup and signature check, against one in-memory vault stood up once on a fixed clock and a seeded generator and reused for every input. | Every refusal is `EngineError::Invalid`; a record that is accepted carries the vault's own record's fields one to ten (everything the signature covers, and the signature), and is `Covered`, writing nothing. |
 
 No target drives `sunrise-http-sig` (`header_sig_v2`). A pull request touching
 it still runs the fuzz plan, which names no target for it; the external review
@@ -1053,6 +1054,7 @@ Every seed comes from something the tree already had:
 | `op_envelope`, `device_cert` | `regression_deep_nest` | The out-of-memory reproducers of the third finding (below), as the nightly uploaded them. Not shapes anything emits — each is a deep, unclosed nest of arrays, maps and tags — kept so every run starts at the nesting bound. |
 | `key_envelope` | `hpke_sealed`, `wrapped` | `key_envelope::SEALED` and `at_rest::wrapped_stream_key::WRAPPED`, byte for byte. Each opens under its own path's frozen key and context, and is refused by the other path. |
 | `pairing_messages` | `offer`, `offer_rotated`, `request`, `grant`, `payload`, `qr` | Each message type's own encoder over the frozen constants in `crates/sunrise-crypto-test-vectors`: the `identity_transition` identity (and, for `offer_rotated`, its successor in force over the original genesis), the frozen device's `DEVICE_SIGNING_PUBLIC`, `device_cert::DEVICE_ID` and `device_cert::ENCODED`, the `key_envelope` Stream key and recipient, and the `at_rest` vault root. Every seed decodes, so the fuzzer starts past the id-against-key checks rather than at them. `qr` is `encode_qr_payload` over `MAGIC_V1_HEX` and the first `EMAIL_HASH_VECTORS` entry, and carries no `.json` extension so Biome leaves the encoder's exact bytes alone. |
+| `core_snapshot` | `frozen` | The record the harness's own vault writes at setup (`Engine::write_stream_snapshot` over the Inbox, holding one task), byte for byte: the clock is fixed and the generator seeded, so every run writes the same record, and the seed is accepted rather than merely parsed. Changing the harness's root, clock or seed changes the record, and this seed has to be minted again. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
 seed corpus. That has happened three times.
@@ -1113,7 +1115,8 @@ wires a narrower version of it:
   `device_cert` and `wire_frame`), `crates/sunrise-crypto/` the five crypto
   targets,
   `crates/sunrise-wire-protocol/` `wire_frame`,
-  `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
+  `crates/sunrise-server/src/auth/` `oauth_state`,
+  `crates/sunrise-core/` `core_snapshot`, a target's own harness or
   seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` every target.
   No path maps to `pairing_messages` yet, so a change to
   `crates/sunrise-pairing/` reaches it only nightly

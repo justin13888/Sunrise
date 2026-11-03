@@ -1789,6 +1789,7 @@ dependencies = [
  "jiff",
  "libfuzzer-sys",
  "sunrise-cbor",
+ "sunrise-core",
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
  "sunrise-domain",
@@ -1796,6 +1797,7 @@ dependencies = [
  "sunrise-integrations",
  "sunrise-pairing",
  "sunrise-server",
+ "sunrise-storage",
  "sunrise-wire-protocol",
 ]
 

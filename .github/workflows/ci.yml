@@ -2381,6 +2381,7 @@ jobs:
               crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert wire_frame" ;;
               crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
               crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
+              crates/sunrise-core/*)            picked="$picked core_snapshot" ;;
               crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
               fuzz/Cargo.toml|fuzz/Cargo.lock)  picked="$picked $all" ;;
               fuzz/fuzz_targets/*.rs)           t="${path#fuzz/fuzz_targets/}"; picked="$picked ${t%.rs}" ;;
