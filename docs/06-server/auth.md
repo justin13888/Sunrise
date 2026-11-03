@@ -9,11 +9,11 @@ Sunrise piggybacks **OpenID Connect (OIDC)** for everything user-facing — acco
 Cryptographic E2EE identity (identity + device keypairs) is **separate** from server auth. Device keys sign ops and pairing handshakes for end-to-end integrity; the device signing key is *additionally* used as a per-request binding (see "Device binding" below), which is not the same thing as being the credential: the bearer proves the account, the signature proves the device.
 
 > **Implementation status.** Token verification, the account model, `allow_signup`,
-> device binding, the sync session's expiry handling and the **recovery-blob
-> fetch** are built (`crates/sunrise-server/src/auth/`, `store/`,
-> `api/accounts.rs`, `api/sync/`, `sync_session.rs`). The
-> **account-deletion** flow below is not: no route serves it, and the section
-> says so in place.
+> device binding, the sync session's expiry handling, the **recovery-blob
+> fetch** and the **account-deletion** flow are built
+> (`crates/sunrise-server/src/auth/`, `store/`, `api/accounts.rs`,
+> `api/recovery_blob.rs`, `api/account_deletion.rs`, `api/sync/`,
+> `sync_session.rs`).
 > [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) replaces
 > `header_sig_v1` with `header_sig_v2` (RFC 8785 canonical JSON over the request
 > *value*), and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the
