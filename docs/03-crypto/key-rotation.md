@@ -75,8 +75,8 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
   it kept, but the cert was genuine under an identity the account had retired,
   so the row was admitted, the device was current under nothing, and it was a
   recipient of nothing.
-  `engine::tests::a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the
-  test that used to assert the bypass, with its setup unchanged.
+  `engine::tests::device_admission::a_revoked_device_cannot_rejoin_under_a_fresh_device_id`
+  is the test that used to assert the bypass, with its setup unchanged.
 
   It bought one revocation at a time, which is why it was not the end of it: the
   device paired *after* a rotation held the new `ID_S_priv`, so revoking that
