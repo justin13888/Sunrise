@@ -12,9 +12,12 @@
 //! # Which binary
 //!
 //! `SUNRISE_CLI_BIN` when it is set. Otherwise the binary is built — `cargo
-//! build -p sunrise-cli --bin sunrise`, a no-op when it is fresh — once per
-//! test process, into the target directory this test binary was built in, so
-//! a scenario never runs a stale `sunrise` against new code.
+//! build -p sunrise-cli --bin sunrise --features test-cheap-kdf`, a no-op when
+//! it is fresh — once per test process, into the target directory this test
+//! binary was built in, so a scenario never runs a stale `sunrise` against new
+//! code. The feature puts the binary's recovery blobs on the cheap Argon2id
+//! set this test process uses; a `SUNRISE_CLI_BIN` built without it seals
+//! blobs this process reports as `KdfParamsMismatch`.
 
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
@@ -52,8 +55,11 @@ pub fn binary() -> &'static Path {
         let release = profile_dir.file_name().is_some_and(|n| n == "release");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let mut build = Command::new(cargo);
+        // `test-cheap-kdf`: this test process seals and opens recovery blobs
+        // under the cheap Argon2id set, and the binary has to agree with it.
         build
             .args(["build", "--quiet", "-p", "sunrise-cli", "--bin", "sunrise"])
+            .args(["--features", "test-cheap-kdf"])
             .env("CARGO_TARGET_DIR", target_dir);
         if release {
             build.arg("--release");

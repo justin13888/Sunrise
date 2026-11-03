@@ -101,6 +101,8 @@ recovery_code = bip39_encode(recovery_seed)   // "abandon ability ... yellow"  (
 
 These parameters are platform-uniform (chosen for the slower-bound mobile target). There is **no timeout**; the function runs to completion, and the UI shows a progress modal on mobile.
 
+**Tests outside `sunrise-crypto`.** A debug build with `sunrise-crypto`'s `test-cheap-kdf` feature uses m = 8 KiB, t = 1, p = 1 instead, so tests that create or recover accounts without being about the KDF do not pay for it. A release build cannot: the cheap set is compiled only where `debug_assertions` is on, and a test fails if a shipped package enables the feature. `sunrise-crypto`'s own tests and its frozen vector stay at the parameters above. A blob sealed under one set opens only under that set. See `docs/10-cross-cutting/testing.md` §The recovery KDF in tests.
+
 **First-launch calibration.** The app runs Argon2id once on a synthetic password and records the wall-clock time. If > 5 s, the UI shows: *"Recovery on this device is slow (≈ Ns). You can still use it, but consider enabling biometric/keystore unlock for daily use."* This is informational; recovery is never blocked.
 
 **OOM handling.** Catch `argon2::Error::MemoryAllocation` and present: *"Not enough memory to derive recovery key. Close other apps and try again."* This does not consume a rate-limit slot.
