@@ -11,18 +11,24 @@
 //! seeds under `fuzz/seeds/`; these tests rebuild each shape from scratch and
 //! pin that it is refused as too deep — a bounded error, before any level past
 //! the bound is read.
+//!
+//! The key-bundle and identity-chain decoders, which read records the relay
+//! pins outside op retention, decode their whole body through
+//! `sunrise_cbor::decode_canonical`, bounded at `sunrise_cbor::MAX_DOC_DEPTH`.
+//! Their tests are at the end of this file.
 
 use ciborium::value::Value;
 use std::collections::BTreeMap;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::{
-    write_prefix, CborValue, MagicKind, ValueDecodeError, ENVELOPE_FORMAT_FLOOR, MAGIC_LEN,
-    MAX_VALUE_DEPTH,
+    write_prefix, CanonicalError, CborValue, MagicKind, ValueDecodeError, ENVELOPE_FORMAT_FLOOR,
+    MAGIC_LEN, MAX_DOC_DEPTH, MAX_VALUE_DEPTH,
 };
 use sunrise_crypto::keys::DeviceSigningKeyPair;
 use sunrise_crypto::{
-    decode_envelope, seal_envelope, verify_envelope, AeadAlgId, DeviceCert, DeviceCertError,
-    OpEnvelope, OpEnvelopeError,
+    decode_envelope, decode_key_bundle, seal_envelope, verify_envelope, AeadAlgId, DeviceCert,
+    DeviceCertError, IdentityChain, IdentityChainError, KeyBundleError, OpEnvelope,
+    OpEnvelopeError, IDENTITY_CHAIN_FORMAT_V, KEY_BUNDLE_FORMAT_V,
 };
 use sunrise_crypto_test_vectors as vectors;
 use sunrise_crypto_test_vectors::identity_transition::device_cert;
@@ -209,5 +215,115 @@ fn a_cert_body_field_past_the_bound_is_refused_as_too_deep() {
 
     assert_too_deep_cert(
         &DeviceCert::from_cbor(&with_extra_body_field(MAX_VALUE_DEPTH)).unwrap_err(),
+    );
+}
+
+/// `magic ‖ body` for a record of `kind` at `version`.
+fn record(kind: MagicKind, version: u16, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; MAGIC_LEN];
+    write_prefix(&mut out, kind, version);
+    out.extend_from_slice(body);
+    out
+}
+
+/// The canonical encoding of a one-entry map from `key` to `levels` nested
+/// arrays: `levels + 1` levels deep, the map included.
+fn one_field_nested(key: u64, levels: usize) -> Vec<u8> {
+    sunrise_cbor::encode_canonical(&Value::Map(vec![(
+        Value::Integer(key.into()),
+        nest(levels),
+    )]))
+    .unwrap()
+}
+
+/// Neither record decoder tells a too-deep body apart from any other body
+/// that is not canonical CBOR: both map every `decode_canonical` error to the
+/// one `Malformed` message. So the test pins two things: `sunrise-cbor` itself
+/// calls `body` too deep, and the record decoder refused it at that step
+/// rather than at a field.
+fn assert_body_too_deep(body: &[u8]) {
+    assert!(
+        matches!(
+            sunrise_cbor::decode_canonical::<Value>(body),
+            Err(CanonicalError::TooDeep)
+        ),
+        "the body is not past the bound"
+    );
+}
+
+/// A key bundle whose `identity_id` is `MAX_DOC_DEPTH - 1` nested arrays gets
+/// past the CBOR decode and is refused for that field's shape; one level more
+/// is refused at the CBOR decode.
+#[test]
+fn a_key_bundle_field_past_the_bound_is_refused_before_its_shape_is_read() {
+    let fits = one_field_nested(1, MAX_DOC_DEPTH - 1);
+    assert_eq!(
+        decode_key_bundle(&record(MagicKind::KeyBundle, KEY_BUNDLE_FORMAT_V, &fits)).unwrap_err(),
+        KeyBundleError::Malformed("identity_id")
+    );
+
+    let deep = one_field_nested(1, MAX_DOC_DEPTH);
+    assert_body_too_deep(&deep);
+    assert_eq!(
+        decode_key_bundle(&record(MagicKind::KeyBundle, KEY_BUNDLE_FORMAT_V, &deep)).unwrap_err(),
+        KeyBundleError::Malformed("not canonical CBOR")
+    );
+}
+
+/// The fuzzers' shape after a key bundle's prefix: a one-entry map whose value
+/// opens a deep interleaved nest the input never closes.
+#[test]
+fn an_open_interleaved_nest_in_a_key_bundle_is_refused_as_too_deep() {
+    let mut body = vec![0xa1, 0x04]; // map(1), key 4 (`manifest`)
+    body.extend(open_interleaved_nest(256));
+    assert_body_too_deep(&body);
+    assert_eq!(
+        decode_key_bundle(&record(MagicKind::KeyBundle, KEY_BUNDLE_FORMAT_V, &body)).unwrap_err(),
+        KeyBundleError::Malformed("not canonical CBOR")
+    );
+}
+
+/// As for the key bundle, at both of an identity chain's fields: the genesis
+/// key, and the link list, whose one link is itself the nest.
+#[test]
+fn an_identity_chain_field_past_the_bound_is_refused_before_its_shape_is_read() {
+    let chain = |body: &[u8]| {
+        IdentityChain::decode(&record(
+            MagicKind::IdentityChain,
+            IDENTITY_CHAIN_FORMAT_V,
+            body,
+        ))
+        .unwrap_err()
+    };
+    for (key, field) in [(1, "genesis_id_s_pub"), (2, "link")] {
+        assert_eq!(
+            chain(&one_field_nested(key, MAX_DOC_DEPTH - 1)),
+            IdentityChainError::Malformed(field),
+            "field {key} at the bound"
+        );
+        let deep = one_field_nested(key, MAX_DOC_DEPTH);
+        assert_body_too_deep(&deep);
+        assert_eq!(
+            chain(&deep),
+            IdentityChainError::Malformed("not canonical CBOR"),
+            "field {key} past the bound"
+        );
+    }
+}
+
+/// The fuzzers' shape after an identity chain's prefix, in the link list.
+#[test]
+fn an_open_interleaved_nest_in_an_identity_chain_is_refused_as_too_deep() {
+    let mut body = vec![0xa1, 0x02]; // map(1), key 2 (`links`)
+    body.extend(open_interleaved_nest(256));
+    assert_body_too_deep(&body);
+    assert_eq!(
+        IdentityChain::decode(&record(
+            MagicKind::IdentityChain,
+            IDENTITY_CHAIN_FORMAT_V,
+            &body
+        ))
+        .unwrap_err(),
+        IdentityChainError::Malformed("not canonical CBOR")
     );
 }
