@@ -15,7 +15,9 @@ which grades the MUSTs the same way; this file grades crates, that one grades
 capabilities, and a crate can be reachable while a capability inside it is not.
 This page quotes no counts that move with the code: the source that holds each
 one is named instead. Fixed values, such as the frame header size or the
-frozen baseline storage version, are stated.
+frozen baseline storage version, are stated, and so is a number word that only
+introduces the items named right after it (the two entities `Note` and
+`Person`, **one** consumer — `apps/web`).
 
 ## Legend
 
