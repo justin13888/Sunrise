@@ -60,7 +60,7 @@ behaviour, then the gates that keep them fixed.
 
 ## P1 — Commit tree and schema
 
-The design of record is [ADR-0043](./11-adr/0043-commit-tree.md) (proposed),
+The design of record is [ADR-0043](./11-adr/0043-commit-tree.md),
 [ADR-0044](./11-adr/0044-per-field-ops.md) and
 [ADR-0045](./11-adr/0045-schema-identity-and-feature-gating.md), with the rules
 in [`02-domain/schema-versioning.md`](./02-domain/schema-versioning.md) and

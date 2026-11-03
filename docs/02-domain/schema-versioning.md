@@ -9,8 +9,9 @@ status: accepted
 > ops write individual fields, and each field merges by its declared CRDT
 > type. A schema version has a fingerprint. Nothing that verifies is dropped.
 > A vault declares the features it requires. The per-device hash chain and
-> state digest in [ADR-0043](../11-adr/0043-commit-tree.md) are **proposed**,
-> and nothing here depends on them.
+> state digest in [ADR-0043](../11-adr/0043-commit-tree.md) are accepted and
+> built ([#325](https://github.com/justin13888/Sunrise/issues/325)), and
+> nothing here depends on them.
 >
 > **Rules marked *Today* describe the tree before those ADRs are built.** Each
 > one names the issue that closes the gap.
