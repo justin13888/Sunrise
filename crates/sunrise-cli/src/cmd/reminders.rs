@@ -288,6 +288,7 @@ async fn print_plan(ctx: &Ctx<'_>) -> CmdResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_support::keys;
 
     /// `docs/07-clients/overview.md` §JSON output: an `unscheduled` entry of
     /// `reminders plan` is `{entity, kind, reason}`. Only a reminder whose
@@ -303,14 +304,7 @@ mod tests {
                 kind: "lunar".into(),
             },
         });
-        let mut keys: Vec<&str> = j
-            .as_object()
-            .expect("an object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["entity", "kind", "reason"]);
+        assert_eq!(keys(&j), ["entity", "kind", "reason"]);
         assert_eq!(j["entity"], entity.to_str());
         assert_eq!(j["kind"], "task");
     }

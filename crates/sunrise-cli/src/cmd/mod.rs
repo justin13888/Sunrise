@@ -25,6 +25,8 @@ mod reports;
 mod search;
 mod settings;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 mod triage;
 mod upcoming;
 mod views;

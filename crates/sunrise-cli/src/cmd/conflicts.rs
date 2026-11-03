@@ -233,6 +233,7 @@ async fn resolve(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_support::keys;
 
     #[test]
     fn a_value_is_json_when_it_reads_as_json_and_text_otherwise() {
@@ -293,18 +294,6 @@ mod tests {
         let whole = c.winner.version.to_string();
         assert_eq!(picked(&c, &whole).unwrap().version.seq, 2);
         assert!(picked(&c, "bbbbbbbb/9").is_err());
-    }
-
-    /// The keys of a JSON object, sorted.
-    fn keys(v: &Value) -> Vec<&str> {
-        let mut keys: Vec<&str> = v
-            .as_object()
-            .unwrap_or_else(|| panic!("not an object: {v}"))
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        keys
     }
 
     /// `docs/07-clients/overview.md` §JSON output: a conflict is
