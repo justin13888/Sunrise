@@ -46,9 +46,20 @@
 //! Seven properties are dropped **silently**, listed in [`BOOKKEEPING`]: they
 //! are iCalendar's own record-keeping, carry no user content, and Sunrise is
 //! not a CalDAV store that has to preserve them byte-for-byte.
+//!
+//! # Layout
+//!
+//! This file holds the component parser and writer. The content-line lexer
+//! (unfolding, folding, property splitting, TEXT escaping) is `lex`, and the
+//! `DTSTART` / `DTEND` value grammar is `time`.
+
+mod lex;
+mod time;
 
 use crate::IntegrationError;
-use jiff::{civil, tz::TimeZone, Timestamp};
+use jiff::{civil, Timestamp};
+use lex::{escape, push_line, split_property, unescape, unfold_lines};
+use time::{parse_time, write_time};
 
 /// Properties that exist to bookkeep an iCalendar object rather than to carry
 /// anything a user typed. Dropped without a notice.
@@ -64,9 +75,6 @@ pub const BOOKKEEPING: &[&str] = &[
 
 /// Components this build reads. Anything else is reported and skipped.
 const READ_COMPONENTS: &[&str] = &["VCALENDAR", "VEVENT"];
-
-/// Maximum octets in a content line before RFC 5545 §3.1 requires folding.
-const FOLD_AT: usize = 75;
 
 /// A `DTSTART` / `DTEND` value together with what its parameters say it *is*.
 ///
@@ -386,251 +394,9 @@ fn inside_unread(stack: &[String]) -> bool {
         .is_some_and(|c| !READ_COMPONENTS.contains(&c.as_str()))
 }
 
-/// RFC 5545 §3.1: a line beginning with SPACE or HTAB continues the previous
-/// logical line, and the one leading whitespace octet is not part of it.
-fn unfold_lines(input: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for raw in input.lines() {
-        if let Some(prev) = out.last_mut() {
-            if let Some(rest) = raw.strip_prefix(' ').or_else(|| raw.strip_prefix('\t')) {
-                prev.push_str(rest);
-                continue;
-            }
-        }
-        out.push(raw.to_string());
-    }
-    out
-}
-
-/// Split `NAME;PARAM=v:value` into its three parts.
-///
-/// The first `:` outside a quoted parameter value ends the name-and-parameters
-/// half. Quoting matters: `TZID="GMT+02:00"` is one parameter whose value
-/// contains a colon, and splitting on the first bare `:` would truncate it.
-fn split_property(line: &str) -> (&str, &str, &str) {
-    let mut in_quotes = false;
-    let mut split = line.len();
-    for (i, c) in line.char_indices() {
-        match c {
-            '"' => in_quotes = !in_quotes,
-            ':' if !in_quotes => {
-                split = i;
-                break;
-            }
-            _ => {}
-        }
-    }
-    let head = &line[..split];
-    let value = if split == line.len() {
-        ""
-    } else {
-        &line[split + 1..]
-    };
-    let name_end = head.find(';').unwrap_or(head.len());
-    (&head[..name_end], &head[name_end..], value)
-}
-
-/// One parameter's value, unquoted. `params` is the `;`-prefixed remainder
-/// from [`split_property`].
-fn param<'a>(params: &'a str, want: &str) -> Option<&'a str> {
-    for part in params.split(';') {
-        // `params` keeps its leading `;`, so the first split is empty, and a
-        // malformed parameter with no `=` must be stepped over rather than
-        // ending the search.
-        let Some((k, v)) = part.split_once('=') else {
-            continue;
-        };
-        if k.trim().eq_ignore_ascii_case(want) {
-            return Some(v.trim().trim_matches('"'));
-        }
-    }
-    None
-}
-
-/// RFC 5545 §3.3.4 `date`: `date-fullyear date-month date-mday`, which is
-/// eight ASCII digits and nothing else.
-///
-/// This is checked before `strptime` rather than left to it, because `jiff`'s
-/// `%Y` implements a *superset* of `date-fullyear`: it takes an optional sign
-/// and as few as one digit, and the numeric directives after it skip leading
-/// whitespace. So `-202 0302` parses, as the year −202. Nothing in iCalendar
-/// can express a year outside `0000`–`9999`, which means [`write_time`] cannot
-/// render one back — `strftime`'s `%Y` pads to four *columns* including the
-/// sign, so year −202 comes out as `-202` and reads back as `-2020`. Refusing
-/// the value here is what keeps `write` a fixed point over `parse`: the
-/// parser's output range becomes exactly what the writer can spell.
-fn is_ical_date(value: &str) -> bool {
-    value.len() == 8 && value.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// RFC 5545 §3.3.5 `date-time` with its UTC designator already removed: an
-/// [`is_ical_date`] `date`, the literal `T`, and `time-hour time-minute
-/// time-second` as six more ASCII digits.
-fn is_ical_date_time(value: &str) -> bool {
-    let Some((date, time)) = value.split_once('T') else {
-        return false;
-    };
-    is_ical_date(date) && time.len() == 6 && time.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// Read a `DTSTART` / `DTEND` value in the light of its parameters.
-///
-/// Returns the value, plus the zone name when a `TZID` had to be abandoned —
-/// which the caller reports as a [`NoticeCode::UnknownTimezone`] notice
-/// (`docs/09-integrations/icalendar.md` §Time zones).
-///
-/// The value is held to RFC 5545's grammar exactly (see [`is_ical_date`]);
-/// anything else is an `Err`, which the caller turns into a
-/// [`NoticeCode::BadValue`] rather than dropping in silence.
-fn parse_time(params: &str, value: &str) -> Result<(ICalTime, Option<String>), String> {
-    let value = value.trim();
-    if param(params, "VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || is_ical_date(value)
-    {
-        // Reached with a non-DATE value only when `VALUE=DATE` claimed one.
-        // That parameter states what the value *is*, so a value that is not
-        // one is an error rather than a reason to try the DATE-TIME reading.
-        if !is_ical_date(value) {
-            return Err("not a DATE; RFC 5545 §3.3.4 wants YYYYMMDD".into());
-        }
-        let date = civil::Date::strptime("%Y%m%d", value).map_err(|e| e.to_string())?;
-        return Ok((ICalTime::Date(date), None));
-    }
-    // RFC 5545 §3.3.5 form 2: one trailing `Z` states UTC. The spec spells it
-    // upper case; lower case is accepted because feeds emit it, and `write`
-    // normalises it back to `Z` on the first pass.
-    let (naked, utc) = match value.strip_suffix(['Z', 'z']) {
-        Some(rest) => (rest, true),
-        None => (value, false),
-    };
-    if !is_ical_date_time(naked) {
-        return Err(
-            "not a DATE-TIME; RFC 5545 §3.3.5 wants YYYYMMDDTHHMMSS with an optional Z".into(),
-        );
-    }
-    let dt = civil::DateTime::strptime("%Y%m%dT%H%M%S", naked).map_err(|e| e.to_string())?;
-    if utc {
-        // A `Z` value is UTC by definition, so this conversion cannot be
-        // ambiguous and needs no fallback.
-        let at = dt
-            .to_zoned(TimeZone::UTC)
-            .map(|z| z.timestamp())
-            .map_err(|e| e.to_string())?;
-        return Ok((ICalTime::Utc(at), None));
-    }
-    match param(params, "TZID") {
-        // A zone the bundled tzdb knows: keep the civil time AND the zone, so
-        // the value stays "09:00 there" rather than becoming an instant that
-        // silently drifts the next time that zone's DST rule changes.
-        Some(tz) if TimeZone::get(tz).is_ok() => Ok((
-            ICalTime::Zoned {
-                civil: dt,
-                tz: tz.to_string(),
-            },
-            None,
-        )),
-        // Spec'd fallback: UTC, and say so.
-        Some(tz) => {
-            let at = dt
-                .to_zoned(TimeZone::UTC)
-                .map(|z| z.timestamp())
-                .map_err(|e| e.to_string())?;
-            Ok((ICalTime::Utc(at), Some(tz.to_string())))
-        }
-        // No zone at all is a real iCalendar value, not a missing one: it
-        // floats with the reader, which is exactly `SunriseTime::Floating`.
-        None => Ok((ICalTime::Floating(dt), None)),
-    }
-}
-
-/// The parameters and value to write for one time.
-///
-/// `%Y` renders four digits for every year iCalendar can express, which is the
-/// `0000`–`9999` that [`is_ical_date`] is there to hold [`parse`] to. Outside
-/// that range there is no conforming spelling to emit and `%Y` falls back to a
-/// signed, shorter field, so a [`ICalTime`] built by hand from a proleptic year
-/// renders something this module's own parser will not read back.
-fn write_time(t: &ICalTime) -> (String, String) {
-    match t {
-        ICalTime::Utc(at) => (String::new(), at.strftime("%Y%m%dT%H%M%SZ").to_string()),
-        ICalTime::Zoned { civil, tz } => (
-            format!(";TZID={tz}"),
-            civil.strftime("%Y%m%dT%H%M%S").to_string(),
-        ),
-        ICalTime::Floating(civil) => (String::new(), civil.strftime("%Y%m%dT%H%M%S").to_string()),
-        ICalTime::Date(d) => (";VALUE=DATE".to_string(), d.strftime("%Y%m%d").to_string()),
-    }
-}
-
-/// Append one content line, folded per RFC 5545 §3.1.
-///
-/// Folds on a char boundary at or before 75 octets: a fold that split a
-/// multi-byte character would produce two invalid UTF-8 fragments, and the
-/// 75-octet limit is a maximum, so stopping short of it is always legal.
-fn push_line(out: &mut String, name: &str, params: &str, value: &str) {
-    let line = format!("{name}{params}:{value}");
-    let bytes = line.as_bytes();
-    if bytes.len() <= FOLD_AT {
-        out.push_str(&line);
-        out.push_str("\r\n");
-        return;
-    }
-    let mut start = 0;
-    // The first line may use all 75 octets; a continuation spends one on the
-    // leading space.
-    let mut budget = FOLD_AT;
-    while start < line.len() {
-        let mut end = (start + budget).min(line.len());
-        while end > start && !line.is_char_boundary(end) {
-            end -= 1;
-        }
-        if start > 0 {
-            out.push(' ');
-        }
-        out.push_str(&line[start..end]);
-        out.push_str("\r\n");
-        start = end;
-        budget = FOLD_AT - 1;
-    }
-}
-
-/// RFC 5545 §3.3.11 TEXT unescaping.
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n' | 'N') => out.push('\n'),
-            Some(',') => out.push(','),
-            Some(';') => out.push(';'),
-            // An escape of anything else is not defined, and a trailing
-            // backslash escapes nothing: keep the backslash rather than eating
-            // a character the file did not intend to lose.
-            Some('\\') | None => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-        }
-    }
-    out
-}
-
-/// RFC 5545 §3.3.11 TEXT escaping. Backslash first, or it would double the
-/// backslashes the later rules introduce.
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace(',', "\\,")
-        .replace(';', "\\;")
-        .replace('\r', "")
-        .replace('\n', "\\n")
-}
-
 #[cfg(test)]
 mod tests {
+    use super::lex::FOLD_AT;
     use super::*;
 
     const SAMPLE: &str = "BEGIN:VCALENDAR\r\n\
@@ -772,17 +538,6 @@ DTSTART:-202 0302T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(cal.notices.len(), 1);
         assert_eq!(cal.notices[0].code, NoticeCode::UnknownTimezone);
         assert!(cal.notices[0].detail.contains("Mars/Olympus"));
-    }
-
-    /// `TZID="GMT+02:00"` is one parameter containing a colon. Splitting on
-    /// the first bare `:` would leave `TZID="GMT+02` and a truncated value.
-    #[test]
-    fn a_quoted_parameter_may_contain_a_colon() {
-        let (name, params, value) = split_property("DTSTART;TZID=\"GMT+02:00\":20260301T090000");
-        assert_eq!(name, "DTSTART");
-        assert_eq!(params, ";TZID=\"GMT+02:00\"");
-        assert_eq!(value, "20260301T090000");
-        assert_eq!(param(params, "TZID"), Some("GMT+02:00"));
     }
 
     #[test]
@@ -932,12 +687,6 @@ BEGIN:VEVENT\r\nUID:ev1\r\nDTSTART:20260301T090000Z\r\nEND:VEVENT\r\n",
         let back = parse(&write(&events)).unwrap();
         assert_eq!(back.events[0].summary.as_deref(), Some(text));
         assert_eq!(back.events[0].description.as_deref(), Some(text));
-    }
-
-    #[test]
-    fn unescaping_leaves_an_undefined_escape_alone() {
-        assert_eq!(unescape("a\\qb"), "a\\qb");
-        assert_eq!(unescape("trailing\\"), "trailing\\");
     }
 
     #[test]

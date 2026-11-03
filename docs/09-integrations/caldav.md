@@ -15,7 +15,7 @@ which is why it left the non-goals.
 
 > **Status: not built.** `IntegrationKind` has no CalDAV variant
 > (`crates/sunrise-integrations/src/lib.rs#IntegrationKind`). The iCalendar
-> parser the fetch reuses is live (`crates/sunrise-integrations/src/ical.rs`).
+> parser the fetch reuses is live (`crates/sunrise-integrations/src/ical/mod.rs`).
 > [#4](https://github.com/justin13888/Sunrise/issues/4) tracks the build.
 
 ## Credentials

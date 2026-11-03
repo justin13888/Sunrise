@@ -1066,7 +1066,7 @@ after it skip whitespace, so that value read as the year −202. No year outside
 its own parser then read as year −2020 and month 30 and dropped — the
 `write(parse(write(x))) == write(x)` the target asserts, failing on every
 nightly for as long as the target had run. Fixed in
-`crates/sunrise-integrations/src/ical.rs` by holding a `DTSTART`/`DTEND` value
+`crates/sunrise-integrations/src/ical/time.rs` by holding a `DTSTART`/`DTEND` value
 to the grammar before handing it to `strptime`, which makes the parser's output
 range exactly what the writer can spell.
 
