@@ -48,6 +48,8 @@ libfuzzer-sys = "0.4"
 # surface only a fuzzer can reach is a surface no attacker reaches either.
 # `sunrise-cbor` is here for `decode_canonical`, which the `identity_transition`
 # target decodes its body with: the decoder whose encoder `body_hash` hashes.
+# The `op_envelope` target also takes `decode_envelope_header` from it: the
+# relay's routing-field decoder, which must agree with the client's.
 # `ciborium` is here for the `key_bundle` target, which rebuilds a decoded
 # bundle's CBOR map to compare with its input, `sunrise-crypto` having no
 # encoder for a bundle it did not seal. Features as the root workspace's entry.

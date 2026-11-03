@@ -201,15 +201,6 @@ BASELINE: dict[str, str] = {
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
-    # --- sunrise-sync -------------------------------------------------------
-    "crates/sunrise-sync/src/sse/tests.rs": (
-        "All test code: the SSE transport's `#[cfg(test)] mod tests`, moved out "
-        "of `sse.rs` unchanged, with the loopback relay it runs against. What "
-        "those tests pin -- `take_event`, `frame_for`, `binding_bytes`, the "
-        "stream buffer -- is private, which rules out `tests/` but not a child "
-        "module: splitting them along their own section markers keeps that "
-        "access and is a change of its own."
-    ),
     # --- sunrise-crypto -----------------------------------------------------
     "crates/sunrise-crypto/src/op_envelope.rs": (
         "Its implementation alone is below this package's threshold; the rest "
