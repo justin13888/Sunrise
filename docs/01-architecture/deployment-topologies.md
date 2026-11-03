@@ -42,7 +42,7 @@ Two topologies are designed. **Only T2 is built** ([ADR-0027](../11-adr/0027-v1-
 
 The wire protocol is the same in both topologies. Only the server URL and OIDC issuer change.
 
-> **No-server / LAN-only mode is not supported.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
+> **No-server / LAN-only mode is not supported.** Sync always goes through a server (managed or self-hosted). Pairing goes through the relay's rendezvous or, for a device with no relay, a file exchange (`sunrise pair offer`, `request`, `issue`, `accept`; see [`../05-sync/transports.md`](../05-sync/transports.md)); that exchange adds no way to sync without a server. Self-hosters who want LAN-only operation run the server on the LAN.
 
 ## Federation note
 
