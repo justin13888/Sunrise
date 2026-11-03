@@ -125,7 +125,7 @@ pub(crate) async fn recover(dir: &std::path::Path, rest: &[String]) -> CmdResult
     use std::io::Read as _;
 
     std::fs::create_dir_all(dir).ok();
-    sunrise_cli::recover::require_empty(dir)?;
+    sunrise_cli::recover::require_no_vault(dir)?;
 
     let url = std::env::var(livesync::ENV_SYNC_URL)
         .map_err(|_| sunrise_cli::recover::RecoverError::NoRelay)?;

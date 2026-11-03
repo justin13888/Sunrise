@@ -1866,11 +1866,12 @@ USAGE:
     sunrise bootstrap [email]    publish this vault's identity to the relay,
                                  register this device, and print the 24-word
                                  recovery code once. Write that code down
-    sunrise recover <word>...    rebuild this account in an EMPTY vault
-                                 directory from the 24-word code. Reads the
-                                 code from stdin if none is given, and signs
-                                 you in again first — the relay only releases
-                                 a recovery blob to a fresh authentication
+    sunrise recover <word>...    rebuild this account from the 24-word code,
+                                 in a directory with no vault.db and no
+                                 written vault-id. Reads the code from stdin
+                                 if none is given, and signs you in again
+                                 first — the relay only releases a recovery
+                                 blob to a fresh authentication
 
   plumbing
     sunrise focus <id>           open a focus session on a task

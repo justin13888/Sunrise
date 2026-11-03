@@ -28,6 +28,38 @@ fn a_recovering_device_registers_its_vault_id_and_cert() {
     assert_eq!((id.nickname.as_str(), id.platform.as_str()), ("n", "linux"));
 }
 
+/// The rule both clients share: a database or a marker holding anything is a
+/// vault, and nothing else is.
+#[test]
+fn a_recovery_directory_is_refused_only_for_a_database_or_a_written_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    check_recovery_directory(dir.path()).expect("an empty directory holds no vault");
+    check_recovery_directory(&dir.path().join("not-yet"))
+        .expect("a directory that does not exist yet holds no vault");
+
+    std::fs::write(dir.path().join(".DS_Store"), b"stray").unwrap();
+    std::fs::write(dir.path().join(VAULT_ID_FILE), b"").unwrap();
+    check_recovery_directory(dir.path()).expect("a stray file and an empty marker are no vault");
+
+    std::fs::write(dir.path().join(VAULT_ID_FILE), b"anything\n").unwrap();
+    let refused = check_recovery_directory(dir.path()).unwrap_err();
+    assert_eq!(refused.0, dir.path());
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "{} already holds a vault; a recovery creates one and cannot merge into another",
+            dir.path().display()
+        )
+    );
+
+    let db_only = tempfile::tempdir().unwrap();
+    std::fs::write(db_only.path().join(VAULT_DB_FILE), b"").unwrap();
+    assert!(
+        check_recovery_directory(db_only.path()).is_err(),
+        "a database is a vault at any size"
+    );
+}
+
 fn status(applied: u64, remaining: Option<u64>) -> SyncStatus {
     SyncStatus {
         state: sunrise_sync::SyncState::CatchingUp,

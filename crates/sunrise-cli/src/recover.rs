@@ -14,7 +14,7 @@
 //! printed at the end.
 //!
 //! ```text
-//!  step 1   the user points this at an empty vault directory
+//!  step 1   the user points this at a directory holding no vault
 //!  steps 3-5 sunrise_client_core::recovery::restore_identity
 //!  step 6   mint a fresh vault root in the keystore, then
 //!  step 8   sunrise_client_core::recovery::rejoin_account opens the vault from the
@@ -27,27 +27,27 @@
 //! The root is minted only once the code has opened the blob, so a mistyped
 //! code leaves nothing in the keystore.
 //!
-//! # Why the vault directory has to be empty
+//! # Why the directory has to hold no vault
 //!
 //! The identity a vault belongs to is decided when it is created and cannot be
 //! changed afterwards (`Keychain::open`'s case 4 loads what is on disk and
 //! never replaces it). Recovering *into* an existing vault would therefore
 //! either fail with `IdentityConflict` or, worse, quietly leave the old
 //! identity in place — so this refuses up front, with the directory named.
+//! `vault.db` or a non-empty `vault-id` marker is what counts as a vault, by
+//! the rule the `UniFFI` seam shares
+//! ([`sunrise_client_core::recovery::check_recovery_directory`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use sunrise_client_core::recovery::{RecoveryProgress, RestoreError};
+use sunrise_client_core::recovery::{check_recovery_directory, RecoveryProgress, RestoreError};
 use sunrise_core::{Core, CoreConfig, SystemRng};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_relay_client::RelayRecovery;
 
 use crate::i18n::strings;
 use crate::{livesync, login, vault};
-
-/// The file whose presence means "there is already a vault here".
-const VAULT_DB_FILE: &str = "vault.db";
 
 /// How long to wait for the replay of §Recovery flow step 8 to reach the
 /// vault before reporting that it did not.
@@ -63,7 +63,7 @@ const CATCH_UP_MS: u64 = 60_000;
 pub enum RecoverError {
     /// The target directory already holds a vault.
     #[error("{}", strings::recover::not_empty(&.0.display().to_string()))]
-    NotEmpty(PathBuf),
+    HoldsVault(PathBuf),
     /// No relay origin.
     #[error("{}", strings::bootstrap::needs_relay(livesync::ENV_SYNC_URL))]
     NoRelay,
@@ -130,16 +130,13 @@ pub fn code_from(args: &[String], piped: &str) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-/// Refuse a directory that already holds a vault, per §Why the vault directory
-/// has to be empty.
+/// Refuse a directory that already holds a vault, per §Why the directory has to
+/// hold no vault.
 ///
 /// # Errors
-/// [`RecoverError::NotEmpty`].
-pub fn require_empty(vault_dir: &Path) -> Result<(), RecoverError> {
-    if vault_dir.join(VAULT_DB_FILE).exists() {
-        return Err(RecoverError::NotEmpty(vault_dir.to_path_buf()));
-    }
-    Ok(())
+/// [`RecoverError::HoldsVault`].
+pub fn require_no_vault(vault_dir: &Path) -> Result<(), RecoverError> {
+    check_recovery_directory(vault_dir).map_err(|refused| RecoverError::HoldsVault(refused.0))
 }
 
 /// The relay at `base_url`, as the shared flow reads it.
@@ -422,14 +419,28 @@ mod tests {
     #[test]
     fn a_directory_that_already_holds_a_vault_is_refused_by_name() {
         let dir = tempfile::tempdir().unwrap();
-        require_empty(dir.path()).expect("an empty directory is fine");
-        std::fs::write(dir.path().join(VAULT_DB_FILE), b"not really a vault").unwrap();
-        let err = require_empty(dir.path()).unwrap_err();
-        assert!(matches!(err, RecoverError::NotEmpty(_)));
+        require_no_vault(dir.path()).expect("an empty directory is fine");
+        std::fs::write(dir.path().join("vault.db"), b"not really a vault").unwrap();
+        let err = require_no_vault(dir.path()).unwrap_err();
+        assert!(matches!(err, RecoverError::HoldsVault(_)));
         assert!(
             err.to_string().contains(&dir.path().display().to_string()),
             "the message has to name the directory the user must change: {err}"
         );
+    }
+
+    /// The marker this command line really writes, by `vault`'s own hand: the
+    /// shared rule names the file, and the two must not drift apart.
+    #[test]
+    fn a_directory_this_cli_has_keyed_is_refused_before_it_has_a_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let keystore = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stray"), b"not a vault").unwrap();
+        require_no_vault(dir.path()).expect("a stray file is not a vault");
+
+        vault::adopt(dir.path(), keystore.path(), [7; 32], &SystemRng).unwrap();
+        let err = require_no_vault(dir.path()).unwrap_err();
+        assert!(matches!(err, RecoverError::HoldsVault(_)), "{err:?}");
     }
 
     #[test]
