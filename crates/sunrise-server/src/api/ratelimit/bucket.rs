@@ -356,4 +356,104 @@ mod tests {
         let (out, _) = decide(q, None, u64::MAX / 2, 100_000_000);
         assert!(out.allowed);
     }
+
+    /// The shipped shapes, and small arbitrary ones so a short run reaches
+    /// both the drained and the oversized paths.
+    fn quota() -> impl proptest::strategy::Strategy<Value = Quota> {
+        use proptest::prelude::*;
+        prop_oneof![
+            Just(Quota::per_minute(5)),
+            Just(Quota::per_second(50)),
+            (1..=64u64, 1..=120_000u64).prop_map(|(limit, period_ms)| Quota { limit, period_ms }),
+        ]
+    }
+
+    /// A quota and a run of `(gap since the previous request, cost)` arrivals.
+    /// Gaps are mostly a few unit intervals, sometimes a whole period; costs
+    /// run from a peek to three buckets.
+    fn arrivals() -> impl proptest::strategy::Strategy<Value = (Quota, Vec<(u64, u64)>)> {
+        use proptest::prelude::*;
+        quota().prop_flat_map(|q| {
+            let unit_ms = (q.period_ms / q.limit).max(1);
+            let gap = prop_oneof![
+                3 => 0..=2 * unit_ms,
+                1 => 0..=q.period_ms,
+            ];
+            (
+                Just(q),
+                proptest::collection::vec((gap, 0..=3 * q.limit), 1..120),
+            )
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: sunrise_test_seed::proptest_cases(256),
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Over any arrival sequence, the cost admitted between any two
+        /// admissions `T` ms apart is at most `limit + limit·T/period`, plus
+        /// the debt the last of them ran up by costing more than a bucket.
+        ///
+        /// Stated multiplied through by `period`, so the bound is exact in
+        /// integers: `sum·period <= limit·period + limit·T + excess·period`.
+        #[test]
+        fn admitted_cost_in_any_window_is_within_the_gcra_bound(
+            (q, arrivals) in arrivals(),
+        ) {
+            let mut cell = None;
+            let mut now = T0;
+            // (time, cost) of each admission, in order.
+            let mut admitted: Vec<(u64, u64)> = Vec::new();
+            for (gap, cost) in arrivals {
+                now += gap;
+                let (out, next) = decide(q, cell, now, cost);
+                cell = Some(next);
+                if out.allowed {
+                    admitted.push((now, cost));
+                }
+            }
+
+            let limit = u128::from(q.limit);
+            let period = u128::from(q.period_ms);
+            for i in 0..admitted.len() {
+                let mut sum = 0u128;
+                for &(t_j, cost_j) in &admitted[i..] {
+                    sum += u128::from(cost_j);
+                    let window = u128::from(t_j - admitted[i].0);
+                    let excess = u128::from(cost_j.saturating_sub(q.limit));
+                    proptest::prop_assert!(
+                        sum * period <= limit * period + limit * window + excess * period,
+                        "{sum} units admitted in {window} ms under {q:?}",
+                    );
+                }
+            }
+        }
+
+        /// Every refusal's `retry_after_ms` is exact: the same request
+        /// waiting that long is admitted, and one waiting a millisecond less
+        /// is not.
+        #[test]
+        fn retry_after_is_exact_over_any_arrival_sequence(
+            (q, arrivals) in arrivals(),
+        ) {
+            let mut cell = None;
+            let mut now = T0;
+            for (gap, cost) in arrivals {
+                now += gap;
+                let (out, next) = decide(q, cell, now, cost);
+                if !out.allowed {
+                    let wait = out.retry_after_ms;
+                    proptest::prop_assert!(wait > 0, "a refusal names a wait");
+                    let (on_time, _) = decide(q, Some(next), now + wait, cost);
+                    proptest::prop_assert!(on_time.allowed, "admitted after {wait} ms");
+                    let (early, _) = decide(q, Some(next), now + wait - 1, cost);
+                    proptest::prop_assert!(!early.allowed, "refused at {} ms", wait - 1);
+                }
+                cell = Some(next);
+            }
+        }
+    }
 }
