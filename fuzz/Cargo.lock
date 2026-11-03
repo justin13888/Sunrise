@@ -1854,7 +1854,6 @@ name = "sunrise-pairing"
 version = "0.2.0"
 dependencies = [
  "base64",
- "blake3",
  "ciborium",
  "hex",
  "serde",
