@@ -14,7 +14,7 @@ is the decision for calendars; it amends
 
 | Integration | Direction | Status | Spec |
 |---|---|---|---|
-| Google Calendar | Read-only | **Not built.** `crates/sunrise-integrations/src/gcal.rs` implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
+| Google Calendar | Read-only | **Not built.** `crates/sunrise-integrations/src/gcal/mod.rs` implements PKCE, refresh and change detection against an injected transport, and has no consumer, no storage and no UI ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
 | Microsoft Graph (Outlook.com, Microsoft 365, Exchange Online) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`microsoft-graph.md`](./microsoft-graph.md) |
 | CalDAV (iCloud, Fastmail, Nextcloud, any RFC 4791 server) | Read-only | **Not built** ([#4](https://github.com/justin13888/Sunrise/issues/4)) | [`caldav.md`](./caldav.md) |
 | iCalendar (.ics) | Import / export | **Live on both shipping clients**, a narrow subset: `sunrise ical import` / `export`, and the macOS File menu over the seam's `import_ical` / `export_ical` | [`icalendar.md`](./icalendar.md) |
@@ -140,7 +140,7 @@ their calendar's busy treatment is `free` (drawn, never blocking) or `hidden`
 - **Deletions:** an occurrence is tombstoned only on a positive deletion signal
   from the provider (a delta entry marked removed, a `404` on re-fetch, or a
   CalDAV `sync-collection` removal). An occurrence missing from a truncated or
-  failed listing is not a deletion; `gcal.rs`'s `diff` already enforces this
+  failed listing is not a deletion; `gcal/poll.rs`'s `diff` already enforces this
   (`a_truncated_listing_suppresses_the_deletion_pass`).
 - **Liveness:** after each successful fetch a device updates its own
   `fetchers[device]` entry, at most once every 15 minutes, so liveness costs a
@@ -207,7 +207,7 @@ pub trait IntegrationProvider: Send + Sync + std::fmt::Debug {
 ```
 
 A calendar provider takes its transport and its credential source by
-injection — which is what keeps `gcal.rs` testable with no network — and
+injection — which is what keeps the `gcal` module testable with no network — and
 returns fetched occurrences. The core owns everything after that: id
 derivation, write-if-changed, tombstones and the `fetchers` update, so a new
 provider cannot get dedup wrong. The client adds only the authorization step and

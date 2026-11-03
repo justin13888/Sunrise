@@ -118,7 +118,7 @@ compound the orphan. Two accepted specs cannot both be authoritative about
 whether Google Calendar ships in v1. The recorded decision stands and **the
 matrix yields to it**.
 
-What is *not* the reason: an unimplemented protocol. `crates/sunrise-integrations/src/gcal.rs`
+What is *not* the reason: an unimplemented protocol. `crates/sunrise-integrations/src/gcal/mod.rs`
 is 850 lines of implemented, tested Google Calendar v3 read-only import — OAuth
 PKCE authorization, code exchange and refresh with the durable-refresh-token
 rule, change detection that suppresses phantom deletes on both window slide and
