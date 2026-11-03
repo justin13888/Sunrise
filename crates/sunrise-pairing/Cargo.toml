@@ -28,4 +28,6 @@ sunrise-crypto = { workspace = true }
 sunrise-error = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
+sunrise-test-seed = { workspace = true }

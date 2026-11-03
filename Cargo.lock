@@ -3493,6 +3493,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "snow",
@@ -3501,6 +3502,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
  "sunrise-error",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "zeroize",
 ]
