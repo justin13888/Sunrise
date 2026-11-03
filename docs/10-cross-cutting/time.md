@@ -163,7 +163,7 @@ reads that as `None`. Each caller then applies one policy. A sort places the
 value last (`cmp_in`, and `instant_or_last` where a caller needs one number).
 Lateness, Today and constraints compare it with nothing. A reminder is not
 scheduled, and `plan_reminders_reported`
-(`crates/sunrise-domain/src/notify.rs#plan_reminders_reported`) lists it with
+(`crates/sunrise-domain/src/notify/pipeline.rs#plan_reminders_reported`) lists it with
 the reason. A view shows the stored text (`Display`). The storage key of a
 civil value with no instant even in UTC is the nearer end of the timestamp
 range, never the epoch.

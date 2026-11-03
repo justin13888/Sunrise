@@ -249,7 +249,7 @@ Not built yet:
   does not call `schedule_notifications` and plans from
   `NotificationPreferences`, and `notifications.block_start.lead_s` has no
   reader, so the block lead is still `BLOCK_DEFAULT_LEAD_S`
-  (`crates/sunrise-domain/src/notify.rs`). One key
+  (`crates/sunrise-domain/src/notify/policy.rs`). One key
   has an engine reader: `notifications.timezone_changed.enabled`, read
   when a zone change is assessed
   (`crates/sunrise-core/src/engine/query.rs#time_zone_impact`). The
