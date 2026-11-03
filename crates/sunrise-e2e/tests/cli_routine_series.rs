@@ -46,14 +46,14 @@ fn titles(routines: &Value) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_this_and_future_edit_splits_the_series_on_both_devices() {
-    // Every `sunrise` command run with a relay opens a sync session, and
-    // this scenario runs more than ten per device inside five minutes. The
+    // Every `sunrise sync` subcommand opens a sync session, and this
+    // scenario runs more than ten per device inside five minutes. The
     // relay's default budget of 10 new sessions per device per five minutes
-    // refused the ones past it with `RATE_LIMITED` (#799). The driver retried five times within about 3 s
-    // and then waited 30 s, so a `sync --once` ran out its own 30 s budget
-    // with nothing pending and the session `Disconnected`. Rate limits are
-    // not what this scenario tests, so they are off here, as in
-    // `cli_recover_trimmed`.
+    // refused the ones past it with `RATE_LIMITED` (#799). The driver
+    // retried five times within about 3 s and then waited 30 s, so a
+    // `sync --once` ran out its own 30 s budget with nothing pending and the
+    // session `Disconnected`. Rate limits are not what this scenario tests,
+    // so they are off here, as in `cli_recover_trimmed`.
     let mut config = ServerConfig::default();
     config.limits.enabled = false;
     let (addr, relay) = spawn_relay_with(config, |s| s).await;
