@@ -500,7 +500,7 @@ pub(crate) async fn run(
             backoff.reset();
         }
         drop(core);
-        shared.set_state(end.state_after());
+        publish_session_end(&shared, &end);
         log_session_end(&end);
         if matches!(end, SessionEnd::Shutdown) {
             break;
@@ -545,6 +545,18 @@ async fn park_until_renewed(shared: &SyncShared, renewals: &mut TokenWatch) -> O
         "credential replaced after a terminal close; reconnecting"
     );
     Some(to_v)
+}
+
+/// Tell readers how the session ended: the refusal's code, when the relay
+/// named one, and the state the driver is now in.
+///
+/// The refusal is recorded before the state changes, so a reader woken by
+/// the `Disconnected` snapshot already finds the code that caused it.
+fn publish_session_end(shared: &SyncShared, end: &SessionEnd) {
+    if let SessionEnd::Refused { code, .. } = end {
+        shared.note_refusal(code);
+    }
+    shared.set_state(end.state_after());
 }
 
 /// `sync.session.closed` for every end, and `sync.session.error` for the ends
@@ -779,6 +791,9 @@ async fn session(
         Err(end) => return end,
     };
     *answered = true;
+    // The relay let this session in, so a refusal of an earlier attempt no
+    // longer explains anything a reader sees.
+    shared.clear_refusal();
     // The handshake is the first round trip this attempt makes: its
     // `Authorization` header has now reached the relay and been answered. That
     // is what the report claims, so it is made here and not at the connect,

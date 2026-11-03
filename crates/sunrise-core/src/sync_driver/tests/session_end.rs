@@ -486,6 +486,70 @@ async fn a_refused_hello_is_logged_under_the_relays_code() {
             named("failed", Some(ErrorCode::RateLimited)),
         ]
     );
+    assert_eq!(
+        shared.last_refusal(),
+        Some(ErrorCode::RateLimited.as_str()),
+        "the refusal reaches readers, not only the log (#1036)"
+    );
+    core.shutdown().await;
+}
+
+/// The recorded refusal is the latest attempt's and lasts only until a session
+/// handshakes: a reader must not blame a relay that has since let it in, and
+/// a refusal after that handshake is recorded afresh (#1036).
+#[tokio::test(start_paused = true)]
+async fn a_handshake_clears_the_recorded_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    let (factory, connects) = scripted(vec![
+        vec![refusal(ErrorCode::RateLimited)],
+        vec![hello_ack(), Ok(None)],
+        vec![refusal(ErrorCode::AuthTokenInvalid)],
+    ]);
+    let (shared, _log, _rx, driver) = drive(&core, factory);
+
+    until("the refusal after the handshake", || {
+        connects.load(AtomicOrdering::SeqCst) >= 4
+    })
+    .await;
+    shared.request_shutdown();
+    timeout(Duration::from_secs(60), driver)
+        .await
+        .expect("the driver never stopped")
+        .unwrap();
+
+    // Connect 4 got an empty script and never handshaked: it leaves connect
+    // 3's refusal in place, recorded after connect 2's handshake cleared the
+    // first one.
+    assert_eq!(
+        shared.last_refusal(),
+        Some(ErrorCode::AuthTokenInvalid.as_str())
+    );
+    core.shutdown().await;
+}
+
+/// A session that handshakes and then drops leaves no refusal behind.
+#[tokio::test(start_paused = true)]
+async fn a_handshake_after_a_refusal_leaves_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    let (factory, connects) = scripted(vec![
+        vec![refusal(ErrorCode::RateLimited)],
+        vec![hello_ack(), Ok(None)],
+    ]);
+    let (shared, _log, _rx, driver) = drive(&core, factory);
+
+    until("a connect after the handshake", || {
+        connects.load(AtomicOrdering::SeqCst) >= 3
+    })
+    .await;
+    shared.request_shutdown();
+    timeout(Duration::from_secs(60), driver)
+        .await
+        .expect("the driver never stopped")
+        .unwrap();
+
+    assert_eq!(shared.last_refusal(), None);
     core.shutdown().await;
 }
 
