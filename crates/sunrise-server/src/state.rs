@@ -104,6 +104,11 @@ pub struct ServerState {
     /// then the root of every traced operation; `docs/06-server/observability.md`
     /// §Tracing.
     pub telemetry: sunrise_telemetry::Telemetry,
+    /// The private directory [`ServerState::blobs`] started under when the
+    /// config resolves no blob root (an in-memory store with none named).
+    /// Held so it outlives every clone of the state, and removed with the
+    /// last one. Never read: holding it is the whole job.
+    _blob_scratch: Option<Arc<tempfile::TempDir>>,
 }
 
 /// Why [`ServerState::try_new`] could not build a state.
@@ -115,6 +120,10 @@ pub enum StartError {
     /// The configured push provider could not be built.
     #[error(transparent)]
     Push(#[from] crate::push::PushSetupError),
+    /// No blob root was configured or derivable, and the private temporary
+    /// one could not be created.
+    #[error("create a private blob root under the temp dir: {0}")]
+    BlobRoot(#[source] std::io::Error),
 }
 
 impl ServerState {
@@ -122,11 +131,12 @@ impl ServerState {
     ///
     /// # Panics
     ///
-    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, or the
-    /// `[push]` provider cannot be built. Use
-    /// [`ServerState::try_new`] where that is a condition to report rather than
-    /// a reason to abort; the binary entrypoint does. An in-memory store — the
-    /// `sqlite_path: None` case every test takes — has nothing to fail on.
+    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, the
+    /// `[push]` provider cannot be built, or a private blob root is needed and
+    /// the temp dir refuses it. Use [`ServerState::try_new`] where that is a
+    /// condition to report rather than a reason to abort; the binary
+    /// entrypoint does. An in-memory store — the `sqlite_path: None` case
+    /// every test takes — has only the temp dir to fail on.
     #[must_use]
     pub fn new(config: ServerConfig) -> Self {
         Self::try_new(config).expect("open account store")
@@ -144,7 +154,7 @@ impl ServerState {
         )?;
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
-        Ok(Self::assemble(config, clock, Arc::new(store), push))
+        Self::assemble(config, clock, Arc::new(store), push)
     }
 
     fn assemble(
@@ -152,7 +162,7 @@ impl ServerState {
         clock: Arc<dyn Clock>,
         store: Arc<dyn MetadataStore>,
         push: crate::push::Dispatcher,
-    ) -> Self {
+    ) -> Result<Self, StartError> {
         // An issuer beside an explicit `require_device_sig = false` is the one
         // setting that leaves a multi-tenant relay accepting a bearer alone.
         // Announced here because every constructor -- the binary's `try_new`
@@ -165,13 +175,21 @@ impl ServerState {
                  signing keeps writing"
             );
         }
-        let blob_root = config
-            .blob_root
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("sunrise-self-host-blobs"));
+        // Never one fixed path in the shared temp dir: another user's
+        // directory there refuses writes, and two servers would share a tree.
+        let (blob_root, blob_scratch) = match config.resolved_blob_root() {
+            Some(root) => (root, None),
+            None => {
+                let dir = tempfile::Builder::new()
+                    .prefix("sunrise-blobs-")
+                    .tempdir()
+                    .map_err(StartError::BlobRoot)?;
+                (dir.path().to_path_buf(), Some(Arc::new(dir)))
+            }
+        };
         let metrics = Metrics::new();
         process_metrics(&metrics, clock.now_ms());
-        Self {
+        Ok(Self {
             config: Arc::new(config),
             relay: RelayHub::new(),
             clock,
@@ -187,7 +205,8 @@ impl ServerState {
             push,
             pairing: crate::api::pairing::Rendezvous::new(),
             telemetry: sunrise_telemetry::Telemetry::disabled(),
-        }
+            _blob_scratch: blob_scratch,
+        })
     }
 
     /// Trace through `telemetry`.
@@ -312,7 +331,7 @@ impl ServerState {
         .expect("open account store");
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))
             .expect("build push provider");
-        Self::assemble(config, clock, Arc::new(store), push)
+        Self::assemble(config, clock, Arc::new(store), push).expect("create the blob root")
     }
 }
 
@@ -416,5 +435,40 @@ mod tests {
         );
         assert!(ServerState::try_new(config(u64::MAX)).is_err());
         assert!(ServerState::try_new(config(max)).is_ok());
+    }
+
+    /// With no blob root and no database file, each state writes under a
+    /// private directory of its own, never one fixed path two servers or two
+    /// users on the machine would share, and the directory goes with the
+    /// state's last clone. With a database file, blobs go beside it.
+    #[tokio::test]
+    async fn an_unconfigured_blob_root_is_private_to_the_state() {
+        let a = ServerState::new(ServerConfig::default());
+        let b = ServerState::new(ServerConfig::default());
+        let (root_a, root_b) = (
+            std::path::PathBuf::from(a.blobs.location()),
+            std::path::PathBuf::from(b.blobs.location()),
+        );
+        assert_ne!(root_a, root_b);
+        assert!(root_a.starts_with(std::env::temp_dir()));
+        assert_ne!(root_a, std::env::temp_dir().join("sunrise-self-host-blobs"));
+        a.blobs.probe().await.unwrap();
+        assert!(root_a.is_dir());
+
+        let clone = a.clone();
+        drop(a);
+        assert!(root_a.is_dir(), "a live clone keeps the directory");
+        drop(clone);
+        assert!(!root_a.exists(), "the last clone removes the directory");
+
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = ServerState::new(ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            ..ServerConfig::default()
+        });
+        assert_eq!(
+            on_disk.blobs.location(),
+            dir.path().join("blobs").display().to_string()
+        );
     }
 }
