@@ -202,11 +202,6 @@ BASELINE: dict[str, str] = {
         "must not re-derive numbers other folds own."
     ),
     # --- sunrise-server -----------------------------------------------------
-    "crates/sunrise-server/src/api/sync/suite.rs": (
-        "The sync test suite, moved whole when api/sync.rs was split so the "
-        "split's diff carried no test changes. Everything below its module doc "
-        "is one `#[cfg(test)] mod tests`: it is the whole suite in one file."
-    ),
     "crates/sunrise-server/src/api/devices.rs": (
         "Its implementation alone is below this package's threshold. "
         "Deliberately not split: every symbol serves the five `/devices*` "

@@ -1255,9 +1255,9 @@ class Symbols(GateCase):
 
     def test_a_mod_is_not_a_citation_target(self):
         # `mod` left the alternation for the reason `impl` did, and the
-        # measurement is worse rather than better: `mod tests` in
-        # `crates/sunrise-server/src/api/sync/suite.rs` spans lines 9 to 1720
-        # of a 1720-line file -- 99.5%, against `impl Engine`'s 97.7% -- and
+        # measurement is worse rather than better: `mod tests` in the sync
+        # suite (`api/sync/suite.rs`, before it became a directory) spanned
+        # lines 9 to 1720 of a 1720-line file -- 99.5%, against `impl Engine`'s 97.7% -- and
         # `mod tests` at the tail of a file is this repository's dominant
         # idiom, not an edge shape. Containment against a span that size
         # certifies nothing the line-existence check did not already certify,
