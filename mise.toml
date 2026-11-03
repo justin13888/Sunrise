@@ -93,6 +93,7 @@ run = "bun run typecheck"
 # a dependency's types. Pre-push and CI always run `typecheck`.
 [tasks.typecheck-staged]
 description = "Type-check when a staged change, deletions included, touches a file tsc reads (the pre-commit hook's)"
+shell = "bash -c"
 run = '''
 set -euo pipefail
 staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
