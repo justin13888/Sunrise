@@ -537,7 +537,10 @@ fn a_storage_failure_during_replay_leaves_the_op_unstamped_and_the_replay_goes_o
             ],
             "the failed op keeps its stamp, and the replay went on to the next"
         );
-        assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+        assert!(matches!(
+            eb.query(&dbb, Query::EntityById(task)),
+            Err(EngineError::NotFound(_))
+        ));
     }
 
     // The next open, with the disk healthy, applies it.
@@ -592,7 +595,10 @@ fn a_parked_op_refused_on_replay_stays_parked_with_its_reason_updated() {
             i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
         )]
     );
-    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    assert!(matches!(
+        eb.query(&dbb, Query::EntityById(task)),
+        Err(EngineError::NotFound(_))
+    ));
 }
 
 /// Only an unknown *name* parks. A family this build reads, with a payload
@@ -807,7 +813,10 @@ fn a_fingerprint_mismatch_retried_against_the_same_registry_stays_parked() {
         parked,
         "still parked, reason unchanged, stamped by this build"
     );
-    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    assert!(matches!(
+        eb.query(&dbb, Query::EntityById(task)),
+        Err(EngineError::NotFound(_))
+    ));
 }
 
 /// A retry moves the reason to the cause it finds now (ADR-0045 §4). An op an
@@ -835,7 +844,10 @@ fn a_replay_reparks_for_the_fingerprint_or_releases_once_the_registry_agrees() {
             i64::from(DOC_SCHEMA_V)
         )]
     );
-    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    assert!(matches!(
+        eb.query(&dbb, Query::EntityById(task)),
+        Err(EngineError::NotFound(_))
+    ));
 
     let (_ea, eb, mut dbb, task, env) = schema_bound_create(current, doc_schema_fp_prefix(current));
     let op = decode_envelope(&env).unwrap();

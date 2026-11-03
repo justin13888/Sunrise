@@ -191,7 +191,10 @@ fn the_span_comes_from_the_query_then_the_device_preference() {
                 },
             )
             .unwrap_err();
-        assert!(matches!(err, EngineError::Invalid(_)), "{bad}: {err:?}");
+        assert_invalid(
+            &err,
+            &format!("an Upcoming span is 7, 14 or 30 days, not {bad}"),
+        );
     }
 }
 

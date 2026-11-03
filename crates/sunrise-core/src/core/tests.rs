@@ -482,7 +482,7 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
     );
     assert!(matches!(
         core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
-        Err(CoreError::Engine(EngineError::Invalid(_)))
+        Err(CoreError::Engine(EngineError::Invalid(why))) if why == "snapshot: not canonical CBOR"
     ));
     assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
     core.close().await.unwrap();
@@ -1535,7 +1535,10 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     let same = core.on_time_zone_changed("Asia/Kolkata").unwrap();
     assert!(!same.changed);
     assert_eq!(same.affected_tasks, 0);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 
     // The same zone under an alias is no change either: no event, nothing
     // counted, so no spurious notification.
@@ -1543,7 +1546,10 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     assert_eq!(alias.previous, "Asia/Kolkata");
     assert!(!alias.changed);
     assert_eq!(alias.affected_tasks, 0);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     core.on_time_zone_changed("Asia/Kolkata").unwrap();
 
     // A name the tzdb does not know is refused, with a typed error, and
@@ -1584,7 +1590,10 @@ async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
     assert_eq!(first.previous, "UTC");
     assert!(!first.changed);
     assert!(!first.notify);
-    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     core.close().await.unwrap();
 }
 

@@ -213,7 +213,10 @@ fn a_forked_chain_is_kept_as_evidence_and_never_refused() {
     );
     assert_eq!(integrity(&eb, &dbb).forks, 2);
     assert_eq!(read_task_t(&eb, &dbb, kept).title, "kept");
-    assert!(eb.query(&dbb, Query::EntityById(forked)).is_err());
+    assert!(matches!(
+        eb.query(&dbb, Query::EntityById(forked)),
+        Err(EngineError::NotFound(_))
+    ));
 
     // The evidence is a proof: the kept envelope verifies under A's key.
     let (held, other_hash, kept_env): (Vec<u8>, Vec<u8>, Vec<u8>) = dbb

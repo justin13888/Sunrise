@@ -580,9 +580,10 @@ fn a_revoked_device_cannot_rotate_a_stream_key() {
             },
         )
         .expect_err("a revoked device must not mint an epoch every honest peer adopts");
-    assert!(
-        matches!(err, EngineError::Invalid(_)),
-        "refused as a policy violation, not a storage failure: {err:?}"
+    // Refused as a policy violation, not a storage failure.
+    assert_invalid(
+        &err,
+        "this device is revoked and cannot rotate a stream key",
     );
 
     assert_eq!(

@@ -1494,7 +1494,14 @@ proptest! {
         let refused = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
             crate::engine::merge::join_stream_state(tx, &bad)
         });
-        prop_assert!(matches!(refused, Err(EngineError::Invalid(_))), "{:?}", refused);
+        // Which of the join's shape checks refuses depends on where the
+        // corruption landed, so the reason is pinned to the join's own
+        // checks rather than to one of them.
+        prop_assert!(
+            matches!(&refused, Err(EngineError::Invalid(why)) if why.starts_with("snapshot doc_state: ")),
+            "{:?}",
+            refused
+        );
         prop_assert_eq!(every_row(&rdb), before);
         let unharmed = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
             crate::engine::merge::join_stream_state(tx, &doc)

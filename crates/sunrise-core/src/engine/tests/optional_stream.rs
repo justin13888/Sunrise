@@ -587,7 +587,12 @@ fn a_stream_cannot_be_deleted_into_itself_or_a_tombstone() {
     let b = stream(&e, &mut db, "b");
     delete(&e, &mut db, b, Disposition::Detach);
     let before = op_count(&db);
-    for to in [a, b, EntityRef::new(EntityKind::Stream, [0x66; 16])] {
+    let missing = EntityRef::new(EntityKind::Stream, [0x66; 16]);
+    for (to, why) in [
+        (a, "cannot be re-homed into itself"),
+        (b, "is not a live stream to move into"),
+        (missing, "is not a live stream to move into"),
+    ] {
         let res = e.apply(
             &mut db,
             Command::DeleteStream {
@@ -595,7 +600,7 @@ fn a_stream_cannot_be_deleted_into_itself_or_a_tombstone() {
                 disposition: Disposition::MoveTo(to),
             },
         );
-        assert!(matches!(res, Err(EngineError::Invalid(_))), "{to}: {res:?}");
+        invalid(res, why);
     }
     assert_eq!(op_count(&db), before);
     assert!(!stream_row(&db, a).deleted);

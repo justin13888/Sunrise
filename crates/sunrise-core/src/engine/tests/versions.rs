@@ -531,7 +531,7 @@ fn a_failed_rebuild_at_open_is_tried_again() {
             rusqlite::params![&env[..env.len() - 1], &task.bytes()[..]],
         )
         .unwrap();
-    assert!(e.rebuild_if_stale(&mut db).is_err());
+    invalid(e.rebuild_if_stale(&mut db), "does not decode");
     let n: i64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM projection_rebuild", [], |r| r.get(0))

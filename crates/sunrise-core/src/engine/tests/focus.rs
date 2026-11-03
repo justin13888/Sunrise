@@ -313,7 +313,7 @@ fn end_focus_freezes_the_measurement_and_the_session_is_then_immutable() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "has already ended");
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn ending_an_unknown_session_is_not_found() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "expected FocusSession, got Task");
 }
 
 #[test]

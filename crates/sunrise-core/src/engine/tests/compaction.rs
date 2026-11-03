@@ -1068,27 +1068,33 @@ fn a_forged_foreign_or_divergent_snapshot_is_refused() {
     for i in [8, record.len() / 2, record.len() - 1] {
         let mut bad = record.clone();
         bad[i] ^= 0x01;
-        assert!(
-            matches!(
-                ec.apply_snapshot(&mut dbc, &bad),
-                Err(EngineError::Invalid(_))
-            ),
-            "a flipped byte at {i} is caught"
-        );
+        // Caught at {i} by the signature, before anything else reads it.
+        invalid(ec.apply_snapshot(&mut dbc, &bad), "snapshot: bad signature");
     }
 
     // Another account's device: its cert verifies under no identity here.
-    let stranger = engine_seeded([0x77; 32], [9; 32], Arc::clone(&c));
+    // Every `engine_seeded` keychain shares one test identity, so the
+    // stranger opens its own, as a fresh account's first device does.
     let mut dbs = db_root([0x77; 32]);
+    let kc = Keychain::open(
+        &mut dbs,
+        VaultRootKey::from_bytes([0x77; 32]),
+        c.as_ref(),
+        &*seeded_rng(),
+        &crate::unlock::IdentitySeed::Own,
+    )
+    .unwrap();
+    let stranger = Engine::from_clock(c.clone(), seeded_rng(), Arc::new(kc));
+    stranger.ensure_base_epochs(&mut dbs).unwrap();
     new_task(&stranger, &mut dbs, "theirs");
     let theirs = stranger
         .write_stream_snapshot(&mut dbs, &INBOX)
         .unwrap()
         .unwrap();
-    assert!(matches!(
+    invalid(
         ec.apply_snapshot(&mut dbc, &theirs),
-        Err(EngineError::Invalid(_))
-    ));
+        "snapshot: the writer's cert verifies under no identity here",
+    );
 
     // B holds a different op at A's seq 2: the same key signing another log.
     let ea2 = engine_seeded(ROOT, [1; 32], Arc::clone(&c));
@@ -1096,10 +1102,10 @@ fn a_forged_foreign_or_divergent_snapshot_is_refused() {
     new_task(&ea2, &mut dba2, "one");
     new_task(&ea2, &mut dba2, "not two");
     relay(&dba2, &eb, &mut dbb);
-    assert!(matches!(
+    invalid(
         eb.apply_snapshot(&mut dbb, &record),
-        Err(EngineError::Invalid(_))
-    ));
+        "snapshot: its frontier disagrees with this replica's chain",
+    );
     assert!(projection(&dbc).is_empty(), "nothing a refusal wrote");
 }
 
