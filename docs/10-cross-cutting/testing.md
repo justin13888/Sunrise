@@ -927,7 +927,7 @@ What is wired today, in one place:
 
 | Check | Where | Runs on |
 |---|---|---|
-| Nine fuzz targets, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
+| Every fuzz target, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
 | The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
 | No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
 | External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
@@ -955,8 +955,8 @@ to look for exactly those. `test_constant_time_gate.py` plants a `==` over a
 
 ### Continuous fuzz targets
 
-`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All nine
-targets are built and run.** Each drives a workspace crate through its
+`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **Every
+target is built and run.** Each drives a workspace crate through its
 ordinary public API — nothing was widened to `pub` for the fuzzer's benefit,
 because a surface only a fuzzer can reach is one no attacker reaches either.
 
@@ -971,6 +971,7 @@ because a surface only a fuzzer can reach is one no attacker reaches either.
 | `identity_transition` | identity-transition chain verify (`sunrise-crypto`, ADR-0037): canonical body decode, `verify_identity_transition`, `verify_successor_signature`. | Nothing but the frozen transition verifies under the frozen outgoing identity, and nothing but the frozen body and `prev_sig` passes the successor check for a body naming the frozen successor key (a body naming another key passes it whenever that key signed it, which is all the check claims); full verification implies the successor check; the signature pair never verifies swapped. |
 | `device_cert` | device cert decode + verify (`sunrise-crypto`): `from_cbor`, `verify`, `verify_binding`. | Nothing but the frozen cert verifies under the frozen identity; `verify_binding` holds only for the identity that signed; `from_cbor(to_cbor(c)) == c`, signed bytes included. |
 | `key_envelope` | key-envelope / Stream-key unwrap (`sunrise-crypto`, ADR-0024): `hpke_open` under the `key_envelope` info, and `unwrap_stream_key` under the vault root. | Only the frozen blob opens on each path, to the frozen Stream key, and never for another `(stream_id, epoch)`. |
+| `pairing_messages` | the five pairing decoders that read the other device's or a camera's bytes (`sunrise-pairing`): `decode_pairing_offer`, `decode_pairing_request`, `decode_pairing_grant`, `decode_pairing_payload`, and `decode_qr_payload` on UTF-8 input. Every input goes through all five. | Whatever a decoder accepts, its encoder encodes, the encoding decodes to the same value, and encoding that yields the same bytes. Byte identity with the input is not asserted: each decoder skips unknown keys and none demands canonical input. |
 
 No target drives `sunrise-http-sig` (`header_sig_v2`). A pull request touching
 it still runs the fuzz plan, which names no target for it; the external review
@@ -997,7 +998,7 @@ nothing there is built by an ordinary workspace command.
 
 ```sh
 cargo install cargo-fuzz --locked   # once
-mise run fuzz-build                 # compile all nine
+mise run fuzz-build                 # compile every target
 mise run fuzz-smoke                 # 10s each against the committed seeds
 mise run fuzz op_envelope 3600      # one target, one hour
 ```
@@ -1011,7 +1012,7 @@ flag and reads none of the three.
 Being a separate workspace means every gate has to name the manifest to reach
 it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
 `mise run rust-doc` each run twice — once over the workspace, once over
-`fuzz/Cargo.toml` — so the nine harnesses are formatted, linted and
+`fuzz/Cargo.toml` — so the harnesses are formatted, linted and
 rustdoc-checked on the same terms as everything else. CI's `rust` job carries
 the clippy and rustdoc halves as steps of their own, on the pinned stable: only
 `cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
@@ -1047,6 +1048,7 @@ Every seed comes from something the tree already had:
 | `device_cert` | `frozen` | `identity_transition::device_cert::ENCODED`, byte for byte, signed by the same frozen identity the harness verifies against. |
 | `op_envelope`, `device_cert` | `regression_deep_nest` | The out-of-memory reproducers of the third finding (below), as the nightly uploaded them. Not shapes anything emits — each is a deep, unclosed nest of arrays, maps and tags — kept so every run starts at the nesting bound. |
 | `key_envelope` | `hpke_sealed`, `wrapped` | `key_envelope::SEALED` and `at_rest::wrapped_stream_key::WRAPPED`, byte for byte. Each opens under its own path's frozen key and context, and is refused by the other path. |
+| `pairing_messages` | `offer`, `offer_rotated`, `request`, `grant`, `payload`, `qr.json` | Each message type's own encoder over the frozen constants in `crates/sunrise-crypto-test-vectors`: the `identity_transition` identity (and, for `offer_rotated`, its successor in force over the original genesis), the frozen device's `DEVICE_SIGNING_PUBLIC`, `device_cert::DEVICE_ID` and `device_cert::ENCODED`, the `key_envelope` Stream key and recipient, and the `at_rest` vault root. Every seed decodes, so the fuzzer starts past the id-against-key checks rather than at them. `qr.json` is `encode_qr_payload` over `MAGIC_V1_HEX` and the first `EMAIL_HASH_VECTORS` entry. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
 seed corpus. That has happened three times.
@@ -1108,7 +1110,10 @@ wires a narrower version of it:
   targets,
   `crates/sunrise-wire-protocol/` `wire_frame`,
   `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
-  seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` all nine.
+  seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` every target.
+  No path maps to `pairing_messages` yet, so a change to
+  `crates/sunrise-pairing/` reaches it only nightly
+  ([#992](https://github.com/justin13888/Sunrise/issues/992)).
   `fuzz-pr` then runs each named target for 120 seconds from the committed
   seeds, and a pull request touching none of those paths runs no fuzzer at
   all. A finding uploads its reproducer, and the reproducer joins
@@ -1123,7 +1128,7 @@ wires a narrower version of it:
   budget is spent only where the diff is, and the corpus-building search stays
   in the nightly job.
 - **Every pull request — still not wired.** The path filter is the point:
-  nine targets at two minutes each, on every pull request, is a runner-hour
+  every target at two minutes each, on every pull request, is a runner-hour
   spent mostly re-reading seeds for changes that touch no decoder.
 
 ### Quarterly external pen test
