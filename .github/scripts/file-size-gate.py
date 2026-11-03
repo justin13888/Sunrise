@@ -235,12 +235,6 @@ BASELINE: dict[str, str] = {
         "`Core`s and waiting on convergence. Test-harness code; not audited "
         "for a split."
     ),
-    # --- sunrise-integrations -----------------------------------------------
-    "crates/sunrise-integrations/src/ical.rs": (
-        "Its implementation alone is below this package's threshold; the rest "
-        "is tests. The iCalendar syntax layer only; mapping and "
-        "the vault driver are already separate modules."
-    ),
     # --- sunrise-log --------------------------------------------------------
     "crates/sunrise-log/tests/event_catalog.rs": (
         "An integration test: the event catalogue and log-field vocabulary "

@@ -1,6 +1,6 @@
 //! The iCalendar importer and exporter against a **real vault**.
 //!
-//! The unit tests beside `ical.rs` and `ical_map.rs` pin the syntax and the
+//! The unit tests beside the `ical` module and `ical_map.rs` pin the syntax and the
 //! mapping with no storage in the way. This file is the other half: it opens a
 //! `Core` on a temporary `SQLCipher` vault, drives the same fixtures a user's
 //! calendar client would hand it, and reads the Blocks back out through the
