@@ -28,18 +28,13 @@ pub struct ReplayFrame {
 pub type Replay = (Vec<ReplayFrame>, Vec<CursorGap>);
 
 impl Store {
-    /// Every retained frame this subscriber's cursors do not already cover, in
-    /// arrival order, plus the gaps retention has made unrecoverable.
-    ///
-    /// Filtering matches the ring's rule exactly: a frame is skipped only when
-    /// it has heads and *every* head is at or below the matching cursor. A
-    /// frame whose heads could not be read is never skipped, because
-    /// over-delivery costs one idempotent no-op and under-delivery is data
-    /// loss.
+    /// [`relay_replay_after`](Self::relay_replay_after) from id 0, each frame
+    /// reduced to its bytes: the shape the relay log's own tests assert on.
     ///
     /// # Errors
     /// [`StoreError::Sqlite`] if any read fails.
-    pub fn relay_replay(
+    #[cfg(test)]
+    pub(crate) fn relay_replay(
         &self,
         key: StreamKey,
         cursors: &HashMap<[u8; 16], u64>,
@@ -48,8 +43,15 @@ impl Store {
         Ok((frames.into_iter().map(|f| f.bytes).collect(), gaps))
     }
 
-    /// [`relay_replay`](Self::relay_replay), keeping each frame's durable id and
-    /// resuming after `after_id`.
+    /// Every retained frame this subscriber has not already received, in
+    /// arrival order, with its durable id, plus the gaps retention has made
+    /// unrecoverable.
+    ///
+    /// Filtering by cursor matches the ring's rule exactly: a frame is skipped
+    /// only when it has heads and *every* head is at or below the matching
+    /// cursor. A frame whose heads could not be read is never skipped, because
+    /// over-delivery costs one idempotent no-op and under-delivery is data
+    /// loss.
     ///
     /// The id is `relay_frames.id`: durable, per-channel and monotonic in
     /// arrival order, which is exactly what an SSE `id:` field has to be for

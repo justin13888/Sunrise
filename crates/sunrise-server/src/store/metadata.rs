@@ -30,7 +30,7 @@ use super::{
     RetiredRecoveryBlob, Store, StoreError, StoreStats,
 };
 use crate::auth::Subject;
-use crate::relay::{CursorGap, FrameHead, StreamKey};
+use crate::relay::{FrameHead, StreamKey};
 use crate::relay_log::{Appended, DurableCaps, Replay};
 
 /// Why a [`MetadataStore`] call failed.
@@ -79,7 +79,7 @@ impl From<StoreError> for MetadataError {
 ///   tokens in the same unit of work, and is scoped to the caller's account.
 /// - **The relay log is ordered and bounded per channel.** Replay returns
 ///   frames in append order; retention evicts oldest first and reports what a
-///   cursor can no longer recover as a [`CursorGap`].
+///   cursor can no longer recover as a [`CursorGap`](crate::relay::CursorGap).
 /// - **Erasure is whole.** [`erase_account`](Self::erase_account) removes the
 ///   account's rows and its relay frames together, and nothing of another
 ///   account's.
@@ -319,12 +319,6 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         now_ms: u64,
         caps: DurableCaps,
     ) -> Result<Appended, MetadataError>;
-    /// [`Store::relay_replay`].
-    async fn relay_replay(
-        &self,
-        key: StreamKey,
-        cursors: &HashMap<[u8; 16], u64>,
-    ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), MetadataError>;
     /// [`Store::relay_replay_after`].
     async fn relay_replay_after(
         &self,
@@ -663,13 +657,6 @@ impl MetadataStore for Store {
         Ok(Self::relay_append(
             self, key, bytes, heads, n_ops, ops_h, batch_id, now_ms, caps,
         )?)
-    }
-    async fn relay_replay(
-        &self,
-        key: StreamKey,
-        cursors: &HashMap<[u8; 16], u64>,
-    ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), MetadataError> {
-        Ok(Self::relay_replay(self, key, cursors)?)
     }
     async fn relay_replay_after(
         &self,

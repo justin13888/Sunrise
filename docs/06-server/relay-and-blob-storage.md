@@ -267,7 +267,7 @@ step 3b before any commit.
 ## Op read path (on subscribe / catch-up — implemented)
 
 1. Receiver sends `Subscribe` with per-originating-device cursors.
-2. Server calls `Store::relay_replay` on the channel, which selects the retained
+2. Server calls `Store::relay_replay_after` on the channel, which selects the retained
    frames whose heads are not already covered and reports a `CursorGap` for any
    device whose cursor sits below `relay_evicted.evicted_through`.
 3. Server streams the retained frames back verbatim; a gap becomes a typed
