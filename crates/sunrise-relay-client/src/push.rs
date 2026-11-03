@@ -18,7 +18,7 @@
 //! the reason `sign_with` takes one: `D_S_priv` lives wrapped inside the vault
 //! and never leaves it, so the vault signs on this function's behalf.
 
-use crate::api::{self, Credential, RegisterPushTokenParams, SecretString};
+use crate::api::{self, RegisterPushTokenParams};
 
 /// The route this module calls, exactly as the relay sees it in the request
 /// target the signature covers.
@@ -114,13 +114,8 @@ pub async fn register_push_token(
     let signature = sunrise_http_sig::sign_with(sign, "POST", PUSH_TOKENS_PATH, &date, Some(&body))
         .map_err(|e| PushTokenError::Request(e.to_string()))?;
 
-    let client = api::Client::new(base_url)
-        .map_err(|e| PushTokenError::Request(e.to_string()))?
-        .with_credential(
-            "AccountToken",
-            Credential::Bearer(SecretString::from(bearer.to_owned())),
-        );
-    client
+    crate::client(base_url, bearer)
+        .map_err(PushTokenError::Request)?
         .register_push_token(
             RegisterPushTokenParams::default()
                 .x_sunrise_device(device.to_owned())

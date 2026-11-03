@@ -17,7 +17,6 @@
 
 use crate::account::{encode_public_key, encode_recovery_blob, AccountCreateRequest};
 use crate::api;
-use crate::api::SecretString;
 
 /// What a device needs to introduce itself.
 #[derive(Debug, Clone)]
@@ -115,16 +114,7 @@ pub async fn bootstrap(
     account: AccountCreateRequest,
     device: DeviceIdentity,
 ) -> Result<BootstrapOutcome, BootstrapError> {
-    // `AccountToken` is the scheme's name in `components.securitySchemes`,
-    // which the generated client matches each operation's `security`
-    // requirement against. A missing required credential is a
-    // request-construction error rather than a silent 401.
-    let client = api::Client::new(base_url)
-        .map_err(|e| BootstrapError::Account(e.to_string()))?
-        .with_credential(
-            "AccountToken",
-            api::Credential::Bearer(SecretString::from(bearer.to_owned())),
-        );
+    let client = crate::client(base_url, bearer).map_err(BootstrapError::Account)?;
 
     // `None` for the per-operation parameters: this is the bootstrap
     // exemption, so the three device-binding headers are deliberately absent.
@@ -182,12 +172,7 @@ pub async fn register_device(
     bearer: &str,
     device: DeviceIdentity,
 ) -> Result<String, BootstrapError> {
-    let client = api::Client::new(base_url)
-        .map_err(|e| BootstrapError::Device(e.to_string()))?
-        .with_credential(
-            "AccountToken",
-            api::Credential::Bearer(SecretString::from(bearer.to_owned())),
-        );
+    let client = crate::client(base_url, bearer).map_err(BootstrapError::Device)?;
 
     let registered = client
         .register_device(
