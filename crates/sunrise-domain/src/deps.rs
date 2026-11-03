@@ -487,7 +487,7 @@ mod tests {
 
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
-            cases: 256,
+            cases: sunrise_test_seed::proptest_cases(256),
             ..proptest::prelude::ProptestConfig::default()
         })]
 

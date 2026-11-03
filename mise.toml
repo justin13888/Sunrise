@@ -87,6 +87,21 @@ run = "bun run ci"
 description = "Type-check every workspace package"
 run = "bun run typecheck"
 
+# The pre-commit hook's typecheck. It decides here rather than with a lefthook
+# `glob`, which sees only added, copied, modified and renamed files: deleting
+# a module another one imports must still run `tsc`. `bun.lock` alone can move
+# a dependency's types. Pre-push and CI always run `typecheck`.
+[tasks.typecheck-staged]
+description = "Type-check when a staged change, deletions included, touches a file tsc reads (the pre-commit hook's)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+if grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$|^bun\.lock$' <<<"$staged"; then
+  mise run typecheck
+fi
+'''
+
 [tasks.test]
 description = "Run the JS/TS test suite once"
 run = "bun run test:run"
@@ -228,12 +243,14 @@ run = "cargo test --workspace --all-targets"
 
 # The CLI end to end (`docs/10-cross-cutting/testing.md` §The CLI end to end):
 # a real relay and two vaults driven by the real `sunrise` binary. The binary is
-# built first so the scenarios never run a stale one; `--include-ignored` so
+# built first so the scenarios never run a stale one, with `test-cheap-kdf` so
+# its recovery blobs use the cheap Argon2id set the scenarios' own process
+# does (`src/cli.rs` builds it the same way); `--include-ignored` so
 # this task runs every scenario these files hold, whatever a later one marks.
 [tasks.e2e-cli]
 description = "Two CLI vaults against a real relay, through the real sunrise binary"
 run = [
-  "cargo build -p sunrise-cli --bin sunrise",
+  "cargo build -p sunrise-cli --bin sunrise --features test-cheap-kdf",
   "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller --test cli_pair_relay --test cli_day_schedule --test cli_snapshot_catchup --test cli_recover_trimmed --test cli_recover_rotated --test cli_optional_stream --test cli_lateness --test cli_triage --test cli_routine_series --test cli_notifications --test cli_settle_outage -- --include-ignored",
 ]
 

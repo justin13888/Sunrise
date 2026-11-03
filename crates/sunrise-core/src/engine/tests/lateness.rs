@@ -462,7 +462,7 @@ const ZONES: [&str; 4] = [
 
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 48,
+        cases: sunrise_test_seed::proptest_cases(48),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/lateness.txt",

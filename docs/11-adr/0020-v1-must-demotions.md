@@ -149,7 +149,7 @@ so a clear is distinguishable from a no-op — on `TaskPatch`. It persists to
 `tasks.body`, it is indexed by the `search_idx` FTS5 table's `body` column, and it
 crosses the UniFFI seam as `set_body` / `clear_body` on the task-edit DTO
 (`setBody` / `clearBody` in generated Swift), which
-`crates/sunrise-core-bindings/src/dto.rs` folds back into a `TaskPatch` through
+`crates/sunrise-core-bindings/src/dto/task.rs` folds back into a `TaskPatch` through
 `patch_field`. A rich-text editor over that field is being built on macOS now.
 Notes-attached-to-a-task is a real v1 capability.
 

@@ -390,7 +390,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
         )
 }
 
-/// 256 cases by default, matching `sunrise-log`'s property test. Each case
+/// 256 cases in CI, matching `sunrise-log`'s property test. Each case
 /// runs four Ed25519 signatures and four verifies plus up to five
 /// XChaCha20-Poly1305 passes over as much as 2 KiB — the expensive part — and
 /// measures at roughly 0.2 s for the file on the developer profile, because
@@ -400,18 +400,15 @@ fn case_strategy() -> impl Strategy<Value = Case> {
 /// enough that both AEAD modes, both payload-length classes, every
 /// unknown-field count and all ten tamper targets are each hit tens of times.
 ///
-/// `PROPTEST_CASES` still wins. Hard-coding the count into the struct literal
-/// would override the environment variable `ProptestConfig::default()` reads,
-/// removing the dial that lets someone widen this run without editing the
-/// file; 256 is the fallback, not the ceiling. The deep sweep of this surface
-/// is the `op_envelope` cargo-fuzz target, not this test.
+/// The count goes through `sunrise_test_seed::proptest_cases`, so
+/// `PROPTEST_CASES` still wins: a bare literal in the struct would override
+/// the environment variable `ProptestConfig::default()` reads, removing the
+/// dial that lets someone widen this run without editing the file. The deep
+/// sweep of this surface is the `op_envelope` cargo-fuzz target, not this
+/// test.
 fn config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(256);
     ProptestConfig {
-        cases,
+        cases: sunrise_test_seed::proptest_cases(256),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // `Direct`, not the `SourceParallel` default: nothing above a `tests/`
         // file holds a `lib.rs` or `main.rs`, so the default warns and drops the

@@ -409,7 +409,7 @@ mod tests {
     proptest! {
         // `Direct`, the shape docs/10-cross-cutting/testing.md section 2 names.
         #![proptest_config(ProptestConfig {
-            cases: 2048,
+            cases: sunrise_test_seed::proptest_cases(2048),
             rng_seed: sunrise_test_seed::proptest_rng_seed(),
             failure_persistence: Some(Box::new(
                 proptest::test_runner::FileFailurePersistence::Direct(

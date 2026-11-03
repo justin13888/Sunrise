@@ -12,6 +12,12 @@
 beneath the table. Nothing else in this ADR changes. See the **Amendment** at
 the end of this file.
 
+**Amended (2026-11):** the `Transport` trait is no longer the three-method
+pipe the Consequences describe, and the account and blob routes are reached
+through a hand-written client rather than a generated one. Neither changes the
+decision; both are recorded in the second **Amendment** at the end of this
+file.
+
 ## Context
 
 `/sync` is the only surface ops travel over. Everything else the relay serves is
@@ -119,6 +125,8 @@ its semantics, its error mapping and its frozen fixtures.
 * The `Transport` trait in `sunrise-sync` keeps its purpose. It is a three-method
   byte-frame pipe, which is why ADR-0005's claim that the wire protocol is
   transport-agnostic held; a future P2P or WebTransport path re-enters here.
+  (It has since widened to fifteen methods; see the
+  [2026-11 amendment](#amendment-2026-11-the-transport-widened-and-the-account-and-blob-routes-are-hand-written).)
 
 ## Amendment (2026-09): the mapping table was missing a row
 
@@ -133,3 +141,58 @@ as its own session-keyed operation, is in `schemas/generated/openapi.v1.json` as
 `subscribeStreams`, and `crates/sunrise-server/src/api/sync/` has carried the
 complete mapping in its module header since it was written. The implementation
 was never ambiguous about it; this ADR was.
+
+## Amendment (2026-11): the Transport widened, and the account and blob routes are hand-written
+
+**What the original text said.** The Consequences called the `Transport` trait
+"a three-method byte-frame pipe", and said `spargen` "generates a client for
+the sync path as well as the lifecycle path".
+
+**The trait has fifteen methods.** The three frame methods — `send_frame`,
+`recv_frame`, `close` — are still the pipe, and are still all a frame-only
+transport implements. Twelve more reach the relay's account and blob API:
+
+* `revoke_device`;
+* `blob_init`, `blob_put_chunk`, `blob_finalize`, `blob_fetch` — the blob
+  two-phase commit;
+* `snapshot_latest`, `snapshot_pin` (ADR-0068);
+* `key_bundle_latest`, `key_bundle_pin` (ADR-0069);
+* `identity_chain_latest`, `identity_chain_pin`, `recovery_blob_replace`
+  (ADR-0070).
+
+Each of the twelve defaults to `TransportError::Unsupported`, so a frame-only
+transport still implements three methods and nothing else; `SseTransport`
+overrides all of them.
+
+The reason they are on the trait rather than on an HTTP client beside it is
+recorded on the trait itself, in its doc comment's "The four blob operations"
+section and in `revoke_device`'s
+(`crates/sunrise-sync/src/transport.rs#Transport`): the driver already holds
+exactly one transport, the device binding that signs every one of these
+routes, and the only knowledge in the client of whether the relay is
+reachable. A second client would need its own copy of the base URL, the
+bearer, the signer and the reachability state, and would be one more thing to
+keep in step with all of them. The blob upload is four operations rather than
+one because its sequencing is where the idempotency lives, and that is a
+policy `sunrise_core::blob_sync` decides and tests, not the transport.
+
+The purpose the Consequences gave the trait holds: the wire protocol is still
+carried as whole frames, and a P2P or WebTransport path still re-enters here.
+What changed is that the seam also carries the account API, and a new
+transport either implements it or answers `Unsupported`.
+
+**The account and blob routes are hand-written.** `SseTransport` reaches every
+route it calls — `/sync`, `/devices/by-vault-id/{id}`, `/blobs`,
+`/snapshots/{stream}` and `/accounts/me` — through its own `hyper` client in
+`crates/sunrise-sync/src/sse/`, not through the `spargen`-generated
+`sunrise_relay_client::api::Client`. The generated client covers the
+bootstrap, push-registration and recovery-read paths in `sunrise-relay-client`. So the first
+Consequence holds for the document — every route above is in
+`schemas/generated/openapi.v1.json` — but not, today, for the client.
+
+Whether the account and blob methods move onto the generated client is an open
+decision, tracked in #774 (Q-C-10); it changes a dependency on that path and
+moves code across crates, so it is not taken here. Until it is, those routes
+stay hand-written.
+
+Neither part changes the decision. Both record its shape as built.

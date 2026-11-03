@@ -183,7 +183,7 @@ none of them keeps a second list:
 | `sunrise-domain` (`registry.rs`) | an exhaustive, type-checked destructuring of every record, and a wire-name check | the build; the wire names fail a test |
 | `sunrise-core` (`inner_op.rs`) | `InnerOp`'s entity variants and their `inner_kind`, `target_kind`, target, effect and kind | the build |
 | `sunrise-core` (`engine/lww.rs`) | the materializer's merge class, table and key column | the build: its per-op match is exhaustive |
-| `sunrise-core-bindings` (`dto.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
+| `sunrise-core-bindings` (`dto/registry.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
 | `sunrise-storage` (`db/tests.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
 
 `ENTITIES` is also the input the canonical schema and its fingerprint are built
@@ -211,8 +211,9 @@ catalogue per-field merge reads
    `inner_kind` and `target_kind` the registry gives it and folds it; a
    command cannot write the row itself, because the writers are private to
    the merge.
-5. Write its `UniFFI` mirror and `From` conversion in
-   `crates/sunrise-core-bindings/src/dto.rs`, and add its `Mirrored` impl.
+5. Write its `UniFFI` mirror and `From` conversion in its domain area's
+   module under `crates/sunrise-core-bindings/src/dto/`, and add its
+   `Mirrored` impl in `crates/sunrise-core-bindings/src/dto/registry.rs`.
 6. Add the commands, queries and undo rules the feature needs. These are
    product surfaces rather than wiring, so the registry does not require them:
    an append-only entity has no delete command, and an attachment has no
