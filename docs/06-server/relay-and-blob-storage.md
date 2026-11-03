@@ -5,7 +5,7 @@ status: accepted
 # Relay and Blob Storage
 
 > **Implementation status.** The self-host single-binary path is built and is
-> the only one: one SQLite database (`store/` + `relay_log.rs`) and a
+> the only one: one SQLite database (`store/` + `relay_log/`) and a
 > local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
 > one implementation, `blob::fs::FsBlobs`, keeps chunks in
 > `sunrise_storage::BlobStore`). There is no Postgres, no object store, and no
@@ -301,7 +301,9 @@ All retention numbers are unified to **30 days** (or shorter):
 - Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
 
 Retention **enforcement** is implemented for the relay op log, the blob store and
-deleted accounts. `relay_log.rs` applies the log's two bounds on every append.
+deleted accounts. The relay log's append path
+(`crates/sunrise-server/src/relay_log/append.rs#relay_append`) applies the log's
+two bounds on every append.
 The rest is the **maintenance pass**
 (`crates/sunrise-server/src/admin/maintenance.rs`). The serving binary runs it
 at startup and then every `[storage] maintenance_interval_secs` (default 3600),
