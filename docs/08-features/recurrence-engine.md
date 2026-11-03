@@ -58,7 +58,8 @@ Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/s
 
 Zero or more new Tasks, each with the deterministic id
 `occurrence_task_id(series_root, key)` (`Routine::occurrence_task_id`),
-`routine_occurrence_key = key`, `planned_at` = the key in the anchor's kind,
+`routine_occurrence` = the key's instant (the key itself is derived from the
+task id), `planned_at` = the key in the anchor's kind,
 and `hard_constraint_violated` set when that plan breaks a `hard` constraint
 the routine carries. Of a split series, only the routine that owns a key
 generates it (`Routine::owns_key`: the latest anchor at or before the key). The per-key steps (skip, pause,
