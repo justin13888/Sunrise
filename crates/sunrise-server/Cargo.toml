@@ -91,6 +91,10 @@ rustix = { workspace = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }
+# The GCRA property tests in `src/api/ratelimit/bucket.rs`, seeded and sized
+# through `sunrise-test-seed` like every other property test here.
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 # Reads exported spans back in `tests/span-redaction.rs` and the span-tree
 # tests.
 sunrise-telemetry = { workspace = true, features = ["testing"] }
