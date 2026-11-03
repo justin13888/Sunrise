@@ -53,7 +53,7 @@ partition, and any op authored between attempts changes the partition. The
 length-prefixing is not the problem and is doing its own job: it is what stops a
 *differently* partitioned batch colliding with another one, which the test
 `a_batch_with_different_ops_is_never_deduped`
-(`crates/sunrise-server/src/api/sync/suite.rs`) guards.
+(`crates/sunrise-server/src/api/sync/suite/dedup.rs`) guards.
 
 ### What the cost of not fixing it actually is
 
