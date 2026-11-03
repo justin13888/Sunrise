@@ -222,14 +222,6 @@ BASELINE: dict[str, str] = {
         "module: splitting them along their own section markers keeps that "
         "access and is a change of its own."
     ),
-    # --- sunrise-core-bindings ----------------------------------------------
-    "crates/sunrise-core-bindings/src/dto.rs": (
-        "The UniFFI mirror of the domain vocabulary: the records and enums and "
-        "the exhaustively destructuring `From` impls that make a new domain "
-        "field fail this crate's build. No test module. Its length tracks the "
-        "domain's; splitting it by the domain module each mirror comes from "
-        "is a change of its own."
-    ),
     # --- sunrise-crypto -----------------------------------------------------
     "crates/sunrise-crypto/src/op_envelope.rs": (
         "Its implementation alone is below this package's threshold; the rest "
