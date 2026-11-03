@@ -116,7 +116,7 @@ ALLOWED: dict[str, str] = {
         "where the link points into a versioned tzdb tree, so the previous "
         "fallback made every Mac claim to be in UTC. This reads the zone's "
         "name, not its rules -- jiff's bundled tzdb keeps resolution "
-        "deterministic. Documented in docs/implementation/overview.md."
+        "deterministic. Documented in shared-core.md §Determinism rules."
     ),
 }
 
