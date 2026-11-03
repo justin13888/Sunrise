@@ -59,7 +59,7 @@ pub(super) const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 /// the client carries no timeout of its own (see
 /// [`SseTransport::connect_with_bearer`]), [`HEAD_TIMEOUT`] ends when the head
 /// arrives and so bounds none of the body, and
-/// `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits the `Hello` send
+/// `crates/sunrise-core/src/sync_driver.rs:744#handshake` awaits the `Hello` send
 /// bare, outside any `tokio::select!`. An unbounded read under that await parks
 /// the driver task with no error, no `SessionEnd::Disconnected`, no backoff and
 /// no log line. On the stream route the driver's `tokio::select!` *cancels*
@@ -147,7 +147,7 @@ pub(super) const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// set. A relay, proxy or captive portal that completes TLS and then sends
 /// nothing therefore parked the awaiting task for good. On the `Hello` route
 /// that task is the sync driver, which awaits the send bare
-/// (`crates/sunrise-core/src/sync_driver.rs:709#handshake`), so the symptom was silence:
+/// (`crates/sunrise-core/src/sync_driver.rs:744#handshake`), so the symptom was silence:
 /// no error, no `SessionEnd::Disconnected`, no backoff and no log line.
 ///
 /// A **total** bound, not an idle one, because a head is not a stream: it is
@@ -370,7 +370,7 @@ impl SseTransport {
         //
         // The deadline is the load-bearing half. This is the route the
         // handshake rides: `send_frame`'s `Hello` arm calls it, and
-        // `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits that send bare,
+        // `crates/sunrise-core/src/sync_driver.rs:744#handshake` awaits that send bare,
         // outside any `tokio::select!`. An unbounded read here was not a retry
         // loop the driver eventually notices — it was the driver task parked
         // for good, with no error, no backoff and nothing in the log.

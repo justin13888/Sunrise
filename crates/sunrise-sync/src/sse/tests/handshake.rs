@@ -87,7 +87,7 @@ async fn a_hello_reply_this_build_cannot_read_is_refused_rather_than_acked() {
 /// stall, in `stream`, was at least *cancelled*:
 /// `crates/sunrise-core/src/sync_driver.rs:884-891#session` selects over the
 /// read, so a stalled refusal there became a silent retry loop. This one is
-/// not. `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits the
+/// not. `crates/sunrise-core/src/sync_driver.rs:744#handshake` awaits the
 /// `Hello` send bare, outside any `tokio::select!`, `session(...)` is itself
 /// awaited bare at `crates/sunrise-core/src/sync_driver.rs:474#run`, and
 /// `Client::builder(...).build(https)` sets no timeout — so an unbounded read
