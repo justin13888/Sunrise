@@ -43,8 +43,8 @@
 
 use sunrise_sync::{RevokeOutcome, Transport, TransportError};
 
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::hex_short;
 
 /// Tell the relay about every device this vault has revoked and not yet
 /// reported.

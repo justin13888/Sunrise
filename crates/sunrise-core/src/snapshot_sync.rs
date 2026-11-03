@@ -26,8 +26,9 @@ use std::collections::HashSet;
 use sunrise_error::ErrorCode;
 use sunrise_sync::{SyncState, Transport, TransportError};
 
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, EngineError, SnapshotApplied};
+use crate::engine::{EngineError, SnapshotApplied};
 use crate::sync_driver::{encode_subscribe_all, Outgoing, SyncShared};
 
 /// The largest chunk a record is uploaded in: the relay's per-chunk ceiling

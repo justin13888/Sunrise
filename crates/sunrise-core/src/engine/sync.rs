@@ -14,12 +14,12 @@
 use super::chain::{check_covered, check_duplicate, check_links, reconcile};
 use super::groups::{event_of, Folded};
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
-use super::ids::hex_short;
 use super::lww::{remap_legacy_inbox, LwwStamp};
 use super::merge::{check_patch, to_sql, PatchProblem};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::park::{diagnostic_kind, schema_fp_mismatch};
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::hex_short;
 use crate::commands::CommandResult;
 use crate::control_op::Recipient;
 use crate::events::DomainEvent;

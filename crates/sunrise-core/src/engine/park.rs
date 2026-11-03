@@ -9,10 +9,10 @@
 //! that an op parks is the receive path's, in `sync`.
 
 use super::chain::{check_covered, check_duplicate, check_links};
-use super::ids::hex_short;
 use super::oplog::{remote_op_id, upsert_sync_cursor};
 use super::sync::oplog_to_sqlite;
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use crate::events::DomainEvent;
 use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_V};
 use sunrise_crypto::decode_envelope;

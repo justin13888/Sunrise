@@ -296,10 +296,6 @@ pub(super) fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
-// The hex encoders live in `crate::bytes`; the engine's modules still name them
-// through here.
-pub(crate) use crate::bytes::{hex_bytes, hex_short};
-
 /// An unsigned count or stamp as the `INTEGER` SQLite stores, clamped to
 /// `i64::MAX` rather than wrapping negative.
 pub(super) fn i64_of(n: u64) -> i64 {

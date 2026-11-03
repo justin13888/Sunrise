@@ -19,8 +19,8 @@
 use sunrise_crypto::{decode_key_bundle, BundledKey, KeyBundleError, ManifestEntry};
 use sunrise_storage::Db;
 
-use super::ids::hex_short;
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use crate::events::DomainEvent;
 use crate::keychain::{KeySource, KeychainError};
 
