@@ -866,11 +866,11 @@ impl Core {
 
     /// Start the periodic routine-materialization timer.
     ///
-    /// `docs/08-features/recurrence-engine.md` §generation-timing requires
-    /// materialization on every app launch **and** on a periodic timer every 6
-    /// hours while running. Only the launch half existed, so a long-running
-    /// client — the TUI, or a desktop app left open over a weekend — would
-    /// never generate occurrences past the horizon it computed at startup.
+    /// Materializes routines every `interval` while the vault is open, on top
+    /// of the pass [`Core::open`] runs at launch; the caller picks the
+    /// interval. Without the timer, a client left running never generates
+    /// occurrences past the horizon it computed at open. See
+    /// `docs/08-features/recurrence-engine.md` §Generation timing.
     ///
     /// Idempotent, and safe to skip: a client that never calls this still
     /// materializes at open. Requires a tokio runtime, which is why it is not
