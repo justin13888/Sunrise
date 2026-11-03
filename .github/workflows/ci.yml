@@ -1841,8 +1841,9 @@ jobs:
     name: Publish gate
     runs-on: ubuntu-latest
     # `actions/checkout` and one standard-library Python script over the
-    # tracked Cargo.toml and package.json files and `apps/apple/project.yml`.
-    # No toolchain: the manifests are read with `tomllib` and `json`, which is
+    # tracked Cargo.toml and package.json files, `apps/apple/project.yml`, and
+    # the root and `tools/uniffi-bindgen` Cargo.lock files. No toolchain: the
+    # manifests and lockfiles are read with `tomllib` and `json`, which is
     # why this needs the runner's Python 3.11+ and nothing else. Seconds of
     # work, so `ci.yml`'s floor for a job whose real cost is the checkout.
     timeout-minutes: 5
@@ -1854,9 +1855,12 @@ jobs:
         # a [package] says `publish = false` itself (inheriting it is refused),
         # every package.json says `"private": true`, and every app-train copy
         # of the version -- apps/*/package.json, packages/*/package.json and
-        # project.yml's MARKETING_VERSION -- equals the root one. A new crate
-        # from a template, or a version bumped in one file of four, is the
-        # shape this catches.
+        # project.yml's MARKETING_VERSION -- equals the root one. The binding
+        # generator (tools/uniffi-bindgen) and its runtime
+        # (crates/sunrise-core-bindings) also agree on `uniffi`: one requirement
+        # in both Cargo.toml files, one locked version in both Cargo.lock files.
+        # A new crate from a template, a version bumped in one file of four, or
+        # a uniffi bump in one workspace only is the shape this catches.
         run: .github/scripts/publish-gate.py
 
   publish-gate-contract:
