@@ -236,6 +236,11 @@ struct ServerInner {
     /// The bearer each of those attempts was handed, in order — what a
     /// real relay would have seen in its `Authorization` header.
     presented: Vec<Option<String>>,
+    /// The streams each `Subscribe` named, in order, across connections. The
+    /// fake adds every one to its set, but the relay **replaces** its set
+    /// with the frame's, so a test reads this to see what the relay would
+    /// have been left serving.
+    subscribes: Vec<Vec<[u8; 16]>>,
 }
 type SharedServer = Arc<parking_lot::Mutex<ServerInner>>;
 
@@ -291,6 +296,7 @@ fn harness_full(
         connect_count: 0,
         scripts: scripts.into_iter().collect(),
         presented: Vec::new(),
+        subscribes: Vec::new(),
     }));
     let (batch_tx, batch_rx) = mpsc::unbounded_channel();
     let subs: SubCount = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -311,6 +317,7 @@ fn harness_full(
             s.presented.push(read.bearer().map(ToOwned::to_owned));
             s.scripts.pop_front().unwrap_or_default()
         };
+        let server = factory_server.clone();
         let fut = async move {
             let (mut client_end, server_end) = duplex();
             client_end.batch_send_hold = script.client_batch_send_hold;
@@ -322,6 +329,7 @@ fn harness_full(
                 server_end,
                 script,
                 batch_tx,
+                server,
                 subs,
                 refreshes,
                 negotiate_refresh,
@@ -415,6 +423,7 @@ async fn run_fake_server(
     mut t: ChannelTransport,
     script: Script,
     batch_tx: mpsc::UnboundedSender<RecvBatch>,
+    server: SharedServer,
     sub_count: SubCount,
     refreshes: SeenRefreshes,
     negotiate_refresh: bool,
@@ -461,6 +470,10 @@ async fn run_fake_server(
         };
         match hh.msg_kind {
             MsgKind::Subscribe => {
+                if let Ok(sub) = SubscribePayload::decode(&payload) {
+                    let named = sub.streams.iter().map(|e| e.stream_id).collect();
+                    server.lock().subscribes.push(named);
+                }
                 if !serve_subscribe(
                     &mut t,
                     &script,
