@@ -201,13 +201,6 @@ BASELINE: dict[str, str] = {
         "doc argues for keeping it in one place, since it is the module that "
         "must not re-derive numbers other folds own."
     ),
-    # --- sunrise-server -----------------------------------------------------
-    "crates/sunrise-server/src/api/devices.rs": (
-        "Its implementation alone is below this package's threshold. "
-        "Deliberately not split: every symbol serves the five `/devices*` "
-        "routes mounted together, so splitting it to satisfy a line count "
-        "would be churn."
-    ),
     # --- sunrise-sync -------------------------------------------------------
     "crates/sunrise-sync/src/sse/tests.rs": (
         "All test code: the SSE transport's `#[cfg(test)] mod tests`, moved out "
