@@ -241,7 +241,7 @@ command set. A field it does not carry takes the registry default at read time.
   resurrects") would let any stale device undo a user's delete as a side effect
   of an unrelated edit.
 - **The undo of a delete is a restore op**, not the removal of the delete op.
-  This changes the client: `crates/sunrise-client-core/src/undo.rs` today
+  This changes the client: `crates/sunrise-client-core/src/undo/mod.rs` today
   says a delete cannot be undone, because a legacy full-state tombstone has no
   inverse that survives a concurrent edit. Under `Patch`, the inverse of a
   delete is `{"deleted": {"set": false}}`, and undo MUST offer it.
@@ -365,7 +365,7 @@ MUST NOT emit a legacy full-state op for that vault.
   - A delete undo is a restore (§5).
 
   Undo never deletes an op
-  (`crates/sunrise-client-core/src/undo.rs`), and it keeps a register's
+  (`crates/sunrise-client-core/src/undo/mod.rs`), and it keeps a register's
   origin as `user`.
 
 ## Alternatives considered

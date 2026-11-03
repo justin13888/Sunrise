@@ -369,7 +369,7 @@ inverse **per field**, in one local transaction:
 - a field written again since, by any device, is **skipped and reported** in
   `PlanUndoResult::skipped`, and the undo toast says so ("Restored 4 of 5;
   ‘Standup’ was changed since"), which is the inverse-command undo's existing
-  rule (`crates/sunrise-client-core/src/undo.rs`);
+  rule (`crates/sunrise-client-core/src/undo/mod.rs`);
 - a restored deferral writes `-1` on `deferred_count`.
 
 Undo never refuses as stale and never re-solves.
