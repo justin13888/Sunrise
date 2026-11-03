@@ -229,6 +229,11 @@ merged automatically this week" review surface has no data behind it. A client
 can read a conflict state from `Query::Conflicts`; the Apple client's UI for it
 is follow-up work.
 
+The per-field `merge_journal` stays dropped
+([ADR-0018](../11-adr/0018-storage-baseline-reset.md)):
+`crates/sunrise-storage/src/db/tests.rs#baseline_omits_the_dead_schema` fails if
+it reappears.
+
 ## Atomic batches
 
 > **Target state.** The receiver applies **one envelope at a time**. The sync
