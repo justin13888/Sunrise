@@ -826,8 +826,11 @@ covered in six local shards records one floor rather than six — and a stale
 directory from an earlier crate is scored with them, which is what the gate's
 "undeclared crate" failure means when it names one you did not ask for.
 
-It is deliberately **not** in `lefthook.yaml`: the pre-push hook already runs
-the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
+It is deliberately **not** in `lefthook.yaml`: adding hours to a push is how a
+hook gets bypassed. For the same reason the pre-push hook runs only the tests a
+push can affect (`mise run rust-test-changed` and `mise run test-changed`, which
+`.github/scripts/prepush-scope.py` scopes), and leaves the whole suite to CI and
+to `SUNRISE_FULL_PREPUSH=1`.
 
 ## Release gates
 
