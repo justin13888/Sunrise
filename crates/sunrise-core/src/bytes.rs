@@ -70,10 +70,12 @@ pub(crate) fn hex_bytes(b: &[u8]) -> String {
     s
 }
 
-/// The 16 bytes that 32 hex characters spell, or `None` for any other text.
+/// The 16 bytes that 32 lower-case hex characters spell, the one spelling
+/// [`hex_bytes`] writes, or `None` for any other text.
 pub(crate) fn unhex16(s: &str) -> Option<[u8; 16]> {
-    // `from_str_radix` alone would take a leading `+` in each pair.
-    if s.len() != 32 || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+    // `from_str_radix` alone would take a leading `+` in each pair, and upper
+    // case.
+    if s.len() != 32 || !s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
         return None;
     }
     let mut out = [0u8; 16];
@@ -128,5 +130,6 @@ mod tests {
         assert_eq!(unhex16(&"g".repeat(32)), None, "not hex");
         assert_eq!(unhex16(&"é".repeat(16)), None, "32 bytes, not ascii");
         assert_eq!(unhex16(&"+a".repeat(16)), None, "a sign is not a digit");
+        assert_eq!(unhex16(&"AB".repeat(16)), None, "upper case is not written");
     }
 }
