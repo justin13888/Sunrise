@@ -82,7 +82,7 @@ The 7-day soft-grace window covers transient overages before the hard cap engage
 
 - Downgrade preserves all data; the user is asked to free space if over the new limit.
 - The downgrade grace window is **30 days**: writes that would exceed the new plan's limit return `202 + X-Sunrise-Quota-Warning`; after 30 days, they are hard-rejected.
-- Account deletion at any time triggers full data deletion within 30 days. (Account deletion has no route — see [`api.md`](./api.md) §account.)
+- Account deletion at any time triggers full data deletion after `[storage] account_delete_grace_days` (default 30) — see [`api.md`](./api.md) §Account deletion.
 
 ## Self-host conversion
 

@@ -787,8 +787,8 @@ refills continuously.
 | `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
-| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
-| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle` | bearer+sig | 600 / min (`blob_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle`, `GET /api/v1/accounts/me/identity_chain`, `PUT /api/v1/accounts/me/identity_chain` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
@@ -798,8 +798,10 @@ refused with `429` *before* the bearer verifier runs, a valid bearer included,
 until the budget refills. `probe` and `meta` verify nothing and are exempt.
 
 The test `every_operation_in_the_description_has_a_group` reads the generated
-OpenAPI description and fails for any operation this table does not name, so a
-route added later is a red build until it is given a row. At run time an
+OpenAPI description and fails for any operation that `route_group`
+(`crates/sunrise-server/src/api/ratelimit/policy.rs`) does not classify, so a
+route added later is a red build until it is given a group there. The test
+reads the code's table, not this one; keep the two in step by hand. At run time an
 unlisted route is held to `bootstrap`, the tightest authenticated group.
 
 **Which address.** The socket peer, unless it is listed in `[server]
@@ -876,10 +878,10 @@ that have not been built.
 | `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
 | `/api/v1/accounts/me/recovery_blob` (GET) | yes | yes | **yes — built, behind an OIDC step-up** |
 | `/api/v1/accounts/me/delete/initiate` (POST), `/api/v1/accounts/me` (DELETE) | yes | yes | **yes — built, behind an OIDC step-up** |
-| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **no route** |
+| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **yes — built, device-bound ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md))** |
 | `/api/v1/identities` (discovery) | yes | yes | **no route** |
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
-| `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
+| `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **yes — built; delivery is APNs only, with `[push.apns]` configured** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
 | `/api/v1/snapshots/*` | yes | yes | **yes — built; the record is a local-disk blob** |
 | `/api/v1/accounts/me/key_bundle` | yes | yes | **yes — built; the bundle is a local-disk blob** |

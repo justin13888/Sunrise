@@ -28,8 +28,8 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 | Authenticate sync connections | [`auth.md`](./auth.md) |
 | Relay encrypted ops to peer devices and shared identities | [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 | Store encrypted op log + blobs durably | [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
-| Wake devices via push when ops arrive while they're offline — **not implemented** | [`push-notifications.md`](./push-notifications.md) |
-| Handle account lifecycle — create only; **recovery-blob fetch and account deletion have no route** | [`api.md`](./api.md), [`auth.md`](./auth.md) |
+| Wake devices via push when ops arrive while they're offline — APNs only | [`push-notifications.md`](./push-notifications.md) |
+| Handle account lifecycle — create, fetch and replace the recovery blob, delete after a grace period | [`api.md`](./api.md), [`auth.md`](./auth.md) |
 | Enforce fixed operator limits — request body size, blob chunk/count/size ceilings, relay-log retention | [`api.md`](./api.md), [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 
 ## Non-responsibilities
@@ -75,11 +75,12 @@ Stateless except for:
 | Object storage | `sunrise_storage::BlobStore` — chunk files on the local filesystem | yes |
 | Push | `push::PushProvider` trait; `push::ApnsProvider` (HTTP/2, `.p8` provider tokens) behind the `push::Dispatcher` queue. FCM and Web Push are not built | APNs only |
 | HTTPS client (JWKS/discovery, APNs) | `hyper` + `hyper-rustls` | yes |
-| Containerization | OCI image, distroless base | no |
+| Containerization | OCI image on a `debian:<suite>-slim` runtime base (`Dockerfile`) | yes |
 
-The relay links **no** `sunrise-crypto`. Its only view into an op is
-`sunrise_cbor::decode_envelope_header`, a type with no payload field — the
-non-responsibility above is enforced by the dependency graph, not by discipline.
+The relay has **no direct** dependency on `sunrise-crypto`. It reaches the crate
+transitively through `sunrise-pairing` and `sunrise-storage`, and never calls
+it. Its only view into an op is `sunrise_cbor::decode_envelope_header`, a type
+with no payload field.
 
 Why Rust: shares the wire-format crate with the client core (one source of truth for the protocol) and is operationally cheap.
 
@@ -103,10 +104,11 @@ For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob s
 
 ## Operational requirements
 
-- TLS termination handled by the binary or a reverse proxy.
-- Backup: as built, one `tar` of the data dir — the SQLite file is the whole
-  server state, op log included. A Postgres dump plus an S3 snapshot is the
-  scaled shape, and there is no scaled deployment.
+- TLS termination handled by a reverse proxy; the binary terminates none.
+- Backup: as built, `sunrise-server admin backup <dest_dir>` while the relay
+  runs — it copies the SQLite database (op log included) and then the blob
+  tree; see [`self-hosting.md`](./self-hosting.md#backup). A Postgres dump plus
+  an S3 snapshot is the scaled shape, and there is no scaled deployment.
 - Monitoring: `/metrics` Prometheus endpoint with content-free metrics. The
   metrics and any admin surface MUST be reachable on loopback only, or behind
   operator authentication; a public bind MUST NOT serve them. `build_service`
