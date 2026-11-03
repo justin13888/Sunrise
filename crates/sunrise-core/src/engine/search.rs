@@ -39,7 +39,7 @@
 use super::attachment::read_attachment;
 use super::block::{block_row, read_block};
 use super::ids::{blob16, time_from_parts};
-use super::merge::{create_words_sql, rebuild_search_from_rows};
+use super::merge::{create_words_sql, rebuild_search_from_rows, to_sql};
 use super::snapshot::in_tx;
 use super::task::read_task;
 use super::{Engine, EngineError};
@@ -854,8 +854,7 @@ impl<'a> Run<'a> {
             return Ok(*v);
         }
         if self.suppressed.is_none() {
-            let keys = super::task::suppressed_edge_keys(self.db.conn())
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let keys = super::task::suppressed_edge_keys(self.db.conn()).map_err(to_sql)?;
             self.suppressed = Some(keys);
         }
         let keys = self.suppressed.as_deref().unwrap_or_default();
@@ -987,7 +986,7 @@ impl<'a> Run<'a> {
             return Ok(*l);
         }
         let l = super::task::read_task(self.db.conn(), id)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            .map_err(to_sql)?
             .map_or(sunrise_domain::LatenessState::ON_TRACK, |t| {
                 self.lateness.of(&t)
             });

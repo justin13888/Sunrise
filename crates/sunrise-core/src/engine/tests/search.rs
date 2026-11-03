@@ -1149,6 +1149,35 @@ fn search_matches_title_and_body_excludes_deleted_and_respects_limit() {
     assert!(empty.is_empty());
 }
 
+/// A SQLite failure while a filter reads another table reaches the caller as
+/// the SQLite error it is, not boxed inside a conversion failure.
+#[test]
+fn a_sqlite_failure_in_a_filter_keeps_its_variant() {
+    let (e, mut db) = (engine(), db());
+    task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "haystack".into(),
+            ..Default::default()
+        },
+    );
+    db.conn().execute("DROP TABLE task_blockers", []).unwrap();
+    let err = e
+        .query(
+            &db,
+            Query::Search {
+                text: "haystack is:blocked".into(),
+                limit: 20,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Sqlite(rusqlite::Error::SqliteFailure(..))),
+        "{err:?}"
+    );
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
