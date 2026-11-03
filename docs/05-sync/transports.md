@@ -9,8 +9,8 @@ upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). The client is
 `SseTransport` (`crates/sunrise-sync/src/sse/`), used by `sunrise-cli`, the
 Apple apps through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the
 server is `crates/sunrise-server/src/api/sync/` over
-`crates/sunrise-server/src/sync_session.rs`. There is no WebSocket:
-`crates/sunrise-server/src/ws.rs` was deleted.
+`crates/sunrise-server/src/sync_session.rs`. There is no WebSocket
+transport.
 
 ## The decided transport (ADR-0023)
 
