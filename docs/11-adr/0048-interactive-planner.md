@@ -117,7 +117,7 @@ preview cache, so eviction never loses it, and returns a commit id.
 `plan_undo(commit_id)` applies the inverse **per field** as one new write. A
 field a later edit has changed again is skipped and reported, the rule the
 existing inverse-command undo already follows
-(`crates/sunrise-client-core/src/undo.rs`). The staleness refusal of §2 applies
+(`crates/sunrise-client-core/src/undo/mod.rs`). The staleness refusal of §2 applies
 to commits only; undo never refuses as stale.
 
 **8. A budget.** `plan_preview` is ≤ 16 ms p95 and ≤ 33 ms p99 on Baseline A for

@@ -222,14 +222,6 @@ BASELINE: dict[str, str] = {
         "module: splitting them along their own section markers keeps that "
         "access and is a change of its own."
     ),
-    # --- sunrise-client-core ------------------------------------------------
-    "crates/sunrise-client-core/src/undo.rs": (
-        "Its implementation alone is below this package's threshold; the rest "
-        "is tests. One concern: the inverse command for each "
-        "command a client submits, which the module doc argues is the only "
-        "undo a client can build without a protocol change. Not audited for "
-        "a split."
-    ),
     # --- sunrise-core-bindings ----------------------------------------------
     "crates/sunrise-core-bindings/src/dto.rs": (
         "The UniFFI mirror of the domain vocabulary: the records and enums and "

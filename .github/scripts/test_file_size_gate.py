@@ -186,8 +186,9 @@ class AFileGrew(GateCase):
     def test_a_baseline_entry_is_judged_by_its_own_package_not_a_prefix(self):
         # `crates/sunrise-cli` is a string prefix of `crates/sunrise-client-core`,
         # and `crates/sunrise-core` of `crates/sunrise-core-bindings`. Looking a
-        # file's package up by prefix judged `client-core/src/undo.rs` against
-        # the CLI's threshold and reported it stale while it was over its own.
+        # file's package up by prefix judged `client-core/src/undo.rs`, then on
+        # the baseline, against the CLI's threshold and reported it stale while
+        # it was over its own.
         rust_file(self.tmp / "crates/a/src/lib.rs", 10)
         rust_file(self.tmp / "crates/a-b/src/big.rs", 500)
         result = self.run_gate(
