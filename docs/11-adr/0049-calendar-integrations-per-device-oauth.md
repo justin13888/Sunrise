@@ -30,7 +30,7 @@ user would "log in once" and every paired device would receive the credential
 through sync. Nothing of it is built: there is no `IntegrationAccount` in
 `crates/`, `IntegrationKind` names only `GoogleCalendar` and `ICalendar`
 (`crates/sunrise-integrations/src/lib.rs#IntegrationKind`), and
-`crates/sunrise-integrations/src/gcal.rs` has no consumer. So the decision can
+`crates/sunrise-integrations/src/gcal/mod.rs` has no consumer. So the decision can
 be revisited at no migration cost, and four facts about real providers say it
 has to be.
 

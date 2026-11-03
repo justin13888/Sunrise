@@ -93,7 +93,7 @@ still stands, and is kept here:
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.
 - **Calendar integration.** Only the Google request and response codec
-  exists (`crates/sunrise-integrations/src/gcal.rs`), with no consumer. The
+  exists (`crates/sunrise-integrations/src/gcal/mod.rs`), with no consumer. The
   design is now read-only Google, Microsoft and CalDAV with per-device OAuth
   ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
 - **Notes (rich text)** (macOS) stays a **MUST**, and it is now **met** — this is
