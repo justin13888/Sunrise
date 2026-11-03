@@ -87,6 +87,21 @@ run = "bun run ci"
 description = "Type-check every workspace package"
 run = "bun run typecheck"
 
+# The pre-commit hook's typecheck. It decides here rather than with a lefthook
+# `glob`, which sees only added, copied, modified and renamed files: deleting
+# a module another one imports must still run `tsc`. `bun.lock` alone can move
+# a dependency's types. Pre-push and CI always run `typecheck`.
+[tasks.typecheck-staged]
+description = "Type-check when a staged change, deletions included, touches a file tsc reads (the pre-commit hook's)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+if grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$|^bun\.lock$' <<<"$staged"; then
+  mise run typecheck
+fi
+'''
+
 [tasks.test]
 description = "Run the JS/TS test suite once"
 run = "bun run test:run"
