@@ -61,7 +61,7 @@ Two routes accept a bearer with **no binding at all**, by construction, on every
 configuration including `require_device_sig = true`:
 
 - `POST /api/v1/accounts` (`crates/sunrise-server/src/api/accounts.rs:117#create`)
-- `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:188#register`)
+- `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:190#register`)
 
 Both take `SignedBootstrap`, and `signed_of` skips verification entirely when the
 binding is absent (`crates/sunrise-server/src/api/signed.rs:455-459#signed_of`) — *a device
