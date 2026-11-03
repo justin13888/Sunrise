@@ -138,7 +138,7 @@ fn process_seed() -> u64 {
 /// use proptest::prelude::ProptestConfig;
 ///
 /// let config = ProptestConfig {
-///     cases: 256,
+///     cases: sunrise_test_seed::proptest_cases(256),
 ///     rng_seed: sunrise_test_seed::proptest_rng_seed(),
 ///     ..ProptestConfig::default()
 /// };
@@ -164,6 +164,100 @@ pub fn proptest_rng_seed() -> RngSeed {
         announce("proptest", value);
     }
     chosen
+}
+
+/// The environment variable choosing how deep every property test runs.
+///
+/// `full` runs each block at the count its call site names — the count CI
+/// runs, and the one `.github/workflows/ci.yml` asks for. Unset, or `local`,
+/// caps every block at [`LOCAL_PROPTEST_CASES`] so an ordinary `cargo test`
+/// stays cheap. Any other value panics: a typo in CI must fail loudly rather
+/// than quietly shrink the run to the local count.
+pub const ENV_PROPTEST_DEPTH: &str = "SUNRISE_PROPTEST_DEPTH";
+
+/// The most cases any property test runs when [`ENV_PROPTEST_DEPTH`] is not
+/// `full` and `PROPTEST_CASES` is unset.
+///
+/// 48 is the largest count the cheap blocks under
+/// `crates/sunrise-core/src/engine/tests/` already ran, so those run exactly
+/// as many cases locally as in CI, and only the expensive blocks (128 to
+/// 2048) are cut.
+pub const LOCAL_PROPTEST_CASES: u32 = 48;
+
+/// What [`ENV_PROPTEST_DEPTH`] asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Depth {
+    /// Cap every block at [`LOCAL_PROPTEST_CASES`].
+    Local,
+    /// Run every block at its call site's count.
+    Full,
+}
+
+/// Parse one [`ENV_PROPTEST_DEPTH`] value; `None` for anything but `local`
+/// or `full`. Pure over its argument.
+fn parse_depth(raw: &str) -> Option<Depth> {
+    match raw.trim() {
+        "local" => Some(Depth::Local),
+        "full" => Some(Depth::Full),
+        _ => None,
+    }
+}
+
+/// How many cases a block whose call site names `full` should run.
+///
+/// Pure, so the precedence rule is testable without the process environment:
+///
+/// * `native` is `PROPTEST_CASES`, parsed. **It wins**, for the reason
+///   [`choose_rng_seed`] gives about proptest's own seed variable: it is the
+///   dial a proptest user reaches for first, and a block that ignored it
+///   would make it look broken.
+/// * Otherwise `Full` runs `full` and `Local` runs at most
+///   [`LOCAL_PROPTEST_CASES`].
+fn choose_cases(native: Option<u32>, depth: Depth, full: u32) -> u32 {
+    match (native, depth) {
+        (Some(n), _) => n,
+        (None, Depth::Full) => full,
+        (None, Depth::Local) => full.min(LOCAL_PROPTEST_CASES),
+    }
+}
+
+/// The case count for a `proptest!` block whose CI count is `full`.
+///
+/// Every block that names a count takes it from here rather than from a
+/// literal, so one dial sets the depth of the whole suite:
+///
+/// ```
+/// use proptest::prelude::ProptestConfig;
+///
+/// let config = ProptestConfig {
+///     cases: sunrise_test_seed::proptest_cases(2048),
+///     rng_seed: sunrise_test_seed::proptest_rng_seed(),
+///     ..ProptestConfig::default()
+/// };
+/// ```
+///
+/// `PROPTEST_CASES` wins when it is set to a number; then
+/// [`ENV_PROPTEST_DEPTH`]`=full` runs `full`; otherwise the count is capped at
+/// [`LOCAL_PROPTEST_CASES`].
+///
+/// # Panics
+///
+/// When [`ENV_PROPTEST_DEPTH`] is set to anything but `local` or `full`.
+#[must_use]
+pub fn proptest_cases(full: u32) -> u32 {
+    let native = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok());
+    let depth = match std::env::var_os(ENV_PROPTEST_DEPTH) {
+        None => Depth::Local,
+        Some(raw) => raw.to_str().and_then(parse_depth).unwrap_or_else(|| {
+            panic!(
+                "{ENV_PROPTEST_DEPTH}={} is neither `local` nor `full`",
+                raw.display()
+            )
+        }),
+    };
+    choose_cases(native, depth, full)
 }
 
 /// Print `seed` and how to pin it, for `harness`.
@@ -225,6 +319,58 @@ mod tests {
             choose_rng_seed(RngSeed::Random, None, 11),
             RngSeed::Fixed(11)
         );
+    }
+
+    #[test]
+    fn parse_depth_reads_local_and_full_and_nothing_else() {
+        assert_eq!(parse_depth("local"), Some(Depth::Local));
+        assert_eq!(parse_depth(" full\n"), Some(Depth::Full));
+        assert_eq!(parse_depth(""), None);
+        assert_eq!(parse_depth("FULL"), None);
+        assert_eq!(parse_depth("ci"), None);
+    }
+
+    #[test]
+    fn proptests_own_case_count_outranks_the_depth() {
+        assert_eq!(choose_cases(Some(5), Depth::Full, 2048), 5);
+        assert_eq!(choose_cases(Some(5000), Depth::Local, 2048), 5000);
+    }
+
+    #[test]
+    fn full_depth_runs_the_call_sites_count() {
+        assert_eq!(choose_cases(None, Depth::Full, 2048), 2048);
+        assert_eq!(choose_cases(None, Depth::Full, 24), 24);
+    }
+
+    #[test]
+    fn local_depth_caps_only_the_expensive_blocks() {
+        assert_eq!(choose_cases(None, Depth::Local, 2048), LOCAL_PROPTEST_CASES);
+        assert_eq!(
+            choose_cases(None, Depth::Local, LOCAL_PROPTEST_CASES),
+            LOCAL_PROPTEST_CASES
+        );
+        assert_eq!(choose_cases(None, Depth::Local, 24), 24);
+    }
+
+    /// The only test that touches `PROPTEST_CASES` or
+    /// [`ENV_PROPTEST_DEPTH`], so every case lives in this one function for
+    /// the reason [`seed_from_env_reads_the_variable`] gives.
+    #[test]
+    fn proptest_cases_reads_both_variables() {
+        std::env::remove_var("PROPTEST_CASES");
+        std::env::remove_var(ENV_PROPTEST_DEPTH);
+        assert_eq!(proptest_cases(2048), LOCAL_PROPTEST_CASES);
+        std::env::set_var(ENV_PROPTEST_DEPTH, "full");
+        assert_eq!(proptest_cases(2048), 2048);
+        std::env::set_var("PROPTEST_CASES", "7");
+        assert_eq!(proptest_cases(2048), 7);
+        // An unparseable `PROPTEST_CASES` is ignored, as proptest ignores it.
+        std::env::set_var("PROPTEST_CASES", "many");
+        assert_eq!(proptest_cases(2048), 2048);
+        std::env::remove_var("PROPTEST_CASES");
+        std::env::set_var(ENV_PROPTEST_DEPTH, "ful");
+        assert!(std::panic::catch_unwind(|| proptest_cases(2048)).is_err());
+        std::env::remove_var(ENV_PROPTEST_DEPTH);
     }
 
     #[test]
