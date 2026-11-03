@@ -165,10 +165,41 @@ nothing shared between the devices but the relay.
   words still fail as a code.
 
 Run them with `mise run e2e-cli`, which builds the binary first. The harness
-also builds it (`cargo build -p sunrise-cli --bin sunrise`, a no-op when fresh)
-when `SUNRISE_CLI_BIN` does not name one, so `cargo test -p sunrise-e2e` never
-runs a stale binary. They read every result through `--json`, whose field names
-are the documented contract (`docs/07-clients/overview.md` §JSON output).
+also builds it (`cargo build -p sunrise-cli --bin sunrise --features
+test-cheap-kdf`, a no-op when fresh) when `SUNRISE_CLI_BIN` does not name one,
+so `cargo test -p sunrise-e2e` never runs a stale binary. They read every
+result through `--json`, whose field names are the documented contract
+(`docs/07-clients/overview.md` §JSON output).
+
+#### The recovery KDF in tests
+
+The recovery blob's Argon2id runs at 64 MiB, t=3, p=1 in production
+(`docs/03-crypto/recovery.md` §Argon2id parameters), and every account a
+test creates seals one. Outside `sunrise-crypto` that cost buys nothing, so
+tests that are not about the KDF run it cheaply; inside `sunrise-crypto` it
+stays at production strength.
+
+- `sunrise-crypto`'s `test-cheap-kdf` feature swaps in 8 KiB, t=1, p=1. The
+  cheap set is compiled only where `debug_assertions` is on as well, so a
+  release build has the spec's parameters whatever features reach it, and
+  `crates/sunrise-crypto/tests/test_cheap_kdf.rs` fails the suite if the
+  normal dependency graph of a shipped package (`sunrise-server`,
+  `sunrise-cli`, `sunrise-core-bindings`, `sunrise-core-wasm`) enables it.
+- `sunrise-client-core`, `sunrise-cli` and `sunrise-e2e` enable it as a
+  dev-dependency. The `sunrise` binary the CLI scenarios spawn is built with
+  `sunrise-cli`'s `test-cheap-kdf`, so a blob crosses the process boundary
+  under one set. The Apple scenarios (`apple_*`) drive the bindings
+  in-process, so they share the set too; the cross-version baseline driver
+  carries no recovery blob.
+- `sunrise-crypto`'s unit tests use the spec's set with the feature on, a unit
+  test pins its values, and the frozen recovery-blob vector opens inside
+  `test_cheap_kdf::at_production_strength`. Because `cargo test --workspace`
+  unifies features, every crate's tests in that run use the cheap set, while
+  `cargo test -p <crate>` on a crate that does not enable it uses the spec's.
+- The blob names no parameters, so a blob sealed under one set opens only
+  under that set. A build with the feature reports one from the other set as
+  `RecoveryError::KdfParamsMismatch`, not as a wrong code; a build without it
+  cannot tell and reports a wrong code.
 
 ### 4. Per-platform UI tests (narrow)
 
@@ -669,9 +700,10 @@ disk and another resident rustc, which is why `mise run mutants` pins one and
 says so. A full pass over all six is hours, which is why it runs nightly and
 sharded rather than on a pull request.
 
-`sunrise-crypto` needs the generous `timeout_multiplier`: it runs Argon2id at
-production parameters (64 MiB, t=3, p=1), deliberately not weakened for tests,
-and every surviving mutant pays that cost again.
+`sunrise-crypto` needs the generous `timeout_multiplier`: its own tests run
+Argon2id at production parameters (64 MiB, t=3, p=1) even though
+`--all-features` turns `test-cheap-kdf` on (§The recovery KDF in tests), and
+every surviving mutant pays that cost again.
 
 ### The gate
 

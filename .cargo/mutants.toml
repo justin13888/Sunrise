@@ -133,9 +133,13 @@ exclude_re = [
     "<impl (?:[A-Za-z0-9_]+::)*Display for ",
 ]
 
-# `sunrise-crypto` runs Argon2id at production parameters — 64 MiB, t=3, p=1
-# (`crates/sunrise-crypto/src/recovery.rs`), deliberately not weakened for
-# tests. Under mutation each surviving mutant pays that cost again, and a
+# `sunrise-crypto`'s own tests run Argon2id at production parameters — 64 MiB,
+# t=3, p=1 (`crates/sunrise-crypto/src/recovery.rs`). The KDF is weakened for
+# tests outside that crate only, through its `test-cheap-kdf` feature; its own
+# unit tests and frozen vector keep the production set even under the
+# `--all-features` `mise run mutants` passes (`docs/10-cross-cutting/testing.md`
+# §The recovery KDF in tests). Under mutation each surviving mutant pays that
+# cost again, and a
 # machine under load pays it slower still. Without a generous multiplier those
 # runs are scored as timeouts, which reads identically to "caught" in the
 # summary and is not the same claim at all.
