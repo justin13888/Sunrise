@@ -150,9 +150,11 @@ fn process_seed() -> u64 {
 /// fails. A once-per-process line would be captured by whichever test happened
 /// to call first and would then be invisible in every *other* test's failure
 /// report — including the one you are actually reading. The seed itself is
-/// resolved once per process, so every announcement in a run names the
-/// same value; only the printing repeats, and only into buffers that are
-/// discarded unless something fails.
+/// resolved once per process, so every announcement within one `cargo test`
+/// process names the same value; only the printing repeats, and only into
+/// buffers that are discarded unless something fails. Under nextest each test
+/// is its own process and draws its own seed, which is why the announcement
+/// belongs in each test's own output.
 #[must_use]
 pub fn proptest_rng_seed() -> RngSeed {
     let chosen = choose_rng_seed(

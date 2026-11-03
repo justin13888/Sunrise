@@ -297,6 +297,42 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
 - Static checks: any code path under `telemetry/` or `logging/` that calls `.expose()` on a `Plain<T>` fails the build.
 - Server-side: no log statement contains task IDs from a fixture vault (regex check on test logs).
 
+## Running the suite under nextest
+
+`mise run rust-test-nextest` runs the same tests as `mise run rust-test`
+(`--workspace --all-targets`) under
+[cargo-nextest](https://nexte.st/), and then the doc tests through
+`mise run rust-doctest`, because nextest cannot run doc tests. mise fetches the
+cargo-nextest version the task pins on its first run. It is opt-in:
+`mise run rust-test`, the pre-push hook and CI still run plain `cargo test`, and
+nothing they check reads `.config/nextest.toml`.
+
+What the profile in `.config/nextest.toml` changes:
+
+- **Per-test timeouts.** A test still running after 60 s is reported as `SLOW`,
+  and after eight such periods (8 min) it is killed and reported as a failure
+  that names it. `sunrise-e2e` tests are killed after five 120 s periods
+  (10 min), since one CLI step can wait up to 180 s (`WAIT` in
+  `crates/sunrise-e2e/src/cli.rs`). Some property tests are legitimately slow
+  under load (the slowest measured beside the e2e set took 159 s), so a `SLOW`
+  line alone is not a failure. Plain
+  `cargo test` has no per-test timeout: a scenario stuck in one of the
+  harness's waits holds the whole run until the wait gives up.
+- **At most four `sunrise-e2e` tests at once.** Each one boots a relay, and the
+  CLI scenarios spawn `sunrise` processes on top of it; running all of them
+  beside the unit tests is what loads a host. The rest of the suite keeps the
+  full thread count.
+- **No retries.** A timeout or a failure stays a failure. A retry would turn a
+  load-dependent flake such as #799 into a pass nobody sees.
+- **Every failure is reported.** `fail-fast` is off, so one failure does not
+  hide the rest of the run.
+
+nextest runs each test in a process of its own. A property test still prints
+its seed: `sunrise_test_seed::proptest_rng_seed` announces it on every call, so
+the captured output of each failing test carries the seed that reproduces it.
+Different tests in one run may now print different seeds; pin one with
+`SUNRISE_FUZZ_SEED` as usual.
+
 ## Test data
 
 - Synthetic vault generator that produces known-shape data (N tasks, N streams, recurring routines).

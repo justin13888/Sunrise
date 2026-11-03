@@ -1,0 +1,36 @@
+# cargo-nextest's configuration, read by `mise run rust-test-nextest` and by any
+# `cargo nextest run` in this workspace. It is opt-in: `mise run rust-test`,
+# the pre-push hook and CI all run plain `cargo test`, and none of them read
+# this file. `docs/10-cross-cutting/testing.md` §Running the suite under
+# nextest says what each setting is for.
+
+[profile.default]
+# A test that runs past the period is reported as SLOW, and after
+# `terminate-after` periods it is killed and reported as failed, naming
+# itself. Plain `cargo test` has no per-test timeout, so a test stuck in one of
+# the e2e harness's 30 s or 180 s waits held the whole run instead. The kill
+# (60 s x 8 periods = 8 min) is three times the slowest test measured beside
+# the full e2e set (`sunrise-core`'s compaction property test, 159 s), so load
+# alone does not reach it.
+slow-timeout = { period = "60s", terminate-after = 8 }
+# Never retry. A timeout or a failure is a failure: a retry would turn the
+# load-dependent flake #799 describes into a pass nobody sees.
+retries = 0
+# Report every failure in the run rather than stopping at the first.
+fail-fast = false
+
+# Each `sunrise-e2e` scenario boots a relay, and the CLI ones spawn `sunrise`
+# processes on top of it. Running every one of them at once beside the unit
+# tests is what loads a host; the group runs at most this many at a time while
+# the rest of the suite keeps the full thread count.
+[test-groups]
+sunrise-e2e = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = "package(sunrise-e2e)"
+test-group = "sunrise-e2e"
+# One CLI step can wait 180 s (`WAIT` in `crates/sunrise-e2e/src/cli.rs`) and a
+# scenario takes several, so the e2e kill (120 s x 5 periods = 10 min) comes
+# later than the unit tests'. The slowest scenario measured under the cap took
+# 127 s.
+slow-timeout = { period = "120s", terminate-after = 5 }

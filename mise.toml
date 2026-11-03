@@ -271,6 +271,23 @@ run = [
   "cargo test -p sunrise-log --test event_catalog",
 ]
 
+# `rust-test` under cargo-nextest and `.config/nextest.toml` (#958): a per-test
+# timeout that kills a hung test and names it, and at most four `sunrise-e2e`
+# scenarios at once. Opt-in; `rust-test`, the pre-push hook and CI are
+# unchanged. `--all-targets` for the same reason as in `rust-test`. nextest
+# cannot run doc tests, so the second step runs them through `rust-doctest`.
+#
+# cargo-nextest is pinned here rather than in `[tools]`, so only someone who
+# runs this task fetches it: mise installs the prebuilt release binary on the
+# first run instead of building it from source.
+[tasks.rust-test-nextest]
+description = "Run the Rust tests and doc tests under cargo-nextest, with per-test timeouts and capped e2e concurrency"
+tools = { "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.149" }
+run = [
+  "cargo nextest run --workspace --all-targets",
+  "mise run rust-doctest",
+]
+
 # What the pre-push hook runs instead of `rust-test` and `test`: only the tests
 # the push can affect (#953). `.github/scripts/prepush-scope.py` says which,
 # and why, from the files the push changes: the changed crates and every crate
