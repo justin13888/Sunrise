@@ -419,13 +419,14 @@ flag the only difference:
 | with `--all-features` | 45 | 76 | 1 | 13 | 36.89% |
 
 All 94 of `src/sse.rs`'s mutants missed — 94 of 94 — while the crate's own ten
-`sse` tests, including the one asserting that every transport operation carries
+`sse` tests (the module was then that one file; it is now the `src/sse/`
+directory, its tests in `src/sse/tests/`), including the one asserting that every transport operation carries
 a device binding, never compiled. Seventeen points of the crate's score were a
 build configuration, and #193 read them as untested security code.
 
 Why it went unnoticed for so long is worth keeping, because it is the part that
-generalises. `cargo test --workspace` compiles `src/sse.rs` and runs all ten of
-those tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
+generalises. `cargo test --workspace` compiles the `sse` module and runs its
+tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
 `sunrise-core-bindings` each depend on `sunrise-sync` with `features = ["sse"]`,
 and Cargo unifies features across a workspace build. cargo-mutants does not do a
 workspace build: it builds `-p sunrise-sync` alone, where nothing asks for the
