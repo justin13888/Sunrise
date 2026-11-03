@@ -1738,7 +1738,6 @@ dependencies = [
  "ciborium",
  "ed25519-dalek",
  "hpke",
- "rand 0.8.6",
  "rand_core 0.6.4",
  "serde",
  "serde_bytes",
