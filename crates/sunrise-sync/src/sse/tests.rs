@@ -2957,15 +2957,17 @@ async fn a_refusal_whose_body_stalls_is_still_reported_as_a_refusal() {
 /// than waited on for good.
 ///
 /// The `Hello` route is the one with nothing above it. The stream route's
-/// stall, above, was at least *cancelled*: `sync_driver.rs:848-855` selects
-/// over the read, so a stalled refusal there became a silent retry loop.
-/// This one is not. `sync_driver.rs:723` awaits the `Hello` send bare,
-/// outside any `tokio::select!`, `session(...)` is itself awaited bare at
-/// `sync_driver.rs:628`, and `Client::builder(...).build(https)` sets no
-/// timeout — so an unbounded read here parks the driver task with no error,
-/// no `SessionEnd::Disconnected`, no backoff and no log line. That is the
-/// "the client isn't syncing" state `sync_driver.rs:580-585` calls the
-/// commonest support question, and the only symptom is silence.
+/// stall, above, was at least *cancelled*:
+/// `crates/sunrise-core/src/sync_driver.rs:884-891#session` selects over the
+/// read, so a stalled refusal there became a silent retry loop. This one is
+/// not. `crates/sunrise-core/src/sync_driver.rs:709#handshake` awaits the
+/// `Hello` send bare, outside any `tokio::select!`, `session(...)` is itself
+/// awaited bare at `crates/sunrise-core/src/sync_driver.rs:474#run`, and
+/// `Client::builder(...).build(https)` sets no timeout — so an unbounded read
+/// here parks the driver task with no error, no `SessionEnd::Disconnected`, no
+/// backoff and no log line. That is the "the client isn't syncing" state
+/// `crates/sunrise-core/src/sync_driver.rs:422-424#run` calls the commonest
+/// support question, and the only symptom is silence.
 ///
 /// The relay answers `200` — a refusal is not needed to reach this, and a
 /// success makes the point better: the handshake is going *well* right up
