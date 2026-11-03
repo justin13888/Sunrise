@@ -11,7 +11,7 @@
 use sunrise_e2e::cli::{
     pair_over_relay, recovery_words, settle, sign_in, Device, SELF_HOST_BEARER,
 };
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// The alerts `device` would post now, as `(kind, device id)`.
 async fn alerts(device: &Device) -> Vec<(String, String)> {
@@ -39,7 +39,7 @@ async fn device_id(device: &Device) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_join_and_a_revocation_are_shown_once_on_every_device_they_concern() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let url = format!("http://{addr}");
     let dir = tempfile::tempdir().unwrap();
 

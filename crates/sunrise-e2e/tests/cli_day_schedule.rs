@@ -12,7 +12,7 @@
 use jiff::civil::Date;
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// The `Etc/GMT` zone `offset_h` hours east of UTC. The names are POSIX's,
 /// so their signs are inverted: `Etc/GMT-5` is UTC+5.
@@ -51,7 +51,7 @@ fn section<'a>(brief: &'a Value, id: &str) -> &'a Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_late_night_is_the_day_before_and_the_planner_day_travels() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
 
