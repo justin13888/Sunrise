@@ -344,6 +344,55 @@ mod tests {
         assert!(frames.is_empty());
     }
 
+    /// `relay_replay(k, c)` is `relay_replay_after(k, 0, c)` with each frame
+    /// reduced to its bytes, for every case the store conformance suite
+    /// replays: no cursor, a cursor behind and past the eviction watermark,
+    /// and a frame with no heads. That equality is what lets the trait carry
+    /// only `relay_replay_after`.
+    #[test]
+    fn relay_replay_is_relay_replay_after_from_zero() {
+        let s = store();
+        let caps = DurableCaps {
+            max_bytes: 30,
+            max_age_ms: u64::MAX,
+        };
+        for seq in 1..=5 {
+            s.relay_append(
+                KEY,
+                &[u8::try_from(seq).unwrap(); 8],
+                &head(seq),
+                1,
+                None,
+                0,
+                1000,
+                caps,
+            )
+            .unwrap();
+        }
+        s.relay_append(KEY, b"opaque", &[], 0, None, 0, 1000, caps)
+            .unwrap();
+        // The cases below reach a gap, or the comparison proves nothing about
+        // the gap half.
+        let (_, gaps) = s.relay_replay_after(KEY, 0, &cursors(1)).unwrap();
+        assert!(!gaps.is_empty(), "cursor 1 is behind what was evicted");
+        for c in [
+            HashMap::new(),
+            cursors(1),
+            cursors(4),
+            cursors(5),
+            cursors(u64::MAX),
+        ] {
+            let (bytes, gaps) = s.relay_replay(KEY, &c).unwrap();
+            let (frames, gaps_after) = s.relay_replay_after(KEY, 0, &c).unwrap();
+            assert_eq!(
+                bytes,
+                frames.into_iter().map(|f| f.bytes).collect::<Vec<_>>(),
+                "{c:?}"
+            );
+            assert_eq!(gaps, gaps_after, "{c:?}");
+        }
+    }
+
     #[test]
     fn an_unparseable_frame_is_never_filtered_out() {
         let s = store();
