@@ -7,7 +7,7 @@
 # `-Cpassess=sancov-*`, and the workspace pins 1.91.1 in `rust-toolchain.toml`
 # with an ADR guarding the pin. Folding this in would either break every
 # workspace command on a stable toolchain or force the whole tree onto nightly
-# for the sake of twelve harnesses.
+# for the sake of a handful of harnesses.
 #
 # The `[workspace]` table below is what makes this its own workspace root, so
 # `cargo` inside `fuzz/` does not walk up to the root manifest and refuse a
@@ -48,6 +48,10 @@ libfuzzer-sys = "0.4"
 # surface only a fuzzer can reach is a surface no attacker reaches either.
 # `sunrise-cbor` is here for `decode_canonical`, which the `identity_transition`
 # target decodes its body with: the decoder whose encoder `body_hash` hashes.
+# `ciborium` is here for the `key_bundle` target, which rebuilds a decoded
+# bundle's CBOR map to compare with its input, `sunrise-crypto` having no
+# encoder for a bundle it did not seal. Features as the root workspace's entry.
+ciborium = { version = "0.2", default-features = false }
 sunrise-cbor ={ path = "../crates/sunrise-cbor" }
 sunrise-crypto = { path = "../crates/sunrise-crypto" }
 sunrise-domain = { path = "../crates/sunrise-domain" }
@@ -83,7 +87,7 @@ async-trait = { version = "0.1", default-features = false }
 # nothing and therefore a gate that checks nothing. The module comment on each
 # harness is where the property that target asserts is written down, so a
 # broken intra-doc link there flattens the one explanation of what the fuzzer
-# is for. `mise run rust-doc` builds all twelve.
+# is for. `mise run rust-doc` builds every one.
 
 [[bin]]
 name = "op_envelope"
@@ -165,6 +169,20 @@ bench = false
 [[bin]]
 name = "pairing_messages"
 path = "fuzz_targets/pairing_messages.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "key_bundle"
+path = "fuzz_targets/key_bundle.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "identity_chain"
+path = "fuzz_targets/identity_chain.rs"
 test = false
 doc = true
 bench = false

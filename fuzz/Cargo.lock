@@ -1784,6 +1784,7 @@ name = "sunrise-fuzz"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "ciborium",
  "futures-executor",
  "jiff",
  "libfuzzer-sys",
