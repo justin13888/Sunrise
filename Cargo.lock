@@ -3527,7 +3527,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spargen",
- "sunrise-error",
  "sunrise-http-sig",
  "thiserror 1.0.69",
  "tokio",
