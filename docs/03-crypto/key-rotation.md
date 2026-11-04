@@ -494,7 +494,7 @@ Two things are deliberately not done:
 | `sunrise.stream_key.v1` (the pre-ADR-0024 derivation) | two frozen legacy keys, through `legacy_derived_stream_key` itself |
 | `sunrise.remote_op_id.v1` | three frozen op-log ids |
 | `sunrise.pair_sas.v1` | three frozen six-digit codes |
-| `sunrise.account_email_hash.v1` | three frozen bucket keys |
+| `sunrise.account_email_hash.v1` | three frozen account tags |
 | `sunrise-device-sig-v2` | the canonical string spelled out, and two frozen signatures that also verify |
 | `sunrise.import_block.v1` | three frozen Block ids |
 | `sunrise.routine_task.v1` | two frozen Task ids |
