@@ -18,9 +18,9 @@ The creating device computes it while sealing
 ([`../02-domain/attachments.md`](../02-domain/attachments.md)`:27`, "assigned by
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
-(`crates/sunrise-server/src/api/blobs/mod.rs:302-338#finalize`), takes the same first 16
+(`crates/sunrise-server/src/api/blobs/mod.rs#finalize`), takes the same first 16
 bytes as the storage key (`crates/sunrise-server/src/api/blobs/mod.rs#blob_key`), and returns it as
-`blb_` + 32 lowercase hex (`crates/sunrise-server/src/api/blobs/mod.rs:382#finalize`). The two values are equal by
+`blb_` + 32 lowercase hex (`crates/sunrise-server/src/api/blobs/mod.rs#finalize`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.
 
 That one 16-byte value is `Attachment.blob_id`
@@ -111,7 +111,7 @@ is one of the reasons cross-user sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 The manifest (`"<chunk_count> <size_bytes>"`) is written **after** every chunk
-(`crates/sunrise-server/src/api/blobs/mod.rs:345-379#finalize`), so a crash mid-commit leaves an invisible partial rather
+(`crates/sunrise-server/src/api/blobs/mod.rs#finalize`), so a crash mid-commit leaves an invisible partial rather
 than a short read: a reader that finds no manifest sees no blob.
 
 Upload is three calls, not one: `POST /blobs/init` reserves an `up_…` id and
@@ -185,8 +185,8 @@ Integrity comes from three facts, each at a different layer:
    guarantee, and it is the only hash the relay cannot compute.
 2. **`FinalizeRequest.chunk_hashes` are BLAKE3 of each *ciphertext* chunk**, and
    `FinalizeRequest.content_hash` is BLAKE3 of the concatenated ciphertext
-   (`crates/sunrise-server/src/api/blobs/mod.rs:116-121#FinalizeRequest`). The relay re-hashes what is on disk and refuses on
-   mismatch (`crates/sunrise-server/src/api/blobs/mod.rs:325-338#finalize`, `sunrise_blob_hash_mismatch_total`), which
+   (`crates/sunrise-server/src/api/blobs/mod.rs#FinalizeRequest`). The relay re-hashes what is on disk and refuses on
+   mismatch (`crates/sunrise-server/src/api/blobs/mod.rs#finalize`, `sunrise_blob_hash_mismatch_total`), which
    catches a chunk that never arrived, arrived truncated, or arrived corrupted —
    at upload time, rather than months later on another device.
 3. **The XChaCha20-Poly1305 tag inside each sealed chunk** catches any

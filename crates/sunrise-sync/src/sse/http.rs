@@ -31,7 +31,7 @@ pub(super) const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// document like every other route and is capped by [`MAX_EVENT_BYTES`] like
 /// every other route, so this number applies to one side of `is_success` and
 /// not to the route.
-/// `crates/sunrise-server/src/api/blobs/mod.rs:339-343#finalize` refuses to commit one larger
+/// `crates/sunrise-server/src/api/blobs/mod.rs#finalize` refuses to commit one larger
 /// than this, so the number is the relay's own ceiling restated on the side
 /// that has to allocate it. Capping it at [`MAX_EVENT_BYTES`] instead would
 /// refuse every attachment over eight mebibytes, and leaving it uncapped — as
