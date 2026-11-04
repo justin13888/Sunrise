@@ -1445,8 +1445,12 @@ impl SunriseCore {
     ///
     /// # Errors
     ///
-    /// None today: a second call while a driver runs is a no-op, and the
-    /// driver's connection failures happen after this has returned.
+    /// None today: the driver's connection failures happen after this has
+    /// returned. A second call while a driver runs does not start another or
+    /// restart the running one, so its `url` and `relay_device_id` are
+    /// ignored; its `bearer` still replaces the stored credential, exactly as
+    /// [`SunriseCore::set_sync_credential`] would, and the running driver
+    /// presents it on its next connect.
     pub fn start_sync(
         &self,
         url: String,
