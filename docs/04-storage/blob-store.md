@@ -19,7 +19,7 @@ The creating device computes it while sealing
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
 (`crates/sunrise-server/src/api/blobs/mod.rs:302-338#finalize`), takes the same first 16
-bytes as the storage key (`crates/sunrise-server/src/api/blobs/mod.rs:466-474#blob_key`), and returns it as
+bytes as the storage key (`crates/sunrise-server/src/api/blobs/mod.rs#blob_key`), and returns it as
 `blb_` + 32 lowercase hex (`crates/sunrise-server/src/api/blobs/mod.rs:382#finalize`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.
 
@@ -53,9 +53,9 @@ per account (§Server-side storage below).
 - Chunks are streamed to/from the server independently.
 - **Two different numbers, often confused.** 256 KiB is the *plaintext* chunking
   unit. 1 MiB is the relay's ceiling on a single *ciphertext* chunk body
-  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES`), alongside a
-  4096-chunk cap (`crates/sunrise-server/src/api/blobs/mod.rs:77#MAX_CHUNK_COUNT`) and a 100 MB per-blob cap
-  (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). A 256 KiB plaintext
+  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES`), alongside a
+  4096-chunk cap (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_COUNT`) and a 100 MB per-blob cap
+  (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`). A 256 KiB plaintext
   chunk seals to 256 KiB + a 16-byte tag, comfortably inside the ceiling; the
   ceiling is an anti-DoS bound on a request body, not a chunk size.
 
@@ -102,7 +102,7 @@ The relay stores the same sealed chunks under the same `blob_id`, in the same
 <blob_root>/committed/<blake3(account_id)[..16] hex>/manifests/<blob_id_hex>
 ```
 
-The per-account root is deliberate and load-bearing (`crates/sunrise-server/src/api/blobs/mod.rs:31-39`, `crates/sunrise-server/src/api/blobs/mod.rs:447-458#account`):
+The per-account root is deliberate and load-bearing (`crates/sunrise-server/src/api/blobs/mod.rs:31-39`, `crates/sunrise-server/src/api/blobs/mod.rs#account`):
 content addressing without it would be a cross-tenant read primitive, since one
 account could name another's blob by its hash. A grantee naming an owner's
 `blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id

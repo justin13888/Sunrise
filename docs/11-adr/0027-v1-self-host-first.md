@@ -140,7 +140,7 @@ enforces are fixed operator constants, not per-account accounting:
 | Limit | Value | Source |
 |---|---|---|
 | Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
-| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES` |
+| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES` |
 | Blob chunk count | 4096 | `api/blobs/mod.rs:77` |
 | Blob size | 100 MB | `api/blobs/mod.rs:81` |
 | Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log/append.rs:11,18` |

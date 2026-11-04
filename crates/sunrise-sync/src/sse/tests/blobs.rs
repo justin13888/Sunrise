@@ -75,7 +75,7 @@ async fn a_stalled_blob_fetch_is_reported_rather_than_parking_the_caller() {
 /// side, which is the side that matters anyway — sizing this route by
 /// [`super::MAX_EVENT_BYTES`] would refuse every attachment over eight
 /// mebibytes, and the relay commits them up to a hundred megabytes
-/// (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). A byte past the event cap
+/// (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`). A byte past the event cap
 /// is enough to tell the two constants apart, and it is the cheapest body
 /// that can.
 ///
