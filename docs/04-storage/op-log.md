@@ -55,17 +55,20 @@ CREATE TABLE ops (
 `UNIQUE (stream_id, device_id, seq)` is the constraint a writer has to respect,
 and there is one way to get it wrong. Inserting an op resolves its stream's
 epoch, and resolving an epoch can **mint** the stream's first key; minting
-emits one `key_envelope` control op per recipient, and every control op is
-routed to the **vault-meta** stream whatever stream was being minted for. So a
+emits one `key_envelope` control op per recipient, and those ops are routed to
+the **vault-meta** stream whatever stream was being minted for. So a
 command whose own op also routes to vault-meta must not read its `seq` before
 the mint that may spend it — and `INSERT OR IGNORE` means it does not get an
 error, it gets silence, followed by a foreign-key failure on its outbox row.
 
-`Engine::meta_slot` makes that unstatable: it resolves
-the epoch, reads the sequence number and takes the LWW stamp, in that order, and
-it is the only thing that hands out a vault-meta `seq`. Commands routed to a
-Task's own Stream are unaffected and read `next_seq` outside their transaction:
-their counter is not the one the envelopes consume.
+`Engine::log_slot` makes that unstatable for commands: it resolves the epoch,
+reads the sequence number and takes the LWW stamp, in that order, inside the
+command's transaction, and it is the only way a command's op gets a `seq`,
+whichever stream the op is routed to. Control ops do not go through it: each
+path that emits one into vault-meta (`Engine::emit_control_op`, device
+revocation, identity and sync) resolves the epoch itself before it reads `seq`,
+and a stream digest is sealed only under a key its stream already holds, so it
+never mints.
 
 See [#214](https://github.com/justin13888/Sunrise/issues/214). `Core::open` runs
 `ensure_base_epochs`, so no released build can reach it; an engine constructed
