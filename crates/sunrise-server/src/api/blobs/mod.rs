@@ -50,11 +50,14 @@ pub mod fetch;
 mod tests;
 
 pub use delete::{BlobDeleteRequest, BlobDeleteResponse};
+// The id newtypes live in the crate-private `api::ids`; re-exported so the
+// pub fields of `FinalizeRequest`, `ChunkPath` and `BlobIdPath` carry types
+// a caller outside the crate can name.
+pub use crate::api::ids::{BlobId, ChunkHash, UploadId};
 
 use crate::api::account_deletion::refuse_if_pending;
 use crate::api::error::{codes, ApiError};
 use crate::api::ids::{parse_hash, parse_upload_id};
-use crate::api::ids::{BlobId, ChunkHash, UploadId};
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary};
