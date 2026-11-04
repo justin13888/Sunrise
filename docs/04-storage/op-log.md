@@ -55,8 +55,8 @@ CREATE TABLE ops (
 `UNIQUE (stream_id, device_id, seq)` is the constraint a writer has to respect,
 and there is one way to get it wrong. Inserting an op resolves its stream's
 epoch, and resolving an epoch can **mint** the stream's first key; minting
-emits one `key_envelope` control op per recipient, and every control op is
-routed to the **vault-meta** stream whatever stream was being minted for. So a
+emits one `key_envelope` control op per recipient, and those ops are routed to
+the **vault-meta** stream whatever stream was being minted for. So a
 command whose own op also routes to vault-meta must not read its `seq` before
 the mint that may spend it — and `INSERT OR IGNORE` means it does not get an
 error, it gets silence, followed by a foreign-key failure on its outbox row.
