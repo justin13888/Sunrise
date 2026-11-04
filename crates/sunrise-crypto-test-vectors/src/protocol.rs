@@ -49,14 +49,15 @@ pub const SAS_VECTORS: [SasVector; 3] = [
 /// `BLAKE3.derive_key("sunrise.account_email_hash.v1", lowercase(trim(email)),
 /// 4)`, per `docs/03-crypto/pairing-and-onboarding.md`.
 ///
-/// The bucket key a pairing rate limit counts against. A build that derived it
-/// differently would file the same user under a different bucket on a
-/// different device, which is a rate limit that does not limit.
+/// The account tag a pairing QR carries, so a screen can say which account it
+/// is pairing without holding the address. It is not a rate-limit key: the
+/// relay buckets attempts by `account_id`. A build that derived it differently
+/// would show a different tag for the same account on a different device.
 #[derive(Debug, Clone, Copy)]
 pub struct EmailHashVector {
     /// The address as supplied, before normalisation.
     pub email: &'static str,
-    /// The 4-byte bucket key.
+    /// The 4-byte account tag.
     pub hash: [u8; 4],
 }
 
