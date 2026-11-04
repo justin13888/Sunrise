@@ -236,7 +236,7 @@ async fn a_body_that_stops_arriving_is_cut_off_at_the_idle_deadline() {
 /// blob route, so the split there is by status rather than by route.
 ///
 /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
-/// (`crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`) restated on the side that
+/// (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`) restated on the side that
 /// allocates it. Lowering it would refuse attachments the relay accepted,
 /// which is a failure no caller could diagnose from here. It bounds a
 /// fetched attachment and nothing else; a refused fetch is capped by
