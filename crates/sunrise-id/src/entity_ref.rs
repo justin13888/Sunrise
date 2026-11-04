@@ -162,6 +162,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_non_string_input_names_what_was_expected() {
+        let err = serde_json::from_str::<EntityRef>("42").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected a 30-char prefixed ULID like `tsk_…`"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn round_trip_str() {
         let bytes = [
             0x01, 0x91, 0x9c, 0x06, 0x39, 0x3e, 0xc5, 0x68, 0x95, 0x6e, 0xb6, 0x95, 0x57, 0xa9,
