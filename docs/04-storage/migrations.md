@@ -578,8 +578,7 @@ and `migrations.rs` assert:
   `IntegrityCheckFailed`.
 
 Every one of those replays SQL into a connection this build just created. None
-of them opens an *old vault*, and for a long time nothing did — which meant the
-migrations had never run against the thing they exist for.
+of them opens an *old vault*.
 
 ### Old-vault fixtures
 
