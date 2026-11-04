@@ -22,9 +22,11 @@ status: proposed
 >
 > **Where the built parts are contracts:** this page is `proposed`, so nothing
 > quoted from it binds ([ADR-0042](../11-adr/0042-v0-forever.md) §4). The
-> `Plain<T>` wrapper and its `log-redaction` gate are specified in
-> [`logging.md` §6.3](./logging.md#63-ci-enforcement), and the operator tracing
-> in [`../06-server/observability.md`](../06-server/observability.md#tracing).
+> `Plain<T>` wrapper is specified in
+> [`logging.md` §6](./logging.md#how-this-is-enforced) and its `log-redaction`
+> gate in [`logging.md` §6.3](./logging.md#63-ci-enforcement), and the
+> operator tracing in
+> [`../06-server/observability.md`](../06-server/observability.md#tracing).
 > Those `accepted` pages are the ones to cite.
 
 ## Default
