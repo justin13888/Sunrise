@@ -38,16 +38,31 @@ token path.**
 
   | Platform | Google client type | Redirect |
   |---|---|---|
-  | macOS | Desktop app | Loopback `http://127.0.0.1:<port>/callback` |
+  | macOS | iOS (bound to the macOS app's bundle id) | Custom scheme, as for iOS |
   | iOS / iPadOS | iOS | Custom scheme from the bundle id |
   | Windows, Linux | Desktop app | Loopback |
   | Android | Android (package + signing cert) | App link |
 
   A token minted by one platform's client is unusable by another's, which is one
-  of the reasons tokens are never synced.
-- **There is no `client_secret`.** An installed app is a public client; a
-  `client_id` is public and ships in the binary. A build MAY substitute its own
-  `client_id`s, as §Client registration says.
+  of the reasons tokens are never synced. The macOS app registers an iOS
+  client rather than a Desktop app client because
+  [Google requires it](https://developers.google.com/identity/sign-in/ios/start-integrating)
+  ("For iOS and macOS apps the OAuth client ID application type must be
+  configured as iOS"), and because an iOS client has no secret.
+- **The Apple apps send no `client_secret`.** An installed app is a public
+  client; a `client_id` is public and ships in the binary. Google issues no
+  secret to an iOS client and
+  [does not accept one from it](https://developers.google.com/identity/protocols/oauth2/native-app)
+  at the token endpoint, so `OAuthFlow::code_exchange_request` sends none. A
+  Desktop app client, the type Windows and Linux use, *is* issued a
+  `client_secret`. Google says a Desktop app cannot keep it confidential and
+  lists it as optional at the token endpoint. Nobody has yet checked against a
+  live registration whether the exchange succeeds without it. The first
+  Windows or Linux build settles that before it ships. If the exchange needs
+  the secret, it becomes a build input next to that platform's `client_id`
+  (public, like the id, and never relay config), and `OAuthFlow` gains a
+  field to carry it. A build MAY substitute its own `client_id`s, as §Client
+  registration says.
 - **Scopes:** `https://www.googleapis.com/auth/calendar.readonly` to read, plus
   `openid` to learn the account's `sub`. Writing adds
   `https://www.googleapis.com/auth/calendar.events`, a separate grant a device
@@ -80,9 +95,12 @@ relay in possession of every user's calendar tokens.
 Sunrise's official builds use one Google Cloud project, owned by the project
 owner:
 
-- **OAuth clients**, one per platform from the table in §Auth: a Desktop app
-  client for macOS and an iOS client bound to the iOS app's bundle id. Windows,
-  Linux and Android clients are registered when those apps ship.
+- **OAuth clients**, one per platform from the table in §Auth: two iOS-type
+  clients, one bound to the macOS app's bundle id (`dev.sunrise.Sunrise`) and
+  one to the iOS app's (`dev.sunrise.SunriseiOS`). An iOS client has no
+  `client_secret`, so each Apple build needs only a `client_id`. Windows,
+  Linux and Android clients are registered when those apps ship. The Windows
+  and Linux ones are Desktop app clients, which come with a secret (§Auth).
 - **Data Access** lists exactly `openid`, `calendar.readonly` and
   `calendar.events`. Verification is requested once for both calendar scopes,
   so turning on writes needs no second review. Reading calendar events is
@@ -106,9 +124,9 @@ reconnect. A build with no Google `client_id` for its platform does not offer
 Google; there is no placeholder id.
 
 **Substituting your own.** Anyone building the apps from source can use their
-own registrations instead of the official ones, and must for an iOS build
-whose bundle id differs from the official app's, because an iOS client is
-bound to a bundle id. Create a Google Cloud project, register the clients and
+own registrations instead of the official ones, and must for a macOS or iOS
+build whose bundle id differs from the official app's, because an iOS-type
+client is bound to a bundle id. Create a Google Cloud project, register the clients and
 scopes above, add yourself as a test user (or get your own verification), and
 supply your `client_id`s as the build's inputs. A self-hosted relay needs none
 of this: official app builds connect Google the same way whichever relay they
