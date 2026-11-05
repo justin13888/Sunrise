@@ -2,7 +2,10 @@
 //!
 //! Supported today: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`,
 //! `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. NOT supported: `BYYEARDAY`,
-//! `BYWEEKNO`. Extensions (floating windows, adaptive cadence) are out of
+//! `BYWEEKNO`, and an ordinal `BYDAY` token (`1MO`, `-1FR`): `BYDAY` holds
+//! plain weekdays, and "the first Monday" is `BYDAY=MO;BYSETPOS=1`. An
+//! ordinal token is kept as an unknown [`Weekday`], so the rule expands to
+//! nothing. Extensions (floating windows, adaptive cadence) are out of
 //! scope here.
 //!
 //! This module implements parsing + recognition; full DST-aware expansion
@@ -523,6 +526,21 @@ mod tests {
         assert!(RRule::parse("FREQ=WEEKLY;BYDAY=MO")
             .unwrap()
             .is_understood());
+    }
+
+    #[test]
+    fn an_ordinal_byday_token_is_an_unknown_weekday() {
+        // `BYDAY` holds plain weekdays only (#928); the ordinal form is
+        // spelled with `BYSETPOS`. A stored ordinal is kept verbatim.
+        for (body, raw) in [
+            ("FREQ=MONTHLY;BYDAY=1MO", "1MO"),
+            ("FREQ=MONTHLY;BYDAY=-1FR", "-1FR"),
+        ] {
+            let r = RRule::parse(body).unwrap();
+            assert_eq!(r.first_unknown(), Some(("BYDAY", raw)), "{body}");
+            assert!(!r.is_understood(), "{body}");
+            assert_eq!(r.to_rfc5545(), body);
+        }
     }
 
     #[test]

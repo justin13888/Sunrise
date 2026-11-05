@@ -56,6 +56,12 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
         // stored rules back (ADR-0045 §6). A rule someone typed is a request,
         // and a request for a schedule this build cannot run is an error.
         if let Some((part, raw)) = rule.first_unknown() {
+            if let Some(hint) = (part == "BYDAY").then(|| ordinal_byday_hint(raw)).flatten() {
+                return Err(format!(
+                    "RRULE bad value for BYDAY: {raw} (an ordinal weekday is not supported; \
+                     write {hint})"
+                ));
+            }
             return Err(format!("RRULE bad value for {part}: {raw}"));
         }
         return Ok(rule);
@@ -148,6 +154,20 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
         }
     }
     Ok(rule)
+}
+
+/// The `BYSETPOS` spelling of an ordinal `BYDAY` token (`1MO`, `-1FR`,
+/// `+2TU`), or `None` when `raw` is not one.
+///
+/// `BYDAY` holds plain weekdays only; the stored [`Weekday`] has no ordinal,
+/// so a rule written with one cannot run. The `BYSETPOS` form picks the same
+/// day when the token stands alone, which is the case the hint is for.
+fn ordinal_byday_hint(raw: &str) -> Option<String> {
+    let split = raw.find(|c: char| c.is_ascii_alphabetic())?;
+    let (n, day) = raw.split_at(split);
+    let n: i32 = n.strip_prefix('+').unwrap_or(n).parse().ok()?;
+    let day = Weekday::parse(day)?;
+    (n != 0).then(|| format!("BYDAY={};BYSETPOS={n}", day.as_str()))
 }
 
 /// Split a trailing `x12` occurrence count off the word list.
@@ -317,6 +337,29 @@ mod tests {
         ] {
             let err = parse_recurrence(body).unwrap_err();
             assert!(err.contains(part), "{body}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_ordinal_byday_is_refused_with_its_bysetpos_spelling() {
+        // `BYDAY` holds plain weekdays only (#928): an ordinal would be kept
+        // as an unknown value and expand to nothing, so a typed one is
+        // refused and pointed at the form that runs.
+        for (body, hint) in [
+            ("FREQ=MONTHLY;BYDAY=1MO", "BYDAY=MO;BYSETPOS=1"),
+            ("FREQ=MONTHLY;BYDAY=-1FR", "BYDAY=FR;BYSETPOS=-1"),
+            ("RRULE:FREQ=YEARLY;BYDAY=+2TU", "BYDAY=TU;BYSETPOS=2"),
+        ] {
+            let err = parse_recurrence(body).unwrap_err();
+            assert!(err.contains("BYDAY") && err.contains(hint), "{body}: {err}");
+            // The suggested spelling is one this build accepts.
+            let fixed = body.split("BYDAY=").next().unwrap_or_default().to_owned() + hint;
+            assert!(parse_recurrence(&fixed).is_ok(), "{fixed}");
+        }
+        // Not an ordinal: no hint, just the value it could not read.
+        for body in ["FREQ=WEEKLY;BYDAY=0MO", "FREQ=WEEKLY;BYDAY=1XX"] {
+            let err = parse_recurrence(body).unwrap_err();
+            assert!(!err.contains("BYSETPOS"), "{body}: {err}");
         }
     }
 
