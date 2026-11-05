@@ -38,7 +38,7 @@ fn open_vault(root: [u8; 32], seed: &IdentitySeed) -> (Engine, Db) {
         seed,
     )
     .unwrap();
-    let e = Engine::from_clock(c, Arc::new(SystemRng), Arc::new(kc));
+    let e = Engine::from_clock(c, seeded_rng(), Arc::new(kc));
     e.ensure_base_epochs(&mut db).unwrap();
     e.publish_device_cert(&mut db).unwrap();
     (e, db)
@@ -341,8 +341,8 @@ fn a_record_from_another_account_is_refused() {
     rotate(&a, &mut adb, true);
     let chain = chain_of(&a, &adb);
     let (stranger, mut sdb) = open_vault([0x53; 32], &IdentitySeed::Own);
-    assert!(matches!(
+    invalid(
         stranger.seed_identity_chain(&mut sdb, &chain),
-        Err(EngineError::Invalid(_))
-    ));
+        "the identity chain starts at another account's identity",
+    );
 }

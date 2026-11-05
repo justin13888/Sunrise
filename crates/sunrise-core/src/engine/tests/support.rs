@@ -3,8 +3,16 @@
 //! A sibling module cannot reach another sibling's private items, so a helper
 //! more than one test module draws on lives here. Everything is `pub(super)`,
 //! which keeps it reachable from `tests` and from any module nested inside it.
+//! The submodules below spell that `pub(in crate::engine::tests)`, the same
+//! reach one level further down, and are re-exported from here.
 
 use super::*;
+
+mod future_ops;
+mod replica_pair;
+
+pub(super) use future_ops::*;
+pub(super) use replica_pair::*;
 
 #[derive(Debug)]
 pub(super) struct FakeClock(pub(super) PLMutex<u64>);
@@ -70,6 +78,28 @@ pub(super) fn engine() -> Engine {
         seeded_rng(),
         keychain,
     )
+}
+
+/// `err` is the `Invalid` refusal whose reason holds `why`, so a refusal from
+/// a different check than the one a case names fails it.
+#[track_caller]
+pub(super) fn assert_invalid(err: &EngineError, why: &str) {
+    match err {
+        EngineError::Invalid(reason) => {
+            assert!(reason.contains(why), "refused for {reason:?}, not {why:?}");
+        }
+        other => panic!("expected Invalid({why:?}), got {other:?}"),
+    }
+}
+
+/// `r` is the `Invalid` refusal whose reason holds `why`; see
+/// [`assert_invalid`].
+#[track_caller]
+pub(super) fn invalid<T: std::fmt::Debug>(r: Result<T, EngineError>, why: &str) {
+    match r {
+        Err(err) => assert_invalid(&err, why),
+        Ok(v) => panic!("expected Invalid({why:?}), got Ok({v:?})"),
+    }
 }
 
 pub(super) fn db() -> Db {
@@ -944,7 +974,7 @@ pub(super) fn revocation_row(db: &Db, device: &[u8; 16]) -> Option<RevocationRow
 /// The `ev` names of every event emitted while a closure runs, in order.
 ///
 /// Only the `ev` field is kept, which is the only part of a log line this
-/// repository treats as a contract — `crates/sunrise-log/tests/event_catalog.rs`
+/// repository treats as a contract — `crates/sunrise-log/tests/event_catalog/`
 /// is the gate on that name. The capture, and the tracing interest-cache
 /// pin it needs to see anything at all, are `sunrise-log`'s.
 pub(super) use sunrise_log::test_util::events_emitted_by;
@@ -1122,21 +1152,6 @@ pub(super) fn delivery_schedule() -> impl proptest::strategy::Strategy<Value = V
         proptest::prelude::Just((0..DELIVERY_OPS).collect::<Vec<usize>>()).prop_shuffle(),
     )
         .prop_map(|(noisy, tail)| noisy.into_iter().chain(tail).collect())
-}
-
-/// Build the `unknown` map a newer schema would have written.
-pub(super) fn future_fields() -> sunrise_domain::Unknowns {
-    use ciborium::value::Value;
-    let mut u = sunrise_domain::Unknowns::new();
-    u.insert(
-        "delegated_to".into(),
-        sunrise_domain::CborValue(Value::Text("prs_future".into())),
-    );
-    u.insert(
-        "zzz_sort_last".into(),
-        sunrise_domain::CborValue(Value::Integer(7.into())),
-    );
-    u
 }
 
 /// A clock pinned to a named zone, so a test can move a device between
@@ -1551,110 +1566,8 @@ pub(super) fn engine_at(
     let tz = jiff::tz::TimeZone::get(zone).unwrap();
     let now = u64::try_from(tz.to_zoned(local).unwrap().timestamp().as_millisecond()).unwrap();
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(root)));
-    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), Arc::new(SystemRng), kc);
+    let e = Engine::from_clock(Arc::new(ZonedClock(now, zone)), seeded_rng(), kc);
     (e, now)
-}
-
-/// Two replicas of one vault that trust each other, on clocks of their own.
-pub(super) struct Pair {
-    pub(super) ea: Engine,
-    pub(super) eb: Engine,
-    pub(super) ca: Arc<FakeClock>,
-    pub(super) cb: Arc<FakeClock>,
-    pub(super) dba: Db,
-    pub(super) dbb: Db,
-}
-
-/// A [`Pair`] over `root` that has exchanged nothing.
-fn pair_under(root: [u8; 32]) -> Pair {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(root, [1u8; 32], ca.clone());
-    let eb = engine_seeded(root, [2u8; 32], cb.clone());
-    let mut dba = db_root(root);
-    let mut dbb = db_root(root);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    Pair {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    }
-}
-
-/// A [`Pair`] over [`ROOT`] that has exchanged nothing.
-pub(super) fn pair() -> Pair {
-    pair_under(ROOT)
-}
-
-/// A [`Pair`] over `root`, each side having delivered what it wrote to the
-/// other, after advertising its features if `advertise`.
-pub(super) fn synced_pair(root: [u8; 32], advertise: bool) -> Pair {
-    let mut p = pair_under(root);
-    if advertise {
-        assert!(p.ea.advertise_features(&mut p.dba).unwrap());
-        assert!(p.eb.advertise_features(&mut p.dbb).unwrap());
-    }
-    sync(&mut p);
-    p
-}
-
-/// Every op `from` logged under its own device, delivered to `to` in each
-/// stream's order. Re-delivering one `to` already holds is a no-op.
-///
-/// `strict` panics on a refused op. A test whose subject is the refusal passes
-/// `false` and asserts on what the refusal left behind.
-pub(super) fn deliver(from: &Engine, from_db: &Db, to: &Engine, to_db: &mut Db, strict: bool) {
-    let device = from.keychain.device_id();
-    let envs: Vec<Vec<u8>> = {
-        let mut stmt = from_db
-            .conn()
-            .prepare("SELECT envelope FROM ops WHERE device_id = ? ORDER BY stream_id, seq")
-            .unwrap();
-        stmt.query_map(params![&device[..]], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for env in envs {
-        let applied = to.apply_remote_all(to_db, &env);
-        if strict {
-            applied.unwrap();
-        }
-    }
-}
-
-/// [`deliver`] both ways across `p`, refusing nothing.
-pub(super) fn sync(p: &mut Pair) {
-    deliver(&p.ea, &p.dba, &p.eb, &mut p.dbb, true);
-    deliver(&p.eb, &p.dbb, &p.ea, &mut p.dba, true);
-}
-
-/// Every envelope `db` holds, in the order a relay would hand them over:
-/// by stream, device and seq.
-pub(super) fn all_envs(db: &Db) -> Vec<Vec<u8>> {
-    let mut stmt = db
-        .conn()
-        .prepare("SELECT envelope FROM ops ORDER BY stream_id, device_id, seq")
-        .unwrap();
-    stmt.query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
-}
-
-/// Deliver every envelope of `from` to `to`, in relay order, except the ones
-/// `to` wrote itself, which a relay does not echo back.
-pub(super) fn relay(from: &Db, to: &Engine, to_db: &mut Db) {
-    let me = to.keychain.device_id();
-    for env in all_envs(from) {
-        if decode_envelope(&env).unwrap().device_id != me {
-            to.apply_remote_all(to_db, &env).unwrap();
-        }
-    }
 }
 
 /// A helper for the four tests below: the device list row for one id.
@@ -1672,95 +1585,4 @@ pub(super) fn made_up_device(n: u64) -> [u8; 16] {
     let mut id = [0xF0u8; 16];
     id[8..].copy_from_slice(&n.to_be_bytes());
     id
-}
-
-/// Emit, as `sender`, a genuine sealed and signed op on `stream` whose inner
-/// CBOR is `inner`, and return its envelope. This is how a newer build's op
-/// family looks to this one: every envelope check passes, and only the
-/// payload is foreign.
-pub(super) fn emit_raw_inner(
-    sender: &Engine,
-    db: &mut Db,
-    stream: &[u8; 16],
-    inner: &[u8],
-) -> Vec<u8> {
-    let device = sender.keychain.device_id();
-    // Sealed as the newer build that wrote it would have, whatever this
-    // vault requires: what is under test is the receiver.
-    let op_id = super::features::sealing_as_peer(|| {
-        db.with_tx(|tx| {
-            let seq = sender.next_seq_tx(tx, stream)?;
-            let op_id = remote_op_id(stream, &device, seq);
-            sender.ops_insert(
-                tx,
-                &op_id,
-                stream,
-                seq,
-                sender.hlc.send(),
-                inner,
-                "future.kind",
-                "future",
-                None,
-                Some(T0),
-                None,
-                T0,
-                &[],
-            )?;
-            Ok(op_id)
-        })
-    })
-    .unwrap();
-    env_bytes(db, &op_id)
-}
-
-pub(super) fn future_kind_inner(name: &str) -> Vec<u8> {
-    use ciborium::value::Value;
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(
-        &Value::Map(vec![(
-            Value::Text(name.into()),
-            Value::Map(vec![(Value::Text("title".into()), Value::Text("x".into()))]),
-        )]),
-        &mut buf,
-    )
-    .unwrap();
-    buf
-}
-
-/// `(reason, kind, parked_under_doc_schema_v)` of every parked row.
-pub(super) fn parked_rows(db: &Db) -> Vec<(String, String, i64)> {
-    let mut stmt = db
-        .conn()
-        .prepare("SELECT reason, kind, parked_under_doc_schema_v FROM parked_ops")
-        .unwrap();
-    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
-}
-
-/// `(inner_kind, applied_at)` of the `ops` row for `op_id`.
-pub(super) fn op_row(db: &Db, op_id: &[u8; 16]) -> (String, Option<i64>) {
-    db.conn()
-        .query_row(
-            "SELECT inner_kind, applied_at FROM ops WHERE op_id = ?",
-            params![&op_id[..]],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap()
-}
-
-/// Set a task's state to one this build does not know.
-pub(super) fn set_unknown_state(e: &Engine, db: &mut Db, task: EntityRef, raw: &str) {
-    e.apply(
-        db,
-        Command::UpdateTask {
-            id: task,
-            patch: TaskPatch {
-                state: Some(TaskState::from_raw(raw)),
-                ..Default::default()
-            },
-        },
-    )
-    .unwrap();
 }

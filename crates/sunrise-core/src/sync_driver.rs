@@ -102,7 +102,7 @@ use crate::config::Rng;
 use crate::core::Core;
 use crate::snapshot_sync::{recover_gaps, GapRecovery};
 use frames::{
-    build_hello, decode_hello_ack, encode_hello, encode_subscribe_one, subscribe_to_new_streams,
+    build_hello, decode_hello_ack, encode_hello, encode_subscribe_session, subscribe_to_new_streams,
 };
 use schedule::{
     backoff_sleep, next_deadline, retransmit_due, rng_unit, Deadlines, Due, InflightBatch,
@@ -245,18 +245,35 @@ impl SyncConfig {
 // Driver task
 // ---------------------------------------------------------------------------
 
+/// The relay's `Retry-After` on a refusal, for a connect that failed before
+/// any session existed to end.
+fn retry_after_of(e: &TransportError) -> Option<Duration> {
+    match e {
+        TransportError::Server { retry_after, .. } => *retry_after,
+        _ => None,
+    }
+}
+
 enum SessionEnd {
     /// Shutdown requested; stop the driver.
     Shutdown,
     /// Transport dropped, or the session failed locally; reconnect after
     /// backoff.
     Disconnected,
-    /// The relay refused the stream and said why: `recv_frame` returned
-    /// [`TransportError::Server`] with the relay's own code. Reconnects after
-    /// backoff exactly as `Disconnected` does; it is a separate variant so the
-    /// code reaches `sync.session.error` instead of being discarded with the
-    /// error that carried it.
-    Refused { code: &'static str, message: String },
+    /// The relay refused the session and said why: the `Hello` send or a
+    /// `recv_frame` returned [`TransportError::Server`] with the relay's own
+    /// code. Reconnects after backoff exactly as `Disconnected` does; it is a
+    /// separate variant so the code reaches `sync.session.error` instead of
+    /// being discarded with the error that carried it.
+    ///
+    /// `retry_after` is the refusal's `Retry-After`: the next reconnect waits
+    /// at least that long (capped at [`schedule::MAX_RETRY_AFTER`]), so a
+    /// rate-limited relay is not re-hit inside the window it asked for.
+    Refused {
+        code: &'static str,
+        message: String,
+        retry_after: Option<Duration>,
+    },
     /// The relay sent a `Close`. The code's catalogue `retryable` flag decides
     /// what happens next: a retryable close reconnects after backoff, any
     /// other parks the driver in [`SyncState::Stopped`]. See
@@ -265,12 +282,29 @@ enum SessionEnd {
 }
 
 impl SessionEnd {
-    /// The end a failed `recv_frame` means. A relay refusal keeps its code;
-    /// every other transport error is a drop.
-    fn from_recv_error(e: TransportError) -> Self {
+    /// The end a failed `Hello` send or `recv_frame` means. A relay refusal
+    /// keeps its code; every other transport error is a drop.
+    fn from_transport_error(e: TransportError) -> Self {
         match e {
-            TransportError::Server { code, message } => Self::Refused { code, message },
+            TransportError::Server {
+                code,
+                message,
+                retry_after,
+            } => Self::Refused {
+                code,
+                message,
+                retry_after,
+            },
             _ => Self::Disconnected,
+        }
+    }
+
+    /// The least the next reconnect must wait: the relay's `Retry-After`,
+    /// when this end is a refusal that carried one.
+    fn reconnect_floor(&self) -> Option<Duration> {
+        match self {
+            Self::Refused { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 
@@ -460,7 +494,7 @@ pub(crate) async fn run(
                         "relay connect failed"
                     ),
                 }
-                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared, retry_after_of(&e)).await {
                     break;
                 }
                 continue;
@@ -500,7 +534,7 @@ pub(crate) async fn run(
             backoff.reset();
         }
         drop(core);
-        shared.set_state(end.state_after());
+        publish_session_end(&shared, &end);
         log_session_end(&end);
         if matches!(end, SessionEnd::Shutdown) {
             break;
@@ -516,7 +550,7 @@ pub(crate) async fn run(
             marked_at_connect = Some(to_v);
             continue;
         }
-        if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+        if !backoff_sleep(&mut backoff, rng.as_ref(), &shared, end.reconnect_floor()).await {
             break;
         }
     }
@@ -547,6 +581,18 @@ async fn park_until_renewed(shared: &SyncShared, renewals: &mut TokenWatch) -> O
     Some(to_v)
 }
 
+/// Tell readers how the session ended: the refusal's code, when the relay
+/// named one, and the state the driver is now in.
+///
+/// The refusal is recorded before the state changes, so a reader woken by
+/// the `Disconnected` snapshot already finds the code that caused it.
+fn publish_session_end(shared: &SyncShared, end: &SessionEnd) {
+    if let SessionEnd::Refused { code, .. } = end {
+        shared.note_refusal(code);
+    }
+    shared.set_state(end.state_after());
+}
+
 /// `sync.session.closed` for every end, and `sync.session.error` for the ends
 /// the relay chose and named.
 ///
@@ -571,7 +617,7 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Shutdown | SessionEnd::Disconnected => {}
         // Worded like the connect path's arm for the same code, because it
         // is the same refusal arriving by the other route.
-        SessionEnd::Refused { code, message }
+        SessionEnd::Refused { code, message, .. }
             if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
         {
             tracing::warn!(
@@ -584,14 +630,20 @@ fn log_session_end(end: &SessionEnd) {
                 "relay refused this device's signature; check the clock, not the token"
             );
         }
-        SessionEnd::Refused { code, message } => tracing::warn!(
+        // `err_kind` is the catalogue's for the relay's code, as for a close:
+        // a `Hello` refused with `AUTH_TOKEN_INVALID` or `AUTH_DEVICE_REVOKED`
+        // is not a transient fault. `retryable` stays the driver's, which
+        // reconnects after any refusal. A code outside the catalogue keeps
+        // the old `transient`.
+        SessionEnd::Refused { code, message, .. } => tracing::warn!(
             ev = "sync.session.error",
             err_code = *code,
-            err_kind = "transient",
+            err_kind = ErrorCode::from_wire_str(code)
+                .map_or("transient", |c| c.default_kind().as_str()),
             retryable = true,
             result = "failed",
             cause = %message,
-            "relay refused the event stream"
+            "relay refused the session"
         ),
         // `err_kind` and `retryable` are the catalogue's for the relay's code,
         // so this line agrees with the relay's own log of the same close.
@@ -706,8 +758,12 @@ async fn handshake(
     let Ok(hello_frame) = encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &hello_bytes) else {
         return Err(SessionEnd::Disconnected);
     };
-    if transport.send_frame(hello_frame).await.is_err() {
-        return Err(SessionEnd::Disconnected);
+    // The SSE transport opens the session on this send, so a relay that turns
+    // the session away (`RATE_LIMITED` from the per-device session budget, an
+    // auth failure) answers here, before any frame is received. Its code is
+    // kept for the log exactly as a refusal out of `recv_frame` is (#1003).
+    if let Err(e) = transport.send_frame(hello_frame).await {
+        return Err(SessionEnd::from_transport_error(e));
     }
     // Whether the relay agreed to take an in-band refresh. A relay that did
     // not gets no `0x12` at all: it would ignore the frame, and the client
@@ -743,7 +799,7 @@ async fn handshake(
                 Err(_) => return Err(SessionEnd::Disconnected),
             },
             Ok(None) => return Err(SessionEnd::Disconnected),
-            Err(e) => return Err(SessionEnd::from_recv_error(e)),
+            Err(e) => return Err(SessionEnd::from_transport_error(e)),
         }
     }
 }
@@ -769,6 +825,9 @@ async fn session(
         Err(end) => return end,
     };
     *answered = true;
+    // The relay let this session in, so a refusal of an earlier attempt no
+    // longer explains anything a reader sees.
+    shared.clear_refusal();
     // The handshake is the first round trip this attempt makes: its
     // `Authorization` header has now reached the relay and been answered. That
     // is what the report claims, so it is made here and not at the connect,
@@ -1036,7 +1095,7 @@ async fn session(
                 .await;
             }
             SessionEvent::Recv(Ok(None)) => return SessionEnd::Disconnected,
-            SessionEvent::Recv(Err(e)) => return SessionEnd::from_recv_error(e),
+            SessionEvent::Recv(Err(e)) => return SessionEnd::from_transport_error(e),
         }
     }
 }
@@ -1181,7 +1240,7 @@ async fn handle_frame(
                 }
                 match core.apply_remote_all(env).await {
                     Ok(events) if !events.is_empty() => {
-                        subscribe_to_new_streams(&events, subscribed, pending_sends);
+                        subscribe_to_new_streams(core, &events, subscribed, pending_sends);
                         shared.mark_synced(core.now_ms());
                     }
                     // Idempotent re-receive, an op parked awaiting its key, or
@@ -1301,13 +1360,21 @@ fn build_outbox_frames(
     rng: &dyn Rng,
 ) -> Result<(), ()> {
     let groups = core.sync_outbox_grouped(inflight_ops).map_err(|_| ())?;
+    let mut grew = false;
+    for (stream_id, ops) in &groups {
+        if !ops.is_empty() {
+            grew |= subscribed.insert(*stream_id);
+        }
+    }
+    // One `Subscribe` for the whole set, ahead of the batches it covers, and
+    // never one naming the new stream alone: that replaces the set
+    // ([`encode_subscribe_session`]).
+    if grew {
+        out.push(Outgoing::Frame(encode_subscribe_session(core, subscribed)?));
+    }
     for (stream_id, ops) in groups {
         if ops.is_empty() {
             continue;
-        }
-        if subscribed.insert(stream_id) {
-            let frame = encode_subscribe_one(stream_id)?;
-            out.push(Outgoing::Frame(frame));
         }
         *batch_counter += 1;
         let batch_id = *batch_counter;

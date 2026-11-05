@@ -148,7 +148,7 @@ async fn sunrise_recover_rebuilds_the_account_from_the_words_alone() {
     drop(founding_dir);
 
     let recovered_dir = tempfile::tempdir().expect("a vault dir");
-    recover::require_empty(recovered_dir.path()).expect("a fresh directory is acceptable");
+    recover::require_no_vault(recovered_dir.path()).expect("a fresh directory is acceptable");
 
     // Steps 3-5. `restore_identity` fetches the account record, derives the
     // AAD from the `ID_S_pub` it carries, fetches the blob, and spends the

@@ -202,6 +202,64 @@ async fn submit_while_live_pushes_without_reconnect() {
     );
 }
 
+// ---- A stream taken on mid-session keeps every other one subscribed ----
+//
+// The relay's `POST /sync/subscribe` replaces the session's stream set. A
+// `Subscribe` naming only the new stream unsubscribed the rest, and a session
+// still catching up sat in `CatchingUp` until the resync tick named them all
+// again (#1005). The fake relay adds rather than replaces, so the frames
+// themselves are what this reads.
+#[tokio::test(start_paused = true)]
+async fn a_stream_created_mid_session_is_subscribed_alongside_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open_arc(dir.path()).await;
+    core.submit(Command::CreateTask(TaskDraft {
+        title: "warm-up".into(),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    drain_announcement(&core);
+
+    let mut status_rx = core.sync_status();
+    let (factory, server, mut batch_rx) = harness(vec![]);
+    core.start_sync(factory).unwrap();
+    let _ = collect_until_live(&mut status_rx).await;
+    let first: HashSet<[u8; 16]> = server.lock().subscribes[0].iter().copied().collect();
+
+    let garden = core
+        .submit(Command::CreateStream(sunrise_domain::StreamDraft {
+            name: "Garden".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    core.submit(Command::CreateTask(TaskDraft {
+        title: "water".into(),
+        stream_id: Some(garden),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    let _ = timeout(Duration::from_secs(10), batch_rx.recv())
+        .await
+        .expect("the new stream's ops reached the relay");
+
+    let subscribes = server.lock().subscribes.clone();
+    let later = &subscribes[1..];
+    assert!(
+        later.iter().any(|s| s.contains(garden.bytes())),
+        "the new stream was subscribed: {subscribes:?}"
+    );
+    for named in later {
+        assert!(
+            first.iter().all(|s| named.contains(s)),
+            "a mid-session Subscribe dropped a stream the session had: {subscribes:?}"
+        );
+    }
+}
+
 // ---- Test (f): an unacked op batch is retransmitted inside the session ----
 //
 // The heart of issue #20. The server *receives* the batch and deliberately

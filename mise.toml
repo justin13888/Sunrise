@@ -87,6 +87,21 @@ run = "bun run ci"
 description = "Type-check every workspace package"
 run = "bun run typecheck"
 
+# The pre-commit hook's typecheck. It decides here rather than with a lefthook
+# `glob`, which sees only added, copied, modified and renamed files: deleting
+# a module another one imports must still run `tsc`. `bun.lock` alone can move
+# a dependency's types. Pre-push and CI always run `typecheck`.
+[tasks.typecheck-staged]
+description = "Type-check when a staged change, deletions included, touches a file tsc reads (the pre-commit hook's)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+if grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$|^bun\.lock$' <<<"$staged"; then
+  mise run typecheck
+fi
+'''
+
 [tasks.test]
 description = "Run the JS/TS test suite once"
 run = "bun run test:run"
@@ -103,7 +118,7 @@ run = "bun run test:coverage"
 # manifest names", and `fuzz/` is deliberately its own workspace
 # root (see `fuzz/Cargo.toml`), so the root invocation cannot reach it. Naming
 # its manifest here is also what puts `fuzz/Cargo.toml` in front of
-# `crates/sunrise-log/tests/event_catalog.rs`, which derives the
+# `crates/sunrise-log/tests/event_catalog/`, which derives the
 # out-of-workspace half of its file set from the `--manifest-path` arguments
 # this file names.
 #
@@ -128,8 +143,9 @@ run = [
   "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
-# The second invocation is #167. The `fuzz/` harnesses were the only Rust
-# in the tree that was formatted and then linted by nothing, which matters more
+# `rust-clippy` runs both halves; the `fuzz/` one, `rust-clippy-fuzz`, is #167.
+# The `fuzz/` harnesses were the only Rust in the tree that was formatted and
+# then linted by nothing, which matters more
 # for them than for ordinary test code: a warning there is the shape — a `let _
 # =` swallowing a result, a branch nothing reaches — that makes a target
 # quietly stop exercising what its name claims. The pinned stable toolchain
@@ -137,10 +153,28 @@ run = [
 # The root `clippy.toml` binds here too, its lookup walking up out of `fuzz/`.
 [tasks.rust-clippy]
 description = "Lint Rust with Clippy (warnings denied), workspace and fuzz/"
-run = [
-  "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings",
-]
+run = ["mise run rust-clippy-workspace", "mise run rust-clippy-fuzz"]
+
+[tasks.rust-clippy-workspace]
+description = "Lint the Rust workspace with Clippy (warnings denied), not fuzz/"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.rust-clippy-fuzz]
+description = "Lint fuzz/ with Clippy (warnings denied)"
+run = "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings"
+
+# What the pre-commit hook runs for `fuzz/` (#954). `fuzz/` keeps its own
+# lockfile and target directory, so its clippy builds the shared dependency
+# graph a second time; the hook pays that only when the staged changes reach
+# the harnesses or a crate they compile, as `.github/scripts/fuzz-closure-touched.py`
+# decides. `mise run rust-clippy`, `mise run pre-commit` and CI always lint it.
+[tasks.rust-clippy-fuzz-staged]
+description = "Lint fuzz/ with Clippy when the staged changes reach it (the pre-commit hook's)"
+run = '''
+set -euo pipefail
+answer="$(.github/scripts/fuzz-closure-touched.py)"
+if [ "$answer" = run ]; then mise run rust-clippy-fuzz; fi
+'''
 
 [tasks.rust-check]
 description = "Type-check the Rust workspace"
@@ -194,7 +228,7 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
 '''
 
 # `--all-targets` is load-bearing beyond "run the tests in the tree", and the
-# reason is `crates/sunrise-log/tests/event_catalog.rs`. That gate reads the
+# reason is `crates/sunrise-log/tests/event_catalog/`. That gate reads the
 # dep-info rustc leaves beside each artefact to learn which files the compiler
 # actually compiled, so its coverage is a fact about what has been built. It
 # compiles every target before it runs a test, which is what puts a record on
@@ -209,12 +243,14 @@ run = "cargo test --workspace --all-targets"
 
 # The CLI end to end (`docs/10-cross-cutting/testing.md` §The CLI end to end):
 # a real relay and two vaults driven by the real `sunrise` binary. The binary is
-# built first so the scenarios never run a stale one; `--include-ignored` so
+# built first so the scenarios never run a stale one, with `test-cheap-kdf` so
+# its recovery blobs use the cheap Argon2id set the scenarios' own process
+# does (`src/cli.rs` builds it the same way); `--include-ignored` so
 # this task runs every scenario these files hold, whatever a later one marks.
 [tasks.e2e-cli]
 description = "Two CLI vaults against a real relay, through the real sunrise binary"
 run = [
-  "cargo build -p sunrise-cli --bin sunrise",
+  "cargo build -p sunrise-cli --bin sunrise --features test-cheap-kdf",
   "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller --test cli_pair_relay --test cli_day_schedule --test cli_snapshot_catchup --test cli_recover_trimmed --test cli_recover_rotated --test cli_optional_stream --test cli_lateness --test cli_triage --test cli_routine_series --test cli_notifications --test cli_settle_outage -- --include-ignored",
 ]
 
@@ -234,6 +270,56 @@ run = [
   "cargo test --workspace --all-targets --no-run",
   "cargo test -p sunrise-log --test event_catalog",
 ]
+
+# `rust-test` under cargo-nextest and `.config/nextest.toml` (#958): a per-test
+# timeout that kills a hung test and names it, and at most four `sunrise-e2e`
+# scenarios at once. Opt-in; `rust-test`, the pre-push hook and CI are
+# unchanged. `--all-targets` for the same reason as in `rust-test`. nextest
+# cannot run doc tests, so the second step runs them through `rust-doctest`.
+#
+# cargo-nextest is pinned here rather than in `[tools]`, so only someone who
+# runs this task fetches it: mise installs the prebuilt release binary on the
+# first run instead of building it from source.
+[tasks.rust-test-nextest]
+description = "Run the Rust tests and doc tests under cargo-nextest, with per-test timeouts and capped e2e concurrency"
+tools = { "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.149" }
+run = [
+  "cargo nextest run --workspace --all-targets",
+  "mise run rust-doctest",
+]
+
+# What the pre-push hook runs instead of `rust-test` and `test`: only the tests
+# the push can affect (#953). `.github/scripts/prepush-scope.py` says which,
+# and why, from the files the push changes: the changed crates and every crate
+# depending on one (`cargo metadata`), and the crates whose sources name a
+# changed file. A change to the workspace manifest, `Cargo.lock`, `.cargo/`,
+# `rust-toolchain*` or `clippy.toml` runs `rust-test` whole. A scoped run still
+# runs the `event_catalog` gate at full coverage, through `log-fields`, before
+# the crates it picked. `SUNRISE_FULL_PREPUSH=1` runs everything, as
+# `mise run pre-push` and CI always do.
+[tasks.rust-test-changed]
+description = "Run the Rust tests the pushed changes can affect"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py rust)"
+case "$scope" in
+  none) ;;
+  all) mise run rust-test ;;
+  *)
+    mise run log-fields
+    # shellcheck disable=SC2086 # one `-p NAME` pair per word
+    cargo test $scope --all-targets
+    ;;
+esac
+'''
+
+[tasks.test-changed]
+description = "Run the JS/TS test suite when the pushed changes can affect it"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py bun)"
+if [ "$scope" = all ]; then mise run test; fi
+'''
 
 [tasks.apple-pairing-fixture]
 description = "Rewrite apps/apple/SunriseTests/PairingFixture.swift from the pairing encoder"
@@ -355,8 +441,59 @@ description = "Reject non-view logic in Swift that is not on the shrinking allow
 run = ".github/scripts/swift-logic-gate.py"
 
 [tasks.publish-gate]
-description = "Reject a publishable crate or package, or an app-train version that disagrees (the CI gate, run locally)"
+description = "Reject a publishable crate or package, an app-train version that disagrees, or a uniffi version the binding generator and its runtime disagree on (the CI gate, run locally)"
 run = ".github/scripts/publish-gate.py"
+
+# The CI gates below had no task, so the only way to run one locally was to copy
+# its command line out of ci.yml. Each `run` is that command line verbatim; the
+# job it mirrors is named in the description, and the reason for each gate is in
+# the comment above its step in ci.yml.
+[tasks.file-size]
+description = "Reject a Rust file that grew past its package threshold (the CI File size gate, run locally)"
+run = "python3 .github/scripts/file-size-gate.py"
+
+[tasks.core-filesystem]
+description = "Reject filesystem access outside the core vault_dir seam (the CI Determinism gate step, run locally)"
+run = "python3 .github/scripts/core-filesystem-gate.py"
+
+[tasks.determinism-rng]
+description = "Reject ambient RNG in the crates (the CI Determinism gate step, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "determinism" \
+  '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
+  crates/*/src crates/*/tests crates/*/benches
+'''
+
+[tasks.log-redaction]
+description = "Reject .expose() in logging and telemetry surfaces (the CI Log redaction gate, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "log-redaction" \
+  '\bplain[a-z_]*\.expose[[:space:]]*\(' \
+  crates/sunrise-log/src \
+  crates/sunrise-server/src \
+  crates/sunrise-cli/src \
+  crates/sunrise-storage/src \
+  crates/sunrise-core/src \
+  crates/sunrise-sync/src \
+  crates/sunrise-client-core/src \
+  crates/sunrise-core-bindings/src \
+  crates/sunrise-http-sig/src \
+  crates/sunrise-relay-client/src \
+  crates/sunrise-telemetry/src \
+  crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+'''
+
+[tasks.constant-time]
+description = "Reject a variable-time comparison over a secret-named value (the CI Constant-time comparison gate, run locally)"
+run = ".github/scripts/constant-time-gate.sh"
+
+[tasks.kynos-waiver]
+description = "Reject any kynos escape hatch that would make the OpenAPI description opaque (the CI Kynos waiver gate, run locally)"
+run = ".github/scripts/kynos-waiver-gate.py"
 
 # `spargen` reads the committed file, so it is an input rather than a report:
 # `the_committed_description_is_current` fails until this has been re-run.
@@ -616,8 +753,9 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #     spells — a directory declares no items under any grammar, and it has no
 #     lines either, which is the same ground `dir:702` has always failed on.
 #   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
-#     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
-#     of it, which checks nothing; cite the `struct`, `trait` or `fn`.
+#     97.7% of `sync.rs` and `mod tests` in the since-split
+#     `api/sync/suite.rs` spanned 99.5% of it, which checks nothing; cite the
+#     `struct`, `trait` or `fn`.
 #   * A single-line `path:LINE#symbol` whose line is a `///` line of the
 #     item's doc comment below its summary line is a FAILURE, in every
 #     declaration of the name that contains it. That is where a line written
@@ -632,7 +770,7 @@ run = ".github/scripts/citation-gate.py"
 # --- Apple clients (Swift / UniFFI) ---
 #
 # `--manifest-path` arguments in this file are an input to a test in another
-# crate. `crates/sunrise-log/tests/event_catalog.rs` derives the out-of-workspace
+# crate. `crates/sunrise-log/tests/event_catalog/` derives the out-of-workspace
 # crates whose log vocabulary it gates by scanning this file for them, and it
 # refuses a path it cannot resolve — so every one of them has to stay a literal.
 # Factoring `tools/uniffi-bindgen/Cargo.toml` into a shell function parameter
@@ -760,7 +898,7 @@ mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 #    variable is set, its own `tools/uniffi-bindgen/target` when it is not.
 #
 #    Only the JSON reader is a shared function. The manifest cannot be a
-#    parameter: `event_catalog.rs` derives the set of out-of-workspace crates
+#    parameter: the `event_catalog` test derives the set of out-of-workspace crates
 #    whose log vocabulary it checks by scanning this file for the manifest
 #    paths its cargo calls name, and it refuses an interpolated one because
 #    it cannot tell which manifest that resolves to. So the bindgen manifest
@@ -1666,6 +1804,23 @@ description = "Assert the reverses gate's exit-code contract (fast, synthesised 
 # Why: the script's docstring.
 run = "python3 .github/scripts/test_reverses_gate.py"
 
+[tasks.prepush-scope-test]
+description = "Assert what the pre-push scope script reaches for a set of changed files (fast, synthesised workspaces and git repos)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_prepush_scope.py"
+
+[tasks.fuzz-closure-touched-test]
+description = "Assert when the pre-commit hook lints fuzz/ for a set of staged files (fast, synthesised metadata)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_fuzz_closure_touched.py"
+
+[tasks.gate-contracts]
+description = "Run every gate contract under .github/scripts at once (each test_*.py)"
+# The single-file tasks above stay, for running one contract. This one discovers
+# every `test_*.py`, so a new contract is covered the moment it lands. About two
+# minutes; the cargo-reading contracts need a cargo on PATH.
+run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
@@ -1720,7 +1875,7 @@ run = [
 ]
 
 [tasks.pre-push]
-description = "Everything the pre-push hook runs"
+description = "Everything the pre-push hook can run, with both test suites whole"
 run = [
   "mise run ci",
   "mise run typecheck",

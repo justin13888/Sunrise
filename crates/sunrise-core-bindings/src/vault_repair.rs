@@ -143,7 +143,7 @@ pub fn restore_vault_backup(
 
 /// Move the closed vault directory `vault_dir` aside whole, and return where
 /// it went: before [`SunriseCore::recover_account_with_replay`] restores the
-/// account into the same place, which needs it empty. See
+/// account into the same place, which must hold no vault. See
 /// [`sunrise_core::Core::set_vault_aside`].
 ///
 /// # Errors

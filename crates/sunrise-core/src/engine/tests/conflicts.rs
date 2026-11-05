@@ -478,10 +478,7 @@ fn restore_refuses_a_live_or_missing_entity() {
     let e = engine();
     let mut db = db();
     let task = new_task(&e, &mut db, "live");
-    assert!(matches!(
-        e.apply(&mut db, Command::Restore(task)),
-        Err(EngineError::Invalid(_))
-    ));
+    invalid(e.apply(&mut db, Command::Restore(task)), "is not deleted");
     let missing = EntityRef::new(EntityKind::Task, [0x77; 16]);
     assert!(matches!(
         e.apply(&mut db, Command::Restore(missing)),
@@ -563,11 +560,23 @@ fn resolve_conflict_refuses_a_field_that_is_not_a_register() {
     let e = engine();
     let mut db = db();
     let task = new_task(&e, &mut db, "t");
-    for (field, value) in [
-        ("contexts", Value::Array(Vec::new())),
-        ("deferred_count", Value::Integer(3.into())),
-        ("id", text("tsk_x")),
-        ("title", Value::Integer(3.into())),
+    for (field, value, why) in [
+        (
+            "contexts",
+            Value::Array(Vec::new()),
+            "`contexts` is a OrSet, and the op is not",
+        ),
+        (
+            "deferred_count",
+            Value::Integer(3.into()),
+            "`deferred_count` is a Counter, and the op is not",
+        ),
+        ("id", text("tsk_x"), "`id` is not written by a patch"),
+        (
+            "title",
+            Value::Integer(3.into()),
+            "`title` cannot hold the value written to it",
+        ),
     ] {
         let res = e.apply(
             &mut db,
@@ -577,10 +586,7 @@ fn resolve_conflict_refuses_a_field_that_is_not_a_register() {
                 value: sunrise_cbor::CborValue(value),
             },
         );
-        assert!(
-            matches!(res, Err(EngineError::Invalid(_))),
-            "{field}: {res:?}"
-        );
+        invalid(res, why);
     }
 }
 
@@ -874,7 +880,7 @@ fn held(e: &Engine, db: &Db, task: EntityRef) -> Held {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(

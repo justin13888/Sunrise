@@ -5,18 +5,22 @@ status: accepted
 # Relay and Blob Storage
 
 > **Implementation status.** The self-host single-binary path is built and is
-> the only one: one SQLite database (`store/` + `relay_log.rs`) and a
-> local-filesystem blob root (`api/blobs/` over `sunrise_storage::BlobStore`).
-> There is no Postgres, no object store, and no pub/sub; the "managed" sections
-> below describe a deployment that does not exist. Sections that describe built
-> behaviour are marked **(implemented)**.
+> the only one: one SQLite database (`store/` + `relay_log/`) and a
+> local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
+> one implementation, `blob::fs::FsBlobs`, keeps chunks in
+> `sunrise_storage::BlobStore`). There is no Postgres, no object store, and no
+> pub/sub; the "managed" sections below describe a deployment that does not
+> exist. Sections that describe built behaviour are marked **(implemented)**.
 >
 > [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is the design of
 > record for the scaled deployment: the four storage traits, the `LISTEN/NOTIFY`
-> fan-out, shared sessions, and the order they are built in. Of those, only the
-> session seam is built: live sessions sit behind `SessionBackend`
-> (`crates/sunrise-server/src/sync_session.rs`), whose one implementation is
-> the in-process map.
+> fan-out, shared sessions, and the order they are built in. Three of the four
+> seams are built, each with its single-binary implementation only:
+> `MetadataStore` (`crates/sunrise-server/src/store/metadata.rs`, over SQLite),
+> `BlobBackend` (`crates/sunrise-server/src/blob/mod.rs`, over the filesystem)
+> and `SessionBackend` (`crates/sunrise-server/src/sync_session.rs`, the
+> in-process map). `FanoutBus` is not built, and neither are the Postgres and
+> S3 implementations.
 
 ## Relay model
 
@@ -263,7 +267,7 @@ step 3b before any commit.
 ## Op read path (on subscribe / catch-up — implemented)
 
 1. Receiver sends `Subscribe` with per-originating-device cursors.
-2. Server calls `Store::relay_replay` on the channel, which selects the retained
+2. Server calls `Store::relay_replay_after` on the channel, which selects the retained
    frames whose heads are not already covered and reports a `CursorGap` for any
    device whose cursor sits below `relay_evicted.evicted_through`.
 3. Server streams the retained frames back verbatim; a gap becomes a typed
@@ -288,7 +292,7 @@ step 3b before any commit.
 
 All retention numbers are unified to **30 days** (or shorter):
 
-- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log/append.rs:11#DEFAULT_MAX_AGE_MS`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
+- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
 - Op metadata rows: retained at least **30 days**, as above. The relay holds no snapshot: a client keeps its stream's latest snapshot record locally, and no transport carries one between devices yet ([#462](https://github.com/justin13888/Sunrise/issues/462)).
 - Blob GC grace: `[storage] gc_grace_days`, default 30. A tombstoned blob is reclaimed by the first maintenance pass after its grace period at which every active device has acknowledged the tombstone. This is independent of post-compaction retention.
 - Abandoned uploads: `[storage] pending_upload_ttl_hours`, default 24, measured from the newest file in the upload.
@@ -297,7 +301,9 @@ All retention numbers are unified to **30 days** (or shorter):
 - Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
 
 Retention **enforcement** is implemented for the relay op log, the blob store and
-deleted accounts. `relay_log.rs` applies the log's two bounds on every append.
+deleted accounts. The relay log's append path
+(`crates/sunrise-server/src/relay_log/append.rs#relay_append`) applies the log's
+two bounds on every append.
 The rest is the **maintenance pass**
 (`crates/sunrise-server/src/admin/maintenance.rs`). The serving binary runs it
 at startup and then every `[storage] maintenance_interval_secs` (default 3600),

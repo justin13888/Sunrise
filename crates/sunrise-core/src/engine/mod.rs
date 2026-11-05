@@ -69,6 +69,7 @@
     clippy::unnecessary_cast
 )]
 
+use crate::bytes::hex_short;
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, HlcClock, Rng};
 use crate::feature::Feature;
@@ -124,16 +125,13 @@ mod upcoming;
 mod write;
 mod zone;
 
-// `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
-// `keychain/` and `sync_driver.rs` — so the path they name has to keep
-// resolving across this split. `META_STREAM` stays defined below; `hex_short`
-// lives in `crate::bytes` and is re-exported here, through `ids`, at its old
-// name.
+// `META_STREAM` is named from outside `engine` — `core/`, `keychain/`,
+// `inner_op.rs` and `key_bundle_sync.rs` — so the path it names has to keep resolving across this
+// split. It stays defined below.
 pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub use self::identity_chain::ChainSeeded;
-pub(crate) use self::ids::hex_short;
 pub use self::key_bundle::KeyBundleApplied;
 pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
 use self::lww::LwwStamp;

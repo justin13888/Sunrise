@@ -122,10 +122,10 @@ a detail:
   nothing the line-existence check did not already certify, while counting as
   a checked citation in the gate's own output. Measured here: `impl Engine`
   spanned 38 through 1628 of `sync.rs`, 97.7% of the file, and `mod tests` in
-  `crates/sunrise-server/src/api/sync/suite.rs` spans 9 through 1720 of 1720 —
-  99.5%, and `mod tests` at the tail of a file is this repository's dominant
-  idiom, not an edge shape. Cite the `struct`, `enum` or `trait`, or the `fn`
-  inside the block.
+  the sync suite (`api/sync/suite.rs`, before it became a directory) spanned 9
+  through 1720 of 1720 — 99.5%, and `mod tests` at the tail of a file is this
+  repository's dominant idiom, not an edge shape. Cite the `struct`, `enum` or
+  `trait`, or the `fn` inside the block.
 
 A single line inside the item's own doc comment
 ----------------------------------------------
@@ -531,8 +531,8 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 # Both were measured against this tree rather than argued:
 #
 # * `impl Engine` spanned lines 38-1628 of `sync.rs`, **97.7%** of the file.
-# * `mod tests` in `crates/sunrise-server/src/api/sync/suite.rs` spans 9-1720
-#   of a 1720-line file, **99.5%** — worse. Over all 379 `mod` declarations
+# * `mod tests` in the sync suite (`api/sync/suite.rs`, before it became a
+#   directory) spanned 9-1720 of a 1720-line file, **99.5%** — worse. Over all 379 `mod` declarations
 #   the tree tracks, 24 cover at least half their file and the top 22 are all
 #   `mod tests`, which is this repository's dominant idiom rather than an edge
 #   shape. `#tests` on that file certified line 20, line 900 and line 1719
@@ -594,10 +594,6 @@ CRATE_PREFIX = re.compile(r"^(crates/[^/]+)/")
 # list unnoticed.
 ALLOWED: dict[tuple[str, str], str] = {
     (
-        "docs/05-sync/transports.md",
-        "crates/sunrise-server/src/ws.rs",
-    ): "the sentence is that this module was deleted with the WebSocket; it names what is gone",
-    (
         "docs/11-adr/0019-swiftui-macos-client.md",
         "docs/07-clients/tui.md",
     ): "ADR-0019 deletes this spec; both of its citations record what it removed",
@@ -613,10 +609,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "docs/11-adr/0022-device-signature-canonical-json.md",
         "crates/sunrise-server/src/auth/device_sig.rs",
     ): "ADR-0022's Context describes the v1 module its own decision removed",
-    (
-        "docs/implementation/overview.md",
-        "tests/ws_cursors.rs",
-    ): "the sentence is 'they were this file until ADR-0023'; the marker survives, the file does not",
 }
 
 

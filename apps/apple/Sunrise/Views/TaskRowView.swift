@@ -3,7 +3,7 @@ import SwiftUI
 /// One task, with the facets it actually carries.
 ///
 /// Every string here comes from the seam. The row decides layout and nothing
-/// else — which is why "overdue", "tomorrow" and "1h30" read identically in
+/// else — which is why "overdue", "tomorrow" and "1h30m" read identically in
 /// this app and in `sunrise-cli`.
 struct TaskRowView: View {
     let facets: TaskFacets

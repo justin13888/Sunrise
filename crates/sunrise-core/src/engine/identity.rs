@@ -13,11 +13,11 @@
 //! mean anything. The fold is the only thing either of them agrees on, and a
 //! second reader of `identity_transitions` is exactly what should not exist.
 
-use super::ids::hex_short;
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::{hex_short, to16, to32, to64};
 use crate::control_op::{IdentityTransitionPayload, KeyShare, RosterEntry};
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
-use crate::keychain::{to16, to32, to64, Keychain, SuccessorPublics};
+use crate::keychain::{Keychain, SuccessorPublics};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use sunrise_crypto::identity_transition::{IdentityTransitionBody, IdentityTransitionSigs};
@@ -84,17 +84,17 @@ use sunrise_storage::Db;
 /// admitted while its predecessor was unknown and not yet swept by
 /// [`Engine::purge_unverifiable_siblings`], and one from a genuinely concurrent
 /// rotation that lost the ordering. Both are bounded by this number.
-/// `engine::tests::forged_siblings_cannot_suppress_the_successor_of_an_unestablished_predecessor`
+/// `engine::tests::identity_siblings::forged_siblings_cannot_suppress_the_successor_of_an_unestablished_predecessor`
 /// builds the first and is the suite's only exercise of the scan-past-a-bad-row
 /// behaviour; before it existed, setting this constant to `1` left the entire
 /// `sunrise-core` suite green — as did `2` and `3` — which was the measurement
 /// rather than the claim.
 ///
 /// The inequality is pinned by
-/// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`, and the
+/// `engine::tests::identity_siblings::the_fold_looks_at_every_row_ingest_will_store`, and the
 /// stronger property it stands in for — that the set ingest *keeps* is the set
 /// this query *reads* — by
-/// `engine::tests::what_ingest_keeps_is_what_the_fold_reads_whatever_order_it_arrives_in`.
+/// `engine::tests::identity_siblings::what_ingest_keeps_is_what_the_fold_reads_whatever_order_it_arrives_in`.
 pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
 
 /// How many `identity_transitions` rows this replica stores for one predecessor.
@@ -258,8 +258,8 @@ impl TransitionLink {
 /// The field order **is** the comparison — `derive(Ord)` is lexicographic over
 /// declaration order — so this type and that string say the same thing twice,
 /// in the only two languages the decision has to be made in.
-/// `engine::tests::the_rank_type_and_the_sql_order_agree` is what stops them
-/// disagreeing.
+/// `engine::tests::identity_siblings::the_rank_type_and_the_sql_order_agree` is
+/// what stops them disagreeing.
 ///
 /// The two id fields are `Vec<u8>` rather than `[u8; 16]` because one side of
 /// every comparison comes out of SQLite as a blob of whatever width the row

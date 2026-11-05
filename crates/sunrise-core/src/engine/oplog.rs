@@ -7,9 +7,10 @@
 //! "one op, one envelope, one outbox row, inside the caller's transaction"
 //! checkable in one place.
 
+use crate::bytes::to16;
 use crate::control_op::{KeyEnvelopePayload, Recipient};
 use crate::inner_op::{encode_inner_op, InnerOp};
-use crate::keychain::{to16, Keychain};
+use crate::keychain::Keychain;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::{stream_key_id, StreamKey};
@@ -18,10 +19,10 @@ use sunrise_storage::{Db, OpLog, Outbox};
 // `open_op_row` is the only user and is `#[cfg(test)]`.
 use super::chain::{fold_chain, hash_of_stored, set_op_hash, writer_links};
 use super::compaction::floor_seq;
-#[cfg(test)]
-use super::ids::hex_short;
 use super::lww::LwwStamp;
 use super::{Engine, EngineError, META_STREAM};
+#[cfg(test)]
+use crate::bytes::hex_short;
 
 /// Which recipients [`Engine::emit_key_envelopes_to`] seals a key to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -790,7 +791,7 @@ pub(super) fn ops_run_end(
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
 /// dispatched out of `crates/sunrise-core/src/engine/sync.rs:415#apply_remote_all_unchecked`
-/// reaches `crates/sunrise-core/src/engine/oplog.rs:474#backfill_key_envelopes`,
+/// reaches `crates/sunrise-core/src/engine/oplog.rs#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on

@@ -118,8 +118,9 @@ compound the orphan. Two accepted specs cannot both be authoritative about
 whether Google Calendar ships in v1. The recorded decision stands and **the
 matrix yields to it**.
 
-What is *not* the reason: an unimplemented protocol. `crates/sunrise-integrations/src/gcal.rs`
-is 850 lines of implemented, tested Google Calendar v3 read-only import — OAuth
+What is *not* the reason: an unimplemented protocol. The `crates/sunrise-integrations/src/gcal/`
+module (850 lines in one file when this was written) is implemented, tested
+Google Calendar v3 read-only import — OAuth
 PKCE authorization, code exchange and refresh with the durable-refresh-token
 rule, change detection that suppresses phantom deletes on both window slide and
 page truncation, all-day events, series linkage, access-role filtering — with
@@ -149,7 +150,7 @@ so a clear is distinguishable from a no-op — on `TaskPatch`. It persists to
 `tasks.body`, it is indexed by the `search_idx` FTS5 table's `body` column, and it
 crosses the UniFFI seam as `set_body` / `clear_body` on the task-edit DTO
 (`setBody` / `clearBody` in generated Swift), which
-`crates/sunrise-core-bindings/src/dto.rs` folds back into a `TaskPatch` through
+`crates/sunrise-core-bindings/src/dto/task.rs` folds back into a `TaskPatch` through
 `patch_field`. A rich-text editor over that field is being built on macOS now.
 Notes-attached-to-a-task is a real v1 capability.
 

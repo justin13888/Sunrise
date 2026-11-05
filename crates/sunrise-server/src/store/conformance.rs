@@ -14,7 +14,7 @@ use super::{
 };
 use crate::account_ns::account_key;
 use crate::auth::Subject;
-use crate::relay::{CursorGap, FrameHead, StreamKey};
+use crate::relay::{FrameHead, StreamKey};
 use crate::relay_log::{Appended, DurableCaps, Replay};
 
 mod pins;
@@ -247,13 +247,6 @@ impl MetadataStore for Unreachable {
         _: u64,
         _: DurableCaps,
     ) -> Result<Appended, MetadataError> {
-        Err(down())
-    }
-    async fn relay_replay(
-        &self,
-        _: StreamKey,
-        _: &HashMap<[u8; 16], u64>,
-    ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), MetadataError> {
         Err(down())
     }
     async fn relay_replay_after(
@@ -535,15 +528,22 @@ async fn the_size_bound_evicts_oldest_first(store: &dyn MetadataStore) {
         "20 bytes hold two"
     );
     let behind: HashMap<[u8; 16], u64> = [(DEV, 1)].into();
-    let (frames, gaps) = store.relay_replay(bounded, &behind).await.unwrap();
-    assert_eq!(frames, vec![vec![4; 8], vec![5; 8]], "oldest went first");
+    let (frames, gaps) = store.relay_replay_after(bounded, 0, &behind).await.unwrap();
+    assert_eq!(
+        frames.into_iter().map(|f| f.bytes).collect::<Vec<_>>(),
+        vec![vec![4; 8], vec![5; 8]],
+        "oldest went first"
+    );
     assert_eq!(gaps.len(), 1);
     assert_eq!(
         (gaps[0].device_id, gaps[0].cursor, gaps[0].evicted_through),
         (DEV, 1, 3)
     );
     let caught_up: HashMap<[u8; 16], u64> = [(DEV, 5)].into();
-    let (frames, gaps) = store.relay_replay(bounded, &caught_up).await.unwrap();
+    let (frames, gaps) = store
+        .relay_replay_after(bounded, 0, &caught_up)
+        .await
+        .unwrap();
     assert!(frames.is_empty() && gaps.is_empty());
     assert_eq!(
         store.relay_device_heads(bounded).await.unwrap().get(&DEV),

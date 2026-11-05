@@ -135,7 +135,7 @@ the entity.
 
 ## Size policy
 
-- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs:81#MAX_BLOB_BYTES`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
+- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES`). It is a compile-time constant, not an operator setting and not a plan tier. The constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires; correcting that comment is a code change.
 - Recommended UX: nudge the user toward external storage links (Drive, Dropbox) for files > 25 MB.
 - No per-vault quota. The only ceiling is the fixed 100 MB per attachment above; there is no per-account accounting to charge a vault total against ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
@@ -255,11 +255,11 @@ proof is `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`.
 
 The 10 MiB threshold bounds only what is fetched *unasked*
 ([#227](https://github.com/justin13888/Sunrise/issues/227)).
-`Core::fetch_attachment` (`crates/sunrise-core/src/blob_fetch.rs:250#fetch_attachment`)
+`Core::fetch_attachment` (`crates/sunrise-core/src/blob_fetch.rs#fetch_attachment`)
 asks for one named attachment whatever its size: it writes a `blob_fetches`
 row, the sync driver drains it with no size predicate, and the call returns
 when the chunks are here. `Core::cancel_attachment_fetch`
-(`crates/sunrise-core/src/blob_fetch.rs:350#cancel_attachment_fetch`) is the
+(`crates/sunrise-core/src/blob_fetch.rs#cancel_attachment_fetch`) is the
 Cancel button, and it marks the request `partial` without needing the relay to
 agree, because a stalled transfer is what people cancel. Both are on the seam,
 behind the pane's Download and Cancel controls

@@ -126,6 +126,7 @@ class Clean(GateCase):
             # Two package.json copies and one MARKETING_VERSION. A pattern that
             # stopped matching project.yml would print 2 here and still pass.
             "publish: app train `0.3.0`; 3 app-train version(s) compared",
+            "publish: 0 `uniffi` pin(s)",
         )
 
     def test_an_unquoted_marketing_version_with_a_comment_is_read(self):
@@ -275,6 +276,102 @@ class TheAppTrainHasOneVersion(GateCase):
             "`apps/web/package.json` has version `0.1.0`",
             "`packages/ui/package.json` has version `0.2.0`",
         )
+
+
+GENERATOR = "tools/uniffi-bindgen/Cargo.toml"
+GENERATOR_LOCK = "tools/uniffi-bindgen/Cargo.lock"
+RUNTIME = "crates/sunrise-core-bindings/Cargo.toml"
+RUNTIME_LOCK = "Cargo.lock"
+
+
+def uniffi_manifest(name: str, dependency: str) -> str:
+    return PRIVATE_CRATE.format(name=name) + f"\n[dependencies]\nuniffi = {dependency}\n"
+
+
+def uniffi_lock(*versions: str) -> str:
+    entries = ['[[package]]\nname = "uniffi_core"\nversion = "9.9.9"\n']
+    entries += [f'[[package]]\nname = "uniffi"\nversion = "{v}"\n' for v in versions]
+    return "version = 4\n\n" + "\n".join(entries)
+
+
+class TheBindingGeneratorAndItsRuntimeAgree(GateCase):
+    def pins(
+        self,
+        generator: str = '{ version = "0.32.0", features = ["cli"] }',
+        runtime: str = '{ version = "0.32.0", default-features = false }',
+        generator_locked: tuple[str, ...] = ("0.32.0",),
+        runtime_locked: tuple[str, ...] = ("0.32.0",),
+    ) -> None:
+        """The baseline plus the four files rule 4 reads, agreeing unless told otherwise."""
+        self.baseline()
+        self.write(GENERATOR, uniffi_manifest("uniffi-bindgen", generator))
+        self.write(GENERATOR_LOCK, uniffi_lock(*generator_locked))
+        self.write(RUNTIME, uniffi_manifest("sunrise-core-bindings", runtime))
+        self.write(RUNTIME_LOCK, uniffi_lock(*runtime_locked))
+
+    def test_agreeing_pins_are_clean_and_both_are_compared(self):
+        self.pins()
+        self.assert_code(
+            self.run_gate(),
+            OK,
+            "OK: publish clean.",
+            # A rule that silently read nothing would print 0 here and pass.
+            "publish: 2 `uniffi` pin(s) (requirement and locked version) compared.",
+        )
+
+    def test_a_plain_string_requirement_is_read(self):
+        self.pins(generator='"0.32.0"', runtime='"0.32.0"')
+        self.assert_code(self.run_gate(), OK, "2 `uniffi` pin(s)")
+
+    def test_without_the_generator_the_rule_does_not_apply(self):
+        self.baseline()
+        self.assert_code(self.run_gate(), OK, "0 `uniffi` pin(s)")
+
+    def test_requirements_that_disagree_fail(self):
+        self.pins(runtime='{ version = "0.31.0" }')
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            f"`{GENERATOR}` requires `uniffi` `0.32.0` but `{RUNTIME}` requires `0.31.0`;",
+        )
+
+    def test_locked_versions_that_disagree_fail(self):
+        # Equal requirements still resolve apart: `0.32.0` is `^0.32.0`.
+        self.pins(runtime_locked=("0.32.1",))
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            f"`{GENERATOR_LOCK}` locks `uniffi` `0.32.0` but `{RUNTIME_LOCK}` locks `0.32.1`;",
+        )
+
+    def test_an_inherited_requirement_cannot_be_compared(self):
+        self.pins(runtime="{ workspace = true }")
+        self.assert_code(self.run_gate(), VIOLATION, f"`{RUNTIME}` has no literal `uniffi` version")
+
+    def test_a_manifest_without_uniffi_cannot_be_compared(self):
+        self.pins()
+        self.write(RUNTIME, PRIVATE_CRATE.format(name="sunrise-core-bindings"))
+        self.assert_code(self.run_gate(), VIOLATION, f"`{RUNTIME}` has no literal `uniffi` version")
+
+    def test_a_lock_with_two_uniffi_versions_fails(self):
+        self.pins(runtime_locked=("0.31.0", "0.32.0"))
+        self.assert_code(
+            self.run_gate(), VIOLATION, f"`{RUNTIME_LOCK}` locks `uniffi` `0.31.0`, `0.32.0`; it must lock exactly one."
+        )
+
+    def test_a_lock_with_no_uniffi_fails(self):
+        self.pins(generator_locked=())
+        self.assert_code(self.run_gate(), VIOLATION, f"`{GENERATOR_LOCK}` locks no `uniffi`; it must lock exactly one.")
+
+    def test_an_untracked_runtime_lock_fails(self):
+        self.pins()
+        self._git("rm", "-q", "--cached", "--", RUNTIME_LOCK)
+        self.assert_code(self.run_gate(), VIOLATION, f"`{RUNTIME_LOCK}` is not tracked")
+
+    def test_an_unparseable_lock_is_named(self):
+        self.pins()
+        self.write(GENERATOR_LOCK, "[[package\n")
+        self.assert_code(self.run_gate(), VIOLATION, f"`{GENERATOR_LOCK}` could not be read as TOML")
 
 
 class RefusesToGuess(GateCase):

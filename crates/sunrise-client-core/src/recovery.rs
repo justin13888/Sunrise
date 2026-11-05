@@ -47,8 +47,18 @@
 //! tested against a relay that refuses, serves the wrong blob, or never
 //! answers, with no network at all. The dependency runs one way: this crate
 //! calls the REST client, and the REST client names no engine.
+//!
+//! # Which directory a recovery may write into
+//!
+//! [`check_recovery_directory`] is the one rule, and both clients call it
+//! before they ask the relay anything. The identity a vault belongs to is
+//! decided when it is created and cannot be changed afterwards, so recovering
+//! into an existing vault would either be refused by the keychain or quietly
+//! keep the old identity. Files that are not a vault do not stop it: a stray
+//! `.DS_Store` is not somebody's data.
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sunrise_core::{Core, CoreConfig, CoreError, SyncStatus, Unlock};
@@ -66,6 +76,35 @@ use sunrise_relay_client::{
     decode_public_key, decode_recovery_blob, DeviceIdentity, PublicKeyError, RelayRecovery,
 };
 pub use sunrise_relay_client::{RecoveryMaterial, RelayRefusal, RetiredCode};
+
+/// The vault database. Its presence means there is a vault here.
+const VAULT_DB_FILE: &str = "vault.db";
+
+/// The marker `sunrise` files a vault's key under, written before the database
+/// exists. Holding anything, it names a vault this directory belongs to.
+const VAULT_ID_FILE: &str = "vault-id";
+
+/// The directory a recovery was pointed at already holds a vault.
+#[derive(Debug, Error)]
+#[error(
+    "{} already holds a vault; a recovery creates one and cannot merge into another",
+    .0.display()
+)]
+pub struct DirectoryHoldsVault(pub PathBuf);
+
+/// Refuse a recovery into `dir` where it holds `vault.db` or a non-empty
+/// `vault-id` marker, per this module's §Which directory a recovery may write
+/// into. A directory that does not exist yet holds neither.
+///
+/// # Errors
+/// [`DirectoryHoldsVault`], naming `dir`.
+pub fn check_recovery_directory(dir: &Path) -> Result<(), DirectoryHoldsVault> {
+    let marked = std::fs::metadata(dir.join(VAULT_ID_FILE)).is_ok_and(|marker| marker.len() > 0);
+    if marked || dir.join(VAULT_DB_FILE).exists() {
+        return Err(DirectoryHoldsVault(dir.to_path_buf()));
+    }
+    Ok(())
+}
 
 /// Recovery flow errors.
 #[derive(Debug, Error)]
@@ -323,8 +362,9 @@ pub enum RestoreError {
     /// Not [`RestoreError::vault_written`], even though the open may have
     /// left files behind: there is no vault under the restored identity, and
     /// a client that kept the root and opened the directory anyway would mint
-    /// a fresh, empty account in it. The leftovers make the directory refuse
-    /// the next recovery until it is cleared, which is the safe failure.
+    /// a fresh, empty account in it. A `vault.db` or `vault-id` left behind
+    /// makes [`check_recovery_directory`] refuse the next recovery until it is
+    /// cleared, which is the safe failure.
     #[error(transparent)]
     Core(#[from] CoreError),
     /// The vault exists and the relay would not register this device.

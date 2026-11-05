@@ -9,7 +9,7 @@
 
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// `(id, title, routine)` of every task in stream `name`, by id.
 async fn listed(device: &Device, name: &str) -> Vec<(String, String, String)> {
@@ -45,7 +45,9 @@ fn titles(routines: &Value) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_this_and_future_edit_splits_the_series_on_both_devices() {
-    let (addr, relay) = spawn_relay().await;
+    // This scenario runs more than ten sync sessions per device inside five
+    // minutes, past the relay's default budget (#799), so its limits are off.
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
 

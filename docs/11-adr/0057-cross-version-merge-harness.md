@@ -35,6 +35,9 @@ as `crates/sunrise-baseline-driver` (which the baseline's own
 `Cargo.lock`. The binary is that commit's `sunrise-core` with no `HEAD` code in
 it. The test process talks to it one JSON object per line over stdin and
 stdout (`crates/sunrise-e2e/src/cross_version/baseline.rs` is the other end).
+The run holds A as a `Replica` (`cross_version/replica.rs`, which also holds
+the in-process `HEAD` implementation), so the same run drives A whether A is
+the baseline or `HEAD`.
 
 Rejected: the baseline as a renamed dependency,
 `sunrise-core-baseline = { package = "sunrise-core", git = ..., rev = ... }`.
@@ -80,7 +83,8 @@ whether the baseline kept what the op set.
 
 ### 4. The reference is computed from the ops, and a control run keeps it honest
 
-The property compares each final projection with what a `HEAD`-only run of the
+The property compares each final projection (the fields
+`cross_version/projection.rs` reads back out of a task) with what a `HEAD`-only run of the
 same ops would hold. A second `HEAD` run does not produce that: which of two
 concurrent writes wins depends on hybrid logical clocks, and a second run cannot
 reproduce them. `cross_version/model.rs` computes it instead. A settle opens an
@@ -102,7 +106,8 @@ expects is reported and passes. Any other violation fails the property. Each
 entry also has a fixed scenario that must still produce it, so an entry fails
 the suite on the day its defect stops reproducing and has to be removed then.
 
-A violation is any of these, on either side unless it names one:
+A violation is any of these, on either side unless it names one
+(`cross_version/violation.rs` names each kind and the replica it was seen on):
 
 - `HEAD` refuses to open a vault the baseline wrote, B at setup or A at the end.
 - A replica refuses a newer op handed to it, whether or not the refusal is the

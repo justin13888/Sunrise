@@ -3127,7 +3127,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "sunrise-auth"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "http",
  "http-body-util",
  "hyper",
@@ -3149,7 +3148,6 @@ version = "0.2.0"
 dependencies = [
  "ciborium",
  "criterion",
- "futures-util",
  "jiff",
  "parking_lot",
  "rand_chacha 0.3.1",
@@ -3343,7 +3341,6 @@ dependencies = [
  "hex",
  "hpke",
  "proptest",
- "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
@@ -3436,7 +3433,6 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "jiff",
- "rand 0.8.6",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -3493,9 +3489,9 @@ name = "sunrise-pairing"
 version = "0.2.0"
 dependencies = [
  "base64",
- "blake3",
  "ciborium",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "snow",
@@ -3503,7 +3499,7 @@ dependencies = [
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
- "sunrise-error",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "zeroize",
 ]
@@ -3528,7 +3524,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spargen",
- "sunrise-error",
  "sunrise-http-sig",
  "thiserror 1.0.69",
  "tokio",
@@ -3555,6 +3550,7 @@ dependencies = [
  "jsonwebtoken",
  "kynos",
  "parking_lot",
+ "proptest",
  "rusqlite",
  "rustix",
  "serde",
@@ -3568,6 +3564,7 @@ dependencies = [
  "sunrise-pairing",
  "sunrise-storage",
  "sunrise-telemetry",
+ "sunrise-test-seed",
  "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",

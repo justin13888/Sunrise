@@ -237,17 +237,20 @@ Every view MUST implement three states. This is the canonical table; per-view fi
 | `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
 | `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
 
-**There is no `conflict` state.** Its data source was asserted absent by
-[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
-§Merge journal — removed: `merge_journal` was dropped by
+**There is no `conflict` view state.**
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) deleted it, and a view shows the
+deterministic winner at once:
+[ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) makes a conflict "a
+badge, not a gate". The merge state behind that badge is recorded: a register
+keeps every concurrent write that lost (`register_losers`), and
+`Query::Conflicts` reports them
+([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
+§No merge history). `sunrise conflicts` prints it; no app view reads it today.
+The older
+`merge_journal` stays dropped by
 [ADR-0018](../11-adr/0018-storage-baseline-reset.md), and
 `baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db/tests.rs` fails if
-it returns. Nothing records that a concurrent edit lost, so a view has nothing to
-raise a toast about. This is not an omission to be filled in later by the UI: the
-state cannot exist until a journal does, and reinstating one needs an ADR
-superseding 0018's removal. [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)
-§What would force revisiting this, trigger 2 (per-field merge becoming
-user-visible), is the likeliest place both come back together.
+it returns.
 
 ### Per-view empty-state copy
 

@@ -336,7 +336,7 @@ mod tests {
     use super::super::Engine;
     use crate::alerts::SecurityEventKind as K;
     use crate::commands::Command;
-    use crate::config::{Clock, SystemRng};
+    use crate::config::{Clock, Rng};
     use crate::keychain::Keychain;
     use rusqlite::params;
     use std::collections::BTreeSet;
@@ -357,9 +357,24 @@ mod tests {
         }
     }
 
+    /// The randomness paired with [`Fixed`]: a frozen clock gives every ULID
+    /// the engine mints one timestamp, so their order is that of their random
+    /// tails, and a seeded stream keeps it the same on every run.
+    #[derive(Debug)]
+    struct Seeded(parking_lot::Mutex<rand::rngs::StdRng>);
+
+    impl Rng for Seeded {
+        fn fill_bytes(&self, dest: &mut [u8]) {
+            rand_core::RngCore::fill_bytes(&mut *self.0.lock(), dest);
+        }
+    }
+
     fn vault() -> (Engine, Db) {
         let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes(ROOT)));
-        let e = Engine::from_clock(Arc::new(Fixed), Arc::new(SystemRng), kc);
+        let rng = Seeded(parking_lot::Mutex::new(
+            <rand::rngs::StdRng as rand_core::SeedableRng>::seed_from_u64(0x5EED),
+        ));
+        let e = Engine::from_clock(Arc::new(Fixed), Arc::new(rng), kc);
         (e, Db::open_memory(&VaultRootKey::from_bytes(ROOT)).unwrap())
     }
 

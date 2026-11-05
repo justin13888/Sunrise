@@ -69,7 +69,7 @@ next to the envelope:
 | `level` | yes | `TRACE`\|`DEBUG`\|`INFO`\|`WARN`\|`ERROR` | `tracing::Level`, uppercase — the formatter's spelling, not ours. |
 | `message` | yes | string | Human-readable summary, ≤ 200 bytes. NEVER interpolate plaintext user data. |
 | `target` | yes | string | The emitting module path. Replaces the old `pkg` + `mod` pair, which were the same information split in two. |
-| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name; first segment is the package short id (`sync`, `db`, `ui`, `srv`, …). New values require an entry in [`log-events.md`](./log-events.md), enforced by `crates/sunrise-log/tests/event_catalog.rs`. |
+| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name; first segment is the package short id (`sync`, `db`, `ui`, `srv`, …). New values require an entry in [`log-events.md`](./log-events.md), enforced by `crates/sunrise-log/tests/event_catalog/`. |
 | `span` | no | object | The innermost active span: its `name` plus its fields. Absent outside a span. The ancestor list is not emitted. |
 | *context* | — | scalar | Any other top-level key. MUST come from the §6 allowlist; `sunrise_log::RedactionLayer` refuses the event otherwise. |
 | `err_code`, `err_kind`, `retryable`, `cause` | no | see §5 | The error envelope, flattened rather than nested. |
@@ -199,7 +199,7 @@ for.
 
 `RedactionLayer` does not gate spans: `on_new_span` has no veto and a span
 cannot be rewritten once created. Span field names are gated at the source
-instead. `crates/sunrise-log/tests/event_catalog.rs` reads every
+instead. `crates/sunrise-log/tests/event_catalog/` reads every
 `tracing::*_span!` and `tracing::span!` call in the files compiled into a
 shipped target and fails, naming the file, the span and the field, on a span
 field name outside the allowlist above. It refuses a span it cannot read, and
@@ -257,7 +257,7 @@ Alongside it:
 
 - `crates/sunrise-log/tests/redaction.rs` — property tests over both defences
   above, asserting on the bytes a sink received.
-- `crates/sunrise-log/tests/event_catalog.rs` — every event name emitted from
+- `crates/sunrise-log/tests/event_catalog/` — every event name emitted from
   shipped source is grammatical and catalogued in
   [`log-events.md`](./log-events.md), and every **field name** those events
   carry is on the §6 allowlist, so the record the catalogue promises can reach
@@ -288,7 +288,7 @@ ADR-0010's Bun server does not exist).
 
 The catalogue lives in [`log-events.md`](./log-events.md), split into what is
 **implemented** and what is **reserved**. It is the contract, and it is checked:
-`crates/sunrise-log/tests/event_catalog.rs` fails if any event emitted from
+`crates/sunrise-log/tests/event_catalog/` fails if any event emitted from
 shipped source is missing from it. Which files count is taken from
 `cargo metadata` and the compiler's own dep-info rather than from a directory
 walk.
@@ -389,7 +389,7 @@ one global dispatcher.
 | Test | What it holds |
 |---|---|
 | `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
-| `crates/sunrise-log/tests/event_catalog.rs` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. Because the file set is dep-info, it sees only what has been compiled: run it as `mise run log-fields`, which builds every target first, or as part of `mise run rust-test`. |
+| `crates/sunrise-log/tests/event_catalog/` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. Because the file set is dep-info, it sees only what has been compiled: run it as `mise run log-fields`, which builds every target first, or as part of `mise run rust-test`. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
 | `crates/sunrise-server/src/api/observe.rs` (in-module) | Real requests through the real router, reached through the `pub(crate)` `api::testing::Client`: no `?access_token=`, no full entity ids, every field allowlisted. `the_query_string_never_reaches_the_log`, `an_opaque_path_segment_is_templated`, `request_records_carry_status_and_latency`, `every_server_field_survives_the_redaction_allowlist`. |
 | `crates/sunrise-server/tests/logging.rs` | The §6.3 MUST, over the *public* surface (`ServerState::new` + `sunrise_server::build_service`): `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`, `a_signed_request_that_is_refused_logs_no_signature_bytes`, `the_request_records_carry_the_catalogued_shape`, `healthy_traffic_is_silent_at_info`, `the_refusal_records_survive_redaction_and_carry_their_cause`. |

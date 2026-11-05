@@ -276,6 +276,54 @@ mod tests {
     }
 
     #[test]
+    fn the_drift_window_is_five_minutes() {
+        // The tests above name the constant, so they would follow it anywhere;
+        // this pins the value peers actually agree on.
+        assert_eq!(MAX_DRIFT_MS, 300_000);
+    }
+
+    #[test]
+    fn receive_continues_the_local_counter_when_only_the_local_clock_leads() {
+        // The received reading lags but carries the larger counter. Only the
+        // local input is at the merged physical component, so the counter
+        // continues from the local one and the received counter is ignored.
+        let local = Hlc {
+            physical_ms: 1_000,
+            logical: 2,
+        };
+        let received = Hlc {
+            physical_ms: 900,
+            logical: 9,
+        };
+        assert_eq!(
+            local.receive(received, 500).unwrap(),
+            Hlc {
+                physical_ms: 1_000,
+                logical: 3
+            }
+        );
+    }
+
+    #[test]
+    fn receive_continues_the_received_counter_when_only_the_received_clock_leads() {
+        let local = Hlc {
+            physical_ms: 900,
+            logical: 9,
+        };
+        let received = Hlc {
+            physical_ms: 1_000,
+            logical: 2,
+        };
+        assert_eq!(
+            local.receive(received, 500).unwrap(),
+            Hlc {
+                physical_ms: 1_000,
+                logical: 3
+            }
+        );
+    }
+
+    #[test]
     fn ordering_is_physical_then_logical() {
         assert!(
             Hlc {

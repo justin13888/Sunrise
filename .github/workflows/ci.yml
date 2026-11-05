@@ -52,6 +52,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Every property test runs the case count its call site names. Unset, as on
+  # a developer machine, `sunrise_test_seed::proptest_cases` caps each block at
+  # 48 so a local `cargo test` stays cheap. Workflow-wide rather than in the
+  # `rust-checks` action, so `rust-windows`, `mutants` and every other job
+  # that runs a proptest keeps the depth it ran before the dial existed.
+  # docs/10-cross-cutting/testing.md section 2.
+  SUNRISE_PROPTEST_DEPTH: full
 
 jobs:
   # The Rust gate runs twice, as two jobs naming one composite action, rather
@@ -1834,8 +1841,9 @@ jobs:
     name: Publish gate
     runs-on: ubuntu-latest
     # `actions/checkout` and one standard-library Python script over the
-    # tracked Cargo.toml and package.json files and `apps/apple/project.yml`.
-    # No toolchain: the manifests are read with `tomllib` and `json`, which is
+    # tracked Cargo.toml and package.json files, `apps/apple/project.yml`, and
+    # the root and `tools/uniffi-bindgen` Cargo.lock files. No toolchain: the
+    # manifests and lockfiles are read with `tomllib` and `json`, which is
     # why this needs the runner's Python 3.11+ and nothing else. Seconds of
     # work, so `ci.yml`'s floor for a job whose real cost is the checkout.
     timeout-minutes: 5
@@ -1847,9 +1855,12 @@ jobs:
         # a [package] says `publish = false` itself (inheriting it is refused),
         # every package.json says `"private": true`, and every app-train copy
         # of the version -- apps/*/package.json, packages/*/package.json and
-        # project.yml's MARKETING_VERSION -- equals the root one. A new crate
-        # from a template, or a version bumped in one file of four, is the
-        # shape this catches.
+        # project.yml's MARKETING_VERSION -- equals the root one. The binding
+        # generator (tools/uniffi-bindgen) and its runtime
+        # (crates/sunrise-core-bindings) also agree on `uniffi`: one requirement
+        # in both Cargo.toml files, one locked version in both Cargo.lock files.
+        # A new crate from a template, a version bumped in one file of four, or
+        # a uniffi bump in one workspace only is the shape this catches.
         run: .github/scripts/publish-gate.py
 
   publish-gate-contract:
@@ -2016,8 +2027,8 @@ jobs:
         # declares no items and has no lines, which is what `dir:702` has
         # always failed on. Neither an
         # `impl` block nor a `mod` is a legal target, because `#Engine`
-        # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
-        # spans 99.5% of it, so neither checked anything. A single-line
+        # spanned 97.7% of `sync.rs` and `mod tests` in the since-split
+        # `api/sync/suite.rs` spanned 99.5% of it, so neither checked anything. A single-line
         # `path:LINE#symbol` whose line is a `///` line of the item's doc
         # comment below its summary line FAILS, in every declaration of the
         # name that contains it: that is where a line written for the
@@ -2181,6 +2192,20 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_reverses_gate.py
 
+  grep-gate-contract:
+    name: Grep gate contract
+    runs-on: ubuntu-latest
+    # One Python script over source trees it synthesises in a temp directory:
+    # no toolchain, no network past the checkout. Seconds.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts: `grep-gate.sh` runs the
+    # determinism, log-redaction and constant-time gates, and a runner that
+    # answers 0 without checking turns all three off at once. Why: the
+    # docstring of `test_grep_gate.py`.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_grep_gate.py
 
   # The nightly `fuzz` matrix, computed rather than written out: the targets
   # are the `[[bin]]` entries of `fuzz/Cargo.toml`, the one place a harness is
@@ -2349,13 +2374,15 @@ jobs:
             jq -r '[.packages[].targets[] | select(.kind == ["bin"]) | .name]
               | if length > 0 and all(test("^[A-Za-z0-9_]+$")) then join(" ")
                 else error("fuzz/Cargo.toml: no [[bin]] target, or a name outside [A-Za-z0-9_]+") end')
-          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope"
+          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope key_bundle identity_chain"
           picked=""
           while IFS= read -r path; do
             case "$path" in
-              crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert wire_frame" ;;
+              crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert key_bundle identity_chain wire_frame pairing_messages" ;;
               crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
+              crates/sunrise-pairing/*)         picked="$picked pairing_messages" ;;
               crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
+              crates/sunrise-core/*)            picked="$picked core_snapshot" ;;
               crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
               fuzz/Cargo.toml|fuzz/Cargo.lock)  picked="$picked $all" ;;
               fuzz/fuzz_targets/*.rs)           t="${path#fuzz/fuzz_targets/}"; picked="$picked ${t%.rs}" ;;

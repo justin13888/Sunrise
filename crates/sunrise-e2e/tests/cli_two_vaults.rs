@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, sign_in, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// Two devices on one account, and a task A wrote before B existed.
 async fn two_devices(root: &std::path::Path, relay: &str) -> (Device, Device, String) {
@@ -36,7 +36,7 @@ fn stored(t: &Value) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_recovered_device_reads_what_the_first_one_wrote() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, task) = two_devices(dir.path(), &format!("http://{addr}")).await;
 
@@ -56,7 +56,7 @@ async fn the_recovered_device_reads_what_the_first_one_wrote() {
 /// survive (#447).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_edits_to_different_fields_of_one_task_converge() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, task) = two_devices(dir.path(), &format!("http://{addr}")).await;
 
@@ -91,7 +91,7 @@ async fn concurrent_edits_to_different_fields_of_one_task_converge() {
 /// report, even where one defer sets the plan the task already had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_defers_converge_on_one_plan() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, _) = two_devices(dir.path(), &format!("http://{addr}")).await;
     let task = first_id(&a.ok(&["capture", "Call the bank ^tomorrow 9am"]).await);
@@ -146,7 +146,7 @@ async fn conflicts(device: &Device) -> Value {
 /// clears the conflict everywhere (§4).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_on_one_device_against_an_edit_on_the_other() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, task) = two_devices(dir.path(), &format!("http://{addr}")).await;
 
@@ -199,7 +199,7 @@ async fn a_delete_on_one_device_against_an_edit_on_the_other() {
 /// both, and the list is then empty (§4).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_retitles_converge_and_resolve() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, task) = two_devices(dir.path(), &format!("http://{addr}")).await;
 
@@ -264,7 +264,7 @@ async fn blocks_tomorrow(device: &Device) -> Vec<String> {
 /// complete changes nothing, and one `undo` takes the whole batch back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_merge_and_a_bulk_completion_reach_the_peer_whole() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
     let second = first_id(&a.ok(&["capture", "Book the ferry"]).await);
@@ -286,7 +286,12 @@ async fn a_merge_and_a_bulk_completion_reach_the_peer_whole() {
     let refused = a
         .run(&["done", &first, "tsk_01J00000000000000000000000"])
         .await;
+    let err = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success());
+    assert!(
+        err.contains("not found: task tsk_01J00000000000000000000000"),
+        "refused for the missing id: {err}"
+    );
     assert_eq!(a.task(&first).await["state"], "todo");
 
     a.ok(&["done", &first, &second]).await;
@@ -323,7 +328,7 @@ async fn inbox_order(device: &Device) -> Vec<String> {
 /// (#340): `move` writes the task's `sort_order`, and it syncs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reorder_on_one_device_appears_on_the_other() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
     let second = first_id(&a.ok(&["capture", "Book the ferry"]).await);
@@ -361,7 +366,7 @@ async fn a_reorder_on_one_device_appears_on_the_other() {
 /// survive, and equal keys break by id the same way on both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reorders_converge() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, first) = two_devices(dir.path(), &format!("http://{addr}")).await;
     a.ok(&["capture", "Book the ferry"]).await;
@@ -421,7 +426,7 @@ async fn applied(device: &Device, name: &str) -> Vec<String> {
 /// device breaks nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_saved_on_one_device_runs_on_the_other_through_a_rename() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, _) = two_devices(dir.path(), &format!("http://{addr}")).await;
     a.ok(&["contexts", "create", "errands"]).await;
@@ -458,7 +463,7 @@ async fn a_view_saved_on_one_device_runs_on_the_other_through_a_rename() {
 /// file is never written again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_views_file_is_imported_once() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b, _) = two_devices(dir.path(), &format!("http://{addr}")).await;
     a.ok(&["contexts", "create", "errands"]).await;

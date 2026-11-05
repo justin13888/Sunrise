@@ -1,10 +1,11 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Telemetry and Privacy
 
-> **Status of client telemetry: proposed, not built.** [§Categories](#categories)
+> **Status: proposed. Not yet built, and no roadmap issue
+> ([`../roadmap.md`](../roadmap.md)) builds it yet.** [§Categories](#categories)
 > and the telemetry and crash-reporting lines of
 > [§Third-party SDKs](#third-party-sdks) are the design of record, not a
 > description of anything that ships. No code, schema or CI check implements
@@ -18,6 +19,15 @@ status: accepted
 > It is operator tracing, and no client sends anything through it. The
 > `Plain<T>` wrapper and its gate in
 > [§Tagged types for content](#tagged-types-for-content) are also built.
+>
+> **Where the built parts are contracts:** this page is `proposed`, so nothing
+> quoted from it binds ([ADR-0042](../11-adr/0042-v0-forever.md) §4). The
+> `Plain<T>` wrapper is specified in
+> [`logging.md` §6](./logging.md#how-this-is-enforced) and its `log-redaction`
+> gate in [`logging.md` §6.3](./logging.md#63-ci-enforcement), and the
+> operator tracing in
+> [`../06-server/observability.md`](../06-server/observability.md#tracing).
+> Those `accepted` pages are the ones to cite.
 
 ## Default
 

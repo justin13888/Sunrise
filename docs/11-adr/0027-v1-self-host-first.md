@@ -140,9 +140,9 @@ enforces are fixed operator constants, not per-account accounting:
 | Limit | Value | Source |
 |---|---|---|
 | Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
-| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs:73#MAX_CHUNK_BYTES` |
-| Blob chunk count | 4096 | `api/blobs/mod.rs:77` |
-| Blob size | 100 MB | `api/blobs/mod.rs:81` |
+| Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES` |
+| Blob chunk count | 4096 | `crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_COUNT` |
+| Blob size | 100 MB | `crates/sunrise-server/src/api/blobs/mod.rs#MAX_BLOB_BYTES` |
 | Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log/append.rs:11,18` |
 
 No `plan_tier` metric label. No `AUTH_QUOTA_EXCEEDED` or `AUTH_RATE_LIMITED` on
@@ -308,7 +308,7 @@ is that dedup by key sharing does not exist at any scope.
 **`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
-(`crates/sunrise-server/src/api/blobs/mod.rs:302-338,466-474`). This reconciles
+(`crates/sunrise-server/src/api/blobs/mod.rs#finalize`, `crates/sunrise-server/src/api/blobs/mod.rs#blob_key`). This reconciles
 `crates/sunrise-domain/src/attachment.rs:42-44#Attachment` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.

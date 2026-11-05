@@ -225,7 +225,11 @@ async fn a_rotation_that_retires_the_code_issues_one_that_recovers_and_the_old_o
     let f = recovering(dir.path(), "f", &url);
     let out = recover(&f, &stranger).await;
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
+    assert!(!out.status.success(), "a stranger's code must not recover");
+    assert!(
+        err.contains("recovery blob authentication failed"),
+        "refused because the code does not open this account's blob: {err}"
+    );
     assert!(
         !err.contains("retired"),
         "a stranger's code is not retired: {err}"

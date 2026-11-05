@@ -111,8 +111,8 @@ account from its recovery code when it is on a relay. It does not offer the
 pre-migration copy, because a migration that rolled back left the vault as
 that copy holds it. "Reset and resync" is the recovery code: the vault is moved
 aside, not deleted (`Core::set_vault_aside`), and the account is restored into
-the empty directory. The CLI prints the table's lines under the error; the
-macOS app does not show them yet.
+the directory it left, which now holds no vault. The CLI prints the table's
+lines under the error; the macOS app does not show them yet.
 - Downgrades require an explicit reverse migration with its own ADR; no reverse migrations exist today.
 
 ## Migration rigor
@@ -417,10 +417,13 @@ arrived in.
 
 Account recovery is exposed over UniFFI as `SunriseCore::recover_account` and
 `SunriseCore::recover_account_with_replay`, and reached from the CLI and the
-Apple onboarding. It recovers an account from the relay into an empty vault.
-It is not a local rebuild. For a vault that will not open, `set_vault_aside`
-(`Core::set_vault_aside`) moves the directory aside whole, so the recovery has
-the empty directory it needs and the vault is kept.
+Apple onboarding. It recovers an account from the relay into a directory
+holding no vault, and refuses one that holds `vault.db` or a non-empty
+`vault-id` marker (`check_recovery_directory` in
+`crates/sunrise-client-core/src/recovery.rs`). It is not a local rebuild. For a
+vault that will not open, `set_vault_aside` (`Core::set_vault_aside`) moves the
+directory aside whole, so the recovery has a directory holding no vault and the
+vault is kept.
 
 ### 5. Additive and destructive changes
 
@@ -575,8 +578,7 @@ and `migrations.rs` assert:
   `IntegrityCheckFailed`.
 
 Every one of those replays SQL into a connection this build just created. None
-of them opens an *old vault*, and for a long time nothing did — which meant the
-migrations had never run against the thing they exist for.
+of them opens an *old vault*.
 
 ### Old-vault fixtures
 

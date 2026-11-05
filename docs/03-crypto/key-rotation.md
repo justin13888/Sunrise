@@ -75,8 +75,8 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
   it kept, but the cert was genuine under an identity the account had retired,
   so the row was admitted, the device was current under nothing, and it was a
   recipient of nothing.
-  `engine::tests::a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the
-  test that used to assert the bypass, with its setup unchanged.
+  `engine::tests::device_admission::a_revoked_device_cannot_rejoin_under_a_fresh_device_id`
+  is the test that used to assert the bypass, with its setup unchanged.
 
   It bought one revocation at a time, which is why it was not the end of it: the
   device paired *after* a rotation held the new `ID_S_priv`, so revoking that
@@ -494,7 +494,7 @@ Two things are deliberately not done:
 | `sunrise.stream_key.v1` (the pre-ADR-0024 derivation) | two frozen legacy keys, through `legacy_derived_stream_key` itself |
 | `sunrise.remote_op_id.v1` | three frozen op-log ids |
 | `sunrise.pair_sas.v1` | three frozen six-digit codes |
-| `sunrise.account_email_hash.v1` | three frozen bucket keys |
+| `sunrise.account_email_hash.v1` | three frozen account tags |
 | `sunrise-device-sig-v2` | the canonical string spelled out, and two frozen signatures that also verify |
 | `sunrise.import_block.v1` | three frozen Block ids |
 | `sunrise.routine_task.v1` | two frozen Task ids |

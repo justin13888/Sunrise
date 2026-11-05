@@ -552,6 +552,27 @@ mod tests {
         assert_eq!(skew_secs("not a date", NOW_MS), None);
     }
 
+    /// The window is inclusive: a `Date` exactly [`MAX_CLOCK_SKEW_SECS`] away
+    /// is accepted and one second further is not, in both directions. Without
+    /// the exact edge a `>` turned `>=` passes every other test, and without
+    /// the negative side a dropped `.abs()` does.
+    #[test]
+    fn the_skew_window_is_inclusive_at_its_edge_in_both_directions() {
+        let edge_ms = MAX_CLOCK_SKEW_SECS as u64 * 1000;
+        for now_ms in [NOW_MS + edge_ms, NOW_MS - edge_ms] {
+            assert_eq!(check_date(DATE, now_ms), Ok(()), "now_ms = {now_ms}");
+        }
+        for now_ms in [NOW_MS + edge_ms + 1000, NOW_MS - edge_ms - 1000] {
+            assert_eq!(
+                check_date(DATE, now_ms),
+                Err(SigError::StaleDate {
+                    skew: MAX_CLOCK_SKEW_SECS + 1
+                }),
+                "now_ms = {now_ms}"
+            );
+        }
+    }
+
     #[test]
     fn a_signed_request_verifies() {
         let k = key();

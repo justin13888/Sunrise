@@ -13,7 +13,8 @@
 //! `sunrise_crypto::wrap_stream_key`, which binds `(stream_id, epoch)` itself
 //! and needs no AAD of ours.
 
-use super::{to16, to32, Identity, KeySource, KeychainError, RngAdapter};
+use super::{Identity, KeySource, KeychainError, RngAdapter};
+use crate::bytes::{to16, to32};
 use crate::config::Rng;
 use rusqlite::{params, OptionalExtension};
 use sunrise_crypto::{stream_key_id, wrap_stream_key, StreamKey, VaultRootKey};

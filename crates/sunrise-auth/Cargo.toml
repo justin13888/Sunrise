@@ -36,4 +36,3 @@ tokio = { workspace = true, features = ["rt", "net", "time"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
 serde_json = { workspace = true }
-async-trait = { workspace = true }

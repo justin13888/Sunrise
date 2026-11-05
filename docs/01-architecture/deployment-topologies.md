@@ -25,10 +25,10 @@ Two topologies are designed. **Only T2 is built** ([ADR-0027](../11-adr/0027-v1-
 ```
 [User devices] ── TLS ─▶ [Single binary: relay + embedded blob store]
                                 │
-                                └── local disk OR S3-compatible
+                                └── local disk
 ```
 
-- One Rust binary, optional Postgres, optional S3.
+- One Rust binary over local disk: one SQLite file for metadata and blobs on the local filesystem ([`../06-server/overview.md`](../06-server/overview.md)). Postgres for multi-node metadata ([#481](https://github.com/justin13888/Sunrise/issues/481)) and an S3-compatible blob store ([#482](https://github.com/justin13888/Sunrise/issues/482)) are **proposed, not built**.
 - Auth: operator brings any OIDC issuer (Keycloak, Authelia, Dex, Auth0, Google Workspace, etc.). See [`../06-server/auth.md`](../06-server/auth.md).
 - Push: optional; if absent, devices poll. (See [`../06-server/push-notifications.md`](../06-server/push-notifications.md).)
 - Use cases: privacy-conscious users; teams of ≤3; researchers.
@@ -42,7 +42,7 @@ Two topologies are designed. **Only T2 is built** ([ADR-0027](../11-adr/0027-v1-
 
 The wire protocol is the same in both topologies. Only the server URL and OIDC issuer change.
 
-> **No-server / LAN-only mode is not supported.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
+> **No-server / LAN-only mode is not supported.** Sync always goes through a server (managed or self-hosted). Pairing goes through the relay's rendezvous or, for a device with no relay, a file exchange (`sunrise pair offer`, `request`, `issue`, `accept`; see [`../05-sync/transports.md`](../05-sync/transports.md)); that exchange adds no way to sync without a server. Self-hosters who want LAN-only operation run the server on the LAN.
 
 ## Federation note
 

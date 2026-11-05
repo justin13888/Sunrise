@@ -57,8 +57,8 @@ actor CoreBridge {
         return await made(core)
     }
 
-    /// Restore an account from its recovery code into the empty `directory`,
-    /// and return the vault open.
+    /// Restore an account from its recovery code into `directory`, which must
+    /// hold no vault, and return the vault open.
     ///
     /// The whole of `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8
     /// happens on the Rust side, in the implementation `sunrise recover` runs;

@@ -32,7 +32,6 @@ futures-core = "0.3.32"
 
 # The recovery blob and the identity keys travel base64url (`src/account.rs`).
 base64 = { workspace = true }
-sunrise-error = { workspace = true }
 sunrise-http-sig = { workspace = true }
 thiserror = { workspace = true }
 

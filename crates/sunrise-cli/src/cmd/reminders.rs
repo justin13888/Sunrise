@@ -15,7 +15,7 @@ use sunrise_client_core::reminders::{
     self, catalog_entries, CatalogNotification, ClockStyle, NotificationLedger, ScheduleRequest,
 };
 use sunrise_core::{Command, Query, QueryResult};
-use sunrise_domain::{NotificationKind, ReminderKind};
+use sunrise_domain::{NotificationKind, ReminderKind, UnscheduledReminder};
 
 use super::{CmdResult, Ctx};
 
@@ -89,6 +89,16 @@ fn catalog_json(n: &CatalogNotification) -> serde_json::Value {
         "link": n.link,
         "level": n.level,
         "actions": n.actions,
+    })
+}
+
+/// One reminder the plan could not place, as `reminders plan --json` prints
+/// it under `unscheduled` (`docs/07-clients/overview.md` §JSON output).
+fn unscheduled_json(u: &UnscheduledReminder) -> serde_json::Value {
+    serde_json::json!({
+        "entity": u.entity.to_str(),
+        "kind": kind_name(u.kind),
+        "reason": u.reason.to_string(),
     })
 }
 
@@ -194,11 +204,7 @@ async fn print_plan(ctx: &Ctx<'_>) -> CmdResult {
                 "title": n.title,
                 "body": n.body,
             })).collect::<Vec<_>>(),
-            "unscheduled": s.unscheduled.iter().map(|u| serde_json::json!({
-                "entity": u.entity.to_str(),
-                "kind": kind_name(u.kind),
-                "reason": u.reason.to_string(),
-            })).collect::<Vec<_>>(),
+            "unscheduled": s.unscheduled.iter().map(unscheduled_json).collect::<Vec<_>>(),
             "wind_down": s.wind_down.as_ref().map(|w| serde_json::json!({
                 "identifier": w.identifier,
                 "date": w.date.to_string(),
@@ -277,4 +283,29 @@ async fn print_plan(ctx: &Ctx<'_>) -> CmdResult {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cmd::test_support::keys;
+
+    /// `docs/07-clients/overview.md` §JSON output: an `unscheduled` entry of
+    /// `reminders plan` is `{entity, kind, reason}`. Only a reminder whose
+    /// time has no instant is one, which a fresh vault never holds, so the
+    /// binary test never sees it.
+    #[test]
+    fn an_unscheduled_reminder_prints_exactly_the_documented_keys() {
+        let entity = sunrise_id::EntityRef::new(sunrise_id::EntityKind::Task, [3; 16]);
+        let j = unscheduled_json(&UnscheduledReminder {
+            entity,
+            kind: ReminderKind::Task,
+            reason: sunrise_domain::Unresolvable::UnknownKind {
+                kind: "lunar".into(),
+            },
+        });
+        assert_eq!(keys(&j), ["entity", "kind", "reason"]);
+        assert_eq!(j["entity"], entity.to_str());
+        assert_eq!(j["kind"], "task");
+    }
 }

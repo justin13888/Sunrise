@@ -11,11 +11,12 @@
 //! (sync wire layer, server). This crate alone proves out the lifecycle,
 //! single-writer guarantee, and shape of the API.
 
+use crate::bytes::to16;
 use crate::commands::{Command, CommandResult};
 use crate::config::CoreConfig;
 use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
-use crate::keychain::{to16, Keychain, KeychainError};
+use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
 use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
 use crate::unlock::{IdentitySeed, Unlock};
@@ -735,6 +736,19 @@ impl Core {
         self.sync_tx.subscribe()
     }
 
+    /// The wire code the relay refused this vault's latest sync attempt with
+    /// (`RATE_LIMITED`, `AUTH_TOKEN_INVALID`, ...), or `None` once a session
+    /// has handshaked since, or when nothing was ever refused.
+    ///
+    /// The driver reconnects after a refusal and reports `Disconnected`, the
+    /// same as for a relay it cannot reach; this is what tells the two apart.
+    /// An accessor rather than a [`SyncStatus`] field so the status the
+    /// bindings carry is unchanged (#1036).
+    #[must_use]
+    pub fn sync_last_refusal(&self) -> Option<&'static str> {
+        self.sync_shared.last_refusal()
+    }
+
     /// Mark the core closed; subsequent submit/query calls fail with
     /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
     /// joins it, then drops the vault lock when this `Core` drops.
@@ -866,11 +880,11 @@ impl Core {
 
     /// Start the periodic routine-materialization timer.
     ///
-    /// `docs/08-features/recurrence-engine.md` §generation-timing requires
-    /// materialization on every app launch **and** on a periodic timer every 6
-    /// hours while running. Only the launch half existed, so a long-running
-    /// client — the TUI, or a desktop app left open over a weekend — would
-    /// never generate occurrences past the horizon it computed at startup.
+    /// Materializes routines every `interval` while the vault is open, on top
+    /// of the pass [`Core::open`] runs at launch; the caller picks the
+    /// interval. Without the timer, a client left running never generates
+    /// occurrences past the horizon it computed at open. See
+    /// `docs/08-features/recurrence-engine.md` §Generation timing.
     ///
     /// Idempotent, and safe to skip: a client that never calls this still
     /// materializes at open. Requires a tokio runtime, which is why it is not

@@ -584,7 +584,7 @@ fn the_three_times_and_lateness_are_operators() {
 fn is_stale_reads_the_stale_after_days_preference() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
     let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-    let e = Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc);
+    let e = Engine::from_clock(clock.clone(), seeded_rng(), kc);
     let mut db = db();
     let id = new_task(&e, &mut db, "undated");
     task_with(
@@ -1003,7 +1003,7 @@ proptest::proptest! {
     // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
     // committed, at a path named here.
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 256,
+        cases: sunrise_test_seed::proptest_cases(256),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/search.txt",
@@ -1147,6 +1147,35 @@ fn search_matches_title_and_body_excludes_deleted_and_respects_limit() {
         _ => panic!(),
     };
     assert!(empty.is_empty());
+}
+
+/// A SQLite failure while a filter reads another table reaches the caller as
+/// the SQLite error it is, not boxed inside a conversion failure.
+#[test]
+fn a_sqlite_failure_in_a_filter_keeps_its_variant() {
+    let (e, mut db) = (engine(), db());
+    task_with(
+        &e,
+        &mut db,
+        TaskDraft {
+            title: "haystack".into(),
+            ..Default::default()
+        },
+    );
+    db.conn().execute("DROP TABLE task_blockers", []).unwrap();
+    let err = e
+        .query(
+            &db,
+            Query::Search {
+                text: "haystack is:blocked".into(),
+                limit: 20,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Sqlite(rusqlite::Error::SqliteFailure(..))),
+        "{err:?}"
+    );
 }
 
 proptest::proptest! {

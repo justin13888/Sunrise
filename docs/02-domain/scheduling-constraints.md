@@ -63,7 +63,7 @@ preserved by an older one ([#322](https://github.com/justin13888/Sunrise/issues/
 `days_of_week` entry this build does not know is kept and written back
 verbatim, after the known days (which are written in `MO..SU` order), and it
 matches no day. A set that holds one places no restriction on the day at all
-(`crates/sunrise-domain/src/constraint.rs#WeekdaySet`). Reading the set as only
+(`crates/sunrise-domain/src/constraint/weekday_set.rs#WeekdaySet`). Reading the set as only
 its known days could turn a newer peer's "Mondays or a day this build has no
 name for" into a hard block on every day but Monday, and an unknown value must
 never invent a block, as an unknown severity reads as `soft`
@@ -231,11 +231,11 @@ SQL; evaluation happens in Rust. See
 ## Status in the tree
 
 - `TimeOfDayRange` rejects `start ≥ end`, so no window wraps
-  (`crates/sunrise-domain/src/constraint.rs#TimeOfDayRange`).
+  (`crates/sunrise-domain/src/constraint/mod.rs#TimeOfDayRange`).
 - Constraints are checked once at write time in the device zone and never
   re-evaluated (`crates/sunrise-core/src/engine/task.rs#check_schedule_constraints`).
 - There is no `at_place` dimension
-  (`crates/sunrise-domain/src/constraint.rs#ScheduleConstraint`).
+  (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`).
 - A suppressed edge is reported as one `dependency_cycle` conflict on the task
   that holds it, listing the loop; asking for either task's conflicts returns
   it. Search's `is:blocked` still reads the raw sets.

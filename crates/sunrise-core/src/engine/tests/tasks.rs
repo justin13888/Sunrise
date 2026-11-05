@@ -545,5 +545,5 @@ fn invalid_state_transition_rejected() {
             patch: TaskPatch::default(),
         },
     );
-    assert!(matches!(res, Err(EngineError::Invalid(_))));
+    invalid(res, "expected Task, got Stream");
 }

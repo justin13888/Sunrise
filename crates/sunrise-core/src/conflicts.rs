@@ -63,6 +63,11 @@ impl FromStr for VersionRef {
         else {
             return Err(BadVersionRef);
         };
+        // `u64::from_str` alone would take a leading `+`, and leading zeros,
+        // neither of which `Display` writes.
+        if !seq.bytes().all(|c| c.is_ascii_digit()) || (seq.len() > 1 && seq.starts_with('0')) {
+            return Err(BadVersionRef);
+        }
         Ok(Self {
             stream: unhex16(stream).ok_or(BadVersionRef)?,
             device: unhex16(device).ok_or(BadVersionRef)?,
@@ -188,7 +193,20 @@ mod tests {
             "abababababababababababababababab.01010101010101010101010101010101.42"
         );
         assert_eq!(s.parse::<VersionRef>(), Ok(v));
-        for bad in ["", "ab.cd.1", &format!("{s}.9"), &s.replace(".42", ".x")] {
+        let zero = VersionRef { seq: 0, ..v };
+        assert_eq!(zero.to_string().parse::<VersionRef>(), Ok(zero));
+        let plus_hex = format!("{}.{}.42", "+a".repeat(16), "01".repeat(16));
+        for bad in [
+            "",
+            "ab.cd.1",
+            &format!("{s}.9"),
+            &s.replace(".42", ".x"),
+            &s.replace(".42", ".+42"),
+            &plus_hex,
+            &s.replace(".42", ".042"),
+            &s.replace(".42", ".00"),
+            &s.to_uppercase(),
+        ] {
             assert_eq!(bad.parse::<VersionRef>(), Err(BadVersionRef), "{bad}");
         }
     }

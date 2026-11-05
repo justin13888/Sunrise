@@ -54,7 +54,7 @@ issue.
    serde discards the keys it does not know. An unknown `SunriseTime` kind fails
    the enclosing op ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 4. **A container version one step newer is refused outright.**
-   `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope` requires both the
+   `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope` requires both the
    magic-prefix version and field 1 to equal `ENVELOPE_FORMAT_V`.
    `crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header` applies
    the same exact match at the relay. This holds even though the decoder
@@ -182,7 +182,7 @@ OpEnvelope = {
   decodes an unknown envelope field into `OpEnvelope.unknown`, re-emits it in
   its canonical position, and includes it in the AAD and the signature. See the
   `other =>` arm of
-  `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`. An old build
+  `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope`. An old build
   therefore reads, verifies, stores and relays an envelope carrying field 13
   without change.
 - **Field 13 is required from the first fingerprinted version.** Call that
@@ -245,7 +245,8 @@ non-canonical encoding, a failed signature, or a failed AEAD tag.
   Clients show it in diagnostics, and next to the read-only banner of §8 when
   the reason is a missing feature.
 - **The digest and snapshots include parked ops.** They are part of the op
-  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed) covers,
+  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed when this
+  record was written, since accepted) covers,
   and part of what a compaction snapshot must carry ([#330](https://github.com/justin13888/Sunrise/issues/330)).
 
 ### 5. The envelope container has a floor
@@ -479,7 +480,8 @@ first feature that is adds it.
 - **The losses [#320](https://github.com/justin13888/Sunrise/issues/320), [#321](https://github.com/justin13888/Sunrise/issues/321), [#322](https://github.com/justin13888/Sunrise/issues/322) and [#329](https://github.com/justin13888/Sunrise/issues/329) record are closed.**
   Overwrite by full-state ops is [ADR-0044](./0044-per-field-ops.md)'s to
   close, and detecting divergence at all is
-  [ADR-0043](./0043-commit-tree.md)'s (proposed).
+  [ADR-0043](./0043-commit-tree.md)'s (proposed when this record was written,
+  since accepted).
 - **`DOC_SCHEMA_FLOOR` stays at 1 indefinitely.** Old ops stay in logs and on
   relays, and their bytes remain the source of truth for rebuild. Raising the
   floor would strand them, so it needs its own ADR showing no live vault or

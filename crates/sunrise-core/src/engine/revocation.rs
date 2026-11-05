@@ -53,8 +53,8 @@
 //! re-entered every recipient set and one republished cert handed it every
 //! held epoch of every stream.
 
-use super::ids::{hex_bytes, hex_short};
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::{hex_bytes, hex_short};
 use crate::commands::CommandResult;
 use crate::control_op::{DeviceRevokePayload, RevokeReason};
 use crate::inner_op::{encode_inner_op, InnerOp};
@@ -909,7 +909,7 @@ impl Engine {
     ///   its first cert, [`Self::self_authenticating_signer`].
     /// - `crates/sunrise-core/src/engine/sync.rs:302-304#apply_remote_all_unchecked`
     ///   verifies the envelope under that key before the op is decrypted or
-    ///   applied, and `crates/sunrise-crypto/src/op_envelope.rs#verify_envelope` is
+    ///   applied, and `crates/sunrise-crypto/src/op_envelope/mod.rs#verify_envelope` is
     ///   the check itself: an Ed25519 verify over the envelope's own signed bytes.
     /// - `crates/sunrise-core/src/engine/sync.rs:569-573#self_authenticating_signer`
     ///   closes the self-authenticating half, refusing a published cert
@@ -1056,7 +1056,7 @@ impl Engine {
         // authenticated and not a field the op filled in. This function's doc
         // §"Why `sender` is the row's author" cites where that is enforced —
         // in `crates/sunrise-core/src/engine/sync.rs` and
-        // `crates/sunrise-crypto/src/op_envelope.rs`, with lines.
+        // `crates/sunrise-crypto/src/op_envelope/mod.rs`, with lines.
         //
         // Those citations are resolvable pointers, and not assertions about the
         // checks. `.github/scripts/citation-gate.py`'s `classify` fails a

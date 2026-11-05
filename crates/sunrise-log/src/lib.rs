@@ -60,7 +60,7 @@ pub mod test_util;
 pub mod time;
 pub mod writer;
 
-pub use event::{is_valid_name, EventName, EventNameError};
+pub use event::is_valid_name;
 pub use field::{is_allowed, templatize_path};
 pub use init::{
     build_subscriber, build_subscriber_with, default_log_path, init, init_file, init_file_at,

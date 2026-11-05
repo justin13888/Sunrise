@@ -18,7 +18,7 @@ disallowed-methods = [
     # never catches it and it simply accumulates as noise — noise that reads
     # like the rule is dead. It is not: `allow-invalid` silences the
     # unresolvable case and leaves the rule binding where `rand` is reachable,
-    # which is verifiable by calling `rand::random()` in `sunrise-crypto` and
+    # which is verifiable by calling `rand::random()` in `sunrise-core` and
     # watching clippy reject it.
     #
     # Path-based matching here is immune to turbofish and aliasing; the

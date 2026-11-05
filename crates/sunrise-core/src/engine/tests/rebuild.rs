@@ -581,7 +581,7 @@ fn an_unreadable_op_rolls_the_rebuild_back() {
         )
         .unwrap();
     let err = e.rebuild_projection(&mut db).unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "does not decode");
     assert_eq!(dump(db.conn()), before);
 }
 

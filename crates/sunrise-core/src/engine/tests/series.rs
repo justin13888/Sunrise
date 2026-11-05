@@ -288,7 +288,7 @@ fn a_split_at_a_key_the_series_lacks_is_refused() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "the series has no occurrence at 2023-11-20T07:00");
     let after = db
         .conn()
         .query_row("SELECT COUNT(*) FROM ops", [], |r| r.get::<_, i64>(0))
@@ -472,7 +472,10 @@ fn an_edit_of_this_occurrence_refuses_a_rule_change() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(
+        &err,
+        "an edit of one occurrence sets only the template, the time and the constraints",
+    );
     assert_eq!(op_count(&db), ops);
 }
 
@@ -793,7 +796,7 @@ const RULES: [&str; 4] = [
 
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/series.txt",

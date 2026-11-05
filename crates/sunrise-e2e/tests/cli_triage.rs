@@ -6,7 +6,7 @@
 //! reaches the other device; a Keep takes a task out of the queue on both.
 
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// The ids in `device`'s triage queue, in its order.
 async fn queue(device: &Device) -> Vec<String> {
@@ -24,7 +24,7 @@ async fn queue(device: &Device) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_triage_batch_is_all_or_nothing_and_a_drop_reason_syncs() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = bootstrap_and_recover(dir.path(), &format!("http://{addr}")).await;
 
@@ -48,7 +48,12 @@ async fn a_triage_batch_is_all_or_nothing_and_a_drop_reason_syncs() {
     let refused = a
         .run(&["triage", "drop", &late, &gone, "--reason", "not needed"])
         .await;
+    let err = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "a deleted id refuses the batch");
+    assert!(
+        err.contains(&format!("{gone} is deleted")),
+        "refused for the deleted id: {err}"
+    );
     assert_eq!(a.task(&late).await["state"], "todo");
     assert_eq!(queue(&a).await, vec![late.clone(), later.clone()]);
 

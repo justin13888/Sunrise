@@ -5,7 +5,9 @@
 //! the other half: the same sigils, applied to a Task that already exists, so
 //! every field [`TaskPatch`] carries is reachable without a form. A `~duration`
 //! reads alike in both, refusals included: `~1h30` is a typo in either prompt,
-//! and `tests/annotate_capture_sigils.rs` holds the two parsers to that.
+//! and `tests/annotate_capture_sigils.rs` holds the two parsers to that. The
+//! form a list displays, [`crate::phrase::short_duration`], is `1h30m`, so an
+//! estimate copied from the CLI's task detail reads back unchanged.
 //!
 //! | Token | Effect |
 //! |---|---|
@@ -235,7 +237,7 @@ impl TaskEdit {
             energy_word(&e).to_string()
         });
         push_set(&mut parts, self.duration_s, "estimate", |s| {
-            format!("~{}", duration_label(s))
+            format!("~{}", crate::phrase::short_duration(s))
         });
         push_set(&mut parts, self.scheduled.clone(), "schedule", |t| {
             format!("^{}", stamp(&t, tz))
@@ -479,16 +481,6 @@ fn parse_duration_s(s: &str) -> Option<u64> {
     (digits.is_empty() && total > 0).then_some(total)
 }
 
-/// `5400` → `1h30m`.
-fn duration_label(secs: u64) -> String {
-    let (h, m) = (secs / 3600, (secs % 3600) / 60);
-    match (h, m) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m}m"),
-    }
-}
-
 /// `2026-01-02 09:00` in the user's zone, or `2026-01-02` for a whole day.
 ///
 /// A value with no instant to show in `tz` shows its stored text instead
@@ -703,6 +695,30 @@ mod tests {
                 e.patch_for(&[]).estimated_duration_s,
                 Some(Some(secs)),
                 "{text}"
+            );
+        }
+    }
+
+    /// The estimate a list shows is one `edit` accepts back: the CLI's task
+    /// detail prints [`crate::phrase::short_duration`], and a user who types
+    /// that text after `~` must get the same estimate, not a refusal.
+    #[test]
+    fn the_displayed_estimate_reads_back_as_the_same_seconds() {
+        for secs in [60, 30 * 60, 3600, 3900, 5400, 7200, 25 * 3600 + 59 * 60] {
+            let shown = crate::phrase::short_duration(secs);
+            let e = edit(&format!("~{shown}"));
+            assert!(e.errors.is_empty(), "{shown}: {:?}", e.errors);
+            assert_eq!(
+                e.patch_for(&[]).estimated_duration_s,
+                Some(Some(secs)),
+                "{shown}"
+            );
+            // The edit's own change summary names the estimate in the same
+            // form the list shows, so the two never disagree.
+            assert!(
+                e.preview(&streams(), &contexts(), &TimeZone::UTC)
+                    .contains(&format!("~{shown}")),
+                "{shown}"
             );
         }
     }

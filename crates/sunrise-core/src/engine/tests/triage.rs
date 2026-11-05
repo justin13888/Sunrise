@@ -172,33 +172,37 @@ fn one_invalid_id_refuses_the_whole_batch() {
         triage(&e, &mut db, &[a, unknown, b], drop()),
         Err(EngineError::NotFound(_))
     ));
-    assert!(matches!(
+    invalid(
         triage(&e, &mut db, &[a, gone], drop()),
-        Err(EngineError::Invalid(_))
-    ));
-    assert!(matches!(
+        &format!("{gone} is deleted"),
+    );
+    invalid(
         triage(&e, &mut db, &[a, a], drop()),
-        Err(EngineError::Invalid(_))
-    ));
-    assert!(matches!(
+        "appears twice in one triage action",
+    );
+    invalid(
         triage(&e, &mut db, &[], drop()),
-        Err(EngineError::Invalid(_))
-    ));
+        "a triage action needs at least one task",
+    );
     // A completion in the future for one of them refuses both.
     let tomorrow = SunriseTime::all_day(jiff::civil::date(2023, 11, 17));
-    assert!(matches!(
-        triage(
-            &e,
-            &mut db,
-            &[a, b],
-            TriageAction::AlreadyDone {
-                completed_at: tomorrow
-            }
-        ),
-        Err(EngineError::Invalid(_))
-    ));
+    let r = triage(
+        &e,
+        &mut db,
+        &[a, b],
+        TriageAction::AlreadyDone {
+            completed_at: tomorrow,
+        },
+    );
+    invalid(r, "a task cannot be done in the future");
     let long = "x".repeat(513);
-    assert!(triage(&e, &mut db, &[a], TriageAction::Drop { reason: Some(long) }).is_err());
+    assert!(matches!(
+        triage(&e, &mut db, &[a], TriageAction::Drop { reason: Some(long) }),
+        Err(EngineError::Validation(ValidationError::Field {
+            field: "task.cancel_reason",
+            constraint: "max_512",
+        }))
+    ));
     assert_eq!(op_count(&db), ops, "nothing written");
     for id in [a, b] {
         assert_eq!(read_task_t(&e, &db, id).state, TaskState::Todo);
@@ -303,15 +307,15 @@ fn each_action_writes_what_its_row_says() {
     .unwrap();
     assert_eq!(read_task_t(&e, &db, t).completed_at, Some(day));
     // Never before it existed.
-    assert!(triage(
+    let r = triage(
         &e,
         &mut db,
         &[t],
         TriageAction::AlreadyDone {
-            completed_at: at(NOW - 1)
-        }
-    )
-    .is_err());
+            completed_at: at(NOW - 1),
+        },
+    );
+    invalid(r, "a task cannot be done before it was created");
 
     // Keep stamps now.
     let k = add(&e, &mut db, "k", None, None);
@@ -743,7 +747,7 @@ fn a_later_id_refused_in_planning_refuses_the_batch() {
                 "{err:?}"
             );
         } else {
-            assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+            assert_invalid(&err, "task state Done cannot transition to Cancelled");
         }
         assert_eq!(op_count(&db), ops, "nothing written (defer: {defer})");
         let after: Vec<Task> = rows(&db, &held);
@@ -753,7 +757,7 @@ fn a_later_id_refused_in_planning_refuses_the_batch() {
 
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig {
-        cases: 32,
+        cases: sunrise_test_seed::proptest_cases(32),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
@@ -785,7 +789,19 @@ proptest::proptest! {
         } else {
             TriageAction::Drop { reason: Some("not mine".into()) }
         };
-        proptest::prop_assert!(triage(&e, &mut db, &ids, action()).is_err());
+        let r = triage(&e, &mut db, &ids, action());
+        let refused_for_it = match (&bad, &r) {
+            (Bad::Unknown, Err(EngineError::NotFound(what))) => *what == format!("task {wrong}"),
+            (Bad::Deleted, Err(EngineError::Invalid(why))) => *why == format!("{wrong} is deleted"),
+            (Bad::Unplannable, Err(EngineError::Validation(
+                sunrise_domain::ValidationError::HardScheduleConstraint,
+            ))) => defer,
+            (Bad::Unplannable, Err(EngineError::Invalid(why))) => {
+                !defer && why == "task state Done cannot transition to Cancelled"
+            }
+            _ => false,
+        };
+        proptest::prop_assert!(refused_for_it, "{:?} (defer: {}): {:?}", bad, defer, r);
         proptest::prop_assert_eq!(op_count(&db), ops);
         let after: Vec<Task> = rows(&db, &held);
         proptest::prop_assert_eq!(before, after);

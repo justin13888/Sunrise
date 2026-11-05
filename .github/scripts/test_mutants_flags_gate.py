@@ -1332,10 +1332,10 @@ class FlagsGateContract(unittest.TestCase):
         # PER FILE and not per line, deliberately. Line numbers move for
         # reasons that have nothing to do with this gate; what must not
         # move unnoticed is WHICH FILES the gate is failing to read, and
-        # how much of each. The four workflow entries are the live half
-        # of a limit the module docstring states as latent — prose the
-        # gate cannot tell from shell — and a reader who believes the
-        # old sentence never learns they exist.
+        # how much of each. The four `- name:` prose entries in the
+        # workflows are the live half of a limit the module docstring
+        # states as latent — prose the gate cannot tell from shell — and
+        # a reader who believes the old sentence never learns they exist.
         #
         # Like the case above, this couples to working-tree state: an
         # untracked `.github/**/*.{yml,yaml,sh}` will move these counts
@@ -1353,10 +1353,10 @@ class FlagsGateContract(unittest.TestCase):
         self.assertEqual(
             derived,
             {
-                "mise.toml": 52,
+                "mise.toml": 65,
                 ".github/scripts/grep-gate.sh": 4,
                 ".github/scripts/sparkle-tools.sh": 3,
-                ".github/workflows/ci.yml": 2,
+                ".github/workflows/ci.yml": 8,
                 ".github/workflows/release.yml": 2,
             },
             "the unlexable tally's composition moved. Correct the "
@@ -1364,13 +1364,14 @@ class FlagsGateContract(unittest.TestCase):
             "docs/10-cross-cutting/testing.md in the same change, and "
             "check whether a file has started going unread rather than "
             "only editing this mapping to match.")
-        # And the two kinds inside `mise.toml`: 50 unbalanced quotations
-        # to a shell lexer — 48 fences, plus the opening and closing lines
+        # And the two kinds inside `mise.toml`: 62 unbalanced quotations
+        # to a shell lexer — 60 fences, plus the opening and closing lines
         # of the single-quoted `python3 -c` program `ios-app` picks its
-        # simulator with — and `:712` and `:1074`, each an unclosed `$(`
-        # continued with `\\` inside a `"""` string. They are counted
-        # together by the gate and stated separately by its docstring, so
-        # they are asserted separately here.
+        # simulator with — and three unclosed `$(`: `:912` and `:1274`,
+        # each continued with `\\` inside a `"""` string, and `:618`,
+        # `fuzz-smoke`'s target list, continued by a trailing `|`. They
+        # are counted together by the gate and stated separately by its
+        # docstring, so they are asserted separately here.
         kinds: dict[str, int] = {}
         for _, line in gate.logical_lines((root / "mise.toml").read_text()):
             try:
@@ -1378,9 +1379,9 @@ class FlagsGateContract(unittest.TestCase):
             except ValueError as error:
                 if not gate.INVOCATION.search(line):
                     kinds[str(error)] = kinds.get(str(error), 0) + 1
-        self.assertEqual(kinds.get("no closing quotation"), 50)
+        self.assertEqual(kinds.get("no closing quotation"), 62)
         self.assertEqual(
-            kinds.get("no closing `)` for a command substitution"), 2)
+            kinds.get("no closing `)` for a command substitution"), 3)
         # Finally, the number the gate PRINTS is the sum of the parts.
         # The docstring's total and its breakdown are one claim.
         printed = subprocess.run(

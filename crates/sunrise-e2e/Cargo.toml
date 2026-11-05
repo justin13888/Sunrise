@@ -52,6 +52,11 @@ sunrise-cli = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }
+# The scenarios create and recover accounts without being about the KDF: the
+# cheap Argon2id set (`sunrise-crypto`'s `test-cheap-kdf`). The `sunrise`
+# binary `src/cli.rs` builds gets it too, so a blob crosses the process
+# boundary under one set; the baseline driver handles no recovery blob.
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
 # The device-bound scenario registers a real `D_S_pub` and reads the scheme's
 # own clock tolerance; both belong to the crate that defines `header_sig_v2`
 # rather than being restated here.

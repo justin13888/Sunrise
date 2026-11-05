@@ -1,14 +1,17 @@
-//! Optional streams between two CLI vaults on one account, through a real
-//! relay and the real `sunrise` binary (ADR-0046, issue #332).
+//! Optional streams through the real `sunrise` binary (ADR-0046, issue #332):
+//! between two CLI vaults on one account over a real relay, and on one vault.
 //!
 //! A task that belongs to no stream syncs like any other, sealed under the
-//! account's private key domain; and a stream deleted on one device while the
-//! other edits one of its tasks, and files a new one into it, converges on
-//! both devices to the outcome the deletion chose.
+//! account's private key domain; and on one device, `streams delete Old
+//! --move-to New` re-homes a task filed with `#old` and retitled, while
+//! `streams delete New` detaches it. How a deletion converges against an
+//! edit made apart is proved in
+//! `crates/sunrise-core/src/engine/tests/optional_stream.rs` and in
+//! `delete_defect_probe.rs`.
 
 use serde_json::Value;
 use sunrise_e2e::cli::{bootstrap_and_recover, first_id, settle, Device};
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_unlimited;
 
 /// Two devices on one account.
 async fn two_devices(root: &std::path::Path, relay: &str) -> (Device, Device) {
@@ -40,7 +43,7 @@ async fn stream_id(device: &Device, name: &str) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_task_with_no_stream_syncs_between_two_vaults() {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_unlimited().await;
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = two_devices(dir.path(), &format!("http://{addr}")).await;
 
@@ -79,58 +82,40 @@ async fn a_task_with_no_stream_syncs_between_two_vaults() {
     relay.abort();
 }
 
-/// The convergence the issue asks for: A deletes a stream into another while
-/// B, apart, retitles one of its tasks and files a new one into it. Both
-/// devices end with both tasks in the stream A chose, B's title kept, and the
-/// deleted stream gone from every listing.
+/// On one device with no relay: a task filed with `#old` and retitled is
+/// re-homed by `streams delete Old --move-to New`, keeping its title, and
+/// `streams delete New` then leaves it in no stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_a_stream_while_the_other_device_edits_one_of_its_tasks_converges() {
-    let (addr, relay) = spawn_relay().await;
+async fn deleting_a_stream_moves_its_task_to_another_or_to_no_stream() {
     let dir = tempfile::tempdir().unwrap();
-    let (a, b) = two_devices(dir.path(), &format!("http://{addr}")).await;
+    let a = Device {
+        relay: None,
+        ..Device::new(&dir.path().join("a"), "")
+    };
 
     a.ok(&["streams", "create", "Old"]).await;
     a.ok(&["streams", "create", "New"]).await;
-    let kept = first_id(&a.ok(&["capture", "Pack the boxes #old"]).await);
-    settle(&a, &b).await;
+    let task = first_id(&a.ok(&["capture", "Pack the boxes #old"]).await);
+    let old = stream_id(&a, "Old").await.expect("created");
     let new = stream_id(&a, "New").await.expect("created");
+    assert_eq!(
+        a.task(&task).await["stream"],
+        old.as_str(),
+        "`#old` filed it"
+    );
+    a.ok(&["retitle", &task, "Pack the boxes and label them"])
+        .await;
 
-    // Apart.
     a.ok(&["streams", "delete", "Old", "--move-to", "New"])
         .await;
-    b.ok(&["retitle", &kept, "Pack the boxes and label them"])
-        .await;
-    let late = first_id(&b.ok(&["capture", "Book the van #old"]).await);
-    settle(&a, &b).await;
+    let moved = a.task(&task).await;
+    assert_eq!(moved["stream"], new.as_str(), "re-homed into New");
+    assert_eq!(moved["title"], "Pack the boxes and label them");
+    assert_eq!(stream_id(&a, "Old").await, None, "the stream is gone");
+    assert_eq!(listed(&a, &["stream", "New"]).await, vec![task.clone()]);
 
-    for device in [&a, &b] {
-        for task in [&kept, &late] {
-            assert_eq!(
-                device.task(task).await["stream"],
-                new.as_str(),
-                "{task} is where the deletion re-homed the stream"
-            );
-        }
-        assert_eq!(
-            device.task(&kept).await["title"],
-            "Pack the boxes and label them",
-            "the edit made apart survives"
-        );
-        assert_eq!(stream_id(device, "Old").await, None, "the stream is gone");
-        let mut in_new = listed(device, &["stream", "New"]).await;
-        in_new.sort();
-        let mut want = vec![kept.clone(), late.clone()];
-        want.sort();
-        assert_eq!(in_new, want);
-    }
-
-    // Detaching sends everything to no stream instead.
+    // Deleting with no `--move-to` detaches it instead.
     a.ok(&["streams", "delete", "New"]).await;
-    settle(&a, &b).await;
-    for device in [&a, &b] {
-        for task in [&kept, &late] {
-            assert_eq!(device.task(task).await["stream"], Value::Null);
-        }
-    }
-    relay.abort();
+    assert_eq!(a.task(&task).await["stream"], Value::Null);
+    assert_eq!(listed(&a, &["stream", "none"]).await, vec![task]);
 }

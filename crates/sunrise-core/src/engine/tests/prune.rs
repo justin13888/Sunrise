@@ -620,7 +620,7 @@ fn arb_step() -> impl Strategy<Value = Step> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 48,
+        cases: sunrise_test_seed::proptest_cases(48),
         // docs/10-cross-cutting/testing.md §2: a shrunken counterexample is
         // committed, at a path named here.
         failure_persistence: Some(Box::new(
@@ -1440,7 +1440,7 @@ fn corrupt(doc: &Value, h: &Hostile) -> Value {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 32,
+        cases: sunrise_test_seed::proptest_cases(32),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/prune.txt",
@@ -1494,7 +1494,14 @@ proptest! {
         let refused = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
             crate::engine::merge::join_stream_state(tx, &bad)
         });
-        prop_assert!(matches!(refused, Err(EngineError::Invalid(_))), "{:?}", refused);
+        // Which of the join's shape checks refuses depends on where the
+        // corruption landed, so the reason is pinned to the join's own
+        // checks rather than to one of them.
+        prop_assert!(
+            matches!(&refused, Err(EngineError::Invalid(why)) if why.starts_with("snapshot doc_state: ")),
+            "{:?}",
+            refused
+        );
         prop_assert_eq!(every_row(&rdb), before);
         let unharmed = crate::engine::snapshot::in_tx(&mut rdb, |tx| {
             crate::engine::merge::join_stream_state(tx, &doc)

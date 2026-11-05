@@ -242,5 +242,5 @@ fn activity_timeline_rejects_an_entity_that_has_no_feed() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "got {err:?}");
+    assert_invalid(&err, "activity timelines exist for tasks and streams only");
 }

@@ -13,11 +13,12 @@ specific to reading from Google. Writing is added by
 [ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) and
 designed in [`calendar-architecture.md`](./calendar-architecture.md).
 
-> **Status: not built.** `crates/sunrise-integrations/src/gcal.rs` implements
+> **Status: not built.** The `crates/sunrise-integrations/src/gcal/` module implements
 > the PKCE authorization-code exchange
-> (`crates/sunrise-integrations/src/gcal.rs#OAuthFlow`), refresh with the
+> (`crates/sunrise-integrations/src/gcal/oauth.rs#OAuthFlow`), refresh with the
 > durable-refresh-token rule
-> (`crates/sunrise-integrations/src/gcal.rs#apply_refresh`) and change detection
+> (`crates/sunrise-integrations/src/gcal/oauth.rs#apply_refresh`) and change detection
+> (`crates/sunrise-integrations/src/gcal/poll.rs#diff`)
 > that suppresses phantom deletes, all against an injected transport. It has
 > **zero consumers**: nothing has run it against the live API, there is no
 > `impl EventSyncer`, and there is no storage or UI.
@@ -81,7 +82,7 @@ For each subscribed calendar:
    and the list offered in Settings. A calendar the user can see only as
    free/busy is listed and marked "busy only": its events carry no title, and
    they import as events titled "Busy". `AccessRole::can_read_details`
-   in `gcal.rs` already tells the two apart.
+   in `gcal/mod.rs` already tells the two apart.
 2. `events.list` with `singleEvents=true`, `timeMin`/`timeMax` bounding the
    window in [`overview.md`](./overview.md) §Fetching, `maxResults=250`, looping
    on `pageToken`. `singleEvents=true` makes Google expand recurring series,

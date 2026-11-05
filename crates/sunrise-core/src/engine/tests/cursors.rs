@@ -77,7 +77,7 @@ proptest::proptest! {
                 "proptest-regressions/tests/cursors.txt",
             ),
         )),
-        ..proptest::prelude::ProptestConfig::with_cases(24)
+        ..proptest::prelude::ProptestConfig::with_cases(sunrise_test_seed::proptest_cases(24))
     })]
 
     /// `docs/05-sync/wire-protocol.md:447-453` calls the contiguous-prefix

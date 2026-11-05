@@ -313,7 +313,7 @@ shape, and each gap is tracked:
   `contexts`, `blocked_by` and `deferred_count` lose concurrent edits there; a
   `core.field_ops` vault merges per field, as §Merge mapping says.
 - Undo of a delete is `Command::Restore`, a later write of `deleted = false`
-  (`crates/sunrise-client-core/src/undo.rs`, ADR-0065 §3). In a vault that
+  (`crates/sunrise-client-core/src/undo/inverse.rs`, ADR-0065 §3). In a vault that
   requires `core.field_ops` it is a `Patch` of `deleted` naming every head;
   in one still in legacy mode, a full-state op of the task as it projects, so
   it also settles every other field on this device's values (ADR-0065 D11).

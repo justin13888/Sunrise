@@ -97,7 +97,7 @@ impl Core {
     /// Move the vault directory `cfg.vault_dir` aside whole, and return where
     /// it went ([`Db::set_vault_dir_aside`]): what a client does before it
     /// restores the account into the same place from its recovery code, which
-    /// needs an empty directory. Nothing in it is deleted.
+    /// needs a directory holding no vault. Nothing in it is deleted.
     ///
     /// # Errors
     /// [`CoreError::VaultLock`] while the vault is open, and nothing is moved;

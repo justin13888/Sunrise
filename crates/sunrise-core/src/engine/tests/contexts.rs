@@ -52,7 +52,7 @@ fn duplicate_and_invalid_context_names_are_rejected() {
                 }),
             )
             .unwrap_err();
-        assert!(matches!(err, EngineError::Invalid(_)), "{dup}: {err:?}");
+        assert_invalid(&err, "is already used by");
     }
 
     // Blank and over-length names never reach the store.
@@ -83,7 +83,7 @@ fn duplicate_and_invalid_context_names_are_rejected() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "is already used by");
     // ...but renaming a context to its own name is not a clash.
     e.apply(
         &mut db,
@@ -291,7 +291,7 @@ fn context_commands_reject_a_non_context_id() {
     let err = e
         .apply(&mut db, Command::DeleteContext(stream_ref(3)))
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "expected Context, got Stream");
 }
 
 /// `PromoteToStream` takes two ids and checks the kind of both. The command
@@ -327,7 +327,7 @@ fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
     let err = e
         .apply(&mut db, Command::PromoteToStream { id: stream, stream })
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "expected Task, got Stream");
 
     // A Task id where the Stream belongs.
     let err = e
@@ -339,7 +339,7 @@ fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "expected Stream, got Task");
 
     // A Context id in the Stream slot: the kind is checked, not merely
     // "is it not a Task".
@@ -353,7 +353,7 @@ fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    assert_invalid(&err, "expected Stream, got Context");
 
     // And the well-kinded pair still works, so the rejections above are the
     // guards and not a broken fixture.
