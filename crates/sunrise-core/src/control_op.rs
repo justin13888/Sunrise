@@ -582,6 +582,16 @@ mod tests {
             },
             &[],
         );
+        assert_wire_names(
+            "DeviceRevokeByIdentityPayload",
+            &DeviceRevokeByIdentityPayload {
+                revoked_device_id: [6u8; 16],
+                reason_code: RevokeReason::Stolen,
+                identity_id: [7u8; 16],
+                identity_sig: [8u8; 64],
+            },
+            &[],
+        );
         let t = a_transition();
         assert_wire_names("IdentityTransitionPayload", &t, &[]);
         assert_wire_names("RosterEntry", &t.roster[0], &[]);
@@ -633,6 +643,7 @@ mod tests {
         let checked = [
             "KeyEnvelopePayload",
             "DeviceRevokePayload",
+            "DeviceRevokeByIdentityPayload",
             "IdentityTransitionPayload",
             "RosterEntry",
             "KeyShare",

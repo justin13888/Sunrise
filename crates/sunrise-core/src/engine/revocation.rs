@@ -143,19 +143,23 @@ pub(super) struct RevokeClaim {
     authority: Option<([u8; 16], [u8; 64])>,
 }
 
-impl RevokeClaim {
-    /// A `device.revoke`.
-    pub(super) const fn ordinary(revoked: [u8; 16], reason: RevokeReason) -> Self {
+/// A `device.revoke`.
+impl From<&DeviceRevokePayload> for RevokeClaim {
+    fn from(p: &DeviceRevokePayload) -> Self {
         Self {
-            revoked,
-            reason,
+            revoked: p.revoked_device_id,
+            reason: p.reason_code,
             authority: None,
         }
     }
+}
 
-    /// A `device.revoke_by_identity`, whatever its signature: the fold
-    /// decides whether it is an authority row.
-    pub(super) const fn by_identity(p: &DeviceRevokeByIdentityPayload) -> Self {
+/// A `device.revoke_by_identity`, whatever its signature: the fold decides
+/// whether it is an authority row, against the head it folds, because a
+/// replica can hold one signed under an identity whose transition has not
+/// reached it yet (ADR-0058 §3).
+impl From<&DeviceRevokeByIdentityPayload> for RevokeClaim {
+    fn from(p: &DeviceRevokeByIdentityPayload) -> Self {
         Self {
             revoked: p.revoked_device_id,
             reason: p.reason_code,
@@ -1685,11 +1689,12 @@ impl Engine {
     pub(super) fn apply_device_revoke(
         &self,
         tx: &Transaction<'_>,
-        p: &RevokeClaim,
+        p: impl Into<RevokeClaim>,
         sender: &[u8; 16],
         hlc: Hlc,
         now_ms: u64,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
+        let p: RevokeClaim = p.into();
         // The revocation row is an **LWW register** keyed on the op's own
         // `(hlc, device_id)` — the same rule ADR-0014 resolves every other
         // concurrent write in this engine with, rather than a bespoke one for
