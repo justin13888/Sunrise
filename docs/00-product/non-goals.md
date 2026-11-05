@@ -22,6 +22,18 @@ No deals, pipelines, or per-contact histories. People entities exist only as **s
 
 Habits are modeled as routines — recurring tasks with streak tracking — but the app is not "open Sunrise to log your habits." Reason: habit-as-primary apps lose users who fall off; productivity-with-routines retains them.
 
+## Not a game or a wellness app
+
+No boredom screen, mini-game or idle toy. No breathing exercises, fidget
+surfaces, calming screens or mood check-ins. No reward for completing work: no
+confetti, points or badges, and no animation that grows with a streak. Motion
+exists only to show a state change, on the shared motion tokens, and it stops
+under Reduce Motion
+([ADR-0072](../11-adr/0072-delight-is-functional-motion-on-the-shared-tokens.md)).
+Reason: a play or wellness surface turns a planning tool into a place to spend
+time, and a reward schedule turns finishing a task into a score. Dedicated apps
+serve these needs well.
+
 ## Not a team/enterprise product
 
 No org admin, SSO, audit logs for compliance, role hierarchies. **Self-hosting is the answer for teams that want shared infrastructure.** Reason: enterprise sales kills the product surface area we care about.
