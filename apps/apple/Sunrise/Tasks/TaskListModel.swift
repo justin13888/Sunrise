@@ -105,11 +105,14 @@ final class TaskListModel {
     /// Write the order an earlier build kept for this list on this device
     /// into the vault, once; `true` when it wrote, so the caller re-reads.
     ///
-    /// A stored order with nothing left to write — its rows are gone, or
-    /// another device has arranged the list since — is forgotten without a
-    /// write. One the core refuses is kept and tried again on the next
-    /// refresh, against the list as it is then: the import is the only copy
-    /// of that arrangement, and deleting it on a failed write would lose it.
+    /// A stored order with nothing left to write — its rows are gone or
+    /// already placed, or another device has arranged the list since — is
+    /// forgotten without a write. Rows this device's own import of another
+    /// list placed are not another device's arrangement; see
+    /// ``ListOrderImport``. One the core refuses is kept and tried again on
+    /// the next refresh, against the list as it is then: the import is the
+    /// only copy of that arrangement, and deleting it on a failed write would
+    /// lose it.
     private func importStoredOrder(into list: [TaskItem]) async -> Bool {
         let kind = kind
         guard orderImport.stored(for: kind) != nil else { return false }
@@ -122,6 +125,7 @@ final class TaskListModel {
         } catch {
             return false
         }
+        orderImport.recordPlaced(command)
         orderImport.forget(kind)
         return true
     }

@@ -66,8 +66,25 @@ enum ListOrder {
 /// Per list, on the first refresh of that list, rather than all at once at
 /// launch: the import needs the list as the core shows it now, and the refresh
 /// has just read exactly that.
+///
+/// **One task, one place.** `sort_order` is a field of the task, not of the
+/// list, so a task in the Inbox and a Context, or in a Stream and a Context,
+/// has one place in both. The first list this device imports therefore places
+/// rows that other lists hold too, and the core's import declines any list
+/// with a placed row, on the premise that another device arranged it. For
+/// rows this device's own import placed that premise is false, so the import
+/// remembers them, and a list whose only placed rows are its own gets the rest
+/// of its stored order placed after them instead of being declined.
 @MainActor
 struct ListOrderImport {
+    /// Where the ids this device's imports placed are kept, until the last
+    /// stored order is gone.
+    static let placedHereKey = "taskOrderImport.placedHere"
+
+    /// The prefix every stored order's key has; see
+    /// ``TaskListKind/legacyOrderKey``.
+    private static let legacyPrefix = "list.order."
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -81,20 +98,56 @@ struct ListOrderImport {
         return defaults.stringArray(forKey: key)
     }
 
+    /// The tasks an import on this device has placed.
+    var placedHere: Set<EntityRef> {
+        Set(defaults.stringArray(forKey: Self.placedHereKey) ?? [])
+    }
+
     /// The command that writes the stored order into `list`, or `nil` when
-    /// there is nothing to write: no stored order, none of its rows still in
-    /// the list, or a list another device has already arranged.
+    /// there is nothing to write: no stored order, none of its rows still
+    /// unplaced in the list, or a list another device has already arranged.
+    ///
+    /// A list whose placed rows were all placed by this device's own import
+    /// of another list keeps them where they are, and its stored rows that
+    /// nobody has placed go after them, in the stored order: the rows shared
+    /// with the list imported first follow that list's order, and nothing is
+    /// lost from either.
     func command(for kind: TaskListKind, in list: [TaskItem]) -> CoreCommand? {
-        guard let stored = stored(for: kind),
-              let move = importTaskListOrder(stored: stored, list: list) else { return nil }
-        return .moveTasks(ids: move.ids, after: move.after, before: move.before)
+        guard let stored = stored(for: kind) else { return nil }
+        if let move = importTaskListOrder(stored: stored, list: list) {
+            return .moveTasks(ids: move.ids, after: move.after, before: move.before)
+        }
+        let placed = list.filter { $0.sortOrder != nil }
+        let here = placedHere
+        guard let last = placed.last, placed.allSatisfy({ here.contains($0.id) }) else { return nil }
+        let unplaced = Set(list.filter { $0.sortOrder == nil }.map(\.id))
+        var ids: [EntityRef] = []
+        for id in stored where unplaced.contains(id) && !ids.contains(id) {
+            ids.append(id)
+        }
+        guard !ids.isEmpty else { return nil }
+        // A list shows its placed rows first, by key, so the last of them is
+        // the highest, and nothing placed comes after it.
+        return .moveTasks(ids: ids, after: last.id, before: nil)
+    }
+
+    /// Remember the rows an import's `command` placed, once the core has
+    /// accepted it.
+    func recordPlaced(_ command: CoreCommand) {
+        guard case let .moveTasks(ids, _, _) = command else { return }
+        defaults.set(Array(placedHere.union(ids)).sorted(), forKey: Self.placedHereKey)
     }
 
     /// Delete the stored order, once it has been written or found to have
-    /// nothing to write.
+    /// nothing to write, and the record of what the imports placed once no
+    /// stored order is left to read it.
     func forget(_ kind: TaskListKind) {
         guard let key = kind.legacyOrderKey else { return }
         defaults.removeObject(forKey: key)
+        let anyLeft = defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(Self.legacyPrefix) }
+        if !anyLeft {
+            defaults.removeObject(forKey: Self.placedHereKey)
+        }
     }
 }
 

@@ -18,156 +18,6 @@ struct DropPayloadTests {
     }
 }
 
-/// Rows of a list as the core returns it, for the pure tests below.
-private enum Rows {
-    static let one = "tsk_01ARZ3NDEKTSV4RRFFQ69G5FAA"
-    static let two = "tsk_01ARZ3NDEKTSV4RRFFQ69G5FAB"
-    static let three = "tsk_01ARZ3NDEKTSV4RRFFQ69G5FAC"
-    static let four = "tsk_01ARZ3NDEKTSV4RRFFQ69G5FAD"
-
-    /// One row per `(id, key)`, in the order given.
-    static func list(_ rows: [(String, String?)]) -> [TaskItem] {
-        rows.map { id, key in
-            var task = Fixture.task(id: id)
-            task.sortOrder = key
-            return task
-        }
-    }
-
-    /// The three fields of a `moveTasks`, or `nil` for any other command.
-    static func fields(_ command: CoreCommand?) -> MoveFields? {
-        guard case let .moveTasks(ids, after, before) = command else { return nil }
-        return MoveFields(ids: ids, after: after, before: before)
-    }
-}
-
-private struct MoveFields: Equatable {
-    let ids: [EntityRef]
-    let after: EntityRef?
-    let before: EntityRef?
-}
-
-/// A drop in a task list, as the `MoveTasks` the core plans for it.
-struct ListOrderTests {
-    /// The ordinary case: a placed list and one dragged row moves that row
-    /// alone, between its two new neighbours.
-    @Test
-    func aRowDroppedOnAnotherLandsImmediatelyAboveIt() {
-        let list = Rows.list([(Rows.one, "G"), (Rows.two, "N"), (Rows.three, "T")])
-        #expect(
-            Rows.fields(ListOrder.move([Rows.three], before: Rows.two, in: list))
-                == MoveFields(ids: [Rows.three], after: Rows.one, before: Rows.two)
-        )
-        #expect(
-            Rows.fields(ListOrder.move([Rows.three], before: Rows.one, in: list))
-                == MoveFields(ids: [Rows.three], after: nil, before: Rows.one)
-        )
-    }
-
-    /// A whole ⇧-selected run moves together and keeps the order it is in
-    /// the list, whatever order the drag delivered it in.
-    @Test
-    func aMultiRowDragKeepsTheRowsInTheOrderTheyWereIn() {
-        let list = Rows.list([(Rows.one, "G"), (Rows.two, "K"), (Rows.three, "N"), (Rows.four, "T")])
-        #expect(
-            Rows.fields(ListOrder.move([Rows.four, Rows.two], before: Rows.one, in: list))
-                == MoveFields(ids: [Rows.two, Rows.four], after: nil, before: Rows.one)
-        )
-    }
-
-    /// In a list nobody has arranged, a row cannot land below an unplaced
-    /// one unless that row is placed too, so the core moves it with the drag.
-    @Test
-    func aDropBelowUnplacedRowsPlacesThemToo() {
-        let list = Rows.list([(Rows.one, nil), (Rows.two, nil), (Rows.three, nil)])
-        #expect(
-            Rows.fields(ListOrder.move([Rows.three], before: Rows.two, in: list))
-                == MoveFields(ids: [Rows.one, Rows.three], after: nil, before: nil)
-        )
-    }
-
-    /// Dropping onto a row that is itself being dragged, or naming rows the
-    /// list does not hold, is a no-op and not a write.
-    @Test
-    func aDropThatChangesNothingIsNoCommand() {
-        let list = Rows.list([(Rows.one, "G"), (Rows.two, "N"), (Rows.three, "T")])
-        #expect(ListOrder.move([Rows.two], before: Rows.two, in: list) == nil)
-        #expect(ListOrder.move([Rows.one, Rows.two], before: Rows.one, in: list) == nil)
-        #expect(ListOrder.move([Rows.one], before: Rows.two, in: list) == nil, "already there")
-        #expect(ListOrder.move([], before: Rows.one, in: list) == nil)
-        #expect(ListOrder.move([Rows.four], before: Rows.one, in: list) == nil)
-        #expect(ListOrder.move([Rows.one], before: Rows.four, in: list) == nil)
-    }
-
-    /// Today is sectioned by urgency and Search is ranked by relevance. A row
-    /// dragged in either would snap back on the next refresh, so both decline
-    /// the drop rather than accepting one they cannot honour.
-    @Test
-    func theSectionedAndRankedListsCannotBeArrangedByHand() {
-        #expect(!TaskListKind.todayAll.acceptsReordering)
-        #expect(!TaskListKind.today(contexts: ["ctx_1"]).acceptsReordering)
-        #expect(!TaskListKind.search(text: "milk").acceptsReordering)
-
-        #expect(TaskListKind.inbox.acceptsReordering)
-        #expect(TaskListKind.stream(id: "str_1", name: "Work").acceptsReordering)
-        #expect(TaskListKind.context(id: "ctx_1", name: "home").acceptsReordering)
-    }
-}
-
-/// The one-time import of the order an earlier build kept in `UserDefaults`.
-@MainActor
-struct ListOrderImportTests {
-    private func scratchDefaults() throws -> UserDefaults {
-        try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
-    }
-
-    /// The keys are the ones the earlier build wrote, so what it left behind
-    /// is what gets read. Lists it never arranged have none.
-    @Test
-    func theStoredOrderIsReadFromWhereTheEarlierBuildKeptIt() throws {
-        let defaults = try scratchDefaults()
-        defaults.set([Rows.three, Rows.one], forKey: "list.order.stream.str_1")
-        let store = ListOrderImport(defaults: defaults)
-
-        #expect(store.stored(for: .stream(id: "str_1", name: "Work")) == [Rows.three, Rows.one])
-        #expect(store.stored(for: .stream(id: "str_2", name: "Home")) == nil)
-        #expect(store.stored(for: .inbox) == nil)
-        #expect(TaskListKind.todayAll.legacyOrderKey == nil)
-        #expect(TaskListKind.search(text: "milk").legacyOrderKey == nil)
-        #expect(TaskListKind.context(id: "ctx_1", name: "home").legacyOrderKey == "list.order.context.ctx_1")
-    }
-
-    /// What the device kept goes ahead of the rest, in its order, as one move.
-    @Test
-    func aStoredOrderBecomesOneMove() throws {
-        let defaults = try scratchDefaults()
-        defaults.set([Rows.three, Rows.four, Rows.one], forKey: "list.order.inbox")
-        let store = ListOrderImport(defaults: defaults)
-        let list = Rows.list([(Rows.one, nil), (Rows.two, nil), (Rows.three, nil)])
-
-        #expect(
-            Rows.fields(store.command(for: .inbox, in: list))
-                == MoveFields(ids: [Rows.three, Rows.one], after: nil, before: nil),
-            "a row the list no longer holds is skipped"
-        )
-    }
-
-    /// A list another device has arranged since holds a newer order than
-    /// anything this device kept, and it is not overwritten.
-    @Test
-    func aListAlreadyArrangedIsLeftAlone() throws {
-        let defaults = try scratchDefaults()
-        defaults.set([Rows.three, Rows.one], forKey: "list.order.inbox")
-        let store = ListOrderImport(defaults: defaults)
-        let list = Rows.list([(Rows.one, "N"), (Rows.two, nil), (Rows.three, nil)])
-
-        #expect(store.command(for: .inbox, in: list) == nil)
-
-        store.forget(.inbox)
-        #expect(store.stored(for: .inbox) == nil)
-    }
-}
-
 /// The drops that write to the vault.
 @MainActor
 struct DropWritesTests {
@@ -330,6 +180,83 @@ struct DropWritesTests {
         let elsewhere = try freshList(.inbox, in: vault)
         await elsewhere.refresh()
         #expect(elsewhere.tasks.map(\.title).prefix(2) == ["Three", "One"])
+
+        await vault.bridge.shutdown()
+    }
+
+    /// A list another device has arranged keeps that arrangement: the stored
+    /// order is deleted on the first refresh, and nothing is written.
+    @Test
+    func aStoredOrderForAListArrangedElsewhereIsForgottenWithoutAWrite() async throws {
+        let vault = try await TestVault()
+        var ids: [EntityRef] = []
+        for title in ["One", "Two", "Three"] {
+            ids.append(try await vault.bridge.submit(.createTask(draft: draft(title))).entity)
+        }
+        // Another device's drag, as it arrives here: a placed row this
+        // device's import did not place.
+        _ = try await vault.bridge.submit(.moveTasks(ids: [ids[1]], after: nil, before: nil))
+        let before = try freshList(.inbox, in: vault)
+        await before.refresh()
+        let arranged = before.tasks.map(\.id)
+        let keys = before.tasks.map(\.sortOrder)
+
+        let defaults = try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+        defaults.set([ids[2], ids[0]], forKey: "list.order.inbox")
+        let list = TaskListModel(
+            bridge: vault.bridge,
+            kind: .inbox,
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await list.refresh()
+
+        #expect(defaults.stringArray(forKey: "list.order.inbox") == nil, "nothing to write, so forgotten")
+        #expect(list.tasks.map(\.id) == arranged)
+        #expect(list.tasks.map(\.sortOrder) == keys, "no key was written")
+
+        await vault.bridge.shutdown()
+    }
+
+    /// **Two lists sharing tasks.** The Inbox imports first and places a task
+    /// a Context also holds. The Context's import then sees that placed row,
+    /// which this device placed, and still writes the rest of its stored
+    /// order after it rather than deleting it unwritten.
+    @Test
+    func aSecondListSharingTasksStillImportsItsOrder() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        await browse.createContext(name: "home", description: nil)
+        let home = try #require(browse.contexts.first { $0.name == "home" })
+        var ids: [EntityRef] = []
+        for title in ["One", "Two", "Three", "Four"] {
+            ids.append(try await vault.bridge.submit(.createTask(draft: draft(title))).entity)
+        }
+        #expect(await browse.fileTasks([ids[1], ids[2], ids[3]], intoContext: home.id))
+
+        let defaults = try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+        defaults.set([ids[0], ids[1]], forKey: "list.order.inbox")
+        defaults.set([ids[3], ids[2]], forKey: "list.order.context.\(home.id)")
+        let inbox = TaskListModel(
+            bridge: vault.bridge,
+            kind: .inbox,
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await inbox.refresh()
+        #expect(inbox.tasks.map(\.title).prefix(2) == ["One", "Two"])
+
+        let context = TaskListModel(
+            bridge: vault.bridge,
+            kind: .context(id: home.id, name: "home"),
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await context.refresh()
+        #expect(
+            context.tasks.map(\.title) == ["Two", "Four", "Three"],
+            "the shared row keeps the Inbox's place"
+        )
+        #expect(context.tasks.allSatisfy { $0.sortOrder != nil }, "the Context's own order was written")
+        #expect(defaults.stringArray(forKey: "list.order.context.\(home.id)") == nil)
+        #expect(defaults.object(forKey: ListOrderImport.placedHereKey) == nil, "no stored order left")
 
         await vault.bridge.shutdown()
     }

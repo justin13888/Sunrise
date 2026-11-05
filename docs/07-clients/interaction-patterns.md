@@ -69,7 +69,10 @@ The Apple client kept a per-device order in `UserDefaults` before tasks had
 one. `ListOrderImport` writes it into the vault once per list, on that list's
 first refresh, through `import_task_list_order`, which places what the device
 kept ahead of the rest and imports nothing into a list another device already
-arranged; the stored order is then deleted. `ListOrder.swift` is otherwise a
+arranged; the stored order is then deleted. A task has one place in every list
+that holds it, so rows the device's own import of one list placed are not taken
+for another device's arrangement of the next: that list's stored rows go after
+them. `ListOrder.swift` is otherwise a
 drag adapter over `plan_task_move`. Lists the core itself ranks — Today, sectioned by urgency, and
 Search, ranked per keystroke — decline the gesture rather than accepting a drop
 they cannot honour.
