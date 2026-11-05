@@ -35,6 +35,11 @@ These failure modes are specific enough to name:
      within a file: a `uses:` whose value the gate cannot parse is a violation,
      never a skip.
 
+  5. **Requiring a check nothing reports.** A required context is matched to
+     a job name by exact string. A renamed job, a matrix template, a step's
+     `name:`, or a workflow that skips some pull requests leaves the context
+     pending on every pull request it misses, and nothing merges.
+
 Fixtures are synthesised trees
 ------------------------------
 
@@ -49,6 +54,7 @@ Run it with `mise run workflow-hardening-gate-test`, or directly.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import shutil
 import subprocess
@@ -287,6 +293,147 @@ class WorkflowHardeningGateContract(unittest.TestCase):
         directory.mkdir(parents=True)
         (directory / "action.yaml").write_text("name: y\nruns:\n  using: composite\n  steps:\n    - uses: Swatinem/rust-cache@v2\n")
         self.assert_code(self.run_gate(), VIOLATION, "`Swatinem/rust-cache@v2` is not pinned", "action.yaml")
+
+    # -- assertion 3: required contexts report on every pull request -------
+
+    def ruleset(self, *contexts: str, name: str = "protect-master.json"):
+        directory = self.tmp / ".github" / "rulesets"
+        directory.mkdir(parents=True, exist_ok=True)
+        checks = [{"context": c, "integration_id": 15368} for c in contexts]
+        record = {
+            "name": "Protect master",
+            "rules": [
+                {"type": "deletion"},
+                {"type": "required_status_checks", "parameters": {"required_status_checks": checks}},
+            ],
+        }
+        (directory / name).write_text(json.dumps(record))
+
+    def gated_workflow(self, on: str = "on:\n  push:\n  pull_request:\n", jobs: str = ""):
+        self.workflow(
+            f"name: CI\n{on}permissions:\n  contents: read\njobs:\n"
+            + (jobs or "  appcast-contract:\n    name: Appcast generator contract\n    steps:\n"
+               f"      - uses: {PIN}  # v4.4.0\n")
+        )
+
+    def test_a_required_context_that_names_a_job_is_clean(self):
+        self.gated_workflow()
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), CLEAN, "each of the 1 required context(s)")
+
+    def test_a_required_context_no_job_reports_is_a_violation(self):
+        # A renamed job: the ruleset waits forever for the old name.
+        self.gated_workflow()
+        self.ruleset("Appcast contract")
+        self.assert_code(self.run_gate(), VIOLATION, "`Appcast contract` is no job's name")
+
+    def test_a_step_name_is_not_a_job_name(self):
+        # A `name:` deeper than the job's own keys belongs to a step, and a
+        # step reports no check run of its own.
+        self.gated_workflow(
+            jobs="  a:\n    name: Job\n    steps:\n      - name: Step\n"
+            f"        uses: {PIN}  # v4.4.0\n"
+        )
+        self.ruleset("Step")
+        self.assert_code(self.run_gate(), VIOLATION, "`Step` is no job's name")
+
+    def test_a_job_with_no_name_reports_as_its_id(self):
+        self.gated_workflow(jobs=f"  lint:\n    steps:\n      - uses: {PIN}  # v4.4.0\n")
+        self.ruleset("lint")
+        self.assert_code(self.run_gate(), CLEAN)
+
+    def test_a_matrix_template_cannot_be_required(self):
+        # The template is not a context; each leg is, and the gate does not
+        # expand matrices.
+        self.gated_workflow(
+            jobs="  fuzz:\n    name: Fuzz (${{ matrix.target }})\n    steps:\n"
+            f"      - uses: {PIN}  # v4.4.0\n"
+        )
+        self.ruleset("Fuzz (op_envelope)")
+        self.assert_code(self.run_gate(), VIOLATION, "cannot be required until")
+
+    def test_a_job_skipped_by_its_own_if_is_still_requireable(self):
+        # A skipped job reports `skipped`, which GitHub counts as passing.
+        self.gated_workflow(
+            jobs="  mac:\n    name: Mac\n    if: >-\n      github.event_name == 'push'\n"
+            f"    steps:\n      - uses: {PIN}  # v4.4.0\n"
+        )
+        self.ruleset("Mac")
+        self.assert_code(self.run_gate(), CLEAN)
+
+    def test_a_job_whose_workflow_skips_pull_requests_is_a_violation(self):
+        self.gated_workflow(on="on:\n  push:\n    branches: [master]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_paths_filtered_pull_request_trigger_is_a_violation(self):
+        # docker-image.yml's shape: a pull request outside the paths gets no
+        # check run at all, so a required context there never arrives.
+        self.gated_workflow(on="on:\n  pull_request:\n    paths:\n      - Dockerfile\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_paths_ignore_filter_in_a_flow_mapping_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request: {paths-ignore: [docs/**]}\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_types_list_holding_every_default_is_clean(self):
+        # pr-body.yml's shape: `edited` added, none of the defaults dropped.
+        self.gated_workflow(on="on:\n  pull_request:\n    types: [opened, edited, reopened, synchronize]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), CLEAN)
+
+    def test_a_types_list_without_synchronize_is_a_violation(self):
+        # Every push after the first leaves the new head with no check run.
+        self.gated_workflow(on="on:\n  pull_request:\n    types: [opened, reopened]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_block_types_list_without_synchronize_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request:\n    types:\n      - opened\n      - reopened\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_types_list_without_synchronize_in_a_flow_mapping_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request: {types: [opened, reopened]}\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_filter_is_a_violation(self):
+        # Even naming the default branch: a pull request stacked on another
+        # one's branch targets that branch and gets no check run.
+        self.gated_workflow(on="on:\n  pull_request:\n    branches: [master]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_ignore_filter_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request:\n    branches-ignore:\n      - master\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_filter_in_a_flow_mapping_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request: {branches: [master]}\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_an_inline_event_list_is_read(self):
+        self.gated_workflow(on="on: [push, pull_request]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), CLEAN)
+
+    def test_an_unreadable_ruleset_is_not_a_pass(self):
+        self.gated_workflow()
+        directory = self.tmp / ".github" / "rulesets"
+        directory.mkdir(parents=True)
+        (directory / "protect-master.json").write_text('{"rules": [{"type": "required_status_checks"}]}')
+        self.assert_code(self.run_gate(), VIOLATION, "not a ruleset this gate can read")
+
+    def test_every_ruleset_record_is_read(self):
+        self.gated_workflow()
+        self.ruleset("Appcast generator contract")
+        self.ruleset("Gone", name="other.json")
+        self.assert_code(self.run_gate(), VIOLATION, "other.json", "`Gone` is no job's name")
 
     # -- fail closed ------------------------------------------------------
 
