@@ -191,6 +191,49 @@ enum L10n {
         }
     }
 
+    enum DaySchedule {
+        /// Day schedule
+        static var title: String { L10n.tr("apple.day_schedule.title") }
+        /// When you usually wake and sleep. Today, the briefs and the wind-down reminder follow it; a day with no schedule runs midnight to midnight. It syncs to every device on this vault.
+        static var caption: String { L10n.tr("apple.day_schedule.caption") }
+        /// Wake
+        static var wake: String { L10n.tr("apple.day_schedule.wake") }
+        /// Sleep
+        static var sleep: String { L10n.tr("apple.day_schedule.sleep") }
+        /// A sleep time at or before the wake time is the next morning.
+        static var sleepCaption: String { L10n.tr("apple.day_schedule.sleep_caption") }
+        /// Days of the month
+        static var monthDays: String { L10n.tr("apple.day_schedule.month_days") }
+        /// A day of the month wins over its weekday. Day 31 never matches a shorter month.
+        static var monthDaysCaption: String { L10n.tr("apple.day_schedule.month_days_caption") }
+        /// Day {day}
+        static func monthDay(day: String) -> String {
+            L10n.tr("apple.day_schedule.month_day", day)
+        }
+        /// Last day of the month
+        static var lastDay: String { L10n.tr("apple.day_schedule.last_day") }
+        /// Add a day
+        static var addMonthDay: String { L10n.tr("apple.day_schedule.add_month_day") }
+        /// Set hours for this date…
+        static var dateHours: String { L10n.tr("apple.day_schedule.date_hours") }
+        /// No schedule on this date
+        static var dateNone: String { L10n.tr("apple.day_schedule.date_none") }
+        /// Use the usual schedule
+        static var dateClear: String { L10n.tr("apple.day_schedule.date_clear") }
+        /// Wake {wake}, sleep {sleep}
+        static func dateWindow(wake: String, sleep: String) -> String {
+            L10n.tr("apple.day_schedule.date_window", wake, sleep)
+        }
+        /// No schedule
+        static var dateNoSchedule: String { L10n.tr("apple.day_schedule.date_no_schedule") }
+        /// Usual schedule
+        static var dateUsual: String { L10n.tr("apple.day_schedule.date_usual") }
+        /// Hours for {date}
+        static func dateSheetTitle(date: String) -> String {
+            L10n.tr("apple.day_schedule.date_sheet_title", date)
+        }
+    }
+
     enum SignIn {
         /// Sign in…
         static var signIn: String { L10n.tr("apple.sign_in.sign_in") }
