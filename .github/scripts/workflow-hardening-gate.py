@@ -47,8 +47,12 @@ hide from a reviewer looking only at `workflows/`.
 A context in a `required_status_checks` rule is matched against job names by
 exact string, so a renamed job leaves the ruleset waiting for a check nothing
 will ever report, and every pull request blocks behind it. The same holds for a
-job whose workflow has no `pull_request` trigger, or one under `paths:` or
-`paths-ignore:`: a pull request it skips gets no check run, not a skipped one.
+job whose workflow has no `pull_request` trigger, or one under `paths:`,
+`paths-ignore:`, `branches:` or `branches-ignore:`, or under a `types:` list
+that omits any of the default `opened`, `synchronize` and `reopened`: a pull
+request it skips, or a head commit it never runs on, gets no check run, not a
+skipped one. A branch filter fails whatever it names, because a pull request
+stacked on another one's branch targets that branch, not the default one.
 A job-level `if:` is fine, because a skipped job reports `skipped`, which GitHub
 counts as passing.
 
@@ -271,7 +275,12 @@ def pull_request_trigger(text: str) -> str:
     """How a workflow's `on:` reaches pull requests.
 
     `"none"` when it does not run on `pull_request` at all, `"filtered"` when it
-    does under a `paths:` or `paths-ignore:` filter, and `"every"` otherwise.
+    does under a filter some pull request falls outside, and `"every"`
+    otherwise. A filter is any of `paths:`, `paths-ignore:`, `branches:` and
+    `branches-ignore:` (whatever it names: the base branch a stacked pull
+    request targets is not the default one), and a `types:` list that omits any
+    of the default `opened`, `synchronize` and `reopened`, each of which is a
+    head commit some pull request would otherwise get no check run on.
     """
     lines = _code_lines(text)
     for index, (indent, content) in enumerate(lines):
@@ -291,16 +300,48 @@ def pull_request_trigger(text: str) -> str:
             cursor += 1
             if indent != event_indent or _unquote(event) != "pull_request":
                 continue
-            if re.search(r"\bpaths(?:-ignore)?\b", rest):
-                return "filtered"
-            while cursor < len(lines) and lines[cursor][0] > event_indent:
-                key = lines[cursor][1].split(":", 1)[0]
-                if _unquote(key) in {"paths", "paths-ignore"}:
+            rest = rest.strip()
+            if rest:
+                # A flow mapping, `pull_request: {types: [opened]}`.
+                if re.search(r"\b(?:paths|branches)(?:-ignore)?\b", rest):
                     return "filtered"
+                types = re.search(r"\btypes\s*:\s*(\[[^\]]*\]|[^,}]+)", rest)
+                if types and not _reaches_every_head(_flow_items(types.group(1))):
+                    return "filtered"
+                return "every"
+            filters: dict[str, list[str]] = {}
+            key_indent = lines[cursor][0] if cursor < len(lines) else 0
+            key = ""
+            while cursor < len(lines) and lines[cursor][0] > event_indent:
+                indent, content = lines[cursor]
                 cursor += 1
+                if indent == key_indent and not content.startswith("-"):
+                    key, _, value = content.partition(":")
+                    key = _unquote(key)
+                    filters[key] = _flow_items(value) if value.strip() else []
+                elif key:
+                    filters[key].append(_unquote(content.lstrip("- ")))
+            if filters.keys() & {"paths", "paths-ignore", "branches", "branches-ignore"}:
+                return "filtered"
+            if "types" in filters and not _reaches_every_head(filters["types"]):
+                return "filtered"
             return "every"
         return "none"
     return "none"
+
+
+# The activity types `pull_request` runs on when it lists none. Each one moves
+# or restores the head a required check is read at.
+DEFAULT_PULL_REQUEST_TYPES = frozenset({"opened", "synchronize", "reopened"})
+
+
+def _flow_items(value: str) -> list[str]:
+    """The items of `[a, b]` or of a bare scalar `a`."""
+    return [_unquote(item) for item in value.strip().strip("[]").split(",") if item.strip()]
+
+
+def _reaches_every_head(types: list[str]) -> bool:
+    return DEFAULT_PULL_REQUEST_TYPES <= set(types)
 
 
 def required_contexts(path: pathlib.Path) -> list[str] | None:
@@ -463,8 +504,9 @@ def main() -> int:
                     f"::error file={shown},line=1::workflow-hardening: required "
                     f"context `{context}` is a job whose workflow does not run on "
                     "every pull request (no `pull_request` trigger, or one under "
-                    "`paths:`). A pull request it skips never gets the check, and "
-                    "never merges."
+                    "`paths:`, `branches:`, or a `types:` list missing `opened`, "
+                    "`synchronize` or `reopened`). A pull request it skips never "
+                    "gets the check, and never merges."
                 )
 
     if failures:

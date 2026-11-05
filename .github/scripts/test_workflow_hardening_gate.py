@@ -378,11 +378,44 @@ class WorkflowHardeningGateContract(unittest.TestCase):
         self.ruleset("Appcast generator contract")
         self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
 
-    def test_a_types_filter_is_not_a_paths_filter(self):
-        # pr-body.yml's shape.
-        self.gated_workflow(on="on:\n  pull_request:\n    types: [opened, edited, synchronize]\n")
+    def test_a_types_list_holding_every_default_is_clean(self):
+        # pr-body.yml's shape: `edited` added, none of the defaults dropped.
+        self.gated_workflow(on="on:\n  pull_request:\n    types: [opened, edited, reopened, synchronize]\n")
         self.ruleset("Appcast generator contract")
         self.assert_code(self.run_gate(), CLEAN)
+
+    def test_a_types_list_without_synchronize_is_a_violation(self):
+        # Every push after the first leaves the new head with no check run.
+        self.gated_workflow(on="on:\n  pull_request:\n    types: [opened, reopened]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_block_types_list_without_synchronize_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request:\n    types:\n      - opened\n      - reopened\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_types_list_without_synchronize_in_a_flow_mapping_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request: {types: [opened, reopened]}\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_filter_is_a_violation(self):
+        # Even naming the default branch: a pull request stacked on another
+        # one's branch targets that branch and gets no check run.
+        self.gated_workflow(on="on:\n  pull_request:\n    branches: [master]\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_ignore_filter_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request:\n    branches-ignore:\n      - master\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
+
+    def test_a_branches_filter_in_a_flow_mapping_is_a_violation(self):
+        self.gated_workflow(on="on:\n  pull_request: {branches: [master]}\n")
+        self.ruleset("Appcast generator contract")
+        self.assert_code(self.run_gate(), VIOLATION, "does not run on every pull request")
 
     def test_an_inline_event_list_is_read(self):
         self.gated_workflow(on="on: [push, pull_request]\n")
