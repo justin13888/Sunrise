@@ -110,6 +110,8 @@ mod query;
 mod rebuild;
 mod review;
 mod revocation;
+mod revocation_authority;
+mod revocation_ledger;
 mod routine;
 mod saved_view;
 mod search;

@@ -194,7 +194,7 @@ impl From<&DeviceRow> for DeviceListRow {
             admitted_after_revocation,
             // Not carried across the seam yet: no client renders it, and
             // adding it to this record is the client half of ADR-0058 §7's
-            // disclosure, which issue #454 leaves to a follow-up.
+            // disclosure, which is #1091.
             revoked_by_authority: _,
         } = d;
         Self {
