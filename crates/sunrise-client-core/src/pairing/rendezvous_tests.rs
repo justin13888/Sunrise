@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use super::{Rendezvous, RendezvousError, RendezvousRole, POLL_INTERVAL, WAIT_CAP};
@@ -35,13 +36,17 @@ type Seen = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
 /// script and then with `then` for ever. It closes every connection after one
 /// exchange, so a request it records is a request the client made.
 ///
-/// The runtime's clock is paused and jumps when every task is idle. The
-/// loopback delivers in the sending syscall, so a request or answer in flight
-/// is already readable when the runtime looks, and the clock moves only when
-/// both ends are really waiting on a timer.
+/// The runtime's clock is paused and jumps toward the next timer when every
+/// task is idle, and a task waiting on a request or answer still in the
+/// loopback counts as idle: on macOS the clock moves during an exchange. So an
+/// exchange can take paused time whenever another timer is pending, and a test
+/// that must act between two polls waits for the relay to have seen a request
+/// ([`Self::reached`]), not for an instant.
 struct FakeRelay {
     url: String,
     seen: Seen,
+    /// How many requests the relay has recorded, as they are recorded.
+    count: watch::Receiver<usize>,
 }
 
 impl FakeRelay {
@@ -52,6 +57,7 @@ impl FakeRelay {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen = Seen::default();
         let record = Arc::clone(&seen);
+        let (counted, count) = watch::channel(0);
         let mut script: VecDeque<Reply> = script.iter().cloned().collect();
         tokio::spawn(async move {
             loop {
@@ -59,12 +65,27 @@ impl FakeRelay {
                 let Some(request) = read_request(&mut socket).await else {
                     continue;
                 };
-                record.lock().unwrap().push(request);
+                let recorded = {
+                    let mut seen = record.lock().unwrap();
+                    seen.push(request);
+                    seen.len()
+                };
+                counted.send_replace(recorded);
                 let reply = script.pop_front().unwrap_or_else(|| then.clone());
                 answer(&mut socket, &reply).await;
             }
         });
-        Self { url, seen }
+        Self { url, seen, count }
+    }
+
+    /// Return once `requests` requests have reached the relay, before it
+    /// answers the last of them.
+    async fn reached(&self, requests: usize) {
+        self.count
+            .clone()
+            .wait_for(|&recorded| recorded >= requests)
+            .await
+            .unwrap();
     }
 
     fn rendezvous(&self, role: RendezvousRole) -> Rendezvous {
@@ -219,21 +240,28 @@ async fn silence_until_the_cap_times_out() {
 
 /// A cancel ends the wait at its next poll, without another request, and every
 /// wait after it before it asks the relay anything.
+///
+/// The cancel lands once the relay has seen the third poll, not at an instant:
+/// a timer of the canceller's own would be pending through every exchange, and
+/// the paused clock would run to it while the first one was in flight.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_ends_a_wait_at_its_next_poll_and_every_later_one() {
     let relay = FakeRelay::start(&[], NOTHING_YET).await;
     let rendezvous = relay.rendezvous(RendezvousRole::ExistingDevice);
-    let cancel_at = POLL_INTERVAL * 2 + POLL_INTERVAL / 2;
 
-    let started = Instant::now();
-    let (waited, ()) = tokio::join!(rendezvous.next(), async {
-        tokio::time::sleep(cancel_at).await;
+    let (waited, cancelled_at) = tokio::join!(rendezvous.next(), async {
+        relay.reached(3).await;
         rendezvous.cancel();
+        Instant::now()
     });
 
     assert_eq!(waited, Err(RendezvousError::Cancelled));
-    assert_ended_at(started, cancel_at);
-    assert_eq!(relay.requests(), 3, "polled at 0, 1 and 2 intervals only");
+    assert_ended_at(cancelled_at, POLL_INTERVAL);
+    assert_eq!(
+        relay.requests(),
+        3,
+        "the poll after the cancel asked nothing"
+    );
 
     assert_eq!(rendezvous.next().await, Err(RendezvousError::Cancelled));
     assert_eq!(
