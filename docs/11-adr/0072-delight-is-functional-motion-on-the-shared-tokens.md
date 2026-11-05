@@ -5,6 +5,13 @@
 **Amends** [`../00-product/non-goals.md`](../00-product/non-goals.md): it adds
 "Not a game or a wellness app".
 
+**Amends** [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
+§What is not shared. "Animation choices beyond motion tokens" stays
+per-platform: which element moves, and whether it slides, fades or scales, is
+each platform's idiom. What that page left open is now settled: the duration
+and curve of any animation a view writes come from the motion tokens, never a
+literal (decision 1).
+
 **Depends on** [ADR-0029](./0029-design-token-pipeline.md) (the token pipeline
 that emits `tokens.swift`) and
 [`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
@@ -51,10 +58,17 @@ all.
    adapter is `Motion` in `Sunrise/Design/Tokens.swift`. On the web it is the
    generated CSS custom properties. A view never writes a literal duration,
    curve or spring. Reduce Motion is honoured in the adapter, once, and not at
-   each call site. Apple is the first host because it is the only shipping
-   client. The web client
-   ([#944](https://github.com/justin13888/Sunrise/issues/944), P6) inherits
-   the same tokens when it arrives, so the two never diverge.
+   each call site. The kind of motion stays each platform's idiom
+   ([`shared-ui-system.md`](../07-clients/shared-ui-system.md) §What is not
+   shared): a view chooses whether something slides, fades or scales, and a
+   transition the platform draws itself, such as a navigation push, is not a
+   literal in a view. Only the timing is shared. Apple is the first host
+   because it is the only client whose views animate today. The web client in
+   `apps/web` already imports `@sunrise/ui-tokens/css`, so the motion custom
+   properties and their `prefers-reduced-motion` block are in its bundle. Any
+   motion it adds, including in its calendar
+   ([#944](https://github.com/justin13888/Sunrise/issues/944), P6), reads
+   those same tokens, so the two clients never diverge.
 2. **(a) A boredom screen is out of scope.** Sunrise ships no mini-game, idle
    toy or play surface. This is a non-goal, recorded in `non-goals.md`.
 3. **(b) Stress-relief tools are out of scope.** Sunrise ships no breathing
@@ -100,9 +114,10 @@ all.
   Reduce Motion handling at every call site. The command palette's literal
   scroll animation shows the cost: it has no Reduce Motion handling.
 - **Build the TypeScript motion layer first, then port it.** Rejected. The web
-  client is P6, and `packages/sunrise-ui` is still a token file with no
-  components. Waiting for it would hold Apple motion behind a client that does
-  not ship. The tokens are already the shared layer, so nothing would be
+  client in `apps/web` has no animated views yet: its calendar
+  ([#944](https://github.com/justin13888/Sunrise/issues/944)) is P6, and
+  `packages/sunrise-ui` re-exports the tokens with no components. Waiting for
+  web motion would hold Apple motion behind work that is not scheduled. The tokens are already the shared layer, so nothing would be
   gained by waiting.
 - **Ship (a) or (b) as an opt-in, peripheral feature.** Rejected. The issue
   proposed this as its mitigation, but [`non-goals.md`](../00-product/non-goals.md)
