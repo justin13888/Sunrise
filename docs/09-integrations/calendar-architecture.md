@@ -183,7 +183,7 @@ refresh rule and the decode cases as fixtures. Check for overlap with the `oauth
 
 | M | Delivers | Depends on | First benefit |
 |---|---|---|---|
-| M0 | Conformance spike, hands-on benchmark, OAuth registration and verification, #660 | None | None |
+| M0 | Conformance spike, hands-on benchmark, OAuth registration and verification | None | None |
 | M1 | Library model and recurrence; `ExternalEvent` series entity; read-time expansion; differential test against `routine_gen` | M0 | None |
 | M2 | Google read end to end on CLI and Apple; Settings → Calendars; events on the grid | M1 | Real calendar on every device |
 | M3 | Graph and CalDAV read; ICS subscriptions | M2 | All accounts |
