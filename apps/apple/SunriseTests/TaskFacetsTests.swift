@@ -87,7 +87,7 @@ struct TaskFacetsTests {
             names: names
         )
 
-        #expect(facets.estimate == "1h30")
+        #expect(facets.estimate == "1h30m")
         #expect(facets.energy == "med")
         #expect(facets.due == DayLabel(RelativeDay(text: "tomorrow", isPast: false)))
         #expect(facets.streamName == "travel")

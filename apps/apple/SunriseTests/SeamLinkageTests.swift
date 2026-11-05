@@ -11,7 +11,7 @@ import Testing
 struct SeamLinkageTests {
     @Test
     func theSharedVocabularyIsCallableFromSwift() {
-        #expect(shortDuration(secs: 5400) == "1h30")
+        #expect(shortDuration(secs: 5400) == "1h30m")
         #expect(durationClock(ms: 3_661_000) == "1:01:01")
     }
 

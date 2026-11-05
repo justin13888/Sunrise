@@ -802,7 +802,7 @@ fn the_day_and_duration_words_come_from_the_domain() {
     assert_eq!(last_week.text, "-7d");
     assert!(last_week.is_past);
 
-    assert_eq!(short_duration(5400), "1h30");
+    assert_eq!(short_duration(5400), "1h30m");
     assert_eq!(duration_clock(3_661_000), "1:01:01");
 }
 
