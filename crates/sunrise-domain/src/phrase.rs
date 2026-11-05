@@ -37,10 +37,11 @@ pub fn fmt_duration_ms(ms: u64) -> String {
 
 /// `1800` → `30m`, `5400` → `1h30m`.
 ///
-/// The compact form, for a column in a list. Every value it prints is one the
-/// `~duration` sigil reads back, so an estimate copied from a list into
-/// `sunrise edit` sets the same estimate. [`fmt_duration_ms`] is the form
-/// for a timer.
+/// The compact form, for a column in a list. For a whole number of minutes,
+/// at least one, the value it prints is one the `~duration` sigil reads back,
+/// so an estimate copied from a list into `sunrise edit` sets the same
+/// estimate. Leftover seconds are dropped, and under a minute prints `0m`,
+/// which the sigil refuses. [`fmt_duration_ms`] is the form for a timer.
 #[must_use]
 pub fn short_duration(secs: u64) -> String {
     let (h, m) = (secs / 3600, (secs % 3600) / 60);

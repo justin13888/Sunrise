@@ -237,7 +237,7 @@ impl TaskEdit {
             energy_word(&e).to_string()
         });
         push_set(&mut parts, self.duration_s, "estimate", |s| {
-            format!("~{}", duration_label(s))
+            format!("~{}", crate::phrase::short_duration(s))
         });
         push_set(&mut parts, self.scheduled.clone(), "schedule", |t| {
             format!("^{}", stamp(&t, tz))
@@ -481,16 +481,6 @@ fn parse_duration_s(s: &str) -> Option<u64> {
     (digits.is_empty() && total > 0).then_some(total)
 }
 
-/// `5400` → `1h30m`.
-fn duration_label(secs: u64) -> String {
-    let (h, m) = (secs / 3600, (secs % 3600) / 60);
-    match (h, m) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m}m"),
-    }
-}
-
 /// `2026-01-02 09:00` in the user's zone, or `2026-01-02` for a whole day.
 ///
 /// A value with no instant to show in `tz` shows its stored text instead
@@ -721,6 +711,13 @@ mod tests {
             assert_eq!(
                 e.patch_for(&[]).estimated_duration_s,
                 Some(Some(secs)),
+                "{shown}"
+            );
+            // The edit's own change summary names the estimate in the same
+            // form the list shows, so the two never disagree.
+            assert!(
+                e.preview(&streams(), &contexts(), &TimeZone::UTC)
+                    .contains(&format!("~{shown}")),
                 "{shown}"
             );
         }
