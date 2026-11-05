@@ -111,7 +111,7 @@ Specified in [`10-cross-cutting/time.md`](./10-cross-cutting/time.md),
 12. [#465](https://github.com/justin13888/Sunrise/issues/465) Pairing by a typed six-digit code, for a device with no camera.
 13. [#353](https://github.com/justin13888/Sunrise/issues/353) Accessibility audit.
 14. [#373](https://github.com/justin13888/Sunrise/issues/373) macOS and iOS screenshots at the top of the README.
-15. [#13](https://github.com/justin13888/Sunrise/issues/13) Delight and motivation.
+15. [#1087](https://github.com/justin13888/Sunrise/issues/1087) Feedback motion on the Apple clients, through the motion tokens. A boredom screen and stress-relief tools are non-goals ([ADR-0072](./11-adr/0072-delight-is-functional-motion-on-the-shared-tokens.md)).
 
 ## P4 — Server production
 

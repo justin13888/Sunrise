@@ -321,5 +321,9 @@ A small custom icon set (~40 icons) shipped as SVG → rendered platform-native:
 ## What is not shared
 
 - The actual rendering library. Native components, native idioms.
-- Animation choices beyond motion tokens. iOS feels like iOS.
+- Animation choices beyond motion tokens. Which element moves, and whether it
+  slides, fades or scales, is each platform's idiom, so iOS feels like iOS.
+  The duration and curve of any animation a view writes still come from the
+  motion tokens, never a literal
+  ([ADR-0072](../11-adr/0072-delight-is-functional-motion-on-the-shared-tokens.md)).
 - Navigation transitions. Each platform owns its idiom.
