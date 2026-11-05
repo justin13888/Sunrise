@@ -19,7 +19,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Self-hostable sync relay**: Run your own server (REST + SSE sync, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
 - **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every push to `master` and nightly. Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
-- **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into any client** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
+- **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into any client** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#930](https://github.com/justin13888/Sunrise/issues/930)).
 
 ## Architecture
 
@@ -48,7 +48,7 @@ crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-core-bindings   UniFFI seam — Swift today, Kotlin later
   sunrise-auth            Client-side OIDC relying party (PKCE, token storage)
   sunrise-pairing         Noise XX device pairing + SAS confirmation
-  sunrise-integrations    iCalendar (live) + Google Calendar (not wired; read-only calendar sync is #4)
+  sunrise-integrations    iCalendar (live) + Google Calendar (not wired; calendar read and write is #924)
   sunrise-core-wasm       The web client's wasm seam over sunrise-core, SQLite in OPFS (ADR-0055)
   sunrise-private-file    The one owner-only file write every secret on disk goes through
   sunrise-telemetry       Redacted OpenTelemetry tracing for the relay

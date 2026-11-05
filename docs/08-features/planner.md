@@ -455,5 +455,7 @@ single-block move with a three-item ripple, a cross-day move, and an
 - It never moves work into another day to make room.
 - It never writes a deadline.
 - It never places, moves or refuses work by Place.
-- It never edits an external calendar: external events are read-only
-  ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
+- It never edits an external calendar. External events are fixed planner inputs.
+  A user can edit one, and can publish a Block to a calendar, but a planner move
+  never writes an external event
+  ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)).

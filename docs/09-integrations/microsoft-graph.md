@@ -4,10 +4,13 @@ status: accepted
 
 # Microsoft Graph (Outlook.com, Microsoft 365, Exchange Online)
 
-Read-only, per-device OAuth, per
+Per-device OAuth, per
 [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md). The
 entities, fetch rules and reconnect flow shared by every calendar provider are
-in [`overview.md`](./overview.md); this page is what is specific to Microsoft.
+in [`overview.md`](./overview.md); this page is what is specific to reading from
+Microsoft. Writing is added by
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) and
+designed in [`calendar-architecture.md`](./calendar-architecture.md).
 
 > **Status: not built.** `IntegrationKind` has no Microsoft variant
 > (`crates/sunrise-integrations/src/lib.rs#IntegrationKind`).
@@ -20,7 +23,8 @@ in [`overview.md`](./overview.md); this page is what is specific to Microsoft.
   (`https://login.microsoftonline.com/common/oauth2/v2.0/{authorize,token}`), so
   personal Microsoft accounts and work or school accounts both work.
 - **Scopes:** `Calendars.Read`, `offline_access` (for a refresh token), and
-  `openid profile` to learn the account. No write scope.
+  `openid profile` to learn the account. A write scope is a separate grant a
+  device asks for when it first needs to push.
 - **One app registration**, with a redirect URI per platform (a loopback URI for
   desktop, a bundle-id or package-signature URI for mobile). A self-hosted build
   MAY substitute its own registration's client id.
@@ -39,6 +43,15 @@ in [`overview.md`](./overview.md); this page is what is specific to Microsoft.
   this-device-only accessibility; the access token stays in memory.
 
 ## Fetch
+
+> **Superseded in part by
+> [ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md).** The
+> delta flow and error handling below stand, except that `@removed` also covers events
+> outside the window, so it is confirmed with a read before anything is deleted. Mapping
+> each expanded occurrence to its
+> own flat `ExternalEvent` does not: events are stored as a series with override
+> registers, assembled from the series master, keeping attendees. This section is
+> rewritten when the conformance spike ends.
 
 For each subscribed calendar:
 

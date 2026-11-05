@@ -63,12 +63,11 @@ Parsing a string ID:
 ## Foreign IDs
 
 **No foreign id is stored alongside a Sunrise id today.** Calendar integrations
-(Google Calendar, Microsoft Graph and CalDAV) are read-only and write
-`ExternalEvent`s, whose ids are derived from
-the provider's own identifiers rather than stored beside them
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). None of
-that is built; it is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as
-[#4](https://github.com/justin13888/Sunrise/issues/4). The `external_id` field
+(Google Calendar, Microsoft Graph and CalDAV) write `ExternalEvent`s, whose ids
+are derived from the provider's own identifiers, and which hold those identifiers
+inside the event's provider register
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)). None of
+that is built; it is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)). The `external_id` field
 serves only `.ics` export and import, and it has not landed either —
 `crates/sunrise-domain/src/import.rs:7-9` says so at the point it matters.
 

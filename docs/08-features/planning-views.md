@@ -238,7 +238,7 @@ marker beside the vault records the import. The CLI runs it the first time
 
 Vertical day columns × hour rows, spanning each planner day. Blocks render as
 coloured rectangles tinted by Stream; external events in their calendar's
-colour, visibly read-only. Tasks with no time live in a drawer; dragging one onto
+colour, visibly fixed to the planner. Tasks with no time live in a drawer; dragging one onto
 the grid places it, and every drag previews its ripple before the drop
 ([`planner.md`](./planner.md)).
 

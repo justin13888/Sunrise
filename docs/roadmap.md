@@ -87,25 +87,25 @@ Specified in [`10-cross-cutting/time.md`](./10-cross-cutting/time.md),
 2. [#333](https://github.com/justin13888/Sunrise/issues/333) Dependency cycles resolved at merge; a requirements model.
 3. [#340](https://github.com/justin13888/Sunrise/issues/340) Manual ordering as a fractional index in Rust.
 4. [#341](https://github.com/justin13888/Sunrise/issues/341) `SavedView` as a synced entity.
-5. [#342](https://github.com/justin13888/Sunrise/issues/342) Fixed, flexible and recurring blocks.
+5. [#342](https://github.com/justin13888/Sunrise/issues/342) Fixed, flexible and recurring blocks, with the ordinal `BYDAY` fix ([#928](https://github.com/justin13888/Sunrise/issues/928)).
 6. [#339](https://github.com/justin13888/Sunrise/issues/339) Places and on-device geofencing.
 7. [#788](https://github.com/justin13888/Sunrise/issues/788) A stream's `paused_until` holds a civil time, behind a `stream.civil_times` feature.
 
 ## P3 — macOS complete
 
-1. [#489](https://github.com/justin13888/Sunrise/issues/489) The Apple settings move out of `UserDefaults` into the core's `Preferences`.
-2. [#458](https://github.com/justin13888/Sunrise/issues/458) A UI test restores an account from its recovery code on macOS and iOS against a seeded relay.
-3. [#343](https://github.com/justin13888/Sunrise/issues/343) Planner solver and `plan_preview` ([ADR-0048](./11-adr/0048-interactive-planner.md)).
-4. [#344](https://github.com/justin13888/Sunrise/issues/344) Drag with a live preview, on the calendar and in lists.
-5. [#345](https://github.com/justin13888/Sunrise/issues/345) Search overhaul ([ADR-0052](./11-adr/0052-search-v2.md)).
-6. [#347](https://github.com/justin13888/Sunrise/issues/347) The notification catalogue, including wind-down ([#301](https://github.com/justin13888/Sunrise/issues/301)).
-7. [#351](https://github.com/justin13888/Sunrise/issues/351) Upcoming view.
-8. [#4](https://github.com/justin13888/Sunrise/issues/4) Read-only calendar sync from Microsoft Graph and CalDAV, authorised per device ([ADR-0049](./11-adr/0049-calendar-integrations-per-device-oauth.md)).
-9. [#924](https://github.com/justin13888/Sunrise/issues/924) A calendar that beats dedicated calendar apps on read and write:
+1. [#924](https://github.com/justin13888/Sunrise/issues/924) A calendar that beats dedicated calendar apps on read and write ([ADR-0071](./11-adr/0071-calendar-read-write-through-synced-intents.md), [goals](./09-integrations/calendar-goals.md)):
    - Groundwork: provider behaviour tested ([#925](https://github.com/justin13888/Sunrise/issues/925)), a hands-on comparison of calendar apps ([#926](https://github.com/justin13888/Sunrise/issues/926)), registered OAuth clients ([#927](https://github.com/justin13888/Sunrise/issues/927)), and an `ExternalEvent` entity ([#929](https://github.com/justin13888/Sunrise/issues/929)).
    - Reading: Google Calendar ([#930](https://github.com/justin13888/Sunrise/issues/930)) and public calendars by URL ([#931](https://github.com/justin13888/Sunrise/issues/931)).
    - Writing: the edit path to a provider ([#932](https://github.com/justin13888/Sunrise/issues/932)), the conflict UI ([#933](https://github.com/justin13888/Sunrise/issues/933)), Google ([#934](https://github.com/justin13888/Sunrise/issues/934)), recurring-event scopes ([#935](https://github.com/justin13888/Sunrise/issues/935)), Microsoft ([#936](https://github.com/justin13888/Sunrise/issues/936)), and CalDAV ([#937](https://github.com/justin13888/Sunrise/issues/937)).
    - Beyond a calendar app: fast event creation ([#938](https://github.com/justin13888/Sunrise/issues/938)), time blocks shown as busy ([#939](https://github.com/justin13888/Sunrise/issues/939)), time-to-leave warnings ([#940](https://github.com/justin13888/Sunrise/issues/940)), other people's free time ([#942](https://github.com/justin13888/Sunrise/issues/942)), freshness on a closed phone ([#943](https://github.com/justin13888/Sunrise/issues/943)), and encrypted scheduling links ([#945](https://github.com/justin13888/Sunrise/issues/945)).
+2. [#489](https://github.com/justin13888/Sunrise/issues/489) The Apple settings move out of `UserDefaults` into the core's `Preferences`.
+3. [#458](https://github.com/justin13888/Sunrise/issues/458) A UI test restores an account from its recovery code on macOS and iOS against a seeded relay.
+4. [#343](https://github.com/justin13888/Sunrise/issues/343) Planner solver and `plan_preview` ([ADR-0048](./11-adr/0048-interactive-planner.md)).
+5. [#344](https://github.com/justin13888/Sunrise/issues/344) Drag with a live preview, on the calendar and in lists.
+6. [#345](https://github.com/justin13888/Sunrise/issues/345) Search overhaul ([ADR-0052](./11-adr/0052-search-v2.md)).
+7. [#347](https://github.com/justin13888/Sunrise/issues/347) The notification catalogue, including wind-down ([#301](https://github.com/justin13888/Sunrise/issues/301)).
+8. [#351](https://github.com/justin13888/Sunrise/issues/351) Upcoming view.
+9. [#4](https://github.com/justin13888/Sunrise/issues/4) Calendar reads from Microsoft Graph and CalDAV, authorised per device ([ADR-0071](./11-adr/0071-calendar-read-write-through-synced-intents.md)).
 10. [#350](https://github.com/justin13888/Sunrise/issues/350) Full decrypted export.
 11. [#352](https://github.com/justin13888/Sunrise/issues/352) Context shift and travel.
 12. [#465](https://github.com/justin13888/Sunrise/issues/465) Pairing by a typed six-digit code, for a device with no camera.

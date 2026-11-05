@@ -99,7 +99,7 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | 13 | New device paired | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 14 | Device revoked | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
 | 15 | Recovery code used or changed | not built; a rotation that retires the code is planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet; a fetch of the blob is blocked on a server account event | not built; same | no client | no client | no client |
-| 16 | Calendar reconnect | not built; blocked on [#4](https://github.com/justin13888/Sunrise/issues/4) | not built; same | no client | no client | no client |
+| 16 | Calendar reconnect | not built; blocked on [#930](https://github.com/justin13888/Sunrise/issues/930) | not built; same | no client | no client | no client |
 | 17 | Shared change | not built; blocked on sharing ([#133](https://github.com/justin13888/Sunrise/issues/133)) | not built; same | no client | no client | no client |
 | 18 | Place arrival | not built; blocked on Places ([#339](https://github.com/justin13888/Sunrise/issues/339)) | not built; same | no client | no client | no client |
 

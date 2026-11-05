@@ -4,14 +4,14 @@ status: accepted
 
 # iCalendar (.ics) Import / Export
 
-**One-shot file import and export. There are no subscription URLs.** `URL` is
+**One-shot file import and export. There are no subscription URLs yet; they are
+ranked as [#931](https://github.com/justin13888/Sunrise/issues/931).** `URL` is
 explicitly unsupported by the parser — it raises a notice like any other
 unmodelled property — and nothing in the workspace fetches an `.ics` over the
-network. The read-only calendar integrations (Google Calendar, Microsoft Graph
-and CalDAV, [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md))
-are not built; they are ranked on the roadmap ([`../roadmap.md`](../roadmap.md))
-as [#4](https://github.com/justin13888/Sunrise/issues/4), and they write
-read-only `ExternalEvent`s, never Blocks. So this is the only calendar path a
+network. The calendar integrations (Google Calendar, Microsoft Graph and CalDAV,
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md))
+are not built; they are ranked on the roadmap ([`../roadmap.md`](../roadmap.md)),
+and they write `ExternalEvent`s, never Blocks. So this is the only calendar path a
 user can actually take today, and the only one that creates Blocks.
 
 > **Status: partly implemented. This document is the target; the list below is
@@ -86,7 +86,7 @@ user can actually take today, and the only one that creates Blocks.
 
 ## Mapping rules
 
-**This is not the CalDAV mapping.** CalDAV is a read-only integration
+**This is not the CalDAV mapping.** CalDAV is a live integration
 ([`caldav.md`](./caldav.md)), and it maps events onto `ExternalEvent`, not
 onto Blocks, so it shares no table with this file. The
 `.ics` file mapping is below, and it is read off

@@ -61,7 +61,7 @@ losing it.
 | Pairing — show QR | MUST | MAY (ASCII QR) | MUST | — | — | — |
 | Sharing — accept invite | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MAY | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | — | — | — |
 | Sharing — view shared stream as editor | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | — | — | — |
-| Calendar integration (Google, Microsoft, CalDAV; read-only) | MUST ([#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | MUST ([#4](https://github.com/justin13888/Sunrise/issues/4)) | — | — | — |
+| Calendar integration (Google, Microsoft, CalDAV; read and write) | MUST ([#924](https://github.com/justin13888/Sunrise/issues/924)) | MAY | MUST ([#924](https://github.com/justin13888/Sunrise/issues/924)) | — | — | — |
 | iCal import / export | MUST | MUST | MUST | — | — | — |
 | Background sync | MUST (while running) | N/A (`sync --once` for cron) | MUST (frontmost, refresh task, silent push) | — | — | — |
 | Menu bar | MUST | N/A | N/A | — | — | — |
@@ -81,7 +81,7 @@ release definition: four lost a MUST and one kept it with a scope note. There is
 no release definition any more ([ADR-0042](../11-adr/0042-v0-forever.md)), so
 the three demoted capabilities, **sharing** (two rows) and **calendar
 integration**, are MUSTs again and sit on the [roadmap](../roadmap.md) as
-[#133](https://github.com/justin13888/Sunrise/issues/133) and [#4](https://github.com/justin13888/Sunrise/issues/4). They are unmet, and the
+[#133](https://github.com/justin13888/Sunrise/issues/133) and [#924](https://github.com/justin13888/Sunrise/issues/924). They are unmet, and the
 audit below says so. The reasoning ADR-0020 recorded about *why* each is hard
 still stands, and is kept here:
 
@@ -97,8 +97,8 @@ still stands, and is kept here:
   the OAuth flow and stored credential
   (`crates/sunrise-integrations/src/gcal/oauth.rs`), and the transport trait
   and change detection (`crates/sunrise-integrations/src/gcal/poll.rs`). The
-  design is now read-only Google, Microsoft and CalDAV with per-device OAuth
-  ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
+  design is now read and write on Google, Microsoft and CalDAV with per-device
+  OAuth ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)).
 - **Notes (rich text)** (macOS) stays a **MUST**, and it is now **met** — this is
   a scope clarification, not a deferral. The row means a **Task's `body`**:
   persisted, FTS-indexed, and editable across the seam as structured blocks

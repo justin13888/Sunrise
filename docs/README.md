@@ -21,7 +21,7 @@ Read top-down, 00 → 11, then `implementation/`. Each numbered section builds o
 | 06 | [`06-server/`](./06-server) | What the server does (and does not). |
 | 07 | [`07-clients/`](./07-clients) | Per-platform: macOS, CLI, iOS, Android, web. |
 | 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…). |
-| 09 | [`09-integrations/`](./09-integrations) | External: Google Calendar, iCalendar import/export. |
+| 09 | [`09-integrations/`](./09-integrations) | External: calendar goals and design, Google Calendar, Microsoft Graph, CalDAV, iCalendar import/export. |
 | 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, logging, versioning, testing, perf. |
 | 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why*, not *what*. |
 | — | [`implementation/`](./implementation) | Living tracker of the build against this design. |

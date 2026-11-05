@@ -66,7 +66,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0046 | [A task's stream is optional, stream-less content lives in a private key domain, and Inbox is a view](./0046-optional-stream.md) | accepted (amends 0024) |
 | 0047 | [A task has a plan time and two deadlines, lateness is derived at read time, and triage is one bulk command](./0047-deadlines-and-lateness.md) | accepted |
 | 0048 | [The planner is a pure, deterministic Rust solver that previews every drag as a `PlanDiff` and commits exactly what it previewed](./0048-interactive-planner.md) | accepted |
-| 0049 | [Calendar integrations are read-only, each device holds its own OAuth token in its keychain, and the vault syncs configuration and fetched events](./0049-calendar-integrations-per-device-oauth.md) | accepted (amends 0025) |
+| 0049 | [Calendar integrations are read-only, each device holds its own OAuth token in its keychain, and the vault syncs configuration and fetched events](./0049-calendar-integrations-per-device-oauth.md) | accepted (amends 0025); amended by 0071: decisions 1 and 4 withdrawn |
 | 0050 | [Preferences are a vault-synced typed entity with a device overlay, and the day schedule is one of them](./0050-preferences-and-day-schedule.md) | accepted |
 | 0051 | [Places are a synced, end-to-end encrypted entity, and presence is evaluated on the device and never stored](./0051-places.md) | accepted |
 | 0052 | [Search indexes every entity kind twice (words and trigrams), parses an operator grammar in Rust, and stays inside the vault](./0052-search-v2.md) | accepted (amends 0008) |
@@ -88,6 +88,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0068 | [A stream's snapshot record travels as a blob the relay pins per stream, and a cursor gap is answered by applying it](./0068-a-streams-snapshot-travels-as-a-pinned-blob.md) | accepted (answers 0059 §7; depends on 0059 §4 and §5; built by #462) |
 | 0069 | [The account's Stream keys travel as one identity-sealed bundle the relay pins, so a recovery does not depend on op retention](./0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md) | accepted (amends 0024 decision 4 and `recovery.md` §Recovery flow step 8; depends on 0068 and 0041 §4; built by #580) |
 | 0070 | [A recovery code survives a rotation that carries it, and a rotation that does not issues the next one](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md) | accepted (amends 0024 decision 4, 0037, 0069 and `recovery.md` §Recovery code rotation; built by #583) |
+| 0071 | [Sunrise reads and writes external calendars: series in the vault, edits as synced intents, and no lease](./0071-calendar-read-write-through-synced-intents.md) | accepted (amends 0049 decisions 1 and 4, `non-goals.md`, and the accepted pages that restated them, listed in its header) |
 
 ## When to write a new ADR
 
