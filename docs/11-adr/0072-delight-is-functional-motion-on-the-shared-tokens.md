@@ -87,7 +87,8 @@ all.
      Sunrise adds no second one
      ([`non-goals.md`](../00-product/non-goals.md) §No feature flags).
 5. **#13 closes with this record.** The feature work for (c) is tracked as its
-   own issue, ranked in P3 of [`../roadmap.md`](../roadmap.md). It is deferred
+   own issue, [#1087](https://github.com/justin13888/Sunrise/issues/1087),
+   ranked in P3 of [`../roadmap.md`](../roadmap.md). It is deferred
    past the stabilization pass for the same reason as #13: it adds product
    surface, and stabilization adds none.
 
@@ -123,7 +124,7 @@ all.
 - Each animation added to a client is reviewable against the rules in decision
   4. A literal duration or curve in a view is a defect.
 - The command palette's literal scroll animation is now out of line with
-  decision 1, and is fixed by the issue that carries (c).
+  decision 1, and is fixed by #1087.
 - Web motion needs no design work of its own: its durations and the
   reduced-motion block are already generated.
 
