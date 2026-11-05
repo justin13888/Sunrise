@@ -6,7 +6,7 @@
 //! of it computes anything; the point is that a client **cannot** be tempted
 //! to compute it.
 //!
-//! The temptation is real and specific. "Overdue", "tomorrow", "1h30" and
+//! The temptation is real and specific. "Overdue", "tomorrow", "1h30m" and
 //! "weekdays 09:00–17:00" are each two lines to write in Swift, and each of
 //! those two-line versions would disagree with the CLI the first time a
 //! deadline landed on a DST boundary or a task was due at 09:00 and read at
@@ -89,7 +89,7 @@ pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
     RelativeDay { text, is_past }
 }
 
-/// `1800` → `30m`, `5400` → `1h30`. The compact form, for a list column.
+/// `1800` → `30m`, `5400` → `1h30m`. The compact form, for a list column.
 #[uniffi::export]
 #[must_use]
 pub fn short_duration(secs: u64) -> String {

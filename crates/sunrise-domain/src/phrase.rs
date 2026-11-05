@@ -35,9 +35,11 @@ pub fn fmt_duration_ms(ms: u64) -> String {
     }
 }
 
-/// `1800` → `30m`, `5400` → `1h30`.
+/// `1800` → `30m`, `5400` → `1h30m`.
 ///
-/// The compact form, for a column in a list. [`fmt_duration_ms`] is the form
+/// The compact form, for a column in a list. Every value it prints is one the
+/// `~duration` sigil reads back, so an estimate copied from a list into
+/// `sunrise edit` sets the same estimate. [`fmt_duration_ms`] is the form
 /// for a timer.
 #[must_use]
 pub fn short_duration(secs: u64) -> String {
@@ -45,7 +47,7 @@ pub fn short_duration(secs: u64) -> String {
     match (h, m) {
         (0, m) => format!("{m}m"),
         (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m:02}"),
+        (h, m) => format!("{h}h{m:02}m"),
     }
 }
 
@@ -199,9 +201,9 @@ mod tests {
     fn the_compact_duration_drops_the_zero_half() {
         assert_eq!(short_duration(1800), "30m");
         assert_eq!(short_duration(7200), "2h");
-        assert_eq!(short_duration(5400), "1h30");
+        assert_eq!(short_duration(5400), "1h30m");
         // Two digits on the minutes so a column of them lines up.
-        assert_eq!(short_duration(3900), "1h05");
+        assert_eq!(short_duration(3900), "1h05m");
     }
 
     #[test]
