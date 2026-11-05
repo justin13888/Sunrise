@@ -535,6 +535,23 @@ nothing.
 
 Functional features (E2EE, sync, multi-client, sharing within the same server) are **identical**. Sharing is not implemented on either (see [`api.md`](./api.md) §Sharing).
 
+## Calendar OAuth clients
+
+A self-hosted relay needs no Google or Microsoft registration, and
+`sunrise.toml` has no setting for one. Each device authorizes against the
+calendar provider itself and keeps its token in its own keychain; the relay
+only carries the sealed account configuration and events
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). An
+official app build connects Google and Microsoft the same way whichever relay
+it syncs through.
+
+The OAuth client ids are inputs to the **app** build. Building the apps from
+source with your own registrations, for example under your own bundle id, is
+described in [`google-calendar.md`](../09-integrations/google-calendar.md)
+§Client registration and
+[`microsoft-graph.md`](../09-integrations/microsoft-graph.md) §App
+registration.
+
 ## Migrations between topologies
 
 **Not implemented.** There is no managed cloud to migrate from, and step 3's

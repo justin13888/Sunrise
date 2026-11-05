@@ -23,13 +23,13 @@ designed in [`calendar-architecture.md`](./calendar-architecture.md).
   (`https://login.microsoftonline.com/common/oauth2/v2.0/{authorize,token}`), so
   personal Microsoft accounts and work or school accounts both work.
 - **Scopes:** `Calendars.Read`, `offline_access` (for a refresh token), and
-  `openid profile` to learn the account. A write scope is a separate grant a
-  device asks for when it first needs to push.
+  `openid profile` to learn the account. Writing adds `Calendars.ReadWrite`, a
+  separate grant a device asks for when it first needs to push.
 - **One app registration**, with a redirect URI per platform (a loopback URI for
-  desktop, a bundle-id or package-signature URI for mobile). A self-hosted build
-  MAY substitute its own registration's client id.
+  desktop, a bundle-id or package-signature URI for mobile). A build MAY
+  substitute its own registration's client id, as §App registration says.
 - **Tenant consent.** A work or school tenant may require an administrator to
-  consent to `Calendars.Read`. The authorization page says so; Sunrise shows
+  consent to `Calendars.Read` or `Calendars.ReadWrite`. The authorization page says so; Sunrise shows
   the provider's message and does not try to work around it.
 - **Refresh tokens rotate on every use.** Each token response carries a new
   refresh token, and the device MUST replace the stored token atomically before
@@ -41,6 +41,40 @@ designed in [`calendar-architecture.md`](./calendar-architecture.md).
   different pair is refused.
 - **Storage:** the refresh token goes in the platform keychain with
   this-device-only accessibility; the access token stays in memory.
+
+### App registration
+
+> **Status: not registered.** No app registration or publisher verification
+> exists yet, and no build carries a Microsoft client id.
+> [#1082](https://github.com/justin13888/Sunrise/issues/1082) tracks the
+> registration and verification.
+
+Sunrise's official builds use one Microsoft Entra app registration, owned by
+the project owner:
+
+- **Supported account types:** accounts in any organizational directory and
+  personal Microsoft accounts, which is what the `common` authority needs.
+- **Platform:** "Mobile and desktop applications", carrying each platform's
+  redirect URI. There is no client secret and no certificate.
+- **API permissions:** the delegated Microsoft Graph permissions `openid`,
+  `profile`, `offline_access`, `Calendars.Read` and `Calendars.ReadWrite`, and
+  nothing else.
+- **Publisher verification is required before release.** The
+  registration is verified against a Microsoft partner account and a publisher
+  domain the project owns. Without it the consent page marks Sunrise as
+  unverified, and a work or school tenant that lets users consent only to apps
+  from verified publishers refuses the user's own consent, leaving only
+  administrator consent. Personal accounts are not affected. No build ships
+  Microsoft to users before verification is complete.
+
+**The client id is a build input**, under the same rules as Google's
+([`google-calendar.md`](./google-calendar.md) §Client registration): compiled
+into the build, never fetched from the relay or synced, and a build with no
+Microsoft client id does not offer Microsoft. Anyone building from source
+registers their own app with the settings above, adds their build's redirect
+URIs, and supplies its client id. Without publisher verification such a build
+works for personal accounts and for tenants that allow consent to unverified
+apps. A self-hosted relay needs none of this.
 
 ## Fetch
 
