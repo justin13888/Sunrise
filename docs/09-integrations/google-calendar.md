@@ -46,12 +46,13 @@ token path.**
   A token minted by one platform's client is unusable by another's, which is one
   of the reasons tokens are never synced.
 - **There is no `client_secret`.** An installed app is a public client; a
-  `client_id` is public and ships in the binary. A self-hosted build MAY
-  substitute its own `client_id`s.
-- **Scope:** `https://www.googleapis.com/auth/calendar.readonly`, plus `openid`
-  to learn the account's `sub`. A write scope is a separate grant a device asks
-  for when it first needs to push. No contacts, no drive. The scope is
-  "sensitive", so the production OAuth app needs Google's
+  `client_id` is public and ships in the binary. A build MAY substitute its own
+  `client_id`s, as §Client registration says.
+- **Scopes:** `https://www.googleapis.com/auth/calendar.readonly` to read, plus
+  `openid` to learn the account's `sub`. Writing adds
+  `https://www.googleapis.com/auth/calendar.events`, a separate grant a device
+  asks for when it first needs to push. No contacts, no drive. Both calendar
+  scopes are "sensitive", so the production OAuth app needs Google's
   verification; until it has it, test users' refresh tokens expire after 7
   days, and the app shows "Needs reconnect" when they do.
 - **Storage:** the refresh token goes in the platform keychain with
@@ -66,6 +67,51 @@ token path.**
 There is no server-mediated exchange and no `client_secret` in the managed
 server's secret store. ADR-0025 and ADR-0049 rule it out: it would put the
 relay in possession of every user's calendar tokens.
+
+### Client registration
+
+> **Status: not registered.** No Google Cloud project, client or verification
+> exists yet, and no build carries a Google `client_id`.
+> [#927](https://github.com/justin13888/Sunrise/issues/927) tracks it, and
+> Google is not offered in any build until it is done.
+
+Sunrise's official builds use one Google Cloud project, owned by the project
+owner:
+
+- **OAuth clients**, one per platform from the table in §Auth: a Desktop app
+  client for macOS and an iOS client bound to the iOS app's bundle id. Windows,
+  Linux and Android clients are registered when those apps ship.
+- **Data Access** lists exactly `openid`, `calendar.readonly` and
+  `calendar.events`. Verification is requested once for both calendar scopes,
+  so turning on writes needs no second review. Reading calendar events is
+  [Google's own example of a sensitive scope](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification),
+  which needs verification but not the security assessment restricted scopes
+  need. The Data Access page shows each scope's class; if it shows either one
+  as restricted, verification includes that assessment and this page changes.
+- **Branding** names Sunrise and links its homepage and privacy policy on a
+  domain the project verifies, which verification requires.
+- **Publishing status** is "In production" once verification is approved.
+  Before then the project stays in "Testing", where only listed test users
+  can connect and their refresh tokens expire after 7 days. No build ships
+  Google to users before verification is approved
+  ([`calendar-architecture.md`](./calendar-architecture.md)).
+
+**The `client_id`s are build inputs.** They are compiled into the client
+build, never fetched from the relay, never synced through the vault and never
+entered in Settings: the relay is not in the token path, and a token is bound
+to the client that minted it, so a device whose `client_id` changed must
+reconnect. A build with no Google `client_id` for its platform does not offer
+Google; there is no placeholder id.
+
+**Substituting your own.** Anyone building the apps from source can use their
+own registrations instead of the official ones, and must for an iOS build
+whose bundle id differs from the official app's, because an iOS client is
+bound to a bundle id. Create a Google Cloud project, register the clients and
+scopes above, add yourself as a test user (or get your own verification), and
+supply your `client_id`s as the build's inputs. A self-hosted relay needs none
+of this: official app builds connect Google the same way whichever relay they
+sync through ([`self-hosting.md`](../06-server/self-hosting.md) §Calendar
+OAuth clients).
 
 ## Fetch
 
