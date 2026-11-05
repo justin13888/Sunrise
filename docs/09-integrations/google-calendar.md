@@ -72,8 +72,10 @@ relay in possession of every user's calendar tokens.
 
 > **Status: not registered.** No Google Cloud project, client or verification
 > exists yet, and no build carries a Google `client_id`.
-> [#927](https://github.com/justin13888/Sunrise/issues/927) tracks it, and
-> Google is not offered in any build until it is done.
+> [#1082](https://github.com/justin13888/Sunrise/issues/1082) tracks the
+> registration and verification. The build input the ids go in is added with
+> the OAuth browser step in
+> [#930](https://github.com/justin13888/Sunrise/issues/930).
 
 Sunrise's official builds use one Google Cloud project, owned by the project
 owner:
