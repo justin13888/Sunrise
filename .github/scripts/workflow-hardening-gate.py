@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Reject a workflow that trusts a ref it does not control, or a token it never scoped.
 
-Two assertions, both about the same thing: what a CI run is allowed to be.
+Three assertions, all about the same thing: what a CI run is allowed to be,
+and what it is allowed to block.
 
 ## 1. Every action is pinned to a commit
 
@@ -39,6 +40,25 @@ key they may carry. They are still read for assertion 1, because a composite
 action pulls actions of its own and is the easiest place for an unpinned ref to
 hide from a reviewer looking only at `workflows/`.
 
+## 3. Every required context is a job that reports on every pull request
+
+`.github/rulesets/*.json` records the repository rulesets, in the shape
+`gh api repos/OWNER/REPO/rulesets/ID` returns (see `.github/rulesets/README.md`).
+A context in a `required_status_checks` rule is matched against job names by
+exact string, so a renamed job leaves the ruleset waiting for a check nothing
+will ever report, and every pull request blocks behind it. The same holds for a
+job whose workflow has no `pull_request` trigger, or one under `paths:` or
+`paths-ignore:`: a pull request it skips gets no check run, not a skipped one.
+A job-level `if:` is fine, because a skipped job reports `skipped`, which GitHub
+counts as passing.
+
+Each context must equal some workflow job's `name:` (its id where it has none),
+in a workflow that runs on every pull request. A name built from
+`${{ matrix.* }}` is not expanded, so a matrix leg cannot be required until the
+gate learns to expand one. The gate reads the record, not the live ruleset:
+whether the two agree is the README's procedure, not something an offline
+check can see.
+
 ## Parsing
 
 Line-oriented, standard library only. No workflow YAML parser ships with
@@ -47,8 +67,9 @@ directory is stdlib-only for the same reason. Block scalars (`run: |`) are
 tracked and skipped so a shell line inside one cannot be read as a `uses:`,
 and comments are stripped before a line is read.
 
-Exit 0 when every ref is pinned and every workflow is scoped, 1 when one is
-not, 2 when the gate cannot run.
+Exit 0 when every ref is pinned, every workflow is scoped and every required
+context reports on every pull request, 1 when one is not, 2 when the gate
+cannot run.
 
 All three are asserted in `test_workflow_hardening_gate.py` beside this file,
 run by the `workflow-hardening-gate-contract` job in ci.yml. The gate takes an
@@ -59,6 +80,7 @@ this repository.
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import re
 import sys
@@ -192,6 +214,115 @@ def has_top_level_permissions(text: str) -> bool:
     return False
 
 
+def _indent(raw: str) -> int:
+    return len(raw) - len(raw.lstrip())
+
+
+def _code_lines(text: str) -> list[tuple[int, str]]:
+    """(indent, content) for every line that is not blank or a comment."""
+    out: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        line = strip_comment(raw).rstrip()
+        if line.strip():
+            out.append((_indent(line), line.strip()))
+    return out
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def job_names(text: str) -> list[str]:
+    """The check-run name of every job in a workflow: its `name:`, else its id.
+
+    A job's keys are found by indentation alone: the first line under `jobs:`
+    fixes the column job ids sit at, and the first line under a job fixes the
+    column its own keys sit at. A `name:` deeper than that belongs to a step.
+    """
+    lines = _code_lines(text)
+    names: list[str] = []
+    start = next((i for i, (ind, c) in enumerate(lines) if ind == 0 and c == "jobs:"), None)
+    if start is None or start + 1 >= len(lines) or lines[start + 1][0] == 0:
+        return names
+    job_indent = lines[start + 1][0]
+    index = start + 1
+    while index < len(lines) and lines[index][0] >= job_indent:
+        indent, content = lines[index]
+        if indent == job_indent and content.endswith(":"):
+            job_id = _unquote(content[:-1])
+            name = job_id
+            index += 1
+            key_indent = lines[index][0] if index < len(lines) else 0
+            while index < len(lines) and lines[index][0] > job_indent:
+                indent, content = lines[index]
+                if indent == key_indent and content.startswith("name:"):
+                    name = _unquote(content[len("name:") :])
+                index += 1
+            names.append(name)
+            continue
+        index += 1
+    return names
+
+
+def pull_request_trigger(text: str) -> str:
+    """How a workflow's `on:` reaches pull requests.
+
+    `"none"` when it does not run on `pull_request` at all, `"filtered"` when it
+    does under a `paths:` or `paths-ignore:` filter, and `"every"` otherwise.
+    """
+    lines = _code_lines(text)
+    for index, (indent, content) in enumerate(lines):
+        if indent != 0 or not re.match(r"""^(?:on|"on"|'on')\s*:""", content):
+            continue
+        inline = content.split(":", 1)[1].strip()
+        if inline:
+            events = [_unquote(e) for e in inline.strip("[]").split(",")]
+            return "every" if "pull_request" in events else "none"
+        if index + 1 >= len(lines) or lines[index + 1][0] == 0:
+            return "none"
+        event_indent = lines[index + 1][0]
+        cursor = index + 1
+        while cursor < len(lines) and lines[cursor][0] >= event_indent:
+            indent, content = lines[cursor]
+            event, _, rest = content.lstrip("- ").partition(":")
+            cursor += 1
+            if indent != event_indent or _unquote(event) != "pull_request":
+                continue
+            if re.search(r"\bpaths(?:-ignore)?\b", rest):
+                return "filtered"
+            while cursor < len(lines) and lines[cursor][0] > event_indent:
+                key = lines[cursor][1].split(":", 1)[0]
+                if _unquote(key) in {"paths", "paths-ignore"}:
+                    return "filtered"
+                cursor += 1
+            return "every"
+        return "none"
+    return "none"
+
+
+def required_contexts(path: pathlib.Path) -> list[str] | None:
+    """Every `required_status_checks` context a ruleset record names.
+
+    `None` when the file is not a ruleset this gate can read.
+    """
+    try:
+        ruleset = json.loads(path.read_text(encoding="utf-8"))
+        contexts: list[str] = []
+        for rule in ruleset["rules"]:
+            if rule["type"] != "required_status_checks":
+                continue
+            for check in rule["parameters"]["required_status_checks"]:
+                if not isinstance(check["context"], str):
+                    return None
+                contexts.append(check["context"])
+        return contexts
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -288,14 +419,64 @@ def main() -> int:
                 "scope here — `contents: read` if the workflow only checks out."
             )
 
+    # Assertion 3: every required context in a ruleset record is a job that
+    # reports on every pull request.
+    reporters: dict[str, list[str]] = {}
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        trigger = pull_request_trigger(text)
+        for name in job_names(text):
+            reporters.setdefault(name, []).append(trigger)
+
+    rulesets_dir = args.root / ".github" / "rulesets"
+    records = sorted(rulesets_dir.glob("*.json")) if rulesets_dir.is_dir() else []
+    required = 0
+    for path in records:
+        shown = path.relative_to(args.root) if path.is_relative_to(args.root) else path
+        contexts = required_contexts(path)
+        if contexts is None:
+            failures += 1
+            print(
+                f"::error file={shown},line=1::workflow-hardening: not a ruleset "
+                "this gate can read. It needs a `rules` list whose "
+                "`required_status_checks` rule lists `{\"context\": \"<job name>\"}` "
+                "objects, which is the shape `gh api repos/OWNER/REPO/rulesets/ID` "
+                "returns."
+            )
+            continue
+        for context in contexts:
+            required += 1
+            triggers = reporters.get(context)
+            if not triggers:
+                failures += 1
+                print(
+                    f"::error file={shown},line=1::workflow-hardening: required "
+                    f"context `{context}` is no job's name in `.github/workflows/`. "
+                    "A required context nothing reports waits forever and blocks "
+                    "every pull request. Correct it to the job's `name:` byte for "
+                    "byte; a name built from `${{ matrix.* }}` cannot be required "
+                    "until this gate expands matrices."
+                )
+            elif "every" not in triggers:
+                failures += 1
+                print(
+                    f"::error file={shown},line=1::workflow-hardening: required "
+                    f"context `{context}` is a job whose workflow does not run on "
+                    "every pull request (no `pull_request` trigger, or one under "
+                    "`paths:`). A pull request it skips never gets the check, and "
+                    "never merges."
+                )
+
     if failures:
-        print(f"workflow-hardening: {failures} violation(s) across {len(workflows) + len(composites)} file(s).")
+        print(f"workflow-hardening: {failures} violation(s) across {len(workflows) + len(composites) + len(records)} file(s).")
         return VIOLATION
 
     print(
         f"OK: workflow-hardening clean — {checked} action ref(s) pinned to a commit "
-        f"across {len(workflows) + len(composites)} file(s), and each of the "
-        f"{len(workflows)} workflow(s) declares its own token scope."
+        f"across {len(workflows) + len(composites)} file(s), each of the "
+        f"{len(workflows)} workflow(s) declares its own token scope, and each of the "
+        f"{required} required context(s) in {len(records)} ruleset record(s) is a "
+        "job that reports on every pull request."
     )
     return CLEAN
 
