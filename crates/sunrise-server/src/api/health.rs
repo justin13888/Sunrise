@@ -309,10 +309,22 @@ mod tests {
         // root included, which a read-only permission bit would not ensure.
         let file = dir.path().join("not-a-dir");
         std::fs::write(&file, b"").unwrap();
-        let client = Client::from_state(ServerState::new(ServerConfig {
-            blob_root: Some(file.join("blobs")),
-            ..ServerConfig::default()
-        }));
+        let root = file.join("blobs");
+        // The disk reads half free, so `failed` names the blob root alone
+        // however full the disk the test runs on is.
+        let blobs = crate::blob::FsBlobs::new(&root).with_disk_space(|_| {
+            Ok(Some(crate::blob::DiskSpace {
+                available: 50,
+                total: 100,
+            }))
+        });
+        let client = Client::from_state(
+            ServerState::new(ServerConfig {
+                blob_root: Some(root),
+                ..ServerConfig::default()
+            })
+            .with_blob_backend(Arc::new(blobs)),
+        );
         let res = client
             .send(Method::GET, "/api/v1/health?deep=1", None)
             .await;
