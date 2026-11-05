@@ -66,14 +66,14 @@ struct DayScheduleModelTests {
         let christmas: CivilDate = "2026-12-25"
 
         await model.set(.date(date: christmas), window: late)
-        #expect(model.override(on: christmas)?.window == late)
+        #expect(model.dateOverride(on: christmas)?.window == late)
 
         await model.set(.date(date: christmas), window: nil)
-        let none = try #require(model.override(on: christmas))
+        let none = try #require(model.dateOverride(on: christmas))
         #expect(none.window == nil, "no schedule is an override, not an absence")
 
         await model.clear(.date(date: christmas))
-        #expect(model.override(on: christmas) == nil)
+        #expect(model.dateOverride(on: christmas) == nil)
         await vault.bridge.shutdown()
     }
 

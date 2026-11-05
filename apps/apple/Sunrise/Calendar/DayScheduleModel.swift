@@ -69,7 +69,7 @@ final class DayScheduleModel {
 
     /// The date's own override, if it has one. Absent means the date follows
     /// its day of the month and weekday.
-    func override(on date: CivilDate) -> DateOverrideItem? {
+    func dateOverride(on date: CivilDate) -> DateOverrideItem? {
         schedule.date.first { $0.date == date }
     }
 
@@ -91,7 +91,8 @@ final class DayScheduleModel {
 
     private func write(_ entry: DayScheduleEntryItem, _ command: (String) -> CoreCommand) async {
         do {
-            _ = try await bridge.submit(command(try dayScheduleKey(entry: entry)))
+            let key = try dayScheduleKey(entry: entry)
+            _ = try await bridge.submit(command(key))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

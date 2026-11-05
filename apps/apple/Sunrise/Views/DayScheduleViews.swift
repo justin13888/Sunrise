@@ -168,7 +168,7 @@ struct DateOverrideMenu: View {
     @ViewBuilder
     private func items(dayOffset: Int) -> some View {
         let date = civilDate(dayOffset)
-        let current = schedule.override(on: date)
+        let current = schedule.dateOverride(on: date)
         Text(stateTitle(current))
         Button(L10n.DaySchedule.dateHours) {
             editing = DateHoursEdit(
