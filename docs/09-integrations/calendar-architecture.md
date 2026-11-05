@@ -173,10 +173,10 @@ On real accounts, before the entity model is frozen:
 - iCloud: limited app-specific passwords, all revoked on a password change. The UX must handle a credential
   dying silently.
 
-## Migration from `gcal.rs`
+## Migration from the `gcal` module
 
-Land #660 as written, since it preserves behaviour. Do not build on its poll half: `diff` reports an absent
-id as deleted, it has no `etag` or recurrence, and `EventSyncer` is read-only. Keep the PKCE flow, the
+#660 has landed, splitting the module without changing behaviour. Do not build on `gcal/poll.rs`: `diff`
+reports an id absent from a complete listing as deleted, it has no `etag` or recurrence, and `EventSyncer` is read-only. Keep the PKCE flow, the
 refresh rule and the decode cases as fixtures. Check for overlap with the `oauth2` use in `sunrise-auth`.
 
 ## Milestones

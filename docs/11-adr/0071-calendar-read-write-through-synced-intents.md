@@ -205,10 +205,10 @@ HTTP, credentials and scheduling. Selection of its dependencies is recorded in
   an event when a device passes the freshness check but has not yet received the
   outcome.
 - **Writes depend on the Apple conflict UI,** which is unbuilt (ADR-0065 §Delivered).
-- **`gcal.rs`'s poll half is replaced.** Its `diff` treats an absent id as deleted,
+- **`gcal/poll.rs` is replaced.** Its `diff` treats an id absent from a complete listing as deleted,
   contradicting the positive-deletion rule in
   [`../09-integrations/overview.md`](../09-integrations/overview.md). Its PKCE flow and
-  decode cases are kept as fixtures. The #660 split lands first, unchanged.
+  decode cases are kept as fixtures. The #660 split has landed unchanged.
 - **Determinism gates do not see dependency code.** `clippy.toml` and
   `.github/scripts/core-filesystem-gate.py` stop at this workspace, so `calendar-sync`
   carries its own rules, and an end-to-end test through a shipped binary proves the
