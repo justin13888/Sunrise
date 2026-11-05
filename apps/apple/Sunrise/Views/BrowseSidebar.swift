@@ -40,8 +40,8 @@ struct BrowseSidebar: View {
                     // **Reorder.** `interaction-patterns.md` §Reorder asks for
                     // drag-within-a-list, and for streams the answer is a
                     // vault fact: this writes `Stream.sort_order` through the
-                    // core, so the arrangement syncs. Task lists still keep
-                    // theirs per device — see `ListOrderStore`.
+                    // core, so the arrangement syncs. Task lists do the same
+                    // through `MoveTasks` — see `ListOrder`.
                     .onMove { source, destination in
                         Task { await model.moveStreams(from: source, to: destination) }
                     }
