@@ -804,8 +804,8 @@ pub struct IdentityStatus {
 
 /// One row of [`Query::DeviceList`].
 ///
-/// Four independent bools, and `struct_excessive_bools` is allowed rather than
-/// obeyed. The lint's remedy is a state machine or two-variant enums, which is
+/// Five bools, and `struct_excessive_bools` is allowed rather than obeyed.
+/// Four are independent; `revoked_by_authority` refines `revoked`. The lint's remedy is a state machine or two-variant enums, which is
 /// the wrong shape here: these are not four positions of one state but four
 /// orthogonal facts, and every pair of them is reachable in both combinations.
 /// `revoked` and `read_bounded` disagreeing is the whole subject of migration
@@ -853,6 +853,22 @@ pub struct DeviceRow {
     /// `read_bounded: false, revoked: true` cannot happen: the fold takes the
     /// bound over the register it is about to write.
     pub read_bounded: bool,
+    /// Whether this device is revoked **by the account identity**: an
+    /// authority row names it at the register's last fold (ADR-0058 §7).
+    ///
+    /// A revocation signed by the `ID_S_priv` of the identity in force is
+    /// never gated and seats a revoker the discount never removes, so no op
+    /// from any device unwinds it while that identity is in force, and a
+    /// rotation carries it forward. Every other revocation is ordinary, and a
+    /// later op can take it back off the list (ADR-0041). This is what lets a
+    /// user tell the two apart.
+    ///
+    /// It is a fact about the register and not about the row that won it: the
+    /// cut and `revoked_by` still follow the LWW rule over every ungated row,
+    /// so a later ordinary revocation of the same device can win the row
+    /// while this stays true. `revoked_by_authority: true, revoked: false`
+    /// cannot happen.
+    pub revoked_by_authority: bool,
     /// Whether this device is certified under the account identity **in
     /// force**, and therefore a member.
     ///

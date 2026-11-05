@@ -295,14 +295,30 @@ impl Engine {
         if !self.features.iter().any(|f| f.id == id) || !self.devices_lacking(tx, id)?.is_empty() {
             return Ok(false);
         }
+        self.require_in_tx(tx, id, now_ms)?;
+        Ok(true)
+    }
+
+    /// Emit a `VaultRequires` naming `id` inside `tx` and record it, with no
+    /// check of which devices advertise it: the caller has made its own.
+    ///
+    /// [`Self::require_if_unanimous`] asks every other non-revoked device.
+    /// The authority revocation asks every one but the device it revokes
+    /// (ADR-0058 §7), and its carry-forward asks none, because the vault
+    /// already holds the op kind the feature names.
+    pub(super) fn require_in_tx(
+        &self,
+        tx: &Transaction<'_>,
+        id: &str,
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
         let ids = vec![id.to_owned()];
         let inner = InnerOp::VaultRequires(VaultRequiresPayload {
             features: ids.clone(),
             unknown: sunrise_domain::Unknowns::new(),
         });
         self.emit_control_op(tx, &inner, now_ms, None)?;
-        record_required(tx, &ids, now_ms)?;
-        Ok(true)
+        record_required(tx, &ids, now_ms).map(|_| ())
     }
 
     /// Whether the vault's required set holds feature `id`.

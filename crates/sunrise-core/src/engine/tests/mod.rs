@@ -220,6 +220,10 @@ mod revocation_keys;
 /// The revocation register: the fold, its gate and the discount.
 mod revocation_fold;
 
+/// Identity-signed revocations (ADR-0058): the authority row, the command
+/// that signs one, and the carry-forward across a rotation.
+mod revocation_authority;
+
 /// Revocation against the apply cursor: what advances it and what does not.
 mod revocation_cursor;
 

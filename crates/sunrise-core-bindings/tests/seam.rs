@@ -2373,6 +2373,7 @@ fn an_unwound_device_row_crosses_the_seam_as_itself() {
         read_bounded: true,
         current: true,
         admitted_after_revocation: false,
+        revoked_by_authority: false,
     };
 
     let lowered = DeviceListRow::from(&row);
@@ -2424,6 +2425,7 @@ fn a_plainly_revoked_device_row_crosses_the_seam_as_itself() {
         read_bounded: true,
         current: false,
         admitted_after_revocation: false,
+        revoked_by_authority: false,
     };
 
     let lowered = DeviceListRow::from(&row);

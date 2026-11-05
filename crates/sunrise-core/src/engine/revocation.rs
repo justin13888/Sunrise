@@ -53,16 +53,29 @@
 //! re-entered every recipient set and one republished cert handed it every
 //! held epoch of every stream.
 
+use super::identity::IdentityHead;
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::{hex_bytes, hex_short};
 use crate::commands::CommandResult;
-use crate::control_op::{DeviceRevokePayload, RevokeReason};
+use crate::control_op::{DeviceRevokeByIdentityPayload, DeviceRevokePayload, RevokeReason};
+use crate::feature::REVOKE_AUTHORITY_FEATURE;
 use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::keychain::{Identity, Keychain};
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::hlc::Hlc;
+use sunrise_crypto::{RevocationClaim, StreamKey};
 use sunrise_id::EntityRef;
 use sunrise_storage::Db;
+
+/// The revoker an authority row seats in its target's set (ADR-0058 §4).
+///
+/// No device's id: every device id is 16 bytes and this is not, so no row
+/// revokes it and the discount, which removes a revoker only when a row
+/// revokes that revoker, never removes it. And since it is never the device a
+/// row names, a device with an authority revocation always has a revoker other
+/// than the target of its own row, so the mutual exception never reaches it.
+const IDENTITY: &[u8] = b"identity";
 
 /// One `device_revoke` op as `device_revoke_ops` keeps it.
 ///
@@ -76,12 +89,97 @@ struct RevokeLedgerRow {
     revoked: Vec<u8>,
     reason: String,
     recorded_at_ms: i64,
+    /// The identity a `device.revoke_by_identity` op names, `None` on an
+    /// ordinary row (migration 0048).
+    authority_identity_id: Option<Vec<u8>>,
+    /// Its signature, `None` on an ordinary row.
+    authority_sig: Option<Vec<u8>>,
+}
+
+impl RevokeLedgerRow {
+    /// Whether this row is an **authority row at a fold whose head is
+    /// `head`** (ADR-0058 §3): it names the head, and its signature verifies
+    /// under the head's `ID_S_pub` over the claim rebuilt from the row.
+    ///
+    /// Every other row is an ordinary row from its sender, including one
+    /// signed under an identity the chain has moved past, one whose
+    /// signature does not verify, and one whose columns are the wrong width
+    /// for any claim to have been signed over.
+    fn is_authority_at(&self, head: &IdentityHead) -> bool {
+        let (Some(id), Some(sig)) = (&self.authority_identity_id, &self.authority_sig) else {
+            return false;
+        };
+        if id.as_slice() != head.identity_id {
+            return false;
+        }
+        let (Ok(sig), Ok(sender), Ok(revoked), Ok(ms), Ok(logical)) = (
+            <[u8; 64]>::try_from(sig.as_slice()),
+            <[u8; 16]>::try_from(self.sender.as_slice()),
+            <[u8; 16]>::try_from(self.revoked.as_slice()),
+            u64::try_from(self.hlc_ms),
+            u32::try_from(self.hlc_logical),
+        ) else {
+            return false;
+        };
+        RevocationClaim {
+            identity_id: head.identity_id,
+            sender_device_id: sender,
+            revoked_device_id: revoked,
+            hlc_physical_ms: ms,
+            hlc_logical: logical,
+            reason_code: self.reason.clone(),
+        }
+        .verify(&head.id_s_pub, &sig)
+        .is_ok()
+    }
+}
+
+/// What one revocation op claims, as [`Engine::apply_device_revoke`] stores
+/// it: the target and the reason, and for a `device.revoke_by_identity` op
+/// the identity it names and that identity's signature.
+pub(super) struct RevokeClaim {
+    revoked: [u8; 16],
+    reason: RevokeReason,
+    authority: Option<([u8; 16], [u8; 64])>,
+}
+
+impl RevokeClaim {
+    /// A `device.revoke`.
+    pub(super) const fn ordinary(revoked: [u8; 16], reason: RevokeReason) -> Self {
+        Self {
+            revoked,
+            reason,
+            authority: None,
+        }
+    }
+
+    /// A `device.revoke_by_identity`, whatever its signature: the fold
+    /// decides whether it is an authority row.
+    pub(super) const fn by_identity(p: &DeviceRevokeByIdentityPayload) -> Self {
+        Self {
+            revoked: p.revoked_device_id,
+            reason: p.reason_code,
+            authority: Some((p.identity_id, p.identity_sig)),
+        }
+    }
+}
+
+/// Whether [`Engine::revoke_device`] signs, decided inside its transaction.
+enum RevokeAuthority {
+    /// Sign. `require_first` when the vault does not require
+    /// `core.revoke_authority` yet, so the command emits `VaultRequires`
+    /// before the op.
+    Sign { require_first: bool },
+    /// Emit an ordinary revocation. `awaiting` names the devices whose build
+    /// does not advertise the feature, when they are all that stands between
+    /// this device and signing; empty when this device cannot sign at all.
+    Withheld { awaiting: Vec<[u8; 16]> },
 }
 
 /// A ledger row the fold stored and did not believe, identified by the op that
 /// wrote it. Returned so the caller can say so about the op it has just
 /// applied, and not about the whole history it re-folded on the way.
-struct SkippedRevoke {
+pub(super) struct SkippedRevoke {
     sender: Vec<u8>,
     hlc_ms: i64,
     hlc_logical: i64,
@@ -170,11 +268,6 @@ impl Engine {
             ));
         }
         let op_id = self.fresh_op_id(now_ms);
-        let revoke = InnerOp::DeviceRevoke(DeviceRevokePayload {
-            revoked_device_id: revoked,
-            reason_code: reason,
-        });
-        let inner = encode_inner_op(&revoke)?;
 
         // Read inside the transaction, and after the epoch below has been
         // resolved. Resolving it can mint the vault-meta stream's own first key
@@ -198,6 +291,12 @@ impl Engine {
         // reason as `unrotatable`: it is read inside the transaction and has
         // to reach the caller, on `CommandResult::revocation_gated`.
         let mut effective = true;
+        // Whether the op carries the account's authority, and if it does
+        // not, which devices stand between this device and signing. Hoisted
+        // for the same reason as `unrotatable`; see
+        // `CommandResult::revoked_by_authority`.
+        let mut signed = false;
+        let mut awaiting: Vec<[u8; 16]> = Vec::new();
         // There is deliberately **no** "this device is revoked, refuse the
         // command" guard here, though the fold in
         // [`Self::refold_device_revocations`] will skip most of what such a
@@ -216,6 +315,50 @@ impl Engine {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
             let hlc = self.hlc.send();
+            // **Signed by the account identity when this device can**
+            // (ADR-0058 §7). The holder of the head's `ID_S_priv` signs by
+            // default, and the user does not choose; it does so only while
+            // the vault requires `core.revoke_authority` or every device but
+            // the one being revoked advertises it, because a replica that
+            // dropped the op would fold a different register for good.
+            // Otherwise it emits the ordinary revocation it always did, and
+            // says so on the result. It never refuses: the device being
+            // revoked is often the one the user lost, and an ordinary
+            // revocation still does everything ADR-0041 gives it.
+            let authority = self.revocation_authority(tx, &revoked)?;
+            let revoke = match authority {
+                RevokeAuthority::Sign { .. } => {
+                    let identity_id = self.keychain.identity_id();
+                    let claim = RevocationClaim {
+                        identity_id,
+                        sender_device_id: self.keychain.device_id(),
+                        revoked_device_id: revoked,
+                        hlc_physical_ms: hlc.physical_ms,
+                        hlc_logical: hlc.logical,
+                        reason_code: reason.as_str().to_owned(),
+                    };
+                    let identity_sig = self
+                        .keychain
+                        .sign_revocation_claim(&claim)
+                        .map_err(crate::keychain::sqlite_from)?;
+                    signed = true;
+                    InnerOp::DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload {
+                        revoked_device_id: revoked,
+                        reason_code: reason,
+                        identity_id,
+                        identity_sig,
+                    })
+                }
+                RevokeAuthority::Withheld { awaiting: ref a } => {
+                    awaiting.clone_from(a);
+                    InnerOp::DeviceRevoke(DeviceRevokePayload {
+                        revoked_device_id: revoked,
+                        reason_code: reason,
+                    })
+                }
+            };
+            let inner =
+                encode_inner_op(&revoke).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
             // The register goes first, before anything can mint a key.
             //
             // `ensure_stream_epoch` below can mint the vault-meta stream's
@@ -262,6 +405,19 @@ impl Engine {
             // of its own, because the fact is the same fact.
             effective = self.is_revoked(tx, &revoked)?;
 
+            // The vault is told it requires the feature before the op that
+            // uses it is sealed (ADR-0045 §7). After the register write, not
+            // before it: emitting can mint the vault-meta stream's first key,
+            // and that key must not reach the device being revoked.
+            if matches!(
+                authority,
+                RevokeAuthority::Sign {
+                    require_first: true
+                }
+            ) {
+                self.require_in_tx(tx, REVOKE_AUTHORITY_FEATURE, now_ms)?;
+            }
+
             // The epoch every rotation op is sealed under: read before
             // anything is minted, so it is the epoch the departing devices and
             // the remaining ones all still share.
@@ -277,7 +433,7 @@ impl Engine {
                 seq,
                 hlc,
                 &inner,
-                "device.revoke",
+                revoke.inner_kind(),
                 "device",
                 Some(&revoked),
                 Some(now_ms),
@@ -534,10 +690,174 @@ impl Engine {
         // operator's NDJSON.
         let revocation_unwound: Vec<String> = unwound.iter().map(|b| hex_bytes(b)).collect();
 
+        // The authority disclosure (ADR-0058 §7): whether the revocation
+        // carries the account's authority, and when it does not only because
+        // some devices' builds lack the feature, which ones to update.
+        let authority_awaits: Vec<String> = awaiting.iter().map(|d| hex_bytes(d)).collect();
+
         Ok(CommandResult::new(device_id, None, op_id, seq)
             .with_unrotated_streams(unrotated_streams)
             .with_revocation_gated(!effective)
-            .with_revocation_unwound(revocation_unwound))
+            .with_revocation_unwound(revocation_unwound)
+            .with_revocation_authority(signed, authority_awaits))
+    }
+
+    /// Whether [`Self::revoke_device`] signs its revocation of `target` as
+    /// the account identity (ADR-0058 §7).
+    ///
+    /// It signs when this device holds the `ID_S_priv` of the identity at the
+    /// head of the chain, this build has `core.revoke_authority`, and the
+    /// vault requires it or every device that is not revoked advertises it.
+    /// The device being revoked is left out of that count: it is the one
+    /// device the op makes revoked, and its standing is what the op is about.
+    /// An attacker device that never advertises the feature would otherwise
+    /// keep the account from ever revoking it by authority.
+    fn revocation_authority(
+        &self,
+        tx: &Transaction<'_>,
+        target: &[u8; 16],
+    ) -> rusqlite::Result<RevokeAuthority> {
+        let holds_head = self.keychain.can_rotate_identity()
+            && self.current_identity(tx)?.identity_id == self.keychain.identity_id();
+        if !holds_head
+            || !self
+                .features
+                .iter()
+                .any(|f| f.id == REVOKE_AUTHORITY_FEATURE)
+        {
+            return Ok(RevokeAuthority::Withheld {
+                awaiting: Vec::new(),
+            });
+        }
+        if self.vault_requires(tx, REVOKE_AUTHORITY_FEATURE)? {
+            return Ok(RevokeAuthority::Sign {
+                require_first: false,
+            });
+        }
+        let awaiting: Vec<[u8; 16]> = self
+            .devices_lacking(tx, REVOKE_AUTHORITY_FEATURE)?
+            .into_iter()
+            .filter(|d| d != target)
+            .collect();
+        Ok(if awaiting.is_empty() {
+            RevokeAuthority::Sign {
+                require_first: true,
+            }
+        } else {
+            RevokeAuthority::Withheld { awaiting }
+        })
+    }
+
+    /// Every device an authority row names at a fold whose head is `head`,
+    /// with the reason of the greatest such row in the fold's order.
+    ///
+    /// What [`Self::rotate_identity`] carries forward (ADR-0058 §5): read
+    /// before the rotation moves the head, because from the first fold that
+    /// sees the successor these rows are ordinary.
+    pub(super) fn authority_revocations_at(
+        &self,
+        conn: &rusqlite::Connection,
+        head: &IdentityHead,
+    ) -> rusqlite::Result<Vec<([u8; 16], RevokeReason)>> {
+        let mut stmt = conn.prepare(
+            "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                    recorded_at_ms, authority_identity_id, authority_sig
+             FROM device_revoke_ops
+             WHERE authority_identity_id = ?1
+             ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
+                      revoked_device_id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![&head.identity_id[..]], ledger_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut named: BTreeMap<[u8; 16], RevokeReason> = BTreeMap::new();
+        for row in rows.iter().filter(|r| r.is_authority_at(head)) {
+            let (Ok(target), Some(reason)) = (
+                <[u8; 16]>::try_from(row.revoked.as_slice()),
+                RevokeReason::parse(&row.reason),
+            ) else {
+                continue;
+            };
+            named.insert(target, reason);
+        }
+        Ok(named.into_iter().collect())
+    }
+
+    /// Emit, under the successor a rotation is minting, an authority
+    /// revocation of each device in `carry` (ADR-0058 §5).
+    ///
+    /// A row signed under a retired identity is ordinary from the first fold
+    /// that sees the new head, so without this every rotation would undo
+    /// every authority revocation and the shape of #394 would reopen. Run by
+    /// [`Self::rotate_identity`] in the transaction that emits the
+    /// transition, which it has already applied, so each op lands as an
+    /// authority row at once. The rotating device holds both keys, which is
+    /// what lets it sign these.
+    ///
+    /// The carry-forward does not judge the rows it carries: a vault restored
+    /// after a theft carries what the thief signed too, and those devices are
+    /// left out of the roster either way, because the register revokes them.
+    pub(super) fn carry_authority_forward(
+        &self,
+        tx: &Transaction<'_>,
+        successor: &Identity,
+        carry: &[([u8; 16], RevokeReason)],
+        seal_under: &(u32, StreamKey),
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        if carry.is_empty() {
+            return Ok(());
+        }
+        // The vault holds the op kind already, so it requires the feature on
+        // every replica that has applied the `VaultRequires` the first
+        // authority revocation followed. This replica may hold the row
+        // without it; the seal guard refuses the op until it has it.
+        if !self.vault_requires(tx, REVOKE_AUTHORITY_FEATURE)? {
+            self.require_in_tx(tx, REVOKE_AUTHORITY_FEATURE, now_ms)?;
+        }
+        let me = self.keychain.device_id();
+        for (target, reason) in carry {
+            let hlc = self.hlc.send();
+            let claim = RevocationClaim {
+                identity_id: successor.identity_id(),
+                sender_device_id: me,
+                revoked_device_id: *target,
+                hlc_physical_ms: hlc.physical_ms,
+                hlc_logical: hlc.logical,
+                reason_code: reason.as_str().to_owned(),
+            };
+            let identity_sig = Keychain::sign_revocation_claim_as(successor, &claim)
+                .map_err(crate::keychain::sqlite_from)?;
+            let op = InnerOp::DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload {
+                revoked_device_id: *target,
+                reason_code: *reason,
+                identity_id: claim.identity_id,
+                identity_sig,
+            });
+            let encoded =
+                encode_inner_op(&op).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+            self.apply_control_op(tx, &op, &me, hlc, now_ms, seal_under.0)?;
+            let op_id = self.fresh_op_id(now_ms);
+            let seq = self.next_seq_tx(tx, &META_STREAM)?;
+            self.ops_insert_at(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                hlc,
+                &encoded,
+                op.inner_kind(),
+                op.target_kind(),
+                Some(target),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+                seal_under.0,
+                &seal_under.1,
+            )?;
+        }
+        Ok(())
     }
     /// Whether `device_id` is revoked: **is there a row**, and nothing else.
     ///
@@ -886,9 +1206,11 @@ impl Engine {
     /// does not hold: ADR-0058
     /// (`docs/11-adr/0058-the-account-identity-is-the-membership-authority.md`)
     /// makes a revocation signed by the identity in force one the walk never
-    /// gates and the discount never removes. Until
-    /// [#454](https://github.com/justin13888/Sunrise/issues/454) builds it,
-    /// every row here is an ordinary one and this residual stands.
+    /// gates and the discount never removes; §"Authority rows" below is how
+    /// this fold reads one. Where the holder of that key signs, the residual
+    /// closes. In an account with no reachable holder, or before the vault
+    /// requires `core.revoke_authority`, every row here is an ordinary one
+    /// and it stands.
     ///
     /// # Why `sender` is the row's author, and where that is enforced
     ///
@@ -946,30 +1268,57 @@ impl Engine {
     /// `core.device.revoke_refused` with `reason = "revoked_sender"` is where an
     /// operator sees that one is needed. ADR-0041 §"What a user sees" item 3
     /// records the same thing for a reader who starts from the decision.
-    fn refold_device_revocations(
+    ///
+    /// # Authority rows (ADR-0058)
+    ///
+    /// A row is an **authority row** at this fold when it names the identity
+    /// at the head of the chain and its signature verifies under that head's
+    /// `ID_S_pub` ([`RevokeLedgerRow::is_authority_at`]). Every other row,
+    /// signed or not, is folded exactly as the sections above describe. An
+    /// authority row differs in three places, and nowhere else:
+    ///
+    /// - **`revokers_all` seats [`IDENTITY`] for it**, not its sender. No row
+    ///   revokes `IDENTITY`, so the discount never removes it, and since it is
+    ///   no device's id, it is a revoker other than the target of any row its
+    ///   target writes: every ordinary row that device writes is gated, and
+    ///   the mutual exception never reaches it.
+    /// - **The discount reads its sender as `IDENTITY`**, which is not any
+    ///   `v`, so an authority revocation of `s` discounts `s` out of every set
+    ///   `s` sits in, including the carrying device's.
+    /// - **The walk never gates it.** The authority is the key, and a device's
+    ///   standing says nothing about the key.
+    ///
+    /// It lands in the register like any ungated row, so the cut and
+    /// `revoked_by` still follow the LWW rule; `by_authority` records that an
+    /// authority row names the device, which is what no later op can unwind.
+    ///
+    /// The head is a function of the op set (ADR-0037 §2), so this stays one
+    /// too, and a moved head re-runs it: the `IdentityTransition` arm of
+    /// [`Self::apply_control_op`] and the chain seed both call it. It is the
+    /// shape #394 could not close through the ledger: two expelled devices
+    /// one attacker holds discount ordinary revokers one op at a time, and
+    /// can never discount `IDENTITY`. Pinned by
+    /// `an_authority_revocation_keeps_the_second_expelled_device_gated`.
+    pub(super) fn refold_device_revocations(
         &self,
         tx: &Transaction<'_>,
     ) -> rusqlite::Result<Vec<SkippedRevoke>> {
         let mut stmt = tx.prepare(
             "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
-                    recorded_at_ms
+                    recorded_at_ms, authority_identity_id, authority_sig
              FROM device_revoke_ops
              ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
-                      revoked_device_id ASC",
+                      revoked_device_id ASC, authority_identity_id ASC",
         )?;
         let rows: Vec<RevokeLedgerRow> = stmt
-            .query_map([], |r| {
-                Ok(RevokeLedgerRow {
-                    hlc_ms: r.get(0)?,
-                    hlc_logical: r.get(1)?,
-                    sender: r.get(2)?,
-                    revoked: r.get(3)?,
-                    reason: r.get(4)?,
-                    recorded_at_ms: r.get(5)?,
-                })
-            })?
+            .query_map([], ledger_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
+
+        // Which rows are authority rows is decided once, against one head,
+        // so every pass below reads the same answer.
+        let head = self.current_identity(tx)?;
+        let by_authority: Vec<bool> = rows.iter().map(|r| r.is_authority_at(&head)).collect();
 
         // Who has revoked whom, over the **whole ledger** — every revoker and
         // not only the one currently winning the register, and every row and
@@ -1011,14 +1360,21 @@ impl Engine {
         // *register*. See it for what each prevents.
         let mut revokers_all: std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> =
             std::collections::BTreeMap::new();
-        for row in &rows {
+        for (row, authority) in rows.iter().zip(&by_authority) {
             if row.sender == row.revoked {
                 continue;
             }
+            // An authority row's revoker is the identity, not the device
+            // that carried it (ADR-0058 §4).
+            let revoker = if *authority {
+                IDENTITY.to_vec()
+            } else {
+                row.sender.clone()
+            };
             revokers_all
                 .entry(row.revoked.clone())
                 .or_default()
-                .insert(row.sender.clone());
+                .insert(revoker);
         }
 
         // **The discount, and why there is a second pass at all.**
@@ -1104,7 +1460,10 @@ impl Engine {
         let mut register: std::collections::BTreeMap<Vec<u8>, RevokeLedgerRow> =
             std::collections::BTreeMap::new();
         let mut skipped = Vec::new();
-        for row in rows {
+        // The devices an authority row names at this fold: what
+        // `device_revocations.by_authority` records.
+        let mut authority_named: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for (row, authority) in rows.into_iter().zip(by_authority) {
             // A device must not move its own cut, and this is where that is
             // enforced for the **register**.
             //
@@ -1149,9 +1508,13 @@ impl Engine {
             // devices end up revoked. It becomes a reason the moment A reaches
             // for a *third* party, or the moment anyone other than B has also
             // revoked A. Both are this condition.
-            let gated = revokers
-                .get(&row.sender)
-                .is_some_and(|who| who.iter().any(|r| *r != row.revoked));
+            //
+            // An authority row is never gated (ADR-0058 §4): the authority is
+            // the key, and its carrier's standing says nothing about the key.
+            let gated = !authority
+                && revokers
+                    .get(&row.sender)
+                    .is_some_and(|who| who.iter().any(|r| *r != row.revoked));
             if gated {
                 skipped.push(SkippedRevoke {
                     sender: row.sender,
@@ -1159,6 +1522,9 @@ impl Engine {
                     hlc_logical: row.hlc_logical,
                 });
                 continue;
+            }
+            if authority {
+                authority_named.insert(row.revoked.clone());
             }
             register.insert(row.revoked.clone(), row);
         }
@@ -1287,8 +1653,9 @@ impl Engine {
         {
             let mut insert = tx.prepare(
                 "INSERT INTO device_revocations
-                 (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms,
+                  by_authority)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for (device_id, row) in &register {
                 insert.execute(params![
@@ -1298,6 +1665,7 @@ impl Engine {
                     row.sender,
                     row.reason,
                     row.recorded_at_ms,
+                    authority_named.contains(device_id),
                 ])?;
             }
         }
@@ -1309,10 +1677,15 @@ impl Engine {
     ///
     /// Split out of `apply_control_op`'s match so that the whole of what
     /// decides the register lives beside the fold that recomputes it.
+    ///
+    /// A `device_revoke_by_identity` comes through here too, as a
+    /// [`RevokeClaim`] carrying its identity and signature. Both are stored
+    /// unchecked: the fold verifies them against the head it folds
+    /// (ADR-0058 §3), and nothing else about the op differs.
     pub(super) fn apply_device_revoke(
         &self,
         tx: &Transaction<'_>,
-        p: &DeviceRevokePayload,
+        p: &RevokeClaim,
         sender: &[u8; 16],
         hlc: Hlc,
         now_ms: u64,
@@ -1350,7 +1723,7 @@ impl Engine {
         // refuses it locally for the separate reason that rotating every key
         // away from the only device holding them is not a recoverable state;
         // this is the remote half, and neither implies the other.
-        if p.revoked_device_id == *sender {
+        if p.revoked == *sender {
             tracing::warn!(
                 ev = "core.device.revoke_refused",
                 reason = "self",
@@ -1385,28 +1758,36 @@ impl Engine {
         // idempotence gate in `apply_remote_all` already stops most of that;
         // this is the same guarantee where the local path and a replay can
         // also reach.
+        //
+        // The identity an authority revocation names is part of the row's
+        // identity (migration 0048), so an ordinary row and an authority row
+        // at one stamp are two rows and neither ignores the other.
+        let authority_id = p.authority.as_ref().map(|(id, _)| id.to_vec());
+        let authority_sig = p.authority.as_ref().map(|(_, sig)| sig.to_vec());
         tx.execute(
             "INSERT OR IGNORE INTO device_revoke_ops
                      (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
-                      recorded_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                      recorded_at_ms, authority_identity_id, authority_sig)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 cut,
                 logical,
                 &sender[..],
-                &p.revoked_device_id[..],
-                p.reason_code.as_str(),
+                &p.revoked[..],
+                p.reason.as_str(),
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
+                authority_id,
+                authority_sig,
             ],
         )?;
         // Before the fold, unlike the pair compaction below, because this one
         // does change what the fold reads: see `cap_device_revoke_targets`.
-        if Self::cap_device_revoke_targets(tx, sender, &p.revoked_device_id)? {
+        if Self::cap_device_revoke_targets(tx, sender, &p.revoked, authority_id.as_deref())? {
             tracing::warn!(
                 ev = "core.device.revoke_refused",
                 reason = "sender_over_cap",
                 sender_h = hex_short(sender),
-                subject_h = hex_short(&p.revoked_device_id),
+                subject_h = hex_short(&p.revoked),
                 "a device has named more distinct targets than one sender may keep"
             );
         }
@@ -1424,7 +1805,7 @@ impl Engine {
                 ev = "core.device.revoke_refused",
                 reason = "revoked_sender",
                 sender_h = hex_short(sender),
-                subject_h = hex_short(&p.revoked_device_id),
+                subject_h = hex_short(&p.revoked),
                 "a device the account had already revoked tried to revoke another"
             );
         }
@@ -1484,12 +1865,29 @@ impl Engine {
     /// that accumulated lesser rows before this existed is compacted by its
     /// next `device_revoke`, and one pass costs the same order as the fold's
     /// own sorted read.
+    ///
+    /// # The pair includes the identity an authority row names
+    ///
+    /// `(sender, revoked_device_id, authority_identity_id)`, since migration
+    /// 0048. An ordinary row and an authority row from one sender to one
+    /// target are folded differently (ADR-0058 §4), so neither can stand in
+    /// for the other, and without the third column this would keep only the
+    /// greater-stamped and could delete the authority row. Rows naming two
+    /// identities differ the same way: at most one of them names the head.
+    /// Within the widened pair everything above holds, with one exception
+    /// the sender alone can reach. Its rows name one identity, so a moved head
+    /// demotes them together; but each carries its own signature, and a pair
+    /// whose greatest row does not verify would lose a lesser row that does.
+    /// Only the pair's own sender can write either row, because the envelope
+    /// authenticates it, so this costs a sender nothing but its own claims,
+    /// which [`Self::cap_device_revoke_targets`] already lets it drop.
+    /// `NULL`s fall in one partition, as SQL window partitions group them.
     fn compact_device_revoke_ops(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
         tx.execute(
             "DELETE FROM device_revoke_ops WHERE rowid IN (
                  SELECT rowid FROM (
                      SELECT rowid, ROW_NUMBER() OVER (
-                         PARTITION BY sender, revoked_device_id
+                         PARTITION BY sender, revoked_device_id, authority_identity_id
                          ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
                      ) AS pos
                      FROM device_revoke_ops
@@ -1543,29 +1941,41 @@ impl Engine {
     /// device the account still trusts. [`Self::revoke_device`] refuses a
     /// target with no row in `devices`, so an honest device reaches the cap
     /// only by revoking that many devices that really paired.
+    ///
+    /// # A pair includes the identity an authority row names
+    ///
+    /// Since migration 0048 the pair is `(sender, target, identity)`, as in
+    /// [`Self::compact_device_revoke_ops`], and an authority row counts toward
+    /// its sender's cap like any row (ADR-0058 §3). The rank breaks a tie on
+    /// the identity last, so it stays total within one sender.
     fn cap_device_revoke_targets(
         tx: &Transaction<'_>,
         sender: &[u8; 16],
         target: &[u8; 16],
+        authority_identity_id: Option<&[u8]>,
     ) -> rusqlite::Result<bool> {
         tx.execute(
             "WITH heads AS (
-                 SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical
+                 SELECT sender, revoked_device_id, authority_identity_id,
+                        op_hlc_ms, op_hlc_logical
                  FROM (
-                     SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical,
+                     SELECT sender, revoked_device_id, authority_identity_id,
+                            op_hlc_ms, op_hlc_logical,
                             ROW_NUMBER() OVER (
-                                PARTITION BY sender, revoked_device_id
+                                PARTITION BY sender, revoked_device_id,
+                                             authority_identity_id
                                 ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
                             ) AS pos
                      FROM device_revoke_ops
                  ) WHERE pos = 1
              ),
              ranked AS (
-                 SELECT sender, revoked_device_id,
+                 SELECT sender, revoked_device_id, authority_identity_id,
                         ROW_NUMBER() OVER (
                             PARTITION BY sender
                             ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
-                                     revoked_device_id DESC
+                                     revoked_device_id DESC,
+                                     authority_identity_id DESC
                         ) AS pos
                  FROM heads
              )
@@ -1575,14 +1985,17 @@ impl Engine {
                  WHERE r.pos > ?1
                    AND r.sender = device_revoke_ops.sender
                    AND r.revoked_device_id = device_revoke_ops.revoked_device_id
+                   AND r.authority_identity_id IS device_revoke_ops.authority_identity_id
              )",
             params![REVOKE_TARGETS_PER_SENDER],
         )?;
         let kept: Option<i64> = tx
             .query_row(
                 "SELECT 1 FROM device_revoke_ops
-                 WHERE sender = ?1 AND revoked_device_id = ?2 LIMIT 1",
-                params![&sender[..], &target[..]],
+                 WHERE sender = ?1 AND revoked_device_id = ?2
+                   AND authority_identity_id IS ?3
+                 LIMIT 1",
+                params![&sender[..], &target[..], authority_identity_id],
                 |r| r.get(0),
             )
             .optional()?;
@@ -1637,6 +2050,21 @@ impl Engine {
             [],
         )
     }
+}
+
+/// One `device_revoke_ops` row, read in the column order both of the fold's
+/// queries select.
+fn ledger_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RevokeLedgerRow> {
+    Ok(RevokeLedgerRow {
+        hlc_ms: r.get(0)?,
+        hlc_logical: r.get(1)?,
+        sender: r.get(2)?,
+        revoked: r.get(3)?,
+        reason: r.get(4)?,
+        recorded_at_ms: r.get(5)?,
+        authority_identity_id: r.get(6)?,
+        authority_sig: r.get(7)?,
+    })
 }
 
 /// The most distinct targets one sender's `device_revoke` ops keep in the

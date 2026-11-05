@@ -93,8 +93,9 @@ pub use conflicts::{
     WriteOrigin,
 };
 pub use control_op::{
-    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
-    KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
+    DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
+    IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry,
+    VaultRequiresPayload,
 };
 pub use core::{Core, CoreError};
 pub use engine::{

@@ -616,6 +616,7 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         // not something that happened to a Task.
         | InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
+        | InnerOp::DeviceRevokeByIdentity(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
         | InnerOp::VaultRequires(_)

@@ -1039,7 +1039,8 @@ fn the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other() {
 /// through the ledger, because the answer is always another row the other
 /// attacker device can discount. Pinned so the residual stays deliberate for
 /// ordinary rows: ADR-0058's identity-signed revocations settle it, and
-/// [#454](https://github.com/justin13888/Sunrise/issues/454) builds them.
+/// `an_authority_revocation_keeps_the_second_expelled_device_gated` runs the
+/// same steps with O's revocations signed.
 #[test]
 fn a_second_expelled_device_discounts_the_third_device_that_revoked_the_first() {
     let ex1 = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));

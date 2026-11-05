@@ -192,6 +192,10 @@ impl From<&DeviceRow> for DeviceListRow {
             read_bounded,
             current,
             admitted_after_revocation,
+            // Not carried across the seam yet: no client renders it, and
+            // adding it to this record is the client half of ADR-0058 §7's
+            // disclosure, which issue #454 leaves to a follow-up.
+            revoked_by_authority: _,
         } = d;
         Self {
             device_id: hex16(device_id),
@@ -336,6 +340,10 @@ impl From<&CommandResult> for CommandOutcome {
             unrotated_streams,
             revocation_gated,
             revocation_unwound,
+            // Not carried across the seam yet, for the reason
+            // `DeviceListRow` gives for `revoked_by_authority`.
+            revoked_by_authority: _,
+            authority_awaits_update: _,
         } = r;
         Self {
             entity: *entity,
