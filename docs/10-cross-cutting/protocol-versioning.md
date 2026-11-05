@@ -281,6 +281,11 @@ From now on:
   did not read it would key the continuation's occurrences on the wrong id;
   and `Task.hard_constraint_violated`, absent when false, which an older build
   keeps as unknown and needs no feature.
+  `DOC_SCHEMA_V` 23 added the control family `DeviceRevokeByIdentity`
+  ([#454](https://github.com/justin13888/Sunrise/issues/454), ADR-0058): a
+  device revocation signed by the account identity in force, and its
+  structural feature `core.revoke_authority`. An older build parks the op, so
+  it is emitted only into a vault that requires the feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

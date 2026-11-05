@@ -4,8 +4,10 @@
 
 **Answers** [#394](https://github.com/justin13888/Sunrise/issues/394).
 
-**Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), which
-waits on §7. Nothing in the engine signs a revocation yet.
+**Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), §2–§5
+and §7. The identity-signed withdrawal of §6 is
+[#383](https://github.com/justin13888/Sunrise/issues/383)'s to build, since it
+lands second.
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user
 sees" item 4, which says no ledger-only rule settles two expelled devices one
