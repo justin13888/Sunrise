@@ -6,7 +6,7 @@
 //! [`emit_patch`], which also folds it into the writer's own state, and hand
 //! its envelope to another replica.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::merge::{check_patch, merge_op, OpRef, PatchProblem};
 use ciborium::value::Value;
@@ -15,23 +15,23 @@ use std::collections::BTreeMap;
 
 // ---- building patches ----
 
-fn text(s: &str) -> Value {
+pub(super) fn text(s: &str) -> Value {
     Value::Text(s.into())
 }
 
-fn op(kind: &str, v: Value) -> Value {
+pub(super) fn op(kind: &str, v: Value) -> Value {
     Value::Map(vec![(text(kind), v)])
 }
 
-fn set(v: Value) -> Value {
+pub(super) fn set(v: Value) -> Value {
     op("set", v)
 }
 
-fn add(elements: Vec<Value>) -> Value {
+pub(super) fn add(elements: Vec<Value>) -> Value {
     op("add", Value::Array(elements))
 }
 
-fn remove(element: Value, tags: &[OpRef]) -> Value {
+pub(super) fn remove(element: Value, tags: &[OpRef]) -> Value {
     op(
         "remove",
         Value::Array(vec![Value::Array(vec![
@@ -45,15 +45,17 @@ fn inc(n: i64) -> Value {
     op("inc", Value::Integer(n.into()))
 }
 
-fn eref(r: EntityRef) -> Value {
+pub(super) fn eref(r: EntityRef) -> Value {
     Value::serialized(&r).unwrap()
 }
 
-fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp {
+pub(super) fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp {
     InnerOp::Patch(Box::new(crate::inner_op::PatchPayload {
         target,
         create,
         origin: None,
+        parents: None,
+        group: None,
         fields: fields
             .into_iter()
             .map(|(k, v)| (k.to_owned(), sunrise_domain::CborValue(v)))
@@ -64,11 +66,19 @@ fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp
 
 /// Seal `op` into `sender`'s log under `stream`, fold it into `sender`'s own
 /// state as the receive path would, and return its envelope and op-ref.
-fn emit_patch(sender: &Engine, db: &mut Db, stream: &[u8; 16], op: &InnerOp) -> (Vec<u8>, OpRef) {
+pub(super) fn emit_patch(
+    sender: &Engine,
+    db: &mut Db,
+    stream: &[u8; 16],
+    op: &InnerOp,
+) -> (Vec<u8>, OpRef) {
     let device = sender.keychain.device_id();
     let bytes = encode_inner_op(op).unwrap();
-    let (op_id, seq) = db
-        .with_tx(|tx| {
+    // The op is sealed as its writer sealed it, in a vault that required
+    // `core.field_ops`; the vault `db` need not, since what is under test
+    // is the fold.
+    let (op_id, seq) = super::super::features::sealing_as_peer(|| {
+        db.with_tx(|tx| {
             let seq = sender.next_seq_tx(tx, stream)?;
             let op_id = remote_op_id(stream, &device, seq);
             let lww = sender.lww_stamp(seq);
@@ -90,7 +100,8 @@ fn emit_patch(sender: &Engine, db: &mut Db, stream: &[u8; 16], op: &InnerOp) -> 
             merge_op(tx, op, &lww, *stream)?;
             Ok((op_id, seq))
         })
-        .unwrap();
+    })
+    .unwrap();
     (
         env_bytes(db, &op_id),
         OpRef {
@@ -119,37 +130,8 @@ fn last_op_ref(db: &Db, target: &EntityRef) -> OpRef {
         .unwrap()
 }
 
-/// Two replicas of one vault that trust each other, on clocks of their own.
-struct Pair {
-    ea: Engine,
-    eb: Engine,
-    ca: Arc<FakeClock>,
-    cb: Arc<FakeClock>,
-    dba: Db,
-    dbb: Db,
-}
-
-fn pair() -> Pair {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    Pair {
-        ea,
-        eb,
-        ca,
-        cb,
-        dba,
-        dbb,
-    }
-}
-
 /// A task created on A with a full-state op and delivered to B.
-fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
+pub(super) fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
     let task =
         p.ea.apply(&mut p.dba, Command::CreateTask(draft))
             .unwrap()
@@ -159,18 +141,28 @@ fn shared_task(p: &mut Pair, draft: TaskDraft) -> EntityRef {
     task
 }
 
-fn task_at(db: &Db, id: EntityRef) -> Task {
+pub(super) fn task_at(db: &Db, id: EntityRef) -> Task {
     read_task(db.conn(), id.bytes())
         .unwrap()
         .expect("projected")
 }
 
-fn inbox() -> [u8; 16] {
+pub(super) fn inbox() -> [u8; 16] {
     sunrise_domain::INBOX_STREAM_BYTES
 }
 
-/// Both replicas hold the same projection of `task`, row stamp included.
-fn assert_converged(p: &Pair, task: EntityRef) -> Task {
+/// Both replicas hold the same projection of `task`, row stamp included, and
+/// each rebuilds from its own op log to exactly the projection it holds.
+pub(super) fn assert_converged(p: &Pair, task: EntityRef) -> Task {
+    let a = assert_same_projection(p, task);
+    p.ea.assert_rebuild_identity(&p.dba);
+    p.eb.assert_rebuild_identity(&p.dbb);
+    a
+}
+
+/// [`assert_converged`] without the rebuild, for a test that folds ops
+/// straight into the merge without logging them, so no log could rebuild it.
+fn assert_same_projection(p: &Pair, task: EntityRef) -> Task {
     let a = task_at(&p.dba, task);
     let b = task_at(&p.dbb, task);
     assert_eq!(a, b, "the two replicas project the same task");
@@ -509,6 +501,8 @@ fn full_state_ops_alone_reproduce_entity_level_lww() {
     assert_eq!(merged.priority, Some(5));
 }
 
+/// The OR-set add rows `id` holds. A deliberate white-box read: what the
+/// garbage collection below deletes is storage no public read shows.
 fn orset_adds(db: &Db, id: EntityRef) -> i64 {
     db.conn()
         .query_row(
@@ -619,7 +613,7 @@ fn an_equal_clock_in_two_streams_is_decided_by_the_stream() {
         })
         .unwrap();
     }
-    let merged = assert_converged(&p, task);
+    let merged = assert_same_projection(&p, task);
     assert_eq!(merged.title, "greater stream");
 }
 
@@ -666,6 +660,7 @@ fn a_generated_occurrence_is_generated_on_every_replica() {
         ),
     );
     p.eb.apply_remote(&mut p.dbb, &edit).unwrap();
+    // A deliberate white-box read: a register's origin has no public read.
     let origin = |db: &Db, field: &str| -> String {
         db.conn()
             .query_row(
@@ -682,8 +677,9 @@ fn a_generated_occurrence_is_generated_on_every_replica() {
 }
 
 /// An entity the vault held before migration 0033 has a row and no field
-/// state. The first `Patch` to reach it seeds the state from the row, so the
-/// fields the patch does not name keep the values the row held.
+/// state. The open rebuilds such a vault from its log before any op reaches
+/// it (`Engine::rebuild_if_stale`), so the fields a later `Patch` does not
+/// name keep the values the row held.
 #[test]
 fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
     let mut p = pair();
@@ -695,7 +691,8 @@ fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
             ..Default::default()
         },
     );
-    // What a vault that took migration 0033 looks like: rows, no state.
+    // What a vault that took migrations 0033 and 0039 looks like: rows, no
+    // state, no versions, and no record of a rebuild.
     for table in [
         "merge_entities",
         "merge_registers",
@@ -703,12 +700,16 @@ fn a_patch_to_an_entity_with_no_field_state_keeps_its_other_fields() {
         "merge_orset_removes",
         "merge_counter_deltas",
         "merge_map_entries",
+        "entity_versions",
+        "entity_frontier",
+        "projection_rebuild",
     ] {
         p.dbb
             .conn()
             .execute(&format!("DELETE FROM {table}"), [])
             .unwrap();
     }
+    assert!(p.eb.rebuild_if_stale(&mut p.dbb).unwrap().is_some());
     let (energy, _) = emit_patch(
         &p.ea,
         &mut p.dba,
@@ -1095,6 +1096,179 @@ fn a_patch_encodes_as_the_adr_shape() {
     assert_eq!(back.target_ref(), task);
 }
 
+// ---- causal keys (ADR-0065 §1, §2, §6) ----
+
+fn op_ref_value(stream: u8, device: u8, seq: u64) -> Value {
+    Value::Array(vec![
+        Value::Bytes(vec![stream; 16]),
+        Value::Bytes(vec![device; 16]),
+        Value::Integer(seq.into()),
+    ])
+}
+
+/// A task `Patch` that writes its title, with `parents` and `group` as given.
+fn causal_patch(
+    parents: Option<Vec<crate::inner_op::OpRefWire>>,
+    group: Option<crate::inner_op::GroupWire>,
+) -> Box<crate::inner_op::PatchPayload> {
+    let task = EntityRef::new(EntityKind::Task, [0x7a; 16]);
+    let InnerOp::Patch(mut p) = patch(task, false, vec![("title", set(text("x")))]) else {
+        unreachable!()
+    };
+    p.parents = parents;
+    p.group = group;
+    p
+}
+
+fn group_of(size: u64) -> crate::inner_op::GroupWire {
+    crate::inner_op::GroupWire {
+        id: [0x0b; 16],
+        size,
+        unknown: Unknowns::new(),
+    }
+}
+
+fn payload_map(op: &InnerOp) -> Vec<(Value, Value)> {
+    let bytes = encode_inner_op(op).unwrap();
+    let value: Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    let Value::Map(outer) = value else { panic!() };
+    let Value::Map(inner) = outer[0].1.clone() else {
+        panic!()
+    };
+    inner
+}
+
+/// ADR-0065 §1's shape: `parents` is an array of `[stream, device, seq]`
+/// op-refs and `group` is `{"id": bstr16, "size": uint}`, beside the ADR-0044
+/// keys, and an unknown key in the group survives a round trip.
+#[test]
+fn a_patch_with_parents_and_group_encodes_as_the_adr_shape() {
+    use crate::inner_op::OpRefWire;
+    let mut group = group_of(3);
+    group.unknown.insert(
+        "x_later".into(),
+        sunrise_domain::CborValue(Value::Integer(1.into())),
+    );
+    let op = InnerOp::Patch(causal_patch(
+        Some(vec![OpRefWire([1; 16], [2; 16], 7)]),
+        Some(group),
+    ));
+    let inner = payload_map(&op);
+    let get = |k: &str| {
+        inner
+            .iter()
+            .find(|(key, _)| *key == text(k))
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get("parents"),
+        Some(Value::Array(vec![op_ref_value(1, 2, 7)]))
+    );
+    assert_eq!(
+        get("group"),
+        Some(Value::Map(vec![
+            (text("id"), Value::Bytes(vec![0x0b; 16])),
+            (text("size"), Value::Integer(3.into())),
+            (text("x_later"), Value::Integer(1.into())),
+        ]))
+    );
+    let back = decode_inner_op(&encode_inner_op(&op).unwrap()).unwrap();
+    let (InnerOp::Patch(a), InnerOp::Patch(b)) = (&op, &back) else {
+        unreachable!()
+    };
+    assert_eq!(a, b);
+    assert!(check_patch(b).is_ok());
+}
+
+/// A `Patch` that names no parents and one that names an empty list are
+/// different versions (ADR-0065 §2), so the wire keeps them apart, and an op
+/// written before the key existed reads as the first.
+#[test]
+fn parents_absent_and_empty_are_distinct_on_the_wire() {
+    let absent = InnerOp::Patch(causal_patch(None, None));
+    let empty = InnerOp::Patch(causal_patch(Some(Vec::new()), None));
+    let keys = |op: &InnerOp| -> Vec<String> {
+        payload_map(op)
+            .into_iter()
+            .filter_map(|(k, _)| k.into_text().ok())
+            .collect()
+    };
+    assert_eq!(keys(&absent), ["ref", "fields"]);
+    assert_eq!(keys(&empty), ["ref", "parents", "fields"]);
+    for (op, want) in [(&absent, None), (&empty, Some(Vec::new()))] {
+        let InnerOp::Patch(back) = decode_inner_op(&encode_inner_op(op).unwrap()).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(back.parents, want);
+        assert!(check_patch(&back).is_ok());
+    }
+}
+
+/// ADR-0065 §6: a group has at least two members. A group of one or none,
+/// a parent that names no op, and a parent named twice are refused, and so
+/// is a parent that is not an op-ref at all, which does not decode.
+#[test]
+fn a_group_smaller_than_two_is_refused() {
+    use crate::inner_op::OpRefWire;
+    for size in [0, 1] {
+        assert!(
+            matches!(
+                check_patch(&causal_patch(None, Some(group_of(size)))),
+                Err(PatchProblem::Invalid(_))
+            ),
+            "a group of {size}"
+        );
+    }
+    assert!(check_patch(&causal_patch(None, Some(group_of(2)))).is_ok());
+    let a = OpRefWire([1; 16], [2; 16], 4);
+    for parents in [
+        vec![OpRefWire([1; 16], [2; 16], 0)],
+        vec![OpRefWire([1; 16], [2; 16], u64::MAX)],
+        vec![a, a],
+    ] {
+        assert!(
+            matches!(
+                check_patch(&causal_patch(Some(parents.clone()), None)),
+                Err(PatchProblem::Invalid(_))
+            ),
+            "{parents:?}"
+        );
+    }
+
+    let task = EntityRef::new(EntityKind::Task, [0x7a; 16]);
+    for malformed in [
+        Value::Array(vec![Value::Array(vec![
+            Value::Bytes(vec![1; 15]),
+            Value::Bytes(vec![2; 16]),
+            Value::Integer(1.into()),
+        ])]),
+        Value::Array(vec![Value::Integer(1.into())]),
+        Value::Map(Vec::new()),
+    ] {
+        let bytes = cbor_of(&Value::Map(vec![(
+            text("Patch"),
+            Value::Map(vec![
+                (text("ref"), eref(task)),
+                (text("parents"), malformed.clone()),
+                (
+                    text("fields"),
+                    Value::Map(vec![(text("title"), set(text("x")))]),
+                ),
+            ]),
+        )]));
+        assert!(
+            matches!(decode_inner_op(&bytes), Err(InnerOpError::Cbor(_))),
+            "{malformed:?} is damage"
+        );
+    }
+}
+
+fn cbor_of(v: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(v, &mut out).unwrap();
+    out
+}
+
 // ---- convergence ----
 
 /// One write a device makes to the shared task, before any device sees
@@ -1144,7 +1318,8 @@ struct Oracle {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: sunrise_test_seed::proptest_cases(24),
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // The repository's convention (docs/10-cross-cutting/testing.md §2):
         // a shrunken counterexample is committed, at a path named here.
         failure_persistence: Some(Box::new(
@@ -1169,6 +1344,7 @@ proptest! {
         writes in proptest::collection::vec((0usize..3, arb_write()), 1..14),
         order in proptest::collection::vec(any::<prop::sample::Index>(), 0..40),
     ) {
+        begin_case();
         let clocks: Vec<Arc<FakeClock>> =
             (0..3).map(|_| Arc::new(FakeClock(PLMutex::new(T0)))).collect();
         let devices: Vec<Engine> = (0..3u8)
@@ -1295,8 +1471,17 @@ proptest! {
             for env in &envelopes {
                 e.apply_remote(&mut db, env).unwrap();
             }
+            // Whatever order the ops came in, a rebuild from the log in
+            // stamp order lands on the same projection (ADR-0065 PR 2).
+            e.assert_rebuild_identity(&db);
             (task_at(&db, task), row_stamp(&db, "tasks", "id", &task))
         };
+        // The writers too: a full-state command folds its own op through the
+        // merge a receiver folds it with (ADR-0065 PR 3), so a rebuild of a
+        // writer's log lands on the rows its commands left.
+        for (writer, db) in devices.iter().zip(&dbs) {
+            writer.assert_rebuild_identity(db);
+        }
         let forward: Vec<usize> = (0..envelopes.len()).collect();
         let shuffled: Vec<usize> = order.iter().map(|ix| ix.index(envelopes.len())).collect();
         let reversed: Vec<usize> = (0..envelopes.len()).rev().collect();

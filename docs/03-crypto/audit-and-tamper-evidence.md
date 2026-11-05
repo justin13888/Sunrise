@@ -12,7 +12,7 @@ The relay is untrusted but is in the message path. We need to detect: dropped op
 
 Built ([#325](https://github.com/justin13888/Sunrise/issues/325)):
 
-* **Per-device hash chains.** Every op a current build writes carries envelope field 14, the `op_hash` of the same device's previous op in the stream, and field 15, the tips of other devices' prefixes its writer had seen since it last listed them (`crates/sunrise-crypto/src/op_envelope.rs#OpEnvelope`, written by `crates/sunrise-core/src/engine/chain.rs#writer_links`).
+* **Per-device hash chains.** Every op a current build writes carries envelope field 14, the `op_hash` of the same device's previous op in the stream, and field 15, the tips of other devices' prefixes its writer had seen since it last listed them (`crates/sunrise-crypto/src/op_envelope/mod.rs#OpEnvelope`, written by `crates/sunrise-core/src/engine/chain.rs#writer_links`).
 * **Link checks on receipt.** A receiver checks both fields, and what earlier ops said this one would be, against the ops it holds. A gap is recorded as an expected op, a mismatch as fork evidence, and the op is applied either way (`crates/sunrise-core/src/engine/chain.rs#check_links`).
 * **A running chain root per `(stream, device)`**, stored on each op inside the contiguous prefix and extended where the sync cursor moves (`crates/sunrise-core/src/engine/chain.rs#fold_chain`).
 * **A per-stream digest exchanged between replicas** as a `StreamDigest` control op, and compared entry by entry on receipt (`crates/sunrise-core/src/engine/chain.rs#reconcile`).
@@ -23,7 +23,7 @@ Still a target:
 * **No rollback detection.** §Rollback detection has its input now, the chain roots, but no reconnect handshake compares them with the relay.
 * **No integrity indicator in any client.** `Engine::chain_integrity` counts fork evidence, divergences and known missing ops; nothing renders them.
 * **No peer-served backfill and no bisection.** A missing op is requested from the relay; a divergence names the device and a seq at or below which two replicas differ, not the first differing op.
-* **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:93`) is stamped at `crates/sunrise-server/src/api/sync/publish.rs:111,226` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse.rs:962#send_frame`. Nothing persists it and nothing orders by it, and nothing here wants it.
+* **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:108#AckPayload`) is stamped at `crates/sunrise-server/src/api/sync/publish.rs:111,226` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse/session.rs:160#send_frame`. Nothing persists it and nothing orders by it, and nothing here wants it.
 
 Tampering with any single stored op is caught by the `OpEnvelope` AEAD and signature, which cover fields 14 and 15 like every other header field.
 

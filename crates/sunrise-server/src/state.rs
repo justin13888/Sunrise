@@ -1,10 +1,11 @@
 //! Shared server state, held as the kynos `Service`'s context.
 
-use crate::auth::{NullVerifier, TokenVerifier};
+use crate::auth::{Metered, NullVerifier, TokenVerifier};
+use crate::blob::{BlobBackend, FsBlobs};
 use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
-use crate::store::{Store, StoreError};
+use crate::store::{MetadataStore, Store, StoreError};
 use std::sync::Arc;
 
 /// Pluggable wall-clock; tests inject a fake.
@@ -69,12 +70,20 @@ pub struct ServerState {
     pub clock: Arc<dyn Clock>,
     /// Token verifier used by authenticated routes.
     pub token_verifier: Arc<dyn TokenVerifier>,
-    /// Account + device persistence.
-    pub store: Arc<Store>,
+    /// Accounts, devices, push tokens, cursors, tombstones, deletion tokens
+    /// and the durable relay log: ADR-0062's `MetadataStore`. The SQLite
+    /// [`Store`] unless [`ServerState::with_metadata_store`] replaced it.
+    pub store: Arc<dyn MetadataStore>,
     /// Metric registry; cheap to clone.
     pub metrics: Metrics,
-    /// Blob store root (self-host filesystem path).
-    pub blob_root: Arc<std::path::PathBuf>,
+    /// Requests inside the handler stack right now, each held by the guard
+    /// `api::observe::RequestMeter` keeps for the request's whole future.
+    /// Sampled into `sunrise_http_in_flight_requests` at scrape time.
+    pub in_flight: crate::metrics::Occupancy,
+    /// Attachment ciphertext: ADR-0062's `BlobBackend`. The filesystem tree
+    /// under `[storage] blob_root` unless [`ServerState::with_blob_backend`]
+    /// replaced it.
+    pub blobs: Arc<dyn BlobBackend>,
     /// Retention bounds for the durable relay op log.
     pub durable_caps: crate::relay_log::DurableCaps,
     /// Live sync sessions. Empty until `POST /sync/session` files one; held
@@ -95,6 +104,11 @@ pub struct ServerState {
     /// then the root of every traced operation; `docs/06-server/observability.md`
     /// §Tracing.
     pub telemetry: sunrise_telemetry::Telemetry,
+    /// The private directory [`ServerState::blobs`] started under when the
+    /// config resolves no blob root (an in-memory store with none named).
+    /// Held so it outlives every clone of the state, and removed with the
+    /// last one. Never read: holding it is the whole job.
+    _blob_scratch: Option<Arc<tempfile::TempDir>>,
 }
 
 /// Why [`ServerState::try_new`] could not build a state.
@@ -106,6 +120,10 @@ pub enum StartError {
     /// The configured push provider could not be built.
     #[error(transparent)]
     Push(#[from] crate::push::PushSetupError),
+    /// No blob root was configured or derivable, and the private temporary
+    /// one could not be created.
+    #[error("create a private blob root under the temp dir: {0}")]
+    BlobRoot(#[source] std::io::Error),
 }
 
 impl ServerState {
@@ -113,11 +131,12 @@ impl ServerState {
     ///
     /// # Panics
     ///
-    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, or the
-    /// `[push]` provider cannot be built. Use
-    /// [`ServerState::try_new`] where that is a condition to report rather than
-    /// a reason to abort; the binary entrypoint does. An in-memory store — the
-    /// `sqlite_path: None` case every test takes — has nothing to fail on.
+    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, the
+    /// `[push]` provider cannot be built, or a private blob root is needed and
+    /// the temp dir refuses it. Use [`ServerState::try_new`] where that is a
+    /// condition to report rather than a reason to abort; the binary
+    /// entrypoint does. An in-memory store — the `sqlite_path: None` case
+    /// every test takes — has only the temp dir to fail on.
     #[must_use]
     pub fn new(config: ServerConfig) -> Self {
         Self::try_new(config).expect("open account store")
@@ -135,15 +154,15 @@ impl ServerState {
         )?;
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
-        Ok(Self::assemble(config, clock, Arc::new(store), push))
+        Self::assemble(config, clock, Arc::new(store), push)
     }
 
     fn assemble(
         config: ServerConfig,
         clock: Arc<dyn Clock>,
-        store: Arc<Store>,
+        store: Arc<dyn MetadataStore>,
         push: crate::push::Dispatcher,
-    ) -> Self {
+    ) -> Result<Self, StartError> {
         // An issuer beside an explicit `require_device_sig = false` is the one
         // setting that leaves a multi-tenant relay accepting a bearer alone.
         // Announced here because every constructor -- the binary's `try_new`
@@ -156,20 +175,29 @@ impl ServerState {
                  signing keeps writing"
             );
         }
-        let blob_root = config
-            .blob_root
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("sunrise-self-host-blobs"));
+        // Never one fixed path in the shared temp dir: another user's
+        // directory there refuses writes, and two servers would share a tree.
+        let (blob_root, blob_scratch) = match config.resolved_blob_root() {
+            Some(root) => (root, None),
+            None => {
+                let dir = tempfile::Builder::new()
+                    .prefix("sunrise-blobs-")
+                    .tempdir()
+                    .map_err(StartError::BlobRoot)?;
+                (dir.path().to_path_buf(), Some(Arc::new(dir)))
+            }
+        };
         let metrics = Metrics::new();
         process_metrics(&metrics, clock.now_ms());
-        Self {
+        Ok(Self {
             config: Arc::new(config),
             relay: RelayHub::new(),
             clock,
-            token_verifier: Arc::new(NullVerifier),
+            token_verifier: Arc::new(Metered::new(Arc::new(NullVerifier), metrics.clone())),
             store,
             metrics,
-            blob_root: Arc::new(blob_root),
+            in_flight: crate::metrics::Occupancy::new(),
+            blobs: Arc::new(FsBlobs::new(blob_root)),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
             drain: crate::drain::Drain::new(),
@@ -177,7 +205,8 @@ impl ServerState {
             push,
             pairing: crate::api::pairing::Rendezvous::new(),
             telemetry: sunrise_telemetry::Telemetry::disabled(),
-        }
+            _blob_scratch: blob_scratch,
+        })
     }
 
     /// Trace through `telemetry`.
@@ -239,6 +268,30 @@ impl ServerState {
         self
     }
 
+    /// Keep metadata in `store` instead of the SQLite database the config
+    /// names.
+    ///
+    /// The seam ADR-0062 §1 puts Postgres behind; today an embedding's and a
+    /// test's. The SQLite-only operator commands (`admin backup`, `rekey`,
+    /// the doctor's database check) and the shutdown checkpoint find no
+    /// SQLite store behind it and skip.
+    #[must_use]
+    pub fn with_metadata_store(mut self, store: Arc<dyn MetadataStore>) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Keep blobs in `blobs` instead of the filesystem tree under
+    /// `[storage] blob_root`.
+    ///
+    /// The seam ADR-0062 §7 puts an object store behind; today an
+    /// embedding's and a test's.
+    #[must_use]
+    pub fn with_blob_backend(mut self, blobs: Arc<dyn BlobBackend>) -> Self {
+        self.blobs = blobs;
+        self
+    }
+
     /// Keep live sessions in `backend` instead of the in-process map.
     ///
     /// The seam ADR-0062 §3 puts a shared table behind; today an embedding's
@@ -253,9 +306,12 @@ impl ServerState {
     }
 
     /// Replace the token verifier (production wiring, and tests).
+    ///
+    /// Installed behind [`Metered`], so every verification it answers is
+    /// counted in `sunrise_auth_verify_total`.
     #[must_use]
     pub fn with_verifier(mut self, verifier: Arc<dyn TokenVerifier>) -> Self {
-        self.token_verifier = verifier;
+        self.token_verifier = Arc::new(Metered::new(verifier, self.metrics.clone()));
         self
     }
 
@@ -275,7 +331,7 @@ impl ServerState {
         .expect("open account store");
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))
             .expect("build push provider");
-        Self::assemble(config, clock, Arc::new(store), push)
+        Self::assemble(config, clock, Arc::new(store), push).expect("create the blob root")
     }
 }
 
@@ -297,6 +353,8 @@ mod tests {
         let busy = |state: &ServerState| -> i64 {
             state
                 .store
+                .as_sqlite()
+                .expect("the configured store is SQLite")
                 .conn
                 .lock()
                 .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
@@ -377,5 +435,40 @@ mod tests {
         );
         assert!(ServerState::try_new(config(u64::MAX)).is_err());
         assert!(ServerState::try_new(config(max)).is_ok());
+    }
+
+    /// With no blob root and no database file, each state writes under a
+    /// private directory of its own, never one fixed path two servers or two
+    /// users on the machine would share, and the directory goes with the
+    /// state's last clone. With a database file, blobs go beside it.
+    #[tokio::test]
+    async fn an_unconfigured_blob_root_is_private_to_the_state() {
+        let a = ServerState::new(ServerConfig::default());
+        let b = ServerState::new(ServerConfig::default());
+        let (root_a, root_b) = (
+            std::path::PathBuf::from(a.blobs.location()),
+            std::path::PathBuf::from(b.blobs.location()),
+        );
+        assert_ne!(root_a, root_b);
+        assert!(root_a.starts_with(std::env::temp_dir()));
+        assert_ne!(root_a, std::env::temp_dir().join("sunrise-self-host-blobs"));
+        a.blobs.probe().await.unwrap();
+        assert!(root_a.is_dir());
+
+        let clone = a.clone();
+        drop(a);
+        assert!(root_a.is_dir(), "a live clone keeps the directory");
+        drop(clone);
+        assert!(!root_a.exists(), "the last clone removes the directory");
+
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = ServerState::new(ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            ..ServerConfig::default()
+        });
+        assert_eq!(
+            on_disk.blobs.location(),
+            dir.path().join("blobs").display().to_string()
+        );
     }
 }

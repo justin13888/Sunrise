@@ -31,8 +31,8 @@ when the distribution moves deliberately, the threshold moves with it.
 A package with fewer than ten Rust files has no p90 of its own: the
 nearest-rank p90 of eight files is the largest of them, so a threshold derived
 that way is whatever its biggest file happens to be and bounds nothing.
-`sunrise-sync` is such a package -- eight files, one of them `sse.rs` -- so its
-threshold is instead the pooled p90 of every Rust file in the packages still in
+`sunrise-sync` was such a package when it entered -- eight files, one of them
+`sse.rs` -- so its threshold is instead the pooled p90 of every Rust file in the packages still in
 `UNGATED` when it entered the gate: 708, nearest-rank over their 169 files. That is still this
 codebase's own distribution, drawn from the packages most like it, rather than a
 number from a style guide.
@@ -78,7 +78,7 @@ What is counted
 
 A file's **total length**. That is what a person means by "this file is six
 hundred lines", and what their editor's gutter shows them. A file that is mostly
-tests still costs a reader the scroll, and `engine/tests.rs` at 10,539 lines is
+tests still costs a reader the scroll, and a ten-thousand-line test module is
 worth seeing in a report even though every line of it is a test.
 
 The baseline is a ratchet
@@ -117,21 +117,18 @@ voice teaches people to read "file-size failed" as "a file is too long" and act
 on the wrong thing. This mirrors `mutants-gate.py`, which separates "scored, and
 the answer is no" from "nothing was scored" for the same reason.
 
-That distinction is doing real work here, because two entries sit three lines
-over their threshold: `sunrise-domain/src/constraint.rs` at 766 against 763, and
-`sunrise-server/src/relay_log.rs` at 860 against 857. Deleting four lines from
-either one turns CI red. The margins are not padded to hide that -- a threshold
-of "p90 plus a bit of slack" is exactly the imported, meaningless number this
-gate's own thresholds were derived to avoid, and padding would only move the
-cliff rather than remove it. What the padding was tempting for is fixed instead:
-the report says what happened and what to type.
+That distinction does real work, because a baseline entry can sit only a few
+lines over its threshold, and then deleting those lines turns CI red. The margins
+are not padded to hide that -- a threshold of "p90 plus a bit of slack" is exactly
+the imported, meaningless number this gate's own thresholds were derived to avoid,
+and padding would only move the cliff rather than remove it. What the padding was
+tempting for is fixed instead: the report says what happened and what to type.
 
-Two files sit exactly *at* their package's threshold (`sunrise-domain/src/activity.rs`
-at 763 and `sunrise-server/src/api/signed.rs` at 857; `sunrise-core/src/core.rs` was a
-third until identity rotation split it into `core/`) -- unavoidably, since each threshold is its package's p90 and therefore
-one of its own files. Adding a line to any of them is a genuine exit 1, which is
-the gate working: those three are the largest files the distribution calls
-ordinary, and the next line really is the one worth arguing about.
+A file can also sit exactly *at* its package's threshold -- unavoidably on the day
+the package enters, since each threshold is its package's p90 and therefore one of
+its own files. Adding a line to such a file is a genuine exit 1, which is the gate
+working: it is the largest file the distribution calls ordinary, and the next line
+really is the one worth arguing about.
 
 What checks this gate
 ---------------------
@@ -150,7 +147,7 @@ import sys
 from pathlib import Path
 
 # package root -> p90 of that package's Rust files when it entered the gate.
-# `sunrise-sync` has eight files, too few to have a p90 of its own, so its
+# `sunrise-sync` had eight files then, too few to have a p90 of its own, so its
 # number is the pooled p90 of the packages in UNGATED: see "Where the numbers
 # come from" above.
 THRESHOLDS: dict[str, int] = {
@@ -180,8 +177,8 @@ THRESHOLDS: dict[str, int] = {
     "crates/sunrise-id": 802,
     "crates/sunrise-integrations": 802,
     "crates/sunrise-log": 448,  # 16 files
-    "crates/sunrise-onboarding": 802,
     "crates/sunrise-pairing": 835,  # 10 files
+    "crates/sunrise-private-file": 802,
     "crates/sunrise-relay-client": 802,
     "crates/sunrise-storage": 802,
     "crates/sunrise-test-seed": 802,
@@ -198,189 +195,7 @@ UNGATED: dict[str, str] = {
 
 # Every file over its threshold today. This list may shrink; it may not grow.
 BASELINE: dict[str, str] = {
-    # --- sunrise-core -------------------------------------------------------
-    "crates/sunrise-core/src/engine/tests.rs": (
-        "The engine's whole test module, moved intact when engine.rs was split "
-        "so the split's diff carried no test changes. 198 tests and 95 shared "
-        "fixtures. Redistributing them across the sixteen engine modules is a "
-        "change of its own."
-    ),
-    "crates/sunrise-core/src/sync_driver.rs": (
-        "One async state machine plus its transport harness. Deliberately not "
-        "split: `session` is the sole constructor of five of the types it "
-        "uses, and separating a state machine from types only it builds "
-        "produces two files that must be read together. #207's testability "
-        "work landed in place for the same reason -- a `sync_driver/` "
-        "directory would move a path ten documents cite by name, to buy "
-        "nothing the `scheduling` test module does not already have."
-    ),
-    "crates/sunrise-core/src/keychain/mod.rs": (
-        "What remains of keychain.rs after its free-function tail was "
-        "extracted. The four `impl` groups were left deliberately: moving any "
-        "of them would require making Keychain's seven private fields "
-        "`pub(super)`, widening the visibility of key material to buy "
-        "navigation."
-    ),
-    # --- sunrise-domain -----------------------------------------------------
-    "crates/sunrise-domain/src/stats.rs": (
-        "504 implementation lines; the rest is tests. A cohesive fold, with one "
-        "worthwhile extraction identified but not urgent: `routine_drift` is "
-        "the only reason this file imports `routine`, `routine_gen` and `rrule`."
-    ),
-    "crates/sunrise-domain/src/notify.rs": (
-        "481 implementation lines. Cohesive, with a clean three-way line "
-        "available (device policy / reminder pipeline / the two digest views) "
-        "if it is ever wanted."
-    ),
-    "crates/sunrise-domain/src/review.rs": (
-        "537 implementation lines. One fold over one input struct; the module "
-        "doc argues for keeping it in one place, since it is the module that "
-        "must not re-derive numbers other folds own."
-    ),
-    "crates/sunrise-domain/src/export.rs": (
-        "485 implementation lines. A renderer for the three folds it imports; "
-        "cohesive."
-    ),
-    "crates/sunrise-domain/src/constraint.rs": (
-        "399 implementation lines, and the only spec in the repository with a "
-        "test that fails when the Rust and the CDDL disagree."
-    ),
-    # --- sunrise-server -----------------------------------------------------
-    "crates/sunrise-server/src/api/sync/suite.rs": (
-        "The sync test suite, moved whole when api/sync.rs was split so the "
-        "split's diff carried no test changes. Everything below its eight-line "
-        "module doc is one `#[cfg(test)] mod tests`, so the 'implementation "
-        "lines' the other entries quote is eight here and means nothing: the "
-        "number worth knowing is that it is the whole suite in one file."
-    ),
-    "crates/sunrise-server/src/api/devices.rs": (
-        "399 implementation lines — below this package's threshold on its own. "
-        "Deliberately not split: every symbol serves the five `/devices*` "
-        "routes mounted together, so splitting it to satisfy a line count "
-        "would be churn."
-    ),
-    "crates/sunrise-server/src/api/blobs.rs": (
-        "498 implementation lines. Not audited for a split; the chunked upload, "
-        "finalize and streaming fetch paths share the pending store."
-    ),
-    "crates/sunrise-server/src/relay_log.rs": (
-        "570 implementation lines, and it grew when the relay DDL moved here to "
-        "sit beside the only code that touches it — a net improvement that "
-        "shows up here as a larger file."
-    ),
-    # --- sunrise-sync -------------------------------------------------------
-    "crates/sunrise-sync/src/sse.rs": (
-        "The SSE transport: 1,520 implementation lines above one "
-        "`#[cfg(test)] mod tests` of 3,619 that includes a loopback relay. "
-        "The tests sit in `src/` because what they pin -- `take_event`, "
-        "`frame_for`, `binding_bytes`, the stream buffer -- is private, so "
-        "`tests/` cannot reach it. Splitting the test module by the route it "
-        "exercises is a change of its own."
-    ),
-    # --- sunrise-cli --------------------------------------------------------
-    "crates/sunrise-cli/src/main.rs": (
-        "The binary's argument handling and every subcommand's body, with no "
-        "test module: `tests/cli.rs` drives the real binary instead. 530 of "
-        "its lines are the one `dispatch` match over subcommand names. Not "
-        "audited for a split; the subcommands that already have a module "
-        "(`login`, `vault`, `livesync`, `recover`) show the shape one would "
-        "take."
-    ),
-    # --- sunrise-client-core ------------------------------------------------
-    "crates/sunrise-client-core/src/undo.rs": (
-        "380 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. One concern: the inverse command for each "
-        "command a client submits, which the module doc argues is the only "
-        "undo a client can build without a protocol change. Not audited for "
-        "a split."
-    ),
-    # --- sunrise-core-bindings ----------------------------------------------
-    "crates/sunrise-core-bindings/src/dto.rs": (
-        "The UniFFI mirror of the domain vocabulary: 69 records and enums and "
-        "the exhaustively destructuring `From` impls that make a new domain "
-        "field fail this crate's build. No test module. Its length tracks the "
-        "domain's; splitting it by the domain module each mirror comes from "
-        "is a change of its own."
-    ),
-    # --- sunrise-crypto -----------------------------------------------------
-    "crates/sunrise-crypto/src/op_envelope.rs": (
-        "862 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The byte-exact CBOR "
-        "codec, signing, encryption, verification and decryption of one wire "
-        "type. Not audited for a split."
-    ),
-    "crates/sunrise-crypto/src/device_cert.rs": (
-        "462 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The codec, signing and verification of one "
-        "certificate type."
-    ),
-    # --- sunrise-e2e --------------------------------------------------------
-    "crates/sunrise-e2e/src/cross_version/mod.rs": (
-        "The cross-version merge harness's driver (ADR-0057): the step "
-        "vocabulary, the run loop and the replica plumbing. Its parts with a "
-        "boundary of their own (`baseline`, `events`, `future`, `gaps`, "
-        "`model`) are already sibling modules. Test-harness code; not audited "
-        "for a split."
-    ),
-    "crates/sunrise-e2e/src/lib.rs": (
-        "The crate's whole helper surface for booting a relay, opening wired "
-        "`Core`s and waiting on convergence. Test-harness code; not audited "
-        "for a split."
-    ),
-    "crates/sunrise-e2e/src/cross_version/model.rs": (
-        "494 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The reference projection the no-loss "
-        "property compares each replica against."
-    ),
-    # --- sunrise-id ---------------------------------------------------------
-    "crates/sunrise-id/src/registry.rs": (
-        "807 implementation lines, most of them one declaration: the "
-        "`for_each_entity!` x-macro that states every entity kind, its ops "
-        "and every field's wire name once (ADR-0044). Splitting the "
-        "declaration would defeat the reason it exists."
-    ),
-    # --- sunrise-integrations -----------------------------------------------
-    "crates/sunrise-integrations/src/ical.rs": (
-        "631 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The iCalendar syntax layer only; mapping and "
-        "the vault driver are already separate modules."
-    ),
-    "crates/sunrise-integrations/src/gcal.rs": (
-        "514 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. Google Calendar OAuth and read-only import "
-        "request building."
-    ),
-    # --- sunrise-log --------------------------------------------------------
-    "crates/sunrise-log/tests/event_catalog.rs": (
-        "An integration test: the event catalogue and log-field vocabulary "
-        "enforced against the files rustc compiled, read from dep-info: 25 "
-        "tests over one shared reading of the build. Not audited for a split."
-    ),
-    # --- sunrise-pairing ----------------------------------------------------
-    "crates/sunrise-pairing/src/protocol.rs": (
-        "793 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The three messages of the pairing protocol "
-        "and the transitions between them."
-    ),
-    # --- sunrise-storage ----------------------------------------------------
-    "crates/sunrise-storage/src/vault_fixtures.rs": (
-        "A `#[cfg(test)]` module, all of it test code: the checked-in old "
-        "vaults, the rows each one is stated to hold, and the migration chain "
-        "run over them. Its expectations are kept beside the fixtures they "
-        "describe on purpose."
-    ),
-    "crates/sunrise-storage/src/vault_fixtures/seed.rs": (
-        "A `#[cfg(test)]` module, nearly all of it one data table: `SEED`, a "
-        "row for every table any migration creates, which the fixtures "
-        "after v17 are filled with. One list on purpose, so the test that it "
-        "reaches every table and column reads it whole. Not audited for a "
-        "split."
-    ),
-    "crates/sunrise-storage/src/db.rs": (
-        "601 implementation lines -- below this package's threshold on its "
-        "own; the rest is tests. The SQLCipher wrapper: keying, pragmas, "
-        "integrity check, pre-migration backups and the migration runner."
-    ),
+    # Empty: no file is exempt from its package's threshold.
 }
 
 SKIP_DIRS = {"target", "node_modules"}

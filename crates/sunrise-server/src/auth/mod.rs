@@ -211,6 +211,70 @@ pub trait TokenVerifier: Send + Sync + std::fmt::Debug {
     }
 }
 
+impl AuthError {
+    /// The `result` and `reason` labels `sunrise_auth_verify_total` counts
+    /// this refusal under (`docs/06-server/metrics.md` §Authentication).
+    ///
+    /// A closed enum rather than the typed error code: `Missing` and
+    /// `Invalid` both answer `AUTH_TOKEN_INVALID`, and an operator needs to
+    /// tell a client sending no token from one sending a forged one. An
+    /// issuer that cannot be reached is the relay's failure, not the caller's,
+    /// so it is `failed` rather than `rejected`.
+    #[must_use]
+    pub const fn metric_labels(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::Missing => ("rejected", "missing"),
+            Self::Invalid(_) => ("rejected", "invalid"),
+            Self::Expired => ("rejected", "expired"),
+            Self::Transport(_) => ("failed", "unreachable"),
+        }
+    }
+}
+
+/// A verifier that counts every outcome of the one it wraps in
+/// `sunrise_auth_verify_total`.
+///
+/// A wrapper rather than a count at each call site, so a route that verifies
+/// a bearer is counted without anyone remembering to: [`crate::ServerState`]
+/// installs every verifier through it.
+#[derive(Debug)]
+pub struct Metered {
+    inner: std::sync::Arc<dyn TokenVerifier>,
+    metrics: crate::Metrics,
+}
+
+impl Metered {
+    /// Count `inner`'s outcomes into `metrics`.
+    #[must_use]
+    pub fn new(inner: std::sync::Arc<dyn TokenVerifier>, metrics: crate::Metrics) -> Self {
+        Self { inner, metrics }
+    }
+}
+
+#[async_trait]
+impl TokenVerifier for Metered {
+    async fn verify(&self, bearer: &str) -> Result<Verified, AuthError> {
+        let verified = self.inner.verify(bearer).await;
+        match &verified {
+            Ok(_) => self
+                .metrics
+                .incr_with("sunrise_auth_verify_total", &[("result", "ok")]),
+            Err(e) => {
+                let (result, reason) = e.metric_labels();
+                self.metrics.incr_with(
+                    "sunrise_auth_verify_total",
+                    &[("result", result), ("reason", reason)],
+                );
+            }
+        }
+        verified
+    }
+
+    fn is_single_tenant(&self) -> bool {
+        self.inner.is_single_tenant()
+    }
+}
+
 /// The issuer string [`NullVerifier`] stamps on its one synthetic principal.
 pub const SELF_HOST_ISSUER: &str = "urn:sunrise:self-host";
 
@@ -317,6 +381,39 @@ impl TokenVerifier for StaticVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every outcome is counted under its own labels, and the wrapper changes
+    /// neither the answer nor the tenancy the server's bind check reads.
+    #[tokio::test]
+    async fn the_metered_verifier_counts_each_outcome() {
+        let metrics = crate::Metrics::new();
+        let v = Metered::new(
+            std::sync::Arc::new(StaticVerifier::default().with("good", Subject::new("i", "s"))),
+            metrics.clone(),
+        );
+        assert!(v.verify("good").await.is_ok());
+        assert!(v.verify("good").await.is_ok());
+        assert!(matches!(v.verify("bad").await, Err(AuthError::Invalid(_))));
+        assert!(!v.is_single_tenant());
+        assert_eq!(
+            metrics.get_with("sunrise_auth_verify_total", &[("result", "ok")]),
+            2
+        );
+        assert_eq!(
+            metrics.get_with(
+                "sunrise_auth_verify_total",
+                &[("result", "rejected"), ("reason", "invalid")]
+            ),
+            1
+        );
+        assert!(Metered::new(std::sync::Arc::new(NullVerifier), metrics).is_single_tenant());
+        assert_eq!(AuthError::Missing.metric_labels(), ("rejected", "missing"));
+        assert_eq!(AuthError::Expired.metric_labels(), ("rejected", "expired"));
+        assert_eq!(
+            AuthError::Transport(String::new()).metric_labels(),
+            ("failed", "unreachable")
+        );
+    }
 
     #[tokio::test]
     async fn null_verifier_accepts_anything() {

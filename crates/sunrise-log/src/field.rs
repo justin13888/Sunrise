@@ -66,8 +66,8 @@ pub static ALLOWED: &[&str] = &[
     // --- error envelope (logging.md §5) ---
     "err_code",
     "err_kind",
-    // The hierarchical event name (logging.md §3). Validated by
-    // [`crate::EventName`].
+    // The hierarchical event name (logging.md §3). Its grammar is
+    // [`crate::is_valid_name`].
     "ev",
     // --- server-minted wall-clock instants (machine time, never authored) ---
     // The deadline the relay adopted for a refreshed bearer, and the relay's
@@ -104,12 +104,17 @@ pub static ALLOWED: &[&str] = &[
     "n_bytes",
     "n_chunks",
     "n_devices",
+    // Indexed entities: a count of search docs, never their text.
+    "n_docs",
     "n_dropped",
     "n_exported",
     "n_imported",
     "n_ops",
     "n_retained",
     "n_streams",
+    "n_total",
+    // A count of version rows compaction pruned (ADR-0065 D25), never which.
+    "n_versions",
     "note_h",
     "op_kind",
     "person_h",

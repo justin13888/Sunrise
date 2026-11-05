@@ -12,9 +12,10 @@ and [ADR-0017](../11-adr/0017-sunrise-time-representation.md) (the four-kind
 routine anchors are no longer instants, `index_ms` is no longer a comparison
 key, and a civil time in a DST gap resolves by one stated rule.
 
-The work that brings the tree in line is tracked in [#336](https://github.com/justin13888/Sunrise/issues/336). Routines follow in
-[#331](https://github.com/justin13888/Sunrise/issues/331), constraints in [#333](https://github.com/justin13888/Sunrise/issues/333), deadlines in [#334](https://github.com/justin13888/Sunrise/issues/334), the day schedule in
-[#338](https://github.com/justin13888/Sunrise/issues/338), and blocks in [#342](https://github.com/justin13888/Sunrise/issues/342).
+The work still open against these rules: constraints in
+[#333](https://github.com/justin13888/Sunrise/issues/333), the day schedule in
+[#338](https://github.com/justin13888/Sunrise/issues/338), and blocks in
+[#342](https://github.com/justin13888/Sunrise/issues/342).
 
 ## 1. Every stored time is a `SunriseTime`
 
@@ -71,16 +72,41 @@ day; each document that uses the type says what an unknown value does there
 | `Task.target_at`, `Task.hard_due_at` | all four | `all_day` for a date, otherwise as above | a deadline "Friday" is a day, not 00:00 UTC Friday |
 | `Task.completed_at` | `instant`, `all_day` | `instant` (now); `all_day` only from a backdated "done yesterday" ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md)) | a completion is a recorded fact; a date is the honest record when the time is unknown |
 | `Block.starts_at`, `Block.ends_at` | all four; both bounds MUST be the same kind, and the same `tz` when `zoned` | per the calendar UI | a 09:00 block and a fixed-instant block are different commitments |
-| Routine and recurring-block **anchor** | `zoned` (default), `floating` | `zoned` in the device zone at creation; `floating` when the user picks "follows me" | **amends ADR-0017**, which kept occurrences as instants: an anchor is a wall-clock time, and changing the zone never moves it |
+| Routine and recurring-block **anchor** | `floating` (default), `zoned` | `floating` ("follows me"); `zoned` when the user pins a zone or an import carries a `TZID` ([ADR-0066](../11-adr/0066-times-survive-travel.md) §1) | **amends ADR-0017**, which kept occurrences as instants: an anchor is a wall-clock time, and changing the zone never moves it |
 | `Routine.ends_at`, `RRule.until` | `floating`, `all_day` | from the rule editor or an iCal `UNTIL` converted into the anchor's civil frame | compared against occurrence keys in civil space (§6), so it needs no zone |
 | `Routine.paused_until`, `Stream.paused_until` | all four | `all_day` for "pause until Monday" | resumes at the start of that planner day |
 | `Task.reminder_lead_s` and other durations | not a time; seconds | — | a duration is not a point |
 
-Before [#336](https://github.com/justin13888/Sunrise/issues/336), `Routine.starts_at`, `ends_at`, `paused_until` and `RRule.until`
-are bare `Timestamp`s (`crates/sunrise-domain/src/routine.rs#Routine`,
-`crates/sunrise-domain/src/rrule.rs#RRule`), and capture writes every phrase as
-an instant (`crates/sunrise-domain/src/capture.rs#parse`). Both are defects
-against this table.
+Capture writes the kinds in the third column through one function,
+`crates/sunrise-domain/src/capture.rs#parse_when_time`, which `capture::parse`
+and the annotate line both use. No capture phrase names a zone yet, so capture
+never writes `zoned`.
+
+`Routine.starts_at`, `ends_at`, `paused_until` and `last_completed_at`,
+`RRule.until` and `Stream.paused_until` are `SunriseTime`s from `DOC_SCHEMA_V`
+15 ([#506](https://github.com/justin13888/Sunrise/issues/506),
+`crates/sunrise-domain/src/routine.rs#Routine`,
+`crates/sunrise-domain/src/rrule.rs#RRule`). They were bare instants, and they
+keep that wire form for the instant kind (`CompatTime`,
+`crates/sunrise-domain/src/time/codec.rs`, module `compat`), so a value that means what
+it meant before reads on an older build as it always did. **A bare instant in
+one of them reads as follows** (`crates/sunrise-domain/src/routine.rs#read_legacy_instant`):
+a routine's anchor, end and `UNTIL` as `zoned` at that instant's wall clock in
+the routine's `timezone`, which is what expansion always made of it, or as
+`floating` at its wall clock in UTC when `timezone` names no zone this build
+knows; a pause and a last completion stay `instant`s, a kind they allow. A
+routine draft or patch that sends an instant means the same.
+
+A routine op carrying a time an older build cannot read (a `floating`
+anchor, an `all_day` end, a `zoned` wall clock in a DST gap, a non-instant
+pause) is written only into a vault that requires the feature
+`routine.civil_times` (`crates/sunrise-core/src/engine/routine.rs#routine_op_form`).
+While a paired device has not advertised it, a routine every build can read
+is written in the old form (`Routine::legacy_wire_form`), a new routine with
+no zone is pinned to its zone instead of following the traveller (logged as
+`core.routine.pinned_for_older_devices`), and an explicit edit to such a time
+is refused with `FeatureUnsupportedByDevices`. `Stream.paused_until` is
+written only as an instant until a `stream.civil_times` feature exists.
 
 ## 2. Comparisons resolve through the reader's zone, never through `index_ms`
 
@@ -109,19 +135,54 @@ it is.
    before timed on the same instant), then by id. `Ord for SunriseTime` on the
    index key (**amends ADR-0017**, which defined it there) is retained only as
    an implementation detail of storage ordering and MUST NOT be used for a
-   domain decision. A lint-style test greps for `index_ms()` and
-   `SunriseTime` comparisons outside `sunrise-storage` and the prefilter
-   helpers.
+   domain decision. A lint-style test
+   (`crates/sunrise-domain/tests/index_ms_lint.rs`) fails on any use of
+   `index_ms` or `index_key` outside `sunrise-storage`, the value's own
+   definition and codec, and the named storage projections it lists with
+   their reasons. A comparison through `Ord` cannot be told apart by a grep
+   from any other `<`, so that half of the rule is held by review.
 
-Today `index_ms` still decides the `due ≥ scheduled` invariant
-(`crates/sunrise-domain/src/task.rs#validate_invariants`), block overlap
-(`crates/sunrise-domain/src/block/conflict.rs#overlaps`) and the Today window
-(`crates/sunrise-core/src/engine/query.rs#query_today`). Each is a defect against
-this rule.
+The comparisons are `SunriseTime`'s own (`crates/sunrise-domain/src/time.rs`):
+`resolve_in(tz)` is rule 1's instant, `due_in(tz)` its deadline exception,
+`day_in(tz)` the date a reader sees a value on (§4), `cmp_in(other, tz)` rule
+3's order, and `PREFILTER_SLACK_MS` rule 2's 48 hours. On a reader's planner
+days they are `sunrise_domain::starts_at` (an `all_day` value at
+`boundary(d)`) and `sunrise_domain::deadline_at` (at `boundary(d+1)`), which
+lateness, the briefs and the ordering warnings read
+(`crates/sunrise-domain/src/day_schedule.rs`, #334); with no day schedule
+they are `resolve_in` and `due_in`. The ordering warnings compare the
+deadline as a deadline, so a task planned for 09:00 Friday and due "Friday"
+is consistent.
+
+**No time falls back silently**
+([ADR-0066](../11-adr/0066-times-survive-travel.md) §3). `to_instant(tz)`
+returns an error (`crates/sunrise-domain/src/time/resolve.rs#Unresolvable`)
+when a value has no instant: an unknown kind with no `at`, or a civil value at
+the edge of the calendar. It never answers with the Unix epoch. `resolve_in`
+reads that as `None`. Each caller then applies one policy. A sort places the
+value last (`cmp_in`, and `instant_or_last` where a caller needs one number).
+Lateness, Today and constraints compare it with nothing. A reminder is not
+scheduled, and `plan_reminders_reported`
+(`crates/sunrise-domain/src/notify/pipeline.rs#plan_reminders_reported`) lists it with
+the reason. A view shows the stored text (`Display`). The storage key of a
+civil value with no instant even in UTC is the nearer end of the timestamp
+range, never the epoch.
 
 **The reader's zone** is the zone `Clock::timezone` reports
-(`crates/sunrise-core/src/config.rs#timezone`) at the moment of the read. It is
-always passed in explicitly; no domain function reads an ambient zone.
+(`crates/sunrise-core/src/config.rs#timezone`) at the moment of the read: the
+zone a client last reported through `on_time_zone_changed` (§7), and the
+injected clock's own until one has. It is always passed in explicitly; no
+domain function reads an ambient zone. A name the tzdb cannot resolve is never
+read as UTC (`crates/sunrise-core/src/engine/zone.rs#device_zone`). The engine
+keeps reading in the last zone it resolved. Only an engine that has never
+resolved one reads in UTC, and `Core::zone_unknown` then says so. That memory
+lasts as long as the process, because the clients report the zone on every
+vault open (§7). The production clock answers with no name, not `"UTC"`, when
+the OS names no zone.
+
+`jiff::tz::TimeZone::system()` is called in one place, `SystemClock`
+(`crates/sunrise-core/src/config.rs#system_iana_name`). `clippy.toml` forbids
+it, `TimeZone::try_system` and `Zoned::now` everywhere else (ADR-0066 §5).
 
 ## 3. One DST rule
 
@@ -145,6 +206,15 @@ not a fallback; it is the defined answer, and it does not depend on whether the
 zone name resolved. [`recurrence-engine.md`](../08-features/recurrence-engine.md)
 §Edge cases applies this rule and states no other.
 
+**Moving a time by days** keeps its kind
+(`crates/sunrise-domain/src/time/shift.rs#shift_civil_days`, ADR-0066 §4). A
+`floating` or `zoned` value moves its civil date and keeps its wall-clock
+time, even one in the new date's gap: it is stored as meant and resolves by
+this rule when read. An `all_day` value moves its date. An `instant` moves by
+civil days in the reader's zone, so across a DST change a day is 23 or 25
+hours, never 86,400 seconds. `DeferTaskTo` writes the result
+(`crates/sunrise-core/src/engine/task.rs#defer_task`).
+
 **Keys never depend on the rule.** An occurrence key, a skip key, a streak key
 and a day-schedule lookup are all **civil**, the intended wall-clock value, and
 never the resolved instant. So a spring-forward day's 02:30 occurrence has key
@@ -161,7 +231,15 @@ through the fold. No window bound is ever disambiguated.
 
 **An unresolvable zone name** (a `zoned` value written by a device with newer
 tzdata, naming a zone this build does not know) resolves in the reader's zone
-and is flagged `zone_unknown` for display. Its stored value is unchanged.
+and is flagged `zone_unknown` for display (`SunriseTime::zone_unknown`). Its
+stored value is unchanged, in storage too: every `SunriseTime` column has a
+`*_civil` sidecar (migration 0041, ADR-0066 §2) holding the wall-clock value a
+civil kind means, and `SunriseTime::from_parts` rebuilds a value from it and
+the zone name alone, never from `index_ms`. So a tzdata change cannot move a
+stored 09:00. A row folded before 0041 has no civil value until the
+projection is rebuilt from the op log, which the first open after the
+migration does (`FOLD_V` 3); only such a row is still derived from
+`index_ms`.
 
 ## 4. "Today", days and weeks
 
@@ -192,7 +270,12 @@ are evaluated in:
 The evaluation converts the candidate moment to civil (§3, windows never
 resolve their bounds) and tests each dimension against the civil value. A
 window whose end is before its start wraps midnight and ends on the next civil
-day.
+day; it belongs to the day it starts on, so the part after midnight is tested
+against the weekday and date range as the previous day
+(`crates/sunrise-domain/src/constraint/mod.rs#TimeOfDayRange`, #333). A window
+whose start equals its end is refused. The evaluation zone is
+`crates/sunrise-core/src/engine/task.rs#constraint_zone`: a routine occurrence
+planned `zoned` evaluates in that zone, everything else in the reader's.
 
 ## 6. Recurrence is expanded in civil space
 
@@ -234,6 +317,40 @@ first revisit trigger ("recurring blocks or tasks with a floating anchor").
   and differs from the new zone, views show times in both zones for `zoned`
   values.
 
+In the tree, the entry point is `Core::on_time_zone_changed`
+(`crates/sunrise-core/src/core/mod.rs`), which returns a `TimeZoneChange`
+(`crates/sunrise-core/src/commands.rs`): it is not a `Command`, because it
+writes no op. It makes the reported zone the reader's zone
+(`crates/sunrise-core/src/config.rs#ReportedZoneClock`), counts the open tasks
+whose resolved time or lateness moved, reports whether the notification
+preference is on, and publishes `DomainEvent::TimeZoneChanged`, on which every
+view re-reads; that re-read is the re-evaluation, since every derived view is
+computed on read. A client may report the zone on every foreground: the same
+zone again is `changed: false` and does nothing. "The same zone" is decided on
+the zones' rules, not their names (`sunrise_domain::time::same_zone`): an alias
+such as `Asia/Calcutta` for `Asia/Kolkata`, or `Etc/UTC` for `UTC`, is no
+change. The event is published before the count is read, so a view re-reads
+even when that read fails. The Apple apps report it from
+`apps/apple/Sunrise/Core/TimeZoneWatch.swift` on vault open, on
+`NSSystemTimeZoneDidChange` and on every foreground. A changed zone also
+re-evaluates the hard scheduling constraints of every open planned task in
+the new zone, and `TimeZoneChange::hard_violations` lists those that now
+break one (`Engine::hard_constraint_violations`, #333): flagged, never moved.
+
+A name the tzdb does not know is refused with `CoreError::UnknownTimeZone`.
+The reader's zone stays as it was (§2), and nothing is published. The reminder
+schedule is re-planned the same way as every other view: by being read again.
+`Query::ReminderIntents` resolves each candidate in the reader's zone at the
+time of the read, so a `floating` 09:00 reminder moves to 09:00 in the new
+zone and a `zoned` one keeps its instant. A reminder's identity is
+`ReminderIntent::identity`, the entity and its source rule, never its fire
+time ([#520](https://github.com/justin13888/Sunrise/issues/520)).
+`Core::reminder_plan` returns the same intents together with the candidates
+it could not schedule (§2). The Apple client still builds its notification
+identifier from the fire time as well
+(`apps/apple/Sunrise/Notifications/ReminderPlan.swift`). It replaces a moved
+reminder by cancelling the old identifier and adding the new one.
+
 ## 8. Test matrix
 
 Every row runs against tasks (lateness, Today membership), blocks (overlap,
@@ -260,3 +377,36 @@ value is recomputed:
 | Los Angeles → New York with a `floating` 09:00 routine | occurrences fire at 09:00 NY; keys unchanged; no occurrence duplicated or lost on the travel day |
 | `Pacific/Apia` ↔ `Pacific/Pago_Pago` (same longitude, 24 hours apart) | an `all_day` deadline is late in one zone and on track in the other at the same instant, and both answers are the reader's |
 | A zone change on a spring-forward night | a `hard` constraint window that became empty is flagged, and nothing is rewritten |
+
+Where the rows run: lateness, with every state, the midnight boundary, a DST
+day each way, a floating deadline in two zones, the Apia date line and a
+sleep past midnight, in `crates/sunrise-domain/src/lateness/tests.rs`, and
+against a vault, two readers of one floating target and a zone change that
+moves staleness, in `crates/sunrise-core/src/engine/tests/lateness.rs`;
+resolution, the DST rule, validation, lateness, overlap,
+the prefilter bound, deferral by civil days (the gaps of `America/New_York`,
+`Australia/Lord_Howe`, `Pacific/Apia`, `Asia/Kathmandu`'s 1986 move to +05:45,
+and `Pacific/Chatham`) and reminders across a zone change in
+`crates/sunrise-domain/tests/time_matrix.rs`; Today and the calendar windows
+at the UTC−10 and UTC+14 extremes, and the New York → Kolkata row against a
+vault (Today, lateness, reminders, defer, and nothing stored rewritten), in
+`crates/sunrise-core/src/engine/tests/time_zones.rs`; the entry point in
+`crates/sunrise-core/src/core/tests.rs`. The routine rows (expansion in civil
+space, the key, skip and streak across a gap and a fold, a pause that runs
+out, a zone change, Lord Howe and the Apia date line, and the wire form older
+builds read) run in `crates/sunrise-domain/tests/routine_times.rs`, and the
+wrapping-window rows in `crates/sunrise-domain/src/constraint/tests.rs`. The travel
+scenarios run in the traveller harness,
+`crates/sunrise-core/src/engine/tests/traveller.rs`: a phone that crosses New
+York's spring-forward night, Kathmandu, Chatham, an offline stretch and Lord
+Howe's fall-back while a peer at home keeps working, asserting each day's
+routine wall-clock times and reminder instants, no duplicated or reset
+occurrence, streak continuity and convergence, plus the zoned re-pin and the
+hard-window flag after a zone change. The day schedule's rows (a sleep past
+midnight, the gaps and folds of `America/New_York`, `Australia/Lord_Howe` and
+`Pacific/Chatham`, the skipped Apia date, and the reader's zone moving the
+planner day) run in `crates/sunrise-domain/src/day_schedule/tests.rs`, Today,
+Upcoming and the briefs on planner days in
+`crates/sunrise-core/src/engine/tests/day_schedule.rs`, and the traveller
+through the CLI in `crates/sunrise-e2e/tests/cli_day_schedule.rs`
+([#338](https://github.com/justin13888/Sunrise/issues/338)).

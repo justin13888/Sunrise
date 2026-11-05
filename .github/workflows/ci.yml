@@ -52,6 +52,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Every property test runs the case count its call site names. Unset, as on
+  # a developer machine, `sunrise_test_seed::proptest_cases` caps each block at
+  # 48 so a local `cargo test` stays cheap. Workflow-wide rather than in the
+  # `rust-checks` action, so `rust-windows`, `mutants` and every other job
+  # that runs a proptest keeps the depth it ran before the dial existed.
+  # docs/10-cross-cutting/testing.md section 2.
+  SUNRISE_PROPTEST_DEPTH: full
 
 jobs:
   # The Rust gate runs twice, as two jobs naming one composite action, rather
@@ -65,6 +72,11 @@ jobs:
   # legs never cost the same — macOS minutes bill at 10x, so the expensive one
   # gets the *tighter* cap rather than inheriting a ceiling sized for the
   # slower-but-cheaper one — and two jobs can simply say so.
+  #
+  # `cargo test --workspace --all-targets` compiles `sunrise-core-bindings`,
+  # the UniFFI seam, and runs its tests on both legs; Linux is the leg every
+  # pull request gets. The seam's `cdylib` and the Kotlin generated from it
+  # are the `kotlin-smoke` job's, and Windows is `rust-windows`'s.
   rust:
     name: Rust (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -118,6 +130,119 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: ./.github/actions/rust-checks
+
+  # The portable core on Windows (#369): the crates a Windows desktop client
+  # would link, built and tested on `windows-latest`. The two jobs above never
+  # compile a `cfg(not(unix))` or `cfg(windows)` branch, and that is where the
+  # Windows behaviour lives: `sunrise-private-file`, whose owner-only write
+  # sets a DACL (ADR-0067) for `sunrise-auth` and `sunrise-cli` and whose
+  # tests read that DACL back, and the device time zone in `sunrise-core`.
+  #
+  # `sunrise-server` is not on the list and is not tested here: the relay is
+  # Linux-only (`docs/01-architecture/dependencies.md` §Windows). It is still
+  # *compiled*, as a dev-dependency of `sunrise-cli`'s live-sync test.
+  #
+  # Advisory, not a required check, and the difference is a ruleset edit rather
+  # than anything in this file. It runs on every pull request and goes red like
+  # any other job; it is not yet in the `master` ruleset's required list
+  # because it has no record of passing, and a required check that has never
+  # run green blocks every pull request behind it. Add `Rust (windows-latest)`
+  # to that list once it has a record.
+  #
+  # SQLCipher's OpenSSL is vendored on Windows (`crates/sunrise-storage/
+  # Cargo.toml`), and `openssl-src` runs OpenSSL's `Configure` with Perl. Git
+  # for Windows ships an MSYS Perl whose paths `Configure` rejects, and which
+  # Perl a shell finds first depends on that shell's PATH, so the runner's
+  # Strawberry Perl is named outright.
+  rust-windows:
+    name: Rust (windows-latest)
+    runs-on: windows-latest
+    # No observation yet. A cold build compiles OpenSSL from source on top of
+    # the graph the `rust` job builds; sized from that job's cold time with the
+    # same margin, plus the OpenSSL build.
+    timeout-minutes: 60
+    env:
+      OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
+    steps:
+      # Before checkout: the runner's git converts LF to CRLF on checkout,
+      # which changes the bytes of every fixture and `include_str!` input the
+      # tests compare against. The repository is LF everywhere.
+      - name: Check out with LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: rust-windows
+          # As in the `rust` gate: only `master` writes, so a pull request
+          # cannot spend the cache quota on an entry only it can read.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The list is the issue's portable core. One cargo invocation for each
+      # step, so feature unification is the same in both and the test step
+      # reuses the build.
+      - name: Build the portable core
+        run: >-
+          cargo build --locked
+          -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
+          -p sunrise-crypto -p sunrise-sync -p sunrise-domain
+          -p sunrise-auth -p sunrise-cli -p sunrise-private-file
+      - name: Test the portable core
+        run: >-
+          cargo test --locked
+          -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
+          -p sunrise-crypto -p sunrise-sync -p sunrise-domain
+          -p sunrise-auth -p sunrise-cli -p sunrise-private-file
+
+  # The UniFFI seam's Kotlin half, on a JVM (#369). The Apple jobs only ever
+  # generate Swift, so a seam change Kotlin cannot take passed every check
+  # here; the first run of this task found one (`NoteBlock::List`, renamed for
+  # Kotlin in `crates/sunrise-core-bindings/uniffi.toml`). This is
+  # `mise run kotlin-smoke`, which says what it proves and what it does not.
+  #
+  # It is also the `cdylib` artefact check: the `rust` job compiles
+  # `sunrise-core-bindings` as an rlib and runs its tests, and this job builds
+  # the `cdylib` crate type, asserts the file exists, and loads it.
+  #
+  # Not a required check. Linux only: the generated Kotlin names no platform,
+  # and a second OS would load the same file through the same JNA.
+  kotlin-smoke:
+    name: Kotlin seam smoke (JVM)
+    runs-on: ubuntu-latest
+    # No observation yet. Locally, warm: two minutes. Cold here: a debug build
+    # of the seam's graph and a release build of `tools/uniffi-bindgen`.
+    timeout-minutes: 30
+    env:
+      # Clears the workflow-level `-D warnings`, as `apple-xcframework` does
+      # and for the same reason: this builds `tools/uniffi-bindgen`, whose
+      # third-party tree is not ours to keep warning-free. The `rust` job's
+      # clippy step holds the workspace's own warnings.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: |
+            .
+            tools/uniffi-bindgen
+          shared-key: kotlin-smoke
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The runner image's default JDK is what runs the compiler and the
+      # program; the task fails naming it if there is none.
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+        with:
+          install: false
+          cache: false
+      - name: Trust mise config
+        run: mise trust --yes
+      - name: mise run kotlin-smoke
+        run: mise run kotlin-smoke
 
   apple-xcframework:
     name: Apple xcframework (3 slices + Swift bindings)
@@ -305,13 +430,18 @@ jobs:
       # `rustup target add` that used to be here and now lives in
       # `apple-xcframework`. Red either way, and that is the direction that
       # matters, but the message names the slice rather than the guard.
-      - name: Install mise, XcodeGen and SwiftLint
-        run: brew install --quiet mise xcodegen swiftlint
+      - name: Install mise and XcodeGen
+        run: brew install --quiet mise xcodegen
       # mise refuses to run tasks from a config it has not been told to trust,
       # and a fresh checkout is never trusted. Explicit rather than implicit:
       # the runner has no interactive prompt to answer.
       - name: Trust mise config
         run: mise trust --yes
+      # SwiftLint at the version mise.toml's `[tools]` pins, not whatever brew
+      # has that day: `--strict` fails on warnings, and which warnings exist
+      # depends on the version. `apple-preflight` checks the two agree.
+      - name: Install the pinned SwiftLint
+        run: mise install swiftlint
       - name: Toolchain versions
         # The versions are printed, not asserted: if the default Xcode ever
         # regresses below 26, the build fails on the deployment target with a
@@ -327,7 +457,7 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild -showsdks | grep -i macos
-          swiftlint version
+          mise exec -- swiftlint version
           xcodegen --version
           du -sh out/SunriseCore.xcframework out/swift
       # One task, deliberately. `mise run macos-app` runs `xcodegen generate`
@@ -384,13 +514,18 @@ jobs:
         with:
           name: apple-xcframework
           path: out
-      - name: Install mise, XcodeGen and SwiftLint
-        run: brew install --quiet mise xcodegen swiftlint
+      - name: Install mise and XcodeGen
+        run: brew install --quiet mise xcodegen
       # mise refuses to run tasks from a config it has not been told to trust,
       # and a fresh checkout is never trusted. Explicit rather than implicit:
       # the runner has no interactive prompt to answer.
       - name: Trust mise config
         run: mise trust --yes
+      # SwiftLint at the version mise.toml's `[tools]` pins, not whatever brew
+      # has that day: `--strict` fails on warnings, and which warnings exist
+      # depends on the version. `apple-preflight` checks the two agree.
+      - name: Install the pinned SwiftLint
+        run: mise install swiftlint
       - name: Toolchain versions
         run: |
           xcodebuild -version
@@ -606,8 +741,9 @@ jobs:
   # The matrix is every baseline the invariant binds. A build older than the
   # ADR-0042 floor is outside it: `v0.1.0-rc.1` predates three CRYPTO_SUITE_V
   # bumps that ADR-0042's withdrawn licence allowed, and `HEAD` does not open
-  # a vault it wrote at all. A release cut at or after the floor joins the
-  # matrix, with whatever change to the driver its API needs.
+  # a vault it wrote at all. A core release (`core-v*`, ADR-0064) cut at or
+  # after the floor joins the matrix, with whatever change to the driver its
+  # API needs.
   cross-version:
     name: Cross-version merge (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -670,6 +806,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -686,6 +823,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -705,6 +843,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -735,6 +874,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -832,9 +972,13 @@ jobs:
         #
         # `compaction` at its default sizes seeds 100k tasks through the
         # command path, about 24 minutes on an M-series Mac before a single
-        # sample, so it runs at the 10k size `baseline.rs` records.
+        # sample, so it runs at the 10k size `baseline.rs` records. `rebuild`
+        # seeds the same way and runs at 10k for the same reason, and so does
+        # `fts`, whose 100k vault also carries notes and blocks.
         env:
           SUNRISE_BENCH_COMPACT_TASKS: "10000"
+          SUNRISE_BENCH_REBUILD_TASKS: "10000"
+          SUNRISE_BENCH_FTS_TASKS: "10000"
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
@@ -909,6 +1053,10 @@ jobs:
     # 1.5x of headroom under 120. Each split pays one more baseline, about
     # 2 minutes of runner time, which is small beside the mutants themselves.
     # The other three crates' longest shard is 61 minutes and needs nothing.
+    # sunrise-cbor (134 mutants) and sunrise-id (109) joined the matrix after
+    # that nightly and have no runner wall clock yet; each runs whole, and at
+    # sunrise-core's slowest per-mutant rate 134 mutants would be 94 minutes,
+    # so neither can set this bound past 120 at its present size.
     #
     # The rates are shard averages over the first third of each slice, not
     # over the whole crate: cargo-mutants' default `slice` sharding gives each
@@ -922,16 +1070,16 @@ jobs:
     # counts it as an arrived shard. Nightly 38044938836 passed
     # `sunrise-core` on 766 of its 2502 mutants that way (#517).
     timeout-minutes: 120
-    # Nightly and on demand, never on a pull request. The four scoped crates
-    # generate 4,668 mutants — the sum of the four populations recorded
-    # on the matrix below — and each one is an incremental rebuild plus a test
+    # Nightly and on demand, never on a pull request. The six scoped crates
+    # generate 4,911 mutants — the sum of the six populations recorded on
+    # the matrix below — and each one is an incremental rebuild plus a test
     # run; a full pass is hours, which is exactly why
     # docs/10-cross-cutting/testing.md scopes this to release candidates rather
     # than to every commit.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       # Not fail-fast: a regression in one crate should not hide the scores of
-      # the other three, and the gate below needs every shard's outcomes to
+      # the others, and the gate below needs every shard's outcomes to
       # compute a crate's rate correctly.
       fail-fast: false
       matrix:
@@ -941,11 +1089,13 @@ jobs:
         # 38044938836 counted them at `5948c54`: sunrise-domain 1447,
         # sunrise-core 2502, sunrise-crypto 548, sunrise-sync 171; the
         # earlier figures here, 1356/1259/519/135 at `1d4b484`, had drifted
-        # with the crates.
+        # with the crates. sunrise-cbor 134 and sunrise-id 109 joined the
+        # scope after that nightly, counted with
+        # `cargo mutants --list -p <crate> --all-features` at `b94bcd5`.
         #
         # Shard counts are not proportional to those populations, and should
-        # not be: per-mutant cost differs across the four, so the population is
-        # not the cost. The wall clocks above are what they balance against —
+        # not be: per-mutant cost differs across the crates, so the population
+        # is not the cost. The wall clocks above are what they balance against —
         # sunrise-core at 24 shards is about 105 mutants at up to 42.1 s, about
         # 76 minutes a shard; sunrise-domain at 6 is about 241 and took 24-33
         # minutes; sunrise-sync whole took 61.
@@ -987,6 +1137,8 @@ jobs:
           - { crate: sunrise-crypto, shard: 0/2 }
           - { crate: sunrise-crypto, shard: 1/2 }
           - { crate: sunrise-sync, shard: 0/1 }
+          - { crate: sunrise-cbor, shard: 0/1 }
+          - { crate: sunrise-id, shard: 0/1 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1010,9 +1162,9 @@ jobs:
           # contents until the next manifest change — and cargo-mutants copies
           # the tree into temporary directories and builds there, so a leg's
           # `target/` at job end holds the baseline build and nothing else, the
-          # least representative snapshot of the thirty-three. The other
-          # question is that there are thirty-three legs: left saving, they
-          # would race for one immutable key, and thirty-two would upload
+          # least representative snapshot of the thirty-five. The other
+          # question is that there are thirty-five legs: left saving, they
+          # would race for one immutable key, and thirty-four would upload
           # ~700 MiB apiece to lose it.
           save-if: false
       - name: Install cargo-mutants
@@ -1060,7 +1212,7 @@ jobs:
           # it from there, so the floor a nightly's artifacts produce is
           # stamped with the revision the mutants actually ran against
           # rather than with whatever HEAD was when someone downloaded
-          # them. Thirty-three shards write thirty-three stamps and the gate
+          # them. Thirty-five shards write thirty-five stamps and the gate
           # refuses if they do not agree on a revision.
           .github/scripts/mutants-gate.py \
             --record-revision out/mutants/revision.json
@@ -1084,6 +1236,10 @@ jobs:
           esac
           mv out/mutants/revision.json out/mutants/mutants.out/revision.json
       - name: Upload outcomes
+        # `always()`, so a shard cancelled at `timeout-minutes` still
+        # uploads the outcomes it reached. The gate reads their null
+        # `end_time` and reports the crate as unfinished rather than
+        # scoring it, which says more than a shard that is merely missing.
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
@@ -1101,7 +1257,7 @@ jobs:
   mutants-gate:
     name: Mutation coverage gate
     runs-on: ubuntu-latest
-    # Downloads thirty-three small artefacts and runs one Python script over them.
+    # Downloads thirty-five small artefacts and runs one Python script over them.
     # Seconds of work; the artefact download is the only part that can stall.
     timeout-minutes: 10
     needs: mutants
@@ -1122,7 +1278,7 @@ jobs:
         # a short crate is reported as a broken run and left unscored.
         run: |
           .github/scripts/mutants-gate.py outcomes/*/outcomes.json \
-            --expect-shards sunrise-domain=6,sunrise-core=24,sunrise-crypto=2,sunrise-sync=1
+            --expect-shards sunrise-domain=6,sunrise-core=24,sunrise-crypto=2,sunrise-sync=1,sunrise-cbor=1,sunrise-id=1
 
   mutants-gate-contract:
     name: Mutation gate contract
@@ -1132,13 +1288,8 @@ jobs:
     timeout-minutes: 5
     # Deliberately not inside the nightly `Mutation coverage gate` job above,
     # and deliberately without an `if:` — so it runs on every trigger this
-    # workflow has, pull requests included. What it asserts is the gate's
-    # exit-code contract, which is what ci.yml and the gate's own printed
-    # remedies depend on, and it has drifted twice — both times in a pull
-    # request that a 04:00 schedule would only have caught the morning after
-    # it merged. Running it nightly as well costs a second and occasionally
-    # catches a change to the runner rather than to the gate. It needs no
-    # Rust, no cargo-mutants and no outcomes: it synthesises its fixtures.
+    # workflow has, pull requests included. Why: the docstring of
+    # `test_mutants_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1174,19 +1325,8 @@ jobs:
     # One Python script over two files it synthesises itself. Seconds.
     timeout-minutes: 5
     # The gate above reads this repository; this reads fixtures it
-    # synthesises, with one deliberate exception. Both are needed and
-    # neither substitutes for the other: the gate passing says the tree is
-    # in step, and says nothing about whether the gate would notice if it
-    # were not. The only way to watch it go red is to hand it two files
-    # that disagree, and the two files it reads in anger are ones nobody
-    # wants edited to find out.
-    #
-    # The exception is one case, which runs the gate against this
-    # repository and asserts it holds the number of invocations the gate
-    # states. That number is otherwise asserted nowhere blocking, because
-    # `Mutation flag gate` above is not a required check. Its cost: an
-    # untracked `.github/**/*.sh` holding a cargo-mutants line fails this
-    # suite locally while the tracked tree is fine.
+    # synthesises, with the exceptions its docstring names. Why both are
+    # needed: the docstring of `test_mutants_flags_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1199,12 +1339,9 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the mutation gate's contract above, so
-    # it runs on every trigger this workflow has. What it asserts is that the
-    # gate can still say no: the first version stopped reading a file at its
-    # first `#[cfg(test)]` line, which left 97% of engine/oplog.rs and 95% of
-    # keychain/mod.rs unscanned the moment those modules were split -- and
-    # reported OK for both. The `Determinism gate` job below runs the gate; this
-    # one asserts the gate is a check.
+    # it runs on every trigger this workflow has. The `Determinism gate` job
+    # below runs the gate; this one asserts the gate is a check. Why: the
+    # docstring of `test_core_filesystem_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code and coverage contract
@@ -1223,7 +1360,7 @@ jobs:
           # comes from the injected `CoreConfig::rng`, never an ambient source.
           #
           # This backstops clippy.toml's `disallowed-methods`, which binds only
-          # inside crates that depend on `rand` directly (6 of 23). The grep
+          # inside crates that depend on `rand` directly. The grep
           # binds everywhere, and catches spellings a path-based lint would
           # also catch but a naive regex would miss: turbofish
           # (`rand::random::<u64>()`), the rand 0.9 rename (`rand::rng()`),
@@ -1232,15 +1369,15 @@ jobs:
             "determinism" \
             '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
             crates/*/src crates/*/tests crates/*/benches
-      - name: Reject filesystem access outside the core's storage seam
+      - name: Reject filesystem access outside the core's vault_dir seam
         # docs/01-architecture/shared-core.md §determinism-rules rule 2 — the
-        # core reads and writes through `CoreConfig::storage`, so a test can
-        # supply one and a vault is the only thing on disk.
+        # core reaches the disk only through `CoreConfig::vault_dir`, so a test
+        # can point it at a temp directory and a vault is the only thing on disk.
         #
         # Not a `clippy.toml` entry, and it cannot be: that file is
-        # workspace-wide, and nine of twenty crates touch the filesystem on
-        # purpose. A `std::fs` deny there fires in eight crates the rule was
-        # never about. This is scoped the way the rule is scoped -- one crate --
+        # workspace-wide, and many crates touch the filesystem on purpose. A
+        # `std::fs` deny there fires in every crate the rule was never about.
+        # This is scoped the way the rule is scoped -- one crate --
         # and carries a visible allowlist of the two documented exceptions.
         run: python3 .github/scripts/core-filesystem-gate.py
 
@@ -1283,9 +1420,8 @@ jobs:
     # One Python script over packages it synthesises in a temp directory: no
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
-    # No `if:`, like the other gate contracts, so it runs on pull requests. The
-    # gate shipped with three failure modes and nothing asserting any of them --
-    # they were checked by hand once, against whatever tree was on disk.
+    # No `if:`, like the other gate contracts, so it runs on pull requests. Why:
+    # the docstring of `test_file_size_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1297,12 +1433,8 @@ jobs:
     # One Python script over JSON it synthesises in a temp directory: no
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
-    # No `if:`, like the other gate contracts, so it runs on pull requests.
-    # What it asserts is not visible to `actionlint` and has no other check:
-    # which release lands on which Sparkle channel, and whether a signature
-    # in hand describes the bytes being advertised. The only other way to
-    # find out is to publish a release and watch every installed copy either
-    # update or stop updating. See ADR-0038.
+    # No `if:`, like the other gate contracts, so it runs on pull requests. Why:
+    # the docstring of `test_appcast.py`, and ADR-0038.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Appcast rules
@@ -1380,10 +1512,8 @@ jobs:
     # One Python script over source trees it synthesises in a temp directory,
     # plus one run over this checkout. No toolchain. Seconds.
     timeout-minutes: 5
-    # No `if:`, like the other gate contracts. It plants the `==` over a
-    # `[u8; 32]` tag in sunrise-crypto that #365 names and asserts exit 1, and
-    # pins the allowlist's refusals: a stale entry, an entry with no reason, a
-    # missing file, and an empty one.
+    # No `if:`, like the other gate contracts. Why: the docstring of
+    # `test_constant_time_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1422,12 +1552,7 @@ jobs:
     # without touching the registry or compiling anything. Seconds of work.
     timeout-minutes: 10
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate asserts something about the published API
-    # surface — that no operation in the description can be flagged opaque —
-    # on the strength of one feature lookup, and the shape it looks that up in
-    # has already moved once: package ids became opaque in newer Cargo, and
-    # kynos moved to a git pin. A lookup that silently stopped finding the
-    # package would print OK over a workspace with the hatch wide open.
+    # on pull requests. Why: the docstring of `test_kynos_waiver_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1521,6 +1646,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
         with:
           toolchain: stable
@@ -1562,6 +1688,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -1597,6 +1724,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -1619,6 +1747,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: ./.github/actions/pinned-node
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ~/.bun/install/cache
@@ -1659,11 +1788,7 @@ jobs:
     # else — and nothing to cache. Seconds of work.
     timeout-minutes: 10
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The number this gate prints is cited by
-    # `docs/implementation/overview.md`, and nothing checked the walk that
-    # produces it: an edge that stopped being followed, or a root that stopped
-    # being a root, changes the count without changing the verdict. Every pass
-    # case in the contract asserts the count for that reason.
+    # on pull requests. Why: the docstring of `test_orphan_crate_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1671,6 +1796,74 @@ jobs:
           toolchain: stable
       - name: Exit-code contract
         run: python3 .github/scripts/test_orphan_crate_gate.py
+
+  swift-logic:
+    name: Swift logic gate
+    runs-on: ubuntu-latest
+    # One standard-library Python script reading the Swift under apps/apple
+    # as text. No toolchain, no Xcode: it is the one check on the Apple
+    # sources a Linux runner can make. Seconds of work.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject non-view logic in Swift that is not on the allowlist
+        # The logic the Apple app decides in Swift is moving into
+        # `sunrise-client-core`, where every client links it and Linux tests
+        # it. This keeps new logic from landing in Swift meanwhile: a file
+        # that holds any is on the script's ALLOWED list with its reason, and
+        # an entry whose file no longer holds any fails until it is removed.
+        run: .github/scripts/swift-logic-gate.py
+
+  swift-logic-gate-contract:
+    name: Swift logic gate contract
+    runs-on: ubuntu-latest
+    # Synthesised apps/apple trees in a temp directory; nothing to install.
+    timeout-minutes: 5
+    # Without an `if:`, like the other gate contracts, so it runs on pull
+    # requests. Why: the docstring of `test_swift_logic_gate.py`.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_swift_logic_gate.py
+
+  publish-gate:
+    name: Publish gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over the
+    # tracked Cargo.toml and package.json files, `apps/apple/project.yml`, and
+    # the root and `tools/uniffi-bindgen` Cargo.lock files. No toolchain: the
+    # manifests and lockfiles are read with `tomllib` and `json`, which is
+    # why this needs the runner's Python 3.11+ and nothing else. Seconds of
+    # work, so `ci.yml`'s floor for a job whose real cost is the checkout.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject anything publishable, and an app train that disagrees with itself
+        # ADR-0064: nothing in this repository publishes to a registry, and the
+        # app train has one version, the root package.json's. Every crate with
+        # a [package] says `publish = false` itself (inheriting it is refused),
+        # every package.json says `"private": true`, and every app-train copy
+        # of the version -- apps/*/package.json, packages/*/package.json and
+        # project.yml's MARKETING_VERSION -- equals the root one. The binding
+        # generator (tools/uniffi-bindgen) and its runtime
+        # (crates/sunrise-core-bindings) also agree on `uniffi`: one requirement
+        # in both Cargo.toml files, one locked version in both Cargo.lock files.
+        # A new crate from a template, a version bumped in one file of four, or
+        # a uniffi bump in one workspace only is the shape this catches.
+        run: .github/scripts/publish-gate.py
+
+  publish-gate-contract:
+    name: Publish gate contract
+    runs-on: ubuntu-latest
+    # One Python script over git repositories it synthesises in a temp
+    # directory. No toolchain and nothing to cache.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. Why: the docstring of `test_publish_gate.py`.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_publish_gate.py
 
 
   proptest-persistence:
@@ -1823,8 +2016,8 @@ jobs:
         # declares no items and has no lines, which is what `dir:702` has
         # always failed on. Neither an
         # `impl` block nor a `mod` is a legal target, because `#Engine`
-        # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
-        # spans 99.5% of it, so neither checked anything. A single-line
+        # spanned 97.7% of `sync.rs` and `mod tests` in the since-split
+        # `api/sync/suite.rs` spanned 99.5% of it, so neither checked anything. A single-line
         # `path:LINE#symbol` whose line is a `///` line of the item's doc
         # comment below its summary line FAILS, in every declaration of the
         # name that contains it: that is where a line written for the
@@ -1846,12 +2039,7 @@ jobs:
     # of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. What it asserts is the gate's *discrimination*: it has
-    # to fire on a dangling `crates/.../nonexistent.rs:1` and stay silent on
-    # `Vec<u8>`, `cargo test --workspace`, `task.update` and the 600 bare
-    # filenames in this repository that are shorthand rather than citations.
-    # Those two halves fail in opposite directions from the same edit, and a
-    # gate that fires on everything is as useless as one that fires on nothing.
+    # on pull requests. Why: the docstring of `test_citation_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code and discrimination contract
@@ -1864,13 +2052,8 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate's own `--self-test` runs `scan_text` over seven
-    # string literals and reaches nothing else: not the `git ls-files` listing,
-    # not the 50-file floor that says "the scan is broken" rather than "the tree
-    # is clean", not the exit codes those produce. It also pins the
-    # inline-code-blanking this gate shares with `docs-links` — the behaviour
-    # that leaves backticked citations to `citation-gate.py` — so the three do
-    # not start fighting over the same span.
+    # on pull requests. Why the gate's own `--self-test` is not enough: the
+    # docstring of `test_doc_comment_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1883,11 +2066,8 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate's own `--self-test` is a very good test of
-    # `slugify` and no test at all of `check()` — the listing, the resolution of
-    # a relative destination, the file/directory distinction, the two exit codes.
-    # Those were exercised only by this repository's own 1,239 links, a fixture
-    # that changes every week and can only ever prove the gate is green.
+    # on pull requests. Why the gate's own `--self-test` is not enough: the
+    # docstring of `test_docs_link_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1902,11 +2082,8 @@ jobs:
     # against git and a fixture that could not answer would retire that check.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. This gate reads its extraction command out of the
-    # document and runs it, which is what keeps the two from disagreeing and is
-    # also a second surface that can rot: a marker that loses its `grep` line, a
-    # path that stops being a directory, a provenance ref that names no commit.
-    # The gate's own self-test reaches none of those routes.
+    # on pull requests. Why the gate's own `--self-test` is not enough: the
+    # docstring of `test_observability_catalog_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1919,10 +2096,8 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. Three of the five codes this gate emits — `ignored`,
-    # `untracked` and `flat` — are decided by the filesystem and the index
-    # rather than by the source text, so the gate's own self-test cannot reach
-    # them from a string literal and nothing exercised them at all.
+    # on pull requests. Why the gate's own `--self-test` is not enough: the
+    # docstring of `test_proptest_persistence_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1950,9 +2125,8 @@ jobs:
     runs-on: ubuntu-latest
     # One Python script over engine files it synthesises in a temp directory.
     timeout-minutes: 5
-    # Deliberately without an `if:`, like the other gate contracts. The gate
-    # exits 0 on the real tree, which a gate that reads nothing also does; this
-    # plants the refusal it exists for and asserts it can still say 1.
+    # Deliberately without an `if:`, like the other gate contracts. Why: the
+    # docstring of `test_apply_refusal_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -1982,24 +2156,11 @@ jobs:
   workflow-hardening-gate-contract:
     name: Workflow hardening gate contract
     runs-on: ubuntu-latest
-    # Thirty-two cases over `.github/` trees it synthesises in a temp
-    # directory: no toolchain, no cargo, no network past the checkout. About a
-    # second.
+    # Cases over `.github/` trees it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. About a second.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate is a regex over YAML rather than a parser —
-    # nothing in CPython parses YAML and the runners install nothing extra —
-    # so the cases that matter are the ones where a regex is wrong. Two kinds.
-    #
-    # Wrong and red on a green tree: a `uses:` inside a `run: |` block, of
-    # which this file has hundreds of lines.
-    #
-    # Wrong and green on a bad tree, which is the larger set, because `uses:`
-    # is a mapping key and YAML spells a key more ways than one: in a flow
-    # mapping, under a quoted key, with the value on the next line, or as a
-    # block scalar. Actions accepts all four and `actionlint` passes all four.
-    # A job-level `permissions:` read as a top-level one belongs to the same
-    # set — it would pass a workflow scoped for one job out of seven.
+    # on pull requests. Why: the docstring of `test_workflow_hardening_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
@@ -2013,18 +2174,62 @@ jobs:
     timeout-minutes: 5
     # The gate itself runs in pr-body.yml, which fires on a body edit as well
     # as a push. This contract reads no body, so it sits here with the other
-    # gate contracts and without an `if:`. It plants the two `Reverses:` lines
-    # that closed #282 and #297 (#300) and asserts exit 1, and keeps the shapes
-    # #300 names as safe - a fenced record, a markdown link, an intended
-    # `Closes #N` on its own line - at 0.
+    # gate contracts and without an `if:`. Why: the docstring of
+    # `test_reverses_gate.py`.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Exit-code contract
         run: python3 .github/scripts/test_reverses_gate.py
 
+  grep-gate-contract:
+    name: Grep gate contract
+    runs-on: ubuntu-latest
+    # One Python script over source trees it synthesises in a temp directory:
+    # no toolchain, no network past the checkout. Seconds.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts: `grep-gate.sh` runs the
+    # determinism, log-redaction and constant-time gates, and a runner that
+    # answers 0 without checking turns all three off at once. Why: the
+    # docstring of `test_grep_gate.py`.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_grep_gate.py
+
+  # The nightly `fuzz` matrix, computed rather than written out: the targets
+  # are the `[[bin]]` entries of `fuzz/Cargo.toml`, the one place a harness is
+  # declared. `mise run fuzz-smoke` and `fuzz-pr-plan` read the same list.
+  fuzz-plan:
+    name: Fuzz plan (nightly)
+    runs-on: ubuntu-latest
+    # A checkout and one `cargo metadata --no-deps`. Seconds.
+    timeout-minutes: 5
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    env:
+      # The runner's preinstalled stable, which is enough to read a manifest.
+      # Without it `rust-toolchain.toml` would have rustup install 1.91.1 and
+      # its components first.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Name every fuzz target
+        id: plan
+        # A name that is not `[A-Za-z0-9_]+`, or an empty list, fails the plan
+        # rather than reaching the matrix.
+        run: |
+          set -euo pipefail
+          json=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+            jq -c '[.packages[].targets[] | select(.kind == ["bin"]) | .name]
+              | if length > 0 and all(test("^[A-Za-z0-9_]+$")) then .
+                else error("fuzz/Cargo.toml: no [[bin]] target, or a name outside [A-Za-z0-9_]+") end')
+          echo "Targets: $json"
+          echo "targets=$json" >> "$GITHUB_OUTPUT"
 
   fuzz:
     name: Fuzz (${{ matrix.target }})
+    needs: fuzz-plan
     runs-on: ubuntu-latest
     # Derived, not measured: no run of this job has ever executed a step, and
     # neither has any other job in this file since the billing block. 30
@@ -2035,8 +2240,8 @@ jobs:
     # wants replacing with a real figure the first time a nightly completes.
     timeout-minutes: 60
     # Nightly and on demand — the same gate the `mutants` job carries. Half an
-    # hour a target and nine targets is four and a half hours of runner time,
-    # which is a nightly's shape, not a pull request's. A pull request that
+    # hour a target, across every target, is hours of runner time, which is a
+    # nightly's shape, not a pull request's. A pull request that
     # touches a decoder gets the short, path-filtered `fuzz-pr` job below
     # instead (ADR-0061).
     #
@@ -2045,20 +2250,11 @@ jobs:
     # change is under review, before anyone moves the pin `fuzz-pr` reads.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
-      # Not fail-fast: a finding in one parser must not hide whether the other
-      # eight ran clean. Each target is an independent search.
+      # Not fail-fast: a finding in one parser must not hide whether the
+      # others ran clean. Each target is an independent search.
       fail-fast: false
       matrix:
-        target:
-          - op_envelope
-          - wire_frame
-          - rrule
-          - ical
-          - oauth_state
-          - recovery_blob
-          - identity_transition
-          - device_cert
-          - key_envelope
+        target: ${{ fromJSON(needs.fuzz-plan.outputs.targets) }}
     env:
       # This workflow sets `RUSTFLAGS: -D warnings` globally. `cargo-fuzz`
       # composes its own `RUSTFLAGS` (the sanitizer and `sancov` passes) on top
@@ -2154,17 +2350,28 @@ jobs:
         # The path list is #365's; each maps to the targets that drive that
         # code through its public API. `sunrise-http-sig` triggers the plan and
         # maps to nothing: no harness drives it yet, and testing.md says so.
-        # A name is only ever emitted from the fixed list `all`, so a file name
-        # in the diff never reaches a shell command in the job below.
+        # `all` is the `[[bin]]` entries of `fuzz/Cargo.toml`, read as the
+        # nightly `fuzz-plan` reads them, and every one must match
+        # `[A-Za-z0-9_]+`. A name is only ever emitted from `all`, so a file
+        # name in the diff never reaches a shell command in the job below.
+        env:
+          # As in `fuzz-plan`: the preinstalled stable reads the manifest.
+          RUSTUP_TOOLCHAIN: stable
         run: |
           set -euo pipefail
-          all="op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope"
-          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope"
+          all=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+            jq -r '[.packages[].targets[] | select(.kind == ["bin"]) | .name]
+              | if length > 0 and all(test("^[A-Za-z0-9_]+$")) then join(" ")
+                else error("fuzz/Cargo.toml: no [[bin]] target, or a name outside [A-Za-z0-9_]+") end')
+          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope key_bundle identity_chain"
           picked=""
           while IFS= read -r path; do
             case "$path" in
+              crates/sunrise-cbor/*)            picked="$picked op_envelope recovery_blob identity_transition device_cert key_bundle identity_chain wire_frame pairing_messages" ;;
               crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
+              crates/sunrise-pairing/*)         picked="$picked pairing_messages" ;;
               crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
+              crates/sunrise-core/*)            picked="$picked core_snapshot" ;;
               crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
               fuzz/Cargo.toml|fuzz/Cargo.lock)  picked="$picked $all" ;;
               fuzz/fuzz_targets/*.rs)           t="${path#fuzz/fuzz_targets/}"; picked="$picked ${t%.rs}" ;;

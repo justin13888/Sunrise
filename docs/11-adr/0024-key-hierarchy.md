@@ -6,6 +6,24 @@
 one reserved per-vault key domain that is not a Stream, the private domain for
 stream-less content, under the same rules as a Stream key.
 
+**Amended by:** [ADR-0069](./0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)
+— decision 4's identity recipient class reaches the recovery path only while
+the relay retains the `key_envelope` ops, which it trims after 30 days or
+256 MiB. The account's keys therefore also travel as one bundle sealed to the
+same recipient, `ID_D_pub` of the identity in force, which the relay pins
+outside op retention and a recovering device opens with the restored
+`ID_D_priv`. Same recipient, so it reaches nobody the envelopes did not.
+
+**Amended by:** [ADR-0070](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md)
+— after an identity rotation the identity copies sealed before it are sealed
+to an identity the account no longer signs under. A recovery code made before
+the rotation reaches the identity in force only if the rotation carried it
+(the carry share, walked link by link from a chain record the relay keeps
+beside the blob), and then takes those keys from the key bundle sealed to the
+identity in force. A rotation that does not carry the code mints its
+vault-meta epoch and every Stream's next epoch with no copy for the outgoing
+identity, and issues a new code.
+
 **Amends** [`docs/03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md),
 [`key-rotation.md`](../03-crypto/key-rotation.md) and
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this

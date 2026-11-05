@@ -48,7 +48,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{AttachmentFetchState, Command, Core, CoreConfig, CoreError, Unlock};
+use sunrise_core::{AttachmentFetchState, Core, CoreConfig, CoreError, NetworkClass, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_id::EntityRef;
 use thiserror::Error;
@@ -57,19 +57,44 @@ use tokio::sync::broadcast::error::RecvError;
 use zeroize::Zeroize as _;
 
 pub mod background;
+pub mod brief;
+pub mod build_info;
+pub mod calendar;
 pub mod client;
 pub mod command;
+pub mod conflicts;
+pub mod day_schedule;
 pub mod dto;
+pub mod editing;
+pub mod flows;
+pub mod full_export;
 pub mod ical;
+pub mod keyboard;
+pub mod lateness;
+pub mod links;
+pub mod note_editing;
 pub mod notes;
+pub mod notifications;
 pub mod pairing;
 pub mod pairing_relay;
+pub mod print;
 pub mod query;
 pub mod recovery;
+pub mod relay_url;
+pub mod reminders;
+pub mod saved_views;
+pub mod search;
+pub mod secret_copies;
+pub mod settings;
+pub mod sync_status;
+pub mod task_order;
 pub mod types;
+pub mod upcoming;
+pub mod vault_repair;
 pub mod vocab;
 
 pub use background::{SyncCancel, SyncOnceOutcome};
+pub use build_info::{core_build_info, CoreBuildInfo};
 pub use client::{
     PrimaryView, SavedView, SavedViewFile, SavedViews, UndoRefusal, UndoState, UndoableOutcome,
 };
@@ -84,7 +109,10 @@ pub use notes::{
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use pairing_relay::RelayPairing;
 pub use query::{CoreQuery, CoreQueryResult};
-pub use recovery::{check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep};
+pub use recovery::{
+    check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep, ReplayListener,
+    ReplayProgress,
+};
 pub use vocab::RelativeDay;
 
 uniffi::setup_scaffolding!();
@@ -235,11 +263,13 @@ pub enum BindingError {
         /// The feature id.
         feature: String,
     },
-    /// A recovery code that is mistyped, or is not this account's.
+    /// A recovery code that is mistyped, or is not this account's, or that an
+    /// identity rotation retired (ADR-0070).
     ///
     /// Raised before anything is written. The client puts the user back in
     /// the 24-word field. The message names a bad word's position and never
-    /// the word.
+    /// the word; for a retired code it says the code was retired and when,
+    /// which is what tells the user to look for the newer one.
     #[error("recovery code: {0}")]
     RecoveryCode(String),
     /// The relay will release the recovery blob only to a fresh sign-in, and
@@ -256,9 +286,10 @@ pub enum BindingError {
     ///
     /// No vault under the restored account exists, so the client must not
     /// keep the root it handed in: opening the directory under it would mint
-    /// a fresh, empty account. A vault that would not open may have left files
-    /// behind, which make the directory refuse the next recovery until they
-    /// are cleared.
+    /// a fresh, empty account. A directory holds a vault when it has `vault.db`
+    /// or a non-empty `vault-id` marker, and a vault that would not open may
+    /// have left either behind, which makes the directory refuse the next
+    /// recovery until it is cleared.
     #[error("recovery: {0}")]
     RecoveryRefused(String),
     /// The recovery wrote the vault and did not finish: the relay would not
@@ -270,6 +301,33 @@ pub enum BindingError {
     /// the vault syncs.
     #[error("recovery: {0}")]
     RecoveryIncomplete(String),
+    /// The vault's integrity check failed: the file is damaged, and was not
+    /// opened or migrated (`STORAGE_INTEGRITY_CHECK_FAILED`).
+    ///
+    /// This and the five variants after it are what [`SunriseCore::open`]
+    /// and [`SunriseCore::open_repairing`] raise for a vault that exists and
+    /// will not open, one per [`sunrise_client_core::vault_session::OpenProblem`] but `Other`, which
+    /// stays [`BindingError::Core`]. Each reads as the `Core` message it
+    /// replaces. The client offers what [`vault_repair::open_remedies`]
+    /// lists for it.
+    #[error("core: {0}")]
+    VaultDamaged(String),
+    /// The copy a migration or rebuild runs under could not be written, so
+    /// neither ran and the vault is as it was (`STORAGE_BACKUP_FAILED`).
+    #[error("core: {0}")]
+    VaultBackupFailed(String),
+    /// A migration failed and rolled back (`STORAGE_MIGRATION_FAILED`).
+    #[error("core: {0}")]
+    VaultMigrationFailed(String),
+    /// A newer build wrote the vault (`STORAGE_V_TOO_NEW`).
+    #[error("core: {0}")]
+    VaultTooNew(String),
+    /// The vault predates the storage baseline (`STORAGE_V_TOO_OLD`).
+    #[error("core: {0}")]
+    VaultTooOld(String),
+    /// Something else has the vault open (`STORAGE_VAULT_LOCKED`).
+    #[error("core: {0}")]
+    VaultBusy(String),
 }
 
 impl From<sunrise_integrations::IntegrationError> for BindingError {
@@ -329,6 +387,14 @@ pub enum AttachmentFetchState {
     Partial,
 }
 
+/// See [`sunrise_core::NetworkClass`].
+#[uniffi::remote(Enum)]
+pub enum NetworkClass {
+    Unmetered,
+    Cellular,
+    Constrained,
+}
+
 /// A live vault.
 ///
 /// Opaque on the foreign side: it is an `Arc`-held object with methods, not a
@@ -352,7 +418,7 @@ pub struct SunriseCore {
     /// restored from disk a week later would restore a value nothing on screen
     /// has shown since. It is also **not** synced — undo is this device's
     /// record of what *it* did.
-    undo_stacks: Mutex<client::UndoStacks>,
+    undo: sunrise_client_core::history::UndoHistory,
     /// The kick and dial count every sync transport this vault dials shares,
     /// so [`SunriseCore::sync_once`] can tell a session dialled for it from one
     /// that was up before the app was suspended. See [`background`].
@@ -378,6 +444,15 @@ impl SunriseCore {
     ///
     /// It defaults to `None`, so every existing Swift call site keeps
     /// compiling and keeps meaning what it meant.
+    ///
+    /// # Errors
+    ///
+    /// For a vault that will not open, the `Vault…` variant naming why:
+    /// [`BindingError::VaultDamaged`] and the five after it, for which
+    /// [`vault_repair::open_remedies`] says what to offer, and
+    /// [`BindingError::Core`] for any other reason.
+    /// [`BindingError::BadVaultRoot`] and [`BindingError::Pairing`] for what
+    /// was handed in.
     // `default(paired_bundle = None)` is what keeps every existing Swift call
     // site compiling and meaning what it meant: the generated signature gains
     // an argument the foreign side may omit, rather than a fourth required one.
@@ -404,16 +479,17 @@ impl SunriseCore {
                 paired,
             },
         )
-        .await?;
+        .await
+        .map_err(vault_repair::open_failed)?;
         Ok(Self::wrap(core))
     }
 
-    /// Restore an account from its recovery code into the empty vault
-    /// directory `vault_dir`, and return the vault open.
+    /// Restore an account from its recovery code into `vault_dir`, a directory
+    /// holding no vault, and return the vault open.
     ///
     /// `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8, by the same
-    /// implementation `sunrise recover` runs (`sunrise_onboarding::
-    /// recover_account`): fetch the account's identity key and its sealed
+    /// implementation `sunrise recover` runs
+    /// (`sunrise_client_core::recovery::recover_account`): fetch the account's identity key and its sealed
     /// blob, open the blob with `code`, create the vault from the restored
     /// identity under `vault_root`, register this device with the relay as
     /// `nickname`, and wait up to `catch_up_ms` for the history to replay.
@@ -459,79 +535,107 @@ impl SunriseCore {
         listener: Arc<dyn recovery::RecoveryListener>,
         catch_up_ms: u64,
     ) -> Result<Arc<Self>, BindingError> {
-        let root = vault_root_bytes(&vault_root)?;
-        let dir = PathBuf::from(vault_dir);
-        // The identity a vault belongs to is fixed when it is created, so a
-        // recovery into a directory that already holds one would either be
-        // refused by the keychain or keep the old identity.
-        if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
-            return Err(BindingError::RecoveryRefused(format!(
-                "{} already holds a vault; a recovery creates one and cannot merge into another",
-                dir.display()
-            )));
-        }
-        let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
-            .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
-
-        let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
-        cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
-        let bearer = step_up_bearer.clone();
-        let url = relay_url.clone();
-        let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
-            core.sync_credential().set(Some(bearer.clone()));
-            let signer = core.device_signer(relay_device_id);
-            // A link of its own: this core is shut down before the handle the
-            // caller gets is opened, and nothing ever kicks it.
-            core.start_sync(ws_factory(&url, Some(signer), background::SyncLink::new()))
-                .map_err(|e| e.to_string())
-        };
-
-        let mut code = code;
-        let outcome = sunrise_onboarding::recover_account(
-            &relay,
-            &code,
-            cfg,
-            VaultRootKey::from_bytes(root),
-            sunrise_onboarding::DeviceLabel {
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
                 nickname,
-                platform: platform_tag(),
-                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                catch_up_ms,
             },
-            &start_sync,
-            catch_up_ms,
-            &mut recovery::forward(listener),
-        )
-        .await;
-        code.zeroize();
-        outcome?;
-
-        // The flow shut its core down, so the vault lock is free: open it
-        // again the way every later launch will, which is also the proof that
-        // the root opens what the recovery wrote. The vault is written and
-        // the device registered by now, so a failure here is still one whose
-        // root the caller must keep.
-        let core = Core::open(
-            CoreConfig::production(dir, app_version),
-            Unlock::DevicePaired {
-                root: VaultRootKey::from_bytes(root),
-                paired: None,
-            },
+            recovery::forward(listener, None),
         )
         .await
-        .map_err(recovery::reopen_failed)?;
-        Ok(Self::wrap(core))
+    }
+
+    /// [`Self::recover_account`], with the replay's progress also reported
+    /// to `replay` as n of N where the relay states N (#459).
+    ///
+    /// `listener` hears every step as it does from [`Self::recover_account`],
+    /// [`recovery::RecoveryStep::Replaying`] included. `replay` hears each of
+    /// those replay steps again as a [`recovery::ReplayProgress`], which
+    /// carries the total. A constructor of its own, not a new field or
+    /// listener method, because either of those would change the generated
+    /// Swift the app already compiles against.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::recover_account`].
+    #[uniffi::constructor(default(catch_up_ms = 60000))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_account_with_replay(
+        vault_dir: String,
+        vault_root: Vec<u8>,
+        app_version: String,
+        relay_url: String,
+        step_up_bearer: String,
+        code: String,
+        nickname: String,
+        listener: Arc<dyn recovery::RecoveryListener>,
+        replay: Arc<dyn recovery::ReplayListener>,
+        catch_up_ms: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
+                nickname,
+                catch_up_ms,
+            },
+            recovery::forward(listener, Some(replay)),
+        )
+        .await
     }
 
     /// Submit one mutating command.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] when the vault requires a feature this
+    /// build lacks and the command would edit what it covers.
+    /// [`BindingError::BadFixedBytes`] for an `AttachFile` whose key or digest
+    /// is the wrong width or not hex. [`BindingError::Core`] when the command
+    /// does not validate, the vault refuses the write, or a `ResolveConflict`
+    /// value is not canonical CBOR.
     pub async fn submit(&self, cmd: CoreCommand) -> Result<CommandOutcome, BindingError> {
         let res = self.inner.submit(cmd.into_core()?).await?;
         Ok(CommandOutcome::from(&res))
     }
 
     /// Run one read query.
+    ///
+    /// [`CoreQuery::StreamList`] answers with one row the core's list does not
+    /// have: a synthetic Inbox first, under the legacy Inbox id, whose
+    /// `open_task_count` counts the Inbox view. The core has no such row because
+    /// the Inbox is a view rather than a stream (ADR-0046 §3).
     pub async fn query(&self, q: CoreQuery) -> Result<CoreQueryResult, BindingError> {
+        let stream_list = matches!(q, CoreQuery::StreamList);
         let res = self.inner.query(q.into_core()).await?;
-        Ok(CoreQueryResult::from_core(res))
+        let mut out = CoreQueryResult::from_core(res);
+        // The Inbox is a view, not a stream (ADR-0046 §3), so the core's
+        // stream list has no row for it. A client that predates that reads
+        // its sidebar's Inbox off the first row, so the seam puts a synthetic
+        // one back, under the legacy Inbox id, counting the view.
+        if let (true, CoreQueryResult::Streams { streams }) = (stream_list, &mut out) {
+            let open = match self.inner.query(sunrise_core::Query::Inbox).await? {
+                sunrise_core::QueryResult::StreamTasks(t) | sunrise_core::QueryResult::Tasks(t) => {
+                    t.len()
+                }
+                _ => 0,
+            };
+            streams.insert(
+                0,
+                crate::dto::StreamListRow::inbox(u64::try_from(open).unwrap_or(u64::MAX)),
+            );
+        }
+        Ok(out)
     }
 
     /// Submit one command **and record how to reverse it**.
@@ -547,39 +651,26 @@ impl SunriseCore {
     /// because it cannot be undone would be a worse client — and the returned
     /// [`client::UndoableOutcome`] carries why nothing went on the stack. Say
     /// that out loud rather than offering an undo that silently does nothing:
-    /// a delete writes a tombstone the core cannot restore, and that fact
-    /// belongs in front of the user *before* they rely on undo.
+    /// detaching an attachment, resolving a conflict, and any other command
+    /// that answers [`client::UndoRefusal::Unsupported`] stay done, and that
+    /// fact belongs in front of the user *before* they rely on undo. A delete
+    /// is not among them: its undo is a restore (ADR-0065 §3).
+    ///
+    /// # Errors
+    ///
+    /// As [`SunriseCore::submit`]; nothing goes on the stack then.
     pub async fn submit_undoable(
         &self,
         cmd: CoreCommand,
         label: String,
     ) -> Result<client::UndoableOutcome, BindingError> {
-        let lowered = cmd.into_core()?;
-        // A create is recorded *after* the write and everything else *before*
-        // it, and neither order is a preference: an edit's inverse reads the
-        // values the write is about to overwrite, and a create's inverse names
-        // the entity the write is about to mint.
-        let (res, recorded) = if sunrise_client_core::undo::is_create(&lowered) {
-            let res = self.inner.submit(lowered.clone()).await?;
-            let recorded = client::record_create(label, lowered, res.entity);
-            (res, recorded)
-        } else {
-            // Read before write. The order is the whole correctness argument.
-            let recorded = client::record(&self.inner, label, vec![lowered.clone()]).await;
-            (self.inner.submit(lowered).await?, recorded)
-        };
-        let not_undoable = match recorded {
-            Ok(entry) => {
-                if let Ok(mut g) = self.undo_stacks.lock() {
-                    g.push(entry);
-                }
-                None
-            }
-            Err(refusal) => Some(refusal),
-        };
+        let (res, not_undoable) = self
+            .undo
+            .submit(&self.inner, cmd.into_core()?, label)
+            .await?;
         Ok(client::UndoableOutcome {
             outcome: CommandOutcome::from(&res),
-            not_undoable,
+            not_undoable: not_undoable.map(client::UndoRefusal::from),
         })
     }
 
@@ -589,37 +680,24 @@ impl SunriseCore {
     /// This is a **new write**, not a rollback: it converges like any other
     /// op, and a device undoing what another has since changed loses the LWW
     /// tie exactly as a manual edit would.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] or [`BindingError::Core`], as
+    /// [`SunriseCore::submit`] raises them for the reversing write. The step
+    /// does not go back on either stack: it may have half applied, and
+    /// replaying it is not known to be safe.
     pub async fn undo(&self) -> Result<Option<String>, BindingError> {
-        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_undo()) else {
-            return Ok(None);
-        };
-        let minted = self.apply(&entry.backward).await?;
-        // If the step being applied contains a create — which is what the redo
-        // of an undone create is — the way back out has to name the entity
-        // this replay minted, not the one the original create did.
-        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
-        let label = entry.label.clone();
-        if let Ok(mut g) = self.undo_stacks.lock() {
-            g.push_undone(entry);
-        }
-        Ok(Some(label))
+        Ok(self.undo.undo(&self.inner).await?)
     }
 
     /// Replay the most recently undone step. Returns its label, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SunriseCore::undo`], for the replayed write.
     pub async fn redo(&self) -> Result<Option<String>, BindingError> {
-        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_redo()) else {
-            return Ok(None);
-        };
-        let minted = self.apply(&entry.backward).await?;
-        // Replaying a create makes a *different* entity. Bind the undo that
-        // goes back on the stack to that one, or the next undo would delete an
-        // already-tombstoned id and leave this entity live for ever.
-        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
-        let label = entry.label.clone();
-        if let Ok(mut g) = self.undo_stacks.lock() {
-            g.push_redone(entry);
-        }
-        Ok(Some(label))
+        Ok(self.undo.redo(&self.inner).await?)
     }
 
     /// What can be undone or redone right now, for the menu.
@@ -627,10 +705,7 @@ impl SunriseCore {
     /// Sync: it reads two labels off a mutex and touches nothing else.
     #[must_use]
     pub fn undo_state(&self) -> client::UndoState {
-        self.undo_stacks
-            .lock()
-            .map(|g| g.state())
-            .unwrap_or_default()
+        self.undo.labels().into()
     }
 
     /// Parse one capture line (`#stream @context ^when !priority ~duration`)
@@ -639,8 +714,15 @@ impl SunriseCore {
     /// `tz` is an IANA zone name; an unknown one falls back to UTC rather than
     /// refusing the capture, because losing what someone typed is the worse
     /// failure.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::FeatureMissing`] when the vault requires a feature this
+    /// build lacks and creating a task would edit what it covers.
+    /// [`BindingError::Core`] when the vault cannot be read to resolve names,
+    /// the parsed task does not validate, or the vault refuses the write.
     pub async fn capture(&self, text: String, tz: String) -> Result<CommandOutcome, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         let parsed = self.inner.capture(&text, &zone).await?;
         let res = self
             .inner
@@ -670,7 +752,7 @@ impl SunriseCore {
         text: String,
         tz: String,
     ) -> Result<CapturePreview, BindingError> {
-        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = sunrise_client_core::vocab::zone_or_utc(&tz);
         Ok(CapturePreview::from(
             &self.inner.capture(&text, &zone).await?,
         ))
@@ -685,7 +767,8 @@ impl SunriseCore {
     /// therefore offer "import" without first asking the user whether they
     /// have already done it.
     ///
-    /// `stream_id` is where the Blocks land; `None` means the Inbox stream.
+    /// `stream_id` is where the Blocks land; `None`, or the legacy Inbox id,
+    /// imports into no stream.
     /// `source` distinguishes two calendars that happen to share a `UID` and
     /// should stay separate; `None` means the shared one-shot `.ics` source,
     /// which is what a file picker wants.
@@ -705,6 +788,9 @@ impl SunriseCore {
     /// at all, or when the vault refuses a write. A single unusable event is
     /// reported in the result instead, because refusing 200 good events over
     /// one bad one would make the feature useless.
+    ///
+    /// [`BindingError::BadId`] when `stream_id` names something other than a
+    /// stream; nothing is imported then.
     pub async fn import_ical(
         &self,
         text: String,
@@ -718,8 +804,8 @@ impl SunriseCore {
                     cause: "a calendar imports into a stream".into(),
                 })
             }
-            Some(id) => id,
-            None => sunrise_domain::inbox_stream_ref(),
+            // None, or the legacy Inbox id, imports into no stream.
+            other => sunrise_domain::home_stream(other),
         };
         let source = source
             .as_deref()
@@ -753,6 +839,35 @@ impl SunriseCore {
         Ok(sunrise_integrations::ical_vault::export(&self.inner, window, at_ms).await?)
     }
 
+    /// Write everything, decrypted, into `dir`, in the open format of
+    /// `docs/04-storage/export-format.md`: every record as JSON lines, notes
+    /// as Markdown, every Block as one `.ics`, the attachment bytes, and a
+    /// `manifest.json` of versions and BLAKE3 digests, written last.
+    ///
+    /// `dir` must not exist yet or be an empty directory. With `fetch`,
+    /// attachment bytes that are on the relay and not here are downloaded
+    /// first; whatever is still not here is listed in the manifest as
+    /// missing, with the reason. The same writer as `sunrise export all`.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] for a destination that is not empty, a file
+    /// that could not be written, or a vault that could not be read.
+    pub async fn export_all(
+        &self,
+        dir: String,
+        fetch: bool,
+    ) -> Result<full_export::FullExportSummary, BindingError> {
+        let manifest = sunrise_client_core::export::export_all(
+            &self.inner,
+            std::path::Path::new(&dir),
+            sunrise_client_core::export::ExportOptions { fetch },
+        )
+        .await
+        .map_err(|e| BindingError::Core(e.to_string()))?;
+        Ok(full_export::FullExportSummary::from(&manifest))
+    }
+
     /// Attach a file to a task: seal the bytes, store them, record the
     /// metadata, and return the row that describes them.
     ///
@@ -765,22 +880,131 @@ impl SunriseCore {
     /// knows that `.heic` is `image/heic`, and reimplementing that in the core
     /// would be a worse answer that also had to be maintained.
     ///
+    /// `preview` is what the platform could tell about the file: the
+    /// original's dimensions and a JPEG or PNG thumbnail it rendered
+    /// (ADR-0053 §1). The core seals the thumbnail as a blob of its own. Pass
+    /// [`dto::AttachPreviewIn`] with every field `None` when there is nothing.
+    ///
     /// # Errors
     ///
-    /// [`BindingError::Attachment`] for an empty or oversized file, an unknown
-    /// parent task, or a blob store that could not be written.
+    /// [`BindingError::Attachment`] for an empty or oversized file, a
+    /// thumbnail that is not a JPEG or PNG of one chunk, an unknown parent
+    /// task, or a blob store that could not be written.
     pub async fn attach_file(
         &self,
         task: EntityRef,
         filename: String,
         mime_type: String,
         bytes: Vec<u8>,
+        preview: dto::AttachPreviewIn,
     ) -> Result<dto::AttachmentItem, BindingError> {
         let att = self
             .inner
-            .attach_file(task, filename, mime_type, &bytes)
+            .attach_file_with(task, filename, mime_type, &bytes, preview.into())
             .await?;
         Ok(dto::AttachmentItem::from(&att))
+    }
+
+    /// One attachment's thumbnail, verified, or `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::AttachmentNotHere`] when the thumbnail has not been
+    /// fetched yet. Everything else is [`BindingError::Attachment`].
+    pub async fn thumbnail_bytes(
+        &self,
+        id: EntityRef,
+    ) -> Result<Option<dto::ThumbnailOut>, BindingError> {
+        Ok(self
+            .inner
+            .thumbnail_bytes(id)
+            .await?
+            .map(|(mime_type, bytes)| dto::ThumbnailOut { mime_type, bytes }))
+    }
+
+    /// Report the class of network this device is on, whenever the OS says
+    /// it changed. The fetch drain decides from it what to fetch unasked.
+    pub fn set_network_class(&self, network: NetworkClass) {
+        self.inner.set_network_class(network);
+    }
+
+    /// Hold an attachment's bytes in the cache while a preview of them is
+    /// open. Release with [`SunriseCore::unpin_attachment`].
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] for an unknown or tombstoned id.
+    pub async fn pin_attachment(&self, id: EntityRef) -> Result<(), BindingError> {
+        Ok(self.inner.pin_attachment(id).await?)
+    }
+
+    /// Release one pin [`SunriseCore::pin_attachment`] took. Infallible, and
+    /// valid for an attachment deleted since it was pinned.
+    pub fn unpin_attachment(&self, id: EntityRef) {
+        self.inner.unpin_attachment(id);
+    }
+
+    /// What this device's attachment cache holds and its limit, for
+    /// Settings → Storage.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault could not be read.
+    pub fn attachment_cache_usage(&self) -> Result<dto::CacheUsageItem, BindingError> {
+        Ok(self.inner.attachment_cache_usage()?.into())
+    }
+
+    /// Evict every evictable blob: **Clear cache**. Returns the bytes freed.
+    /// Blobs not yet uploaded, thumbnails and open previews stay.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault or the blob store could not
+    /// be written.
+    pub fn clear_attachment_cache(&self) -> Result<u64, BindingError> {
+        Ok(self.inner.clear_attachment_cache()?)
+    }
+
+    /// Bring the cache under its limit now: after the limit was lowered.
+    /// Returns the bytes freed.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault or the blob store could not
+    /// be written.
+    pub fn enforce_attachment_cache(&self) -> Result<u64, BindingError> {
+        Ok(self.inner.enforce_attachment_cache()?)
+    }
+
+    /// Rebuild the vault's projection from its local op log: every entity
+    /// row, the task search index and the merge state are cleared and
+    /// folded again from the ops, in one transaction (issue #441). Nothing
+    /// is reported on `subscribe_changes`; re-read what is on screen.
+    ///
+    /// The vault is copied first, to `<vault>.pre-rebuild.bak`, which the
+    /// next open deletes; [`vault_repair::vault_backups`] lists it until then.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] if the copy cannot be written, an op in the log
+    /// cannot be read or the vault cannot be written. The projection is then
+    /// left as it was.
+    pub fn rebuild_projection(&self) -> Result<dto::RebuildReportItem, BindingError> {
+        Ok(self.inner.rebuild_projection()?.into())
+    }
+
+    /// Bring search's word index into line with the vault's content language
+    /// (`search.content_language`), a batch at a time with the vault free
+    /// between batches; search answers from the old index until the new one
+    /// is swapped in. Cheap when nothing needs doing, so call it in the
+    /// background after open and after the language changes.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] when the vault is closed or cannot be written;
+    /// the old index stays, and the next call resumes.
+    pub async fn reindex_search(&self) -> Result<search::SearchReindexItem, BindingError> {
+        Ok(self.inner.reindex_search().await?.into())
     }
 
     /// One attachment's plaintext, reassembled and verified.
@@ -906,14 +1130,10 @@ impl SunriseCore {
         &self,
         pairing: Arc<pairing::DevicePairing>,
     ) -> Result<String, BindingError> {
-        let offer = self
-            .inner
-            .export_pairing_offer()
-            .map_err(|e| BindingError::Core(e.to_string()))?;
-        let encoded = offer
-            .encode()
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        pairing.seal_pairing_offer(encoded)
+        Ok(sunrise_client_core::pairing::seal_offer(
+            &self.inner,
+            pairing.inner(),
+        )?)
     }
 
     /// Issue the joiner's `DeviceCert` and seal message 3, on the sponsor.
@@ -937,20 +1157,14 @@ impl SunriseCore {
         pairing: Arc<pairing::DevicePairing>,
         sealed_request: String,
     ) -> Result<String, BindingError> {
-        let raw = pairing.open_cert_request(sealed_request)?;
-        let request = sunrise_pairing::decode_pairing_request(&raw)
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let grant = self
-            .inner
-            .issue_pairing_grant(&request)
-            .map_err(|e| BindingError::Core(e.to_string()))?;
-        // `grant` zeroizes itself on drop; the encoding is the same secret in
-        // serialized form, and `seal_pairing_grant` takes ownership of it and
-        // wipes it once the ciphertext exists.
-        let encoded = grant
-            .encode()
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        pairing.seal_pairing_grant(encoded)
+        // The request is opened by the pairing object, answered by the vault
+        // and the grant sealed straight back out, all in the client layer's
+        // `seal_grant`, which wipes the grant's encoding once sealed.
+        Ok(sunrise_client_core::pairing::seal_grant(
+            &self.inner,
+            pairing.inner(),
+            &sealed_request,
+        )?)
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.
@@ -964,18 +1178,31 @@ impl SunriseCore {
         self.inner.now_ms()
     }
 
+    /// Report the zone the OS says this device is in: on the OS's
+    /// time-zone-change notification and on every foreground
+    /// (`docs/10-cross-cutting/time.md` §7). See
+    /// [`sunrise_core::Core::on_time_zone_changed`].
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] for a zone name the tzdb does not know.
+    pub fn on_time_zone_changed(&self, zone: String) -> Result<TimeZoneChange, BindingError> {
+        let c = self.inner.on_time_zone_changed(&zone)?;
+        Ok(TimeZoneChange {
+            previous: c.previous,
+            zone: c.zone,
+            changed: c.changed,
+            affected_tasks: c.affected_tasks,
+            notify: c.notify,
+            hard_violations: c.hard_violations,
+        })
+    }
+
     /// This device's stable id, hex-encoded — what [`SunriseLogin::begin`]
     /// binds the token to.
     #[must_use]
     pub fn device_id(&self) -> String {
-        self.inner
-            .device_id()
-            .iter()
-            .fold(String::new(), |mut acc, b| {
-                use std::fmt::Write;
-                let _ = write!(acc, "{b:02x}");
-                acc
-            })
+        sunrise_client_core::ids::hex_id(&self.inner.device_id())
     }
 
     /// This device's certificate (canonical CBOR), for pairing.
@@ -1119,42 +1346,32 @@ impl SunriseCore {
         nickname: String,
         terms_accepted_at_ms: u64,
     ) -> Result<dto::AccountBootstrap, BindingError> {
-        use sunrise_core::Rng as _;
-
-        // Exactly `sunrise bootstrap`'s sequence: draw, seal, encode, upload.
-        let (recovery_blob, code) = if self.inner.holds_identity_key() {
-            let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
-            sunrise_core::SystemRng.fill_bytes(&mut seed);
-            let blob = self.inner.seal_recovery_blob(&seed)?;
-            let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-            seed.zeroize();
-            (Some(blob), Some(code))
-        } else {
-            (None, None)
-        };
-
-        let outcome = sunrise_relay_client::bootstrap(
+        // Exactly `sunrise bootstrap`'s sequence — draw, seal, encode, upload —
+        // because it is the same function.
+        let done = sunrise_client_core::account::bootstrap_account(
+            &self.inner,
+            &sunrise_core::SystemRng,
             &relay_url,
             &bearer,
-            sunrise_onboarding::AccountCreateRequest {
-                email,
-                identity_signing_pub: self.inner.identity_signing_pub(),
-                identity_dh_pub: self.inner.identity_dh_pub(),
-                recovery_blob,
-                terms_at_ms: terms_accepted_at_ms,
-            },
-            self.relay_device_identity(nickname),
+            email,
+            terms_accepted_at_ms,
+            device_label(nickname),
         )
         .await
-        .map_err(|e| BindingError::Relay(e.to_string()))?;
+        .map_err(|e| match e {
+            sunrise_client_core::account::AccountError::Seal(e) => BindingError::from(e),
+            sunrise_client_core::account::AccountError::Relay(e) => {
+                BindingError::Relay(e.to_string())
+            }
+        })?;
 
         Ok(dto::AccountBootstrap {
-            identity_id: outcome.identity_id,
-            email: outcome.email,
-            device_id: outcome.device_id,
+            identity_id: done.outcome.identity_id,
+            email: done.outcome.email,
+            device_id: done.outcome.device_id,
             // Read out only after the relay accepted the blob, so a code this
             // ever returns is a code the stored blob opens.
-            recovery_code: code.map(|c| c.reveal().to_owned()),
+            recovery_code: done.recovery_code.map(|c| c.reveal().to_owned()),
         })
     }
 
@@ -1188,10 +1405,11 @@ impl SunriseCore {
         bearer: String,
         nickname: String,
     ) -> Result<String, BindingError> {
-        sunrise_relay_client::register_device(
+        sunrise_client_core::account::register_relay_device(
+            &self.inner,
             &relay_url,
             &bearer,
-            self.relay_device_identity(nickname),
+            device_label(nickname),
         )
         .await
         .map_err(|e| BindingError::Relay(e.to_string()))
@@ -1224,6 +1442,15 @@ impl SunriseCore {
     /// runtime handle captured in the async constructor, not `tokio::spawn` —
     /// a sync exported method runs on the calling foreign thread with no
     /// reactor installed, and a bare `tokio::spawn` there panics at runtime.
+    ///
+    /// # Errors
+    ///
+    /// None today: the driver's connection failures happen after this has
+    /// returned. A second call while a driver runs does not start another or
+    /// restart the running one, so its `url` and `relay_device_id` are
+    /// ignored; its `bearer` still replaces the stored credential, exactly as
+    /// [`SunriseCore::set_sync_credential`] would, and the running driver
+    /// presents it on its next connect.
     pub fn start_sync(
         &self,
         url: String,
@@ -1254,6 +1481,10 @@ impl SunriseCore {
     }
 
     /// Start the periodic routine-materialization timer.
+    ///
+    /// # Errors
+    ///
+    /// None today: a second call while the timer runs is a no-op.
     pub fn start_routine_timer(&self, interval_ms: u64) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
         self.inner
@@ -1284,6 +1515,11 @@ impl SunriseCore {
 }
 
 impl SunriseCore {
+    /// The open vault, for the client-layer flows that take one.
+    pub(crate) fn core(&self) -> &Core {
+        &self.inner
+    }
+
     /// Hold an opened core.
     ///
     /// Only ever called from an async constructor, so a runtime is
@@ -1293,45 +1529,19 @@ impl SunriseCore {
         Arc::new(Self {
             inner: Arc::new(core),
             rt: Handle::current(),
-            undo_stacks: Mutex::new(client::UndoStacks::default()),
+            undo: sunrise_client_core::history::UndoHistory::new(),
             sync_link: background::SyncLink::new(),
         })
     }
+}
 
-    /// Submit a recorded batch, stopping at the first failure.
-    ///
-    /// Not exported: an undo step is a list of commands the seam built, never
-    /// one a client hands in.
-    /// Submit a recorded step, returning the entity each command touched.
-    ///
-    /// The ids matter for exactly one command shape: a create, whose entity is
-    /// minted here and nowhere else. Everything else returns the id it was
-    /// already given, which the caller ignores.
-    async fn apply(&self, cmds: &[Command]) -> Result<Vec<EntityRef>, BindingError> {
-        let mut touched = Vec::with_capacity(cmds.len());
-        for cmd in cmds {
-            touched.push(self.inner.submit(cmd.clone()).await?.entity);
-        }
-        Ok(touched)
-    }
-
-    /// What this device tells `POST /api/v1/devices` about itself.
-    ///
-    /// One builder for both registration paths, so a founding device and a
-    /// paired one cannot come to describe themselves differently.
-    fn relay_device_identity(&self, nickname: String) -> sunrise_relay_client::DeviceIdentity {
-        sunrise_relay_client::DeviceIdentity {
-            device_pub_s: self.inner.device_signing_pub(),
-            device_pub_d: None,
-            device_cert: None,
-            // The only name a sibling can revoke this device by: the relay
-            // mints its own id and never sends it back through the op
-            // stream. A device that omits it cannot be revoked at all.
-            vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
-            nickname,
-            platform: platform_tag(),
-            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        }
+/// How this build describes itself to `POST /api/v1/devices`: the caller's
+/// nickname, this build's platform tag and version.
+fn device_label(nickname: String) -> sunrise_client_core::account::DeviceLabel {
+    sunrise_client_core::account::DeviceLabel {
+        nickname,
+        platform: platform_tag(),
+        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     }
 }
 
@@ -1348,48 +1558,40 @@ fn platform_tag() -> String {
 
 /// A vault root as it crossed the seam, checked for its width.
 fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
-    vault_root
-        .try_into()
-        .map_err(|_| BindingError::BadVaultRoot {
-            len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
-        })
+    sunrise_client_core::host::vault_root(vault_root).map_err(|e| BindingError::BadVaultRoot {
+        len: u32::try_from(e.len).unwrap_or(u32::MAX),
+    })
 }
 
-/// Build the transport factory the sync driver dials with, once per connection
-/// attempt (initial connect and every reconnect).
-///
-/// The factory holds no bearer: the driver reads the core's sync credential on
-/// every attempt and hands the read over, so a reconnect after a renewal
-/// presents the *current* token and the driver knows which version each
-/// attempt carried. `signer` — the ADR-0022 device binding — is cloned per
-/// attempt for the same reason: the route where that matters most is the
-/// revocation `DELETE`, which runs on whatever connection the driver holds at
-/// the time.
-///
-/// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
-/// transport-agnostic and calls this once per connection attempt.
-///
-/// Every transport goes out through `link`, which counts it and lets
-/// [`SunriseCore::sync_once`] end it later — see [`background`].
+/// The transport factory the sync driver dials with: the shared SSE factory,
+/// every transport going out through `link` so [`SunriseCore::sync_once`] can
+/// count and end it — see [`background`].
 fn ws_factory(
     url: &str,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
     link: background::SyncLink,
 ) -> sunrise_core::TransportFactory {
-    let url = url.to_string();
-    Arc::new(move |read: sunrise_core::CredentialRead| {
-        let url = url.clone();
-        let signer = signer.clone();
-        let link = link.clone();
-        Box::pin(async move {
-            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
-            let t = match signer {
-                Some(s) => t.with_device_signer(s),
-                None => t,
-            };
-            Ok(link.wrap(Box::new(t)))
-        }) as sunrise_core::ConnectFuture
-    })
+    sunrise_client_core::sync::sse_factory(url, signer, Some(link))
+}
+
+/// What reporting a zone did. See [`sunrise_core::TimeZoneChange`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TimeZoneChange {
+    /// The reader's zone before the report.
+    pub previous: String,
+    /// The reader's zone now.
+    pub zone: String,
+    /// Whether the zone changed.
+    pub changed: bool,
+    /// Open tasks whose resolved time or lateness moved.
+    pub affected_tasks: u32,
+    /// Whether to post the one local notification naming the new zone; the
+    /// `notifications.timezone_changed.enabled` preference, off by default.
+    pub notify: bool,
+    /// Open planned tasks whose plan breaks a hard scheduling constraint in
+    /// the new zone (#333). Flag them; the core never moves them.
+    #[uniffi(default = [])]
+    pub hard_violations: Vec<EntityRef>,
 }
 
 /// One change to the local vault, addressed by entity.
@@ -1420,15 +1622,24 @@ pub enum ChangeEvent {
         /// The entity.
         entity: sunrise_id::EntityRef,
     },
+    /// The reader's zone changed and no entity did: every view derived from
+    /// the zone has to be read again (`docs/10-cross-cutting/time.md` §7).
+    TimeZoneChanged {
+        /// The new IANA zone.
+        zone: String,
+    },
 }
 
 impl From<&sunrise_core::DomainEvent> for ChangeEvent {
     fn from(e: &sunrise_core::DomainEvent) -> Self {
-        match *e {
-            sunrise_core::DomainEvent::Created(entity) => Self::Created { entity },
-            sunrise_core::DomainEvent::Updated(entity) => Self::Updated { entity },
-            sunrise_core::DomainEvent::Deleted(entity) => Self::Deleted { entity },
-            sunrise_core::DomainEvent::Forgotten(entity) => Self::Forgotten { entity },
+        match e {
+            sunrise_core::DomainEvent::Created(entity) => Self::Created { entity: *entity },
+            sunrise_core::DomainEvent::Updated(entity) => Self::Updated { entity: *entity },
+            sunrise_core::DomainEvent::Deleted(entity) => Self::Deleted { entity: *entity },
+            sunrise_core::DomainEvent::Forgotten(entity) => Self::Forgotten { entity: *entity },
+            sunrise_core::DomainEvent::TimeZoneChanged { zone } => {
+                Self::TimeZoneChanged { zone: zone.clone() }
+            }
         }
     }
 }
@@ -1503,7 +1714,7 @@ impl std::fmt::Debug for SunriseCore {
 ///
 /// `refresh_token` is `None` when the issuer did not return one — some do not
 /// for public clients — in which case renewal means logging in again.
-#[derive(uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LoginCredentials {
     /// The bearer to hand to [`SunriseCore::set_sync_credential`].
     pub access_token: String,
@@ -1679,6 +1890,128 @@ impl SunriseLogin {
     }
 }
 
+/// What [`SunriseCore::recover_account`] and
+/// [`SunriseCore::recover_account_with_replay`] take, less the listeners.
+struct RecoveryRequest {
+    vault_dir: String,
+    vault_root: Vec<u8>,
+    app_version: String,
+    relay_url: String,
+    step_up_bearer: String,
+    code: String,
+    nickname: String,
+    catch_up_ms: u64,
+}
+
+/// The recovery both constructors run, reporting through `progress`.
+async fn recover_account_reporting(
+    request: RecoveryRequest,
+    mut progress: impl FnMut(sunrise_client_core::recovery::RecoveryProgress) + Send,
+) -> Result<Arc<SunriseCore>, BindingError> {
+    let RecoveryRequest {
+        vault_dir,
+        vault_root,
+        app_version,
+        relay_url,
+        step_up_bearer,
+        code,
+        nickname,
+        catch_up_ms,
+    } = request;
+    let root = vault_root_bytes(&vault_root)?;
+    let dir = PathBuf::from(vault_dir);
+    sunrise_client_core::recovery::check_recovery_directory(&dir)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+    let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+
+    let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
+    cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
+    let bearer = step_up_bearer.clone();
+    let url = relay_url.clone();
+    let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
+        core.sync_credential().set(Some(bearer.clone()));
+        let signer = core.device_signer(relay_device_id);
+        // A link of its own: this core is shut down before the handle the
+        // caller gets is opened, and nothing ever kicks it.
+        core.start_sync(ws_factory(&url, Some(signer), background::SyncLink::new()))
+            .map_err(|e| e.to_string())
+    };
+
+    let mut code = code;
+    let outcome = sunrise_client_core::recovery::recover_account(
+        &relay,
+        &code,
+        cfg,
+        VaultRootKey::from_bytes(root),
+        device_label(nickname),
+        &start_sync,
+        catch_up_ms,
+        &mut progress,
+    )
+    .await;
+    code.zeroize();
+    outcome?;
+
+    // The flow shut its core down, so the vault lock is free: open it
+    // again the way every later launch will, which is also the proof that
+    // the root opens what the recovery wrote. The vault is written and
+    // the device registered by now, so a failure here is still one whose
+    // root the caller must keep.
+    let core = Core::open(
+        CoreConfig::production(dir, app_version),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes(root),
+            paired: None,
+        },
+    )
+    .await
+    .map_err(recovery::reopen_failed)?;
+    Ok(SunriseCore::wrap(core))
+}
+
+#[cfg(test)]
+mod recovery_directory_tests {
+    use super::{recover_account_reporting, BindingError, RecoveryRequest};
+
+    /// A recovery into `dir` with a code that fails its checksum, which is the
+    /// first thing the flow checks once the directory has passed.
+    async fn recover_into(dir: &std::path::Path) -> BindingError {
+        let request = RecoveryRequest {
+            vault_dir: dir.to_string_lossy().into_owned(),
+            vault_root: vec![7; 32],
+            app_version: "test".into(),
+            // Nothing listens here, and neither path below reaches it.
+            relay_url: "http://127.0.0.1:9".into(),
+            step_up_bearer: "bearer".into(),
+            code: "abandon".into(),
+            nickname: "phone".into(),
+            catch_up_ms: 1_000,
+        };
+        match recover_account_reporting(request, |_| {}).await {
+            Ok(_) => panic!("a one-word code cannot recover anything"),
+            Err(e) => e,
+        }
+    }
+
+    /// The seam runs the shared rule: a stray file gets as far as the code,
+    /// and a written marker is refused before it.
+    #[tokio::test]
+    async fn a_stray_file_passes_and_a_vault_marker_is_refused() {
+        let dir = tempfile::tempdir().expect("a vault dir");
+        std::fs::write(dir.path().join(".DS_Store"), b"stray").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(matches!(err, BindingError::RecoveryCode(_)), "{err:?}");
+
+        std::fs::write(dir.path().join("vault-id"), b"anything\n").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(
+            matches!(&err, BindingError::RecoveryRefused(m) if m.contains("already holds a vault")),
+            "{err:?}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod login_error_tests {
     use super::BindingError;
@@ -1714,5 +2047,53 @@ mod login_error_tests {
             refused.to_string(),
             "login: issuer declined: refresh: invalid_grant"
         );
+    }
+}
+
+#[cfg(test)]
+mod attach_error_tests {
+    use super::BindingError;
+    use sunrise_core::AttachError;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// Bytes not fetched yet and a download the user cancelled are not
+    /// failures, so each crosses as its own variant carrying the id; every
+    /// other attachment error crosses as `Attachment` with its message.
+    #[test]
+    fn each_attach_error_crosses_as_what_the_client_does_next() {
+        let id = EntityRef::new(EntityKind::Attachment, [7; 16]);
+
+        let not_here = BindingError::from(AttachError::BytesNotHere { id });
+        assert!(
+            matches!(&not_here, BindingError::AttachmentNotHere { id: i } if *i == id.to_str()),
+            "{not_here:?}"
+        );
+
+        let cancelled = BindingError::from(AttachError::FetchCancelled { id });
+        assert!(
+            matches!(
+                &cancelled,
+                BindingError::AttachmentDownloadCancelled { id: i } if *i == id.to_str()
+            ),
+            "{cancelled:?}"
+        );
+        assert_eq!(
+            cancelled.to_string(),
+            AttachError::FetchCancelled { id }.to_string(),
+            "the message is unchanged"
+        );
+
+        for other in [
+            AttachError::FetchUnavailable { id },
+            AttachError::NotOnRelay { id },
+            AttachError::SyncOffline { id },
+        ] {
+            let message = other.to_string();
+            let crossed = BindingError::from(other);
+            assert!(
+                matches!(&crossed, BindingError::Attachment(m) if *m == message),
+                "{crossed:?}"
+            );
+        }
     }
 }

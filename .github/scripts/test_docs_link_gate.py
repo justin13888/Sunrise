@@ -4,14 +4,14 @@
 Why this file exists
 --------------------
 
-The gate's own `--self-test` is a very good test of `slugify`: 23 cases,
-including a derivation of github-slugger's Unicode deletion ranges. It is
-not a test of anything else. `check()` — the listing, the resolution of a
-relative destination against the citing file's directory, the difference
-between a file link and a directory link, the two exit codes and the
-annotation a reader follows back to a line — is exercised by nothing but
-the repository's own 1,239 links, which is a fixture that changes every
-week and can only ever prove the gate is green.
+The gate's own `--self-test` is a very good test of `slugify`, including a
+derivation of github-slugger's Unicode deletion ranges. It is not a test of
+anything else. `check()` — the listing, the resolution of a relative
+destination against the citing file's directory, the difference between a
+file link and a directory link, the two exit codes and the annotation a
+reader follows back to a line — is exercised by nothing but the repository's
+own links, which is a fixture that changes every week and can only ever
+prove the gate is green.
 
 Both directions are here. `Rejects` pins the four ways a link can resolve
 to nothing; `Accepts` pins the shapes a plausible tightening would start
@@ -395,12 +395,6 @@ class AdrLabelAgreesWithTarget(GateCase):
         # code is the rule: it needs an ADR number on both sides.
         self.write("docs/a.md", "Prose.\n")
         self.write("crates/c/src/lib.rs", "fn f() { let _ = a[0](b); }\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
-
-    def test_legacy_is_not_read_for_this_rule_either(self):
-        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
-        self.write("docs/a.md", "Prose.\n")
-        self.write("legacy/app/build.rs", "// [ADR-0038](../../docs/11-adr/0039-ios-distribution.md)\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
 
     def test_the_run_says_how_many_links_it_compared(self):

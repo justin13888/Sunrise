@@ -120,12 +120,6 @@ impl std::fmt::Debug for Unlock {
 }
 
 impl Unlock {
-    /// Underlying vault root (consumes self, zeroizing the rest on drop).
-    #[must_use]
-    pub fn into_root(self) -> VaultRootKey {
-        self.into_parts().0
-    }
-
     /// The vault root and the identity material the keychain should seed
     /// itself from.
     #[must_use]

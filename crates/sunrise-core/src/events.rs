@@ -15,6 +15,13 @@ pub enum DomainEvent {
     Deleted(EntityRef),
     /// An entity is fully gone (post-compaction).
     Forgotten(EntityRef),
+    /// The reader's zone changed (`docs/10-cross-cutting/time.md` §7). No
+    /// entity changed, and every view derived from the zone — Today,
+    /// lateness, the calendar, the reminder schedule — must be read again.
+    TimeZoneChanged {
+        /// The new IANA zone.
+        zone: String,
+    },
 }
 
 /// Snapshot of sync status. Streamed via `Core::sync_status()`.
@@ -28,6 +35,21 @@ pub struct SyncStatus {
     pub peer_devices: u32,
     /// Last successful sync time (ms since epoch); `None` if never.
     pub last_sync_ms: Option<u64>,
+    /// Ops this session has received while catching up (#459). Counts every
+    /// op in a replayed batch, applied or found already held, so it moves in
+    /// the same unit as [`Self::replay_remaining`].
+    #[serde(default)]
+    pub replay_applied: u64,
+    /// Ops the relay has stated it will still send before this session is
+    /// caught up, summed over the streams it has stated a backlog for.
+    ///
+    /// Zero once the stated streams have caught up. `None` before the relay
+    /// has stated anything this session, which includes a session with
+    /// nothing to replay, and always against a relay that states no backlog
+    /// (one that predates the `backlog` event): there is then no total to
+    /// show, only [`Self::replay_applied`].
+    #[serde(default)]
+    pub replay_remaining: Option<u64>,
 }
 
 /// How one attachment's bytes stand on **this** device.

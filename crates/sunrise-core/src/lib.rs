@@ -46,11 +46,15 @@
     clippy::manual_let_else
 )]
 
+pub mod alerts;
 pub mod attach;
+mod blob_cache;
 mod blob_fetch;
 mod blob_sync;
+mod bytes;
 pub mod commands;
 pub mod config;
+pub mod conflicts;
 pub mod control_op;
 pub mod core;
 // Test-only: the generator and its pins. The build's registry, which the
@@ -59,19 +63,35 @@ pub mod core;
 mod doc_schema;
 pub mod engine;
 pub mod events;
+pub mod export;
 pub mod feature;
+mod identity_chain_sync;
 pub mod inner_op;
+mod key_bundle_sync;
 pub mod keychain;
 pub mod queries;
 mod relay_intents;
+mod snapshot_sync;
 pub mod sync_driver;
+#[cfg(test)]
+mod test_support;
 pub mod unlock;
 pub mod vault_lock;
 
-pub use attach::AttachError;
+pub use alerts::{DeadlineCandidate, SecurityEvent, SecurityEventKind};
+pub use attach::{AttachError, AttachPreview, ThumbnailImage};
+pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClass};
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;
-pub use commands::{Command, CommandResult, FocusStartDraft};
-pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
+pub use commands::{
+    BulkTaskAction, BulkTaskItem, Command, CommandResult, FocusStartDraft, TimeZoneChange,
+};
+pub use config::{
+    Clock, CoreConfig, HlcClock, MonotonicHlc, ReportedZoneClock, Rng, SystemClock, SystemRng,
+};
+pub use conflicts::{
+    BadVersionRef, ConflictClass, ConflictWrite, DeletedEdit, EntityConflict, VersionRef,
+    WriteOrigin,
+};
 pub use control_op::{
     DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
     KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
@@ -79,17 +99,23 @@ pub use control_op::{
 pub use core::{Core, CoreError};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, SnapshotApplied, BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
+    Engine, EngineError, KeyBundleApplied, RebuildReport, SearchReindex, SnapshotApplied,
+    BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
 };
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };
-pub use feature::{FeatureScope, MissingFeature};
+pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
-    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
-    StreamRow,
+    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,
+    PlannerDay, Query, QueryResult, SavedViewResult, SearchGroup, SearchHit, SearchNotice,
+    SearchResults, StreamRow, TaskLateness, TodayRow, TriageRow,
 };
+/// What [`CoreError::Db`] carries, and the copies of a vault kept beside it
+/// ([`Core::vault_backups`]): named here so a client that branches on why a
+/// vault would not open needs no dependency on the storage crate.
+pub use sunrise_storage::{BackupKind, DbError, VaultBackup};
 pub use sync_driver::{
     BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,
 };

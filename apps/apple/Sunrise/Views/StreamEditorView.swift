@@ -37,11 +37,11 @@ struct StreamEditorView: View {
             // this sheet opens: the list behind it has a capture bar, and a UI
             // test reaching for "the first text field" was as likely to type
             // the stream's name into a task.
-            TextField("Name", text: $name)
+            TextField(L10n.StreamEditor.name, text: $name)
                 .textInput(.identifier)
                 .accessibilityIdentifier("stream.name")
 
-            Picker("Colour", selection: $color) {
+            Picker(L10n.StreamEditor.colour, selection: $color) {
                 ForEach(StreamColor.options(holding: stream?.color), id: \.self) { option in
                     Label {
                         Text(option.label)
@@ -52,23 +52,23 @@ struct StreamEditorView: View {
                 }
             }
 
-            Picker("Review cadence", selection: $cadence) {
-                Text("None").tag(StreamReviewCadence.none)
-                Text("Weekly").tag(StreamReviewCadence.weekly)
-                Text("Biweekly").tag(StreamReviewCadence.biweekly)
-                Text("Monthly").tag(StreamReviewCadence.monthly)
+            Picker(L10n.StreamEditor.reviewCadence, selection: $cadence) {
+                Text(L10n.StreamEditor.cadenceNone).tag(StreamReviewCadence.none)
+                Text(L10n.StreamEditor.cadenceWeekly).tag(StreamReviewCadence.weekly)
+                Text(L10n.StreamEditor.cadenceBiweekly).tag(StreamReviewCadence.biweekly)
+                Text(L10n.StreamEditor.cadenceMonthly).tag(StreamReviewCadence.monthly)
                 // A cadence a newer client wrote: offered as itself, so saving
                 // the sheet without touching it keeps it.
                 if let held = stream?.reviewCadence, case .unknown = held {
-                    Text("Unknown").tag(held)
+                    Text(L10n.StreamEditor.cadenceUnknown).tag(held)
                 }
             }
 
             Section {
                 HStack {
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button(isCreating ? "Create" : "Save") {
+                    Button(L10n.Action.cancel) { dismiss() }
+                    Button(isCreating ? L10n.StreamEditor.create : L10n.Action.save) {
                         Task {
                             await commit(name.trimmed, edit)
                             dismiss()
@@ -83,7 +83,7 @@ struct StreamEditorView: View {
         .formStyle(.grouped)
         .frame(width: 380)
         .padding(.vertical, 8)
-        .navigationTitle(isCreating ? "New stream" : "Edit stream")
+        .navigationTitle(isCreating ? L10n.StreamEditor.newStream : L10n.StreamEditor.editStream)
     }
 
     private var edit: StreamEdit {
@@ -115,8 +115,8 @@ struct StreamEditorLoader: View {
                 StreamEditorView(stream: stream) { _, edit in await commit(edit) }
             } else if failed {
                 VStack(spacing: 12) {
-                    Text("“\(row.name)” could not be read.")
-                    Button("Close") { dismiss() }
+                    Text(L10n.StreamEditor.unreadable(name: row.name))
+                    Button(L10n.Action.close) { dismiss() }
                 }
                 .padding(24)
                 .frame(width: 320)
@@ -151,15 +151,23 @@ struct ContextEditorView: View {
 
     var body: some View {
         Form {
-            TextField("Name", text: $name, prompt: Text("errands"))
-                .textInput(.identifier)
-            TextField("Description", text: $description, prompt: Text("Optional"))
+            TextField(
+                L10n.StreamEditor.name,
+                text: $name,
+                prompt: Text(L10n.StreamEditor.contextNamePrompt)
+            )
+            .textInput(.identifier)
+            TextField(
+                L10n.StreamEditor.contextDescription,
+                text: $description,
+                prompt: Text(L10n.StreamEditor.contextDescriptionPrompt)
+            )
 
             Section {
                 HStack {
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button(isCreating ? "Create" : "Save") {
+                    Button(L10n.Action.cancel) { dismiss() }
+                    Button(isCreating ? L10n.StreamEditor.create : L10n.Action.save) {
                         Task {
                             await commit(name.trimmed, edit)
                             dismiss()
@@ -174,7 +182,7 @@ struct ContextEditorView: View {
         .formStyle(.grouped)
         .frame(width: 380)
         .padding(.vertical, 8)
-        .navigationTitle(isCreating ? "New context" : "Edit context")
+        .navigationTitle(isCreating ? L10n.StreamEditor.newContext : L10n.StreamEditor.editContext)
     }
 
     /// Split-optional: an emptied description asks for the field to be

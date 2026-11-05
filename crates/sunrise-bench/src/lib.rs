@@ -164,14 +164,14 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
     };
 
     let base = i64::try_from(FIXED_NOW_MS).expect("fixed now fits i64");
-    // scheduled_at: present ~70% of the time, spread -30..=30 days.
+    // planned_at: present ~70% of the time, spread -30..=30 days.
     let scheduled_at = if rng.next_u32() % 10 < 7 {
         let off_days = i64::from(rng.next_u32() % 61) - 30;
         Some(ts(base + off_days * DAY_MS))
     } else {
         None
     };
-    // due_at: present ~40% of the time. When both are set, keep due >= scheduled
+    // hard_due_at: present ~40% of the time. When both are set, keep due >= scheduled
     // by anchoring it 0..=14 days after the scheduled instant.
     let due_at = if rng.next_u32() % 10 < 4 {
         let extra_days = i64::from(rng.next_u32() % 15);
@@ -192,8 +192,8 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 
     TaskDraft {
         title,
-        scheduled_at: scheduled_at.map(Into::into),
-        due_at: due_at.map(Into::into),
+        planned_at: scheduled_at.map(Into::into),
+        hard_due_at: due_at.map(Into::into),
         priority,
         ..Default::default()
     }
@@ -205,7 +205,7 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 pub fn submit_draft() -> TaskDraft {
     TaskDraft {
         title: "review budget report".to_string(),
-        scheduled_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS).into()),
+        planned_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS).into()),
         ..Default::default()
     }
 }
@@ -241,6 +241,94 @@ pub fn seed_tasks(vault: &mut BenchVault, n: usize, content_seed: u64) -> Vec<St
         }
     }
     ids
+}
+
+/// A CJK title fragment injected into ~1% of [`seed_search_vault`]'s titles,
+/// so the bench measures the trigram index's CJK path as well as words.
+pub const CJK_WORD: &str = "東京出張";
+
+/// Seed a vault shaped for the search bench: `n_tasks` tasks through
+/// [`seed_tasks`]'s titles, a third of them with a note, in one stream per
+/// thousand tasks, and one block per twenty tasks, all through the real
+/// command path so the index writers run as they do on a device.
+///
+/// Notes are a dozen of the common title words, and one note in a hundred names
+/// [`RARE_WORD`]; one title in a hundred carries [`CJK_WORD`]. Returns the
+/// stream names, which the bench's `#stream` query names.
+///
+/// # Panics
+/// Panics if any command fails to apply (a seeding bug, not an expected error).
+pub fn seed_search_vault(vault: &mut BenchVault, n_tasks: usize, content_seed: u64) -> Vec<String> {
+    use sunrise_domain::{
+        encode_note_body, BlockDraft, Inline, NoteBlock, StreamDraft, SunriseTime,
+    };
+    let mut rng = ChaCha8Rng::seed_from_u64(content_seed);
+    let word = |rng: &mut ChaCha8Rng| -> &'static str {
+        let len = u32::try_from(WORDS.len()).expect("word list fits u32");
+        WORDS[(rng.next_u32() % len) as usize]
+    };
+    let n_streams = (n_tasks / 1_000).max(1);
+    let mut names = Vec::with_capacity(n_streams);
+    let mut streams = Vec::with_capacity(n_streams);
+    for i in 0..n_streams {
+        let name = format!("area {i}");
+        let id = vault
+            .engine
+            .apply(
+                &mut vault.db,
+                Command::CreateStream(StreamDraft {
+                    name: name.clone(),
+                    ..Default::default()
+                }),
+            )
+            .expect("seed stream")
+            .entity;
+        names.push(name);
+        streams.push(id);
+    }
+    let base = i64::try_from(FIXED_NOW_MS).expect("fixed now fits i64");
+    for i in 0..n_tasks {
+        let mut draft = synth_draft(i, &mut rng);
+        if i % 100 == 50 {
+            draft.title = format!("{} {CJK_WORD}の準備", draft.title);
+        }
+        if i % 3 == 0 {
+            let mut text = Vec::new();
+            for _ in 0..12 {
+                text.push(word(&mut rng));
+            }
+            if i % 100 == 3 {
+                text.push(RARE_WORD);
+            }
+            draft.body = Some(encode_note_body(&[NoteBlock::Paragraph {
+                inline: vec![Inline::text(text.join(" "))],
+            }]));
+        }
+        draft.stream_id = Some(streams[i % n_streams]);
+        vault
+            .engine
+            .apply(&mut vault.db, Command::CreateTask(draft))
+            .expect("seed task");
+        if i % 20 == 0 {
+            let start = ts(base + i64::try_from(i).expect("fits") * 60_000);
+            let end = ts(start.as_millisecond() + 3_600_000);
+            vault
+                .engine
+                .apply(
+                    &mut vault.db,
+                    Command::CreateBlock(BlockDraft {
+                        stream_id: Some(streams[i % n_streams]),
+                        starts_at: SunriseTime::from(start),
+                        ends_at: SunriseTime::from(end),
+                        title: Some(format!("{} {} session {i}", word(&mut rng), word(&mut rng))),
+                        title_track_task: false,
+                        tasks: Vec::new(),
+                    }),
+                )
+                .expect("seed block");
+        }
+    }
+    names
 }
 
 /// How many real commands [`grow_op_log`] applies before it starts cloning.

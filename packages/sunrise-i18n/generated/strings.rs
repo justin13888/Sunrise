@@ -6,6 +6,424 @@
 /// Every locale this binding carries, the source locale first.
 pub const LOCALES: &[&str] = &["en"];
 
+/// `usage` messages.
+pub mod usage {
+    /// ```text
+    /// sunrise — command-line client for Sunrise
+    ///
+    /// USAGE:
+    ///   capture and triage
+    ///     sunrise capture <text>...    parse and commit one task, then exit
+    ///     sunrise edit <id>... <tokens>...
+    ///                                  change a task's fields (see EDIT SYNTAX)
+    ///     sunrise retitle <id> <text>...
+    ///                                  give one task a new title
+    ///     sunrise defer <id>... <when> push tasks out, counting the deferral; a day
+    ///                                  keeps the plan's time and kind
+    ///     sunrise schedule <id>... <when>|-
+    ///                                  set or clear the plan, without counting a
+    ///                                  deferral
+    ///     sunrise done <id>...         complete one or more tasks
+    ///     sunrise drop <id>...         soft-delete one or more tasks
+    ///     sunrise move <id>... before|after <id>
+    ///     sunrise move <id>... first|last
+    ///                                  hand-arrange tasks within their stream; the
+    ///                                  order syncs to every device
+    ///     sunrise restore <id>...      bring back deleted tasks, streams, contexts,
+    ///                                  routines or blocks
+    ///     sunrise conflicts [list] [<id>] [--all]
+    ///                                  the fields two devices wrote without seeing
+    ///                                  each other, with every write kept; --all adds
+    ///                                  the quiet ones (priority, energy, ...)
+    ///     sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)
+    ///                                  settle one field on a kept write, or on a new
+    ///                                  value (JSON, or plain text)
+    ///     sunrise note <id> [<text>...|-|--file <path|->] [--force]
+    ///                                  print, replace or clear a task's note
+    ///     sunrise show <id>            one task's fields, each time with its kind
+    ///     sunrise undo | redo          reverse or replay this vault's last write
+    ///     sunrise today                list today's tasks
+    ///     sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then
+    ///                                  the undated tasks of each stream
+    ///     sunrise inbox                list the Inbox: open tasks with no stream,
+    ///                                  no date, and not triaged
+    ///     sunrise triage <id>...       take tasks out of the Inbox and leave them
+    ///                                  with no stream and no date
+    ///     sunrise untriage <id>...     put triaged tasks back in the Inbox
+    ///     sunrise triage [list]        the tasks that need a decision: late, hard
+    ///                                  then soft, then stale, oldest first
+    ///     sunrise triage defer <id>... <when>|next
+    ///                                  move their plan; `next` is the next free slot
+    ///     sunrise triage done <id>... [--on <when>]
+    ///                                  already done, now or when it was done
+    ///     sunrise triage drop <id>... [--reason <text>]
+    ///                                  drop them, saying why
+    ///     sunrise triage keep <id>...  leave them as they are until their lateness
+    ///                                  changes
+    ///     sunrise next                 the focus planner's top picks
+    ///     sunrise search [--kind <k>] [--all] <query>...
+    ///                                  search everything, grouped by kind; the
+    ///                                  query takes #stream, @context, !1, state:,
+    ///                                  kind:, is:, has: and due<fri-style dates
+    ///
+    ///   the vault's shape
+    ///     sunrise streams              list streams with open counts
+    ///     sunrise streams move <id|name> before <id|name>
+    ///     sunrise streams move <id|name> last
+    ///                                  reorder the stream list; syncs to every device
+    ///     sunrise stream <id|name>     list the tasks in one stream; `none` lists
+    ///                                  the tasks of no stream
+    ///     sunrise streams create|edit|archive|unarchive|delete <id|name> ...
+    ///                                  change the stream list
+    ///     sunrise streams delete <id|name> [--move-to <id|name>]
+    ///                                  delete a stream and move everything it held,
+    ///                                  its tasks, blocks and routines, to another
+    ///                                  stream or to no stream; its sub-streams
+    ///                                  become top-level
+    ///     sunrise contexts             list contexts with task counts
+    ///     sunrise context <id|name>    list the tasks carrying one context
+    ///     sunrise contexts create|edit|archive|unarchive|delete <id|name> ...
+    ///                                  change the context list
+    ///     sunrise routines             list routines with cadence and streak
+    ///     sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]
+    ///     sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
+    ///     sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]
+    ///                                  skip the next occurrence, or a named one
+    ///
+    ///   calendar
+    ///     sunrise blocks [day|week] [<when>]
+    ///                                  list the blocks on one day or week
+    ///     sunrise block create --from <when> (--to <when> | --for <length>)
+    ///                                  [--title <t>] [--task <id>]... [--kind <k>]
+    ///     sunrise block move <block-id> --from <when> [--to <when>]
+    ///                                  move or resize; each bound keeps its kind
+    ///     sunrise block bind|unbind <block-id> <task-id>...
+    ///     sunrise block merge <block-id> <block-id>
+    ///                                  replace two overlapping blocks with their union
+    ///     sunrise block delete <block-id>
+    ///
+    ///   attachments
+    ///     sunrise attachments <task-id>
+    ///                                  list a task's attachments, marking which are
+    ///                                  on this device
+    ///     sunrise attachment get <attachment-id> [path]
+    ///                                  download one attachment's bytes on demand,
+    ///                                  whatever its size, and write them to `path`
+    ///                                  or to stdout
+    ///     sunrise attachment cancel <attachment-id>
+    ///                                  stop a download this vault has outstanding and
+    ///                                  mark it partial; `get` restarts it from byte 0
+    ///     sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]
+    ///                                  attach a file; it uploads on the next sync
+    ///     sunrise attachment remove <attachment-id>
+    ///
+    ///   review and reporting
+    ///     sunrise review               print this week's review summary
+    ///     sunrise review daily         the glance since the start of yesterday
+    ///     sunrise review save [note]   record that this week was reviewed
+    ///     sunrise brief morning|evening
+    ///                                  the morning or evening brief
+    ///     sunrise reminders plan       this device's reminders for the next day
+    ///     sunrise reminders kinds      every notification kind, and whether it is on
+    ///     sunrise reminders on|off <kind>... [--device]
+    ///                                  turn notification kinds on or off
+    ///     sunrise export <dataset> [json|csv] [path]
+    ///                                  trends | activity | focus | streaks
+    ///     sunrise export all <dir> [--no-fetch]
+    ///                                  write everything, decrypted, into an empty
+    ///                                  directory: every record as JSON, notes as
+    ///                                  Markdown, blocks as .ics, attachment bytes,
+    ///                                  and a manifest of BLAKE3 digests
+    ///
+    ///   calendar interchange (RFC 5545)
+    ///     sunrise ical import <path|-> [--stream <id>] [--source <name>]
+    ///                                  read an .ics file (or stdin) as time blocks
+    ///     sunrise ical export [today|day|week] [path]
+    ///                                  write .ics to stdout, or to a path
+    ///
+    ///   devices and identity
+    ///     sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+    ///                                  (on the device being added) pair over the
+    ///                                  relay: show a code, compare the six digits,
+    ///                                  and open the vault here. Needs SUNRISE_SYNC_URL
+    ///                                  and a sign-in
+    ///     sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+    ///                                  (on the device with the vault) pair with the
+    ///                                  device showing <code>, over the relay
+    ///     sunrise pair offer --out <file>
+    ///                                  (on the device with the vault) write the
+    ///                                  account's public identity. Carries no key
+    ///     sunrise pair request --offer <file> --out <file>
+    ///                                  (on the device being added) mint this device's
+    ///                                  keys and ask for a certificate
+    ///     sunrise pair issue --request <file> --out <file>
+    ///                                  (on the device with the vault) certify those
+    ///                                  keys and hand over the vault. This file carries
+    ///                                  your vault key
+    ///     sunrise pair accept --response <file>
+    ///                                  (on the device being added) adopt the
+    ///                                  certificate and open the vault
+    ///     sunrise devices              list this account's devices, marking revoked
+    ///                                  and non-current ones distinctly
+    ///     sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
+    ///                                  revoke a device and rotate every Stream key, so
+    ///                                  it reads nothing written afterwards. Also
+    ///                                  rotates the account identity, on the device
+    ///                                  that created the account. It cannot be
+    ///                                  undone: to use the device again, pair it
+    ///                                  as a new device
+    ///     sunrise identity status      the account's identity chain: its stable name,
+    ///                                  the identity in force, and whether this device
+    ///                                  still speaks for it
+    ///     sunrise identity rotate [--keep-code]
+    ///                                  replace the account identity, keeping every
+    ///                                  current device, and print a new recovery code:
+    ///                                  the old one stops opening the account. Needs
+    ///                                  SUNRISE_SYNC_URL. --keep-code carries the old
+    ///                                  code forward instead; never use it when the
+    ///                                  code itself may be in someone else's hands
+    ///     sunrise identity new-code    print a new recovery code for the identity in
+    ///                                  force and retire the old one
+    ///
+    ///   views and preferences
+    ///     sunrise views                list saved views
+    ///     sunrise views save <name> <view> [--query <q>] [--contexts a,b]
+    ///                                  [--stream <s>] [--sort <order>]
+    ///                                  save or edit a view; it syncs to every
+    ///                                  device, and names contexts by id
+    ///     sunrise views apply|delete <name>
+    ///     sunrise views rename <name> <new name>
+    ///     sunrise prefs [list]         every preference, its value and its source
+    ///     sunrise prefs get <key>
+    ///     sunrise prefs set <key> <value> [--device]
+    ///     sunrise prefs clear <key> [--device]
+    ///
+    ///   account
+    ///     sunrise vaults               list this machine's vaults, marking the open one
+    ///     sunrise login                sign in via OIDC and store the token
+    ///     sunrise logout               forget the stored token
+    ///     sunrise whoami               report the stored token's state
+    ///     sunrise bootstrap [email]    publish this vault's identity to the relay,
+    ///                                  register this device, and print the 24-word
+    ///                                  recovery code once. Write that code down
+    ///     sunrise recover <word>...    rebuild this account from the 24-word code,
+    ///                                  in a directory with no vault.db and no
+    ///                                  written vault-id. Reads the code from stdin
+    ///                                  if none is given, and signs you in again
+    ///                                  first — the relay only releases a recovery
+    ///                                  blob to a fresh authentication
+    ///
+    ///   plumbing
+    ///     sunrise focus <id>           open a focus session on a task
+    ///     sunrise focus end [--done]   close every running session; --done also
+    ///                                  completes the task it was opened on
+    ///     sunrise sync --once          drain the outbox and exit (cron / CI)
+    ///     sunrise sync --watch [--rounds <n>]
+    ///                                  keep draining until Ctrl-C, backing off while
+    ///                                  the relay is unreachable
+    ///     sunrise sync status          this vault's sync badge and outbox depth
+    ///     sunrise tz [set <IANA>|clear]
+    ///                                  the zone times are read in, and where it
+    ///                                  came from
+    ///     sunrise day-schedule [show [<date>]]
+    ///                                  when you usually wake and sleep, and the
+    ///                                  planner day it makes of today (or <date>)
+    ///     sunrise day-schedule set <days>|day <n|last>|date <date> <wake>-<sleep>|none
+    ///                                  days: MO..SU, mo,we, weekdays, weekend or
+    ///                                  daily; a sleep at or before the wake is the
+    ///                                  next morning
+    ///     sunrise day-schedule clear <days>|day <n|last>|date <date>
+    ///     sunrise rebuild              rebuild every task, stream and other row
+    ///                                  from this vault's own op log, in one
+    ///                                  transaction, under a copy of the vault taken
+    ///                                  first; nothing is sent
+    ///     sunrise rebuild --repair     the same, for a vault that failed its
+    ///                                  integrity check and will not open
+    ///     sunrise backups [restore <file>]
+    ///                                  the copies of this vault kept beside it, or
+    ///                                  put one back in its place
+    ///     sunrise help                 show this message
+    ///
+    /// CAPTURE SYNTAX:
+    ///     #stream  @context  ^when  !priority(1-5)  ~duration  *target:when*  *due:when*
+    ///
+    ///     sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
+    ///
+    /// EDIT SYNTAX:
+    ///     #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  target:when  due:when
+    ///     a trailing `-` clears a field:  !-  %-  ~-  ^-  target:-  due:-  @-
+    ///
+    ///     sunrise edit tsk_01J… '#work !1 ^next friday'
+    ///     sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
+    ///
+    ///     Bare words are refused: an edit line is not a title, and the whole
+    ///     line is rejected if any token is, so nothing is half-applied.
+    ///     The title is `sunrise retitle`, which is all title and no grammar.
+    ///
+    /// ENVIRONMENT:
+    ///     SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
+    ///                               Each one is a separate account: the first open
+    ///                               mints a random 32-byte root for it
+    ///     SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one
+    ///                               file per vault (default
+    ///                               $XDG_DATA_HOME/sunrise/keys). Deliberately not
+    ///                               inside the vault: a vault directory copied on
+    ///                               its own must stay ciphertext. Back both up
+    ///     SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
+    ///                               keystore — how to open a vault made before
+    ///                               per-vault keys
+    ///     SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
+    ///     SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
+    ///                               login. Unset, with no stored login, only works
+    ///                               against a self-host relay
+    ///     SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
+    ///     SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
+    ///     SUNRISE_LOG_FILE          override the NDJSON log destination
+    ///     SUNRISE_TZ                the zone times are read in (IANA name); wins
+    ///                               over `sunrise tz set`, loses to --tz
+    ///
+    /// GLOBAL FLAGS (anywhere on the line; `--` ends them):
+    ///     --json                    print a query's result as one JSON document
+    ///     --tz <IANA>               read times in this zone for this command
+    ///
+    /// ```
+    #[must_use]
+    pub fn text() -> String {
+        let mut out = String::new();
+        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise move <id>... before|after <id>\n    sunrise move <id>... first|last\n                                 hand-arrange tasks within their stream; the\n                                 order syncs to every device\n    sunrise restore <id>...      bring back deleted tasks, streams, contexts,\n                                 routines or blocks\n    sunrise conflicts [list] [<id>] [--all]\n                                 the fields two devices wrote without seeing\n                                 each other, with every write kept; --all adds\n                                 the quiet ones (priority, energy, ...)\n    sunrise conflicts resolve <id> <field> (--pick <version> | --value <v>)\n                                 settle one field on a kept write, or on a new\n                                 value (JSON, or plain text)\n    sunrise note <id> [<text>...|-|--file <path|->] [--force]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise upcoming [7|14|30]   the next 7, 14 or 30 days, day by day, then\n                                 the undated tasks of each stream\n    sunrise inbox                list the Inbox: open tasks with no stream,\n                                 no date, and not triaged\n    sunrise triage <id>...       take tasks out of the Inbox and leave them\n                                 with no stream and no date\n    sunrise untriage <id>...     put triaged tasks back in the Inbox\n    sunrise triage [list]        the tasks that need a decision: late, hard\n                                 then soft, then stale, oldest first\n    sunrise triage defer <id>... <when>|next\n                                 move their plan; `next` is the next free slot\n    sunrise triage done <id>... [--on <when>]\n                                 already done, now or when it was done\n    sunrise triage drop <id>... [--reason <text>]\n                                 drop them, saying why\n    sunrise triage keep <id>...  leave them as they are until their lateness\n                                 changes\n    sunrise next                 the focus planner's top picks\n    sunrise search [--kind <k>] [--all] <query>...\n                                 search everything, grouped by kind; the\n                                 query takes #stream, @context, !1, state:,\n                                 kind:, is:, has: and due<fri-style dates\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream; `none` lists\n                                 the tasks of no stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise streams delete <id|name> [--move-to <id|name>]\n                                 delete a stream and move everything it held,\n                                 its tasks, blocks and routines, to another\n                                 stream or to no stream; its sub-streams\n                                 become top-level\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise reminders kinds      every notification kind, and whether it is on\n    sunrise reminders on|off <kind>... [--device]\n                                 turn notification kinds on or off\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n    sunrise export all <dir> [--no-fetch]\n                                 write everything, decrypted, into an empty\n                                 directory: every record as JSON, notes as\n                                 Markdown, blocks as .ics, attachment bytes,\n                                 and a manifest of BLAKE3 digests\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|day|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]\n                                 (on the device being added) pair over the\n                                 relay: show a code, compare the six digits,\n                                 and open the vault here. Needs SUNRISE_SYNC_URL\n                                 and a sign-in\n    sunrise pair add <code|-> [--yes | --confirm-sas <digits>]\n                                 (on the device with the vault) pair with the\n                                 device showing <code>, over the relay\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--keep-code]\n                                 replace the account identity, keeping every\n                                 current device, and print a new recovery code:\n                                 the old one stops opening the account. Needs\n                                 SUNRISE_SYNC_URL. --keep-code carries the old\n                                 code forward instead; never use it when the\n                                 code itself may be in someone else's hands\n    sunrise identity new-code    print a new recovery code for the identity in\n                                 force and retire the old one\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n                                 [--stream <s>] [--sort <order>]\n                                 save or edit a view; it syncs to every\n                                 device, and names contexts by id\n    sunrise views apply|delete <name>\n    sunrise views rename <name> <new name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account from the 24-word code,\n                                 in a directory with no vault.db and no\n                                 written vault-id. Reads the code from stdin\n                                 if none is given, and signs you in again\n                                 first — the relay only releases a recovery\n                                 blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise sync --watch [--rounds <n>]\n                                 keep draining until Ctrl-C, backing off while\n                                 the relay is unreachable\n    sunrise sync status          this vault's sync badge and outbox depth\n    sunrise tz [set <IANA>|clear]\n                                 the zone times are read in, and where it\n                                 came from\n    sunrise day-schedule [show [<date>]]\n                                 when you usually wake and sleep, and the\n                                 planner day it makes of today (or <date>)\n    sunrise day-schedule set <days>|day <n|last>|date <date> <wake>-<sleep>|none\n                                 days: MO..SU, mo,we, weekdays, weekend or\n                                 daily; a sleep at or before the wake is the\n                                 next morning\n    sunrise day-schedule clear <days>|day <n|last>|date <date>\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction, under a copy of the vault taken\n                                 first; nothing is sent\n    sunrise rebuild --repair     the same, for a vault that failed its\n                                 integrity check and will not open\n    sunrise backups [restore <file>]\n                                 the copies of this vault kept beside it, or\n                                 put one back in its place\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *target:when*  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  target:when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  target:-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how to open a vault made before\n                              per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n    SUNRISE_TZ                the zone times are read in (IANA name); wins\n                              over `sunrise tz set`, loses to --tz\n\nGLOBAL FLAGS (anywhere on the line; `--` ends them):\n    --json                    print a query's result as one JSON document\n    --tz <IANA>               read times in this zone for this command\n");
+        out
+    }
+}
+
+/// `general` messages.
+pub mod general {
+    /// error: {message}
+    #[must_use]
+    pub fn error(message: &str) -> String {
+        let mut out = String::new();
+        out.push_str("error: ");
+        out.push_str(message);
+        out
+    }
+
+    /// note: {text}
+    #[must_use]
+    pub fn note(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("note: ");
+        out.push_str(text);
+        out
+    }
+
+    /// unexpected query result
+    #[must_use]
+    pub fn unexpected_result() -> String {
+        let mut out = String::new();
+        out.push_str("unexpected query result");
+        out
+    }
+
+    /// expected a device list
+    #[must_use]
+    pub fn expected_device_list() -> String {
+        let mut out = String::new();
+        out.push_str("expected a device list");
+        out
+    }
+
+    /// expected an identity status
+    #[must_use]
+    pub fn expected_identity_status() -> String {
+        let mut out = String::new();
+        out.push_str("expected an identity status");
+        out
+    }
+
+    /// not a task id: {raw} ({reason})
+    #[must_use]
+    pub fn not_a_task_id(raw: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("not a task id: ");
+        out.push_str(raw);
+        out.push_str(" (");
+        out.push_str(reason);
+        out.push(')');
+        out
+    }
+
+    /// not an attachment id: {raw} ({reason})
+    #[must_use]
+    pub fn not_an_attachment_id(raw: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("not an attachment id: ");
+        out.push_str(raw);
+        out.push_str(" (");
+        out.push_str(reason);
+        out.push(')');
+        out
+    }
+
+    /// not a stream id: {raw} ({reason})
+    #[must_use]
+    pub fn not_a_stream_id(raw: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("not a stream id: ");
+        out.push_str(raw);
+        out.push_str(" (");
+        out.push_str(reason);
+        out.push(')');
+        out
+    }
+
+    /// not an id of that kind: {raw} ({reason})
+    #[must_use]
+    pub fn not_an_id(raw: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("not an id of that kind: ");
+        out.push_str(raw);
+        out.push_str(" (");
+        out.push_str(reason);
+        out.push(')');
+        out
+    }
+
+    /// no such task: {id}
+    #[must_use]
+    pub fn no_such_task(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no such task: ");
+        out.push_str(id);
+        out
+    }
+
+    /// unexpected argument: {arg}
+    #[must_use]
+    pub fn unexpected_argument(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unexpected argument: ");
+        out.push_str(arg);
+        out
+    }
+
+    /// unknown subcommand {name}; try `sunrise help`
+    #[must_use]
+    pub fn unknown_subcommand(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown subcommand ");
+        out.push_str(name);
+        out.push_str("; try `sunrise help`");
+        out
+    }
+
+    /// updated
+    #[must_use]
+    pub fn updated() -> String {
+        let mut out = String::new();
+        out.push_str("updated");
+        out
+    }
+}
+
 /// `login` messages.
 pub mod login {
     use super::rt;
@@ -44,6 +462,137 @@ pub mod login {
         out.push_str("Signed out.");
         out
     }
+
+    /// {error}; set {issuer} and {client_id} first
+    #[must_use]
+    pub fn needs_config(error: &str, issuer: &str, client_id: &str) -> String {
+        let mut out = String::new();
+        out.push_str(error);
+        out.push_str("; set ");
+        out.push_str(issuer);
+        out.push_str(" and ");
+        out.push_str(client_id);
+        out.push_str(" first");
+        out
+    }
+
+    /// {name} is not set
+    #[must_use]
+    pub fn not_set(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str(name);
+        out.push_str(" is not set");
+        out
+    }
+
+    /// (could not open a browser: {error})
+    #[must_use]
+    pub fn no_browser(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("(could not open a browser: ");
+        out.push_str(error);
+        out.push(')');
+        out
+    }
+
+    /// logged in, but the access token has expired — run `sunrise login`
+    #[must_use]
+    pub fn status_expired() -> String {
+        let mut out = String::new();
+        out.push_str("logged in, but the access token has expired — run `sunrise login`");
+        out
+    }
+
+    /// logged in; access token valid for another {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn status_valid(seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("logged in; access token valid for another ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
+    /// not logged in
+    #[must_use]
+    pub fn status_none() -> String {
+        let mut out = String::new();
+        out.push_str("not logged in");
+        out
+    }
+
+    /// cannot read stored credentials: {error}
+    #[must_use]
+    pub fn status_unreadable(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("cannot read stored credentials: ");
+        out.push_str(error);
+        out
+    }
+}
+
+/// `bootstrap` messages.
+pub mod bootstrap {
+    /// not signed in; run `sunrise login` first
+    #[must_use]
+    pub fn not_signed_in() -> String {
+        let mut out = String::new();
+        out.push_str("not signed in; run `sunrise login` first");
+        out
+    }
+
+    /// set {var} to the relay origin
+    #[must_use]
+    pub fn needs_relay(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("set ");
+        out.push_str(var);
+        out.push_str(" to the relay origin");
+        out
+    }
+
+    /// registered as {device} but could not record it at {path}: {error}
+    #[must_use]
+    pub fn unrecorded(device: &str, path: &str, error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("registered as ");
+        out.push_str(device);
+        out.push_str(" but could not record it at ");
+        out.push_str(path);
+        out.push_str(": ");
+        out.push_str(error);
+        out
+    }
+
+    /// Account {identity} ({email}) ready; this device is {device}.
+    #[must_use]
+    pub fn ready(identity: &str, email: &str, device: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Account ");
+        out.push_str(identity);
+        out.push_str(" (");
+        out.push_str(email);
+        out.push_str(") ready; this device is ");
+        out.push_str(device);
+        out.push('.');
+        out
+    }
+
+    /// this vault was paired into an existing account, so it holds no identity key and cannot produce a recovery code. The device that created the account is the one that can.
+    #[must_use]
+    pub fn paired_no_code() -> String {
+        let mut out = String::new();
+        out.push_str("this vault was paired into an existing account, so it holds no identity key and cannot produce a recovery code. The device that created the account is the one that can.");
+        out
+    }
 }
 
 /// `vaults` messages.
@@ -54,6 +603,900 @@ pub mod vaults {
         let mut out = String::new();
         out.push_str("no vaults keyed in ");
         out.push_str(dir);
+        out
+    }
+}
+
+/// `capture` messages.
+pub mod capture {
+    /// capture needs some text; see `sunrise help`
+    #[must_use]
+    pub fn needs_text() -> String {
+        let mut out = String::new();
+        out.push_str("capture needs some text; see `sunrise help`");
+        out
+    }
+
+    /// no stream matches "{text}" (try `sunrise streams`)
+    #[must_use]
+    pub fn unknown_stream(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no stream matches \"");
+        out.push_str(text);
+        out.push_str("\" (try `sunrise streams`)");
+        out
+    }
+
+    /// no context matches "{text}" (try `sunrise contexts`)
+    #[must_use]
+    pub fn unknown_context(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no context matches \"");
+        out.push_str(text);
+        out.push_str("\" (try `sunrise contexts`)");
+        out
+    }
+
+    /// "{text}" matches {candidates}
+    #[must_use]
+    pub fn ambiguous(text: &str, candidates: &str) -> String {
+        let mut out = String::new();
+        out.push('\"');
+        out.push_str(text);
+        out.push_str("\" matches ");
+        out.push_str(candidates);
+        out
+    }
+
+    /// could not read the date "{text}"
+    #[must_use]
+    pub fn unreadable_date(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("could not read the date \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+
+    /// priority "{text}" is not 1-5
+    #[must_use]
+    pub fn priority_out_of_range(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("priority \"");
+        out.push_str(text);
+        out.push_str("\" is not 1-5");
+        out
+    }
+
+    /// could not read the duration "{text}"
+    #[must_use]
+    pub fn unreadable_duration(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("could not read the duration \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+}
+
+/// `search` messages.
+pub mod search {
+    use super::rt;
+
+    /// search needs a query
+    #[must_use]
+    pub fn needs_query() -> String {
+        let mut out = String::new();
+        out.push_str("search needs a query");
+        out
+    }
+
+    /// ```text
+    /// usage: search [--kind <kind>[,<kind>...]] [--all] <query>...
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: search [--kind <kind>[,<kind>...]] [--all] <query>...");
+        out
+    }
+
+    /// unknown kind `{kind}`; use task, note, event, block, stream, context, place, attachment, view or person
+    #[must_use]
+    pub fn unknown_kind(kind: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown kind `");
+        out.push_str(kind);
+        out.push_str("`; use task, note, event, block, stream, context, place, attachment, view or person");
+        out
+    }
+
+    /// nothing matches “{text}”
+    #[must_use]
+    pub fn nothing(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("nothing matches “");
+        out.push_str(text);
+        out.push('”');
+        out
+    }
+
+    /// {count, plural, one {Tasks (#)} other {Tasks (#)}}
+    #[must_use]
+    pub fn group_task(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Tasks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Tasks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Notes (#)} other {Notes (#)}}
+    #[must_use]
+    pub fn group_note(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Notes (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Notes (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Calendar events (#)} other {Calendar events (#)}}
+    #[must_use]
+    pub fn group_event(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Calendar events (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Calendar events (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Blocks (#)} other {Blocks (#)}}
+    #[must_use]
+    pub fn group_block(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Blocks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Blocks (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Streams (#)} other {Streams (#)}}
+    #[must_use]
+    pub fn group_stream(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Streams (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Streams (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Contexts (#)} other {Contexts (#)}}
+    #[must_use]
+    pub fn group_context(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Contexts (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Contexts (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Places (#)} other {Places (#)}}
+    #[must_use]
+    pub fn group_place(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Places (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Places (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Attachments (#)} other {Attachments (#)}}
+    #[must_use]
+    pub fn group_attachment(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Attachments (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Attachments (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {Saved views (#)} other {Saved views (#)}}
+    #[must_use]
+    pub fn group_view(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("Saved views (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("Saved views (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {People (#)} other {People (#)}}
+    #[must_use]
+    pub fn group_person(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("People (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+            _ => {
+                out.push_str("People (");
+                out.push_str(&rt::number("en", count));
+                out.push(')');
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {… # more (--kind {kind} --all)} other {… # more (--kind {kind} --all)}}
+    #[must_use]
+    pub fn more(count: i64, kind: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more (--kind ");
+                out.push_str(kind);
+                out.push_str(" --all)");
+            }
+            _ => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more (--kind ");
+                out.push_str(kind);
+                out.push_str(" --all)");
+            }
+        }
+        out
+    }
+
+    /// `{text}` is no operator, so it was searched for as text
+    #[must_use]
+    pub fn notice_unknown_key(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is no operator, so it was searched for as text");
+        out
+    }
+
+    /// `{text}` is not a value that operator takes, so it was searched for as text
+    #[must_use]
+    pub fn notice_bad_value(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is not a value that operator takes, so it was searched for as text");
+        out
+    }
+
+    /// a quote was not closed; the phrase runs to the end
+    #[must_use]
+    pub fn notice_unclosed_quote() -> String {
+        let mut out = String::new();
+        out.push_str("a quote was not closed; the phrase runs to the end");
+        out
+    }
+
+    /// a parenthesis was not closed; it closes at the end
+    #[must_use]
+    pub fn notice_unclosed_group() -> String {
+        let mut out = String::new();
+        out.push_str("a parenthesis was not closed; it closes at the end");
+        out
+    }
+
+    /// a closing parenthesis with no opening one was ignored
+    #[must_use]
+    pub fn notice_stray_paren() -> String {
+        let mut out = String::new();
+        out.push_str("a closing parenthesis with no opening one was ignored");
+        out
+    }
+
+    /// an empty phrase was ignored
+    #[must_use]
+    pub fn notice_empty_phrase() -> String {
+        let mut out = String::new();
+        out.push_str("an empty phrase was ignored");
+        out
+    }
+
+    /// OR needs something on both sides, so it was searched for as a word
+    #[must_use]
+    pub fn notice_literal_or() -> String {
+        let mut out = String::new();
+        out.push_str("OR needs something on both sides, so it was searched for as a word");
+        out
+    }
+
+    /// the query is longer than search reads; the rest was ignored
+    #[must_use]
+    pub fn notice_too_long() -> String {
+        let mut out = String::new();
+        out.push_str("the query is longer than search reads; the rest was ignored");
+        out
+    }
+
+    /// the query has more parts than search reads; the rest was searched for as one phrase
+    #[must_use]
+    pub fn notice_too_many_clauses() -> String {
+        let mut out = String::new();
+        out.push_str("the query has more parts than search reads; the rest was searched for as one phrase");
+        out
+    }
+
+    /// parentheses nest deeper than search reads; the rest was searched for as one phrase
+    #[must_use]
+    pub fn notice_too_deep() -> String {
+        let mut out = String::new();
+        out.push_str("parentheses nest deeper than search reads; the rest was searched for as one phrase");
+        out
+    }
+
+    /// nothing is named “{text}”, so that part matches nothing
+    #[must_use]
+    pub fn notice_unknown_name(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("nothing is named “");
+        out.push_str(text);
+        out.push_str("”, so that part matches nothing");
+        out
+    }
+
+    /// more than one name starts with “{text}”, so that part matches nothing
+    #[must_use]
+    pub fn notice_ambiguous_name(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("more than one name starts with “");
+        out.push_str(text);
+        out.push_str("”, so that part matches nothing");
+        out
+    }
+
+    /// `{text}` is not available yet, so it matches nothing
+    #[must_use]
+    pub fn notice_unsupported(text: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(text);
+        out.push_str("` is not available yet, so it matches nothing");
+        out
+    }
+}
+
+/// `streams` messages.
+pub mod streams {
+    /// ```text
+    /// usage: stream <id|name>; `sunrise streams` lists them
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: stream <id|name>; `sunrise streams` lists them");
+        out
+    }
+
+    /// unknown streams verb `{verb}`; use move, create, edit, archive, unarchive or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown streams verb `");
+        out.push_str(verb);
+        out.push_str("`; use move, create, edit, archive, unarchive or delete");
+        out
+    }
+
+    /// ```text
+    /// usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]
+    /// ```
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]");
+        out
+    }
+
+    /// ```text
+    /// usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]
+    /// ```
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]");
+        out
+    }
+
+    /// unknown colour `{color}`; use slate, rose, amber, emerald, sky, indigo, violet or pink
+    #[must_use]
+    pub fn unknown_color(color: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown colour `");
+        out.push_str(color);
+        out.push_str("`; use slate, rose, amber, emerald, sky, indigo, violet or pink");
+        out
+    }
+
+    /// no stream matches "{text}"
+    #[must_use]
+    pub fn no_match(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no stream matches \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+
+    /// ```text
+    /// usage: streams move <id|name> before <id|name>
+    /// streams move <id|name> last
+    /// ```
+    #[must_use]
+    pub fn move_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: streams move <id|name> before <id|name>\nstreams move <id|name> last");
+        out
+    }
+
+    /// the Inbox is not a stream and cannot be reordered
+    #[must_use]
+    pub fn inbox_fixed() -> String {
+        let mut out = String::new();
+        out.push_str("the Inbox is not a stream and cannot be reordered");
+        out
+    }
+
+    /// that stream is not in the list
+    #[must_use]
+    pub fn not_in_list() -> String {
+        let mut out = String::new();
+        out.push_str("that stream is not in the list");
+        out
+    }
+
+    /// cannot place that stream: {error}
+    #[must_use]
+    pub fn cannot_place(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("cannot place that stream: ");
+        out.push_str(error);
+        out
+    }
+}
+
+/// `contexts` messages.
+pub mod contexts {
+    /// ```text
+    /// usage: context <id|name>; `sunrise contexts` lists them
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: context <id|name>; `sunrise contexts` lists them");
+        out
+    }
+
+    /// unknown contexts verb `{verb}`; use create, edit, archive, unarchive or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown contexts verb `");
+        out.push_str(verb);
+        out.push_str("`; use create, edit, archive, unarchive or delete");
+        out
+    }
+
+    /// ```text
+    /// usage: contexts create <name>... [--description <text>]
+    /// ```
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: contexts create <name>... [--description <text>]");
+        out
+    }
+
+    /// ```text
+    /// usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]
+    /// ```
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]");
+        out
+    }
+
+    /// no context matches "{text}"
+    #[must_use]
+    pub fn no_match(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no context matches \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+}
+
+/// `done` messages.
+pub mod done {
+    /// done needs at least one task id
+    #[must_use]
+    pub fn needs_id() -> String {
+        let mut out = String::new();
+        out.push_str("done needs at least one task id");
+        out
+    }
+}
+
+/// `drop` messages.
+pub mod drop {
+    /// drop needs at least one task id
+    #[must_use]
+    pub fn needs_id() -> String {
+        let mut out = String::new();
+        out.push_str("drop needs at least one task id");
+        out
+    }
+}
+
+/// `triage` messages.
+pub mod triage {
+    /// triage and untriage need at least one task id
+    #[must_use]
+    pub fn needs_id() -> String {
+        let mut out = String::new();
+        out.push_str("triage and untriage need at least one task id");
+        out
+    }
+
+    /// ```text
+    /// usage: triage [list] | triage defer <id>... <when>|next | triage done <id>... [--on <when>] | triage drop <id>... [--reason <text>] | triage keep <id>... | triage <id>...
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: triage [list] | triage defer <id>... <when>|next | triage done <id>... [--on <when>] | triage drop <id>... [--reason <text>] | triage keep <id>... | triage <id>...");
+        out
+    }
+
+    /// nothing needs a decision
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("nothing needs a decision");
+        out
+    }
+
+    /// {id}  deferred to {when}
+    #[must_use]
+    pub fn deferred(id: &str, when: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str("  deferred to ");
+        out.push_str(when);
+        out
+    }
+
+    /// {id}  done {when}
+    #[must_use]
+    pub fn done(id: &str, when: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str("  done ");
+        out.push_str(when);
+        out
+    }
+
+    /// {id}  dropped
+    #[must_use]
+    pub fn dropped(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str("  dropped");
+        out
+    }
+
+    /// {id}  kept
+    #[must_use]
+    pub fn kept(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str("  kept");
+        out
+    }
+
+    /// the next free slot
+    #[must_use]
+    pub fn next_free_slot() -> String {
+        let mut out = String::new();
+        out.push_str("the next free slot");
+        out
+    }
+}
+
+/// `reorder` messages.
+pub mod reorder {
+    /// ```text
+    /// usage: move <id>... before|after <id> | move <id>... first|last
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: move <id>... before|after <id> | move <id>... first|last");
+        out
+    }
+
+    /// {id} is not in the stream {anchor} is in; a task's order is kept within its own stream
+    #[must_use]
+    pub fn other_stream(id: &str, anchor: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str(" is not in the stream ");
+        out.push_str(anchor);
+        out.push_str(" is in; a task's order is kept within its own stream");
+        out
+    }
+
+    /// already in that order
+    #[must_use]
+    pub fn unchanged() -> String {
+        let mut out = String::new();
+        out.push_str("already in that order");
+        out
+    }
+}
+
+/// `restore` messages.
+pub mod restore {
+    /// restore needs at least one id
+    #[must_use]
+    pub fn needs_id() -> String {
+        let mut out = String::new();
+        out.push_str("restore needs at least one id");
+        out
+    }
+}
+
+/// `conflicts` messages.
+pub mod conflicts {
+    /// unknown conflicts verb `{verb}`; use list or resolve
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown conflicts verb `");
+        out.push_str(verb);
+        out.push_str("`; use list or resolve");
+        out
+    }
+
+    /// ```text
+    /// usage: conflicts resolve <id> <field> (--pick <version> | --value <value>)
+    /// ```
+    #[must_use]
+    pub fn resolve_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: conflicts resolve <id> <field> (--pick <version> | --value <value>)");
+        out
+    }
+
+    /// no conflicts
+    #[must_use]
+    pub fn none() -> String {
+        let mut out = String::new();
+        out.push_str("no conflicts");
+        out
+    }
+
+    /// {entity} has no conflict on {field}; `sunrise conflicts {entity}` lists them
+    #[must_use]
+    pub fn no_such_conflict(entity: &str, field: &str) -> String {
+        let mut out = String::new();
+        out.push_str(entity);
+        out.push_str(" has no conflict on ");
+        out.push_str(field);
+        out.push_str("; `sunrise conflicts ");
+        out.push_str(entity);
+        out.push_str("` lists them");
+        out
+    }
+
+    /// no write {version} in that conflict; `sunrise conflicts` lists each write's version
+    #[must_use]
+    pub fn no_such_version(version: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no write ");
+        out.push_str(version);
+        out.push_str(" in that conflict; `sunrise conflicts` lists each write's version");
+        out
+    }
+
+    /// {version} matches more than one write; give the whole version
+    #[must_use]
+    pub fn ambiguous_version(version: &str) -> String {
+        let mut out = String::new();
+        out.push_str(version);
+        out.push_str(" matches more than one write; give the whole version");
+        out
+    }
+
+    /// that value will not do: {error}
+    #[must_use]
+    pub fn bad_value(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that value will not do: ");
+        out.push_str(error);
+        out
+    }
+}
+
+/// `edit` messages.
+pub mod edit {
+    /// ```text
+    /// usage: edit <id>... <tokens>...; see `sunrise help`
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: edit <id>... <tokens>...; see `sunrise help`");
+        out
+    }
+
+    /// edit needs something to change, e.g. `!1 ^tomorrow #work`
+    #[must_use]
+    pub fn needs_change() -> String {
+        let mut out = String::new();
+        out.push_str("edit needs something to change, e.g. `!1 ^tomorrow #work`");
+        out
+    }
+
+    /// nothing was changed; fix the line and run it again
+    #[must_use]
+    pub fn nothing_changed() -> String {
+        let mut out = String::new();
+        out.push_str("nothing was changed; fix the line and run it again");
+        out
+    }
+}
+
+/// `retitle` messages.
+pub mod retitle {
+    /// ```text
+    /// usage: retitle <id> <text>...; see `sunrise help`
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: retitle <id> <text>...; see `sunrise help`");
+        out
+    }
+
+    /// retitle takes one task: a title is what tells two tasks apart, so one title for several of them loses the difference rather than saving a command
+    #[must_use]
+    pub fn one_task() -> String {
+        let mut out = String::new();
+        out.push_str("retitle takes one task: a title is what tells two tasks apart, so one title for several of them loses the difference rather than saving a command");
+        out
+    }
+
+    /// that title will not do: {error}
+    #[must_use]
+    pub fn bad_title(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that title will not do: ");
+        out.push_str(error);
+        out
+    }
+}
+
+/// `defer` messages.
+pub mod defer {
+    /// ```text
+    /// usage: defer <id>... <when>; see `sunrise help`
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: defer <id>... <when>; see `sunrise help`");
+        out
+    }
+
+    /// defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`
+    #[must_use]
+    pub fn needs_date() -> String {
+        let mut out = String::new();
+        out.push_str("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`");
+        out
+    }
+
+    /// that date is before the epoch
+    #[must_use]
+    pub fn before_epoch() -> String {
+        let mut out = String::new();
+        out.push_str("that date is before the epoch");
         out
     }
 }
@@ -74,6 +1517,1719 @@ pub mod focus {
         let mut out = String::new();
         out.push_str("focus started on ");
         out.push_str(title);
+        out
+    }
+
+    /// ```text
+    /// usage: focus end [--done]; got {arg}
+    /// ```
+    #[must_use]
+    pub fn end_usage(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("usage: focus end [--done]; got ");
+        out.push_str(arg);
+        out
+    }
+
+    /// ```text
+    /// no focus session is running; `sunrise focus <id>` opens one
+    /// ```
+    #[must_use]
+    pub fn none_running() -> String {
+        let mut out = String::new();
+        out.push_str("no focus session is running; `sunrise focus <id>` opens one");
+        out
+    }
+}
+
+/// `schedule` messages.
+pub mod schedule {
+    /// ```text
+    /// usage: schedule <id>... <when>|-; see `sunrise help`
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: schedule <id>... <when>|-; see `sunrise help`");
+        out
+    }
+
+    /// schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to clear
+    #[must_use]
+    pub fn needs_date() -> String {
+        let mut out = String::new();
+        out.push_str("schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to clear");
+        out
+    }
+}
+
+/// `show` messages.
+pub mod show {
+    /// ```text
+    /// usage: show <task-id>
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: show <task-id>");
+        out
+    }
+}
+
+/// `today` messages.
+pub mod today {
+    /// Planned
+    #[must_use]
+    pub fn planned() -> String {
+        let mut out = String::new();
+        out.push_str("Planned");
+        out
+    }
+
+    /// Carried over
+    #[must_use]
+    pub fn carried_over() -> String {
+        let mut out = String::new();
+        out.push_str("Carried over");
+        out
+    }
+
+    /// Due today
+    #[must_use]
+    pub fn due_today() -> String {
+        let mut out = String::new();
+        out.push_str("Due today");
+        out
+    }
+
+    /// Late
+    #[must_use]
+    pub fn late() -> String {
+        let mut out = String::new();
+        out.push_str("Late");
+        out
+    }
+
+    /// late: hard deadline
+    #[must_use]
+    pub fn late_hard() -> String {
+        let mut out = String::new();
+        out.push_str("late: hard deadline");
+        out
+    }
+
+    /// late: target
+    #[must_use]
+    pub fn late_soft() -> String {
+        let mut out = String::new();
+        out.push_str("late: target");
+        out
+    }
+
+    /// due
+    #[must_use]
+    pub fn deadline_hard() -> String {
+        let mut out = String::new();
+        out.push_str("due");
+        out
+    }
+
+    /// target
+    #[must_use]
+    pub fn deadline_target() -> String {
+        let mut out = String::new();
+        out.push_str("target");
+        out
+    }
+}
+
+/// `note` messages.
+pub mod note {
+    /// ```text
+    /// usage: note <task-id> [<text>...|-|--file <path|->] [--force]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: note <task-id> [<text>...|-|--file <path|->] [--force]");
+        out
+    }
+
+    /// this task has no note
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("this task has no note");
+        out
+    }
+
+    /// this note holds content this build cannot write back exactly; saving would lose it. Pass --force to replace it anyway
+    #[must_use]
+    pub fn not_exact() -> String {
+        let mut out = String::new();
+        out.push_str("this note holds content this build cannot write back exactly; saving would lose it. Pass --force to replace it anyway");
+        out
+    }
+
+    /// note saved
+    #[must_use]
+    pub fn saved() -> String {
+        let mut out = String::new();
+        out.push_str("note saved");
+        out
+    }
+
+    /// note cleared
+    #[must_use]
+    pub fn cleared() -> String {
+        let mut out = String::new();
+        out.push_str("note cleared");
+        out
+    }
+}
+
+/// `routines` messages.
+pub mod routines {
+    /// name a routine by its id or title; `sunrise routines` lists them
+    #[must_use]
+    pub fn needs_target() -> String {
+        let mut out = String::new();
+        out.push_str("name a routine by its id or title; `sunrise routines` lists them");
+        out
+    }
+
+    /// no routine matches "{text}"
+    #[must_use]
+    pub fn no_match(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no routine matches \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+
+    /// "{text}" matches more than one routine; use more of its title or its id
+    #[must_use]
+    pub fn ambiguous(text: &str) -> String {
+        let mut out = String::new();
+        out.push('\"');
+        out.push_str(text);
+        out.push_str("\" matches more than one routine; use more of its title or its id");
+        out
+    }
+
+    /// unknown routines verb `{verb}`; use create, edit, archive, unarchive, pause, resume, delete or skip
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown routines verb `");
+        out.push_str(verb);
+        out.push_str("`; use create, edit, archive, unarchive, pause, resume, delete or skip");
+        out
+    }
+
+    /// ```text
+    /// usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]
+    /// ```
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]");
+        out
+    }
+
+    /// ```text
+    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>] [--scope this|future|all --at <YYYY-MM-DDTHH:MM>]
+    /// ```
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--floating] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>] [--scope this|future|all --at <YYYY-MM-DDTHH:MM>]");
+        out
+    }
+
+    /// unknown edit scope `{scope}`; use this, future or all
+    #[must_use]
+    pub fn bad_scope(scope: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown edit scope `");
+        out.push_str(scope);
+        out.push_str("`; use this, future or all");
+        out
+    }
+
+    /// ```text
+    /// an edit of this occurrence or this and future ones names the occurrence with --at <YYYY-MM-DDTHH:MM>
+    /// ```
+    #[must_use]
+    pub fn scope_needs_at() -> String {
+        let mut out = String::new();
+        out.push_str("an edit of this occurrence or this and future ones names the occurrence with --at <YYYY-MM-DDTHH:MM>");
+        out
+    }
+
+    /// split; this routine continues the series
+    #[must_use]
+    pub fn split() -> String {
+        let mut out = String::new();
+        out.push_str("split; this routine continues the series");
+        out
+    }
+
+    /// that recurrence rule will not do: {error}
+    #[must_use]
+    pub fn bad_rule(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that recurrence rule will not do: ");
+        out.push_str(error);
+        out
+    }
+
+    /// unknown catch-up policy `{policy}`; use skip, merge or queue
+    #[must_use]
+    pub fn bad_catchup(policy: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown catch-up policy `");
+        out.push_str(policy);
+        out.push_str("`; use skip, merge or queue");
+        out
+    }
+
+    /// ```text
+    /// the reader's zone has no IANA name; pass --zone <IANA> for this routine
+    /// ```
+    #[must_use]
+    pub fn needs_zone() -> String {
+        let mut out = String::new();
+        out.push_str("the reader's zone has no IANA name; pass --zone <IANA> for this routine");
+        out
+    }
+
+    /// ```text
+    /// this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>
+    /// ```
+    #[must_use]
+    pub fn no_next() -> String {
+        let mut out = String::new();
+        out.push_str("this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>");
+        out
+    }
+}
+
+/// `blocks` messages.
+pub mod blocks {
+    /// usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`");
+        out
+    }
+
+    /// ```text
+    /// usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]
+    /// ```
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]");
+        out
+    }
+
+    /// ```text
+    /// usage: block move <block-id> --from <when> [--to <when>]
+    /// ```
+    #[must_use]
+    pub fn move_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block move <block-id> --from <when> [--to <when>]");
+        out
+    }
+
+    /// ```text
+    /// usage: block bind|unbind <block-id> <task-id>...
+    /// ```
+    #[must_use]
+    pub fn bind_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block bind|unbind <block-id> <task-id>...");
+        out
+    }
+
+    /// ```text
+    /// usage: block merge <block-id> <block-id>
+    /// ```
+    #[must_use]
+    pub fn merge_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block merge <block-id> <block-id>");
+        out
+    }
+
+    /// a block must end after it starts
+    #[must_use]
+    pub fn end_before_start() -> String {
+        let mut out = String::new();
+        out.push_str("a block must end after it starts");
+        out
+    }
+
+    /// unknown time kind `{kind}`; use zoned, floating or instant
+    #[must_use]
+    pub fn bad_kind(kind: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown time kind `");
+        out.push_str(kind);
+        out.push_str("`; use zoned, floating or instant");
+        out
+    }
+
+    /// no such block: {id}
+    #[must_use]
+    pub fn no_such(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no such block: ");
+        out.push_str(id);
+        out
+    }
+
+    /// merged; both originals deleted
+    #[must_use]
+    pub fn merged() -> String {
+        let mut out = String::new();
+        out.push_str("merged; both originals deleted");
+        out
+    }
+}
+
+/// `review` messages.
+pub mod review {
+    /// unknown review mode `{mode}`; use daily or save
+    #[must_use]
+    pub fn unknown_mode(mode: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown review mode `");
+        out.push_str(mode);
+        out.push_str("`; use daily or save");
+        out
+    }
+
+    /// Captured since yesterday
+    #[must_use]
+    pub fn daily_inbox() -> String {
+        let mut out = String::new();
+        out.push_str("Captured since yesterday");
+        out
+    }
+
+    /// Nothing new in the Inbox.
+    #[must_use]
+    pub fn daily_inbox_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing new in the Inbox.");
+        out
+    }
+
+    /// Today's plan
+    #[must_use]
+    pub fn daily_today() -> String {
+        let mut out = String::new();
+        out.push_str("Today's plan");
+        out
+    }
+
+    /// Nothing is planned for today.
+    #[must_use]
+    pub fn daily_today_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing is planned for today.");
+        out
+    }
+
+    /// Blocked
+    #[must_use]
+    pub fn daily_blocked() -> String {
+        let mut out = String::new();
+        out.push_str("Blocked");
+        out
+    }
+
+    /// Nothing in today's plan is blocked.
+    #[must_use]
+    pub fn daily_blocked_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing in today's plan is blocked.");
+        out
+    }
+
+    /// review saved
+    #[must_use]
+    pub fn saved() -> String {
+        let mut out = String::new();
+        out.push_str("review saved");
+        out
+    }
+}
+
+/// `brief` messages.
+pub mod brief {
+    /// unknown brief `{arg}`; use morning or evening
+    #[must_use]
+    pub fn usage(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown brief `");
+        out.push_str(arg);
+        out.push_str("`; use morning or evening");
+        out
+    }
+}
+
+/// `reminders` messages.
+pub mod reminders {
+    /// unknown reminders mode `{arg}`; use plan, kinds, on or off
+    #[must_use]
+    pub fn usage(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown reminders mode `");
+        out.push_str(arg);
+        out.push_str("`; use plan, kinds, on or off");
+        out
+    }
+
+    /// ```text
+    /// usage: reminders on|off <kind>... [--device]; `sunrise reminders kinds` lists them
+    /// ```
+    #[must_use]
+    pub fn toggle_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: reminders on|off <kind>... [--device]; `sunrise reminders kinds` lists them");
+        out
+    }
+
+    /// unknown notification kind `{kind}`; `sunrise reminders kinds` lists them
+    #[must_use]
+    pub fn unknown_kind(kind: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown notification kind `");
+        out.push_str(kind);
+        out.push_str("`; `sunrise reminders kinds` lists them");
+        out
+    }
+
+    /// `{kind}` is a security notification and cannot be turned off
+    #[must_use]
+    pub fn always_on(kind: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(kind);
+        out.push_str("` is a security notification and cannot be turned off");
+        out
+    }
+
+    /// reminders are switched off on this device (notifications.enabled), so nothing is planned
+    #[must_use]
+    pub fn disabled() -> String {
+        let mut out = String::new();
+        out.push_str("reminders are switched off on this device (notifications.enabled), so nothing is planned");
+        out
+    }
+
+    /// {entity} has a reminder that cannot be placed: {reason}
+    #[must_use]
+    pub fn unscheduled(entity: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str(entity);
+        out.push_str(" has a reminder that cannot be placed: ");
+        out.push_str(reason);
+        out
+    }
+
+    /// wind down before sleeping at {sleep}
+    #[must_use]
+    pub fn wind_down(sleep: &str) -> String {
+        let mut out = String::new();
+        out.push_str("wind down before sleeping at ");
+        out.push_str(sleep);
+        out
+    }
+}
+
+/// `views` messages.
+pub mod views {
+    /// ```text
+    /// usage: views save <name> <view> [--query <text>] [--contexts a,b] [--stream <s>] [--sort <order>]
+    /// ```
+    #[must_use]
+    pub fn save_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views save <name> <view> [--query <text>] [--contexts a,b] [--stream <s>] [--sort <order>]");
+        out
+    }
+
+    /// ```text
+    /// usage: views apply <name>
+    /// ```
+    #[must_use]
+    pub fn apply_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views apply <name>");
+        out
+    }
+
+    /// ```text
+    /// usage: views rename <name> <new name>
+    /// ```
+    #[must_use]
+    pub fn rename_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views rename <name> <new name>");
+        out
+    }
+
+    /// ```text
+    /// usage: views delete <name>
+    /// ```
+    #[must_use]
+    pub fn delete_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views delete <name>");
+        out
+    }
+
+    /// unknown views verb `{verb}`; use list, save, apply, rename or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown views verb `");
+        out.push_str(verb);
+        out.push_str("`; use list, save, apply, rename or delete");
+        out
+    }
+
+    /// no saved view named `{name}`; `sunrise views` lists them
+    #[must_use]
+    pub fn no_such(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no saved view named `");
+        out.push_str(name);
+        out.push_str("`; `sunrise views` lists them");
+        out
+    }
+
+    /// more than one saved view is named `{name}` ({ids}); name it by id
+    #[must_use]
+    pub fn ambiguous(name: &str, ids: &str) -> String {
+        let mut out = String::new();
+        out.push_str("more than one saved view is named `");
+        out.push_str(name);
+        out.push_str("` (");
+        out.push_str(ids);
+        out.push_str("); name it by id");
+        out
+    }
+
+    /// that view will not do: {error}
+    #[must_use]
+    pub fn bad_spec(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that view will not do: ");
+        out.push_str(error);
+        out
+    }
+
+    /// imported the saved view `{name}` from views.toml
+    #[must_use]
+    pub fn imported(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("imported the saved view `");
+        out.push_str(name);
+        out.push_str("` from views.toml");
+        out
+    }
+
+    /// the saved view `{view}` named `{name}`, which this vault does not have; it is kept on the view and matches nothing
+    #[must_use]
+    pub fn import_unresolved(view: &str, name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the saved view `");
+        out.push_str(view);
+        out.push_str("` named `");
+        out.push_str(name);
+        out.push_str("`, which this vault does not have; it is kept on the view and matches nothing");
+        out
+    }
+
+    /// the saved view `{name}` was not imported ({error}); it will be tried again
+    #[must_use]
+    pub fn import_failed(name: &str, error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the saved view `");
+        out.push_str(name);
+        out.push_str("` was not imported (");
+        out.push_str(error);
+        out.push_str("); it will be tried again");
+        out
+    }
+
+    /// the view names a context that no longer exists ({id}); it matches nothing
+    #[must_use]
+    pub fn missing_context(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the view names a context that no longer exists (");
+        out.push_str(id);
+        out.push_str("); it matches nothing");
+        out
+    }
+
+    /// the view names `{name}`, a context this vault does not have; it matches nothing
+    #[must_use]
+    pub fn unresolved_name(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the view names `");
+        out.push_str(name);
+        out.push_str("`, a context this vault does not have; it matches nothing");
+        out
+    }
+
+    /// this view uses filters from a newer version of Sunrise, which this one cannot apply; it shows more than they would
+    #[must_use]
+    pub fn incomplete() -> String {
+        let mut out = String::new();
+        out.push_str("this view uses filters from a newer version of Sunrise, which this one cannot apply; it shows more than they would");
+        out
+    }
+}
+
+/// `prefs` messages.
+pub mod prefs {
+    /// ```text
+    /// usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]");
+        out
+    }
+
+    /// unknown prefs verb `{verb}`; use list, get, set or clear
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown prefs verb `");
+        out.push_str(verb);
+        out.push_str("`; use list, get, set or clear");
+        out
+    }
+
+    /// unknown preference key `{key}`; `sunrise prefs` lists them
+    #[must_use]
+    pub fn unknown_key(key: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown preference key `");
+        out.push_str(key);
+        out.push_str("`; `sunrise prefs` lists them");
+        out
+    }
+
+    /// `{value}` is not a valid value for `{key}`: expected {expected}
+    #[must_use]
+    pub fn bad_value(value: &str, key: &str, expected: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(value);
+        out.push_str("` is not a valid value for `");
+        out.push_str(key);
+        out.push_str("`: expected ");
+        out.push_str(expected);
+        out
+    }
+
+    /// true or false
+    #[must_use]
+    pub fn expect_bool() -> String {
+        let mut out = String::new();
+        out.push_str("true or false");
+        out
+    }
+
+    /// a whole number in the key's range
+    #[must_use]
+    pub fn expect_number() -> String {
+        let mut out = String::new();
+        out.push_str("a whole number in the key's range");
+        out
+    }
+
+    /// one of {values}
+    #[must_use]
+    pub fn expect_one_of(values: &str) -> String {
+        let mut out = String::new();
+        out.push_str("one of ");
+        out.push_str(values);
+        out
+    }
+
+    /// an http, https, ws or wss URL
+    #[must_use]
+    pub fn expect_url() -> String {
+        let mut out = String::new();
+        out.push_str("an http, https, ws or wss URL");
+        out
+    }
+
+    /// non-empty text
+    #[must_use]
+    pub fn expect_text() -> String {
+        let mut out = String::new();
+        out.push_str("non-empty text");
+        out
+    }
+
+    /// an IANA time zone name
+    #[must_use]
+    pub fn expect_zone() -> String {
+        let mut out = String::new();
+        out.push_str("an IANA time zone name");
+        out
+    }
+
+    /// a BCP 47 language tag
+    #[must_use]
+    pub fn expect_language() -> String {
+        let mut out = String::new();
+        out.push_str("a BCP 47 language tag");
+        out
+    }
+
+    /// an entity id
+    #[must_use]
+    pub fn expect_id() -> String {
+        let mut out = String::new();
+        out.push_str("an entity id");
+        out
+    }
+
+    /// MO, TU, WE, TH, FR, SA or SU
+    #[must_use]
+    pub fn expect_weekday() -> String {
+        let mut out = String::new();
+        out.push_str("MO, TU, WE, TH, FR, SA or SU");
+        out
+    }
+
+    /// a weekday and a time, e.g. MO 09:00
+    #[must_use]
+    pub fn expect_cadence() -> String {
+        let mut out = String::new();
+        out.push_str("a weekday and a time, e.g. MO 09:00");
+        out
+    }
+
+    /// a start and an end, e.g. 22:00-07:00
+    #[must_use]
+    pub fn expect_window() -> String {
+        let mut out = String::new();
+        out.push_str("a start and an end, e.g. 22:00-07:00");
+        out
+    }
+
+    /// a wake and a sleep time, e.g. 07:00-23:00 (a sleep at or before the wake is the next morning)
+    #[must_use]
+    pub fn expect_day_window() -> String {
+        let mut out = String::new();
+        out.push_str("a wake and a sleep time, e.g. 07:00-23:00 (a sleep at or before the wake is the next morning)");
+        out
+    }
+
+    /// a wake and a sleep time, e.g. 07:00-23:00, or none
+    #[must_use]
+    pub fn expect_day_override() -> String {
+        let mut out = String::new();
+        out.push_str("a wake and a sleep time, e.g. 07:00-23:00, or none");
+        out
+    }
+}
+
+/// `undo` messages.
+pub mod undo {
+    /// usage: undo
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: undo");
+        out
+    }
+
+    /// usage: redo
+    #[must_use]
+    pub fn redo_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: redo");
+        out
+    }
+
+    /// undid {action}
+    #[must_use]
+    pub fn undid(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str("undid ");
+        out.push_str(action);
+        out
+    }
+
+    /// redid {action}
+    #[must_use]
+    pub fn redid(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str("redid ");
+        out.push_str(action);
+        out
+    }
+
+    /// nothing to undo
+    #[must_use]
+    pub fn nothing() -> String {
+        let mut out = String::new();
+        out.push_str("nothing to undo");
+        out
+    }
+
+    /// nothing to redo
+    #[must_use]
+    pub fn nothing_to_redo() -> String {
+        let mut out = String::new();
+        out.push_str("nothing to redo");
+        out
+    }
+
+    /// the undo history could not be read ({reason}); starting a new one
+    #[must_use]
+    pub fn discarded(reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the undo history could not be read (");
+        out.push_str(reason);
+        out.push_str("); starting a new one");
+        out
+    }
+
+    /// the undo history was not saved: {error}
+    #[must_use]
+    pub fn unsaved(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the undo history was not saved: ");
+        out.push_str(error);
+        out
+    }
+
+    /// {action} cannot be undone
+    #[must_use]
+    pub fn not_undoable(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str(action);
+        out.push_str(" cannot be undone");
+        out
+    }
+
+    /// capture “{title}”
+    #[must_use]
+    pub fn capture(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("capture “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// complete “{title}”
+    #[must_use]
+    pub fn complete(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("complete “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// edit “{name}”
+    #[must_use]
+    pub fn edit(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("edit “");
+        out.push_str(name);
+        out.push('”');
+        out
+    }
+
+    /// move “{title}” to another stream
+    #[must_use]
+    pub fn move_task(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("move “");
+        out.push_str(title);
+        out.push_str("” to another stream");
+        out
+    }
+
+    /// triage “{title}”
+    #[must_use]
+    pub fn triage(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("triage “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// mark “{title}” already done
+    #[must_use]
+    pub fn triage_done(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("mark “");
+        out.push_str(title);
+        out.push_str("” already done");
+        out
+    }
+
+    /// keep “{title}”
+    #[must_use]
+    pub fn triage_keep(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("keep “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// return “{title}” to the Inbox
+    #[must_use]
+    pub fn untriage(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("return “");
+        out.push_str(title);
+        out.push_str("” to the Inbox");
+        out
+    }
+
+    /// retitle “{title}”
+    #[must_use]
+    pub fn retitle(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("retitle “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// defer “{title}”
+    #[must_use]
+    pub fn defer(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("defer “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// schedule “{title}”
+    #[must_use]
+    pub fn schedule(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("schedule “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// edit the note on “{title}”
+    #[must_use]
+    pub fn note(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("edit the note on “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// drop {name}
+    #[must_use]
+    pub fn drop(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("drop ");
+        out.push_str(name);
+        out
+    }
+
+    /// restore {name}
+    #[must_use]
+    pub fn restore(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("restore ");
+        out.push_str(name);
+        out
+    }
+
+    /// resolve {field} on {name}
+    #[must_use]
+    pub fn resolve(field: &str, name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("resolve ");
+        out.push_str(field);
+        out.push_str(" on ");
+        out.push_str(name);
+        out
+    }
+
+    /// create “{name}”
+    #[must_use]
+    pub fn create(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("create “");
+        out.push_str(name);
+        out.push('”');
+        out
+    }
+
+    /// delete {name}
+    #[must_use]
+    pub fn delete(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("delete ");
+        out.push_str(name);
+        out
+    }
+
+    /// archive or unarchive stream {name}
+    #[must_use]
+    pub fn archive_stream(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("archive or unarchive stream ");
+        out.push_str(name);
+        out
+    }
+
+    /// archive or unarchive context {name}
+    #[must_use]
+    pub fn archive_context(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("archive or unarchive context ");
+        out.push_str(name);
+        out
+    }
+
+    /// reorder streams
+    #[must_use]
+    pub fn reorder() -> String {
+        let mut out = String::new();
+        out.push_str("reorder streams");
+        out
+    }
+
+    /// move “{title}”
+    #[must_use]
+    pub fn reorder_tasks(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("move “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// bind tasks to block {name}
+    #[must_use]
+    pub fn bind(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("bind tasks to block ");
+        out.push_str(name);
+        out
+    }
+
+    /// move block {name}
+    #[must_use]
+    pub fn move_block(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("move block ");
+        out.push_str(name);
+        out
+    }
+}
+
+/// `day_schedule` messages.
+pub mod day_schedule {
+    /// ```text
+    /// usage: day-schedule [show [<YYYY-MM-DD>]] | day-schedule set <days>|day <1-31|last>|date <YYYY-MM-DD> <wake>-<sleep> | day-schedule set date <YYYY-MM-DD> none | day-schedule clear <days>|day <1-31|last>|date <YYYY-MM-DD>
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: day-schedule [show [<YYYY-MM-DD>]] | day-schedule set <days>|day <1-31|last>|date <YYYY-MM-DD> <wake>-<sleep> | day-schedule set date <YYYY-MM-DD> none | day-schedule clear <days>|day <1-31|last>|date <YYYY-MM-DD>");
+        out
+    }
+
+    /// unknown day-schedule verb `{verb}`; use show, set or clear
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown day-schedule verb `");
+        out.push_str(verb);
+        out.push_str("`; use show, set or clear");
+        out
+    }
+
+    /// `{days}` names no weekday: use MO..SU, a comma list such as mo,we, or weekdays, weekend or daily
+    #[must_use]
+    pub fn bad_days(days: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(days);
+        out.push_str("` names no weekday: use MO..SU, a comma list such as mo,we, or weekdays, weekend or daily");
+        out
+    }
+
+    /// `{day}` is not a day of the month: use 1 to 31, or last
+    #[must_use]
+    pub fn bad_month_day(day: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(day);
+        out.push_str("` is not a day of the month: use 1 to 31, or last");
+        out
+    }
+
+    /// `{date}` is not a date: use YYYY-MM-DD
+    #[must_use]
+    pub fn bad_date(date: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(date);
+        out.push_str("` is not a date: use YYYY-MM-DD");
+        out
+    }
+
+    /// planner day {date}: {start} to {end}
+    #[must_use]
+    pub fn planner_day(date: &str, start: &str, end: &str) -> String {
+        let mut out = String::new();
+        out.push_str("planner day ");
+        out.push_str(date);
+        out.push_str(": ");
+        out.push_str(start);
+        out.push_str(" to ");
+        out.push_str(end);
+        out
+    }
+
+    /// awake {wake} to {sleep}
+    #[must_use]
+    pub fn window(wake: &str, sleep: &str) -> String {
+        let mut out = String::new();
+        out.push_str("awake ");
+        out.push_str(wake);
+        out.push_str(" to ");
+        out.push_str(sleep);
+        out
+    }
+
+    /// no wake or sleep time on this date
+    #[must_use]
+    pub fn no_window() -> String {
+        let mut out = String::new();
+        out.push_str("no wake or sleep time on this date");
+        out
+    }
+
+    /// No day schedule is set, so every day runs midnight to midnight. Set one with `sunrise day-schedule set daily 07:00-23:00`.
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("No day schedule is set, so every day runs midnight to midnight. Set one with `sunrise day-schedule set daily 07:00-23:00`.");
+        out
+    }
+}
+
+/// `tz` messages.
+pub mod tz {
+    use super::rt;
+
+    /// ```text
+    /// usage: tz [show] | tz set <IANA> | tz clear
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: tz [show] | tz set <IANA> | tz clear");
+        out
+    }
+
+    /// {zone} ({source})
+    #[must_use]
+    pub fn show(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str(zone);
+        out.push_str(" (");
+        out.push_str(source);
+        out.push(')');
+        out
+    }
+
+    /// {zone} ({source}; this device reports no zone, so times are read in UTC)
+    #[must_use]
+    pub fn show_unknown(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str(zone);
+        out.push_str(" (");
+        out.push_str(source);
+        out.push_str("; this device reports no zone, so times are read in UTC)");
+        out
+    }
+
+    /// reading times in {zone} (was {previous}); {count, plural, =0 {no open task moves} one {# open task now falls at another time} other {# open tasks now fall at another time}}
+    #[must_use]
+    pub fn set(zone: &str, previous: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("reading times in ");
+        out.push_str(zone);
+        out.push_str(" (was ");
+        out.push_str(previous);
+        out.push_str("); ");
+        if count == 0 {
+            out.push_str("no open task moves");
+        } else {
+            match rt::plural("en", count) {
+                rt::Category::One => {
+                    out.push_str(&rt::number("en", count));
+                    out.push_str(" open task now falls at another time");
+                }
+                _ => {
+                    out.push_str(&rt::number("en", count));
+                    out.push_str(" open tasks now fall at another time");
+                }
+            }
+        }
+        out
+    }
+
+    /// the zone set with `sunrise tz set` is cleared; the OS zone is used
+    #[must_use]
+    pub fn cleared() -> String {
+        let mut out = String::new();
+        out.push_str("the zone set with `sunrise tz set` is cleared; the OS zone is used");
+        out
+    }
+
+    /// {var} is set, and it still takes precedence over this for every command
+    #[must_use]
+    pub fn env_overrides(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str(var);
+        out.push_str(" is set, and it still takes precedence over this for every command");
+        out
+    }
+
+    /// unknown time zone `{zone}` (from {source}); times are never read in UTC as a fallback. Use an IANA name such as Europe/Berlin
+    #[must_use]
+    pub fn unknown(zone: &str, source: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown time zone `");
+        out.push_str(zone);
+        out.push_str("` (from ");
+        out.push_str(source);
+        out.push_str("); times are never read in UTC as a fallback. Use an IANA name such as Europe/Berlin");
+        out
+    }
+
+    /// --tz needs an IANA zone name, e.g. --tz Asia/Kolkata
+    #[must_use]
+    pub fn flag_needs_zone() -> String {
+        let mut out = String::new();
+        out.push_str("--tz needs an IANA zone name, e.g. --tz Asia/Kolkata");
+        out
+    }
+
+    /// ```text
+    /// this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz
+    /// ```
+    #[must_use]
+    pub fn unknown_note() -> String {
+        let mut out = String::new();
+        out.push_str("this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz");
+        out
+    }
+}
+
+/// `upcoming` messages.
+pub mod upcoming {
+    use super::rt;
+
+    /// ```text
+    /// usage: upcoming [7|14|30]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: upcoming [7|14|30]");
+        out
+    }
+
+    /// an Upcoming span is 7, 14 or 30 days, not {span}
+    #[must_use]
+    pub fn unknown_span(span: &str) -> String {
+        let mut out = String::new();
+        out.push_str("an Upcoming span is 7, 14 or 30 days, not ");
+        out.push_str(span);
+        out
+    }
+
+    /// nothing planned
+    #[must_use]
+    pub fn empty_day() -> String {
+        let mut out = String::new();
+        out.push_str("nothing planned");
+        out
+    }
+
+    /// due
+    #[must_use]
+    pub fn due() -> String {
+        let mut out = String::new();
+        out.push_str("due");
+        out
+    }
+
+    /// target
+    #[must_use]
+    pub fn target() -> String {
+        let mut out = String::new();
+        out.push_str("target");
+        out
+    }
+
+    /// No date
+    #[must_use]
+    pub fn no_date() -> String {
+        let mut out = String::new();
+        out.push_str("No date");
+        out
+    }
+
+    /// No stream
+    #[must_use]
+    pub fn no_stream() -> String {
+        let mut out = String::new();
+        out.push_str("No stream");
+        out
+    }
+
+    /// {count, plural, one {… # more} other {… # more}}
+    #[must_use]
+    pub fn more(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more");
+            }
+            _ => {
+                out.push_str("… ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" more");
+            }
+        }
+        out
+    }
+}
+
+/// `export` messages.
+pub mod export {
+    use super::rt;
+
+    /// ```text
+    /// usage: export all <dir> [--no-fetch] | export <trends|activity|focus|streaks> [json|csv] [path]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: export all <dir> [--no-fetch] | export <trends|activity|focus|streaks> [json|csv] [path]");
+        out
+    }
+
+    /// unknown dataset: {name}
+    #[must_use]
+    pub fn unknown_dataset(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown dataset: ");
+        out.push_str(name);
+        out
+    }
+
+    /// ```text
+    /// usage: export all <dir> [--no-fetch]
+    /// ```
+    #[must_use]
+    pub fn all_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: export all <dir> [--no-fetch]");
+        out
+    }
+
+    /// {files, plural, one {# file written to {dir}} other {# files written to {dir}}}
+    #[must_use]
+    pub fn all_written(files: i64, dir: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", files) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", files));
+                out.push_str(" file written to ");
+                out.push_str(dir);
+            }
+            _ => {
+                out.push_str(&rt::number("en", files));
+                out.push_str(" files written to ");
+                out.push_str(dir);
+            }
+        }
+        out
+    }
+
+    /// {id} {filename}: not on this device, and --no-fetch was given
+    #[must_use]
+    pub fn missing_not_fetched(id: &str, filename: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push(' ');
+        out.push_str(filename);
+        out.push_str(": not on this device, and --no-fetch was given");
+        out
+    }
+
+    /// {id} {filename}: no device uploaded these bytes, so they cannot be fetched
+    #[must_use]
+    pub fn missing_never_uploaded(id: &str, filename: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push(' ');
+        out.push_str(filename);
+        out.push_str(": no device uploaded these bytes, so they cannot be fetched");
+        out
+    }
+
+    /// {id} {filename}: the download did not bring them
+    #[must_use]
+    pub fn missing_fetch_failed(id: &str, filename: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push(' ');
+        out.push_str(filename);
+        out.push_str(": the download did not bring them");
+        out
+    }
+}
+
+/// `ical` messages.
+pub mod ical {
+    /// unknown ical mode {mode}; try import or export
+    #[must_use]
+    pub fn unknown_mode(mode: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown ical mode ");
+        out.push_str(mode);
+        out.push_str("; try import or export");
+        out
+    }
+
+    /// ```text
+    /// usage: ical import <path|-> | ical export [today|day|week] [path]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: ical import <path|-> | ical export [today|day|week] [path]");
+        out
+    }
+
+    /// ```text
+    /// usage: ical import <path|-> [--stream <id>] [--source <name>]
+    /// ```
+    #[must_use]
+    pub fn import_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: ical import <path|-> [--stream <id>] [--source <name>]");
+        out
+    }
+
+    /// --stream needs a stream id
+    #[must_use]
+    pub fn stream_needs_id() -> String {
+        let mut out = String::new();
+        out.push_str("--stream needs a stream id");
+        out
+    }
+
+    /// --source needs a name
+    #[must_use]
+    pub fn source_needs_name() -> String {
+        let mut out = String::new();
+        out.push_str("--source needs a name");
+        out
+    }
+
+    /// --source needs a non-empty name
+    #[must_use]
+    pub fn source_needs_text() -> String {
+        let mut out = String::new();
+        out.push_str("--source needs a non-empty name");
+        out
+    }
+}
+
+/// `attachments` messages.
+pub mod attachments {
+    use super::rt;
+
+    /// ```text
+    /// usage: attachments <task-id>
+    /// ```
+    #[must_use]
+    pub fn list_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachments <task-id>");
+        out
+    }
+
+    /// ```text
+    /// usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>");
+        out
+    }
+
+    /// ```text
+    /// usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]
+    /// ```
+    #[must_use]
+    pub fn add_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]");
+        out
+    }
+
+    /// ```text
+    /// usage: attachment remove <attachment-id>
+    /// ```
+    #[must_use]
+    pub fn remove_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment remove <attachment-id>");
+        out
+    }
+
+    /// ```text
+    /// usage: attachment get <attachment-id> [path]
+    /// ```
+    #[must_use]
+    pub fn get_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment get <attachment-id> [path]");
+        out
+    }
+
+    /// ```text
+    /// usage: attachment cancel <id>
+    /// ```
+    #[must_use]
+    pub fn cancel_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment cancel <id>");
+        out
+    }
+
+    /// here
+    #[must_use]
+    pub fn here() -> String {
+        let mut out = String::new();
+        out.push_str("here");
+        out
+    }
+
+    /// downloading
+    #[must_use]
+    pub fn downloading() -> String {
+        let mut out = String::new();
+        out.push_str("downloading");
+        out
+    }
+
+    /// partial (interrupted; `attachment get` restarts it)
+    #[must_use]
+    pub fn partial() -> String {
+        let mut out = String::new();
+        out.push_str("partial (interrupted; `attachment get` restarts it)");
+        out
+    }
+
+    /// not here (`attachment get` fetches it)
+    #[must_use]
+    pub fn fetchable() -> String {
+        let mut out = String::new();
+        out.push_str("not here (`attachment get` fetches it)");
+        out
+    }
+
+    /// not here, and never uploaded
+    #[must_use]
+    pub fn never_uploaded() -> String {
+        let mut out = String::new();
+        out.push_str("not here, and never uploaded");
+        out
+    }
+
+    /// the download did not finish within {seconds, plural, one {#s} other {#s}}. The request stands: `sunrise sync --once` will finish it
+    #[must_use]
+    pub fn deadline(seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("the download did not finish within ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out.push_str(". The request stands: `sunrise sync --once` will finish it");
+        out
+    }
+
+    /// {count, plural, one {# byte written to {path}} other {# bytes written to {path}}}
+    #[must_use]
+    pub fn written(count: i64, path: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" byte written to ");
+                out.push_str(path);
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" bytes written to ");
+                out.push_str(path);
+            }
+        }
+        out
+    }
+
+    /// download cancelled; marked partial
+    #[must_use]
+    pub fn cancelled() -> String {
+        let mut out = String::new();
+        out.push_str("download cancelled; marked partial");
         out
     }
 }
@@ -108,6 +3264,463 @@ pub mod sync {
         out.push_str(" (");
         out.push_str(state);
         out.push(')');
+        out
+    }
+
+    /// ```text
+    /// usage: sync [--once] | sync --watch [--rounds <n>] | sync status
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: sync [--once] | sync --watch [--rounds <n>] | sync status");
+        out
+    }
+
+    /// sync: {badge}, {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn status(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(badge);
+        out.push_str(", ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
+    /// {badge} with {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn not_live(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str(badge);
+        out.push_str(" with ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
+    /// sync: {reason}; retrying in {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn retrying(reason: &str, seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(reason);
+        out.push_str("; retrying in ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
+    /// sync: stopped
+    #[must_use]
+    pub fn stopped() -> String {
+        let mut out = String::new();
+        out.push_str("sync: stopped");
+        out
+    }
+
+    /// sync needs SUNRISE_SYNC_URL
+    #[must_use]
+    pub fn needs_url() -> String {
+        let mut out = String::new();
+        out.push_str("sync needs SUNRISE_SYNC_URL");
+        out
+    }
+
+    /// sync: outbox did not drain within {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn timed_out(seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: outbox did not drain within ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
+    /// sync: the relay refused the session ({code}); outbox did not drain within {seconds, plural, one {#s} other {#s}}
+    #[must_use]
+    pub fn refused(code: &str, seconds: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: the relay refused the session (");
+        out.push_str(code);
+        out.push_str("); outbox did not drain within ");
+        match rt::plural("en", seconds) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+            _ => {
+                out.push_str(&rt::number("en", seconds));
+                out.push('s');
+            }
+        }
+        out
+    }
+
+    /// sync: {badge}, so the outbox cannot drain; {count, plural, one {# change waiting} other {# changes waiting}}
+    #[must_use]
+    pub fn ended(badge: &str, count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("sync: ");
+        out.push_str(badge);
+        out.push_str(", so the outbox cannot drain; ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change waiting");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes waiting");
+            }
+        }
+        out
+    }
+
+    /// sync driver started -> {url}
+    #[must_use]
+    pub fn driver_started(url: &str) -> String {
+        let mut out = String::new();
+        out.push_str("sync driver started -> ");
+        out.push_str(url);
+        out
+    }
+
+    /// sync is not device-bound (no relay device id); run `sunrise bootstrap` or set {var}
+    #[must_use]
+    pub fn not_device_bound(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("sync is not device-bound (no relay device id); run `sunrise bootstrap` or set ");
+        out.push_str(var);
+        out
+    }
+
+    /// start_sync failed: {error}
+    #[must_use]
+    pub fn start_failed(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("start_sync failed: ");
+        out.push_str(error);
+        out
+    }
+
+    /// sync off (set {var} to enable)
+    #[must_use]
+    pub fn off(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("sync off (set ");
+        out.push_str(var);
+        out.push_str(" to enable)");
+        out
+    }
+}
+
+/// `relay_url` messages.
+pub mod relay_url {
+    /// {var} is not a relay origin: {reason}
+    #[must_use]
+    pub fn bad(var: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str(var);
+        out.push_str(" is not a relay origin: ");
+        out.push_str(reason);
+        out
+    }
+
+    /// it is empty
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("it is empty");
+        out
+    }
+
+    /// it is longer than 256 bytes
+    #[must_use]
+    pub fn too_long() -> String {
+        let mut out = String::new();
+        out.push_str("it is longer than 256 bytes");
+        out
+    }
+
+    /// it is not an absolute URL
+    #[must_use]
+    pub fn not_a_url() -> String {
+        let mut out = String::new();
+        out.push_str("it is not an absolute URL");
+        out
+    }
+
+    /// it is a WebSocket URL; sync is reached over https://
+    #[must_use]
+    pub fn web_socket() -> String {
+        let mut out = String::new();
+        out.push_str("it is a WebSocket URL; sync is reached over https://");
+        out
+    }
+
+    /// it is not https://
+    #[must_use]
+    pub fn unsupported_scheme() -> String {
+        let mut out = String::new();
+        out.push_str("it is not https://");
+        out
+    }
+
+    /// it is plain http:// to another machine; use https://
+    #[must_use]
+    pub fn insecure_remote() -> String {
+        let mut out = String::new();
+        out.push_str("it is plain http:// to another machine; use https://");
+        out
+    }
+
+    /// it has a path, query or credentials; give only scheme, host and port
+    #[must_use]
+    pub fn not_an_origin() -> String {
+        let mut out = String::new();
+        out.push_str("it has a path, query or credentials; give only scheme, host and port");
+        out
+    }
+}
+
+/// `rebuild` messages.
+pub mod rebuild {
+    use super::rt;
+
+    /// ```text
+    /// usage: rebuild [--repair]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: rebuild [--repair]");
+        out
+    }
+
+    /// there is no vault in {dir} to repair
+    #[must_use]
+    pub fn no_vault(dir: &str) -> String {
+        let mut out = String::new();
+        out.push_str("there is no vault in ");
+        out.push_str(dir);
+        out.push_str(" to repair");
+        out
+    }
+
+    /// repaired the vault from {count, plural, one {# op} other {# ops}} of its own history; the damaged file was copied to {copy}
+    #[must_use]
+    pub fn repaired(count: i64, copy: &str) -> String {
+        let mut out = String::new();
+        out.push_str("repaired the vault from ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" op");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" ops");
+            }
+        }
+        out.push_str(" of its own history; the damaged file was copied to ");
+        out.push_str(copy);
+        out
+    }
+
+    /// rebuilt the projection from {count, plural, one {# op} other {# ops}}
+    #[must_use]
+    pub fn done(count: i64) -> String {
+        let mut out = String::new();
+        out.push_str("rebuilt the projection from ");
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" op");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" ops");
+            }
+        }
+        out
+    }
+
+    /// {count, plural, one {# op this build would not apply was left out; the log names it} other {# ops this build would not apply were left out; the log names them}}
+    #[must_use]
+    pub fn skipped(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" op this build would not apply was left out; the log names it");
+            }
+            _ => {
+                out.push_str(&rt::number("en", count));
+                out.push_str(" ops this build would not apply were left out; the log names them");
+            }
+        }
+        out
+    }
+}
+
+/// `backups` messages.
+pub mod backups {
+    /// ```text
+    /// usage: backups [restore <file>]
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: backups [restore <file>]");
+        out
+    }
+
+    /// no copies of this vault are kept beside it
+    #[must_use]
+    pub fn none() -> String {
+        let mut out = String::new();
+        out.push_str("no copies of this vault are kept beside it");
+        out
+    }
+
+    /// taken before a rebuild or a repair
+    #[must_use]
+    pub fn pre_rebuild() -> String {
+        let mut out = String::new();
+        out.push_str("taken before a rebuild or a repair");
+        out
+    }
+
+    /// taken before an upgrade from storage version {version}
+    #[must_use]
+    pub fn pre_migration(version: &str) -> String {
+        let mut out = String::new();
+        out.push_str("taken before an upgrade from storage version ");
+        out.push_str(version);
+        out
+    }
+
+    /// restored {copy}; the vault it replaced was moved to {aside}
+    #[must_use]
+    pub fn restored(copy: &str, aside: &str) -> String {
+        let mut out = String::new();
+        out.push_str("restored ");
+        out.push_str(copy);
+        out.push_str("; the vault it replaced was moved to ");
+        out.push_str(aside);
+        out
+    }
+
+    /// restored {copy}
+    #[must_use]
+    pub fn restored_alone(copy: &str) -> String {
+        let mut out = String::new();
+        out.push_str("restored ");
+        out.push_str(copy);
+        out
+    }
+}
+
+/// `open` messages.
+pub mod open {
+    /// what you can do:
+    #[must_use]
+    pub fn remedies() -> String {
+        let mut out = String::new();
+        out.push_str("what you can do:");
+        out
+    }
+
+    /// run the command again
+    #[must_use]
+    pub fn try_again() -> String {
+        let mut out = String::new();
+        out.push_str("run the command again");
+        out
+    }
+
+    /// free some disk space, then run the command again
+    #[must_use]
+    pub fn free_space() -> String {
+        let mut out = String::new();
+        out.push_str("free some disk space, then run the command again");
+        out
+    }
+
+    /// repair it from its own history: sunrise rebuild --repair
+    #[must_use]
+    pub fn repair() -> String {
+        let mut out = String::new();
+        out.push_str("repair it from its own history: sunrise rebuild --repair");
+        out
+    }
+
+    /// put back the copy kept beside it, losing what was written after it: sunrise backups restore {copy}
+    #[must_use]
+    pub fn restore(copy: &str) -> String {
+        let mut out = String::new();
+        out.push_str("put back the copy kept beside it, losing what was written after it: sunrise backups restore ");
+        out.push_str(copy);
+        out
+    }
+
+    /// ```text
+    /// restore the account from its 24-word code into an empty directory: SUNRISE_VAULT=<empty directory> sunrise recover
+    /// ```
+    #[must_use]
+    pub fn recover() -> String {
+        let mut out = String::new();
+        out.push_str("restore the account from its 24-word code into an empty directory: SUNRISE_VAULT=<empty directory> sunrise recover");
+        out
+    }
+
+    /// install a newer version of Sunrise, which opens it
+    #[must_use]
+    pub fn update() -> String {
+        let mut out = String::new();
+        out.push_str("install a newer version of Sunrise, which opens it");
+        out
+    }
+
+    /// nothing here mends it; report it, with the log file
+    #[must_use]
+    pub fn diagnostics() -> String {
+        let mut out = String::new();
+        out.push_str("nothing here mends it; report it, with the log file");
         out
     }
 }
@@ -148,15 +3761,1019 @@ pub mod devices {
         out.push_str("They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust.");
         out
     }
+
+    /// give a device id or a prefix of one
+    #[must_use]
+    pub fn no_prefix() -> String {
+        let mut out = String::new();
+        out.push_str("give a device id or a prefix of one");
+        out
+    }
+
+    /// no device id starts with `{prefix}`
+    #[must_use]
+    pub fn no_match(prefix: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no device id starts with `");
+        out.push_str(prefix);
+        out.push('`');
+        out
+    }
+
+    /// {count, plural, one {`{prefix}` matches # device; use more characters} other {`{prefix}` matches # devices; use more characters}}
+    #[must_use]
+    pub fn ambiguous(count: i64, prefix: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push('`');
+                out.push_str(prefix);
+                out.push_str("` matches ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" device; use more characters");
+            }
+            _ => {
+                out.push('`');
+                out.push_str(prefix);
+                out.push_str("` matches ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" devices; use more characters");
+            }
+        }
+        out
+    }
+
+    /// this device
+    #[must_use]
+    pub fn mark_this_device() -> String {
+        let mut out = String::new();
+        out.push_str("this device");
+        out
+    }
+
+    /// revoked
+    #[must_use]
+    pub fn mark_revoked() -> String {
+        let mut out = String::new();
+        out.push_str("revoked");
+        out
+    }
+
+    /// removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust
+    #[must_use]
+    pub fn mark_read_bounded() -> String {
+        let mut out = String::new();
+        out.push_str("removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust");
+        out
+    }
+
+    /// not active on this account
+    #[must_use]
+    pub fn mark_not_current() -> String {
+        let mut out = String::new();
+        out.push_str("not active on this account");
+        out
+    }
+
+    /// joined after a device was removed
+    #[must_use]
+    pub fn mark_admitted_after_revocation() -> String {
+        let mut out = String::new();
+        out.push_str("joined after a device was removed");
+        out
+    }
+
+    /// ```text
+    /// This device holds the account identity key. A sealed recovery code is
+    /// its only other copy: without one, losing this vault destroys the key
+    /// permanently and no recovery feature added later can retrieve it.
+    /// ```
+    #[must_use]
+    pub fn identity_key() -> String {
+        let mut out = String::new();
+        out.push_str("This device holds the account identity key. A sealed recovery code is \nits only other copy: without one, losing this vault destroys the key \npermanently and no recovery feature added later can retrieve it.");
+        out
+    }
+
+    /// `sunrise bootstrap` seals that second copy
+    #[must_use]
+    pub fn identity_key_remedy() -> String {
+        let mut out = String::new();
+        out.push_str("`sunrise bootstrap` seals that second copy");
+        out
+    }
+
+    /// ```text
+    /// usage: sunrise device revoke <id-prefix> [--reason <r>]
+    /// ```
+    #[must_use]
+    pub fn revoke_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: sunrise device revoke <id-prefix> [--reason <r>]");
+        out
+    }
+
+    /// unknown device subcommand `{verb}`
+    #[must_use]
+    pub fn unknown_subcommand(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown device subcommand `");
+        out.push_str(verb);
+        out.push('`');
+        out
+    }
+
+    /// unknown reason `{reason}`; use lost, stolen, retired or compromised
+    #[must_use]
+    pub fn unknown_reason(reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown reason `");
+        out.push_str(reason);
+        out.push_str("`; use lost, stolen, retired or compromised");
+        out
+    }
+
+    /// NOT revoked: this device has itself been revoked, so the account discards its revocations of other devices.
+    #[must_use]
+    pub fn gated_title() -> String {
+        let mut out = String::new();
+        out.push_str("NOT revoked: this device has itself been revoked, so the account discards its revocations of other devices.");
+        out
+    }
+
+    /// {id} is still a current device
+    #[must_use]
+    pub fn gated_still_current(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str(id);
+        out.push_str(" is still a current device");
+        out
+    }
+
+    /// this revocation tells the relay nothing
+    #[must_use]
+    pub fn gated_relay() -> String {
+        let mut out = String::new();
+        out.push_str("this revocation tells the relay nothing");
+        out
+    }
+
+    /// the op is kept, not dropped: revoke from a device the account still trusts, or see `sunrise devices` for which those are
+    #[must_use]
+    pub fn gated_kept() -> String {
+        let mut out = String::new();
+        out.push_str("the op is kept, not dropped: revoke from a device the account still trusts, or see `sunrise devices` for which those are");
+        out
+    }
+
+    /// no Stream key was rotated and the account identity is untouched
+    #[must_use]
+    pub fn gated_untouched() -> String {
+        let mut out = String::new();
+        out.push_str("no Stream key was rotated and the account identity is untouched");
+        out
+    }
+
+    /// Revoked {id} locally.
+    #[must_use]
+    pub fn revoked_title(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Revoked ");
+        out.push_str(id);
+        out.push_str(" locally.");
+        out
+    }
+
+    /// every Stream key rotated, and the account identity with it
+    #[must_use]
+    pub fn revoked_all_rotated() -> String {
+        let mut out = String::new();
+        out.push_str("every Stream key rotated, and the account identity with it");
+        out
+    }
+
+    /// the account identity rotated, and every Stream key BUT these:
+    #[must_use]
+    pub fn revoked_some_unrotated() -> String {
+        let mut out = String::new();
+        out.push_str("the account identity rotated, and every Stream key BUT these:");
+        out
+    }
+
+    /// (not a 16-byte stream id; nothing to rotate)
+    #[must_use]
+    pub fn unrotated_row() -> String {
+        let mut out = String::new();
+        out.push_str("(not a 16-byte stream id; nothing to rotate)");
+        out
+    }
+
+    /// that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry.
+    #[must_use]
+    pub fn unrotated_note() -> String {
+        let mut out = String::new();
+        out.push_str("that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry.");
+        out
+    }
+
+    /// that device cannot certify itself back in under a new id
+    #[must_use]
+    pub fn no_recertify() -> String {
+        let mut out = String::new();
+        out.push_str("that device cannot certify itself back in under a new id");
+        out
+    }
+
+    /// this cannot be undone: to use that device again, pair it as a new device
+    #[must_use]
+    pub fn irreversible() -> String {
+        let mut out = String::new();
+        out.push_str("this cannot be undone: to use that device again, pair it as a new device");
+        out
+    }
+
+    /// the relay has NOT been told yet; it is queued and will be sent on the next `sunrise sync`
+    #[must_use]
+    pub fn relay_pending() -> String {
+        let mut out = String::new();
+        out.push_str("the relay has NOT been told yet; it is queued and will be sent on the next `sunrise sync`");
+        out
+    }
+
+    /// the relay has been told
+    #[must_use]
+    pub fn relay_told() -> String {
+        let mut out = String::new();
+        out.push_str("the relay has been told");
+        out
+    }
+}
+
+/// `identity` messages.
+pub mod identity {
+    /// speaks for the account
+    #[must_use]
+    pub fn speaks() -> String {
+        let mut out = String::new();
+        out.push_str("speaks for the account");
+        out
+    }
+
+    /// does NOT speak for the account (no share of the current identity)
+    #[must_use]
+    pub fn does_not_speak() -> String {
+        let mut out = String::new();
+        out.push_str("does NOT speak for the account (no share of the current identity)");
+        out
+    }
+
+    /// this device can seal a recovery code
+    #[must_use]
+    pub fn can_seal() -> String {
+        let mut out = String::new();
+        out.push_str("this device can seal a recovery code");
+        out
+    }
+
+    /// this device cannot seal a recovery code
+    #[must_use]
+    pub fn cannot_seal() -> String {
+        let mut out = String::new();
+        out.push_str("this device cannot seal a recovery code");
+        out
+    }
+
+    /// this device can add another device
+    #[must_use]
+    pub fn can_sponsor() -> String {
+        let mut out = String::new();
+        out.push_str("this device can add another device");
+        out
+    }
+
+    /// this device was added by pairing and cannot add another; run `sunrise pair` on the device the account was created on
+    #[must_use]
+    pub fn cannot_sponsor() -> String {
+        let mut out = String::new();
+        out.push_str("this device was added by pairing and cannot add another; run `sunrise pair` on the device the account was created on");
+        out
+    }
+
+    /// unknown identity subcommand `{verb}`
+    #[must_use]
+    pub fn unknown_subcommand(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown identity subcommand `");
+        out.push_str(verb);
+        out.push('`');
+        out
+    }
+
+    /// Rotated. The account is still {id}.
+    #[must_use]
+    pub fn rotated(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Rotated. The account is still ");
+        out.push_str(id);
+        out.push('.');
+        out
+    }
+
+    /// current identity is now {id}
+    #[must_use]
+    pub fn current_now(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("current identity is now ");
+        out.push_str(id);
+        out
+    }
+
+    /// your existing recovery code still works: it follows the account to this identity. If the code itself may be in someone else's hands, rotate again without --keep-code
+    #[must_use]
+    pub fn code_kept() -> String {
+        let mut out = String::new();
+        out.push_str("your existing recovery code still works: it follows the account to this identity. If the code itself may be in someone else's hands, rotate again without --keep-code");
+        out
+    }
+
+    /// your old recovery code is retired: it no longer opens this account, and a recovery with it says so. This is the new one:
+    #[must_use]
+    pub fn code_retired() -> String {
+        let mut out = String::new();
+        out.push_str("your old recovery code is retired: it no longer opens this account, and a recovery with it says so. This is the new one:");
+        out
+    }
+
+    /// this device does not hold the account's recovery key, so it cannot issue a recovery code; run this on the device the account was created on or restored to, or pass --keep-code
+    #[must_use]
+    pub fn cannot_seal_code() -> String {
+        let mut out = String::new();
+        out.push_str("this device does not hold the account's recovery key, so it cannot issue a recovery code; run this on the device the account was created on or restored to, or pass --keep-code");
+        out
+    }
+
+    /// a new recovery code is stored on the relay: set {var}, sign in, and register this device with `sunrise bootstrap`, or pass --keep-code to keep the current code
+    #[must_use]
+    pub fn needs_relay(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("a new recovery code is stored on the relay: set ");
+        out.push_str(var);
+        out.push_str(", sign in, and register this device with `sunrise bootstrap`, or pass --keep-code to keep the current code");
+        out
+    }
+
+    /// the new recovery code did not reach the relay ({cause}). If the identity rotated, your old code no longer opens the account: run `sunrise identity new-code` once the relay is reachable, before you rely on any code
+    #[must_use]
+    pub fn reissue_failed(cause: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the new recovery code did not reach the relay (");
+        out.push_str(cause);
+        out.push_str("). If the identity rotated, your old code no longer opens the account: run `sunrise identity new-code` once the relay is reachable, before you rely on any code");
+        out
+    }
+}
+
+/// `pair` messages.
+pub mod pair {
+    /// ```text
+    /// usage:
+    ///   over the relay (SUNRISE_SYNC_URL, signed in on both devices):
+    ///   sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]
+    ///                                                      (on the device being added)
+    ///   sunrise pair add <code|-> [--yes | --confirm-sas <digits>]
+    ///                                                      (on the device with the vault)
+    ///
+    ///   by files, with no relay:
+    ///   sunrise pair offer    --out <file>                 (on the device with the vault)
+    ///   sunrise pair request  --offer <file> --out <file>  (on the device being added)
+    ///   sunrise pair issue    --request <file> --out <file>(on the device with the vault)
+    ///   sunrise pair accept   --response <file>            (on the device being added)
+    ///
+    /// Run `join` first: it shows the code `add` takes. Run the four file steps in
+    /// that order, moving each file to the other machine as it is written.
+    ///
+    /// ```
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage:\n  over the relay (SUNRISE_SYNC_URL, signed in on both devices):\n  sunrise pair join [--email <address>] [--yes | --confirm-sas <digits>]\n                                                     (on the device being added)\n  sunrise pair add <code|-> [--yes | --confirm-sas <digits>]\n                                                     (on the device with the vault)\n\n  by files, with no relay:\n  sunrise pair offer    --out <file>                 (on the device with the vault)\n  sunrise pair request  --offer <file> --out <file>  (on the device being added)\n  sunrise pair issue    --request <file> --out <file>(on the device with the vault)\n  sunrise pair accept   --response <file>            (on the device being added)\n\nRun `join` first: it shows the code `add` takes. Run the four file steps in\nthat order, moving each file to the other machine as it is written.\n");
+        out
+    }
+
+    /// ```text
+    /// {flag} is required
+    ///
+    /// {usage}
+    /// ```
+    #[must_use]
+    pub fn flag_required(flag: &str, usage: &str) -> String {
+        let mut out = String::new();
+        out.push_str(flag);
+        out.push_str(" is required\n\n");
+        out.push_str(usage);
+        out
+    }
+
+    /// ```text
+    /// unknown pair step {step}
+    ///
+    /// {usage}
+    /// ```
+    #[must_use]
+    pub fn unknown_step(step: &str, usage: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown pair step ");
+        out.push_str(step);
+        out.push_str("\n\n");
+        out.push_str(usage);
+        out
+    }
+
+    /// this vault was itself added by pairing, so it holds the account's public identity and no signing key; it cannot certify another device. Run this on the device the account was created on.
+    #[must_use]
+    pub fn cannot_sponsor() -> String {
+        let mut out = String::new();
+        out.push_str("this vault was itself added by pairing, so it holds the account's public identity and no signing key; it cannot certify another device. Run this on the device the account was created on.");
+        out
+    }
+
+    /// ```text
+    /// wrote the pairing offer -> {path}
+    /// move it to the device you are adding, then run:
+    ///   sunrise pair request --offer <that file> --out request.cbor
+    /// ```
+    #[must_use]
+    pub fn offer_written(path: &str) -> String {
+        let mut out = String::new();
+        out.push_str("wrote the pairing offer -> ");
+        out.push_str(path);
+        out.push_str("\nmove it to the device you are adding, then run:\n  sunrise pair request --offer <that file> --out request.cbor");
+        out
+    }
+
+    /// {dir} already holds a vault; a device joins an account when its vault is created, so pair into an empty directory (set SUNRISE_VAULT)
+    #[must_use]
+    pub fn not_empty(dir: &str) -> String {
+        let mut out = String::new();
+        out.push_str(dir);
+        out.push_str(" already holds a vault; a device joins an account when its vault is created, so pair into an empty directory (set SUNRISE_VAULT)");
+        out
+    }
+
+    /// ```text
+    /// minted this device's keys and wrote the cert request -> {path}
+    /// move it back to the device with your vault, then run:
+    ///   sunrise pair issue --request <that file> --out grant.cbor
+    /// ```
+    #[must_use]
+    pub fn request_written(path: &str) -> String {
+        let mut out = String::new();
+        out.push_str("minted this device's keys and wrote the cert request -> ");
+        out.push_str(path);
+        out.push_str("\nmove it back to the device with your vault, then run:\n  sunrise pair issue --request <that file> --out grant.cbor");
+        out
+    }
+
+    /// ```text
+    /// issued a certificate and wrote the grant -> {path}
+    /// this file carries your vault key. Move it to the device you are adding, then run:
+    ///   sunrise pair accept --response <that file>
+    /// ```
+    #[must_use]
+    pub fn grant_written(path: &str) -> String {
+        let mut out = String::new();
+        out.push_str("issued a certificate and wrote the grant -> ");
+        out.push_str(path);
+        out.push_str("\nthis file carries your vault key. Move it to the device you are adding, then run:\n  sunrise pair accept --response <that file>");
+        out
+    }
+
+    /// no pending pairing in {dir} ({error}); run `sunrise pair request` on this device first
+    #[must_use]
+    pub fn no_pending(dir: &str, error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no pending pairing in ");
+        out.push_str(dir);
+        out.push_str(" (");
+        out.push_str(error);
+        out.push_str("); run `sunrise pair request` on this device first");
+        out
+    }
+
+    /// ```text
+    /// this device joined the account as {device}
+    /// run `sunrise sync --once` against the account's relay to pull its history
+    /// ```
+    #[must_use]
+    pub fn joined(device: &str) -> String {
+        let mut out = String::new();
+        out.push_str("this device joined the account as ");
+        out.push_str(device);
+        out.push_str("\nrun `sunrise sync --once` against the account's relay to pull its history");
+        out
+    }
+
+    /// ```text
+    /// unknown option {flag} for this pair step
+    ///
+    /// {usage}
+    /// ```
+    #[must_use]
+    pub fn unknown_flag(flag: &str, usage: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown option ");
+        out.push_str(flag);
+        out.push_str(" for this pair step\n\n");
+        out.push_str(usage);
+        out
+    }
+
+    /// --yes and --confirm-sas answer the same question; give one of them
+    #[must_use]
+    pub fn both_answers() -> String {
+        let mut out = String::new();
+        out.push_str("--yes and --confirm-sas answer the same question; give one of them");
+        out
+    }
+
+    /// ```text
+    /// `sunrise pair add` needs the code the other device shows: `sunrise pair add <code>`, or `sunrise pair add -` to read it from stdin
+    /// ```
+    #[must_use]
+    pub fn needs_code() -> String {
+        let mut out = String::new();
+        out.push_str("`sunrise pair add` needs the code the other device shows: `sunrise pair add <code>`, or `sunrise pair add -` to read it from stdin");
+        out
+    }
+
+    /// pairing over the relay needs {var} set to this account's relay. With no relay, pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn needs_relay(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs ");
+        out.push_str(var);
+        out.push_str(" set to this account's relay. With no relay, pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// pairing over the relay needs this account's sign-in: run `sunrise login`, or set {var}
+    #[must_use]
+    pub fn needs_sign_in(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs this account's sign-in: run `sunrise login`, or set ");
+        out.push_str(var);
+        out
+    }
+
+    /// pairing over the relay needs this account's sign-in ({error}): set {issuer} and {client_id} to sign in now, or set {var}
+    #[must_use]
+    pub fn joiner_needs_sign_in(error: &str, issuer: &str, client_id: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("pairing over the relay needs this account's sign-in (");
+        out.push_str(error);
+        out.push_str("): set ");
+        out.push_str(issuer);
+        out.push_str(" and ");
+        out.push_str(client_id);
+        out.push_str(" to sign in now, or set ");
+        out.push_str(var);
+        out
+    }
+
+    /// signing in to your account, so the relay can bring the two devices together
+    #[must_use]
+    pub fn signing_in() -> String {
+        let mut out = String::new();
+        out.push_str("signing in to your account, so the relay can bring the two devices together");
+        out
+    }
+
+    /// ```text
+    /// On the device with your vault, run this within five minutes:
+    ///   sunrise pair add <the code below>
+    ///
+    /// Pairing code:
+    /// ```
+    #[must_use]
+    pub fn show_code() -> String {
+        let mut out = String::new();
+        out.push_str("On the device with your vault, run this within five minutes:\n  sunrise pair add <the code below>\n\nPairing code:");
+        out
+    }
+
+    /// waiting for the other device…
+    #[must_use]
+    pub fn waiting() -> String {
+        let mut out = String::new();
+        out.push_str("waiting for the other device…");
+        out
+    }
+
+    /// ```text
+    /// Both devices now show six digits. Check they are the same on the other device:
+    ///
+    ///     {sas}
+    ///
+    /// ```
+    #[must_use]
+    pub fn compare(sas: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Both devices now show six digits. Check they are the same on the other device:\n\n    ");
+        out.push_str(sas);
+        out.push('\n');
+        out
+    }
+
+    /// Type the digits the other device shows to confirm they match (anything else cancels):
+    #[must_use]
+    pub fn prompt() -> String {
+        let mut out = String::new();
+        out.push_str("Type the digits the other device shows to confirm they match (anything else cancels): ");
+        out
+    }
+
+    /// the digits did not match, so this pairing was thrown away and nothing was sent. Two devices talking directly always show the same digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust.
+    #[must_use]
+    pub fn mismatch() -> String {
+        let mut out = String::new();
+        out.push_str("the digits did not match, so this pairing was thrown away and nothing was sent. Two devices talking directly always show the same digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust.");
+        out
+    }
+
+    /// {error}. Check that the code was copied whole from a device that is pairing over the same relay, and start again from a new code.
+    #[must_use]
+    pub fn failed_code(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str(error);
+        out.push_str(". Check that the code was copied whole from a device that is pairing over the same relay, and start again from a new code.");
+        out
+    }
+
+    /// the relay at {url} did not answer, so nothing was paired. Check {var}, or pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn relay_did_not_answer(url: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay at ");
+        out.push_str(url);
+        out.push_str(" did not answer, so nothing was paired. Check ");
+        out.push_str(var);
+        out.push_str(", or pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// the relay would not start this pairing ({error}). Try again later, or pair by files: `sunrise pair offer` on the device with your vault
+    #[must_use]
+    pub fn relay_refused(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay would not start this pairing (");
+        out.push_str(error);
+        out.push_str("). Try again later, or pair by files: `sunrise pair offer` on the device with your vault");
+        out
+    }
+
+    /// pairing cancelled; nothing was sent
+    #[must_use]
+    pub fn cancelled() -> String {
+        let mut out = String::new();
+        out.push_str("pairing cancelled; nothing was sent");
+        out
+    }
+
+    /// paired: the other device now holds this account. It shows in `sunrise devices` here once it has synced
+    #[must_use]
+    pub fn sponsored() -> String {
+        let mut out = String::new();
+        out.push_str("paired: the other device now holds this account. It shows in `sunrise devices` here once it has synced");
+        out
+    }
+
+    /// registered this device with the relay as {device}
+    #[must_use]
+    pub fn registered(device: &str) -> String {
+        let mut out = String::new();
+        out.push_str("registered this device with the relay as ");
+        out.push_str(device);
+        out
+    }
+
+    /// paired, but the relay did not register this device ({error}); run `sunrise bootstrap` to register it
+    #[must_use]
+    pub fn unregistered(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("paired, but the relay did not register this device (");
+        out.push_str(error);
+        out.push_str("); run `sunrise bootstrap` to register it");
+        out
+    }
 }
 
 /// `recover` messages.
 pub mod recover {
+    use super::rt;
+
     /// Your recovery code — write it down now, on paper:
     #[must_use]
     pub fn code_heading() -> String {
         let mut out = String::new();
         out.push_str("Your recovery code — write it down now, on paper:");
+        out
+    }
+
+    /// ```text
+    /// This code and your devices are the only two ways into this account.
+    /// Sunrise is end-to-end encrypted: the relay stores your recovery blob
+    /// as ciphertext it cannot open, and nobody — including us — can reset
+    /// the account for you. Lose every device and this code, and the data is
+    /// gone permanently.
+    ///
+    /// It is shown once. It is not written to any file and not in any log.
+    /// ```
+    #[must_use]
+    pub fn code_footer() -> String {
+        let mut out = String::new();
+        out.push_str("This code and your devices are the only two ways into this account. \nSunrise is end-to-end encrypted: the relay stores your recovery blob \nas ciphertext it cannot open, and nobody — including us — can reset \nthe account for you. Lose every device and this code, and the data is \ngone permanently.\n\nIt is shown once. It is not written to any file and not in any log.");
+        out
+    }
+
+    /// {dir} already holds a vault; a recovery creates one and cannot merge into another. Point SUNRISE_VAULT at an empty directory and run this again.
+    #[must_use]
+    pub fn not_empty(dir: &str) -> String {
+        let mut out = String::new();
+        out.push_str(dir);
+        out.push_str(" already holds a vault; a recovery creates one and cannot merge into another. Point SUNRISE_VAULT at an empty directory and run this again.");
+        out
+    }
+
+    /// ```text
+    /// a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in
+    /// ```
+    #[must_use]
+    pub fn needs_code() -> String {
+        let mut out = String::new();
+        out.push_str("a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in");
+        out
+    }
+
+    /// the relay will not serve the recovery blob to this session: {detail}. It requires a fresh sign-in (an OIDC step-up), which is what `sunrise recover` performs when it runs the login itself — so this means the token in {var} is an ordinary one. Unset it and let this command sign you in.
+    #[must_use]
+    pub fn step_up_required(detail: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the relay will not serve the recovery blob to this session: ");
+        out.push_str(detail);
+        out.push_str(". It requires a fresh sign-in (an OIDC step-up), which is what `sunrise recover` performs when it runs the login itself — so this means the token in ");
+        out.push_str(var);
+        out.push_str(" is an ordinary one. Unset it and let this command sign you in.");
+        out
+    }
+
+    /// {error}. Nothing is lost: run `sunrise sync --once` when the network is better.
+    #[must_use]
+    pub fn never_caught_up(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str(error);
+        out.push_str(". Nothing is lost: run `sunrise sync --once` when the network is better.");
+        out
+    }
+
+    /// recovery code accepted; the account identity is restored
+    #[must_use]
+    pub fn code_accepted() -> String {
+        let mut out = String::new();
+        out.push_str("recovery code accepted; the account identity is restored");
+        out
+    }
+
+    /// vault rebuilt from the recovery code
+    #[must_use]
+    pub fn vault_rebuilt() -> String {
+        let mut out = String::new();
+        out.push_str("vault rebuilt from the recovery code");
+        out
+    }
+
+    /// re-keyed as device {device}
+    #[must_use]
+    pub fn rekeyed(device: &str) -> String {
+        let mut out = String::new();
+        out.push_str("re-keyed as device ");
+        out.push_str(device);
+        out
+    }
+
+    /// registered as {device} but could not record it: {error}
+    #[must_use]
+    pub fn unrecorded(device: &str, error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("registered as ");
+        out.push_str(device);
+        out.push_str(" but could not record it: ");
+        out.push_str(error);
+        out
+    }
+
+    /// {count, plural, one {replaying history: # change applied} other {replaying history: # changes applied}}
+    #[must_use]
+    pub fn replaying(count: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", count) {
+            rt::Category::One => {
+                out.push_str("replaying history: ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" change applied");
+            }
+            _ => {
+                out.push_str("replaying history: ");
+                out.push_str(&rt::number("en", count));
+                out.push_str(" changes applied");
+            }
+        }
+        out
+    }
+
+    /// {total, plural, one {replaying history: {count} of # change applied} other {replaying history: {count} of # changes applied}}
+    #[must_use]
+    pub fn replaying_of(total: i64, count: &str) -> String {
+        let mut out = String::new();
+        match rt::plural("en", total) {
+            rt::Category::One => {
+                out.push_str("replaying history: ");
+                out.push_str(count);
+                out.push_str(" of ");
+                out.push_str(&rt::number("en", total));
+                out.push_str(" change applied");
+            }
+            _ => {
+                out.push_str("replaying history: ");
+                out.push_str(count);
+                out.push_str(" of ");
+                out.push_str(&rt::number("en", total));
+                out.push_str(" changes applied");
+            }
+        }
+        out
+    }
+
+    /// using the bearer in {var}
+    #[must_use]
+    pub fn using_bearer(var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("using the bearer in ");
+        out.push_str(var);
+        out
+    }
+
+    /// {error}; set {issuer} and {client_id}, or set {var} to a token that carries a fresh sign-in
+    #[must_use]
+    pub fn needs_config(error: &str, issuer: &str, client_id: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str(error);
+        out.push_str("; set ");
+        out.push_str(issuer);
+        out.push_str(" and ");
+        out.push_str(client_id);
+        out.push_str(", or set ");
+        out.push_str(var);
+        out.push_str(" to a token that carries a fresh sign-in");
+        out
+    }
+
+    /// signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob
+    #[must_use]
+    pub fn signing_in() -> String {
+        let mut out = String::new();
+        out.push_str("signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob");
+        out
+    }
+
+    /// ```text
+    /// Account {identity} is restored on this device.
+    ///
+    /// Two things are worth doing now, and neither is automatic:
+    ///
+    /// * Revoke the devices you lost. Until you do, anything still
+    /// holding them can read what this account writes.
+    /// * Rotate your Stream keys. A recovery means an unknown-state
+    /// environment, and rotation is what bounds what a lost device
+    /// keeps reading. See docs/03-crypto/key-rotation.md.
+    ///
+    /// Your recovery code still works and has not changed. This device now
+    /// holds ID_D_priv, so it can seal a new one if you ever rotate it.
+    /// ```
+    #[must_use]
+    pub fn aftercare(identity: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Account ");
+        out.push_str(identity);
+        out.push_str(" is restored on this device.\n\nTwo things are worth doing now, and neither is automatic:\n\n* Revoke the devices you lost. Until you do, anything still\nholding them can read what this account writes.\n* Rotate your Stream keys. A recovery means an unknown-state\nenvironment, and rotation is what bounds what a lost device\nkeeps reading. See docs/03-crypto/key-rotation.md.\n\nYour recovery code still works and has not changed. This device now\nholds ID_D_priv, so it can seal a new one if you ever rotate it.");
+        out
+    }
+}
+
+/// `vault` messages.
+pub mod vault {
+    use super::rt;
+
+    /// ```text
+    /// the vault at {dir} was created before vaults had their own keys, when every vault shared one root compiled into this binary. It is not opened by guessing that root, because that would leave it readable by anyone holding a copy of `sunrise`. To open it once and move the work somewhere new:
+    ///     {var}={root} sunrise export activity json > out.json
+    /// Otherwise pick a fresh directory; this build makes a new key for it.
+    /// ```
+    #[must_use]
+    pub fn pre_multi_account(dir: &str, var: &str, root: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the vault at ");
+        out.push_str(dir);
+        out.push_str(" was created before vaults had their own keys, when every vault shared one root compiled into this binary. It is not opened by guessing that root, because that would leave it readable by anyone holding a copy of `sunrise`. To open it once and move the work somewhere new:\n    ");
+        out.push_str(var);
+        out.push('=');
+        out.push_str(root);
+        out.push_str(" sunrise export activity json > out.json\nOtherwise pick a fresh directory; this build makes a new key for it.");
+        out
+    }
+
+    /// ```text
+    /// no key for vault {id} in {keystore}. The key never lives beside the data — a vault directory copied on its own is ciphertext. Bring the keystore over from the machine that made it, or supply the root directly with {var}=<64 hex chars>.
+    /// ```
+    #[must_use]
+    pub fn root_missing(id: &str, keystore: &str, var: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no key for vault ");
+        out.push_str(id);
+        out.push_str(" in ");
+        out.push_str(keystore);
+        out.push_str(". The key never lives beside the data — a vault directory copied on its own is ciphertext. Bring the keystore over from the machine that made it, or supply the root directly with ");
+        out.push_str(var);
+        out.push_str("=<64 hex chars>.");
+        out
+    }
+
+    /// {var} must be exactly {chars, plural, one {# hex character} other {# hex characters}} ({bytes, plural, one {# byte} other {# bytes}}); got {len, number}
+    #[must_use]
+    pub fn bad_root_hex(var: &str, chars: i64, bytes: i64, len: i64) -> String {
+        let mut out = String::new();
+        out.push_str(var);
+        out.push_str(" must be exactly ");
+        match rt::plural("en", chars) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex character");
+            }
+            _ => {
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex characters");
+            }
+        }
+        out.push_str(" (");
+        match rt::plural("en", bytes) {
+            rt::Category::One => {
+                out.push_str(&rt::number("en", bytes));
+                out.push_str(" byte");
+            }
+            _ => {
+                out.push_str(&rt::number("en", bytes));
+                out.push_str(" bytes");
+            }
+        }
+        out.push_str("); got ");
+        out.push_str(&rt::number("en", len));
+        out
+    }
+
+    /// {chars, plural, one {expected # hex character naming a vault} other {expected # hex characters naming a vault}}
+    #[must_use]
+    pub fn bad_id(chars: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", chars) {
+            rt::Category::One => {
+                out.push_str("expected ");
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex character naming a vault");
+            }
+            _ => {
+                out.push_str("expected ");
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex characters naming a vault");
+            }
+        }
+        out
+    }
+
+    /// {chars, plural, one {expected # hex character} other {expected # hex characters}}
+    #[must_use]
+    pub fn bad_key(chars: i64) -> String {
+        let mut out = String::new();
+        match rt::plural("en", chars) {
+            rt::Category::One => {
+                out.push_str("expected ");
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex character");
+            }
+            _ => {
+                out.push_str("expected ");
+                out.push_str(&rt::number("en", chars));
+                out.push_str(" hex characters");
+            }
+        }
         out
     }
 }

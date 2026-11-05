@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # CRDT Design
@@ -13,35 +13,41 @@ status: proposed
 > lists and rich text, Loro snapshots) is withdrawn; it survives only in
 > [ADR-0003](../11-adr/0003-crdt-loro-vs-automerge.md) as history.
 >
-> **Status: proposed.** The merge is built; no command emits a `Patch` yet.
-> Tracked by [#319](https://github.com/justin13888/Sunrise/issues/319).
+> **Status: accepted, and in effect.** The merge is built, and every command
+> writes `Patch` once a vault requires `core.field_ops`
+> ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §7, which closed
+> [#319](https://github.com/justin13888/Sunrise/issues/319) and
+> [#447](https://github.com/justin13888/Sunrise/issues/447)).
 >
 > **What exists in the tree.** `crates/sunrise-core/src/engine/merge/` folds
-> every received entity op into per-field state, in migration
-> `0033_field_merge_state.sql`'s `merge_*` tables, and projects the merged
-> entity to its row. It reads both op shapes: `Patch` (`DOC_SCHEMA_V` 8) and
-> the full-state ops every earlier build wrote. Every field type in the table
-> below is implemented for Task, Stream, Context, Routine, Block and Attachment.
-> `loro` appears in no `Cargo.toml` in the workspace.
+> every entity op, a command's own and a received one, into per-field state,
+> in migration `0033_field_merge_state.sql`'s `merge_*` tables, and projects
+> the merged entity to its row. It reads both op shapes: `Patch` (`DOC_SCHEMA_V`
+> 8, with `parents` and `group` from 14) and the full-state ops every earlier
+> build wrote. Every field type in the table below is implemented for Task,
+> Stream, Context, Routine, Block and Attachment. A command writes the `Patch`
+> of the fields it changed in a vault that requires `core.field_ops`
+> (`DOC_SCHEMA_V` 18), and a full-state op while a paired device lacks it
+> (§What a command writes). `loro` appears in no `Cargo.toml` in the
+> workspace.
 >
 > What is not built yet:
 >
-> - **No command emits a `Patch`.** ADR-0044 §9 forbids a build from emitting
->   its first `Patch` into a vault until the vault's `vault_requires` lists
->   `core.field_ops`, and the feature registry `vault_requires` reads
->   ([#324](https://github.com/justin13888/Sunrise/issues/324)) does not list
->   it yet. Every local
->   command still writes a full-state op, which merges as a write to every
->   field it carries (see [Legacy full-state ops](#legacy-full-state-ops)). So
->   between two devices running this build, a concurrent edit to a different
->   field still loses to a later full-state write. A `Patch` from a build that
->   emits one merges field by field. Undoing a delete as a restore (ADR-0044
->   §5) waits for the same gate.
-> - **Streaks are still stored.** The streak fields are carried as registers.
->   Deriving them from `streak_keys` and `skipped_keys` is
->   [#331](https://github.com/justin13888/Sunrise/issues/331).
+> - **Streaks are stored until a `Patch` writes a key.** The streak fields
+>   are registers a full-state routine op carries. Once a `Patch` stamped
+>   above the legacy floor has written `streak_keys` or `skipped_keys`,
+>   `project` derives them from the keys instead
+>   ([#331](https://github.com/justin13888/Sunrise/issues/331), ADR-0065
+>   D17); in a field-ops vault every streak advance and skip is such a
+>   `Patch`.
 > - **The read-time invariant rules of ADR-0044 §6 are not applied**, except
->   that a tombstoned context is not shown on a task. A merged state that breaks
+>   that a tombstoned context is not shown on a task, and the two cycle rules
+>   of ADR-0065 §5: a `blocked_by` edge that closes a cycle, newest first, and
+>   the newest `parent_id` of a stream nesting loop read as absent, and are
+>   reported as `dependency_cycle` conflicts (D18); and a task's, block's or
+>   routine template's `stream_id` naming a deleted stream reads as where its
+>   deletion re-homed it, and a `parent_id` naming one as absent
+>   ([ADR-0046](../11-adr/0046-optional-stream.md) §4, C3, C8). A merged state that breaks
 >   another invariant is stored and read as it is, and
 >   `core.merge.invariant_derived` is not emitted.
 > - **A field's default is not declared in the registry** (ADR-0044 §2). The
@@ -72,7 +78,7 @@ where). Sharing, per-stream sync and compaction follow the key domain.
 
 | Domain field | Field type (ADR-0044 §3) |
 |---|---|
-| Scalars and optional fields (`title`, `state`, `planned_at`, `target_at`, `hard_due_at`, `stream_id`, `sort_order`, `deleted`, …) | LWW register, compared by `(hlc, device_id, seq)`, with an origin (`generated` or `user`) |
+| Scalars and optional fields (`title`, `state`, `planned_at`, `target_at`, `hard_due_at`, `stream_id`, `sort_order`, `deleted`, …) | Register: the concurrent writes no other write descends from, with a winner picked by the field's conflict class, each write with an origin (`generated` or `user`). See §Registers and conflict classes |
 | Nested values edited as a unit (`scheduling_constraints`, `rrule`, each `template.*` field) | One LWW register for the whole value |
 | Map-valued fields (`Preferences.values`, day-schedule entries) | Map: one LWW register per key, tombstoned keys |
 | `Task.contexts`, `Task.blocked_by`, `Block.tasks` | Observed-remove OR-set (add-wins) |
@@ -80,7 +86,7 @@ where). Sharing, per-stream sync and compaction follow the key domain.
 | `Task.blocks` | Derived from `Block.tasks` on read; not merged |
 | `deferred_count` | PN-counter |
 | Streak count, `streak_started_at`, `last_completed_at` | Derived at read time from `streak_keys` and `skipped_keys`; not stored |
-| Ordering of a stream's children | `sort_order` fractional key, one register per entity |
+| Ordering of a stream's children, and of a stream's tasks | `sort_order` fractional key, one register per entity (`Stream.sort_order`, `Task.sort_order`); equal keys break by id |
 | `updated_at` | Derived: the greatest `hlc.physical_ms` among applied ops that touched the entity |
 
 ### OR-set merge rules
@@ -108,7 +114,8 @@ entity:
 
 | Field type | Rule |
 |---|---|
-| Register, map key | A write stamped below `L` reads as absent |
+| Register | A write stamped below `L` is not a candidate: it leaves the register's antichain and is deleted, winner or loser (ADR-0065 D4) |
+| Map key | A write stamped below `L` reads as absent |
 | OR-set | An add stamped below `L` reads as removed; `L` re-adds each element of its own value under its own tag |
 | Counter | The base `L` carried, plus every `inc` stamped after `L` |
 
@@ -119,7 +126,7 @@ The OR-set rule removes *every* add below `L`. ADR-0044 §7 removes only the
 adds of elements `L` does not carry. The value is the same either way, since
 `L` re-adds what it carries. They differ only for a later remove that observed
 `L`'s tag but not an older one. Under this rule a replica that never saw the
-older tags agrees with one that replayed every op. That is the case for any
+older tags agrees with one that replayed every op. That was the case for any
 replica that seeded an entity from its row (below), so the rule is the one
 that converges.
 
@@ -127,22 +134,198 @@ that converges.
 stream)`: the stream breaks a tie between two ops one device made in two
 streams with an equal clock and `seq`, so the register that holds the
 greatest stamp is never read as below `L`. When `L` rises, what it makes
-unreadable is deleted: the adds below it, the removes that named them, and the
-counter deltas at or below it. An add or delta that arrives below `L` is not
-stored. So a set written only by legacy ops holds one add per element, not one
-per element per op.
+unreadable is deleted: the adds below it, the counter deltas at or below it,
+and every register write below it, a kept loser included
+(`state::prune_below_floor`). An add, delta or register write that arrives
+below `L` is not stored. So a set written only
+by legacy ops holds one add per element, not one per element per op.
 
-### Seeding and local writes
+The removes that named a pruned add are kept, inert. Deleting them with their
+add would make the stored set depend on arrival order: a remove folded before
+`L` rose would go with its add, and the same remove folded after would be
+stored, because nothing tells an add `L` pruned from one that has not arrived.
+Only a `Patch` writes a remove, so the set grows with field ops and not with
+full-state ones. Bounding it is compaction's
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8).
 
-An entity a vault held before migration 0033 has a row and no field state. The
-first op to touch it seeds the state from the row, read as the legacy op that
-wrote it, at the row's stamp. Under the rule above only `L` matters, so this is
-what replaying every earlier op would give, up to what the row cannot hold, and
-the row projects identically. A local command still writes its row directly.
-The merge sees a row stamp it did not write and folds the row in the same way
-before the next op, with the origin the logged op that wrote the row reads
-as, so a routine's occurrence create is `generated` on the replica that made
-it as on every peer.
+A field this build does not register can be written both ways: key by key by
+a newer build's map `Patch`, and whole, as one unknown value, by a full-state
+op that carried it. The whole write is the field's value as of its stamp, as
+`L` is the entity's: a map entry stamped before it is superseded, one stamped
+after it applies on top, and where the whole value is not a map the newer
+entries replace it. So a map an unknown field held survives a full-state op
+from a build that cannot read it, as a registered map does.
+
+### Local writes, and rows written another way
+
+A local command builds its op, appends it to the op log, and folds it through
+the call a received op takes (`Engine::append_and_fold`, then
+`materialize_remote`), in one transaction
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §5). No command
+writes an entity row: the row writers are private to the merge module, so a
+command that tried would not compile. The writer and every peer derive a row
+from one function of the same ops, and a rebuild of the writer's own log lands
+on the rows its commands left. Each local op is logged under the
+`inner_kind` and `target_kind` the receive path reads off it, so one op has
+one kind on every replica. A defer had been logged locally as `task.defer`
+and is now the `task.update` it is; compaction still recognises the older
+kind.
+
+Routine materialization is a local write like any other: each occurrence is a
+create appended and folded, with `generated` origin, and an occurrence the
+replica already holds, as a row or as a created entity waiting for a field,
+is not generated again. Two replicas that generate one occurrence write two
+equal creates of one deterministic id, which fold to one with no conflict
+(ADR-0065 D5).
+
+### What a command writes
+
+A command describes its write as the whole entity it leaves behind, the
+full-state op of ADR-0044 §7, and `engine/write.rs` decides, inside the
+command's transaction, what reaches the log (`Engine::write_mode`, ADR-0065
+§7):
+
+- **Legacy mode**, while this build or a paired device lacks
+  `core.field_ops` (clarification D9): the full-state op itself, and a group's
+  members carry the `op_group` mark (D13). A device that has never advertised
+  its features lacks every one, so a vault shared with a build before
+  `DOC_SCHEMA_V` 18 stays here.
+- **Patch mode**, once the vault requires `core.field_ops`. A device makes it
+  require the feature itself, sealing the `VaultRequires` in the transaction
+  of its first entity write, once no other non-revoked device lacks it;
+  `Core::enable_field_ops(confirmed)` requires it over one that does, which
+  then refuses to edit (ADR-0045 §8). From then on no full-state entity op is
+  written by this build.
+
+In Patch mode the full-state op is rewritten as the `Patch` of the fields that
+differ from the entity as the command read it (the projection, read by the
+same reader inside the transaction), naming the entity's heads as `parents`
+(`write::as_patch`, `write::PatchBuilder`):
+
+| Field type | What is written |
+|---|---|
+| Register | `{"set": v}` with the new value; an optional field cleared is `null`, and a list or flag a serializer leaves out when empty is its empty value |
+| Nested record (`template`) | One register per sub-field, `template.title`, …, for the ones that changed |
+| OR-set | `{"add": [..]}` of the elements gained, and `{"remove": [[e, tags]]}` of those lost, each with the add-tags this replica observed for it; an element with none observed is no remove |
+| Counter | `{"inc": n}` of the difference: a defer is `+1` |
+| Map | None has full-state ops: `Preferences.values` is written by its own `Patch` |
+| Unknown field | Never written: a command carries a key it does not know back as it read it, so a newer build's value stands |
+
+A create is a `Patch` with `create` writing every field set to other than its
+default, and a routine's generated occurrence carries `"origin":
+"generated"`, as does a re-key's tombstone of an untouched occurrence, so
+neither ever beats a concurrent user write (§3). `id`, `created_at` and
+`updated_at` are never written: a `Patch`-created entity's `created_at` is
+its create's clock reading. A defer always writes the plan it sets, even the
+plan the task held, since a defer is a statement of the plan. A write that
+changes no field writes nothing, and the command reports an all-zero op id.
+`ResolveConflict` and `Restore` write the one field whatever it held, as the
+write is what settles the set (ADR-0065 §4). A preferences or saved-view
+`Patch`, which has no full-state form, names its heads in Patch mode too.
+
+A command whose writes are only correct together writes them as one group of
+`Patch`es carrying `group` (§Groups): a block merge, a bulk task action, a
+manual reorder of several tasks, a completion and its streak key (from a
+command or a focus session), a skip and its occurrence's tombstone, and a
+routine re-key and the tombstones it makes. In legacy mode the last four stay
+the separate ops of one transaction they always were.
+
+Two kinds of row were written another way. An entity a vault held before
+migration 0033 has a row and no field state, and a build before ADR-0065's
+third pull request wrote each command's row directly and left the merge to
+fold it before the next op. Until ADR-0065's fourth pull request, the first op
+to touch such an entity seeded the state from the row, read as the legacy op
+that wrote it. Now `Core::open` rebuilds the projection from the op log
+whenever the vault was last rebuilt by another version of the fold
+(`FOLD_V`), which includes every vault opened for the first time after
+migration 0039, and before anything reads the projection or folds an op into
+it. The log holds the op behind every such row, so each is folded from its op,
+and a legacy-only history projects exactly as it did. No row is read back as
+an op any more.
+
+### Versions
+
+Every op folded into an entity is also admitted as one of its *versions*
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §1–§2), in
+`entity_versions` (migration 0039), keyed by its op-ref. A version's causal
+frontier, in `entity_frontier`, maps each device to the greatest stamp of that
+device's versions it reaches through the `parents` it names and through its
+own device's previous version (clarifications D1–D3). `a` precedes `b` when
+`b`'s frontier at `a`'s device is at least `a`'s stamp; otherwise they are
+concurrent. The heads, the versions nothing else descends from, are flagged
+`is_head`. A version that arrives after one that reaches it, by naming it or
+by being its device's later version, recomputes every frontier of the entity
+in stamp order, so the stored DAG is a function of the versions applied,
+whatever order they came in. The register fold reads it (below), and the
+heads are what the conflicts query reports as branches.
+
+### Registers and conflict classes
+
+A register keeps the **antichain** of its writes (ADR-0065 §3–§4,
+`engine::merge::register`): every write at or above `L` that no other such
+write descends from. `merge_registers` holds the winner and `register_losers`
+the rest. The winner is the member with the greatest rank, which is origin
+first, then the class rule, then the stamp (clarification D7):
+
+| Class | Fields | Rank among concurrent writes |
+|---|---|---|
+| quiet | `priority`, `energy`, `archived`, `completed_at` (D6), `Stream.sort_order` and `Task.sort_order` (#340), `SavedView.sort` and `SavedView.sort_order` (#341), presentation fields, and every field this build does not know | `(user, stamp)` |
+| tracked | `title`, `body`, `stream_id`, every time field, `scheduling_constraints`, `rrule`, `timezone`, template fields, `SavedView.name`, `view` and `filter` (#341) | `(user, stamp)` |
+| state | `Task.state` | `(user, state is done or cancelled, stamp)` |
+| tombstone | `deleted` | `(user, value is true, stamp)` |
+
+`user` is 1 for a user write and 0 for a generated one, so a generated write
+never beats a concurrent user write and still replaces one it descends from,
+which is not in the antichain. Ordered writes are decided by the order alone:
+the later one is the only candidate left. The registry declares each class
+(`crates/sunrise-id/src/registry/table.rs`), and quiet and tracked differ only in
+whether a loser is reported.
+
+The winner is an argmax over a set, so no two writes are ever merged pair by
+pair and no order of evaluation is involved. The stored antichain is kept
+incrementally and is still a function of the versions applied: a write is left
+out only when another descends from it or it is below `L`, and both are
+permanent once true. A version that arrives late can order two writes kept as
+concurrent; the entity's frontiers are then recomputed and every register is
+filtered again.
+
+Two full-state ops name no parents, so they are concurrent, but only `L`
+survives the floor: a history of full-state ops alone keeps no loser and
+projects exactly as entity-level last-writer-wins did. A full-state op that
+loses to a concurrent `Patch` is kept, marked `legacy`, and never reported
+(D4).
+
+**Conflicts.** `Query::Conflicts` reports a field whose kept losers include
+one written by a `Patch` with a value other than the winner's (D5), for a
+tracked, state or tombstone field, and for a quiet one when asked. A winning
+delete also reports the heads it does not precede: branches that edited the
+entity without seeing the delete. A write that descends from every member of
+a field's antichain clears it, which is what `Command::ResolveConflict` and
+`Command::Restore` write. `conflict-resolution.md` is the user-facing
+account.
+
+### Groups
+
+Some commands write several entities that are only correct together: merging
+two blocks (`Command::MergeBlocks`), a batch of task actions
+(`Command::BulkTasks`), and, in a field-ops vault, the others §What a command
+writes lists. Each writes one op per entity, as one **group** (ADR-0065 §6):
+every member names the group's id and size, a `Patch` in its `group` key and,
+in legacy mode, a full-state op in a top-level `op_group` mark that names the
+member's own op-ref (D13). A receiver stores a member and counts it toward the
+cursor, but holds it out of the fold until at least `size` members of the
+group are present; then it folds every held member in one transaction, and a
+later member at once (D8). So no replica ever shows part of a group, and what
+it shows is still a function of the ops it holds, whatever order they came in.
+The writer folds its own group in the transaction that appends it.
+
+A build from before groups reads the mark as an unknown field and applies each
+member as it arrives. A copy of the mark it writes back names another op, and
+marks nothing.
+
+Compaction never deletes a member still held, and a snapshot retains it. A
+member whose op compaction deleted counts as present through the version a
+snapshot or a rebuild's base carries (D14).
 
 ### Visibility, timestamps and validation
 
@@ -165,12 +348,14 @@ it as on every peer.
 
 | Scenario | Result |
 |---|---|
-| Device A renames a task; device B renames it | The `title` register takes the greater `(hlc, device_id, seq)` |
+| Device A renames a task; device B renames it | As `Patch` versions: the `title` register shows the greater stamp and keeps the other, reported as a tracked conflict. As full-state ops, which a vault in legacy mode writes: the later op wins whole and nothing is kept (D4) |
+| Device A completes a task; device B, not having seen it, starts it | As `Patch` versions: `done` wins whatever the stamps, and `in_progress` is kept and reported (state class). A reopen written after seeing the completion is an ordinary later write and wins |
 | Device A renames a task; device B sets its priority | Both survive: they are different registers |
 | Device A adds context X; device B removes context X | The add survives if B had not observed A's add-tag; otherwise X is removed |
 | Device A marks done; device B edits the title | Both apply; the task is done with the new title |
-| Device A deletes a task; device B edits it | The task stays deleted. B's edit is kept inside the tombstoned entity, and a restore shows it (ADR-0044 §5) |
+| Device A deletes a task; device B edits it | As `Patch` versions: the task stays deleted, B's edit is applied inside the tombstone and reported as edited while deleted, and a restore shows it (ADR-0044 §5, ADR-0065 §3). As full-state ops: the later op wins whole, so a later edit brings the task back |
 | Two devices complete the same routine occurrence | Both add the same key to `streak_keys`; the set counts it once, and the derived streak advances once |
+| Device A merges two blocks; device B has received one of the three writes | B shows the two blocks as they were until it has all three, then the union alone |
 | Device A adds `x → y` to `blocked_by`; device B adds `y → x` | Both edges stay in the OR-sets. The edge whose earliest surviving add-tag is newer is suppressed at read time ([`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) §Dependencies) |
 
 ## Op encoding
@@ -185,7 +370,8 @@ forever, as writes to every field they carry (ADR-0044 §7).
 
 Every field type is a pure function of the set of applied ops, so a projection
 is rebuildable from `ops` in any order. A compaction snapshot carries that
-state, and applying one is a join of it into the local state
+state, the version DAG and the register losers with it (ADR-0065 §8), and
+applying one is a join of it into the local state
 ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Snapshot record,
 [ADR-0059](../11-adr/0059-client-op-log-compaction.md) §1).
 
@@ -209,6 +395,19 @@ In `crates/sunrise-core/src/engine/tests/field_merge.rs`:
 - **Legacy ops.** A later full-state op writes every field it carries. A
   history of full-state ops alone reproduces entity-level LWW. A `Patch` to an
   entity with no field state keeps the fields its row held.
+
+In `crates/sunrise-core/src/engine/tests/field_ops.rs`, for the write mode:
+
+- **Commands converge.** `commands_converge_in_any_delivery_order`: three
+  current devices run commands on one task (retitle, priority, contexts,
+  defer, complete, reopen, delete, restore, resolve), catching up on each
+  other at random, so their `Patch`es name the heads each had. Receivers of
+  every op, forward, reversed and shuffled with repeats, hold byte for byte
+  the same rows, registers, losers, versions and conflicts, and rebuild to
+  exactly that.
+- **What each command writes.** `every_command_writes_only_the_fields_it_changed`,
+  table-driven over the commands, and
+  `no_full_state_op_is_emitted_once_field_ops_is_required`.
 
 Every existing engine test of the full-state merge also runs through this path
 unchanged. The model checks only the `Patch`-only cases. A case with a

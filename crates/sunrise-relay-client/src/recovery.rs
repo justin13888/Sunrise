@@ -1,14 +1,35 @@
-//! The relay, as `docs/03-crypto/recovery.md` §Recovery flow needs it.
+//! The relay routes `docs/03-crypto/recovery.md` §Recovery flow reads, and
+//! the refusals a recovery branches on.
 //!
-//! [`sunrise_onboarding::RecoveryRelay`] is the flow's view of the relay; this
-//! is that view over the generated client. `sunrise recover` and the `UniFFI`
-//! seam's `recover_account` both use it, so the two clients read the same
-//! routes and classify the same refusals.
+//! `sunrise_client_core::recovery` runs the flow; it reaches the relay through
+//! its `RecoveryRelay` trait, which it implements over this type. The
+//! dependency points that way on purpose: this crate is the REST client and
+//! names no engine, so the flow that opens a vault sits above it rather than
+//! below. `sunrise recover` and the `UniFFI` seam's `recover_account` both
+//! go through here, so the two clients read the same routes and classify the
+//! same refusals.
 
-use sunrise_onboarding::{RecoveringDevice, RecoveryRelay, RelayRefusal};
-
-use crate::api::{self, Credential, SecretString};
+use crate::api;
 use crate::bootstrap::{register_device, DeviceIdentity};
+
+/// Why the relay did not give a recovery what it asked for.
+///
+/// Split where the caller does something different. A missing step-up is
+/// fixed by signing in again, a missing blob by nothing on this device, and
+/// everything else is a network or a relay to retry.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RelayRefusal {
+    /// `403`: the bearer carries no fresh sign-in, and the blob route requires
+    /// one (`docs/06-server/auth.md` §The step-up in front of step 3).
+    #[error("{0}")]
+    StepUpRequired(String),
+    /// `404`: the account has no recovery blob stored.
+    #[error("{0}")]
+    NoBlob(String),
+    /// Any other refusal or transport failure, in the relay client's words.
+    #[error("{0}")]
+    Other(String),
+}
 
 /// The relay at one origin, under one bearer.
 ///
@@ -38,12 +59,8 @@ impl RelayRecovery {
     /// # Errors
     /// [`RelayRefusal::Other`] when `base_url` is not a usable origin.
     pub fn new(base_url: &str, bearer: &str) -> Result<Self, RelayRefusal> {
-        let client = api::Client::new(base_url)
-            .map_err(|e| RelayRefusal::Other(format!("not a relay origin: {e}")))?
-            .with_credential(
-                "AccountToken",
-                Credential::Bearer(SecretString::from(bearer.to_owned())),
-            );
+        let client = crate::client(base_url, bearer)
+            .map_err(|e| RelayRefusal::Other(format!("not a relay origin: {e}")))?;
         Ok(Self {
             client,
             base_url: base_url.to_owned(),
@@ -52,8 +69,13 @@ impl RelayRecovery {
     }
 }
 
-impl RecoveryRelay for RelayRecovery {
-    async fn account_identity_key(&self) -> Result<Option<String>, RelayRefusal> {
+impl RelayRecovery {
+    /// The account record's `identity_signing_pub`, or `None` where the
+    /// account never published one.
+    ///
+    /// # Errors
+    /// [`RelayRefusal`], classified by route and status.
+    pub async fn account_identity_key(&self) -> Result<Option<String>, RelayRefusal> {
         self.client
             .get_account(None)
             .await
@@ -61,33 +83,67 @@ impl RecoveryRelay for RelayRecovery {
             .map_err(|e| refusal(Route::Account, &e, status_of(&e)))
     }
 
-    async fn recovery_blob(&self) -> Result<String, RelayRefusal> {
+    /// The sealed recovery blob, base64url as the relay serves it, with what
+    /// the relay keeps beside it for a recovery across an identity rotation
+    /// (ADR-0070).
+    ///
+    /// # Errors
+    /// [`RelayRefusal::StepUpRequired`] for a bearer without a fresh sign-in,
+    /// [`RelayRefusal::NoBlob`] for an account that stored none.
+    pub async fn recovery_blob(&self) -> Result<RecoveryMaterial, RelayRefusal> {
         self.client
             .get_recovery_blob(None)
             .await
-            .map(|r| r.into_inner().recovery_blob)
+            .map(|r| {
+                let r = r.into_inner();
+                RecoveryMaterial {
+                    blob: r.recovery_blob,
+                    identity_chain: r.identity_chain,
+                    retired: r
+                        .retired
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| RetiredCode {
+                            check: c.check,
+                            retired_at_ms: u64::try_from(c.retired_at_ms).unwrap_or(0),
+                        })
+                        .collect(),
+                }
+            })
             .map_err(|e| refusal(Route::Blob, &e, status_of(&e)))
     }
 
-    async fn register_device(&self, device: RecoveringDevice) -> Result<String, RelayRefusal> {
-        register_device(
-            &self.base_url,
-            &self.bearer,
-            DeviceIdentity {
-                device_pub_s: device.device_pub_s,
-                device_pub_d: None,
-                device_cert: Some(sunrise_onboarding::encode_recovery_blob(
-                    &device.device_cert,
-                )),
-                vault_device_id: Some(sunrise_id::crockford::encode_bytes(&device.vault_device_id)),
-                nickname: device.nickname,
-                platform: device.platform,
-                app_version: device.app_version,
-            },
-        )
-        .await
-        .map_err(|e| RelayRefusal::Other(e.to_string()))
+    /// Register a device on the account this bearer names, and return the id
+    /// the relay minted for it.
+    ///
+    /// # Errors
+    /// [`RelayRefusal::Other`] with what the generated client reported.
+    pub async fn register_device(&self, device: DeviceIdentity) -> Result<String, RelayRefusal> {
+        register_device(&self.base_url, &self.bearer, device)
+            .await
+            .map_err(|e| RelayRefusal::Other(e.to_string()))
     }
+}
+
+/// What `GET /accounts/me/recovery_blob` serves, all base64url as sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryMaterial {
+    /// The sealed blob.
+    pub blob: String,
+    /// The account's identity chain record, where a device pinned one: what
+    /// takes a code made before an identity rotation to the identity in force.
+    pub identity_chain: Option<String>,
+    /// What is left of each blob a replacement retired, newest first.
+    pub retired: Vec<RetiredCode>,
+}
+
+/// One retired recovery code, as the relay keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetiredCode {
+    /// The replaced blob's first bytes, base64url.
+    pub check: String,
+    /// When it was replaced, ms since the epoch, by the relay's clock.
+    pub retired_at_ms: u64,
 }
 
 /// The HTTP status a failed call carried, where it carried one.

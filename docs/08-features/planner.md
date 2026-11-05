@@ -368,8 +368,9 @@ inverse **per field**, in one local transaction:
   prior value;
 - a field written again since, by any device, is **skipped and reported** in
   `PlanUndoResult::skipped`, and the undo toast says so ("Restored 4 of 5;
-  ‘Standup’ was changed since"), which is the inverse-command undo's existing
-  rule (`crates/sunrise-client-core/src/undo.rs`);
+  ‘Standup’ was changed since"). The inverse-command undo
+  (`crates/sunrise-client-core/src/undo/mod.rs`) has no such rule: it writes
+  the prior value back as a new write, whatever has changed since;
 - a restored deferral writes `-1` on `deferred_count`.
 
 Undo never refuses as stale and never re-solves.
@@ -454,5 +455,7 @@ single-block move with a three-item ripple, a cross-day move, and an
 - It never moves work into another day to make room.
 - It never writes a deadline.
 - It never places, moves or refuses work by Place.
-- It never edits an external calendar: external events are read-only
-  ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
+- It never edits an external calendar. External events are fixed planner inputs.
+  A user can edit one, and can publish a Block to a calendar, but a planner move
+  never writes an external event
+  ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)).

@@ -2,7 +2,7 @@
 //!
 //! `docs/10-cross-cutting/testing.md` §2 lists "Op envelope round-trip
 //! (encode/decode/encrypt/decrypt/sign/verify)" among the properties this
-//! project holds. The unit tests in `op_envelope.rs` pin three or four
+//! project holds. The unit tests in `op_envelope/tests/` pin three or four
 //! hand-chosen envelopes; this file states the claim the document actually
 //! makes — that it holds for *any* well-formed envelope — and lets `proptest`
 //! look for the one that does not.
@@ -26,7 +26,7 @@
 //! actually uses and the full domain of the type. A `seq` drawn from
 //! `any::<u64>()` alone is below 2^32 with probability 2e-10, so it would
 //! encode in CBOR's 9-byte form in every single case and leave the 1-, 2-, 3-
-//! and 5-byte forms — the ones a real envelope uses, where `op_envelope.rs`
+//! and 5-byte forms — the ones a real envelope uses, where `op_envelope/mod.rs`
 //! documents "first op = 1" — untested. The tail into the full domain is kept
 //! because it is what catches a width truncation.
 //!
@@ -53,7 +53,7 @@ use sunrise_crypto::{
 ///
 /// Tampering only ever with `seq` would leave the claim "the AAD covers the
 /// whole header" resting on one field: dropping `doc_schema_v` from both
-/// `Omit` arms — the field `op_envelope.rs` singles out as the easy one to
+/// `Omit` arms — the field `op_envelope/mod.rs` singles out as the easy one to
 /// leave outside the signature and the AAD, because it sorts after `sig` — is
 /// invisible to a `seq`-only check.
 #[derive(Debug, Clone, Copy)]
@@ -390,7 +390,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
         )
 }
 
-/// 256 cases by default, matching `sunrise-log`'s property test. Each case
+/// 256 cases in CI, matching `sunrise-log`'s property test. Each case
 /// runs four Ed25519 signatures and four verifies plus up to five
 /// XChaCha20-Poly1305 passes over as much as 2 KiB — the expensive part — and
 /// measures at roughly 0.2 s for the file on the developer profile, because
@@ -400,18 +400,15 @@ fn case_strategy() -> impl Strategy<Value = Case> {
 /// enough that both AEAD modes, both payload-length classes, every
 /// unknown-field count and all ten tamper targets are each hit tens of times.
 ///
-/// `PROPTEST_CASES` still wins. Hard-coding the count into the struct literal
-/// would override the environment variable `ProptestConfig::default()` reads,
-/// removing the dial that lets someone widen this run without editing the
-/// file; 256 is the fallback, not the ceiling. The deep sweep of this surface
-/// is the `op_envelope` cargo-fuzz target, not this test.
+/// The count goes through `sunrise_test_seed::proptest_cases`, so
+/// `PROPTEST_CASES` still wins: a bare literal in the struct would override
+/// the environment variable `ProptestConfig::default()` reads, removing the
+/// dial that lets someone widen this run without editing the file. The deep
+/// sweep of this surface is the `op_envelope` cargo-fuzz target, not this
+/// test.
 fn config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(256);
     ProptestConfig {
-        cases,
+        cases: sunrise_test_seed::proptest_cases(256),
         rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // `Direct`, not the `SourceParallel` default: nothing above a `tests/`
         // file holds a `lib.rs` or `main.rs`, so the default warns and drops the

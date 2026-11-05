@@ -15,93 +15,19 @@
 //!   of their last values is acceptable.
 //!
 //! The control run (`HEAD` against `HEAD`) is what shows the reference is the
-//! one `HEAD` produces: the only violations it may show are #319's, which is
-//! `HEAD`'s own entity-level last-writer-wins.
+//! one `HEAD` produces: it may show no violation at all. Its devices write
+//! `Patch`es of the fields they change (ADR-0065 §7), so two concurrent writes
+//! to different fields both survive; #319, entity-level last-writer-wins, is
+//! left only to a baseline, against which `HEAD` writes full-state ops.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sunrise_domain::Task;
 use sunrise_id::EntityRef;
 
-use super::future::{FutureWrite, FUTURE_FIELD};
+use super::future::FutureWrite;
 use super::gaps::expected_gaps;
-
-/// A field the harness writes and reads back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Field {
-    /// `title`.
-    Title,
-    /// `priority`.
-    Priority,
-    /// `deleted`.
-    Deleted,
-    /// `state`, as its raw spelling.
-    State,
-    /// The kind of `due_at`, when set.
-    DueKind,
-    /// The newer build's top-level field.
-    Note,
-}
-
-impl Field {
-    /// Every field, in projection order.
-    pub const ALL: [Self; 6] = [
-        Self::Title,
-        Self::Priority,
-        Self::Deleted,
-        Self::State,
-        Self::DueKind,
-        Self::Note,
-    ];
-}
-
-impl FutureWrite {
-    /// The field this newer write sets, if it sets one this build can read.
-    #[must_use]
-    pub const fn field(self) -> Option<Field> {
-        match self {
-            Self::Field => Some(Field::Note),
-            Self::EnumValue => Some(Field::State),
-            Self::NestedKind => Some(Field::DueKind),
-            Self::OpKind => None,
-        }
-    }
-
-    /// The issue that tracks a baseline dropping this write.
-    #[must_use]
-    pub const fn baseline_issue(self) -> Option<u32> {
-        match self {
-            Self::Field => None,
-            Self::EnumValue => Some(321),
-            Self::NestedKind => Some(322),
-            Self::OpKind => Some(320),
-        }
-    }
-}
-
-/// One task as a replica holds it, field by field.
-pub type Projection = BTreeMap<Field, Option<String>>;
-
-/// Read the fields the harness tracks out of a `HEAD` `Task`.
-#[must_use]
-pub fn project(t: &Task) -> Projection {
-    let mut p = Projection::new();
-    p.insert(Field::Title, Some(t.title.clone()));
-    p.insert(Field::Priority, t.priority.map(|n| n.to_string()));
-    p.insert(Field::Deleted, Some(t.deleted.to_string()));
-    p.insert(Field::State, Some(t.state.as_str().to_owned()));
-    p.insert(
-        Field::DueKind,
-        t.due_at.as_ref().map(|d| d.kind_str().to_owned()),
-    );
-    p.insert(
-        Field::Note,
-        t.unknown
-            .get(FUTURE_FIELD)
-            .and_then(|v| v.get().as_text().map(str::to_owned)),
-    );
-    p
-}
+use super::projection::{Field, Projection};
+use super::violation::{Classified, Violation, Who};
 
 /// Who wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -112,107 +38,6 @@ pub enum Writer {
     B,
     /// The newer-build writer.
     Future,
-}
-
-/// Which replica a violation was seen on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Who {
-    /// A before its upgrade.
-    A,
-    /// A after it was reopened by `HEAD`.
-    AUpgraded,
-    /// B. For a logged corruption, any `HEAD` core: they share one process
-    /// and one log.
-    B,
-}
-
-/// One way a run broke the invariant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Violation {
-    /// `HEAD` would not open a vault the baseline wrote.
-    UpgradeRefused {
-        /// Which vault: B at setup, or A at the end.
-        who: Who,
-        /// The open's refusal.
-        error: String,
-    },
-    /// A replica refused a newer op handed to it directly.
-    Refused {
-        /// Where.
-        who: Who,
-        /// The task the op was about.
-        task: EntityRef,
-        /// What it set.
-        write: FutureWrite,
-        /// Newer values it carried from earlier newer writes to the task.
-        /// Each op is a whole task as `HEAD` held it, so it carries every
-        /// unknown value `HEAD` kept, and any of them can be what the replica
-        /// could not read.
-        carried: Vec<FutureWrite>,
-        /// Whether the refusal is the one the sync driver counts as corruption.
-        corruption: bool,
-        /// The refusal.
-        error: String,
-    },
-    /// A replica's sync driver logged an inbound op as corruption.
-    LoggedCorruption {
-        /// Where.
-        who: Who,
-        /// The message.
-        message: String,
-    },
-    /// A replica logged an error or a warning.
-    LoggedError {
-        /// Where.
-        who: Who,
-        /// `ev` and message.
-        event: String,
-    },
-    /// A command the scenario issued failed.
-    CommandFailed {
-        /// Where.
-        who: Who,
-        /// What was asked.
-        command: String,
-        /// The failure.
-        error: String,
-    },
-    /// A replica stopped syncing.
-    StoppedSyncing {
-        /// Where.
-        who: Who,
-        /// What was seen.
-        detail: String,
-    },
-    /// A replica never materialized a task.
-    Missing {
-        /// Where.
-        who: Who,
-        /// The task.
-        task: EntityRef,
-    },
-    /// A replica holds a value for a field that no last write gave it.
-    Lost {
-        /// Where.
-        who: Who,
-        /// The task.
-        task: EntityRef,
-        /// The field.
-        field: Field,
-        /// Every acceptable value.
-        expected: Vec<Option<String>>,
-        /// What the replica holds.
-        got: Option<String>,
-    },
-}
-
-/// A violation and the known gap that explains it, if one does.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Classified {
-    /// The violation.
-    pub violation: Violation,
-    /// The issue of the known gap that accounts for it, or `None`.
-    pub issue: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -260,8 +85,9 @@ pub struct Model {
     touched: BTreeMap<(EntityRef, u32), BTreeSet<Writer>>,
     unkept: Vec<Unkept>,
     taints: Vec<Taint>,
-    /// Whether a `HEAD` core published a `StreamDigest` during the run.
-    digest_published: bool,
+    /// Whether a `HEAD` core wrote a `StreamDigest` or a `DeviceFeatures`
+    /// during the run.
+    unparkable_kind_published: bool,
     epoch: u32,
     clock: u64,
     tasks: Vec<EntityRef>,
@@ -338,11 +164,11 @@ impl Model {
         }
     }
 
-    /// Record that a `HEAD` core published a `StreamDigest`, an op kind a
-    /// baseline that predates parking classes as corruption when the relay
-    /// delivers it.
-    pub fn published_digest(&mut self) {
-        self.digest_published = true;
+    /// Record that a `HEAD` core wrote an op of a kind of `HEAD`'s own — a
+    /// `StreamDigest` or a `DeviceFeatures` — which a baseline that predates
+    /// parking classes as corruption when the relay delivers it.
+    pub fn published_unparkable_kind(&mut self) {
+        self.unparkable_kind_published = true;
     }
 
     /// Whether a baseline A can be expected to agree with B about `task` at a
@@ -429,16 +255,18 @@ impl Model {
             } if cross => cause(*write, carried),
             // The baseline's sync driver dropping a `HEAD` write that carries a
             // newer value `HEAD` kept: the same unknown value, one hop later.
-            // Or `HEAD`'s own `StreamDigest` (ADR-0043 §5), which every
-            // `HEAD` core publishes on its anti-entropy tick: an op kind
-            // the baseline cannot read, so it reaches the baseline's sync
-            // driver exactly as `FutureWrite::OpKind` would.
+            // Or an op kind of `HEAD`'s own the baseline cannot read, which
+            // reaches its sync driver exactly as `FutureWrite::OpKind` would:
+            // a `StreamDigest` (ADR-0043 §5), published on the anti-entropy
+            // tick, or a `DeviceFeatures` (ADR-0045 §7), which every `HEAD`
+            // core writes when it opens the vault. The second is in every run,
+            // the first only in a run long enough to reach the tick.
             Violation::LoggedCorruption { who: Who::A, .. } if cross => self
                 .taints
                 .first()
                 .and_then(|t| t.write.baseline_issue())
                 .or_else(|| {
-                    self.digest_published
+                    self.unparkable_kind_published
                         .then_some(FutureWrite::OpKind)
                         .and_then(FutureWrite::baseline_issue)
                 }),
@@ -508,36 +336,84 @@ mod tests {
         model.classify(baseline, corruption_at_a())[0].issue
     }
 
-    /// A baseline that predates parking logs `HEAD`'s digest as corruption,
-    /// which is #320, but only once `HEAD` has published one.
+    /// A baseline that predates parking logs `HEAD`'s digest or feature
+    /// advertisement as corruption, which is #320, but only once `HEAD` has
+    /// written one.
     #[test]
-    fn a_published_digest_explains_the_floors_corruption_log_as_320() {
+    fn an_unparkable_head_kind_explains_the_floors_corruption_log_as_320() {
         let mut model = Model::default();
         assert_eq!(
             issue(&model, Some(FLOOR)),
             None,
-            "no digest, no explanation"
+            "no such op, no explanation"
         );
-        model.published_digest();
+        model.published_unparkable_kind();
         assert_eq!(issue(&model, Some(FLOOR)), Some(320));
     }
 
-    /// A baseline cut after the parking fix keeps a digest, so a corruption
-    /// log there is not #320 however many digests `HEAD` published.
+    /// A baseline cut after the parking fix parks both kinds, so a corruption
+    /// log there is not #320 however many of them `HEAD` wrote.
     #[test]
-    fn a_published_digest_explains_nothing_against_a_parking_baseline() {
+    fn an_unparkable_head_kind_explains_nothing_against_a_parking_baseline() {
         let mut model = Model::default();
-        model.published_digest();
+        model.published_unparkable_kind();
         let after_parking = "0000000000000000000000000000000000000000";
         assert_eq!(issue(&model, Some(after_parking)), None);
     }
 
-    /// `HEAD` against `HEAD` parks its own digest kind, so a corruption log
-    /// in the control run stays unexplained.
+    /// `HEAD` against `HEAD` parks nothing of its own, so a corruption log in
+    /// the control run stays unexplained.
     #[test]
-    fn a_published_digest_explains_nothing_in_the_control_run() {
+    fn an_unparkable_head_kind_explains_nothing_in_the_control_run() {
         let mut model = Model::default();
-        model.published_digest();
+        model.published_unparkable_kind();
         assert_eq!(issue(&model, None), None);
+    }
+
+    /// The nightly `Cross-version merge (ADR-0042 floor)` failure, seed
+    /// `9a11c123` in `proptest-regressions/tests/cross_version_convergence.txt`,
+    /// without the baseline driver.
+    ///
+    /// The floor refuses the newer op kind handed to it, and its sync driver
+    /// logs three inbound ops as corruption: the `DeviceFeatures` that B and
+    /// C wrote when `HEAD` opened them, delivered by the relay and delivered
+    /// again by the resync each corruption log schedules. The
+    /// run was too short for any `HEAD` core to reach its anti-entropy tick,
+    /// so no `StreamDigest` was published, and the classifier, which only
+    /// knew the digest, left the three logs unexplained. The `HEAD` log of
+    /// that run holds the advertisements and nothing else of note.
+    #[test]
+    fn the_floors_corruption_logs_of_heads_feature_advertisements_are_320() {
+        use crate::cross_version::events::LoggedEvent;
+
+        let head_log = [LoggedEvent {
+            level: "DEBUG".into(),
+            ev: Some("core.feature.advertised".into()),
+            cause: None,
+            message: "advertised the features this build supports".into(),
+        }];
+        let mut model = Model::default();
+        if head_log
+            .iter()
+            .any(LoggedEvent::is_unparkable_kind_published)
+        {
+            model.published_unparkable_kind();
+        }
+        let task = EntityRef::new(sunrise_id::EntityKind::Task, [7; 16]);
+        let mut violations = vec![Violation::Refused {
+            who: Who::A,
+            task,
+            write: FutureWrite::OpKind,
+            carried: Vec::new(),
+            corruption: true,
+            error: "remote op invalid: inner op: unknown variant `X326Annotate`".into(),
+        }];
+        violations.extend(std::iter::repeat_n(corruption_at_a(), 3).flatten());
+
+        let classified = model.classify(Some(FLOOR), violations);
+        assert!(
+            classified.iter().all(|c| c.issue == Some(320)),
+            "{classified:?}"
+        );
     }
 }

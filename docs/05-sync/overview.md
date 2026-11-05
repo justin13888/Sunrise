@@ -10,7 +10,7 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 1. **Eventual consistency.** Two devices that have received the same set of ops will produce the same materialized state.
 2. **No lost ops.** A locally-committed op reaches all peer devices once both online (within a bounded window measured in seconds, given a working network).
-3. **Causal application.** Ops are applied in causal order on receivers; user-visible state never reflects a "future" op without its predecessors.
+3. **Convergent regardless of arrival order.** Receivers apply ops on arrival, and the merge state is a function of the ops applied, whatever order they came in ([ADR-0044](../11-adr/0044-per-field-ops.md)). A `Patch` names its causal `parents` ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)), so the fold tells an ordered write from a concurrent one without relying on delivery order. Until the set is complete, a device can show an op without its predecessors: applying in causal order is the target of `deps`, which no caller passes ([`op-log.md`](../04-storage/op-log.md)).
 4. **Offline tolerance.** Devices may be offline indefinitely. On reconnect, they exchange diffs efficiently.
 5. **Bandwidth proportional to changes.** Sync transfers only the new ops since the last cursor, not full state snapshots (except for compaction).
 
@@ -18,10 +18,9 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 | Component | Spec |
 |---|---|
-| Merge engine (entity LWW today; superseded by [ADR-0044](../11-adr/0044-per-field-ops.md)) | [`conflict-resolution.md`](./conflict-resolution.md), [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) |
-| Per-field merge (design of record, [ADR-0044](../11-adr/0044-per-field-ops.md)) | [`crdt-design.md`](./crdt-design.md) *(proposed)* |
+| Merge engine (per-field ops, [ADR-0044](../11-adr/0044-per-field-ops.md); version DAGs, [ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)) | [`crdt-design.md`](./crdt-design.md) |
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
-| Transport (SSE + typed POST per [ADR-0023](../11-adr/0023-sse-sync-transport.md); WebSocket is the implementation being replaced) | [`transports.md`](./transports.md) |
+| Transport (SSE + typed POST, [ADR-0023](../11-adr/0023-sse-sync-transport.md)) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |
 | Presence | [`presence.md`](./presence.md) *(proposed)* |
 | Offline outbox | [`offline-queue.md`](./offline-queue.md) |

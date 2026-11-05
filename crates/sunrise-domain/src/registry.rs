@@ -11,16 +11,22 @@
 //!
 //! each fail this crate's build. The wire names (`as "…"` in the registry)
 //! are checked by the tests below against what serde actually writes.
+//!
+//! [`VALUE_TYPES`] does the same for the value types those records carry
+//! (`RRule`, `SunriseTime`, `ScheduleConstraint` and the rest), which are not
+//! records of their own, through [`sunrise_id::describe_value_types!`]. A
+//! field or variant added to one of them and not described there fails the
+//! build too.
 
 // Only the record types and the types their fields are written in are used,
 // and only in type position.
 #[allow(unused_imports)]
 use crate::{
-    Attachment, Block, CborValue, Chunk, Context, Energy, FocusEnd, FocusKind, FocusStart,
-    Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule, ReviewSnapshot,
-    ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, ScheduleConstraint,
-    StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState,
-    TaskTemplate, Unknowns,
+    Attachment, Block, CborValue, Chunk, CompatTime, Context, Energy, FocusEnd, FocusKind,
+    FocusStart, Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule,
+    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, SavedView,
+    ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
+    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -49,7 +55,7 @@ macro_rules! check_records {
                     $(
                         $record:ident @ $storage:tt {
                             $(
-                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident $(($conflict:ident))? $(= $default:literal)?;
                             )*
                             $(..$unknown:ident)?
                         }
@@ -72,6 +78,127 @@ macro_rules! check_records {
 }
 
 sunrise_id::for_each_entity!(check_records);
+
+#[allow(unused_imports)]
+use crate::{
+    ConstraintSeverity, DateRange, DateWindow, Frequency, LatenessPart, PriorityRange,
+    TimeOfDayRange, Weekday, WeekdaySet, WindowField,
+};
+#[allow(unused_imports)]
+use jiff::civil::{Date, DateTime, Time};
+
+sunrise_id::describe_value_types! {
+    /// Every value type a registered record carries that is not a record
+    /// itself, field by field. The canonical document schema describes them
+    /// from here (`sunrise-core`'s `doc_schema`), and a field added to one of
+    /// these types and not here fails this crate's build.
+    pub static VALUE_TYPES;
+    records: [
+        RRule {
+            freq: Frequency;
+            interval: u32;
+            by_day: Vec<Weekday>;
+            by_month_day: Vec<i32>;
+            by_month: Vec<u32>;
+            by_set_pos: Vec<i32>;
+            count: Option<u32>;
+            until: Option<CompatTime>;
+            wkst: Option<Weekday>;
+            ..unknown
+        }
+        ScheduleConstraint {
+            time_of_day: Option<TimeOfDayRange>;
+            days_of_week: WeekdaySet;
+            date_range: Option<DateRange>;
+            severity: ConstraintSeverity;
+            ..unknown
+        }
+        TimeOfDayRange {
+            start: Time;
+            end: Time;
+            ..unknown
+        }
+        DateRange {
+            start: Date;
+            end: Option<Date>;
+            ..unknown
+        }
+        Chunk {
+            index: u32;
+            total: u32;
+            ..unknown
+        }
+        ReviewTotals {
+            completed: u32;
+            deferred: u32;
+            dropped: u32;
+            created: u32;
+            reopened: u32;
+            ..unknown
+        }
+        ReviewSnapshotStream {
+            stream: EntityRef;
+            name: String;
+            completed: u32;
+            deferred: u32;
+            created: u32;
+            ..unknown
+        }
+        StreakRow {
+            routine: EntityRef;
+            title: String;
+            streak: i64;
+            last_completed_at_ms: Option<u64>;
+            ..unknown
+        }
+        ViewFilter {
+            streams: Vec<EntityRef>;
+            no_stream: bool;
+            contexts: Vec<EntityRef>;
+            context_names: Vec<String>;
+            priority: Option<PriorityRange>;
+            energy: Vec<Energy>;
+            window: Option<DateWindow>;
+            lateness: Vec<LatenessPart>;
+            text: String;
+            ..unknown
+        }
+        PriorityRange {
+            min: u8;
+            max: u8;
+            ..unknown
+        }
+        DateWindow {
+            field: WindowField;
+            from_days: Option<i32>;
+            to_days: Option<i32>;
+            ..unknown
+        }
+    ],
+    newtypes: [
+        NoteBody(Vec<u8>);
+    ],
+    aliases: [
+        WeekdaySet = Vec<Weekday>;
+    ],
+    tuples: [],
+    variants: [
+        SunriseTime "kind" {
+            Instant as "instant" = { at: Timestamp; };
+            Zoned as "zoned" = { civil: DateTime; tz: String; };
+            Floating as "floating" = { civil: DateTime; };
+            AllDay as "all_day" = { date: Date; };
+            ..Unknown
+        }
+        CompatTime "kind" {
+            Instant as "instant" = { at: Timestamp; };
+            Zoned as "zoned" = { civil: DateTime; tz: String; };
+            Floating as "floating" = { civil: DateTime; };
+            AllDay as "all_day" = { date: Date; };
+            ..Unknown
+        }
+    ],
+}
 
 #[cfg(test)]
 mod tests {
@@ -133,7 +260,7 @@ mod tests {
     fn template() -> TaskTemplate {
         TaskTemplate {
             title: "t".into(),
-            stream_id: eref(EntityKind::Stream, 2),
+            stream_id: Some(eref(EntityKind::Stream, 2)),
             contexts: Vec::new(),
             energy: None,
             priority: None,
@@ -153,14 +280,15 @@ mod tests {
                 updated_at: ts(),
                 title: "t".into(),
                 body: None,
-                stream_id: eref(EntityKind::Stream, 2),
+                stream_id: Some(eref(EntityKind::Stream, 2)),
                 contexts: BTreeSet::new(),
                 state: TaskState::Todo,
                 priority: None,
                 energy: None,
                 estimated_duration_s: None,
-                scheduled_at: None,
-                due_at: None,
+                planned_at: None,
+                target_at: Some(ts().into()),
+                hard_due_at: None,
                 scheduling_constraints: Vec::new(),
                 completed_at: None,
                 deferred_count: 0,
@@ -169,12 +297,25 @@ mod tests {
                 assignee: None,
                 routine_id: None,
                 routine_occurrence: None,
+                hard_constraint_violated: false,
                 reminder_lead_s: None,
+                sort_order: None,
+                triaged_at: None,
+                cancel_reason: None,
+                late_acknowledged_at: None,
                 archived: false,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &["scheduling_constraints", "reminder_lead_s"],
+            &[
+                "scheduling_constraints",
+                "reminder_lead_s",
+                "sort_order",
+                "triaged_at",
+                "cancel_reason",
+                "late_acknowledged_at",
+                "hard_constraint_violated",
+            ],
         );
         assert_wire_names(
             "Stream",
@@ -194,10 +335,11 @@ mod tests {
                 review_cadence: StreamReviewCadence::Weekly,
                 default_context: None,
                 reminder_lead_s: None,
+                rehomed_to: None,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &["icon", "reminder_lead_s"],
+            &["icon", "reminder_lead_s", "rehomed_to"],
         );
         assert_wire_names(
             "Context",
@@ -233,7 +375,7 @@ mod tests {
                     unknown: Unknowns::new(),
                 },
                 timezone: "UTC".into(),
-                starts_at: ts(),
+                starts_at: ts().into(),
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 skip_dates: Vec::new(),
@@ -245,6 +387,7 @@ mod tests {
                 forgiveness_enabled: true,
                 streak_started_at: None,
                 forgivenesses_in_window: 0,
+                split_from: None,
                 streak_keys: Vec::new(),
                 paused: false,
                 paused_until: None,
@@ -260,6 +403,7 @@ mod tests {
                 "streak_started_at",
                 "forgivenesses_in_window",
                 "streak_keys",
+                "split_from",
             ],
         );
         assert_wire_names("TaskTemplate", &template(), &[]);
@@ -269,7 +413,7 @@ mod tests {
                 id: eref(EntityKind::Block, 1),
                 created_at: ts(),
                 updated_at: ts(),
-                stream_id: eref(EntityKind::Stream, 2),
+                stream_id: Some(eref(EntityKind::Stream, 2)),
                 starts_at: SunriseTime::Instant { at: ts() },
                 ends_at: SunriseTime::Instant { at: ts() },
                 title: None,
@@ -295,10 +439,27 @@ mod tests {
                 chunk_count: 1,
                 content_hash: [0; 32],
                 ciphertext_hash: [0; 32],
+                width: None,
+                height: None,
+                thumbnail_blob_id: None,
+                thumbnail_blob_key: None,
+                thumbnail_mime: None,
+                thumbnail_size_bytes: None,
+                thumbnail_content_hash: None,
+                thumbnail_ciphertext_hash: None,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &[],
+            &[
+                "width",
+                "height",
+                "thumbnail_blob_id",
+                "thumbnail_blob_key",
+                "thumbnail_mime",
+                "thumbnail_size_bytes",
+                "thumbnail_content_hash",
+                "thumbnail_ciphertext_hash",
+            ],
         );
     }
 
@@ -410,6 +571,28 @@ mod tests {
         );
     }
 
+    mod value_types;
+
+    #[test]
+    fn saved_views_write_their_registered_names() {
+        assert_wire_names(
+            "SavedView",
+            &SavedView {
+                id: eref(EntityKind::SavedView, 1),
+                created_at: ts(),
+                updated_at: ts(),
+                name: "v".into(),
+                view: ViewKind::Today,
+                filter: ViewFilter::default(),
+                sort: ViewSort::Default,
+                sort_order: None,
+                deleted: false,
+                unknown: Unknowns::new(),
+            },
+            &["sort_order"],
+        );
+    }
+
     /// Every registered record is reached by one of the tests above.
     #[test]
     fn every_registered_record_is_checked_on_the_wire() {
@@ -428,6 +611,7 @@ mod tests {
             "Interruption",
             "ReviewSnapshot",
             "Preferences",
+            "SavedView",
         ];
         for r in ENTITIES.iter().flat_map(|e| e.records.iter()) {
             assert!(

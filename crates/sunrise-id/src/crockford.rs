@@ -177,4 +177,59 @@ mod tests {
         // golden string here because that'd duplicate the impl.
         assert_eq!(decode_str(&enc).unwrap(), bytes);
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Every 16-byte payload encodes to 26 canonical chars and decodes
+        /// back to itself.
+        #[test]
+        fn any_bytes_round_trip(bytes in proptest::prelude::any::<[u8; 16]>()) {
+            let enc = encode_bytes(&bytes);
+            proptest::prop_assert_eq!(enc.len(), ENCODED_LEN);
+            proptest::prop_assert!(enc.bytes().all(|c| ALPHABET.contains(&c)));
+            proptest::prop_assert_eq!(decode_str(&enc), Ok(bytes));
+        }
+
+        /// The encodings of two payloads compare as the payloads' bytes do,
+        /// so sorting the strings sorts the ids. `b` shares its first
+        /// `shared` bytes with `a`, so the first difference falls at every
+        /// position, low bytes included, rather than almost always byte 0.
+        #[test]
+        fn encoding_order_matches_byte_order(
+            a in proptest::prelude::any::<[u8; 16]>(),
+            mut b in proptest::prelude::any::<[u8; 16]>(),
+            shared in 0usize..=16,
+        ) {
+            b[..shared].copy_from_slice(&a[..shared]);
+            proptest::prop_assert_eq!(encode_bytes(&a).cmp(&encode_bytes(&b)), a.cmp(&b));
+        }
+
+        /// Any string decodes to a value or an error, never a panic.
+        #[test]
+        fn decode_str_never_panics(s in proptest::prelude::any::<String>()) {
+            let _ = decode_str(&s);
+        }
+
+        /// Twenty-six bytes drawn mostly from the alphabet with one arbitrary
+        /// character spliced in: the shape that reaches the per-char loop. A
+        /// string that decodes is canonical: it re-encodes to itself.
+        #[test]
+        fn decode_str_of_twenty_six_bytes_is_canonical_or_an_error(
+            head in "[0-9A-Z]{0,25}",
+            ch in proptest::prelude::any::<char>(),
+        ) {
+            let mut s = head;
+            s.push(ch);
+            while s.len() < ENCODED_LEN {
+                s.push('0');
+            }
+            if let Ok(bytes) = decode_str(&s) {
+                proptest::prop_assert_eq!(encode_bytes(&bytes), s);
+            }
+        }
+    }
 }

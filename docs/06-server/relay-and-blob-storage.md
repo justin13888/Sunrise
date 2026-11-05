@@ -5,18 +5,22 @@ status: accepted
 # Relay and Blob Storage
 
 > **Implementation status.** The self-host single-binary path is built and is
-> the only one: one SQLite database (`store/` + `relay_log.rs`) and a
-> local-filesystem blob root (`api/blobs.rs` over `sunrise_storage::BlobStore`).
-> There is no Postgres, no object store, and no pub/sub; the "managed" sections
-> below describe a deployment that does not exist. Sections that describe built
-> behaviour are marked **(implemented)**.
+> the only one: one SQLite database (`store/` + `relay_log/`) and a
+> local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
+> one implementation, `blob::fs::FsBlobs`, keeps chunks in
+> `sunrise_storage::BlobStore`). There is no Postgres, no object store, and no
+> pub/sub; the "managed" sections below describe a deployment that does not
+> exist. Sections that describe built behaviour are marked **(implemented)**.
 >
 > [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is the design of
 > record for the scaled deployment: the four storage traits, the `LISTEN/NOTIFY`
-> fan-out, shared sessions, and the order they are built in. Of those, only the
-> session seam is built: live sessions sit behind `SessionBackend`
-> (`crates/sunrise-server/src/sync_session.rs`), whose one implementation is
-> the in-process map.
+> fan-out, shared sessions, and the order they are built in. Three of the four
+> seams are built, each with its single-binary implementation only:
+> `MetadataStore` (`crates/sunrise-server/src/store/metadata.rs`, over SQLite),
+> `BlobBackend` (`crates/sunrise-server/src/blob/mod.rs`, over the filesystem)
+> and `SessionBackend` (`crates/sunrise-server/src/sync_session.rs`, the
+> in-process map). `FanoutBus` is not built, and neither are the Postgres and
+> S3 implementations.
 
 ## Relay model
 
@@ -80,12 +84,13 @@ it is under the database key at rest:
 | `devices.nickname`, `devices.platform`, `devices.app_version` | **plaintext** | user-set name and client-reported platform/version |
 | `devices.device_pub_s` / `device_pub_d` / `device_cert` | public keys | |
 | `push_tokens.token` | **plaintext** | see [`push-notifications.md`](./push-notifications.md) |
-| `relay_frames.bytes` | **verbatim ciphertext** | the wire frame as received, alongside `n_bytes` and `created_ms` |
+| `relay_frames.bytes` | **verbatim ciphertext** | the wire frame as received, alongside `n_bytes`, `created_ms` and `n_ops` (how many ops the batch carries, which `sunrise_sync_ops_delivered_total` adds on replay) |
 | `relay_frames.account_h` | BLAKE3-truncated | first 16 bytes of `BLAKE3(account_id)`, derived server-side from the verified token — never from the client |
 | `relay_frames.stream_id` | **raw 16-byte id** | as the subscriber named it |
 | `relay_frame_heads.device_id` | **raw 16-byte id** | read from the envelope's cleartext routing header |
 | `account_delete_tokens.token_h` | BLAKE3 | of a pending deletion phrase; the phrase itself is never stored |
 | `blob_tombstones` | **raw ids** | blob key, stream id, publishing device and `seq` of the detaching op, as `DELETE /blobs/{blob_id}` named them |
+| `committed_blobs` | **raw ids** | per account, each readable blob's key and its ciphertext size, which `sunrise_blob_storage_bytes` sums |
 | `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe` |
 
 So the channel namespace is hashed and the routing ids inside it are not. The
@@ -129,6 +134,8 @@ how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 | 0001 `baseline` | The `accounts`, `devices`, `push_tokens` and `relay_*` tables, as every pre-versioning release created them. Still `CREATE … IF NOT EXISTS`, so a database those releases wrote, which is at version 0, adopts it without change. |
 | 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
 | 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
+| 0004 `relay_frames_n_ops` | Adds `relay_frames.n_ops`, the ops each stored frame carries, and counts them for the frames already stored by reading each frame's op list (the same depth the publish path reads; no envelope is opened). |
+| 0005 `committed_blobs` | Adds the committed-blob ledger, one row per readable blob with its size, cascading from its account. Created empty, because the blobs already committed live on the blob backend, which a migration cannot read; the maintenance pass backfills them from their manifests. |
 
 A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database
@@ -211,14 +218,15 @@ server only claims ops are gone when they actually are.
 
 The blob flow is a genuine two-phase commit, fully implemented and
 hash-verified, but it is not the Postgres/S3 outbox an earlier draft described.
-What `api/blobs.rs` does:
+What `api/blobs/` does:
 
 ```
 1. POST /api/v1/blobs/init { stream_id, chunk_count, size_bytes }
      → 200 { upload_id = "up_" + 16 random bytes hex,
              chunk_urls = ["/api/v1/blobs/<upload_id>/<i>", …] }
    The per-upload pending area is created eagerly, under
-   <blob_root>/pending/<blake3(account_id)[..16] hex>/<upload_id>/.
+   <blob_root>/pending/<blake3(account_id)[..16] hex>/<upload_id>/,
+   with the time it was opened beside the chunks.
 2. PUT /api/v1/blobs/<upload_id>/<i>   raw ciphertext chunk → 204
 3. POST /api/v1/blobs/finalize { upload_id, content_hash, chunk_hashes }
      a. re-read every pending chunk from disk and re-hash it with BLAKE3;
@@ -226,8 +234,9 @@ What `api/blobs.rs` does:
         a chunk that was never uploaded → 409 BLOB_CHUNK_MISSING;
      b. hash the concatenation and compare to content_hash → 400 on mismatch;
      c. write the chunks under the content address, then the manifest LAST;
-     d. lift any tombstone on that content address, and best-effort delete
-        of the upload's pending directory.
+     d. record the blob and its size in the committed-blob ledger, lift any
+        tombstone on that content address, and best-effort delete of the
+        upload's pending directory.
      → 200 { blob_id = "blb_" + first 16 bytes of content_hash hex,
              size_bytes, chunk_count }
 ```
@@ -258,7 +267,7 @@ step 3b before any commit.
 ## Op read path (on subscribe / catch-up — implemented)
 
 1. Receiver sends `Subscribe` with per-originating-device cursors.
-2. Server calls `Store::relay_replay` on the channel, which selects the retained
+2. Server calls `Store::relay_replay_after` on the channel, which selects the retained
    frames whose heads are not already covered and reports a `CursorGap` for any
    device whose cursor sits below `relay_evicted.evicted_through`.
 3. Server streams the retained frames back verbatim; a gap becomes a typed
@@ -283,7 +292,7 @@ step 3b before any commit.
 
 All retention numbers are unified to **30 days** (or shorter):
 
-- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
+- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
 - Op metadata rows: retained at least **30 days**, as above. The relay holds no snapshot: a client keeps its stream's latest snapshot record locally, and no transport carries one between devices yet ([#462](https://github.com/justin13888/Sunrise/issues/462)).
 - Blob GC grace: `[storage] gc_grace_days`, default 30. A tombstoned blob is reclaimed by the first maintenance pass after its grace period at which every active device has acknowledged the tombstone. This is independent of post-compaction retention.
 - Abandoned uploads: `[storage] pending_upload_ttl_hours`, default 24, measured from the newest file in the upload.
@@ -292,7 +301,9 @@ All retention numbers are unified to **30 days** (or shorter):
 - Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
 
 Retention **enforcement** is implemented for the relay op log, the blob store and
-deleted accounts. `relay_log.rs` applies the log's two bounds on every append.
+deleted accounts. The relay log's append path
+(`crates/sunrise-server/src/relay_log/append.rs#relay_append`) applies the log's
+two bounds on every append.
 The rest is the **maintenance pass**
 (`crates/sunrise-server/src/admin/maintenance.rs`). The serving binary runs it
 at startup and then every `[storage] maintenance_interval_secs` (default 3600),
@@ -360,12 +371,14 @@ account under a BLAKE3 of the account id:
 <data_dir>/
 ├── sunrise.db                        # SQLite: accounts, devices, push_tokens,
 │                                     #   relay_frames, relay_frame_heads, relay_evicted,
-│                                     #   account_delete_tokens, blob_tombstones, device_cursors
+│                                     #   account_delete_tokens, blob_tombstones, device_cursors,
+│                                     #   committed_blobs
 ├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
 ├── sunrise.db.pre-encryption         # only after [storage] encrypt was turned on: the
 │                                     #   plaintext original, until the operator deletes it
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
+    │   ├── opened                      # when init opened it, ms since the epoch
     │   └── blobs/<xx>/<upload_hex>/<i>.bin
     └── committed/<acct_h>/
         ├── blobs/<xx>/<blob_hex>/<i>.bin   # xx = first 2 hex chars of the id

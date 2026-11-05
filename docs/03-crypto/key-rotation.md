@@ -75,8 +75,8 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
   it kept, but the cert was genuine under an identity the account had retired,
   so the row was admitted, the device was current under nothing, and it was a
   recipient of nothing.
-  `engine::tests::a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the
-  test that used to assert the bypass, with its setup unchanged.
+  `engine::tests::device_admission::a_revoked_device_cannot_rejoin_under_a_fresh_device_id`
+  is the test that used to assert the bypass, with its setup unchanged.
 
   It bought one revocation at a time, which is why it was not the end of it: the
   device paired *after* a rotation held the new `ID_S_priv`, so revoking that
@@ -100,7 +100,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
   leaves it holding the signing key (§Revocation step 2, and its
   `core.identity.rotation_unavailable`). That residual is what ADR-0034
   §Consequences names as the unmitigated bypass, and it is the creator's alone.
-  `keychain::tests::a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id`
+  `keychain::tests::pairing::a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id`
   asserts the absence three ways that fail independently: behaviourally through
   `issue_cert_for`, at rest through an empty `identity.id_s_priv_wrapped`, and
   across a restart.
@@ -131,7 +131,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
   Step 3 is built, under the three conditions in the implemented list above, and **so is peer-side refusal** — for the two **control** ops whose effect the engine can re-derive ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md), [#82](https://github.com/justin13888/Sunrise/issues/82), closed). What is not built, and is a decision rather than a gap, is peer-side refusal of a revoked device's **entity** writes: a task edit, a note, a focus session. The dilemma is real for that family and ADR-0041 declines it on exactly these grounds — refusing one without advancing the cursor stalls that stream against relay retention until eviction latches a data-loss warning on every device in the account, and advancing the cursor makes the loss permanent, because a later revocation changes only what is sealed *next* and gives back nothing the cursor has already passed. Note what that reason is **not**: it is not that the cut cannot be corrected. It can, in both directions — see §Revocation below — and the control-op gate does not read the cut at all. The bound for entity writes is therefore the relay (step 3), in force only under the three conditions above; on a relay with an OIDC issuer `[auth] require_device_sig` is on by default and that bound is in force, but wherever the flag is off — the single-tenant self-host verifier, or an explicit `false` beside an issuer — there is no write bound anywhere, so there the control-op refusal is the only line there is rather than defence in depth over ops that should not have been accepted. See [ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) §Why re-adding a peer-side refusal is not free, which is now scoped to entity writes alone.
 
-  **What the revoking user is shown is built at the moment of the act, and not on the device list afterwards; the two states are different guarantees.** "Revoked locally" is true the moment the op commits; "the relay has stopped accepting it" is true only once the queued `DELETE` has been answered, which needs a network the user may not have — and the second is the one someone pressing the button believes they are getting. The log distinguishes them (`sync.device.revoke_relayed` against `sync.device.revoke_not_relayed`), and so does the core: `Core::relay_revocation_pending` answers it for one device (`crates/sunrise-core/src/relay_intents.rs:96#relay_revocation_pending`). Both clients ask it and say which state the revocation is in — the CLI on the revoke path (`crates/sunrise-cli/src/main.rs:788#dispatch`) and the shared Apple account view in its revocation disclosure (`apps/apple/Sunrise/Views/DeviceListSection.swift:186`). What is **not** built is standing disclosure: `DeviceRow` carries no pending flag, so a device list opened the next day cannot say which of its revoked entries the relay has actually been told about. That was [#160](https://github.com/justin13888/Sunrise/issues/160).
+  **What the revoking user is shown is built at the moment of the act, and not on the device list afterwards; the two states are different guarantees.** "Revoked locally" is true the moment the op commits; "the relay has stopped accepting it" is true only once the queued `DELETE` has been answered, which needs a network the user may not have — and the second is the one someone pressing the button believes they are getting. The log distinguishes them (`sync.device.revoke_relayed` against `sync.device.revoke_not_relayed`), and so does the core: `Core::relay_revocation_pending` answers it for one device (`crates/sunrise-core/src/relay_intents.rs:185#relay_revocation_pending`). Both clients ask it and say which state the revocation is in — the CLI on the revoke path (`crates/sunrise-cli/src/cmd/devices.rs#device`) and the shared Apple account view in its revocation disclosure (`apps/apple/Sunrise/Views/DeviceListSection.swift:186`). What is **not** built is standing disclosure: `DeviceRow` carries no pending flag, so a device list opened the next day cannot say which of its revoked entries the relay has actually been told about. That was [#160](https://github.com/justin13888/Sunrise/issues/160).
 
   The Apple notice's own lifetime is worth stating exactly, because it is not the "one-shot sheet" it reads as. It is an inline `VStack` inside `Section("Devices")` (`apps/apple/Sunrise/Views/DeviceListSection.swift:24`, `apps/apple/Sunrise/Views/DeviceListSection.swift:176`) — the *Settings container* is the sheet, not the notice — and the `lastRevocation` it renders lives on `DeviceListModel`, which `VaultModels` owns (`apps/apple/Sunrise/App/VaultModels.swift:57`) and which outlives that sheet. Nothing clears it but the "Done" button, and `DeviceListModel.refresh()` re-reads the device list without re-reading `Core::relay_revocation_pending`. So the notice survives closing and reopening Settings within a session, and it goes stale in the direction a reader would not guess: it keeps saying "The relay has NOT been told yet" after a sync has drained the intent, rather than the other way round.
 
@@ -264,13 +264,23 @@ devices compare to decide they belong together. It lives in
    `identity` row under the new id and re-issues its own cert. It does **not**
    touch `D_S`/`D_D`: those are unchanged by a rotation and their at-rest AAD
    binds to `device_id`, not to `identity_id`.
-6. The recovery code is carried forward by default: the successor's
-   `ID_S_priv || ID_D_priv` is sealed to the **outgoing** `ID_D_pub`, so the
-   user's existing BIP-39 code keeps working. `keep_recovery_code: false` skips
-   it, which is what to use when the *code* is the thing suspected. Revoking the
-   device that holds `ID_D_priv` forces no-carry regardless — the carry share is
-   sealed to the very key being excluded — and the user must be told
-   (`core.identity.recovery_code_invalidated`).
+6. What happens to the recovery code is the one choice
+   ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+   `keep_recovery_code: true` (`sunrise identity rotate --keep-code`, and every
+   revocation) seals the successor's `ID_S_priv || ID_D_priv` to the
+   **outgoing** `ID_D_pub` as well, so the user's existing BIP-39 code keeps
+   working: a vault restored from it walks each rotation's carry share to the
+   identity in force and certifies itself there. That carry reaches every
+   holder of the outgoing `ID_D_priv`, so it is never what to use when one of
+   them is the reason for rotating. `keep_recovery_code: false` (the CLI's
+   default) retires the code: the transition is sealed under a vault-meta epoch
+   minted for it with no identity copy, every Stream then rotates, the rotating
+   device keeps the successor's `ID_D_priv`, and it seals a new recovery blob and
+   replaces the relay's. Revoking the device that holds `ID_D_priv` forces
+   no-carry regardless — the carry share is sealed to the very key being
+   excluded — and the user must be told
+   (`core.identity.recovery_code_invalidated`); `sunrise identity new-code` is
+   how they get a working code back.
 7. When sharing exists, a fresh `share_grant` to every shared peer for every
    Stream. The peer's `ID_D_pub` is unchanged; only the granting identity has
    new keys, so the share signature changes. Nothing implements sharing yet.
@@ -400,7 +410,7 @@ Revocation = removing a device from the identity. Triggered from any other still
 2. The trusted device performs a Stream key rotation **for every Stream the revoked device had access to** (all of them, today). This produces fresh `key_envelope` ops for sibling devices and `share_grant` ops for peers under the new epoch — but pointedly NOT for the revoked device.
 3. The server stops accepting ops signed by the revoked device. **It cannot learn this from the op**, and it is not asked to. `device_revoke` is an inner op sealed under the vault-meta Stream key, and the relay holds no Stream keys — so `revoked_device_id` is ciphertext to it, not metadata it can read. The alternative, promoting `revoked_device_id` into the **cleartext envelope header**, is refused: it would tell the relay which of an account's devices had been revoked and when, for every account it serves, on an unauthenticated channel — the metadata leak the blind-relay property exists to prevent. So the relay is told **out of band**, by `DELETE /api/v1/devices/by-vault-id/{id}` ([`../06-server/api.md`](../06-server/api.md) §Two names for one device). The route takes the *vault-side* device id because that is the only name a revoking device holds; the older `DELETE /api/v1/devices/{id}` names a ULID the relay mints at registration and never sends back through the op stream, so no vault can address a peer with it.
 
-   The call is queued, not made. `Command::RevokeDevice` writes a row to `relay_revocation_intents` in the same transaction as the op, and `sync_driver::drain_relay_revocations` sends it once a session is up — because a revocation has to work with no network at all, which is the situation a user is in the moment they notice a device is gone. A refusal keeps the row and retries on the next session, logging `sync.device.revoke_not_relayed`, which says outright that the relay is still accepting the device. See [`../10-cross-cutting/log-events.md`](../10-cross-cutting/log-events.md).
+   The call is queued, not made. `Command::RevokeDevice` writes a row to `relay_revocation_intents` in the same transaction as the op, and `relay_intents::drain` sends it once a session is up — because a revocation has to work with no network at all, which is the situation a user is in the moment they notice a device is gone. A refusal keeps the row and retries on the next session, logging `sync.device.revoke_not_relayed`, which says outright that the relay is still accepting the device. See [`../10-cross-cutting/log-events.md`](../10-cross-cutting/log-events.md).
 
    **A queued intent is owed only while the register agrees.** The register is derived, and a re-fold can unwind a revocation it believed (the "`device_revoke` is the one family where revocation reaches backwards" bullet below). The fold does not touch `relay_revocation_intents`, so an intent can outlive the register row it was queued beside. The drain therefore sends, and `Core::relay_revocation_pending` reports, only the intents whose device `device_revocations` currently holds — one query, `OWED_RELAY_REVOCATIONS_SQL` in `crates/sunrise-core/src/relay_intents.rs` — and holds the rest rather than deleting them, so a later fold that revokes the device again makes the intent owed again instead of leaving the relay behind the register ([#257](https://github.com/justin13888/Sunrise/issues/257)). A `RevokeDevice` the fold discards can then never read as pending, and its "this revocation tells the relay nothing" is exact.
 
@@ -423,6 +433,8 @@ A revoked device that never reconnects retains whatever plaintext it had at the 
 The op waits for [#320](https://github.com/justin13888/Sunrise/issues/320) and [#324](https://github.com/justin13888/Sunrise/issues/324). Until an unknown op kind is parked rather than dropped as corruption, an older build would never see a withdrawal, and the register would split between builds. Parking does not reach a build that predates it, so a withdrawal is also emitted only behind the `core.revoke_withdraw` feature, and the command refuses while any non-revoked device, or the device being reinstated, does not advertise it (ADR-0056 §7).
 
 **Step 2 also rotates the account identity, when the revoking device can.** Only the device the account was created on holds `ID_S_priv`, so a revocation run from a paired device cuts every future Stream key and leaves the identity where it is, logging `core.identity.rotation_unavailable`. That costs less than it sounds: since #105 a revoked device holds no signing key unless it is the creator, so for every other device there is no certificate for the rotation to have invalidated. Revoking the **creator** is the case that needs the rotation, and it has to be run from the creator.
+
+**The rotation reaches the account's key bundle, and so does every other new key** ([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)). The identity copy of each new epoch is a `key_envelope` op, and the relay trims ops. So the device that holds the new keys first, normally the one that rotated, republishes the account's key bundle before its session reports `Live`: every key it may write under, sealed to the identity in force's `ID_D_pub`, signed by its `D_S`, and pinned on the relay outside op retention. It publishes only a superset of the bundle the relay pins and only over the pin it read, so a device that has not yet absorbed the rotation never puts the old keys back. A key the revoked device delivered is not carried, and a bundle the revoked device pinned is replaced by the next honest device to sync. Sealing to the identity reaches exactly the devices the identity copy of every envelope already reaches; after a revocation from the creator the identity has rotated and the cut device holds no share of it.
 
 **What converges, and what does not.** Every replica applies every **entity** op it can decrypt — a task edit, a note, a focus session — whatever its sender's revocation state and whatever order the `device_revoke` and the op arrive in. There is no refusal record for those anywhere in the tree, so delivery order is not an input to the materialized state: two replicas holding the same op set hold the same task table. What the apply path does consult is the read bound, and only to decide key distribution: applying a `DeviceCertPublish` runs `backfill_key_envelopes`, which returns early on a read-bounded device — it tested `Engine::is_revoked` until migration 0028 gave the bound its own table — so what is settled there is which device is sealed key material, never whether the op applies. Two consequences follow and are worth stating outright, because they are what makes the rest of this section safe.
 
@@ -482,7 +494,7 @@ Two things are deliberately not done:
 | `sunrise.stream_key.v1` (the pre-ADR-0024 derivation) | two frozen legacy keys, through `legacy_derived_stream_key` itself |
 | `sunrise.remote_op_id.v1` | three frozen op-log ids |
 | `sunrise.pair_sas.v1` | three frozen six-digit codes |
-| `sunrise.account_email_hash.v1` | three frozen bucket keys |
+| `sunrise.account_email_hash.v1` | three frozen account tags |
 | `sunrise-device-sig-v2` | the canonical string spelled out, and two frozen signatures that also verify |
 | `sunrise.import_block.v1` | three frozen Block ids |
 | `sunrise.routine_task.v1` | two frozen Task ids |

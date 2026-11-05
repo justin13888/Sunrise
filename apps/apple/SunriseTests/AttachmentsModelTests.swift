@@ -55,11 +55,21 @@ struct AttachmentsModelTests {
         #expect(row.item.mimeType == "application/pdf")
         #expect(row.item.sizeBytes == UInt64(bytes.count))
         #expect(row.isLocal)
-        #expect(row.previewKind == .pdf)
+        #expect(row.previewKind == .quickLook)
 
+        // QuickLook reads a plaintext copy under this launch's preview
+        // directory, which closing the preview deletes (ADR-0053 §5).
         await model.preview(row)
-        #expect(model.previewing?.data == bytes)
+        guard case let .file(_, url)? = model.previewing else {
+            Issue.record("a PDF previews through QuickLook")
+            return
+        }
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(url.path().hasPrefix(PreviewFiles.launch.path()))
         #expect(model.errorMessage == nil)
+        model.closePreview()
+        #expect(model.previewing == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path()))
         await vault.bridge.shutdown()
     }
 
@@ -81,15 +91,14 @@ struct AttachmentsModelTests {
         #expect(row.item.chunkCount == 3)
         #expect(row.previewKind == .image)
         await model.preview(row)
-        #expect(model.previewing?.data == bytes)
+        #expect(model.previewing == .image(id: row.id, data: bytes))
         await vault.bridge.shutdown()
     }
 
-    /// A file whose type this app cannot draw still attaches and still opens —
-    /// in whatever owns it. Guessing at a renderer is how a `.zip` gets shown
-    /// as mojibake.
+    /// Any file still attaches and still opens in whatever owns it: **Open
+    /// in…** writes the plaintext under this launch's preview directory.
     @Test
-    func anUnpreviewableTypeStillAttachesAndExports() async throws {
+    func anyTypeStillAttachesAndExports() async throws {
         let vault = try await TestVault()
         let task = try await aTask(vault)
         let model = AttachmentsModel(bridge: vault.bridge, task: task)
@@ -99,8 +108,9 @@ struct AttachmentsModelTests {
         await model.attach(contentsOf: file)
 
         let row = try #require(model.rows.first)
-        #expect(row.previewKind == .none)
+        #expect(row.previewKind == .quickLook)
         let exported = try #require(await model.exportToTemporary(row))
+        #expect(exported.path().hasPrefix(PreviewFiles.launch.path()))
         #expect(try Data(contentsOf: exported) == bytes)
         #expect(exported.lastPathComponent == "people.csv")
         await vault.bridge.shutdown()

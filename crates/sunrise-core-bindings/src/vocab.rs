@@ -1,10 +1,12 @@
 //! The shared vocabulary, exported as functions rather than restated.
 //!
 //! Everything here is a thin lowering of [`sunrise_domain::phrase`] or
-//! [`sunrise_domain::planning`]. None of it computes anything; the point is
-//! that a client **cannot** be tempted to compute it.
+//! [`sunrise_domain::planning`], through [`sunrise_client_core::vocab`] where
+//! the answer is read in the caller's zone or crosses epoch milliseconds. None
+//! of it computes anything; the point is that a client **cannot** be tempted
+//! to compute it.
 //!
-//! The temptation is real and specific. "Overdue", "tomorrow", "1h30" and
+//! The temptation is real and specific. "Overdue", "tomorrow", "1h30m" and
 //! "weekdays 09:00–17:00" are each two lines to write in Swift, and each of
 //! those two-line versions would disagree with the CLI the first time a
 //! deadline landed on a DST boundary or a task was due at 09:00 and read at
@@ -20,6 +22,8 @@ use sunrise_domain::{
     EnergyFit, ExportDataset, ExportFormat, InterruptionReason, RRule, ScheduleConstraint,
     SessionLength, SnoozeSpan, SunriseTime, TodaySection,
 };
+
+use sunrise_client_core::vocab;
 
 use crate::dto::{
     BlockDraftIn, BlockGridRow, Constraint, Recurrence, RoutineItem, SessionRow, TimeValue,
@@ -45,7 +49,8 @@ pub enum TodaySection {
 /// exactly the restatement this module exists to prevent.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RelativeDay {
-    /// `yesterday` / `today` / `tomorrow` / `+3d` / `-3d`.
+    /// `yesterday` / `today` / `tomorrow` / `+3d` / `-3d`, or `unknown` for a
+    /// time kind this build does not know.
     pub text: String,
     /// Whether the day is behind the caller's `now_ms`.
     pub is_past: bool,
@@ -67,10 +72,9 @@ pub fn today_section(
     now_ms: u64,
     tz: String,
 ) -> TodaySection {
-    let zone = zone_or_utc(&tz);
     let scheduled = scheduled_at.map(SunriseTime::from);
     let due = due_at.map(SunriseTime::from);
-    sunrise_domain::today_section(scheduled.as_ref(), due.as_ref(), now_ms, &zone)
+    vocab::today_section(scheduled.as_ref(), due.as_ref(), now_ms, &tz)
 }
 
 /// `yesterday` / `today` / `tomorrow` / `+3d`, in whole civil days.
@@ -80,13 +84,12 @@ pub fn today_section(
 #[uniffi::export]
 #[must_use]
 pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
-    let zone = zone_or_utc(&tz);
-    let at = SunriseTime::from(at).to_instant(&zone);
-    let (text, is_past) = sunrise_domain::relative_day(at, now_ms, &zone);
+    let vocab::RelativeDay { text, is_past } =
+        vocab::relative_day(&SunriseTime::from(at), now_ms, &tz);
     RelativeDay { text, is_past }
 }
 
-/// `1800` → `30m`, `5400` → `1h30`. The compact form, for a list column.
+/// `1800` → `30m`, `5400` → `1h30m`. The compact form, for a list column.
 #[uniffi::export]
 #[must_use]
 pub fn short_duration(secs: u64) -> String {
@@ -202,13 +205,13 @@ pub fn interruption_label(reason: InterruptionReason) -> String {
 /// say) asks for it here rather than reading the enum apart.
 ///
 /// `tz` is the zone a floating or all-day value is read in; an unknown one
-/// falls back to UTC, as everywhere else in this module.
+/// falls back to UTC, as everywhere else in this module. A value with no
+/// instant answers where a sort places it,
+/// [`sunrise_domain::SunriseTime::instant_or_last`], never the epoch.
 #[uniffi::export]
 #[must_use]
 pub fn time_value_ms(value: TimeValue, tz: String) -> i64 {
-    SunriseTime::from(value)
-        .to_instant(&zone_or_utc(&tz))
-        .as_millisecond()
+    vocab::time_value_ms(&SunriseTime::from(value), &tz)
 }
 
 /// A dataset's lowercase wire name: `trends`, `activity`, `focus`, `streaks`.
@@ -242,14 +245,24 @@ pub fn export_format_name(format: ExportFormat) -> String {
 ///
 /// Skips, pauses and the series end are all honoured, because the whole
 /// routine is handed over rather than just its rule.
+///
+/// A floating routine fires at its wall-clock time in the reader's zone, and
+/// this has none: it reads in the routine's own zone. Prefer
+/// [`next_occurrence_ms_in`].
 #[uniffi::export]
 #[must_use]
 pub fn next_occurrence_ms(routine: RoutineItem, now_ms: u64) -> Option<i64> {
-    let now = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).ok()?).ok()?;
-    let rows = sunrise_domain::routine_rows(&[sunrise_domain::Routine::from(routine)], now);
-    rows.first()
-        .and_then(|r| r.next)
-        .map(jiff::Timestamp::as_millisecond)
+    let zone = routine.timezone.clone();
+    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms, &zone)
+}
+
+/// [`next_occurrence_ms`] for a reader in `zone` (an IANA name, the zone the
+/// client reports through `on_time_zone_changed`): a floating routine's next
+/// occurrence at its wall-clock time there, a zoned one's in its zone.
+#[uniffi::export]
+#[must_use]
+pub fn next_occurrence_ms_in(routine: RoutineItem, now_ms: u64, zone: String) -> Option<i64> {
+    vocab::next_occurrence_ms(sunrise_domain::Routine::from(routine), now_ms, &zone)
 }
 
 /// A running session's numbers, as the domain derives them.
@@ -284,27 +297,36 @@ pub struct SessionProgress {
 #[uniffi::export]
 #[must_use]
 pub fn session_progress(session: SessionRow, now_ms: u64) -> SessionProgress {
-    let live = sunrise_domain::FocusSession::from(&session);
-    let remaining_ms = live.remaining_ms(now_ms);
-    SessionProgress {
-        focused_ms: live.focused_ms(now_ms),
-        clock: sunrise_domain::fmt_duration_ms(live.focused_ms(now_ms)),
+    let vocab::SessionProgress {
+        focused_ms,
+        clock,
         remaining_ms,
-        remaining_clock: remaining_ms.map(sunrise_domain::fmt_duration_ms),
-        overran: live.overran(now_ms),
-        running: live.is_running(),
+        remaining_clock,
+        overran,
+        running,
+    } = vocab::session_progress(&sunrise_domain::FocusSession::from(&session), now_ms);
+    SessionProgress {
+        focused_ms,
+        clock,
+        remaining_ms,
+        remaining_clock,
+        overran,
+        running,
     }
 }
 
-/// The synthetic Inbox stream's id.
+/// The legacy Inbox id: how the seam spells "no stream" (ADR-0046 §5).
 ///
-/// `Query::StreamList` puts the Inbox first as an ordinary-looking row, and a
-/// client has to tell it apart: it cannot be renamed, recoloured or deleted,
-/// and offering those would produce a rejected command and a confused user.
+/// A task, block or routine template that belongs to no stream carries it in
+/// its non-optional `stream_id` (and `None` in the optional field beside it),
+/// and a command given it moves the entity to no stream. The binding's
+/// `CoreQuery::StreamList` still puts a synthetic Inbox row first under this
+/// id, counting the Inbox view, for a client that predates the Inbox being a
+/// view; it cannot be renamed, recoloured or deleted.
 ///
 /// Exported rather than hardcoded because the alternative is a client
-/// comparing against the literal all-zero id — or worse, against the string
-/// "Inbox", which is a display name and translatable.
+/// comparing against a literal id, or worse, against the string "Inbox",
+/// which is a display name and translatable.
 #[uniffi::export]
 #[must_use]
 pub fn inbox_stream_id() -> sunrise_id::EntityRef {
@@ -331,12 +353,7 @@ pub fn inbox_stream_id() -> sunrise_id::EntityRef {
 #[uniffi::export]
 #[must_use]
 pub fn stream_sort_key_between(after: Option<String>, before: Option<String>) -> Option<String> {
-    sunrise_domain::sort_order::between(after.as_deref(), before.as_deref()).ok()
-}
-
-/// An IANA zone, or UTC when the name is not one.
-fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
-    jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+    vocab::sort_key_between(after.as_deref(), before.as_deref())
 }
 
 // ---------------------------------------------------------------------------
@@ -361,16 +378,19 @@ pub struct BlockConflict {
 /// Every overlapping pair among the rows a calendar grid is showing.
 ///
 /// See [`sunrise_domain::overlaps`]. Exported rather than computed in the
-/// client because "overlap" is a decision, not arithmetic: it is measured on
-/// [`sunrise_domain::SunriseTime::index_ms`] so that the four time kinds
-/// compare the way storage orders them, and back-to-back blocks are
-/// deliberately *not* a conflict. A client comparing its own two numbers would
-/// get the second of those wrong on its first well-planned day.
+/// client because "overlap" is a decision, not arithmetic: each bound resolves
+/// in the reader's zone `tz` (`docs/10-cross-cutting/time.md` §2), so a
+/// floating block and a zoned one collide where the reader is, and
+/// back-to-back blocks are deliberately *not* a conflict. A client comparing
+/// its own two numbers would get the second of those wrong on its first
+/// well-planned day.
+///
+/// An unknown `tz` falls back to UTC, as everywhere else here.
 #[uniffi::export]
 #[must_use]
-pub fn block_conflicts(rows: Vec<BlockGridRow>) -> Vec<BlockConflict> {
+pub fn block_conflicts(rows: Vec<BlockGridRow>, tz: String) -> Vec<BlockConflict> {
     let blocks: Vec<sunrise_domain::Block> = rows.iter().map(|r| r.block.to_domain()).collect();
-    sunrise_domain::overlaps(&blocks)
+    vocab::block_conflicts(&blocks, &tz)
         .into_iter()
         .map(|o| BlockConflict {
             a: o.a,
@@ -381,12 +401,15 @@ pub fn block_conflicts(rows: Vec<BlockGridRow>) -> Vec<BlockConflict> {
         .collect()
 }
 
-/// The draft the Resolve menu's **Merge** action creates.
+/// A preview of the block the Resolve menu's **Merge** action creates. Writes
+/// nothing.
 ///
 /// `docs/02-domain/time-blocks.md` §Conflicts defines merge as "tombstone the
 /// two original Blocks and create a new one with the union time range and
-/// concatenated tasks". This is the create half; the caller submits the two
-/// deletes alongside it.
+/// concatenated tasks". To commit one, call
+/// [`SunriseCore::merge_blocks`](crate::SunriseCore::merge_blocks), which
+/// writes the union and both tombstones as one commit; this draft is not an
+/// input to it.
 ///
 /// The interesting part is not the union but **which time kind survives it**,
 /// and that is a domain decision: two bounds of the same kind stay that kind,
@@ -408,17 +431,9 @@ pub fn merged_block_draft(
     b: BlockGridRow,
     tz: String,
 ) -> Result<BlockDraftIn, BindingError> {
-    let zone = zone_or_utc(&tz);
-    let draft = sunrise_domain::merge_blocks(&a.block.to_domain(), &b.block.to_domain(), &zone)
+    let draft = vocab::merged_block_draft(&a.block.to_domain(), &b.block.to_domain(), &tz)
         .map_err(|e| BindingError::Core(e.to_string()))?;
-    Ok(BlockDraftIn {
-        stream_id: draft.stream_id,
-        starts_at: TimeValue::from(&draft.starts_at),
-        ends_at: TimeValue::from(&draft.ends_at),
-        title: draft.title,
-        title_track_task: draft.title_track_task,
-        tasks: draft.tasks,
-    })
+    Ok(BlockDraftIn::from(&draft))
 }
 
 /// When a "defer an hour" / "until tomorrow" / "next week" lands, epoch ms.
@@ -434,7 +449,5 @@ pub fn merged_block_draft(
 #[uniffi::export]
 #[must_use]
 pub fn snooze_target_ms(from_ms: u64, span: SnoozeSpan, tz: String) -> i64 {
-    let from = jiff::Timestamp::from_millisecond(i64::try_from(from_ms).unwrap_or(i64::MAX))
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    sunrise_domain::snooze_target(from, span, &zone_or_utc(&tz)).as_millisecond()
+    vocab::snooze_target_ms(from_ms, span, &tz)
 }

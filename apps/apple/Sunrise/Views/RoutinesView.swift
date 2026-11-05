@@ -21,9 +21,9 @@ struct RoutinesView: View {
             }
             if model.visible.isEmpty {
                 ContentUnavailableView(
-                    "No routines",
+                    L10n.Routines.emptyTitle,
                     systemImage: "repeat",
-                    description: Text("A routine generates its task on a cadence you describe.")
+                    description: Text(L10n.Routines.emptyDescription)
                 )
             } else {
                 List(model.visible, id: \.id) { routine in
@@ -38,16 +38,16 @@ struct RoutinesView: View {
                 .listStyle(.inset)
             }
         }
-        .navigationTitle("Routines")
+        .navigationTitle(L10n.Routines.title)
         .toolbar {
             ToolbarItem {
-                Button("New routine", systemImage: "plus") { creating = true }
+                Button(L10n.Routines.newRoutine, systemImage: "plus") { creating = true }
                     .disabledUnlessEditable(.routine, .task)
             }
             ToolbarItem {
-                Menu("More", systemImage: "ellipsis.circle") {
-                    Toggle("Show archived", isOn: $model.showsArchived)
-                    Button("Generate now") { Task { await model.materializeNow() } }
+                Menu(L10n.Routines.more, systemImage: "ellipsis.circle") {
+                    Toggle(L10n.Routines.showArchived, isOn: $model.showsArchived)
+                    Button(L10n.Routines.generateNow) { Task { await model.materializeNow() } }
                         .disabledUnlessEditable(.task)
                 }
             }
@@ -66,43 +66,40 @@ struct RoutinesView: View {
             }
         }
         .confirmationDialog(
-            "Delete “\(confirmingDelete?.template.title ?? "")”?",
+            L10n.Routines.deleteConfirmTitle(title: confirmingDelete?.template.title ?? ""),
             isPresented: Binding(
                 get: { confirmingDelete != nil },
                 set: { if !$0 { confirmingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button(L10n.Action.delete, role: .destructive) {
                 guard let routine = confirmingDelete else { return }
                 confirmingDelete = nil
                 Task { await model.delete(routine) }
             }
         } message: {
-            Text(
-                "Generation stops and this cannot be undone. Tasks it already made stay. "
-                    + "Pause it instead to stop generation and keep it."
-            )
+            Text(L10n.Routines.deleteConfirmMessage)
         }
     }
 
     @ViewBuilder
     private func menu(for routine: RoutineItem) -> some View {
-        Button("Edit…") { editing = routine }
+        Button(L10n.Routines.editEllipsis) { editing = routine }
         // Skipping can tombstone the occurrence's task, and pausing or
         // archiving is an update, which re-materializes: each writes tasks.
         Group {
-            Button("Skip next occurrence") { Task { await model.skipNext(routine) } }
-            Button(routine.paused ? "Resume" : "Pause") {
+            Button(L10n.Routines.skipNext) { Task { await model.skipNext(routine) } }
+            Button(routine.paused ? L10n.Routines.resume : L10n.Routines.pause) {
                 Task { await model.setPaused(routine, !routine.paused) }
             }
-            Button(routine.archived ? "Unarchive" : "Archive") {
+            Button(routine.archived ? L10n.Routines.unarchive : L10n.Routines.archive) {
                 Task { await model.setArchived(routine, !routine.archived) }
             }
         }
         .disabledUnlessEditable(.routine, .task)
         Divider()
-        Button("Delete…", role: .destructive) { confirmingDelete = routine }
+        Button(L10n.Routines.deleteEllipsis, role: .destructive) { confirmingDelete = routine }
             .disabledUnlessEditable(.routine)
     }
 }
@@ -124,7 +121,7 @@ struct RoutineRowView: View {
                     if routine.paused {
                         Image(systemName: "pause.circle")
                             .foregroundStyle(.secondary)
-                            .help("Paused — generates nothing")
+                            .help(L10n.Routines.pausedHelp)
                     }
                 }
                 HStack(spacing: 8) {
@@ -133,12 +130,12 @@ struct RoutineRowView: View {
                         Text("#\(streamName)").font(.caption).foregroundStyle(.secondary)
                     }
                     if let next {
-                        Text("next \(next.text)")
+                        Text(L10n.Routines.next(day: next.text))
                             .font(.caption)
                             .foregroundStyle(next.isPast ? .orange : .secondary)
                     }
                     if routine.streakCounter > 0 {
-                        Text("streak \(routine.streakCounter)")
+                        Text(L10n.Routines.streak(count: Int(routine.streakCounter)))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()

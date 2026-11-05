@@ -41,9 +41,9 @@ struct RestoreFromCodeView: View {
 
     private var title: String {
         switch model.phase {
-        case .restored: "Your account is back"
-        case .incomplete: "Your account is back, still catching up"
-        default: "Restore from your recovery code"
+        case .restored: L10n.Recovery.Restore.titleRestored
+        case .incomplete: L10n.Recovery.Restore.titleIncomplete
+        default: L10n.Recovery.Restore.title
         }
     }
 
@@ -60,7 +60,7 @@ struct RestoreFromCodeView: View {
         case .entering, .failed:
             entry
         case .signingIn:
-            ProgressView("Sign in again in your browser…")
+            ProgressView(L10n.Recovery.Restore.signingIn)
                 .frame(maxWidth: .infinity, alignment: .center)
         case let .restoring(progress):
             ProgressView(Self.describe(progress))
@@ -70,13 +70,8 @@ struct RestoreFromCodeView: View {
             aftercare
         case let .incomplete(message):
             VStack(alignment: .leading, spacing: 10) {
-                Text(
-                    """
-                    Your vault is restored and open. Part of its history had \
-                    not arrived yet; it finishes the next time Sunrise syncs.
-                    """
-                )
-                .font(.callout)
+                Text(L10n.Recovery.Restore.incomplete)
+                    .font(.callout)
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -87,16 +82,10 @@ struct RestoreFromCodeView: View {
 
     private var entry: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(
-                """
-                Type the twenty-four words you saved when you set Sunrise up. \
-                Your provider will ask you to sign in again before the relay \
-                releases your encrypted account.
-                """
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(L10n.Recovery.Restore.entryInstruction)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             TextField("abandon ability able …", text: $model.text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(4 ... 8)
@@ -125,14 +114,12 @@ struct RestoreFromCodeView: View {
     private var wordStatus: String {
         if !model.unknownWords.isEmpty {
             let list = model.unknownWords.map(String.init).joined(separator: ", ")
-            return model.unknownWords.count == 1
-                ? "Word \(list) is not a recovery-code word."
-                : "Words \(list) are not recovery-code words."
+            return L10n.Recovery.Restore.unknownWords(count: model.unknownWords.count, positions: list)
         }
         if let problem = model.checksumProblem {
-            return "All twenty-four are real words, but they are not a valid code: \(problem)"
+            return L10n.Recovery.Restore.invalidChecksum(problem: problem)
         }
-        return "\(model.wordCount) of 24 words"
+        return L10n.Recovery.Restore.wordCount(count: model.wordCount)
     }
 
     private var wordStatusIsProblem: Bool {
@@ -141,25 +128,18 @@ struct RestoreFromCodeView: View {
 
     private var aftercare: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(
-                """
-                Two things are worth doing now, and neither is automatic. \
-                Remove the devices you lost: until you do, anything still \
-                holding them can read what this account writes. Then rotate \
-                your Stream keys, which bounds what a lost device keeps reading.
-                """
-            )
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(L10n.Recovery.Restore.aftercare)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
             if let devices {
                 Form { DeviceListSection(model: devices) }
                     .frame(minHeight: 160)
             }
             HStack {
-                Button("Rotate Stream keys") { Task { await model.rotateKeys() } }
+                Button(L10n.Recovery.Restore.rotate) { Task { await model.rotateKeys() } }
                     .accessibilityIdentifier("restore.rotate")
                 if let count = model.rotatedStreams {
-                    Text(count == 1 ? "1 Stream key rotated." : "\(count) Stream keys rotated.")
+                    Text(L10n.Recovery.Restore.rotated(count: count))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -180,9 +160,9 @@ struct RestoreFromCodeView: View {
         HStack {
             switch model.phase {
             case .entering, .failed:
-                Button("Cancel", role: .cancel, action: dismiss)
+                Button(L10n.Action.cancel, role: .cancel, action: dismiss)
                 Spacer()
-                Button("Sign in and restore") { Task { await model.restoreAccount() } }
+                Button(L10n.Recovery.Restore.submit) { Task { await model.restoreAccount() } }
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canRestore)
                     .accessibilityIdentifier("restore.submit")
@@ -190,7 +170,7 @@ struct RestoreFromCodeView: View {
                 EmptyView()
             case .restored, .incomplete:
                 Spacer()
-                Button("Done", action: dismiss)
+                Button(L10n.Action.done, action: dismiss)
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("restore.done")
             }
@@ -199,10 +179,10 @@ struct RestoreFromCodeView: View {
 
     static func describe(_ progress: RestoreFromCodeModel.Progress) -> String {
         switch progress {
-        case .fetching: "Fetching your encrypted account…"
-        case .identityOpened: "Code accepted. Setting up this device…"
-        case .deviceRegistered: "Reading your history…"
-        case let .replaying(applied): "Reading your history: \(applied) changes so far…"
+        case .fetching: L10n.Recovery.Restore.fetching
+        case .identityOpened: L10n.Recovery.Restore.identityOpened
+        case .deviceRegistered: L10n.Recovery.Restore.deviceRegistered
+        case let .replaying(applied): L10n.Recovery.Restore.replaying(count: Int(clamping: applied))
         }
     }
 }

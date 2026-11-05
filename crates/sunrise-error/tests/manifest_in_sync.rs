@@ -1,8 +1,8 @@
 //! Asserts that `codes.toml` and the hand-maintained Rust enum stay aligned.
 //!
 //! Per `docs/10-cross-cutting/error-handling.md`, the TOML manifest is the
-//! source of truth and the Rust enum is a generated mirror; until the
-//! build-script lands, this test catches drift.
+//! source of truth and the Rust enum is a hand-kept mirror of it; this test
+//! is what catches drift between the two.
 
 use sunrise_error::ErrorCode;
 
@@ -54,6 +54,80 @@ fn ids_are_monotonic_and_unique() {
         ids, sorted,
         "ids in codes.toml are not monotonically increasing"
     );
+}
+
+#[test]
+fn kind_and_retryable_match_the_toml() {
+    let blocks = extract_blocks(include_str!("../codes.toml"));
+    assert_eq!(
+        blocks.len(),
+        ErrorCode::all().len(),
+        "codes.toml and the Rust enum list a different number of codes"
+    );
+    for block in &blocks {
+        let code = ErrorCode::from_wire_str(&block.name)
+            .unwrap_or_else(|| panic!("name {:?} from codes.toml missing", block.name));
+        // The toml's `kind` is compared through `ErrorKind`'s serde spelling,
+        // so this also holds that spelling to the manifest's.
+        let rust_kind = serde_json::to_string(&code.default_kind()).expect("kind serializes");
+        assert_eq!(
+            rust_kind,
+            format!("\"{}\"", block.kind),
+            "kind of {} differs between codes.toml and default_kind()",
+            block.name
+        );
+        assert_eq!(
+            code.retryable(),
+            block.retryable,
+            "retryable of {} differs between codes.toml and retryable()",
+            block.name
+        );
+    }
+}
+
+#[test]
+fn as_str_matches_the_serde_spelling() {
+    for code in ErrorCode::all() {
+        let wire = serde_json::to_string(&code).expect("code serializes");
+        assert_eq!(
+            wire,
+            format!("\"{}\"", code.as_str()),
+            "ErrorCode::{code:?} serializes differently from its as_str()"
+        );
+        let parsed: ErrorCode = serde_json::from_str(&wire).expect("code deserializes");
+        assert_eq!(parsed, code, "{wire} does not deserialize back to itself");
+    }
+}
+
+/// The fields of one `[[code]]` block that the Rust accessors mirror.
+struct ManifestCode {
+    name: String,
+    kind: String,
+    retryable: bool,
+}
+
+/// Parses each `[[code]]` block, panicking on one that lacks a mirrored field
+/// so a malformed block cannot pass by being skipped.
+fn extract_blocks(toml: &str) -> Vec<ManifestCode> {
+    let mut out = Vec::new();
+    for block in toml.split("[[code]]").skip(1) {
+        let field = |key: &str| {
+            let prefix = format!("{key} = ");
+            block
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
+                .map_or_else(
+                    || panic!("a [[code]] block has no {key}: {block}"),
+                    str::trim,
+                )
+        };
+        out.push(ManifestCode {
+            name: field("name").trim_matches('"').to_string(),
+            kind: field("kind").trim_matches('"').to_string(),
+            retryable: field("retryable").parse().expect("retryable is a bool"),
+        });
+    }
+    out
 }
 
 /// Extracts the `name = "..."` value from each `[[code]]` block.

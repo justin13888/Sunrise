@@ -7,12 +7,16 @@ use sunrise_core::{Query, QueryResult};
 use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::EntityRef;
 
+use crate::conflicts::ConflictItem;
 use crate::dto::{
     hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
-    NotificationSettings, PlanRow, PreferenceItem, Reminder, RoutineItem, SessionRow, Snapshot,
-    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    NotificationSettings, ParkedReasonCount, PlanRow, PreferenceItem, Reminder, RoutineItem,
+    SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
+    WeeklyReviewReport,
 };
+use crate::search::SearchReport;
+use crate::upcoming::UpcomingReport;
 
 /// A read query.
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -49,7 +53,8 @@ pub enum CoreQuery {
     IdentityStatus,
     /// Sync health.
     SyncStatus,
-    /// Streams, with open counts, Inbox first.
+    /// Streams, with open counts, and a synthetic Inbox row first, counting
+    /// the Inbox view, for a client that predates the Inbox being one.
     StreamList,
     /// Contexts, with task counts, by name.
     Contexts,
@@ -176,22 +181,88 @@ pub enum CoreQuery {
         /// Any instant inside the day (epoch ms).
         day_ms: u64,
     },
-    /// The calendar grid for one week, Monday-first, in the device's zone.
+    /// The calendar grid for one week, starting on the `week_start`
+    /// preference, in the device's zone.
     WeekBlocks {
         /// Any instant inside the week (epoch ms).
         week_ms: u64,
     },
-    /// Full-text search over tasks.
+    /// Search, answered as the tasks it finds, best first. The text is in
+    /// the search grammar, so operators work; only tasks come back.
     Search {
         /// Raw query text.
         text: String,
         /// Row cap.
         limit: u32,
     },
+    /// How many ops this device holds parked, by reason: ops it keeps but
+    /// cannot apply yet, most often because a newer device wrote them.
+    ParkedOpsSummary,
     /// Every preference but the bootstrap ones, resolved, each with where
     /// its value came from. The bootstrap keys are read without the vault,
     /// by `bootstrap_preferences`.
     Preferences,
+    /// Upcoming: the next 7, 14 or 30 civil days from today in the device's
+    /// zone, day by day, then a no-date lane per stream.
+    Upcoming {
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`].
+        now_ms: u64,
+        /// 7, 14 or 30; any other span is an error. Absent reads the
+        /// device's `views.upcoming.span_days` preference.
+        span_days: Option<u32>,
+        /// Narrow tasks to these contexts; empty means all.
+        contexts: Vec<EntityRef>,
+    },
+    /// Search every kind, grouped by kind in a fixed order, with highlight
+    /// ranges and the notices the query raised. The text is parsed in the
+    /// core; operators (`#stream`, `@context`, `is:late`, `due<fri`, …) are
+    /// ASCII on every locale.
+    SearchGrouped {
+        /// Raw query text.
+        text: String,
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`]; date
+        /// operators resolve against it in the device's zone.
+        now_ms: u64,
+        /// Also match the last word as a prefix: set while the user types.
+        prefix: bool,
+        /// Hits per group; absent is 50 tasks and 10 of every other kind.
+        per_group: Option<u32>,
+    },
+    /// The unresolved conflicts (ADR-0065 §4), one row per conflicted field.
+    Conflicts {
+        /// Only this entity's; every entity's when absent.
+        entity: Option<EntityRef>,
+        /// Also the quiet fields', which are kept but not shown by default.
+        include_quiet: bool,
+    },
+    /// The day schedule and the reader's planner day holding `at_ms`
+    /// (`docs/02-domain/day-schedule.md`).
+    DaySchedule {
+        /// Any instant inside the planner day to describe (epoch ms).
+        at_ms: u64,
+    },
+    /// Every live saved view, in the saved-views list's order.
+    SavedViews,
+    /// Evaluate one saved view now: the tasks it matches, in its order.
+    SavedView {
+        /// The view.
+        id: EntityRef,
+    },
+    /// Today as ADR-0047 composes it: each task with its group (planned,
+    /// carried over, due today, late) and its lateness, in group order.
+    TodayView {
+        /// "Now" (epoch ms), from [`crate::SunriseCore::now_ms`].
+        now_ms: u64,
+        /// Narrow to these contexts; empty means all.
+        contexts: Vec<EntityRef>,
+    },
+    /// Each named task's lateness for the reader now, in the order asked.
+    Lateness {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// The triage queue (ADR-0047 §3), in its order.
+    Triage,
 }
 
 impl CoreQuery {
@@ -271,12 +342,50 @@ impl CoreQuery {
             Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
             Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
+            Self::ParkedOpsSummary => Query::ParkedOpsSummary,
             Self::Preferences => Query::Preferences,
+            Self::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            } => Query::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            },
+            Self::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
+            } => Query::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
+            },
+            Self::Conflicts {
+                entity,
+                include_quiet,
+            } => Query::Conflicts {
+                entity,
+                include_quiet,
+            },
+            Self::DaySchedule { at_ms } => Query::DaySchedule { at_ms },
+            Self::SavedViews => Query::SavedViews,
+            Self::SavedView { id } => Query::SavedView(id),
+            Self::TodayView { now_ms, contexts } => Query::TodayView { now_ms, contexts },
+            Self::Lateness { ids } => Query::Lateness { ids },
+            Self::Triage => Query::Triage,
         }
     }
 }
 
 /// What a query returned.
+// The variants are the Swift enum's cases, by value: boxing the largest
+// (`Routine`, grown by its four `*_time` fields in #506) would not change
+// what crosses the FFI, only add an allocation on this side of it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum CoreQueryResult {
     /// A task list.
@@ -432,10 +541,63 @@ pub enum CoreQueryResult {
         /// The document.
         body: String,
     },
+    /// Parked-op counts.
+    ParkedOps {
+        /// One row per reason with at least one parked op, in reason order.
+        /// Empty when nothing is parked.
+        counts: Vec<ParkedReasonCount>,
+    },
     /// Every non-bootstrap preference, resolved, in key-table order.
     Preferences {
         /// The keys.
         preferences: Vec<PreferenceItem>,
+    },
+    /// The Upcoming view.
+    Upcoming {
+        /// The days and the no-date lane.
+        upcoming: UpcomingReport,
+    },
+    /// What `SearchGrouped` found.
+    Search {
+        /// The groups, notices and canonical query.
+        results: SearchReport,
+    },
+    /// The unresolved conflicts, by entity and then field. Empty when
+    /// nothing is in conflict.
+    Conflicts {
+        /// One row per conflicted field.
+        conflicts: Vec<ConflictItem>,
+    },
+    /// The day schedule and one planner day.
+    DaySchedule {
+        /// The planner day, with every entry of the schedule.
+        day: crate::day_schedule::PlannerDayItem,
+    },
+    /// Saved views: the live ones for `SavedViews`, the one for an
+    /// `EntityById` of a `svw_` id.
+    SavedViews {
+        /// The views.
+        views: Vec<crate::saved_views::SavedViewItem>,
+    },
+    /// One saved view, evaluated.
+    SavedView {
+        /// The view and what it matches.
+        result: crate::saved_views::SavedViewResultItem,
+    },
+    /// Today's rows, in group order.
+    TodayView {
+        /// The rows.
+        rows: Vec<crate::lateness::TodayRowItem>,
+    },
+    /// One row per task asked for, in that order.
+    Lateness {
+        /// The rows.
+        rows: Vec<crate::lateness::TaskLatenessItem>,
+    },
+    /// The triage queue, in its order.
+    Triage {
+        /// The rows.
+        rows: Vec<crate::lateness::TriageRowItem>,
     },
 }
 
@@ -532,9 +694,92 @@ impl CoreQueryResult {
                 attachments: a.iter().map(AttachmentItem::from).collect(),
             },
             QueryResult::Export(body) => Self::Export { body },
+            QueryResult::ParkedOps(c) => Self::ParkedOps {
+                counts: c.iter().map(ParkedReasonCount::from).collect(),
+            },
             QueryResult::Preferences(p) => Self::Preferences {
                 preferences: p.into_iter().map(PreferenceItem::from).collect(),
             },
+            QueryResult::Upcoming(u) => Self::Upcoming {
+                upcoming: UpcomingReport::from(u.as_ref()),
+            },
+            QueryResult::Search(r) => Self::Search {
+                results: SearchReport::from(r.as_ref()),
+            },
+            QueryResult::Conflicts(c) => Self::Conflicts {
+                conflicts: c.iter().map(ConflictItem::from).collect(),
+            },
+            QueryResult::DaySchedule(d) => Self::DaySchedule {
+                day: crate::day_schedule::PlannerDayItem::from(d.as_ref()),
+            },
+            QueryResult::SavedViews(v) => Self::SavedViews {
+                views: v
+                    .iter()
+                    .map(crate::saved_views::SavedViewItem::from)
+                    .collect(),
+            },
+            QueryResult::SavedView(r) => Self::SavedView {
+                result: crate::saved_views::SavedViewResultItem::from(r.as_ref()),
+            },
+            QueryResult::TodayView(rows) => Self::TodayView {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TodayRowItem::from)
+                    .collect(),
+            },
+            QueryResult::Lateness(rows) => Self::Lateness {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TaskLatenessItem::from)
+                    .collect(),
+            },
+            QueryResult::Triage(rows) => Self::Triage {
+                rows: rows
+                    .iter()
+                    .map(crate::lateness::TriageRowItem::from)
+                    .collect(),
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parked-op count lowers to the core's query and lifts back with
+    /// every row, a reason this build has no name for included.
+    #[test]
+    fn parked_op_counts_cross_the_seam_by_reason() {
+        assert!(matches!(
+            CoreQuery::ParkedOpsSummary.into_core(),
+            Query::ParkedOpsSummary
+        ));
+        let core = QueryResult::ParkedOps(vec![
+            sunrise_core::ParkedOpCount {
+                reason: "a_reason_from_a_newer_build".into(),
+                count: 2,
+            },
+            sunrise_core::ParkedOpCount {
+                reason: "unknown_kind".into(),
+                count: 3,
+            },
+        ]);
+        let CoreQueryResult::ParkedOps { counts } = CoreQueryResult::from_core(core) else {
+            panic!("ParkedOps lifted into another variant");
+        };
+        assert_eq!(
+            counts,
+            vec![
+                ParkedReasonCount {
+                    reason: "a_reason_from_a_newer_build".into(),
+                    count: 2,
+                },
+                ParkedReasonCount {
+                    reason: "unknown_kind".into(),
+                    count: 3,
+                },
+            ]
+        );
     }
 }

@@ -68,6 +68,24 @@ pub enum SyncEvent {
         /// The frame, exactly as the relay stored it.
         frame: String,
     },
+    /// How many ops the replay of a stream's retained backlog will still
+    /// deliver. Sent once per stream per stream open with a replay, right
+    /// after its first `ops`, and counting the replayed frames after that
+    /// one, so a client can show its catch-up as "n of N" (#459). Not sent
+    /// for a stream with nothing to replay, which adds nothing to a total.
+    ///
+    /// After the first frame rather than before it, so a statement never
+    /// delays a frame: a client that reopens its stream faster than one slow
+    /// frame arrives still makes progress on every reopen.
+    ///
+    /// Additive: a client that predates it drops an event kind it does not
+    /// know, and loses nothing but the total.
+    Backlog {
+        /// The stream about to be replayed.
+        stream_id: String,
+        /// The ops in the replayed frames still to come, summed.
+        ops: u64,
+    },
     /// The retained backlog for a stream has been fully replayed.
     ///
     /// Never sent where a gap was reported for that stream without the gap
@@ -234,6 +252,10 @@ fn spawn_stream(
     tokio::spawn(async move {
         let span = span;
         let _slot = slot;
+        // Counted for as long as this task runs, replay included, so
+        // `sunrise_sync_streams_active` is every stream a client holds open
+        // and the shutdown log can say how many streams the drain ended.
+        let _open = state.drain.track_stream();
         // The device is online for exactly as long as this task runs, so the
         // push dispatcher does not wake a device already receiving the ops.
         let _present = state.push.hold(session.device_id.as_deref());
@@ -251,11 +273,10 @@ fn spawn_stream(
                 .iter()
                 .map(|c| (c.device_id, c.last_applied_seq))
                 .collect();
-            let replay = state.store.relay_replay_after(
-                (session.account, sid),
-                after.unwrap_or(0),
-                &cursors,
-            );
+            let replay = state
+                .store
+                .relay_replay_after((session.account, sid), after.unwrap_or(0), &cursors)
+                .await;
             let (frames, gaps) = match replay {
                 Ok(v) => v,
                 Err(e) => {
@@ -306,15 +327,8 @@ fn spawn_stream(
                     return;
                 }
             }
-            for (seq, bytes) in frames {
-                let event = Event::new(SyncEvent::Ops {
-                    stream_id: hex::encode(sid),
-                    frame: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                })
-                .id(seq.to_string());
-                if tx.send(event).await.is_err() {
-                    return;
-                }
+            if !send_replay(&state, &tx, sid, frames).await {
+                return;
             }
             let caught_up = Event::new(SyncEvent::CaughtUp {
                 stream_id: hex::encode(sid),
@@ -335,6 +349,48 @@ fn spawn_stream(
         rx.recv().await.map(|event| (Ok(event), rx))
     })
     .boxed()
+}
+
+/// Send `sid`'s retained `frames`, with the `backlog` statement after the
+/// first. `false` when the client has gone.
+///
+/// After the first frame, never before it: a stream reopened faster than one
+/// slow frame arrives must still make progress on each reopen, and a
+/// statement is not progress.
+async fn send_replay(
+    state: &ServerState,
+    tx: &tokio::sync::mpsc::Sender<Event<SyncEvent>>,
+    sid: [u8; 16],
+    frames: Vec<crate::relay_log::ReplayFrame>,
+) -> bool {
+    let after_first: u64 = frames.iter().skip(1).map(|f| f.n_ops).sum();
+    for (n, frame) in frames.into_iter().enumerate() {
+        let event = Event::new(SyncEvent::Ops {
+            stream_id: hex::encode(sid),
+            frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
+        })
+        .id(frame.id.to_string());
+        if tx.send(event).await.is_err() {
+            return false;
+        }
+        state
+            .metrics
+            .add("sunrise_sync_ops_delivered_total", frame.n_ops);
+        if n == 0 && tx.send(backlog(sid, after_first)).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// The `backlog` event sent after a replay's first frame. `ops` is counted
+/// from the frames already read, so it is exactly what the replay goes on to
+/// send, not an estimate from the head of the log.
+fn backlog(sid: [u8; 16], ops: u64) -> Event<SyncEvent> {
+    Event::new(SyncEvent::Backlog {
+        stream_id: hex::encode(sid),
+        ops,
+    })
 }
 
 /// The `sync.stream` span: whether the stream resumed, and how many streams
@@ -364,9 +420,6 @@ async fn live_loop(
     let recheck = std::time::Duration::from_millis(state.config.device_recheck_ms.max(1));
     let mut ticker = tokio::time::interval(recheck);
     ticker.tick().await;
-    // Counted for as long as this loop runs, so the shutdown log can say how
-    // many streams the drain ended.
-    let _open = state.drain.track_stream();
     let draining = state.drain.wait();
     tokio::pin!(draining);
 
@@ -416,6 +469,9 @@ async fn live_loop(
                 if tx.send(event).await.is_err() {
                     return "peer_gone";
                 }
+                state
+                    .metrics
+                    .add("sunrise_sync_ops_delivered_total", frame.n_ops);
                 // Handed to this subscriber's response stream. That is as far
                 // as the relay can see: the socket write belongs to the HTTP
                 // stack, behind a buffer of `STREAM_BUFFER` events.
@@ -478,7 +534,11 @@ async fn device_recheck(
     span: &sunrise_telemetry::SpanGuard,
 ) -> Option<&'static str> {
     let device_id = session.device_id.as_deref()?;
-    let active = match state.store.active_device(&session.account_id, device_id) {
+    let active = match state
+        .store
+        .active_device(&session.account_id, device_id)
+        .await
+    {
         Ok(active) => active,
         // A store that did not answer has not revoked anything: closing
         // `AUTH_DEVICE_REVOKED` would send the user to re-pair over a server

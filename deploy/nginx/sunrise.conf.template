@@ -98,9 +98,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # nginx passes a client's RFC 7239 `Forwarded` through untouched, and
-        # the relay prefers it to X-Forwarded-For when both are present. An
-        # empty value drops it, so a client cannot name its own address.
+        # nginx passes a client's RFC 7239 `Forwarded` through untouched. The
+        # relay reads only X-Forwarded-For, so dropping it (an empty value) is
+        # defence in depth: nothing behind here is handed a field a client wrote.
         proxy_set_header Forwarded "";
 
         # A blob fetch streams up to 100 MB; let it reach the client as it is

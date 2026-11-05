@@ -42,9 +42,9 @@ struct MenuBarScene: View {
             // Saying so beats an empty menu, and the main window is where every
             // one of those is resolved.
             VStack(alignment: .leading, spacing: 8) {
-                Text("Sunrise is not unlocked.").font(.callout)
-                Button("Open Sunrise") { openWindow(id: SunriseWindow.main.rawValue) }
-                Button("Quit Sunrise") { NSApplication.shared.terminate(nil) }
+                Text(L10n.Menu.notUnlocked).font(.callout)
+                Button(L10n.Menu.openApp) { openWindow(id: SunriseWindow.main.rawValue) }
+                Button(L10n.Menu.quitApp) { NSApplication.shared.terminate(nil) }
             }
             .padding(12)
             .frame(width: 220)

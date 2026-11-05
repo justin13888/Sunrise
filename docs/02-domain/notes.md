@@ -12,11 +12,11 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
 > `EntityKind::Note`, though not by name: it falls through to the generic
-> refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:206-209`
+> refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:319-322#query_entity`
 > ("EntityById not supported for kind {:?}"). What *is* live is `NoteBody`
 > as a **field**, reached three ways — `Task.body`
-> (`crates/sunrise-domain/src/task.rs:97`), `Stream.description`
-> (`stream.rs:124`, given a column by migration
+> (`crates/sunrise-domain/src/task.rs:86#Task`), `Stream.description`
+> (`stream.rs:86`, given a column by migration
 > `0016_stream_description_and_default_context.sql`) and
 > `Routine.template.body`, which is a field of `TaskTemplate`
 > (`routine.rs:68-88`, `body` at `:87`) reached through `Routine.template`
@@ -120,7 +120,7 @@ up names this file specifically. Character-level merge is the target state.
 | Platform | Editor |
 |---|---|
 | macOS | SwiftUI text editing, schema-locked to NoteBody |
-| Web (not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
+| Web (the core runs; no note editor yet) | Tiptap or ProseMirror, schema-locked to NoteBody |
 | iOS / iPadOS | The same SwiftUI `NoteBodyEditor` the Mac uses, schema-locked to NoteBody. The one deliberate difference is the checklist tick: macOS draws `.checkbox`, which iOS does not have, and iOS's default `Toggle` is a switch — so it draws a circle that fills instead, because a switch says "this setting is on" where a checklist row means "this is done" |
 | Android (not built) | Native EditText with custom toolbar |
 | `sunrise` CLI | Plain text only; no structured-body editing |
@@ -138,7 +138,7 @@ bytes, not a proposal.** `NoteBody` is live on `Task.body`,
 `Stream.description` and `Routine.template.body` (banner above), and the codec
 encodes these exact map keys
 (`crates/sunrise-domain/src/note_body/encode.rs:133,:137-144`) and decodes them
-(`crates/sunrise-domain/src/note_body/decode.rs:207-216`).
+(`crates/sunrise-domain/src/note_body/decode.rs:209-218#inline_from_value`).
 Every other spec that shows a reference or a redaction —
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 §Egress scrubbing, [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)

@@ -1,0 +1,39 @@
+# The Node `mise.toml`'s `[tools]` table pins, first on PATH for the rest of
+# the job.
+#
+# Every job that installs Bun runs this too. `bun run` hands a script with a
+# `node` shebang (vitest, tsc, vite, vitepress) to whatever `node` is on PATH,
+# and falls back to Bun when there is none. The runner image's Node is
+# whatever version the image ships that week, and a hook on a developer's
+# machine runs the pinned one, so the two could pass and fail different
+# tests. Under Bun alone, `apps/web/src/i18n.test.ts` fails, because
+# `navigator.languages` is undefined there.
+#
+# The version is read from `mise.toml`, not written here, so the hooks and CI
+# cannot drift apart. `actions/setup-node` cannot read `mise.toml`.
+#
+# The caller supplies `actions/checkout` before this action.
+name: Pinned Node
+description: Install the Node version mise.toml pins and put it first on PATH.
+
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+      with:
+        install: false
+        cache: false
+    # mise refuses to read a config it has not been told to trust, and a
+    # fresh checkout is never trusted.
+    - name: Trust mise config
+      shell: bash
+      run: mise trust --yes
+    # Only Node: the rest of `[tools]` is not this job's business.
+    - name: Install the pinned Node
+      shell: bash
+      run: |
+        set -euo pipefail
+        mise install node
+        bin="$(mise where node)/bin"
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/node" --version

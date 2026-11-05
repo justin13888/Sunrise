@@ -100,7 +100,7 @@ async fn a_recovery_code_restores_the_identity_across_the_relay() {
     let blob = core.seal_recovery_blob(&seed).expect("the creator seals");
     let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
 
-    let account = sunrise_onboarding::AccountCreateRequest {
+    let account = sunrise_relay_client::AccountCreateRequest {
         email: "alice@example.com".into(),
         identity_signing_pub: core.identity_signing_pub(),
         identity_dh_pub: core.identity_dh_pub(),
@@ -137,13 +137,13 @@ async fn a_recovery_code_restores_the_identity_across_the_relay() {
         .await
         .expect("the blob comes back");
     assert_eq!(
-        sunrise_onboarding::decode_recovery_blob(&served).expect("base64url"),
+        sunrise_relay_client::decode_recovery_blob(&served).expect("base64url"),
         blob,
         "the relay must serve back exactly the ciphertext it was given"
     );
 
-    let restored = sunrise_onboarding::recover_identity_from_code(
-        &sunrise_onboarding::decode_recovery_blob(&served).expect("base64url"),
+    let restored = sunrise_client_core::recovery::recover_identity_from_code(
+        &sunrise_relay_client::decode_recovery_blob(&served).expect("base64url"),
         &typed,
         &identity_id,
     )
@@ -187,7 +187,7 @@ async fn an_ordinary_bearer_is_refused_by_the_live_relay() {
     sunrise_relay_client::bootstrap(
         &base_url,
         FRESH,
-        sunrise_onboarding::AccountCreateRequest {
+        sunrise_relay_client::AccountCreateRequest {
             email: "alice@example.com".into(),
             identity_signing_pub: core.identity_signing_pub(),
             identity_dh_pub: core.identity_dh_pub(),

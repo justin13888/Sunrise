@@ -134,14 +134,21 @@ fn documented_keys() -> BTreeMap<String, PrefScope> {
 
 /// `preferences.md` and `notifications.md` §Preference keys are the list of
 /// record; this table is their Rust form and must name exactly the same keys
-/// with the same scopes. `day_schedule` is documented ahead of its key (#338).
+/// with the same scopes.
 #[test]
 fn the_key_table_is_the_documented_one() {
-    let mut documented = documented_keys();
-    assert!(documented.remove("day_schedule").is_some());
+    let documented = documented_keys();
+    // The day schedule's three maps are documented as the one key
+    // `day_schedule` (its shape is `day-schedule.md`'s).
     let table: BTreeMap<String, PrefScope> = PREFERENCE_KEYS
         .iter()
-        .map(|s| (s.key.to_owned(), s.scope))
+        .map(|s| {
+            let key = match s.entries {
+                Some(_) => s.key.split('.').next().unwrap_or(s.key),
+                None => s.key,
+            };
+            (key.to_owned(), s.scope)
+        })
         .collect();
     assert_eq!(table, documented);
 }

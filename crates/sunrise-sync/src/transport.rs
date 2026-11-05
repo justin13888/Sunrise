@@ -21,6 +21,12 @@ pub enum TransportError {
         code: &'static str,
         /// Human-readable summary.
         message: String,
+        /// How long the relay asked the client to wait before trying again:
+        /// the refusal's `Retry-After`, when it sent one in the delta-seconds
+        /// form. The sync driver waits at least this long before its next
+        /// reconnect instead of re-hitting a rate-limited relay on its own
+        /// backoff schedule.
+        retry_after: Option<std::time::Duration>,
     },
     /// Encode/decode error somewhere in the framing or CBOR layer.
     #[error("protocol error: {0}")]
@@ -73,6 +79,47 @@ pub struct BlobCommit {
     pub size_bytes: u64,
     /// Committed chunk count.
     pub chunk_count: u32,
+}
+
+/// A stream's latest snapshot record, as the relay pins it (ADR-0068).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotPin {
+    /// The committed blob holding the record; [`Transport::blob_fetch`]
+    /// reads it.
+    pub blob_id: [u8; 16],
+    /// The record's size in bytes.
+    pub size_bytes: u64,
+}
+
+/// The account's pinned key bundle, as the relay states it (ADR-0069).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBundlePin {
+    /// The committed blob holding the bundle; [`Transport::blob_fetch`] reads
+    /// it.
+    pub blob_id: [u8; 16],
+    /// The digest of the bundle's manifest its publisher sent. The relay
+    /// cannot check it; a reader that needs the manifest fetches the bundle.
+    pub manifest_digest: [u8; 32],
+}
+
+/// What [`Transport::key_bundle_pin`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyBundlePinned {
+    /// The bundle is pinned.
+    Pinned,
+    /// The pin named as replaced is not the one in place: another device
+    /// pinned since it was read. Nothing was written.
+    Superseded,
+}
+
+/// What [`Transport::identity_chain_pin`] came to (ADR-0070).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityChainPinned {
+    /// The chain is pinned.
+    Pinned,
+    /// The chain named as replaced is not the one in place: another device
+    /// pinned since it was read. Nothing was written.
+    Superseded,
 }
 
 /// Async wire transport. Both client and server sides implement this.
@@ -190,6 +237,73 @@ pub trait Transport: Send + Sync {
     /// The body carries no framing between chunks;
     /// `sunrise_crypto::split_sealed` recovers the boundaries.
     async fn blob_fetch(&mut self, _blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/snapshots/{stream_id}`: the stream's pinned snapshot
+    /// record, or `Ok(None)` when the relay holds none.
+    ///
+    /// A record is a blob, not a frame, because a stream's snapshot outgrows
+    /// the 4 MiB frame cap (ADR-0068); the pin names it and
+    /// [`Transport::blob_fetch`] reads it.
+    async fn snapshot_latest(
+        &mut self,
+        _stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/snapshots/{stream_id}`: make the committed blob
+    /// `blob_id` the stream's latest snapshot record. The relay deletes the
+    /// blob the previous pin named.
+    async fn snapshot_pin(
+        &mut self,
+        _stream_id: &[u8; 16],
+        _blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/accounts/me/key_bundle`: the account's pinned key bundle,
+    /// or `Ok(None)` when the relay holds none (ADR-0069).
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/key_bundle`: make the committed blob
+    /// `blob_id` the account's key bundle, provided the pin in place is the
+    /// one `replaces` names (`None`: no pin in place).
+    async fn key_bundle_pin(
+        &mut self,
+        _blob_id: &[u8; 16],
+        _manifest_digest: &[u8; 32],
+        _replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/accounts/me/identity_chain`: the account's pinned identity
+    /// chain record, or `Ok(None)` when the relay holds none (ADR-0070).
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/identity_chain`: pin `chain`, provided the
+    /// record in place is the one whose BLAKE3 digest `replaces` names
+    /// (`None`: no record in place).
+    async fn identity_chain_pin(
+        &mut self,
+        _chain: &[u8],
+        _replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/accounts/me/recovery_blob`: replace the account's sealed
+    /// recovery blob with `blob`. The relay keeps a few bytes of the one it
+    /// replaces, so the code that opened it fails with a reason rather than
+    /// as a mistyped code (ADR-0070).
+    async fn recovery_blob_replace(&mut self, _blob: &[u8]) -> Result<(), TransportError> {
         Err(TransportError::Unsupported)
     }
 }

@@ -316,6 +316,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfg-expr"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ba9e9ec16c447027685b1f897b720e18e9a8afd00bd7332c483537e38086c9f"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -552,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
@@ -1574,6 +1583,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link",
 ]
 
 [[package]]
@@ -1709,8 +1719,9 @@ dependencies = [
 
 [[package]]
 name = "kynos"
-version = "0.1.0"
-source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d75530018fdd7c79f6c9ace88d95a47c9a598df22f0fb9a8eaa67941094e59a"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1723,8 +1734,10 @@ dependencies = [
  "kynos-openapi",
  "matchit",
  "percent-encoding",
+ "regex",
  "serde",
  "serde_json",
+ "socket2",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -1732,8 +1745,9 @@ dependencies = [
 
 [[package]]
 name = "kynos-macros"
-version = "0.1.0"
-source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca89ea95ab3cae1a5ba78d303f5d0c363b9b40cffcbf7af385e03a2950c55a48"
 dependencies = [
  "kynos-openapi",
  "proc-macro2",
@@ -1743,11 +1757,14 @@ dependencies = [
 
 [[package]]
 name = "kynos-openapi"
-version = "0.1.0"
-source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b36dffdf28f22cc143a81a5e9d067851653bed0890e0406f026bb156ced4a37"
 dependencies = [
  "http",
  "indexmap",
+ "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1772,6 +1789,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
 dependencies = [
  "cc",
+ "openssl-sys",
  "pkg-config",
  "vcpkg",
 ]
@@ -2072,6 +2090,28 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "openssl-src"
+version = "300.6.1+3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "openssl-sys"
+version = "0.9.117"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
+dependencies = [
+ "cc",
+ "libc",
+ "openssl-src",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "opentelemetry"
@@ -2551,9 +2591,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.3"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2574,9 +2614,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.10"
+version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
@@ -2688,9 +2728,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -2712,9 +2752,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2977,9 +3017,9 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.6.3"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -2987,11 +3027,12 @@ dependencies = [
 
 [[package]]
 name = "spargen"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5baebe002620b367fea87f77f911a9de77031f7d9072d8da238624df2a7b413"
+checksum = "1a556a87dced0db1cbfed1c1b788dfd20c40371a5debfe3e94598e8baa358e90"
 dependencies = [
  "camino",
+ "cfg-expr",
  "indexmap",
  "jsonschema 0.49.9",
  "prettyplease",
@@ -3084,9 +3125,8 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sunrise-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "async-trait",
  "http",
  "http-body-util",
  "hyper",
@@ -3095,6 +3135,7 @@ dependencies = [
  "oauth2",
  "serde",
  "serde_json",
+ "sunrise-private-file",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3103,11 +3144,10 @@ dependencies = [
 
 [[package]]
 name = "sunrise-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "criterion",
- "futures-util",
  "jiff",
  "parking_lot",
  "rand_chacha 0.3.1",
@@ -3128,57 +3168,84 @@ dependencies = [
 
 [[package]]
 name = "sunrise-cbor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
+ "proptest",
  "serde",
  "serde_json",
  "sunrise-error",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "sunrise-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "icu_decimal",
  "icu_locale_core",
  "icu_plurals",
  "jiff",
+ "proptest",
  "serde_json",
  "sunrise-auth",
  "sunrise-cbor",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
  "sunrise-integrations",
  "sunrise-log",
- "sunrise-onboarding",
  "sunrise-pairing",
+ "sunrise-private-file",
  "sunrise-relay-client",
  "sunrise-server",
+ "sunrise-storage",
  "sunrise-sync",
+ "sunrise-test-seed",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zeroize",
 ]
 
 [[package]]
 name = "sunrise-client-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "async-trait",
+ "base64",
  "jiff",
+ "proptest",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sunrise-auth",
+ "sunrise-cbor",
  "sunrise-core",
+ "sunrise-crypto",
  "sunrise-domain",
+ "sunrise-error",
  "sunrise-id",
+ "sunrise-integrations",
+ "sunrise-pairing",
+ "sunrise-relay-client",
+ "sunrise-sync",
+ "sunrise-test-seed",
+ "sunrise-wire-protocol",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
 name = "sunrise-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3215,42 +3282,46 @@ dependencies = [
 
 [[package]]
 name = "sunrise-core-bindings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "async-trait",
  "base64",
  "jiff",
+ "proptest",
  "sunrise-auth",
+ "sunrise-cbor",
  "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
  "sunrise-integrations",
- "sunrise-onboarding",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",
+ "sunrise-test-seed",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
- "url",
  "zeroize",
 ]
 
 [[package]]
 name = "sunrise-core-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
  "rusqlite",
+ "serde",
  "serde_json",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
+ "sunrise-domain",
+ "sunrise-id",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3260,7 +3331,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -3270,7 +3341,6 @@ dependencies = [
  "hex",
  "hpke",
  "proptest",
- "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
@@ -3280,7 +3350,6 @@ dependencies = [
  "sunrise-cbor",
  "sunrise-crypto-test-vectors",
  "sunrise-error",
- "sunrise-id",
  "sunrise-test-seed",
  "thiserror 1.0.69",
  "x25519-dalek",
@@ -3289,11 +3358,11 @@ dependencies = [
 
 [[package]]
 name = "sunrise-crypto-test-vectors"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sunrise-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ciborium",
@@ -3308,11 +3377,12 @@ dependencies = [
  "sunrise-id",
  "sunrise-test-seed",
  "thiserror 1.0.69",
+ "unicode-normalization",
 ]
 
 [[package]]
 name = "sunrise-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -3324,14 +3394,16 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde_json",
+ "sunrise-auth",
  "sunrise-cbor",
+ "sunrise-cli",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-core-bindings",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-http-sig",
  "sunrise-id",
- "sunrise-onboarding",
  "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-server",
@@ -3346,21 +3418,21 @@ dependencies = [
 
 [[package]]
 name = "sunrise-error"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "sunrise-http-sig"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "blake3",
  "ed25519-dalek",
  "jiff",
- "rand 0.8.6",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -3370,17 +3442,18 @@ dependencies = [
 
 [[package]]
 name = "sunrise-id"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
- "zeroize",
 ]
 
 [[package]]
 name = "sunrise-integrations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "jiff",
@@ -3397,7 +3470,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-log"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jiff",
  "jsonschema 0.18.3",
@@ -3412,30 +3485,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "sunrise-onboarding"
-version = "0.1.0"
-dependencies = [
- "base64",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "serde",
- "sunrise-core",
- "sunrise-crypto",
- "sunrise-error",
- "sunrise-sync",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "sunrise-pairing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
- "blake3",
  "ciborium",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "snow",
@@ -3443,15 +3499,24 @@ dependencies = [
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
- "sunrise-error",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "zeroize",
 ]
 
 [[package]]
-name = "sunrise-relay-client"
-version = "0.1.0"
+name = "sunrise-private-file"
+version = "0.2.0"
 dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sunrise-relay-client"
+version = "0.2.0"
+dependencies = [
+ "base64",
  "bytes",
  "futures-core",
  "reqwest",
@@ -3459,17 +3524,14 @@ dependencies = [
  "serde",
  "serde_json",
  "spargen",
- "sunrise-error",
  "sunrise-http-sig",
- "sunrise-id",
- "sunrise-onboarding",
  "thiserror 1.0.69",
  "tokio",
 ]
 
 [[package]]
 name = "sunrise-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3488,7 +3550,9 @@ dependencies = [
  "jsonwebtoken",
  "kynos",
  "parking_lot",
+ "proptest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sunrise-cbor",
@@ -3500,6 +3564,7 @@ dependencies = [
  "sunrise-pairing",
  "sunrise-storage",
  "sunrise-telemetry",
+ "sunrise-test-seed",
  "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",
@@ -3511,12 +3576,10 @@ dependencies = [
 
 [[package]]
 name = "sunrise-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "blake3",
  "hex",
  "rusqlite",
- "serde",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-error",
@@ -3528,7 +3591,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3539,11 +3602,13 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "proptest",
  "serde",
  "serde_json",
  "sunrise-error",
  "sunrise-http-sig",
  "sunrise-id",
+ "sunrise-test-seed",
  "sunrise-wire-protocol",
  "thiserror 1.0.69",
  "tokio",
@@ -3551,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "sunrise-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3570,14 +3635,14 @@ dependencies = [
 
 [[package]]
 name = "sunrise-test-seed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "sunrise-wire-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "serde",
@@ -3760,9 +3825,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -4022,6 +4087,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-xid"
@@ -4312,9 +4386,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]

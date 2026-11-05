@@ -33,11 +33,16 @@ impl LoggedEvent {
             && self.cause.as_deref() == Some("corrupt_op")
     }
 
-    /// Whether this is a `HEAD` core publishing a `StreamDigest` (ADR-0043
-    /// §5): an op kind a baseline cut before #320's parking fix cannot read.
+    /// Whether this is a `HEAD` core writing an op of a kind a baseline cut
+    /// before #320's parking fix cannot read: a `StreamDigest` (ADR-0043 §5),
+    /// published on the anti-entropy tick, or a `DeviceFeatures` (ADR-0045
+    /// §7), which every `HEAD` core writes when it opens a vault it has not
+    /// yet advertised its build's features in.
     #[must_use]
-    pub fn is_digest_published(&self) -> bool {
-        self.ev.as_deref() == Some("core.chain.digest_published")
+    pub fn is_unparkable_kind_published(&self) -> bool {
+        self.ev
+            .as_deref()
+            .is_some_and(|ev| UNPARKABLE_KIND_EVENTS.contains(&ev))
     }
 
     /// Read one event out of the baseline driver's JSON form, which uses the
@@ -56,6 +61,11 @@ impl LoggedEvent {
         }
     }
 }
+
+/// The events a `HEAD` core logs when it writes an op whose kind a baseline
+/// that predates parking (#320) cannot read. Each such op reaches that
+/// baseline's sync driver exactly as `FutureWrite::OpKind` would.
+const UNPARKABLE_KIND_EVENTS: &[&str] = &["core.chain.digest_published", "core.feature.advertised"];
 
 static HEAD_EVENTS: Mutex<Vec<LoggedEvent>> = Mutex::new(Vec::new());
 static INSTALLED: OnceLock<bool> = OnceLock::new();
@@ -95,13 +105,13 @@ impl<S: tracing::Subscriber> Layer<S> for Capture {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let level = *event.metadata().level();
-        // Two debug events are kept: the sync driver's loss evidence, and a
-        // published digest, which is what explains a baseline's corruption
-        // log when the baseline predates parking.
-        let kept = matches!(
-            fields.ev.as_deref(),
-            Some("sync.loss_evidence" | "core.chain.digest_published")
-        );
+        // Debug events kept: the sync driver's loss evidence, and every op of
+        // a kind a baseline that predates parking cannot read, which is what
+        // explains that baseline's corruption log.
+        let kept = fields
+            .ev
+            .as_deref()
+            .is_some_and(|ev| ev == "sync.loss_evidence" || UNPARKABLE_KIND_EVENTS.contains(&ev));
         if level > tracing::Level::WARN && !kept {
             return;
         }

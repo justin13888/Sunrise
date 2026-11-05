@@ -1,27 +1,41 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
+use sunrise_domain::search::{Highlighted, NoticeKind, SearchKind};
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
-    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SessionPlan, Stream,
-    StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
+    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SavedView,
+    SessionPlan, Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
 /// Read query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
-    /// Today view: scheduled blocks, due-today tasks, manually-pulled tasks.
+    /// Today view: every open task planned, or with a deadline of either
+    /// kind, on or before the planner day containing `now_ms` in the
+    /// device's zone (`docs/10-cross-cutting/time.md` §4), by resolved time.
+    /// [`Query::TodayView`] is the same set grouped as ADR-0047 composes
+    /// Today, with each task's lateness.
     Today {
         /// "Now" (ms since epoch).
         now_ms: u64,
         /// Filter to these contexts (empty means all).
         contexts: Vec<EntityRef>,
     },
-    /// Inbox.
+    /// The Inbox view (ADR-0046 §3): the open, live tasks with no stream, no
+    /// plan, no deadline and no `triaged_at`
+    /// ([`sunrise_domain::Task::in_inbox`]), in manual order, as
+    /// [`Query::StreamTasks`] is.
     Inbox,
-    /// All tasks in a single Stream.
+    /// All tasks in a single Stream, in manual order: every task placed by
+    /// `Command::MoveTasks` first, by `sort_order` and then by id, and then
+    /// the rest, unplanned first and by when each lands
+    /// ([`sunrise_domain::task_order`], #340). The legacy Inbox reference
+    /// ([`sunrise_domain::inbox_stream_ref`]) lists the tasks of no stream,
+    /// triaged or not: the set a manual order is kept within beside the
+    /// streams'.
     StreamTasks(EntityRef),
     /// All live tasks carrying one Context.
     ///
@@ -31,6 +45,10 @@ pub enum Query {
     /// `@errands`" is a first-class listing, not a filter over one Stream —
     /// and without it a Context is only ever reachable as a capture token,
     /// never as a place to stand.
+    ///
+    /// In manual order, as [`Query::StreamTasks`] is: the tasks' keys are
+    /// one order per task, so a Context listing interleaves its Streams'
+    /// arrangements by key.
     ContextTasks(EntityRef),
     /// One entity by id.
     EntityById(EntityRef),
@@ -46,7 +64,8 @@ pub enum Query {
     IdentityStatus,
     /// Snapshot of sync status.
     SyncStatus,
-    /// All streams (plus the synthetic Inbox row), with open-task counts.
+    /// All live streams, with open-task counts. The Inbox is a view, not a
+    /// stream, and has no row here (ADR-0046 §3); [`Query::Inbox`] counts it.
     StreamList,
     /// All live (non-deleted) contexts, with the count of tasks carrying each.
     Contexts,
@@ -195,9 +214,10 @@ pub enum Query {
         day_ms: u64,
     },
     /// **Calendar grid, one week**: every live Block overlapping the seven
-    /// civil days beginning at the Monday of the week containing `week_ms`.
+    /// civil days of the week containing `week_ms`.
     ///
-    /// Monday-first, matching `WeekGrid` and every other weekly fold. The
+    /// The week begins on the `week_start` preference, as `WeekGrid` and every
+    /// other weekly fold does (`docs/10-cross-cutting/time.md` §4). The
     /// window is built from civil dates rather than by adding 7 x 86_400_000,
     /// so a week containing a DST transition is still exactly seven days.
     WeekBlocks {
@@ -221,6 +241,24 @@ pub enum Query {
         /// "Now" (ms since epoch).
         now_ms: u64,
     },
+    /// **Upcoming** (`docs/08-features/planning-views.md` §Upcoming, #351):
+    /// the next 7, 14 or 30 civil days from the reader's today, day by day,
+    /// and a no-date lane per Stream.
+    ///
+    /// Days are civil days in the device's zone, each with its own bounds, so
+    /// a DST day is 23 or 25 hours and a floating time stays on its wall-clock
+    /// day wherever the reader is. The fold is the pure
+    /// `sunrise_domain::build_upcoming`.
+    Upcoming {
+        /// "Now" (ms since epoch), from the injected clock. Fixes today.
+        now_ms: u64,
+        /// 7, 14 or 30; any other span is refused. `None` reads the
+        /// device-local `views.upcoming.span_days` preference.
+        span_days: Option<u32>,
+        /// Filter tasks to these contexts (empty means all). Blocks are not
+        /// filtered.
+        contexts: Vec<EntityRef>,
+    },
     /// The local notifications a client should schedule with the OS, between
     /// `now_ms` and `horizon_ms`.
     ///
@@ -241,18 +279,109 @@ pub enum Query {
     /// Metadata only — the bytes are fetched separately from the blob store
     /// and opened with the `blob_key` each row carries.
     TaskAttachments(EntityRef),
-    /// Full-text search over tasks.
+    /// Search, answered as the tasks it finds, best match first.
+    ///
+    /// The query language of [`Query::SearchGrouped`]: `text` is parsed by
+    /// [`sunrise_domain::search::parse`], so operators work here too, and
+    /// only the Tasks group is returned. No word is matched as a prefix.
     Search {
-        /// Raw user query text (sanitized before hitting FTS5).
+        /// Raw query text, in the search grammar.
         text: String,
-        /// Maximum number of results to return.
+        /// Maximum number of tasks to return.
         limit: u32,
     },
+    /// Search every indexed kind, answered grouped by kind with highlights
+    /// (`docs/08-features/search.md` §Results, ADR-0052).
+    ///
+    /// `text` is parsed by [`sunrise_domain::search::parse`], which never
+    /// fails: what it cannot read as an operator is searched for as text, and
+    /// [`SearchResults::notices`] says why. Date operators resolve in the
+    /// device's zone at `now_ms`, with the week starting on `week_start`.
+    SearchGrouped {
+        /// Raw query text, in the search grammar.
+        text: String,
+        /// "Now" (ms since epoch), which date operators resolve against.
+        now_ms: u64,
+        /// Also match the last bare word as a prefix, for a field the user is
+        /// still typing in. Saved searches and the CLI leave it off.
+        prefix: bool,
+        /// Hits per group. `None` is the spec's: 50 tasks and 10 of every
+        /// other kind. A "Show all" re-runs the query with `kind:` set and a
+        /// larger limit.
+        per_group: Option<u32>,
+    },
+    /// How many ops this replica holds parked, by reason (ADR-0045 §4,
+    /// "Visibility").
+    ///
+    /// A parked op is one this build cannot apply yet, most often because a
+    /// newer device wrote a kind this build does not know. It is kept, counted
+    /// toward the sync cursor, and replayed after an upgrade, so nothing is
+    /// lost — but until this query it was visible only as a log event.
+    ParkedOpsSummary,
     /// Every preference key except the bootstrap ones, resolved
     /// (`docs/02-domain/preferences.md` §Scope and resolution), each with
     /// where its value came from. Bootstrap keys are read without the vault,
     /// through `BootstrapPreferences`.
     Preferences,
+    /// The day schedule (`docs/02-domain/day-schedule.md`) and the reader's
+    /// planner day holding `at_ms`: its bounds, the window it resolved to, and
+    /// its plannable span. Resolved in the device's zone at the time of the
+    /// read, so a zone change moves the bounds and never the stored times.
+    DaySchedule {
+        /// Any instant inside the planner day to describe (ms since epoch).
+        at_ms: u64,
+    },
+    /// The unresolved conflicts (ADR-0065 §4): per entity and field, the
+    /// winning write and every concurrent write that lost to it, and for a
+    /// winning delete, the branches that edited the entity without seeing
+    /// it. One entity's, or every entity's when `entity` is `None`.
+    Conflicts {
+        /// Only this entity's.
+        entity: Option<EntityRef>,
+        /// Also the quiet fields', whose losers are kept but not shown by
+        /// default.
+        include_quiet: bool,
+    },
+    /// Every live saved view (#341), in the saved-views list's order: placed
+    /// ones by `sort_order` and id, then the rest by name and id.
+    SavedViews,
+    /// Evaluate one saved view now, in the reader's zone, over the vault as
+    /// it is: the tasks it matches, in its order. The result is never stored
+    /// (`docs/08-features/planning-views.md` §Saved views).
+    SavedView(EntityRef),
+    /// Today as ADR-0047 composes it (`docs/08-features/planning-views.md`
+    /// §Today): each task in Today with its [`sunrise_domain::TodayGroup`]
+    /// (planned, carried over, due today, late) and its lateness for the
+    /// reader now, in group order. A client renders the groups; it never
+    /// decides them.
+    TodayView {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+        /// Filter to these contexts (empty means all).
+        contexts: Vec<EntityRef>,
+    },
+    /// Each named task's lateness for the reader now (ADR-0047 §2), in the
+    /// order asked: what a list that is not Today or the triage queue shows
+    /// a lateness badge from. Refused with `NotFound` for a task this
+    /// replica does not hold.
+    Lateness {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// The triage queue (ADR-0047 §3): every open task that is `LateHard`,
+    /// `LateSoft` or `Stale` for the reader now, not kept since that state
+    /// began and not in a paused stream, with its lateness, `LateHard` first,
+    /// then `LateSoft`, then `Stale`, each oldest first, then by id.
+    Triage,
+    /// The routine occurrences the catch-up policy lapses now: past, open
+    /// and untouched occurrences that Today, the stream and context lists
+    /// leave out (`docs/02-domain/routines-and-recurrence.md` §Catch-up for
+    /// occurrences already materialized), as `Tasks`, in Today's order.
+    /// Derived at read time; nothing is written.
+    LapsedOccurrences {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -282,7 +411,7 @@ pub enum QueryResult {
     Identity(Box<IdentityStatus>),
     /// Sync status snapshot.
     SyncStatus(crate::events::SyncStatus),
-    /// `StreamList` returns stream rows (Inbox first).
+    /// `StreamList` returns stream rows.
     Streams(Vec<StreamRow>),
     /// `Contexts` returns context rows, ordered by name.
     Contexts(Vec<ContextRow>),
@@ -317,12 +446,179 @@ pub enum QueryResult {
     MorningSummary(Box<MorningSummary>),
     /// `EndOfDayPlan` returns the end-of-day view.
     EndOfDayPlan(Box<EndOfDayPlan>),
+    /// `Upcoming` returns the days and the no-date lane. Boxed to keep the
+    /// enum small.
+    Upcoming(Box<Upcoming>),
     /// `ReminderIntents` returns what to schedule, earliest first.
     Reminders(Vec<ReminderIntent>),
     /// `ExportStats` returns the rendered document.
     Export(String),
+    /// `ParkedOpsSummary` returns one row per reason with at least one parked
+    /// op, in reason order. Empty when nothing is parked.
+    ParkedOps(Vec<ParkedOpCount>),
     /// `Preferences` returns every non-bootstrap key, in key-table order.
     Preferences(Vec<ResolvedPref>),
+    /// `SearchGrouped` returns its groups, in the fixed kind order. Boxed to
+    /// keep the enum small.
+    Search(Box<SearchResults>),
+    /// `Conflicts` returns one row per conflicted field, by entity id and
+    /// then field name. Empty when nothing is in conflict.
+    Conflicts(Vec<crate::conflicts::EntityConflict>),
+    /// `DaySchedule` returns the schedule and one planner day. Boxed to keep
+    /// the enum small.
+    DaySchedule(Box<PlannerDay>),
+    /// `SavedViews` returns the live views; `EntityById` of a `svw_` id
+    /// returns the one view, deleted or not.
+    SavedViews(Vec<SavedView>),
+    /// `SavedView` returns the view and what it matches. Boxed to keep the
+    /// enum small.
+    SavedView(Box<SavedViewResult>),
+    /// `TodayView` returns Today's rows, in group order.
+    TodayView(Vec<TodayRow>),
+    /// `Lateness` returns one row per task asked for, in that order.
+    Lateness(Vec<TaskLateness>),
+    /// `Triage` returns the queue, in its order.
+    Triage(Vec<TriageRow>),
+}
+
+/// One row of [`Query::Triage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TriageRow {
+    /// The task.
+    pub task: Task,
+    /// Its lateness for the reader now: why it needs a decision, and since
+    /// when.
+    pub lateness: sunrise_domain::LatenessState,
+}
+
+/// One row of [`Query::TodayView`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TodayRow {
+    /// The task.
+    pub task: Task,
+    /// Which group of Today it is in.
+    pub group: sunrise_domain::TodayGroup,
+    /// For [`sunrise_domain::TodayGroup::DueToday`], which deadline falls
+    /// today; `None` otherwise.
+    pub deadline: Option<sunrise_domain::TodayRowDeadline>,
+    /// Its lateness for the reader now.
+    pub lateness: sunrise_domain::LatenessState,
+}
+
+/// One row of [`Query::Lateness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TaskLateness {
+    /// The task.
+    pub task: EntityRef,
+    /// Its lateness for the reader now.
+    pub lateness: sunrise_domain::LatenessState,
+}
+
+/// What [`Query::SavedView`] returns: the view and the tasks it matches now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SavedViewResult {
+    /// The view, as stored.
+    pub view: SavedView,
+    /// The tasks it matches, in its order. Empty for a view that opens a
+    /// screen of its own (calendar, focus, …) rather than a list: the client
+    /// opens that screen.
+    pub tasks: Vec<Task>,
+    /// Contexts the filter names that are deleted or that this replica does
+    /// not hold: they match no task, and the reader should be told.
+    pub missing_contexts: Vec<EntityRef>,
+    /// Context names an import could not resolve, kept on the view and
+    /// matched by nothing.
+    pub unresolved_names: Vec<String>,
+    /// Whether every part of the view is one this build evaluates. `false`
+    /// when a newer build added a filter part or a view kind this one
+    /// cannot read: the result then shows more than that build would.
+    pub complete: bool,
+}
+
+/// What [`Query::DaySchedule`] returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlannerDay {
+    /// The planner day's date.
+    pub date: jiff::civil::Date,
+    /// Where it starts: `boundary(date)`.
+    pub start: jiff::Timestamp,
+    /// Where it ends: `boundary(date + 1)`, the next day's start.
+    pub end: jiff::Timestamp,
+    /// The window the date resolved to; `None` when it has no schedule.
+    pub window: Option<sunrise_domain::DayWindow>,
+    /// Wake to sleep, resolved; `None` when the date has no schedule.
+    pub plannable: Option<(jiff::Timestamp, jiff::Timestamp)>,
+    /// Every entry of the schedule.
+    pub schedule: sunrise_domain::DaySchedule,
+}
+
+/// What [`Query::SearchGrouped`] found (`docs/08-features/search.md`
+/// §Results).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SearchResults {
+    /// One group per kind with a hit, in the fixed order of [`SearchKind`]:
+    /// tasks, notes, calendar events, blocks, streams, contexts, places,
+    /// attachments, saved views, people. Ranking orders hits within a group,
+    /// never the groups.
+    pub groups: Vec<SearchGroup>,
+    /// What the query read as text or matched nothing for, and why.
+    pub notices: Vec<SearchNotice>,
+    /// The query's canonical text, which parses back to the same query: what
+    /// a saved search stores.
+    pub canonical: String,
+}
+
+/// The hits of one kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchGroup {
+    /// The kind.
+    pub kind: SearchKind,
+    /// Up to the group's limit, best first.
+    pub hits: Vec<SearchHit>,
+    /// How many there were before the limit.
+    pub total: u32,
+}
+
+/// One hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchHit {
+    /// What matched.
+    pub entity: EntityRef,
+    /// What activating the hit opens: the entity itself, or for an
+    /// attachment, the entity it is attached to.
+    pub opens: EntityRef,
+    /// The title or name, with the matched ranges.
+    pub title: Highlighted,
+    /// At most 160 scalars of the body around its first match, or `None`
+    /// when the body did not match.
+    pub snippet: Option<Highlighted>,
+}
+
+/// Why part of a query was read as text, left out, or matched nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchNotice {
+    /// The reason; [`NoticeKind::code`] is its stable spelling.
+    pub kind: NoticeKind,
+    /// Where it starts in the query text, in Unicode scalars.
+    pub start: u32,
+    /// Where it ends, half-open.
+    pub end: u32,
+    /// What it is about, when that is a name or an operator: the stream
+    /// name that matched nothing, the operator this build cannot evaluate.
+    pub detail: Option<String>,
+}
+
+/// One row of [`Query::ParkedOpsSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedOpCount {
+    /// The stored `parked_ops.reason`, e.g. `unknown_kind`.
+    ///
+    /// A string rather than [`sunrise_storage::ParkReason`]: a vault a newer
+    /// build parked ops in can be opened by an older one, and a count under a
+    /// reason this build has no name for is still a count to show.
+    pub reason: String,
+    /// How many ops are parked under it. Never zero.
+    pub count: u64,
 }
 
 /// One row of [`Query::DayBlocks`] / [`Query::WeekBlocks`].
@@ -341,6 +637,13 @@ pub struct BlockRow {
     /// Task whose op has not arrived yet — a valid state, not a repair case.
     pub task_titles: Vec<String>,
 }
+
+/// What [`Query::Upcoming`] returns: the domain's view, each day's blocks
+/// as calendar-grid rows.
+pub type Upcoming = sunrise_domain::Upcoming<BlockRow>;
+
+/// One day of [`Upcoming`].
+pub type UpcomingDay = sunrise_domain::UpcomingDay<BlockRow>;
 
 /// One row of [`Query::FocusPlan`]: a proposal, with the two facts that put it
 /// where it is and the session the core would open for it.
@@ -390,28 +693,27 @@ pub struct ActionableTask {
     pub unblocks: u32,
 }
 
-/// One row of [`Query::StreamList`]. The synthetic Inbox row uses
-/// [`sunrise_domain::inbox_stream_ref`] as its `id`.
+/// One row of [`Query::StreamList`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamRow {
-    /// Stream id (the all-zero id for the Inbox row).
+    /// Stream id.
     pub id: EntityRef,
-    /// Display name ("Inbox" for the synthetic row).
+    /// Display name.
     pub name: String,
     /// Stream color.
     pub color: StreamColor,
     /// Count of open tasks (todo / in-progress, not deleted).
     pub open_task_count: u64,
-    /// Whether the stream is archived (always false for Inbox).
+    /// Whether the stream is archived.
     pub archived: bool,
-    /// Whether the stream is paused (always false for Inbox).
+    /// Whether the stream is paused.
     ///
     /// Projected alongside `archived` because a client cannot offer
     /// pause/resume without knowing which one the key means, and reading it
     /// per row through `EntityById` would cost a query per sidebar row.
     pub paused: bool,
-    /// The fractional index this row is sorted on, or `""` for the synthetic
-    /// Inbox and for a row nothing has ever ordered.
+    /// The fractional index this row is sorted on, or `""` for a row nothing
+    /// has ever ordered.
     ///
     /// Projected because a client that wants to *move* a row needs the keys of
     /// the two rows it landed between, and reading them one `EntityById` at a

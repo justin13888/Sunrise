@@ -14,6 +14,7 @@ A finite enum across the system. Examples:
 - `AUTH_DEVICE_SIG_INVALID`
 - `AUTH_TOKEN_INVALID`
 - `STORAGE_VAULT_LOCKED`
+- `STORAGE_INTEGRITY_CHECK_FAILED`
 - `SYNC_PROTOCOL_VERSION_MISMATCH`
 - `SYNC_TAMPER_DETECTED`
 - `SYNC_NETWORK_UNAVAILABLE`
@@ -21,7 +22,9 @@ A finite enum across the system. Examples:
 - `CRYPTO_RECOVERY_BLOB_INVALID`
 - `INTEGRATION_REAUTH_REQUIRED`
 - `VALIDATION_INVALID_TITLE`
-- `VALIDATION_DUE_BEFORE_SCHEDULED`
+- `VALIDATION_DUE_BEFORE_SCHEDULED` (retired: no write returns it since
+  ADR-0047 §1 made the order of a task's times a warning,
+  `CommandResult::ordering_warnings`; the code stays reserved)
 - `INTERNAL_UNKNOWN_CODE`
 
 Codes are stable across versions; new codes can be added but never repurposed.
@@ -32,7 +35,7 @@ Codes are stable across versions; new codes can be added but never repurposed.
 - The Rust enum at `crates/sunrise-error/src/codes.rs` mirrors that manifest. It is *intended* to be generated; until the build script lands it is hand-maintained, and `crates/sunrise-error/tests/manifest_in_sync.rs` is what holds the two together. The TypeScript mirror this section used to place at `packages/sunrise-error-ts` does not exist — nothing in TypeScript reads the registry yet.
 - Codes are added at minor-version boundaries; never reused, never renamed.
 - Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
-- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.
+- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304 (`STORAGE_INTEGRITY_CHECK_FAILED`, then `STORAGE_BACKUP_FAILED` and `STORAGE_MIGRATION_FAILED`: the three ways a vault fails to open that [04-storage/migrations.md](../04-storage/migrations.md) §Migration rigor gives a client a way out of).
 - An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
 ## Error envelope (core → UI)
@@ -78,20 +81,25 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
+Applies only to errors whose code the registry gives `kind: transient` AND `retryable: true` (`crates/sunrise-error/codes.toml`; `CoreError` itself carries neither), and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
+
+**Target state, not built.** The core has no `catch_unwind`, the release profile in the root `Cargo.toml` sets `panic = "abort"`, and the crash report does not exist ([`telemetry-and-privacy.md`](./telemetry-and-privacy.md)). A panic in a release build ends the process. The target is:
 
 - Rust panics in the core are caught at the FFI boundary and surfaced as `CoreError(FATAL_INTERNAL, …)` rather than crashing the host.
 - A panic generates a crash report (off-by-default; user opt-in for delivery).
 
 ## Validation errors
 
-- Validation runs at the command boundary in the core.
-- Returns `VALIDATION_*` codes with a structured `diagnostic` object.
+Validation runs at the command boundary in the core and returns `VALIDATION_*` codes.
+
+**The structured shape below is target state, not built.** Today `CoreError.diagnostic` is a `String` and `CoreError` has no `kind` or `retryable` field; those two are per-code registry attributes. `ValidationError::Field` (`crates/sunrise-domain/src/validation.rs#ValidationError`) carries a `field` and a `constraint` and no operands. The target is:
+
+- Validation errors carry a structured `diagnostic` object.
 - UI surfaces inline at the offending field, keying off `diagnostic.field`.
 
-The wire shape of a validation error:
+The target wire shape of a validation error:
 
 ```json
 {

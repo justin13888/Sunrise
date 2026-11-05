@@ -26,8 +26,9 @@ final class KeyboardTips {
     /// The one sentence a tip is. Short on purpose: a coachmark that has to be
     /// read twice has already failed. The keys are the keymap's, not typed out
     /// here, so the tip cannot teach a chord the app does not answer.
-    static let hint = "Press ? for the keyboard shortcuts, or "
-        + "\(Keymap.shortcutLabel(for: .commandPalette)) for the command palette."
+    static var hint: String {
+        L10n.Keyboard.tipHint(palette: Keymap.shortcutLabel(for: .commandPalette))
+    }
 
     private let defaults: UserDefaults
 
@@ -47,18 +48,18 @@ struct KeyboardTipsCoachmark: View {
     @Bindable var tips: KeyboardTips
 
     /// Built from the keymap, like ``KeyboardTips/hint``.
-    static let text = "Press ? in any view for the shortcuts, and "
-        + "\(Keymap.shortcutLabel(for: .quickCaptureGlobal)) to capture a "
-        + "thought from whatever app you are in."
+    static var text: String {
+        L10n.Keyboard.coachmark(shortcut: Keymap.shortcutLabel(for: .quickCaptureGlobal))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Sunrise is keyboard-first", systemImage: "keyboard")
+            Label(L10n.Keyboard.keyboardFirst, systemImage: "keyboard")
                 .font(.callout.weight(.medium))
             Text(Self.text)
             .font(.caption)
             .foregroundStyle(.secondary)
-            Toggle("Show keyboard tips as I go", isOn: $tips.isEnabled)
+            Toggle(L10n.Keyboard.showTips, isOn: $tips.isEnabled)
                 .accessibilityIdentifier("onboarding.keyboardTips")
         }
         .padding(12)

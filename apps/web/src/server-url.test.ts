@@ -1,13 +1,41 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+    checkRelayUrl,
     MAX_SERVER_URL_LENGTH,
     parseServerUrl,
+    type RelayUrlCheck,
     readServerUrl,
     resolveServerUrl,
     type ServerUrlEnv,
     STORAGE_KEY,
     withoutServerParam,
 } from "./server-url";
+
+/**
+ * The cases the Rust rule (`sunrise_client_core::relay_url`) is tested
+ * against. One file, two implementations: a case that one accepts and the
+ * other refuses fails here or there.
+ */
+const vectors = JSON.parse(
+    readFileSync(
+        new URL(
+            "../../../crates/sunrise-client-core/vectors/relay-url.json",
+            import.meta.url,
+        ),
+        "utf8",
+    ),
+) as { cases: ({ input: string } & Partial<RelayUrlCheck>)[] };
+
+describe("checkRelayUrl", () => {
+    it("holds every shared vector", () => {
+        expect(vectors.cases.length).toBeGreaterThanOrEqual(25);
+        for (const { input, ...expected } of vectors.cases) {
+            const expanded = input.replace("{256}", "a".repeat(256));
+            expect(checkRelayUrl(expanded), input).toEqual(expected);
+        }
+    });
+});
 
 describe("parseServerUrl", () => {
     it("reduces an https URL to its origin", () => {
@@ -64,6 +92,7 @@ describe("resolveServerUrl", () => {
             source: "none",
             store: null,
             refused: null,
+            offered: null,
         });
         expect(resolveServerUrl({ ...none, buildDefault: "" }).source).toBe(
             "none",
@@ -78,6 +107,7 @@ describe("resolveServerUrl", () => {
             source: "build",
             store: null,
             refused: null,
+            offered: null,
         });
     });
 
@@ -93,6 +123,7 @@ describe("resolveServerUrl", () => {
             source: "link",
             store: "https://relay.example",
             refused: null,
+            offered: null,
         });
     });
 
@@ -106,6 +137,7 @@ describe("resolveServerUrl", () => {
         expect(resolution.source).toBe("stored");
         expect(resolution.store).toBeNull();
         expect(resolution.refused).toContain("https://mine.example");
+        expect(resolution.offered).toBe("https://theirs.example");
     });
 
     it("does not call a link to the stored server refused", () => {
@@ -127,6 +159,7 @@ describe("resolveServerUrl", () => {
         expect(resolution.url).toBe("https://ops.example");
         expect(resolution.store).toBeNull();
         expect(resolution.refused).toContain("http://relay.example");
+        expect(resolution.offered).toBeNull();
     });
 
     it("treats a stored value that no longer parses as nothing stored", () => {

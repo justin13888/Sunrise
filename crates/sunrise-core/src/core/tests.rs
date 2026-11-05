@@ -1,14 +1,13 @@
 //! `Core`'s own tests.
 //!
-//! Kept as one module across the `core/` split, on the same rule
-//! [`crate::engine::tests`] follows: the suite shares `cfg`, `unlock` and
-//! `vault_footprint`, so moving it whole is what keeps the test diff at zero.
+//! Kept as one module across the `core/` split: the suite shares `cfg`,
+//! `unlock` and `vault_footprint`, so moving it whole is what keeps the test
+//! diff at zero.
 //! `core.rs` sat exactly at its package's size threshold before identity
 //! rotation was added to it, and this is the boundary that cost nothing to
 //! draw.
 
 use super::*;
-use crate::config::SystemRng;
 use crate::vault_lock::VaultLockError;
 use parking_lot::Mutex as PLMutex;
 use std::sync::Arc;
@@ -22,12 +21,48 @@ impl crate::config::Clock for FakeClock {
     }
 }
 
+/// The randomness a vault on [`FakeClock`] is opened with.
+///
+/// A frozen clock gives every ULID the vault mints one timestamp, so their
+/// order is the order of their random tails, which `SystemRng` changed from
+/// run to run. Each config a test builds draws its own seeded stream instead,
+/// seeded by its position among the configs its thread has built, so a test
+/// replays exactly and two opens of one test never mint the same id.
+#[derive(Debug)]
+struct SeededRng(PLMutex<rand::rngs::StdRng>);
+
+impl crate::config::Rng for SeededRng {
+    fn fill_bytes(&self, dest: &mut [u8]) {
+        rand_core::RngCore::fill_bytes(&mut *self.0.lock(), dest);
+    }
+}
+
+thread_local! {
+    static RNGS_BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The next seeded [`crate::config::Rng`] of this thread; see [`SeededRng`].
+fn seeded_rng() -> Arc<SeededRng> {
+    let n = RNGS_BUILT.with(|c| {
+        let n = c.get();
+        c.set(n + 1);
+        n
+    });
+    Arc::new(SeededRng(PLMutex::new(
+        <rand::rngs::StdRng as rand_core::SeedableRng>::seed_from_u64(0x5EED_0000 + n),
+    )))
+}
+
+/// A config for a vault in `dir`. Every command and delivery on this test's
+/// thread then also checks that a rebuild of the log lands on the rows it
+/// left (ADR-0065 §5), as the engine's own tests do.
 fn cfg(dir: &std::path::Path) -> CoreConfig {
+    crate::engine::check_rebuild_after_every_write();
     CoreConfig::with_clock(
         dir.to_path_buf(),
         "0.1.0+test",
         Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-        Arc::new(SystemRng),
+        seeded_rng(),
     )
 }
 
@@ -283,7 +318,9 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
             .unwrap()
     };
     for (env, kind) in &envelopes {
-        if kind == "task.create" {
+        // The sponsor's vault requires `core.field_ops`, so its task is a
+        // create `Patch`.
+        if kind == "task.create" || kind == "task.patch" {
             let op = sunrise_crypto::decode_envelope(env).unwrap();
             joiner
                 .engine
@@ -304,6 +341,14 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     }
     assert_eq!(task_rows(&joiner), 0, "parked, so not materialized");
     assert_eq!(parked_rows(&joiner), 1);
+    // ADR-0045 §4 "Visibility": the count crosses the read surface, by reason.
+    assert_eq!(
+        parked_summary(&joiner).await,
+        vec![crate::ParkedOpCount {
+            reason: "unknown_kind".into(),
+            count: 1,
+        }]
+    );
     a_failing_replay_never_fails_the_open(joiner, joiner_dir.path(), &joiner_root, task).await;
 
     let upgraded = Core::open(
@@ -317,7 +362,20 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     .unwrap();
     assert_eq!(task_rows(&upgraded), 1, "the open replayed it");
     assert_eq!(parked_rows(&upgraded), 0, "and released the marker");
+    assert!(
+        parked_summary(&upgraded).await.is_empty(),
+        "a reason with nothing parked has no row"
+    );
     upgraded.close().await.unwrap();
+}
+
+/// `Query::ParkedOpsSummary` through `Core::query`, the path every client's
+/// read takes.
+async fn parked_summary(core: &Core) -> Vec<crate::ParkedOpCount> {
+    match core.query(Query::ParkedOpsSummary).await.unwrap() {
+        QueryResult::ParkedOps(counts) => counts,
+        other => panic!("ParkedOpsSummary answered {other:?}"),
+    }
 }
 
 /// A storage fault that fails the parked op's replay on every open, installed
@@ -386,38 +444,281 @@ async fn the_sync_tick_compacts_at_most_once_a_day() {
             dir.path().to_path_buf(),
             "0.1.0+test",
             Arc::clone(&clock) as Arc<dyn crate::config::Clock>,
-            Arc::new(SystemRng),
+            seeded_rng(),
         ),
         unlock(),
     )
     .await
     .unwrap();
+    // A snapshot is due at every compaction, so the vault-meta stream's
+    // snapshot is what shows whether a tick compacted.
     let policy = crate::engine::CompactionPolicy {
         retention_ms: 1,
+        snapshot_every_ms: 1,
         ..Default::default()
     };
     core.set_compaction_policy(policy);
     assert_eq!(core.compaction_policy(), policy);
+    let meta = || core.stream_snapshot(crate::engine::META_STREAM).unwrap();
+    assert_eq!(meta(), None, "nothing has compacted yet");
 
     core.sync_publish_due_digests();
-    assert_eq!(*core.last_compaction_ms.lock(), Some(T));
+    let first = meta().expect("the first tick compacts and writes a snapshot");
     *clock.0.lock() = T + 1_000;
     core.sync_publish_due_digests();
-    assert_eq!(
-        *core.last_compaction_ms.lock(),
-        Some(T),
-        "not again within the day"
-    );
+    assert_eq!(meta().as_ref(), Some(&first), "not again within the day");
     *clock.0.lock() = T + COMPACT_EVERY_MS;
     core.sync_publish_due_digests();
-    assert_eq!(*core.last_compaction_ms.lock(), Some(T + COMPACT_EVERY_MS));
+    let next = meta().expect("a snapshot");
+    assert_ne!(next, first, "the next day's tick compacts again");
 
-    assert!(core.compact_op_log().is_ok());
+    *clock.0.lock() = T + COMPACT_EVERY_MS + 1_000;
+    let report = core.compact_op_log().unwrap();
+    assert_eq!(report.snapshots_written, 1, "{report:?}");
+    assert_ne!(
+        meta(),
+        Some(next),
+        "a direct call compacts whatever the cadence"
+    );
     assert!(matches!(
         core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
-        Err(CoreError::Engine(EngineError::Invalid(_)))
+        Err(CoreError::Engine(EngineError::Invalid(why))) if why == "snapshot: not canonical CBOR"
     ));
     assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
+    core.close().await.unwrap();
+}
+
+/// `Core::open` rebuilds the projection when the vault holds no record of a
+/// rebuild at this build's fold version, as the first open after migration
+/// 0039 finds it, and only then (ADR-0065 §7). The rebuilt vault reads as it
+/// did, and its version DAG is the one the live fold wrote.
+#[tokio::test]
+async fn open_rebuilds_the_projection_once_per_fold_version() {
+    use sunrise_domain::{TaskDraft, TaskPatch};
+    const MARKER: &str = "SELECT fold_v, done_at_ms FROM projection_rebuild";
+    const STATE: &str = "SELECT * FROM entity_versions
+         UNION ALL SELECT *, NULL, NULL, NULL, NULL, NULL FROM entity_frontier
+         UNION ALL SELECT id, title, state, lww_seq, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                          NULL, NULL, NULL FROM tasks
+         ORDER BY 1, 2, 3, 4";
+    let dir = tempfile::tempdir().unwrap();
+    let at = |ms: u64| {
+        crate::engine::check_rebuild_after_every_write();
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            Arc::new(FakeClock(PLMutex::new(ms))),
+            seeded_rng(),
+        )
+    };
+    let read = |core: &Core, sql: &str| -> Vec<String> {
+        let db = core.db.lock();
+        let mut stmt = db.conn().prepare(sql).unwrap();
+        let n = stmt.column_count();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| {
+                (0..n)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i)
+                            .map(|v| format!("{v:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|c| c.join(" | "))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows
+    };
+    let fold_v = crate::engine::FOLD_V;
+
+    let core = Core::open(at(1_700_000_000_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000000000)")],
+        "a new vault is rebuilt, from its empty log, by its first open"
+    );
+    let task = core
+        .submit(Command::CreateTask(TaskDraft {
+            title: "kept".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    core.submit(Command::UpdateTask {
+        id: task,
+        patch: TaskPatch {
+            title: Some("kept, renamed".into()),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let live = read(&core, STATE);
+    core.close().await.unwrap();
+
+    // What an open after migration 0039 finds: no versions, no record.
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM entity_versions; DELETE FROM entity_frontier;
+                 DELETE FROM projection_rebuild;",
+            )
+            .unwrap();
+    }
+    let core = Core::open(at(1_700_000_005_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000005000)")]
+    );
+    assert_eq!(
+        read(&core, STATE),
+        live,
+        "the rebuild lands on the live fold"
+    );
+    core.close().await.unwrap();
+
+    let core = Core::open(at(1_700_000_009_000), unlock()).await.unwrap();
+    assert_eq!(
+        read(&core, MARKER),
+        vec![format!("Integer({fold_v}) | Integer(1700000005000)")],
+        "an open at the same fold version does not rebuild"
+    );
+    core.close().await.unwrap();
+}
+
+/// `Core::open` writes both search indexes from the rows when the vault has
+/// no record of them, as the first open after migration 0040 finds it, and
+/// `Core::reindex_search` re-tokenizes the word index when the content
+/// language changes (ADR-0052 §6).
+#[tokio::test]
+async fn open_builds_the_search_indexes_and_a_language_change_reindexes_them() {
+    use sunrise_domain::{PrefTarget, PrefValue, TaskDraft};
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    for title in ["running shoes", "東京出張"] {
+        core.submit(Command::CreateTask(TaskDraft {
+            title: title.into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    }
+    core.close().await.unwrap();
+    // What an open after migration 0040 finds: empty indexes, no record.
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM search_meta; DELETE FROM search_docs;
+                 DELETE FROM search_words; DELETE FROM search_tri;",
+            )
+            .unwrap();
+    }
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let found = |core: &Core, q: &str| {
+        let db = core.db.lock();
+        match core
+            .engine
+            .query(
+                &db,
+                Query::Search {
+                    text: q.into(),
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(t) => t.len(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(found(&core, "東京"), 1, "rebuilt from the rows at open");
+    assert_eq!(found(&core, "runs"), 1, "English stems");
+    let step = core.reindex_search().await.unwrap();
+    assert!(step.finished && step.copied == 2, "{step:?}");
+    core.submit(Command::SetPreference {
+        key: "search.content_language".into(),
+        value: PrefValue::Text("ko".into()),
+        target: PrefTarget::Vault,
+    })
+    .await
+    .unwrap();
+    let step = core.reindex_search().await.unwrap();
+    assert!(step.finished, "{step:?}");
+    assert_eq!(found(&core, "runs"), 0, "Korean does not stem");
+    assert_eq!(found(&core, "東京"), 1);
+    core.close().await.unwrap();
+}
+
+/// A rebuild at open that fails does not fail the open: the vault opens on
+/// the projection it had, and the record stays unwritten for the next open.
+#[tokio::test]
+async fn a_failed_rebuild_never_fails_the_open() {
+    use sunrise_domain::TaskDraft;
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let task = core
+        .submit(Command::CreateTask(TaskDraft {
+            title: "kept".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    core.close().await.unwrap();
+    {
+        let db = Db::open(
+            &dir.path().join("vault.db"),
+            &VaultRootKey::from_bytes([1u8; 32]),
+        )
+        .unwrap();
+        // A damaged op: its envelope no longer decodes, and no rebuild of
+        // this log can succeed, the after-every-write check's included.
+        crate::engine::stop_checking_the_rebuild();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM projection_rebuild;
+                 UPDATE ops SET envelope = substr(envelope, 1, length(envelope) - 1)
+                 WHERE inner_kind IN ('task.create', 'task.patch');",
+            )
+            .unwrap();
+    }
+    let damaged = CoreConfig::with_clock(
+        dir.path().to_path_buf(),
+        "0.1.0+test",
+        Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
+        seeded_rng(),
+    );
+    let core = Core::open(damaged, unlock()).await.unwrap();
+    let (marker, title): (i64, String) = {
+        let db = core.db.lock();
+        let marker = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM projection_rebuild", [], |r| r.get(0))
+            .unwrap();
+        let title = db
+            .conn()
+            .query_row(
+                "SELECT title FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (marker, title)
+    };
+    assert_eq!(marker, 0, "the next open tries again");
+    assert_eq!(title, "kept", "the projection it had");
     core.close().await.unwrap();
 }
 
@@ -438,7 +739,6 @@ async fn open_and_close() {
 /// never learn a Block or an Attachment appeared.
 #[tokio::test]
 async fn create_and_delete_commands_publish_the_right_change_event() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::{AttachmentDraft, BlockDraft, SunriseTime, TaskDraft};
 
     async fn next(rx: &mut tokio::sync::broadcast::Receiver<DomainEvent>) -> DomainEvent {
@@ -464,7 +764,7 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
 
     let block = core
         .submit(Command::CreateBlock(BlockDraft {
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             starts_at: SunriseTime::instant(now),
             ends_at: SunriseTime::instant(now + hour),
             title: Some("Deep work".into()),
@@ -492,6 +792,9 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
             chunk_count: 1,
             content_hash: [11u8; 32],
             ciphertext_hash: [13u8; 32],
+            width: None,
+            height: None,
+            thumbnail: None,
         }))
         .await
         .unwrap()
@@ -518,7 +821,6 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
 /// its view off `changes()` leaves the row on screen.
 #[tokio::test]
 async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::{
         ContextDraft, FocusKind, RRule, RoutineCatchupPolicy, RoutineDraft, SessionLength,
         StreamDraft, TaskDraft, TaskTemplate,
@@ -559,7 +861,7 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
         .submit(Command::CreateRoutine(RoutineDraft {
             template: TaskTemplate {
                 title: "Water plants".into(),
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -569,7 +871,9 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
-            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap()).unwrap(),
+            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap())
+                .unwrap()
+                .into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             catchup_policy: RoutineCatchupPolicy::Skip,
@@ -622,7 +926,12 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
     core.submit(Command::DeleteContext(context)).await.unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == context));
 
-    core.submit(Command::DeleteStream(stream)).await.unwrap();
+    core.submit(Command::DeleteStream {
+        id: stream,
+        disposition: sunrise_domain::Disposition::Detach,
+    })
+    .await
+    .unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == stream));
 
     core.close().await.unwrap();
@@ -656,7 +965,34 @@ async fn the_notification_reads_answer_through_the_core() {
         .unwrap(),
         QueryResult::Reminders(_)
     ));
-    core.close().await.unwrap();
+
+    // The catalog's reads (#347): a fresh vault's own announcement waits in
+    // the outbox, it has no news, and a hard deadline is a candidate.
+    let oldest = core.oldest_unacked_ms().unwrap();
+    assert!(
+        oldest.is_some_and(|ms| ms > 1 && ms <= now_ms),
+        "the vault's first ops wait from its opening: {oldest:?}"
+    );
+    assert!(core.security_events().unwrap().is_empty());
+    let due = sunrise_domain::SunriseTime::instant(
+        jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap() + 3_600_000).unwrap(),
+    );
+    let task = core
+        .submit(Command::CreateTask(sunrise_domain::TaskDraft {
+            title: "File taxes".into(),
+            hard_due_at: Some(due.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let got = core.deadline_candidates().unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].task, &got[0].hard_due_at), (task, &due));
+    core.shutdown().await;
+    assert!(matches!(core.oldest_unacked_ms(), Err(CoreError::Closed)));
+    assert!(matches!(core.security_events(), Err(CoreError::Closed)));
+    assert!(matches!(core.deadline_candidates(), Err(CoreError::Closed)));
 }
 
 /// `docs/08-features/recurrence-engine.md` requires materialization on a
@@ -669,7 +1005,6 @@ async fn the_notification_reads_answer_through_the_core() {
 /// `tokio::time::advance` fires the timer.
 #[tokio::test(start_paused = true)]
 async fn routine_timer_materializes_past_the_launch_horizon() {
-    use sunrise_domain::inbox::inbox_stream_ref;
     use sunrise_domain::routine::TaskTemplate;
     use sunrise_domain::rrule::RRule;
     use sunrise_domain::{RoutineCatchupPolicy, RoutineDraft};
@@ -681,14 +1016,14 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
         dir.path().to_path_buf(),
         "0.1.0+test",
         clock.clone(),
-        Arc::new(SystemRng),
+        seeded_rng(),
     );
     let core = Arc::new(Core::open(cfg, unlock()).await.unwrap());
 
     core.submit(Command::CreateRoutine(RoutineDraft {
         template: TaskTemplate {
             title: "Water plants".into(),
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             contexts: Vec::new(),
             energy: None,
             priority: None,
@@ -698,7 +1033,9 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
         },
         rrule: RRule::parse("FREQ=DAILY").unwrap(),
         timezone: "UTC".into(),
-        starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap()).unwrap(),
+        starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap())
+            .unwrap()
+            .into(),
         ends_at: None,
         scheduling_constraints: Vec::new(),
         catchup_policy: RoutineCatchupPolicy::Skip,
@@ -782,12 +1119,66 @@ async fn capture_resolves_streams_from_the_vault() {
         [Unresolved::UnknownStream(_)]
     ));
 
-    // The synthetic Inbox row is resolvable by name too.
+    // `#inbox` still resolves, to no stream (ADR-0046), and is not left in
+    // the title as an unknown stream.
     let c3 = core.capture("Triage me #inbox", &tz).await.unwrap();
-    assert_eq!(
-        c3.draft.stream_id,
-        Some(sunrise_domain::inbox::inbox_stream_ref())
-    );
+    assert_eq!(c3.draft.stream_id, None);
+    assert_eq!(c3.draft.title, "Triage me");
+    assert!(c3.unresolved.is_empty(), "{:?}", c3.unresolved);
+
+    core.close().await.unwrap();
+}
+
+/// `Core::capture_aside` is `capture` with the stream dropped
+/// (`docs/08-features/focus-mode.md` §Capture-aside): a `#stream` that
+/// resolves is consumed from the title as `capture` consumes it, but the
+/// draft lands in the Inbox; its context and priority are kept.
+#[tokio::test]
+async fn capture_aside_drops_the_stream_and_keeps_the_rest() {
+    use sunrise_domain::{ContextDraft, StreamDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let travel = core
+        .submit(Command::CreateStream(StreamDraft {
+            name: "travel".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let errands = core
+        .submit(Command::CreateContext(ContextDraft {
+            name: "errands".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let tz = jiff::tz::TimeZone::UTC;
+    let line = "Renew passport #travel @errands !2";
+
+    let plain = core.capture(line, &tz).await.unwrap();
+    assert_eq!(plain.draft.stream_id, Some(travel), "capture files it");
+    let aside = core.capture_aside(line, &tz).await.unwrap();
+    assert_eq!(aside.draft.stream_id, None, "an aside lands in the Inbox");
+    assert_eq!(aside.draft.title, plain.draft.title);
+    assert_eq!(aside.draft.title, "Renew passport");
+    assert_eq!(aside.draft.contexts, vec![errands]);
+    assert_eq!(aside.draft.priority, Some(2));
+    assert_eq!(aside.unresolved, plain.unresolved);
+    assert!(aside.unresolved.is_empty(), "{:?}", aside.unresolved);
+
+    // Committed, it is an Inbox task.
+    let task = core
+        .submit(Command::CreateTask(aside.draft))
+        .await
+        .unwrap()
+        .entity;
+    match core.query(Query::EntityById(task)).await.unwrap() {
+        QueryResult::Task(t) => assert_eq!(t.stream_id, None),
+        other => panic!("expected Task, got {other:?}"),
+    }
 
     core.close().await.unwrap();
 }
@@ -899,15 +1290,18 @@ async fn identity_persists_and_outbox_hydrates_across_reopen() {
         pending_before_close = core.sync_pending().unwrap();
         device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
             QueryResult::SyncStatus(s) => {
-                // One more, not two: the Inbox's key is minted at open
-                // along with the vault-meta one, so the first task in it
-                // finds a key already there and queues only itself. It was
-                // two while the Inbox epoch was minted lazily by whatever
-                // first wrote to that stream.
+                // Two more: the task, and the `VaultRequires` of
+                // `core.field_ops` its write makes first, as the vault's
+                // first entity write with no device lacking the feature
+                // (ADR-0065 §7). No key envelope: the Inbox's key is minted
+                // at open along with the vault-meta one, so the first task
+                // in it finds a key already there. It was one more while the
+                // Inbox epoch was minted lazily by whatever first wrote to
+                // that stream.
                 assert_eq!(
                     u64::from(s.outbox_pending),
-                    announced + 1,
-                    "only the task itself is newly pending"
+                    announced + 2,
+                    "only the task and the vault's requirement are newly pending"
                 );
                 // Read the device id straight from the vault for comparison.
                 let db = core.db.lock();
@@ -1077,8 +1471,10 @@ async fn both_observer_channels_deliver_to_their_subscribers() {
         core.sync_pending().unwrap(),
         "the query path reads outbox depth from the database"
     );
+    // Two rows: the task, and the vault's requirement of `core.field_ops`
+    // that its write, the vault's first, makes (ADR-0065 §7).
     assert_eq!(
-        u64::from(snapshot.outbox_pending) + 1,
+        u64::from(snapshot.outbox_pending) + 2,
         u64::from(from_query.outbox_pending),
         "and the broadcast snapshot is behind it by the one submit, because \
          nothing off the driver path republishes the depth"
@@ -1086,3 +1482,121 @@ async fn both_observer_channels_deliver_to_their_subscribers() {
 
     core.close().await.unwrap();
 }
+
+/// `docs/10-cross-cutting/time.md` §7: the one entry point a client reports
+/// the OS zone through. It moves the reader's zone, writes nothing, counts
+/// the open tasks whose time moved, tells subscribers to re-read, and asks
+/// for a notification only when the preference is on.
+#[tokio::test]
+async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
+    use sunrise_domain::{PrefTarget, PrefValue, SunriseTime, TaskDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let day = jiff::civil::date(2023, 11, 15);
+    for (title, at) in [
+        ("floats", SunriseTime::floating(day.at(9, 0, 0, 0))),
+        (
+            "pinned",
+            SunriseTime::zoned(day.at(9, 0, 0, 0), "Europe/Berlin"),
+        ),
+    ] {
+        core.submit(Command::CreateTask(TaskDraft {
+            title: title.into(),
+            planned_at: Some(at),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    }
+    let mut events = core.changes();
+    let before = vault_footprint(&core);
+
+    let moved = core.on_time_zone_changed("Asia/Kolkata").unwrap();
+    assert_eq!(moved.previous, "UTC");
+    assert_eq!(moved.zone, "Asia/Kolkata");
+    assert!(moved.changed);
+    assert_eq!(moved.affected_tasks, 1, "only the floating task moves");
+    assert!(
+        !moved.notify,
+        "the notification preference is off by default"
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Ok(DomainEvent::TimeZoneChanged { zone }) if zone == "Asia/Kolkata"
+    ));
+    assert_eq!(
+        vault_footprint(&core),
+        before,
+        "a zone change is not an edit"
+    );
+
+    // The same zone again, as every foreground reports it: nothing happens.
+    let same = core.on_time_zone_changed("Asia/Kolkata").unwrap();
+    assert!(!same.changed);
+    assert_eq!(same.affected_tasks, 0);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    // The same zone under an alias is no change either: no event, nothing
+    // counted, so no spurious notification.
+    let alias = core.on_time_zone_changed("Asia/Calcutta").unwrap();
+    assert_eq!(alias.previous, "Asia/Kolkata");
+    assert!(!alias.changed);
+    assert_eq!(alias.affected_tasks, 0);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    core.on_time_zone_changed("Asia/Kolkata").unwrap();
+
+    // A name the tzdb does not know is refused, with a typed error, and
+    // changes nothing: the reader's zone stays Kolkata, never UTC.
+    assert!(matches!(
+        core.on_time_zone_changed("Mars/Olympus"),
+        Err(CoreError::UnknownTimeZone { zone }) if zone == "Mars/Olympus"
+    ));
+    assert!(!core.zone_unknown());
+    assert_eq!(
+        core.on_time_zone_changed("Asia/Kolkata").unwrap().previous,
+        "Asia/Kolkata"
+    );
+
+    core.submit(Command::SetPreference {
+        key: "notifications.timezone_changed.enabled".into(),
+        value: PrefValue::Bool(true),
+        target: PrefTarget::Device,
+    })
+    .await
+    .unwrap();
+    let back = core.on_time_zone_changed("UTC").unwrap();
+    assert!(back.changed);
+    assert!(back.notify);
+
+    core.close().await.unwrap();
+}
+
+/// The first report of the zone the injected clock already names, under
+/// another spelling, is no change: a vault open must not count as a zone
+/// change, nor ask for a notification, on every launch.
+#[tokio::test]
+async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let mut events = core.changes();
+    let first = core.on_time_zone_changed("Etc/UTC").unwrap();
+    assert_eq!(first.previous, "UTC");
+    assert!(!first.changed);
+    assert!(!first.notify);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    core.close().await.unwrap();
+}
+
+/// Every public storage method after `Core::close`.
+#[cfg(test)]
+mod closed;

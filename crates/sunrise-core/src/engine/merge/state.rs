@@ -2,11 +2,12 @@
 //! field write at a time.
 //!
 //! Every write here is idempotent, because the same op can be folded twice:
-//! once from its envelope and once more when its row is read back
-//! (`sync_from_row`). A register keeps the greater stamp and rewrites itself
+//! by a redelivery, and by a snapshot join that carries what an op already
+//! folded here wrote. A map entry keeps the greater stamp and rewrites itself
 //! at an equal one; an OR-set add or remove and a counter delta are keyed by
-//! the op that made them.
+//! the op that made them. Registers are [`super::register`]'s.
 
+use super::register::Registers;
 use super::OpRef;
 use super::Stamp;
 use crate::engine::ids::blob16;
@@ -15,11 +16,11 @@ use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 
-/// Whether a write stamped `at` replaces the one a register holds, stamped
+/// Whether a write stamped `at` replaces the one a map entry holds, stamped
 /// `held`: the register rule, [`lww_wins`], over `(hlc, device, seq)`, with
 /// the stream breaking a tie between two ops one device made in two streams.
-/// So a register keeps the greatest full [`Stamp`], the same order the legacy
-/// floor is compared in (`project::superseded`), and a register written at or
+/// So an entry keeps the greatest full [`Stamp`], the same order the legacy
+/// floor is compared in (`project::superseded`), and an entry written at or
 /// above the floor is never read as below it. An equal stamp is the same op
 /// folded again, and replaces itself with the same value.
 fn replaces(at: Stamp, held: Stamp) -> bool {
@@ -38,13 +39,22 @@ fn replaces(at: Stamp, held: Stamp) -> bool {
 
 // ---- CBOR helpers ----
 
-pub(super) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
+pub(in crate::engine) fn enc(v: &Value) -> rusqlite::Result<Vec<u8>> {
     sunrise_cbor::encode_canonical(v)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
 
-pub(super) fn dec(bytes: &[u8]) -> Value {
-    ciborium::de::from_reader(bytes).unwrap_or(Value::Null)
+/// A stored field value, read under `sunrise_cbor::MAX_DOC_DEPTH`.
+///
+/// A value an applied op wrote is shallower than the op by the levels the op
+/// wraps it in, so the bound refuses none of them. It does hold a value a
+/// joined snapshot carried to the same bound an op is held to.
+///
+/// It never fails: bytes that do not decode, including a value nested past
+/// the bound, read as [`Value::Null`], indistinguishable from a stored null.
+pub(in crate::engine) fn dec(bytes: &[u8]) -> Value {
+    sunrise_cbor::decode_bounded(&mut &bytes[..], sunrise_cbor::MAX_DOC_DEPTH)
+        .unwrap_or(Value::Null)
 }
 
 // ---- state I/O ----
@@ -63,8 +73,6 @@ pub(super) struct Meta {
     pub(super) patch_ms: Option<u64>,
     /// The greatest stamp of any op applied: the row's stamp.
     pub(super) head: Stamp,
-    /// The row stamp this merge last wrote or folded.
-    pub(super) row: Option<(Hlc, [u8; 16], u64)>,
 }
 
 impl Meta {
@@ -75,7 +83,6 @@ impl Meta {
             legacy: None,
             patch_ms: None,
             head: at,
-            row: None,
         }
     }
 
@@ -96,7 +103,7 @@ pub(super) fn hlc_of(ms: i64, logical: i64) -> Hlc {
     }
 }
 
-pub(super) fn stamp_cols(
+pub(in crate::engine) fn stamp_cols(
     ms: Option<i64>,
     logical: Option<i64>,
     device: Option<Vec<u8>>,
@@ -117,24 +124,10 @@ pub(super) fn read_meta(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result
                 create_hlc_ms, create_hlc_logical, create_device, create_seq, create_stream,
                 legacy_hlc_ms, legacy_hlc_logical, legacy_device, legacy_seq, legacy_stream,
                 patch_ms,
-                head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream,
-                row_hlc_ms, row_hlc_logical, row_device, row_seq
+                head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream
          FROM merge_entities WHERE entity_id = ?",
         params![&id[..]],
         |r| {
-            let row = match (
-                r.get::<_, Option<i64>>(17)?,
-                r.get::<_, Option<i64>>(18)?,
-                r.get::<_, Option<Vec<u8>>>(19)?,
-                r.get::<_, Option<i64>>(20)?,
-            ) {
-                (Some(ms), Some(logical), Some(device), Some(seq)) => Some((
-                    hlc_of(ms, logical),
-                    blob16(&device),
-                    u64::try_from(seq.max(0)).unwrap_or(0),
-                )),
-                _ => None,
-            };
             Ok(Meta {
                 created: r.get::<_, i64>(0)? != 0,
                 create: stamp_cols(r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?),
@@ -149,7 +142,6 @@ pub(super) fn read_meta(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result
                         seq: 0,
                         stream: [0u8; 16],
                     }),
-                row,
             })
         },
     )
@@ -186,23 +178,15 @@ pub(super) fn write_meta(
 ) -> rusqlite::Result<()> {
     let c = split(m.create);
     let l = split(m.legacy);
-    let (row_ms, row_logical, row_device, row_seq) = match m.row {
-        None => (None, None, None, None),
-        Some((hlc, device, seq)) => (
-            Some(hlc.physical_ms),
-            Some(hlc.logical),
-            Some(device.to_vec()),
-            Some(seq),
-        ),
-    };
+    // `row_*` is no longer written (migration 0039): a row is the fold's
+    // output, so there is no other stamp for it to have.
     tx.execute(
         "INSERT INTO merge_entities
          (entity_id, kind, created,
           create_hlc_ms, create_hlc_logical, create_device, create_seq, create_stream,
           legacy_hlc_ms, legacy_hlc_logical, legacy_device, legacy_seq, legacy_stream,
-          patch_ms, head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream,
-          row_hlc_ms, row_hlc_logical, row_device, row_seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          patch_ms, head_hlc_ms, head_hlc_logical, head_device, head_seq, head_stream)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (entity_id) DO UPDATE SET
             created = excluded.created,
             create_hlc_ms = excluded.create_hlc_ms,
@@ -220,11 +204,7 @@ pub(super) fn write_meta(
             head_hlc_logical = excluded.head_hlc_logical,
             head_device = excluded.head_device,
             head_seq = excluded.head_seq,
-            head_stream = excluded.head_stream,
-            row_hlc_ms = excluded.row_hlc_ms,
-            row_hlc_logical = excluded.row_hlc_logical,
-            row_device = excluded.row_device,
-            row_seq = excluded.row_seq",
+            head_stream = excluded.head_stream",
         params![
             &id[..],
             tag,
@@ -245,64 +225,6 @@ pub(super) fn write_meta(
             &m.head.device[..],
             m.head.seq,
             &m.head.stream[..],
-            row_ms,
-            row_logical,
-            row_device,
-            row_seq,
-        ],
-    )?;
-    Ok(())
-}
-
-/// Write one register if `at` is not older than what it holds. An equal
-/// stamp is the same op folded again, and rewrites the same value.
-pub(super) fn write_register(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    field: &str,
-    value: Option<&Value>,
-    at: Stamp,
-    origin: &str,
-) -> rusqlite::Result<()> {
-    let held = tx
-        .query_row(
-            "SELECT hlc_ms, hlc_logical, device, seq, stream FROM merge_registers
-             WHERE entity_id = ? AND field = ?",
-            params![&id[..], field],
-            |r| {
-                Ok(stamp_cols(
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
-            },
-        )
-        .optional()?
-        .flatten();
-    if held.is_some_and(|h| !replaces(at, h)) {
-        return Ok(());
-    }
-    let bytes = value.map(enc).transpose()?;
-    tx.execute(
-        "INSERT INTO merge_registers
-         (entity_id, field, value, hlc_ms, hlc_logical, device, seq, stream, origin)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (entity_id, field) DO UPDATE SET
-            value = excluded.value, hlc_ms = excluded.hlc_ms,
-            hlc_logical = excluded.hlc_logical, device = excluded.device,
-            seq = excluded.seq, stream = excluded.stream, origin = excluded.origin",
-        params![
-            &id[..],
-            field,
-            bytes,
-            at.hlc.physical_ms,
-            at.hlc.logical,
-            &at.device[..],
-            at.seq,
-            &at.stream[..],
-            origin,
         ],
     )?;
     Ok(())
@@ -448,8 +370,9 @@ pub(super) fn add_delta(
 }
 
 /// Delete the state the legacy floor `floor` has made unreadable: every OR-set
-/// add stamped below it, the removes that named one of those adds, and every
-/// counter delta at or below it.
+/// add stamped below it, every counter delta at or below it, and every
+/// register write below it, winner or loser ([`Registers::raise_floor`],
+/// which the fold writes back when it flushes).
 ///
 /// Each legacy op re-adds every element it carries under its own tag, so
 /// without this a long-lived set (`Routine.streak_keys`) written by full-state
@@ -457,11 +380,22 @@ pub(super) fn add_delta(
 /// read them all. Nothing deleted here can be read again: the floor only
 /// rises, and [`add_element`] and [`add_delta`] refuse a redelivered write
 /// below it.
+///
+/// The removes that named a pruned add are kept. One is inert, since its add
+/// never comes back, but deleting it here would make the remove set depend on
+/// arrival order: a remove folded before the floor rose would be pruned with
+/// its add, and the same remove folded after would be stored, because nothing
+/// can tell an add the floor pruned from one that has not arrived yet. Kept,
+/// every replica, and every rebuild of one, holds the same removes. Only a
+/// `Patch` writes a remove, so the set grows with field ops rather than with
+/// full-state ones; bounding it is compaction's (ADR-0065 §8).
 pub(super) fn prune_below_floor(
     tx: &Transaction<'_>,
     id: &[u8; 16],
     floor: Stamp,
+    registers: &mut Registers,
 ) -> rusqlite::Result<()> {
+    registers.raise_floor(floor);
     let floor_params = params![
         &id[..],
         floor.hlc.physical_ms,
@@ -470,17 +404,6 @@ pub(super) fn prune_below_floor(
         floor.seq,
         &floor.stream[..],
     ];
-    tx.execute(
-        "DELETE FROM merge_orset_removes AS r
-         WHERE r.entity_id = ?1 AND EXISTS (
-            SELECT 1 FROM merge_orset_adds a
-            WHERE a.entity_id = r.entity_id AND a.field = r.field
-              AND a.element = r.element AND a.tag_stream = r.tag_stream
-              AND a.tag_device = r.tag_device AND a.tag_seq = r.tag_seq
-              AND (a.hlc_ms, a.hlc_logical, a.tag_device, a.tag_seq, a.tag_stream)
-                  < (?2, ?3, ?4, ?5, ?6))",
-        floor_params,
-    )?;
     tx.execute(
         "DELETE FROM merge_orset_adds
          WHERE entity_id = ?1
@@ -494,4 +417,54 @@ pub(super) fn prune_below_floor(
         floor_params,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// `n` one-element arrays around the integer 1: `n` levels deep.
+    fn nest(n: usize) -> Value {
+        let mut v = Value::Integer(1.into());
+        for _ in 0..n {
+            v = Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn a_stored_value_reads_back_as_written() {
+        let v = Value::Map(vec![(Value::Text("k".into()), nest(3))]);
+        assert_eq!(dec(&enc(&v).unwrap()), v);
+        assert_eq!(dec(&enc(&Value::Null).unwrap()), Value::Null);
+    }
+
+    /// The fallback the doc names: bytes that do not decode read as a stored
+    /// null, never as an error.
+    #[test]
+    fn bytes_that_do_not_decode_read_as_null() {
+        let mut truncated = enc(&Value::Text("a field".into())).unwrap();
+        truncated.pop();
+        for bytes in [&[][..], &[0xff, 0x00], &[0x1c], &truncated[..]] {
+            assert_eq!(dec(bytes), Value::Null, "{bytes:02x?}");
+        }
+    }
+
+    /// A value nested to the bound decodes; one level past it reads as null.
+    #[test]
+    fn a_value_nested_past_the_document_depth_reads_as_null() {
+        let at = nest(sunrise_cbor::MAX_DOC_DEPTH);
+        assert_eq!(dec(&enc(&at).unwrap()), at);
+        let past = enc(&nest(sunrise_cbor::MAX_DOC_DEPTH + 1)).unwrap();
+        assert_eq!(dec(&past), Value::Null);
+    }
+
+    proptest! {
+        /// `dec` is total: any bytes at all yield a value, and no input panics.
+        #[test]
+        fn dec_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = dec(&bytes);
+        }
+    }
 }

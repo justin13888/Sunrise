@@ -147,4 +147,50 @@ mod tests {
         store.delete_all(&blob_id).unwrap();
         assert!(store.get_chunk(&blob_id, 0).unwrap().is_none());
     }
+
+    #[test]
+    fn delete_all_leaves_a_sibling_under_the_same_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path()).unwrap();
+        let doomed = [0x5au8; 16];
+        let mut sibling = doomed;
+        sibling[15] = 0x00;
+        assert_eq!(
+            hex::encode(doomed)[..2],
+            hex::encode(sibling)[..2],
+            "both blobs live under one prefix directory"
+        );
+        store.put_chunk(&doomed, 0, b"doomed").unwrap();
+        store.put_chunk(&sibling, 0, b"sibling-0").unwrap();
+        store.put_chunk(&sibling, 1, b"sibling-1").unwrap();
+        store.delete_all(&doomed).unwrap();
+        assert!(store.get_chunk(&doomed, 0).unwrap().is_none());
+        assert_eq!(
+            store.get_chunk(&sibling, 0).unwrap().unwrap(),
+            b"sibling-0".to_vec()
+        );
+        assert_eq!(
+            store.get_chunk(&sibling, 1).unwrap().unwrap(),
+            b"sibling-1".to_vec()
+        );
+        assert!(store.has_all(&sibling, 2).unwrap());
+    }
+
+    #[test]
+    fn put_chunk_twice_overwrites_the_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path()).unwrap();
+        let blob_id = [2u8; 16];
+        store.put_chunk(&blob_id, 0, b"first, and longer").unwrap();
+        store.put_chunk(&blob_id, 0, b"second").unwrap();
+        assert_eq!(
+            store.get_chunk(&blob_id, 0).unwrap().unwrap(),
+            b"second".to_vec()
+        );
+        let leftovers: Vec<_> = fs::read_dir(store.chunk_path(&blob_id, 0).parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from("0.bin")]);
+    }
 }

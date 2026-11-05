@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by** [ADR-0071](./0071-calendar-read-write-through-synced-intents.md):
+decisions 1 and 4 and the rejections of two-way sync and series storage are
+withdrawn. The rest stands.
+
 **Amends** [ADR-0025](./0025-integration-account-entity.md). The
 `IntegrationAccount` entity stays, and so does its rationale for being an entity
 rather than a Stream field. Its decision that "secrets ride as ordinary entity
@@ -30,7 +34,7 @@ user would "log in once" and every paired device would receive the credential
 through sync. Nothing of it is built: there is no `IntegrationAccount` in
 `crates/`, `IntegrationKind` names only `GoogleCalendar` and `ICalendar`
 (`crates/sunrise-integrations/src/lib.rs#IntegrationKind`), and
-`crates/sunrise-integrations/src/gcal.rs` has no consumer. So the decision can
+`crates/sunrise-integrations/src/gcal/mod.rs` has no consumer. So the decision can
 be revisited at no migration cost, and four facts about real providers say it
 has to be.
 

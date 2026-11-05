@@ -11,10 +11,6 @@
 //! All algorithm choices are FROZEN for v1 (ADR-0004): Ed25519, X25519,
 //! XChaCha20-Poly1305, ChaCha20-Poly1305 (HPKE-internal), HPKE Base, Noise XX,
 //! BLAKE3 (with KDF mode), Argon2id, TLS 1.3.
-//!
-//! HPKE share grants and Noise XX pairing have type-level scaffolding here;
-//! their full implementations live in `sunrise-pairing` (Phase 9 in the
-//! roadmap). Within `sunrise-crypto` we own only the building blocks.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -23,7 +19,7 @@
 // targeted local relaxation on a defensive boundary that uses a lot of
 // CBOR `Value` matching, integer casts in CBOR conversion, and
 // auto-generated CDDL field names that don't survive doc_markdown's
-// backtick heuristic. To be tightened in Phase 17 (testing pass).
+// backtick heuristic.
 #![allow(
     clippy::manual_let_else,
     clippy::doc_markdown,
@@ -42,7 +38,9 @@ pub mod blob_chunk;
 pub mod device_cert;
 pub mod hpke_seal;
 pub mod identity;
+pub mod identity_chain;
 pub mod identity_transition;
+pub mod key_bundle;
 pub mod keys;
 pub mod merkle;
 pub mod op_envelope;
@@ -69,6 +67,9 @@ pub use hpke_seal::{
     key_envelope_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
 };
 pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityId};
+pub use identity_chain::{
+    CarryWalk, ChainLink, IdentityChain, IdentityChainError, IDENTITY_CHAIN_FORMAT_V,
+};
 // `body_hash` is deliberately not re-exported at the crate root: `device_cert`
 // hashes a body too, and `sunrise_crypto::body_hash` would name neither. It is
 // reachable as `identity_transition::body_hash`.
@@ -76,6 +77,11 @@ pub use identity_transition::{
     roster_digest, shares_digest, sign_identity_transition, verify_identity_transition,
     verify_successor_signature, IdentityTransitionBody, IdentityTransitionError,
     IdentityTransitionSigs, DEVICE_SHARE_LEN, IDENTITY_SHARE_LEN,
+};
+pub use key_bundle::{
+    decode_key_bundle, manifest_covers, manifest_digest, manifest_of, seal_key_bundle, BundledKey,
+    KeyBundle, KeyBundleError, KeyBundleHeader, ManifestEntry, VerifiedKeyBundle,
+    KEY_BUNDLE_FORMAT_V,
 };
 pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,
@@ -91,7 +97,8 @@ pub use op_envelope::{
     OpEnvelopeError, MAX_CHAIN_HEADS,
 };
 pub use recovery::{
-    seal_recovery_blob, unseal_recovery_blob, RecoveryError, RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN,
+    retired_check_matches, seal_recovery_blob, unseal_recovery_blob, RecoveryError,
+    RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN, RETIRED_CHECK_LEN,
 };
 pub use stream_key::{
     stream_key_id, unwrap_stream_key, wrap_stream_key, StreamKeyWrapError, STREAM_KEY_ID_LEN,

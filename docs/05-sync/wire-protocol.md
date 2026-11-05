@@ -6,20 +6,20 @@ status: accepted
 
 A binary, length-prefixed message framing over a reliable byte stream, implemented in `crates/sunrise-wire-protocol/`.
 
-> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the transport under
-> this protocol, and the move has landed.** Sync is an SSE stream downstream and
-> typed `POST` operations upstream; the WebSocket this document was written
-> against is gone (see [`transports.md`](./transports.md)). The **payload types
-> and their canonical CBOR encoding survived unchanged** — `Hello::negotiate`,
-> the capability bitfield and the frozen fixtures all carried over. The frame
-> header below did not survive on the wire: magic, versions, `msg_kind`, flags
-> and length are subsumed by HTTP framing and SSE event types. It survives
-> *inside the client*, because `SseTransport` is the seam — the sync driver
-> still hands it whole encoded frames and still reads whole encoded frames back
-> — and it survives on the relay's own storage, which appends the rebuilt
-> `OpBatch` frame verbatim and streams those same bytes out again. So the
-> layout below still describes real bytes; it no longer describes a wire
-> protocol two peers speak to each other.
+> **Sync is an SSE stream downstream and typed `POST` operations upstream
+> ([ADR-0023](../11-adr/0023-sse-sync-transport.md), [`transports.md`](./transports.md)).**
+>
+> Peers share the **payload types and their canonical CBOR encoding**, along
+> with `Hello::negotiate`, the capability bitfield and the frozen fixtures that
+> pin them.
+>
+> The frame header below is not on the wire between them: magic, versions,
+> `msg_kind`, flags and length are carried by HTTP framing and SSE event types.
+> It exists *inside the client*, because `SseTransport` is the seam — the sync
+> driver hands it whole encoded frames and reads whole encoded frames back — and
+> in the relay's own storage, which appends the rebuilt `OpBatch` frame verbatim
+> and streams those same bytes out again. So the layout below describes real
+> bytes, not a wire protocol two peers speak to each other.
 
 ## Frame layout
 
@@ -40,9 +40,9 @@ Every frame begins with the protocol-versioning magic prefix per [`../10-cross-c
 **`sunrise_cbor::{encode_canonical, decode_canonical}` MUST be the only
 encoder/decoder for wire payloads** — not `sunrise_crypto::canonical_cbor`,
 which does not exist. The pair is applied by the `canonical_codec!` macro in
-`crates/sunrise-wire-protocol/src/payloads.rs`, which gives nine payload types
+`crates/sunrise-wire-protocol/src/payloads.rs`, which gives ten payload types
 an `encode`/`decode` pair: `OpBatchPayload`, `AckPayload`, `NackPayload`,
-`SubscribePayload`, `CaughtUpPayload`, `ErrorPayload`, `ClosePayload`,
+`SubscribePayload`, `CaughtUpPayload`, `BacklogPayload`, `ErrorPayload`, `ClosePayload`,
 `RefreshTokenPayload` and `RefreshTokenAckPayload`. `decode_canonical` rejects
 non-canonical input and trailing garbage, which is what makes
 `CRYPTO_NON_CANONICAL_CBOR` enforceable rather than aspirational.
@@ -53,7 +53,7 @@ The rule covers **all** payloads including the handshake. `Hello` and
 client-side: `crates/sunrise-core/src/sync_driver.rs` encodes the `Hello` frame
 with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
 `ciborium::de::from_reader` and writes the `HelloAck` frame the same way
-(`crates/sunrise-sync/src/sse.rs:839-889#send_frame`). Both bypass the canonicality check
+(`crates/sunrise-sync/src/sse/session.rs#send_frame`). Both bypass the canonicality check
 every other payload gets. The server sees neither frame — `POST /sync/session`
 takes a typed body and rebuilds a `Hello` from its fields
 (`crates/sunrise-server/src/api/sync/credential.rs`) — so the handshake's two hops through
@@ -145,7 +145,7 @@ KIND  NAME                  DIRECTION   PAYLOAD CDDL TAG
 0x04  Ack                   S → C       Ack
 0x05  Nack                  S → C       Nack
 0x06  Subscribe             C → S       Subscribe
-0x07  StreamUpdate          S → C       CaughtUp (see below)
+0x07  StreamUpdate          S → C       CaughtUp, Backlog (see below)
 0x08  SnapshotReq           C → S       SnapshotReq
 0x09  SnapshotResp          S → C       SnapshotResp
 0x0A  PresenceBeacon        C → S       PresenceBeacon
@@ -171,8 +171,8 @@ load-bearing for anyone reading the code:
 | Kind | Status |
 |---|---|
 | `Hello`, `HelloAck`, `OpBatch`, `Ack`, `Subscribe`, `Ping`, `Pong`, `Error`, `Close`, `RefreshToken`, `RefreshTokenAck` | Handled end to end. |
-| `StreamUpdate` (`0x07`) | Carries `CaughtUpPayload`, **not** an `OpBatch`. The relay forwards live op frames **verbatim**, so they keep `msg_kind = OpBatch`; `StreamUpdate` is otherwise unused, which is why `CaughtUp` reuses it rather than claiming a fresh discriminator in a fully-allocated kind space. |
-| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. The client half lands with ADR-0023's transport move. |
+| `StreamUpdate` (`0x07`) | Carries `CaughtUpPayload` or `BacklogPayload`, **not** an `OpBatch`. The relay forwards live op frames **verbatim**, so they keep `msg_kind = OpBatch`; `StreamUpdate` is otherwise unused, which is why `CaughtUp` reuses it rather than claiming a fresh discriminator in a fully-allocated kind space. `BacklogPayload` (`{ ops, stream_id }`, #459) shares it and is told apart by shape: a reader decodes it first, since a `CaughtUpPayload` reader ignores the `ops` key and would accept it. |
+| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. |
 | `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | Defined, unimplemented, and now **refused with a typed `Error`** rather than dropped. Dispatch is exhaustive over `MsgKind`: a client-sent server-to-client kind ends the session, and a defined-but-unserved kind is answered with `SYNC_OP_INVALID`. Adding a kind to `MsgKind` no longer compiles until it is placed on one side of that line. |
 
 **The contract, now implemented.** Dispatch MUST be exhaustive over
@@ -301,7 +301,7 @@ is accepted — the fold order lost its clamp under
 [ADR-0027](../11-adr/0027-v1-self-host-first.md) precisely because a relay input
 into it was a hole (see
 [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
-§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse.rs:962#send_frame`
+§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse/session.rs:160#send_frame`
 parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
@@ -338,7 +338,9 @@ GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
   ← data: {"kind":"gap", …}        only where the cursor predates retention,
                                    always before that stream's replay
   ← data: {"kind":"ops", …}        retained frames, replayed verbatim, each
-                                   event carrying `id: <relay_frames.id>`
+                                   event carrying `id: <relay_frames.id>`;
+                                   after the first, {"kind":"backlog", …}
+                                   with the ops the rest will send
   ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
   ← data: {"kind":"ops", …}        live frames as peers publish them, no `id:`
   ← : sunrise                      sent after 15 s of silence, not on a
@@ -406,7 +408,7 @@ a reconnect that presents the last id it saw resumes after that frame instead of
 replaying the retained backlog from the start. When it does, the cursors stop
 selecting anything: `relay_replay_after` sends every frame with
 `id > after_id` and never consults `covered(&heads, cursors)` at all
-(`crates/sunrise-server/src/relay_log.rs`, whose own rustdoc states the
+(`crates/sunrise-server/src/relay_log/replay.rs`, whose own rustdoc states the
 precedence). Only `after_id == 0` — a first connection — replays what the
 cursors do not cover.
 
@@ -438,7 +440,7 @@ stream, so a client that has not been served one has nothing to resume from.
 
 The order this enforces is what `SseTransport` already does: it clears
 `last_event_id` whenever it sends `Subscribe`
-(`crates/sunrise-sync/src/sse.rs`). What changed is that the invariant is now a
+(`crates/sunrise-sync/src/sse/session.rs`). What changed is that the invariant is now a
 property of the relay rather than of one client's source. A third-party client
 that keeps the id across a recovery `Subscribe` used to silently under-receive;
 it now gets a code it can act on.
@@ -455,6 +457,21 @@ Replay and live fan-out carry the **same** frame bytes: the relay republishes
 retained and live frames byte-for-byte, so a client cannot tell them apart from
 the frame and does not need to. `caught_up` is the only boundary marker, and it
 is per-stream.
+
+`backlog` (#459) is a count, not a boundary: `{ stream_id, ops }`, the ops in
+the retained frames this stream open will still replay after the first one,
+summed from the frames the relay has already read, so it follows the cursors
+and the resume id exactly. It is what lets a restore show "n of N". It follows
+the first frame rather than leading the replay so it never delays one: a
+client that reopens its stream faster than one slow frame arrives (every
+`Subscribe` reopens it) still makes progress on each reopen, which a leading
+statement would starve. A stream with nothing to replay gets none, since zero
+adds nothing to a total. It is additive: a client that predates
+it drops an event kind it does not know (`SseTransport::frame_for`), and a
+client facing a relay that predates it has no total, only a count. The reference
+driver keeps it per stream in `SyncStatus::replay_remaining`, replaces it each
+time the relay states it again (every `Subscribe` reopens the stream), counts it
+down as replayed batches arrive, and zeroes it at `caught_up`.
 
 ## Cursors
 
@@ -484,23 +501,40 @@ Filtering is one-sided: a frame is skipped only when *every* device head in it i
 Replay is served from the relay's **durable** op log, bounded per channel by age (30 days) and size (256 MiB) — see [`../06-server/relay-and-blob-storage.md`](../06-server/relay-and-blob-storage.md). The in-memory ring in front of it is live fan-out only, so passing *its* bound costs nothing and a relay restart loses no history. When durable retention deletes a frame, the channel raises an `evicted_through` watermark for each device it carried. A subscriber whose cursor for such a device is **below** that watermark is missing ops the relay can no longer produce, and receives:
 
 ```
-Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…" }
+Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…", stream_id }
 ```
 
-before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client resyncs from a peer.
+before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client catches the stream up from its snapshot record instead (below).
+
+`stream_id` is optional on `ErrorPayload` (key 9 in canonical order, after
+`code` and `reason`): written only when set, and read as absent when missing, so
+an `Error` that names no stream is the payload it always was. The relay's SSE
+`gap` event already names the stream, and the SSE transport carries it into the
+frame the driver reads.
 
 Being caught up past everything evicted is **not** a gap — otherwise every healthy long-lived session would be told to resync each time retention turned over. Watermarks are durable, so a restart no longer resets them: a fresh relay reports exactly the gaps that are real. (While they lived only in memory, a restart cleared frames and watermarks together and the relay reported *no* gap at all — telling a returning device it was complete when it was not.)
 
-A client that receives this must not treat the following `CaughtUp` as completeness. The reference client latches a degraded sync state for the rest of the session and never reports `Live`, because no retry on that connection can produce the missing ops.
+A client that receives this must not treat the following `CaughtUp` as completeness. The reference client first fetches the stream's pinned snapshot record and applies it, then re-subscribes from the cursors it set; only if no record covers the gap does it latch a degraded sync state for the rest of the session and never report `Live`, because no retry on that connection can produce the missing ops.
 
-## Backfill from snapshot — target state
+## Backfill from snapshot
 
-*Not implemented.* `SnapshotReq`/`SnapshotResp` have discriminators and nothing
-else — no payload types, no handler — and a device whose cursor has fallen below
-the relay's `evicted_through` watermark gets `SYNC_CURSOR_GAP` and resyncs from
-a peer instead (see [Cursor gaps](#cursor-gaps)). The intent: if a device's
-cursor is older than the most recent snapshot for a Stream, the server sends
-`SnapshotResp` first, then ops since the snapshot.
+Built, and not over the frame protocol
+([ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md)). A
+stream's snapshot record outgrows a 4 MiB frame past a few thousand tasks, so the
+compactor uploads it as a blob and pins it with
+`PUT /api/v1/snapshots/{stream_id}`, and a device told `SYNC_CURSOR_GAP` reads
+it with `GET /api/v1/snapshots/{stream_id}` and `GET /api/v1/blobs/{blob_id}`
+([`../06-server/api.md`](../06-server/api.md) §Stream snapshots;
+[`../04-storage/compaction.md`](../04-storage/compaction.md) §Transport). Applying
+it raises the stream's cursors to the record's frontier, and the re-subscribe
+that follows replays only what lies above it. `SnapshotReq`/`SnapshotResp`
+(`0x08`/`0x09`) keep their discriminators and nothing else.
+
+A record sealed under a key the device does not hold waits. Where the device
+holds the identity's `ID_D_priv` (one restored from the recovery code), it
+reads the account's key bundle with `GET /api/v1/accounts/me/key_bundle` and
+the blob it names, absorbs the keys, and retries the record
+([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)).
 
 ## Atomic batches
 

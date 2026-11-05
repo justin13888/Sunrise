@@ -95,7 +95,10 @@ fuzz_target!(|data: &[u8]| {
         let Ok(tz) = TimeZone::get(zone) else {
             continue;
         };
-        let Ok(occurrences) = expand(&rule, anchor, &tz, (anchor, window_end)) else {
+        // `expand` takes the anchor as civil time in `tz`; the window and the
+        // occurrences stay instants.
+        let civil_anchor = anchor.to_zoned(tz.clone()).datetime();
+        let Ok(occurrences) = expand(&rule, civil_anchor, &tz, (anchor, window_end)) else {
             continue;
         };
         for occ in &occurrences {

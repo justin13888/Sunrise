@@ -8,7 +8,7 @@ The gate is a regex over YAML, not a YAML parser, because no parser ships with
 CPython and the runners install nothing extra. That buys speed and costs
 precision, and the cases below are where the precision has to be bought back.
 
-Three failure modes are specific enough to name:
+These failure modes are specific enough to name:
 
   1. **Reading a shell line as a step.** `run: |` blocks in this repository
      contain hundreds of lines of shell, and any one of them could contain the
@@ -18,7 +18,7 @@ Three failure modes are specific enough to name:
   2. **Reading a job-level `permissions:` as a top-level one.** These differ
      only by indentation. `release.yml` carries both, so a gate that confused
      them would pass a workflow whose token scope was declared for one job and
-     left to a settings page for the other six.
+     left to a settings page for the others.
 
   3. **Reading only the spelling this repository happens to use.** `uses:`
      is a mapping key, and YAML will take it in a flow mapping, under a quoted

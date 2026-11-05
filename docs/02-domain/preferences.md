@@ -137,7 +137,7 @@ Types use the CDDL names from [`overview.md`](./overview.md) and
 | `week_start` | `Weekday` | `"SU"` | `vault` | week views, the planner, reviews |
 | `home_timezone` | IANA zone name, or absent | absent | `vault` | dual-zone display when travelling ([`time.md`](../10-cross-cutting/time.md) §7) |
 | `time_format` | `"locale"` / `"h12"` / `"h24"` | `"locale"` | `vault_overridable` | every time label |
-| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down. Not in the key table yet: [#338](https://github.com/justin13888/Sunrise/issues/338) adds it with its map entries. |
+| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down. Held as three maps of entries, `day_schedule.weekday.<Weekday>`, `day_schedule.month_day.<-1, 1..31>` and `day_schedule.date.<civil-date>`, each its own register. |
 
 ### Tasks, triage and reviews
 
@@ -230,15 +230,37 @@ overlay, the bootstrap store, `Command::SetPreference`,
 
 Not built yet:
 
-- **No client reads or writes through it.** The Apple `AppSettings` and
-  `NotificationPreferences` still hold their values in `UserDefaults`, and the
-  one-time migration out of it has not run. That is
+- **Clients read and write only the two attachment keys through it.** Apple's
+  Settings → Storage writes `attachments.cache_limit_bytes` and
+  `attachments.auto_fetch_on_cellular` to this device's overlay
+  ([#346](https://github.com/justin13888/Sunrise/issues/346)). The Apple
+  `AppSettings` and `NotificationPreferences` still hold their values in
+  `UserDefaults`, and the one-time migration out of it has not run. That is
   [#489](https://github.com/justin13888/Sunrise/issues/489).
-- **No core reader consumes a key yet.** `week_start` reaches the week views
-  with [#336](https://github.com/justin13888/Sunrise/issues/336), the
-  notification keys reach the reminder planner with
-  [#347](https://github.com/justin13888/Sunrise/issues/347), and `day_schedule`
-  is [#338](https://github.com/justin13888/Sunrise/issues/338).
+- **The notification keys reach the client core's planner, not the Apple
+  client's.** `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`)
+  hands `core.reminder_plan` the settings `reminder_policy`
+  (`crates/sunrise-client-core/src/reminders/policy.rs`) builds from
+  `notifications.task_reminder.lead_s`, `notifications.quiet_hours.*` and
+  `notifications.primary_device`, and only plans when
+  `notifications.enabled` is on. `catalog_policy` (`reminders/catalog.rs`) reads
+  the catalog's toggles, leads and offsets. Two things wait on
+  [#347](https://github.com/justin13888/Sunrise/issues/347): the Apple client
+  does not call `schedule_notifications` and plans from
+  `NotificationPreferences`, and `notifications.block_start.lead_s` has no
+  reader, so the block lead is still `BLOCK_DEFAULT_LEAD_S`
+  (`crates/sunrise-domain/src/notify/policy.rs`). One key
+  has an engine reader: `notifications.timezone_changed.enabled`, read
+  when a zone change is assessed
+  (`crates/sunrise-core/src/engine/query.rs#time_zone_impact`). The
+  attachment cache resolves the two attachment keys when it enforces its limit
+  and when the fetch drain decides what to fetch on cellular
+  (`crates/sunrise-core/src/blob_cache.rs`). The engine reads `week_start` for
+  the week's blocks, the review's week grid and search's date spans
+  (`crates/sunrise-core/src/engine/block.rs`, `engine/review.rs`,
+  `engine/search.rs`). `day_schedule` is read by every planner-day view and by the wind-down plan
+  ([#338](https://github.com/justin13888/Sunrise/issues/338),
+  [`day-schedule.md`](./day-schedule.md) §In the tree).
 - **No cross-version run covers the entity.** The baseline build the
   cross-version harness drives ([ADR-0057](../11-adr/0057-cross-version-merge-harness.md))
   predates `prf_`, and a vault write is gated until every device supports it,

@@ -157,6 +157,56 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "preferences",
         sql: include_str!("../migrations/0037_preferences.sql"),
     },
+    Migration {
+        id: 38,
+        name: "attachment_thumbnails",
+        sql: include_str!("../migrations/0038_attachment_thumbnails.sql"),
+    },
+    Migration {
+        id: 39,
+        name: "entity_versions",
+        sql: include_str!("../migrations/0039_entity_versions.sql"),
+    },
+    Migration {
+        id: 40,
+        name: "search_indexes",
+        sql: include_str!("../migrations/0040_search_indexes.sql"),
+    },
+    Migration {
+        id: 41,
+        name: "civil_times",
+        sql: include_str!("../migrations/0041_civil_times.sql"),
+    },
+    Migration {
+        id: 42,
+        name: "task_sort_order",
+        sql: include_str!("../migrations/0042_task_sort_order.sql"),
+    },
+    Migration {
+        id: 43,
+        name: "saved_views",
+        sql: include_str!("../migrations/0043_saved_views.sql"),
+    },
+    Migration {
+        id: 44,
+        name: "optional_stream",
+        sql: include_str!("../migrations/0044_optional_stream.sql"),
+    },
+    Migration {
+        id: 45,
+        name: "task_deadlines",
+        sql: include_str!("../migrations/0045_task_deadlines.sql"),
+    },
+    Migration {
+        id: 46,
+        name: "task_triage",
+        sql: include_str!("../migrations/0046_task_triage.sql"),
+    },
+    Migration {
+        id: 47,
+        name: "routine_series",
+        sql: include_str!("../migrations/0047_routine_series.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

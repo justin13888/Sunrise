@@ -31,7 +31,9 @@ pub const DEFAULT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// At `max_bytes` the current file is renamed to `<name>.1` (replacing any
 /// previous `.1`) and a fresh file is opened. Two generations is the whole
 /// retention policy: enough to survive a roll mid-incident, bounded at
-/// `2 × max_bytes` on disk no matter how loud the process gets.
+/// `2 × max_bytes` plus one record per generation on disk no matter how loud
+/// the process gets. The roll is checked before each write, so the record
+/// that crosses `max_bytes` lands whole in the generation it started in.
 #[derive(Debug, Clone)]
 pub struct RollingFile {
     inner: Arc<Mutex<RollingState>>,

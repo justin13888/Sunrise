@@ -12,7 +12,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 
 - Pure-function tests in `sunrise-core` for parsers, RRULE expansion, LWW merge, crypto envelopes.
 - Run on `cargo test`; <30 seconds in CI.
-- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::lww_wins` and the materialization it guards). The 90% figure previously named "CRDT modules", which do not exist — `crates/sunrise-crdt` was deleted by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), so that half of the gate applied to nothing. No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
+- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::merge` and the materialization it drives). No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
 
 ### 2. Property tests (thinner, deep)
 
@@ -28,7 +28,8 @@ persistence file, which every later run replays before generating anything new.
 Those files are **committed**: a shrunken counterexample is a test input the
 suite discovered by itself, and it is the one output of a property test that
 cannot be regenerated on demand.
-`crates/sunrise-core/proptest-regressions/engine/tests.txt` is the standing
+`crates/sunrise-core/proptest-regressions/tests/apply_remote.txt` and
+`crates/sunrise-core/proptest-regressions/tests/search.txt` are the standing
 example — two cases from the control-op ordering bug, still replayed on every
 `cargo test`.
 
@@ -73,6 +74,13 @@ replaced with a gate everywhere else.
     ```
 
   The chaos harness announces through the same function, so one grep over a CI log finds the reproduction for either half of the suite. This does not remove the need for the persistence file: a seed reproduces the run, the file replays the minimal case. Closed [#119](https://github.com/justin13888/Sunrise/issues/119).
+- **Case count**: a block that names its count takes it from `sunrise_test_seed::proptest_cases`, never from a literal, and the argument is the count CI runs:
+
+    ```rust
+    cases: sunrise_test_seed::proptest_cases(2048),
+    ```
+
+  Precedence is proptest's own `PROPTEST_CASES` first, when it is set to a number; then `SUNRISE_PROPTEST_DEPTH=full`, which runs the named count; otherwise the count is capped at `LOCAL_PROPTEST_CASES` (48), so a local `cargo test` pays for 48 cases where CI pays for 2048. `.github/workflows/ci.yml` sets `SUNRISE_PROPTEST_DEPTH: full` workflow-wide, so CI runs every block at exactly its named count. A value other than `local` or `full` panics rather than quietly running the local count. A block with no count of its own takes proptest's default (256, and `PROPTEST_CASES` already moves it), so it is the same locally and in CI. To reproduce CI's depth locally, export `SUNRISE_PROPTEST_DEPTH=full`.
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
 - **Assertion**: for every permutation of the same op set across N simulated devices, the final state is byte-identical (canonical CBOR comparison).
 
@@ -83,6 +91,122 @@ replaced with a gate everywhere else.
   - Sharing accept / edit / revoke.
   - Migration from old schema fixture.
   - Recovery code restore.
+
+#### The CLI end to end
+
+The in-process scenarios above share one address space; these do not.
+`crates/sunrise-e2e/tests/cli_two_vaults.rs`,
+`crates/sunrise-e2e/tests/cli_traveller.rs`,
+`crates/sunrise-e2e/tests/cli_day_schedule.rs`,
+`crates/sunrise-e2e/tests/cli_pair_relay.rs`,
+`crates/sunrise-e2e/tests/cli_snapshot_catchup.rs`,
+`crates/sunrise-e2e/tests/cli_recover_trimmed.rs`,
+`crates/sunrise-e2e/tests/cli_recover_rotated.rs`,
+`crates/sunrise-e2e/tests/cli_lateness.rs`,
+`crates/sunrise-e2e/tests/cli_notifications.rs`,
+`crates/sunrise-e2e/tests/cli_optional_stream.rs`,
+`crates/sunrise-e2e/tests/cli_routine_series.rs`,
+`crates/sunrise-e2e/tests/cli_settle_outage.rs` and
+`crates/sunrise-e2e/tests/cli_triage.rs` boot the real relay and drive two or more
+vaults with the **real `sunrise` binary**, one process per command, through the
+harness in `crates/sunrise-e2e/src/cli.rs`. It is how stabilisation is shown on
+a host with no Apple tooling: everything a user at two terminals does, with
+nothing shared between the devices but the relay.
+
+- **Setup.** Device A is published with `sunrise bootstrap` (the harness writes
+  the stored sign-in `sunrise login` would leave; the self-host relay accepts
+  any bearer), and device B joins with `sunrise recover` from the 24 words A
+  printed. Both then `sync --once` until level.
+- **Concurrent edits** to different fields of one task, made while apart:
+  both devices agree, and both edits survive. Both CLIs are this build and
+  have advertised `core.field_ops`, so their vault requires it and every
+  command writes a `Patch` of the fields it changed (ADR-0065 §7).
+- **Concurrent defers** converge on one plan, which keeps its floating wall
+  clock and kind.
+- **Delete on one device, edit on the other**: the delete wins on both, and
+  both report the edit as made while deleted, a conflict on `deleted`
+  (ADR-0065 §3). `sunrise restore` brings the task back on both, with the
+  edit, and clears the conflict.
+- **Concurrent retitles**: one title on both, and both report one `tracked`
+  conflict on `title` whose loser is the other title.
+  `sunrise conflicts resolve <id> title --pick <loser>` makes the loser the
+  title on both and empties the list.
+- **The traveller**: A writes in `America/New_York` (`SUNRISE_TZ`), then reads
+  and edits in `Asia/Kolkata`. A floating 09:00 stays 09:00 at another instant,
+  a zoned block keeps its own zone, a read or a zone change rewrites nothing
+  (`updated_at_ms` does not move), and B reads the same stored values in UTC.
+  The zone precedence (`--tz`, `SUNRISE_TZ`, `sunrise tz set`, the OS) and the
+  refusal of an unknown zone are asserted through the binary too.
+- **Pairing over the relay** (`cli_pair_relay.rs`): the path the Apple apps
+  pair by. B has no vault; `sunrise pair join` on it prints a code,
+  `sunrise pair add` on A takes it, both print the same six digits and each
+  confirms them, B registers with the relay, and a task written on either
+  device then shows on the other after sync. Digits declined on either side —
+  typed wrong at A's prompt, or named wrong with `--confirm-sas` on B — end
+  the pairing on both: no vault on B and one device on the account. With no
+  relay or no sign-in the command says so, and which way still works.
+- **Catching up past the relay's retention** (`cli_snapshot_catchup.rs`,
+  ADR-0068): the relay's durable log keeps a few frames per channel. A writes
+  its history over three syncs; the first pins the inbox's snapshot record,
+  the second pushes the frame it covers out of the relay. B, paired over the
+  relay afterwards, is told the inbox has a gap on its first `sync --once`,
+  catches it up from the pinned record, takes the rest from the relay, and
+  reports `live` with every task rather than ending `Degraded`.
+- **Recovering from the code past the relay's retention**
+  (`cli_recover_trimmed.rs`, ADR-0069, #580): the relay keeps thirty seconds
+  of each channel. A writes its history; C pairs, revokes A, and so rotates
+  every stream past the genesis; C's last write, after the window, leaves the
+  relay holding no vault-meta frame that carries a key. B runs `sunrise
+  recover` with A's 24 words, takes its keys from the account's key bundle,
+  applies the snapshot records sealed under them, and reports `live` holding
+  every task. With the bundle route removed it ends `Degraded` holding none.
+- **Recovering across an identity rotation** (`cli_recover_rotated.rs`,
+  ADR-0070, #583): A writes, runs `identity rotate --keep-code`, writes again,
+  and syncs once; a write past the relay's thirty-second window leaves no frame
+  that carried the rotation. B recovers with the words A was given before the
+  rotation, walks the identity chain record to the identity in force, takes the
+  keys from the bundle sealed to it, and reports `live` holding every task as a
+  current device. Then a plain `identity rotate` on another account: the new
+  words recover a current device holding every task, the old words fail with
+  "this recovery code was retired on …" and write no vault, and a stranger's
+  words still fail as a code.
+
+Run them with `mise run e2e-cli`, which builds the binary first. The harness
+also builds it (`cargo build -p sunrise-cli --bin sunrise --features
+test-cheap-kdf`, a no-op when fresh) when `SUNRISE_CLI_BIN` does not name one,
+so `cargo test -p sunrise-e2e` never runs a stale binary. They read every
+result through `--json`, whose field names are the documented contract
+(`docs/07-clients/overview.md` §JSON output).
+
+#### The recovery KDF in tests
+
+The recovery blob's Argon2id runs at 64 MiB, t=3, p=1 in production
+(`docs/03-crypto/recovery.md` §Argon2id parameters), and every account a
+test creates seals one. Outside `sunrise-crypto` that cost buys nothing, so
+tests that are not about the KDF run it cheaply; inside `sunrise-crypto` it
+stays at production strength.
+
+- `sunrise-crypto`'s `test-cheap-kdf` feature swaps in 8 KiB, t=1, p=1. The
+  cheap set is compiled only where `debug_assertions` is on as well, so a
+  release build has the spec's parameters whatever features reach it, and
+  `crates/sunrise-crypto/tests/test_cheap_kdf.rs` fails the suite if the
+  normal dependency graph of a shipped package (`sunrise-server`,
+  `sunrise-cli`, `sunrise-core-bindings`, `sunrise-core-wasm`) enables it.
+- `sunrise-client-core`, `sunrise-cli` and `sunrise-e2e` enable it as a
+  dev-dependency. The `sunrise` binary the CLI scenarios spawn is built with
+  `sunrise-cli`'s `test-cheap-kdf`, so a blob crosses the process boundary
+  under one set. The Apple scenarios (`apple_*`) drive the bindings
+  in-process, so they share the set too; the cross-version baseline driver
+  carries no recovery blob.
+- `sunrise-crypto`'s unit tests use the spec's set with the feature on, a unit
+  test pins its values, and the frozen recovery-blob vector opens inside
+  `test_cheap_kdf::at_production_strength`. Because `cargo test --workspace`
+  unifies features, every crate's tests in that run use the cheap set, while
+  `cargo test -p <crate>` on a crate that does not enable it uses the spec's.
+- The blob names no parameters, so a blob sealed under one set opens only
+  under that set. A build with the feature reports one from the other set as
+  `RecoveryError::KdfParamsMismatch`, not as a wrong code; a build without it
+  cannot tell and reports a wrong code.
 
 ### 4. Per-platform UI tests (narrow)
 
@@ -173,6 +297,42 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
 - Static checks: any code path under `telemetry/` or `logging/` that calls `.expose()` on a `Plain<T>` fails the build.
 - Server-side: no log statement contains task IDs from a fixture vault (regex check on test logs).
 
+## Running the suite under nextest
+
+`mise run rust-test-nextest` runs the same tests as `mise run rust-test`
+(`--workspace --all-targets`) under
+[cargo-nextest](https://nexte.st/), and then the doc tests through
+`mise run rust-doctest`, because nextest cannot run doc tests. mise fetches the
+cargo-nextest version the task pins on its first run. It is opt-in:
+`mise run rust-test`, the pre-push hook and CI still run plain `cargo test`, and
+nothing they check reads `.config/nextest.toml`.
+
+What the profile in `.config/nextest.toml` changes:
+
+- **Per-test timeouts.** A test still running after 60 s is reported as `SLOW`,
+  and after eight such periods (8 min) it is killed and reported as a failure
+  that names it. `sunrise-e2e` tests are killed after five 120 s periods
+  (10 min), since one CLI step can wait up to 180 s (`WAIT` in
+  `crates/sunrise-e2e/src/cli.rs`). Some property tests are legitimately slow
+  under load (the slowest measured beside the e2e set took 159 s), so a `SLOW`
+  line alone is not a failure. Plain
+  `cargo test` has no per-test timeout: a scenario stuck in one of the
+  harness's waits holds the whole run until the wait gives up.
+- **At most four `sunrise-e2e` tests at once.** Each one boots a relay, and the
+  CLI scenarios spawn `sunrise` processes on top of it; running all of them
+  beside the unit tests is what loads a host. The rest of the suite keeps the
+  full thread count.
+- **No retries.** A timeout or a failure stays a failure. A retry would turn a
+  load-dependent flake such as #799 into a pass nobody sees.
+- **Every failure is reported.** `fail-fast` is off, so one failure does not
+  hide the rest of the run.
+
+nextest runs each test in a process of its own. A property test still prints
+its seed: `sunrise_test_seed::proptest_rng_seed` announces it on every call, so
+the captured output of each failing test carries the seed that reproduces it.
+Different tests in one run may now print different seeds; pin one with
+`SUNRISE_FUZZ_SEED` as usual.
+
 ## Test data
 
 - Synthetic vault generator that produces known-shape data (N tasks, N streams, recurring routines).
@@ -208,26 +368,31 @@ green.
 
 ### Scope
 
-Four crates: `sunrise-core`, `sunrise-crypto`, `sunrise-sync`, `sunrise-domain`.
-The scope is enforced by the `-p <crate>` in `mise.toml`'s `mutants` task and in
-`ci.yml`'s matrix, and nowhere else.
+Six crates: `sunrise-core`, `sunrise-crypto`, `sunrise-sync`, `sunrise-domain`,
+`sunrise-cbor`, `sunrise-id`. The last two are small wire-format crates — the
+canonical encoder, the HLC and the relay-side envelope header decoder; the
+Crockford codec — where a survivor is a protocol defect and the population is
+cheap. Widening past these six is a separate cost decision. The scope is
+enforced by the `-p <crate>` in `mise.toml`'s `mutants` task and in `ci.yml`'s
+matrix, and nowhere else.
 
-`.cargo/mutants.toml`'s `exclude_globs` names five crates it would be actively
+`.cargo/mutants.toml`'s `exclude_globs` names six crates it would be actively
 wrong to score, and those exclusions are reasoned rather than convenient — the
 UniFFI seam (`sunrise-core-bindings`) is half Swift and cannot be scored
 honestly from one side; `sunrise-bench` is benchmarks, not correctness code;
 `sunrise-e2e` is a harness, and mutating a harness measures the harness's own
 tests; `sunrise-relay-client` is generated by `build.rs`;
 `sunrise-crypto-test-vectors` is frozen literals, where flipping a constant
-tests the test.
+tests the test; `sunrise-test-seed` is test scaffolding that decides which cases
+a property test draws.
 
-That is five of twenty-three, which leaves fourteen crates neither scoped nor
+That is six of twenty-six, which leaves fourteen crates neither scoped nor
 excluded — `sunrise-server`, `sunrise-storage`, `sunrise-auth` and the rest.
 The config does not keep them out; the `-p` does. A bare `cargo mutants` with
 no `-p` mutates all fourteen, takes far longer than the numbers below, and
 produces a run the gate fails with "no floor recorded" for each of them. Run it
 through `mise run mutants <crate>`. That task does not check the name against
-the four either — the argument goes straight to `-p` — so
+the six either — the argument goes straight to `-p` — so
 `mise run mutants sunrise-storage` mutates an unscoped crate and the gate fails
 that run the same way.
 
@@ -254,21 +419,22 @@ flag the only difference:
 | with `--all-features` | 45 | 76 | 1 | 13 | 36.89% |
 
 All 94 of `src/sse.rs`'s mutants missed — 94 of 94 — while the crate's own ten
-`sse` tests, including the one asserting that every transport operation carries
+`sse` tests (the module was then that one file; it is now the `src/sse/`
+directory, its tests in `src/sse/tests/`), including the one asserting that every transport operation carries
 a device binding, never compiled. Seventeen points of the crate's score were a
 build configuration, and #193 read them as untested security code.
 
 Why it went unnoticed for so long is worth keeping, because it is the part that
-generalises. `cargo test --workspace` compiles `src/sse.rs` and runs all ten of
-those tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
+generalises. `cargo test --workspace` compiles the `sse` module and runs its
+tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
 `sunrise-core-bindings` each depend on `sunrise-sync` with `features = ["sse"]`,
 and Cargo unifies features across a workspace build. cargo-mutants does not do a
 workspace build: it builds `-p sunrise-sync` alone, where nothing asks for the
 feature and the default is off. So the ordinary suite and the mutation run
 disagreed about which files existed, and only the mutation run was wrong.
 
-`sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
-today, so the flag is a no-op for the other three. It is passed unconditionally
+`sunrise-sync`'s `sse` is the only feature any of the six scoped crates has
+today, so the flag is a no-op for the other five. It is passed unconditionally
 anyway, because the failure it prevents is silent: the next feature-gated module
 would otherwise start under-reporting with nothing to say so.
 
@@ -400,16 +566,19 @@ is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
 apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
-so. On this repository it is 59: **46** of `mise.toml`'s triple-quote fences,
+so. On this repository it is 82: **60** of `mise.toml`'s triple-quote fences,
 the first and last lines of the single-quoted `python3 -c` program `ios-app`
-picks its simulator with, and `mise.toml:710`; **three** in
-`.github/scripts/sparkle-tools.sh` where one `awk` program's single-quoted body
-spans three lines inside a `$( )`, **four** in `.github/scripts/grep-gate.sh`
-where two such `awk` programs each count at their opening and closing line, and
-**three** `- name:` scalars whose English apostrophe is an unbalanced quotation
-— two in `ci.yml`, one in `release.yml`. Ten of the 59 are not in `mise.toml`,
-which matters because the three workflow entries are the visible half of the
-limit two paragraphs up: the gate cannot tell an executable line from prose.
+picks its simulator with, and three unclosed `$(` at `mise.toml:618`, `:912`
+and `:1274`; **three** in `.github/scripts/sparkle-tools.sh` where one `awk`
+program's single-quoted body spans three lines inside a `$( )`, **four** in
+`.github/scripts/grep-gate.sh` where two such `awk` programs each count at their
+opening and closing line, **six** in `ci.yml` where the `fuzz-plan` and
+`fuzz-pr-plan` jobs each pipe `$(cargo metadata …` into a multi-line `jq`
+program, and **four** `- name:` scalars whose English apostrophe is an
+unbalanced quotation — two in `ci.yml`, two in `release.yml`. Seventeen of the
+82 are not in `mise.toml`, which matters because the four `- name:` entries are
+the visible half of the limit two paragraphs up: the gate cannot tell an
+executable line from prose.
 Prose that does not lex lands in this tally and is skipped, which is the safe
 direction; prose that *does* lex is counted as an invocation, which is the
 other one. The composition is asserted by the contract suite, not just the
@@ -487,6 +656,8 @@ changing the flags is told the third copy exists.
 | `sunrise-core` | 1 259 | 14.0 s |
 | `sunrise-crypto` | 519 | 2.7 s |
 | `sunrise-sync` | 135 | 1.2 s |
+| `sunrise-cbor` | 134 | — |
+| `sunrise-id` | 109 | — |
 
 Both columns are reproducible, and the left one is cheap enough that there is no
 excuse for it being wrong:
@@ -500,10 +671,11 @@ on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
 is the original measurement, taken 2026-09-07, and was **not** re-taken with it
 — which is why its heading carries that date. The two columns are from
 different commits, and the right one is a cost estimate rather than a number
-anything checks.
+anything checks. The `sunrise-cbor` and `sunrise-id` rows joined later and were
+counted at `ed50b37`; they have no right-hand figure because nobody took one.
 
 `--all-features` changes nothing about this command's output. `--list` returns
-an identical population with and without it for all four crates today: three
+an identical population with and without it for all six crates today: five
 have no features at all, and it makes no difference to `sunrise-sync` either,
 because discovery mutates the *source file* and ignores the gate — which is
 §Features' whole mechanism, a gated module mutated and then not built. The
@@ -514,7 +686,7 @@ matches the campaign invocation, which is where it is load-bearing — see
 §Features above.
 
 `--list` parses the crate and prints one line per mutant **without building
-anything**, so all four counts take seconds. The right column is
+anything**, so all these counts take seconds. The right column is
 `cargo clean -p <crate> && cargo test -p <crate>` — the crate and its test
 binaries rebuilt against already-built dependencies, wall clock, which is the
 shape of the work `cargo-mutants` repeats once per mutant. Two runs agreed to
@@ -537,14 +709,19 @@ factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
 | `sunrise-sync` | 135 | 7 m | ~3.1 s |
 | `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
 | `sunrise-core` | 1 259 | — | ~15.4 s |
+| `sunrise-cbor` | 134 | 2 m | ~0.9 s |
+| `sunrise-id` | 109 | 72 s | ~0.7 s |
+
+The last two rows were measured on 2026-10-31 at `ed50b37`, and stretch the
+factor of eight above to about twenty across the six.
 
 The right-hand column is the `wall` column divided by the `mutants` column —
 full-pass wall clock ÷ mutants. It is an average over a whole pass, not a
 marginal cost per additional mutant, so everything `cargo mutants` spends
 inside one invocation is already amortised into it, **the unmutated baseline
-build it runs once before any mutant included**. The three completed rows
-recompute from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
-7 200 / 1 356 = 5.31. The `wall` column is rounded to whole minutes, which is
+build it runs once before any mutant included**. The completed rows recompute
+from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
+7 200 / 1 356 = 5.31, 120 / 134 = 0.90, 72 / 109 = 0.66. The `wall` column is rounded to whole minutes, which is
 the whole of the gap between 1.85 and the 1.9 recorded beside it.
 
 That definition is what the column means anywhere it is reused. Multiplying it
@@ -567,12 +744,13 @@ until a completed pass records its wall clock.
 
 Each additional job is another copy of the source tree on
 disk and another resident rustc, which is why `mise run mutants` pins one and
-says so. A full pass over all four is hours, which is why it runs nightly and
+says so. A full pass over all six is hours, which is why it runs nightly and
 sharded rather than on a pull request.
 
-`sunrise-crypto` needs the generous `timeout_multiplier`: it runs Argon2id at
-production parameters (64 MiB, t=3, p=1), deliberately not weakened for tests,
-and every surviving mutant pays that cost again.
+`sunrise-crypto` needs the generous `timeout_multiplier`: its own tests run
+Argon2id at production parameters (64 MiB, t=3, p=1) even though
+`--all-features` turns `test-cheap-kdf` on (§The recovery KDF in tests), and
+every surviving mutant pays that cost again.
 
 ### The gate
 
@@ -727,8 +905,11 @@ covered in six local shards records one floor rather than six — and a stale
 directory from an earlier crate is scored with them, which is what the gate's
 "undeclared crate" failure means when it names one you did not ask for.
 
-It is deliberately **not** in `lefthook.yaml`: the pre-push hook already runs
-the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
+It is deliberately **not** in `lefthook.yaml`: adding hours to a push is how a
+hook gets bypassed. For the same reason the pre-push hook runs only the tests a
+push can affect (`mise run rust-test-changed` and `mise run test-changed`, which
+`.github/scripts/prepush-scope.py` scopes), and leaves the whole suite to CI and
+to `SUNRISE_FULL_PREPUSH=1`.
 
 ## Release gates
 
@@ -750,8 +931,8 @@ What is wired today, in one place:
 
 | Check | Where | Runs on |
 |---|---|---|
-| Nine fuzz targets, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
-| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
+| Every fuzz target, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
+| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-cbor/`, `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-pairing/`, `crates/sunrise-core/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
 | No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
 | External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
 
@@ -778,22 +959,28 @@ to look for exactly those. `test_constant_time_gate.py` plants a `==` over a
 
 ### Continuous fuzz targets
 
-`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All nine
-targets are built and run.** Each drives a workspace crate through its
+`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **Every
+target is built and run.** Each drives a workspace crate through its
 ordinary public API — nothing was widened to `pub` for the fuzzer's benefit,
 because a surface only a fuzzer can reach is one no attacker reaches either.
 
 | Target | Scope | What it asserts beyond "does not panic" |
 |---|---|---|
-| `op_envelope` | `sunrise-crypto` envelope decode + signature verify path. | Re-signing a decoded envelope yields a signature this build verifies, and changes no field but `sig`. |
-| `wire_frame` | `sunrise-wire-protocol` framing + magic-prefix parser, and the canonical-CBOR payload codec behind each `MsgKind`. | Header and payload survive an encode/decode round trip, and the payload is exactly `decompressed_len` bytes long. |
+| `op_envelope` | `sunrise-crypto` envelope decode + signature verify path, and the relay's routing-header decoder `sunrise_cbor::decode_envelope_header` over the same bytes. | An envelope the client decoder accepts also passes the relay's decoder, with the same `(stream_id, device_id, seq)`; re-signing a decoded envelope yields a signature this build verifies, and changes no field but `sig`. |
+| `wire_frame` | `sunrise-wire-protocol` framing + magic-prefix parser, and the canonical-CBOR payload codec behind each `MsgKind`. | Header and payload survive an encode/decode round trip, and the payload is exactly `decompressed_len` bytes long; a payload its `MsgKind`'s codec decodes re-encodes to exactly its own bytes. |
 | `rrule` | RRULE parser and DST-aware expansion (`sunrise-domain`). | `to_rfc5545` round-trips and is idempotent; `expand` stays inside its window and honours `COUNT`, across four zones including a 30-minute DST shift and a 12:45 base offset. |
 | `ical` | inbound iCalendar feed parser (`sunrise-integrations`). | `ical::write` is a fixed point over `ical::parse`, and re-parsing its own output raises no notices. |
+| `capture` | capture-bar line parser `sunrise_domain::capture::parse` on UTF-8 input, against one named stream and one named context, read in `America/New_York` and in UTC at a fixed instant on the day New York springs forward. | Every word of the parsed title is a word of the line, in the line's order. |
+| `annotate` | annotate-prompt line parser `sunrise_domain::parse_annotate` on UTF-8 input, and the `preview`, `patch_for` and `error_note` built from its result, in the same two zones at the same instant. | A line with a word in it is either applied or reported (the edit is non-empty, or `errors` is), and a blank line is neither. |
 | `oauth_state` | bearer-token verification in `sunrise-server::auth`: JWT header parse, JWKS resolution, algorithm pinning, claim checks. | Verification never *succeeds*. No seed carries a private key, so an `Ok` is an accepted forgery — including the `HS256`-signed-with-the-public-key and `alg: none` classics. |
 | `recovery_blob` | recovery-blob decode + KDF input validation (`sunrise-crypto`). | A payload that comes back is bound to the identity the caller demanded. |
 | `identity_transition` | identity-transition chain verify (`sunrise-crypto`, ADR-0037): canonical body decode, `verify_identity_transition`, `verify_successor_signature`. | Nothing but the frozen transition verifies under the frozen outgoing identity, and nothing but the frozen body and `prev_sig` passes the successor check for a body naming the frozen successor key (a body naming another key passes it whenever that key signed it, which is all the check claims); full verification implies the successor check; the signature pair never verifies swapped. |
 | `device_cert` | device cert decode + verify (`sunrise-crypto`): `from_cbor`, `verify`, `verify_binding`. | Nothing but the frozen cert verifies under the frozen identity; `verify_binding` holds only for the identity that signed; `from_cbor(to_cbor(c)) == c`, signed bytes included. |
 | `key_envelope` | key-envelope / Stream-key unwrap (`sunrise-crypto`, ADR-0024): `hpke_open` under the `key_envelope` info, and `unwrap_stream_key` under the vault root. | Only the frozen blob opens on each path, to the frozen Stream key, and never for another `(stream_id, epoch)`. |
+| `key_bundle` | account key-bundle decode, verify and open (`sunrise-crypto`, ADR-0069): `decode_key_bundle` over the bytes the relay pins and serves to a recovering device, then `KeyBundle::verify` under the frozen identity and the open under the frozen `ID_D_priv`. | Whatever decodes is rebuilt from the returned header and the input's `sealed` and `sig` fields into exactly the input bytes; a bundle that verifies carries the seed's fields one to five, everything the signature covers; a verified bundle that opens yields keys whose manifest is the header's. |
+| `identity_chain` | identity-chain record decode, verify and carry walk (`sunrise-crypto`, ADR-0070): `IdentityChain::decode` over the record the relay serves beside the recovery blob, then `IdentityChain::verify` from the frozen genesis and `IdentityChain::carry_walk` under the frozen `ID_D_priv`. | Whatever decodes encodes back to exactly the input bytes and decodes again to the same chain; a chain that verifies is the genesis alone or the genesis and the one frozen transition, body and signatures exactly; the carry walk from the genesis either reaches the last link or names a link the chain has. |
+| `pairing_messages` | the five pairing decoders that read the other device's or a camera's bytes (`sunrise-pairing`): `decode_pairing_offer`, `decode_pairing_request`, `decode_pairing_grant`, `decode_pairing_payload`, and `decode_qr_payload` on UTF-8 input. Every input goes through all five. | Whatever a decoder accepts, its encoder encodes, the encoding decodes to the same value, and encoding that yields the same bytes. Byte identity with the input is not asserted: each decoder skips unknown keys and none demands canonical input. |
+| `core_snapshot` | the snapshot record reader `Engine::apply_snapshot` (`sunrise-core`, ADR-0059): magic prefix, canonical map and frontier parse, writer lookup and signature check, against one in-memory vault stood up once on a fixed clock and a seeded generator and reused for every input. | Every refusal is `EngineError::Invalid`; a record that is accepted carries the vault's own record's fields one to ten (everything the signature covers, and the signature), and is `Covered`, writing nothing. |
 
 No target drives `sunrise-http-sig` (`header_sig_v2`). A pull request touching
 it still runs the fuzz plan, which names no target for it; the external review
@@ -820,7 +1007,7 @@ nothing there is built by an ordinary workspace command.
 
 ```sh
 cargo install cargo-fuzz --locked   # once
-mise run fuzz-build                 # compile all nine
+mise run fuzz-build                 # compile every target
 mise run fuzz-smoke                 # 10s each against the committed seeds
 mise run fuzz op_envelope 3600      # one target, one hour
 ```
@@ -834,7 +1021,7 @@ flag and reads none of the three.
 Being a separate workspace means every gate has to name the manifest to reach
 it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
 `mise run rust-doc` each run twice — once over the workspace, once over
-`fuzz/Cargo.toml` — so the nine harnesses are formatted, linted and
+`fuzz/Cargo.toml` — so the harnesses are formatted, linted and
 rustdoc-checked on the same terms as everything else. CI's `rust` job carries
 the clippy and rustdoc halves as steps of their own, on the pinned stable: only
 `cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
@@ -860,18 +1047,25 @@ Every seed comes from something the tree already had:
 | Target | Seeds | Provenance |
 |---|---|---|
 | `op_envelope` | `signed_only`, `sealed` | The two frozen envelope vectors in `crates/sunrise-crypto-test-vectors` — `signed_only_envelope::ENCODED` and `sealed_envelope::ENCODED`, byte for byte. The harness's fixed device key is that crate's `DEVICE_SIGNING_SECRET`, so the seeds verify rather than merely decode. |
-| `wire_frame` | `ping`, `ack`, `subscribe`, `stream_update_caught_up`, `close`, `op_batch`, `op_batch_zstd` | `encode_frame` output for each `MsgKind` that has a canonical payload codec, over the same `STREAM_ID` / `DEVICE_ID` the crypto vectors use. `op_batch` carries both frozen envelopes as its `ops`; `op_batch_zstd` is the same batch with the compression bit set, and is the only seed that reaches the decompression path and its bomb caps at all. |
+| `wire_frame` | `ping`, `ack`, `subscribe`, `stream_update_caught_up`, `stream_update_backlog`, `close`, `op_batch`, `op_batch_zstd` | `encode_frame` output for each `MsgKind` that has a canonical payload codec, over the same `STREAM_ID` / `DEVICE_ID` the crypto vectors use. `StreamUpdate` carries two codecs, so it has a seed for each: `stream_update_backlog` is a `BacklogPayload` (`ops: 2`), which the harness tries first, and `stream_update_caught_up` a `CaughtUpPayload`. `op_batch` carries both frozen envelopes as its `ops`; `op_batch_zstd` is the same batch with the compression bit set, and is the only seed that reaches the decompression path and its bomb caps at all. |
 | `rrule` | nine rule bodies | Every distinct valid `RRULE` the workspace's own tests and `.ics` fixtures use, plus `regression_interval_overflow` (below). |
 | `ical` | `apple.ics`, `google.ics`, `fastmail.ics`, `outlook.ics` | `crates/sunrise-integrations/testdata/<vendor>/basic.ics`, unmodified. Four vendors fold, escape and time-zone their output differently, so the fuzzer starts from four shapes of line folding rather than one. |
 | `ical` | `regression_negative_year.ics` | The minimized reproducer for the second finding (below). Not a vendor shape — a `DTSTART` no client emits, kept because the round trip it broke is the property the target asserts. |
+| `capture` | `full_line`, `deadlines`, `unresolved`, `regression_duration_overflow`, `regression_non_ascii_relative` | Hand-written lines in the token forms `capture`'s own documentation and tests use: every token resolving, the deadline tokens, and every token failing to resolve. `regression_duration_overflow` carries `~` durations too large for the checked seconds arithmetic, and `regression_non_ascii_relative` a relative date ending in a multi-byte character (`^+3é`), the case `parse_relative` reads by character rather than byte. |
+| `annotate` | `full_line`, `clears`, `errors`, `regression_non_ascii_relative` | Hand-written lines in the token forms `annotate`'s own documentation and tests use: every token set, every token cleared, and every token rejected. `regression_non_ascii_relative` ends `^`, `~` and `due:` values in a multi-byte character. |
 | `oauth_state` | `rs256_full`, `no_keys`, `symmetric_jwks` | Hand-built `<bearer>\0<discovery>\0<JWKS>` triples: a well-formed RS256 token against a 2048-bit RSA key set, the same token against an empty key set, and the same token against an `oct` key set — the algorithm-confusion branch. |
 | `recovery_blob` | `sealed` | `seal_recovery_blob` output for a fixed seed, identity and CSPRNG state; the harness unseals against the same constants. |
 | `identity_transition` | `frozen` | `identity_transition::transition::BODY_CBOR`, `PREV_SIG` and `NEXT_SIG` from `crates/sunrise-crypto-test-vectors`, concatenated in that order — the harness's input encoding. The harness verifies against that crate's `IDENTITY_SIGNING_PUBLIC`, so the seed verifies rather than merely decodes. |
 | `device_cert` | `frozen` | `identity_transition::device_cert::ENCODED`, byte for byte, signed by the same frozen identity the harness verifies against. |
+| `op_envelope`, `device_cert` | `regression_deep_nest` | The out-of-memory reproducers of the third finding (below), as the nightly uploaded them. Not shapes anything emits — each is a deep, unclosed nest of arrays, maps and tags — kept so every run starts at the nesting bound. |
 | `key_envelope` | `hpke_sealed`, `wrapped` | `key_envelope::SEALED` and `at_rest::wrapped_stream_key::WRAPPED`, byte for byte. Each opens under its own path's frozen key and context, and is refused by the other path. |
+| `key_bundle` | `frozen` | `at_rest::key_bundle::BUNDLE` from `crates/sunrise-crypto-test-vectors`, byte for byte, signed by the frozen device under the frozen identity the harness verifies against, so the seed verifies rather than merely decodes. |
+| `identity_chain` | `genesis_only`, `carried`, `retired` | `IdentityChain::encode` over the frozen `identity_transition` identity: the genesis alone, and the genesis with the frozen transition, once carrying the code forward (a share sealed to the frozen `ID_D_pub`) and once retiring it. |
+| `pairing_messages` | `offer`, `offer_rotated`, `request`, `grant`, `payload`, `qr` | Each message type's own encoder over the frozen constants in `crates/sunrise-crypto-test-vectors`: the `identity_transition` identity (and, for `offer_rotated`, its successor in force over the original genesis), the frozen device's `DEVICE_SIGNING_PUBLIC`, `device_cert::DEVICE_ID` and `device_cert::ENCODED`, the `key_envelope` Stream key and recipient, and the `at_rest` vault root. Every seed decodes, so the fuzzer starts past the id-against-key checks rather than at them. `qr` is `encode_qr_payload` over `MAGIC_V1_HEX` and the first `EMAIL_HASH_VECTORS` entry, and carries no `.json` extension so Biome leaves the encoder's exact bytes alone. |
+| `core_snapshot` | `frozen` | The record the harness's own vault writes at setup (`Engine::write_stream_snapshot` over the Inbox, holding one task), byte for byte: the clock is fixed and the generator seeded, so every run writes the same record, and the seed is accepted rather than merely parsed. Changing the harness's root, clock or seed changes the record, and this seed has to be minted again. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
-seed corpus. That has happened twice.
+seed corpus. That has happened three times.
 
 `fuzz/seeds/ical/regression_negative_year.ics` carries `DTSTART:-202
 0302T100000` (issue #190). `jiff`'s `%Y` implements a superset of RFC 5545's
@@ -882,7 +1076,7 @@ after it skip whitespace, so that value read as the year −202. No year outside
 its own parser then read as year −2020 and month 30 and dropped — the
 `write(parse(write(x))) == write(x)` the target asserts, failing on every
 nightly for as long as the target had run. Fixed in
-`crates/sunrise-integrations/src/ical.rs` by holding a `DTSTART`/`DTEND` value
+`crates/sunrise-integrations/src/ical/time.rs` by holding a `DTSTART`/`DTEND` value
 to the grammar before handing it to `strptime`, which makes the parser's output
 range exactly what the writer can spell.
 
@@ -894,6 +1088,22 @@ The first finding, on the first run:
 `crates/sunrise-domain/src/routine_gen.rs` with a regression test beside the
 golden DST cases. The property test in the same file could not have found it:
 it samples `interval in 1u32..=3`.
+
+The third finding was two out-of-memory reports on the same night, from
+`op_envelope` and `device_cert`, with one cause. Neither input allocates much:
+each reproducer runs alone in under 60 MB. Both decoders read a whole CBOR item
+into a `ciborium` `Value` tree at `ciborium`'s default bound of 256 nested
+arrays, maps and tags, so the fuzzers drifted into deep nests inside fields the
+decoders keep or skip. Address Sanitizer records the call stack of every
+allocation in a depot it never frees, and each different interleaving of
+container levels is a new stack, so RSS rose with the number of distinct nests
+tried. It crossed libFuzzer's 2 GiB limit inside the 30-minute budget with
+under 30 MB of live heap. Twenty thousand distinct depth-200 nests reproduce it
+offline (1.5 GB, against 45 MB for one nest repeated twenty thousand times).
+Fixed in `crates/sunrise-cbor/src/bounded.rs`: `decode_value` holds an item to
+`MAX_VALUE_DEPTH` (8) levels, and the op envelope decoder, the relay's envelope
+header decoder and both device-cert decoders go through it. The regression
+tests are `crates/sunrise-crypto/tests/nesting_bound.rs`.
 
 #### CI shape
 
@@ -908,10 +1118,18 @@ wires a narrower version of it:
   and the job's comment says so.
 - **A pull request that touches a decoder — wired, path-filtered.**
   `fuzz-pr-plan` reads the merge commit's diff against its base and names the
-  targets the changed paths reach: `crates/sunrise-crypto/` the five crypto
-  targets, `crates/sunrise-wire-protocol/` `wire_frame`,
-  `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
-  seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` all nine.
+  targets the changed paths reach: `crates/sunrise-cbor/` the eight that
+  decode through it (`op_envelope`, `recovery_blob`, `identity_transition`,
+  `device_cert`, `key_bundle`, `identity_chain`, `wire_frame` and
+  `pairing_messages`),
+  `crates/sunrise-crypto/` the seven crypto targets (`op_envelope`,
+  `recovery_blob`, `identity_transition`, `device_cert`, `key_envelope`,
+  `key_bundle` and `identity_chain`),
+  `crates/sunrise-wire-protocol/` `wire_frame`,
+  `crates/sunrise-pairing/` `pairing_messages`,
+  `crates/sunrise-server/src/auth/` `oauth_state`,
+  `crates/sunrise-core/` `core_snapshot`, a target's own harness or
+  seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` every target.
   `fuzz-pr` then runs each named target for 120 seconds from the committed
   seeds, and a pull request touching none of those paths runs no fuzzer at
   all. A finding uploads its reproducer, and the reproducer joins
@@ -926,7 +1144,7 @@ wires a narrower version of it:
   budget is spent only where the diff is, and the corpus-building search stays
   in the nightly job.
 - **Every pull request — still not wired.** The path filter is the point:
-  nine targets at two minutes each, on every pull request, is a runner-hour
+  every target at two minutes each, on every pull request, is a runner-hour
   spent mostly re-reading seeds for changes that touch no decoder.
 
 ### Quarterly external pen test

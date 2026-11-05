@@ -4,22 +4,25 @@ status: accepted
 
 # Google Calendar
 
-Read-only. Each device authorizes on its own and keeps its token in its
-keychain; the vault syncs the account configuration and the fetched events.
+Each device authorizes on its own and keeps its token in its keychain; the vault
+syncs the account configuration and the fetched events.
 [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md) is the
 decision, and [`overview.md`](./overview.md) specifies the entities, fetching
 and reconnect flow shared by every calendar provider. This page is what is
-specific to Google.
+specific to reading from Google. Writing is added by
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) and
+designed in [`calendar-architecture.md`](./calendar-architecture.md).
 
-> **Status: not built.** `crates/sunrise-integrations/src/gcal.rs` implements
+> **Status: not built.** The `crates/sunrise-integrations/src/gcal/` module implements
 > the PKCE authorization-code exchange
-> (`crates/sunrise-integrations/src/gcal.rs#OAuthFlow`), refresh with the
+> (`crates/sunrise-integrations/src/gcal/oauth.rs#OAuthFlow`), refresh with the
 > durable-refresh-token rule
-> (`crates/sunrise-integrations/src/gcal.rs#apply_refresh`) and change detection
+> (`crates/sunrise-integrations/src/gcal/oauth.rs#apply_refresh`) and change detection
+> (`crates/sunrise-integrations/src/gcal/poll.rs#diff`)
 > that suppresses phantom deletes, all against an injected transport. It has
 > **zero consumers**: nothing has run it against the live API, there is no
 > `impl EventSyncer`, and there is no storage or UI.
-> [#4](https://github.com/justin13888/Sunrise/issues/4) tracks the build.
+> [#930](https://github.com/justin13888/Sunrise/issues/930) tracks the build.
 
 ## Auth
 
@@ -46,8 +49,9 @@ token path.**
   `client_id` is public and ships in the binary. A self-hosted build MAY
   substitute its own `client_id`s.
 - **Scope:** `https://www.googleapis.com/auth/calendar.readonly`, plus `openid`
-  to learn the account's `sub`. No write scope, no contacts, no drive. The
-  scope is "sensitive", so the production OAuth app needs Google's
+  to learn the account's `sub`. A write scope is a separate grant a device asks
+  for when it first needs to push. No contacts, no drive. The scope is
+  "sensitive", so the production OAuth app needs Google's
   verification; until it has it, test users' refresh tokens expire after 7
   days, and the app shows "Needs reconnect" when they do.
 - **Storage:** the refresh token goes in the platform keychain with
@@ -59,12 +63,18 @@ token path.**
 - **Subject:** the ID token's `sub` is the account's `subject`. A reconnect that
   returns a different `sub` is refused.
 
-An earlier revision specified a server-mediated exchange with a `client_secret`
-in the managed server's secret store. ADR-0025 deleted it, and ADR-0049 keeps
-it deleted: it would put the relay in possession of every user's calendar
-tokens.
+There is no server-mediated exchange and no `client_secret` in the managed
+server's secret store. ADR-0025 and ADR-0049 rule it out: it would put the
+relay in possession of every user's calendar tokens.
 
 ## Fetch
+
+> **Superseded in part by
+> [ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md).** The
+> endpoints, sync tokens and error handling below stand. Asking for expanded
+> instances, and mapping each occurrence to its own flat `ExternalEvent` with no
+> attendees, do not: events are stored as a series with override registers, keeping
+> attendees. This section is rewritten when the conformance spike ends.
 
 For each subscribed calendar:
 
@@ -72,7 +82,7 @@ For each subscribed calendar:
    and the list offered in Settings. A calendar the user can see only as
    free/busy is listed and marked "busy only": its events carry no title, and
    they import as events titled "Busy". `AccessRole::can_read_details`
-   in `gcal.rs` already tells the two apart.
+   in `gcal/mod.rs` already tells the two apart.
 2. `events.list` with `singleEvents=true`, `timeMin`/`timeMax` bounding the
    window in [`overview.md`](./overview.md) §Fetching, `maxResults=250`, looping
    on `pageToken`. `singleEvents=true` makes Google expand recurring series,

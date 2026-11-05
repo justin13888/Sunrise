@@ -66,15 +66,16 @@ use kynos::error::rejection::{AuthRejection, BodyRejection};
 use kynos::extract::body::binary::Binary;
 use kynos::extract::body::json::Json;
 use kynos::extract::describe::{Describe, RequestContent};
-use kynos::extract::media::OctetStream;
 use kynos::extract::params::header::Headers;
 use kynos::extract::{FromRequest, FromRequestParts};
+use kynos::http::media::OctetStream;
 use kynos::http::{Parts, Request};
 use kynos::response::{IntoResponse, Responses};
 use kynos::router::operation::OperationCx;
 use kynos::schema::registry::Registry;
+use kynos::schema::unchecked::Unchecked;
 use kynos::schema::Schema;
-use kynos::security::auth::{Auth, MaybeAuth};
+use kynos::security::auth::Auth;
 
 /// The device-binding headers, declared so they appear in the description.
 #[derive(Debug, Clone, kynos::HeaderParams)]
@@ -136,19 +137,26 @@ pub struct DeviceSig {
 /// from a bad bearer or the code becomes an enumeration oracle. See
 /// [`ApiError::device_sig_invalid`] for the full rule and for the bearer-
 /// validity disclosure the pre-lookup case carries.
-pub fn verify<T: serde::Serialize>(
-    state: &ServerState,
-    principal: &Principal,
-    sig: &DeviceSig,
-    method: &str,
-    path: &str,
+///
+/// The one failure that is not a `401` is the metadata store not answering the
+/// device lookup: `503 RELAY_STORAGE_UNAVAILABLE`, which the client retries
+/// rather than refreshing a bearer that was never the problem (ADR-0062 §1).
+///
+/// The body is canonicalized before the returned future is built, so the
+/// future holds bytes rather than a borrow of `T`.
+pub fn verify<'a, T: serde::Serialize>(
+    state: &'a ServerState,
+    principal: &'a Principal,
+    sig: &'a DeviceSig,
+    method: &'a str,
+    path: &'a str,
     value: Option<&T>,
-) -> Result<Option<Device>, ApiError> {
-    let canonical = match value {
-        Some(v) => sunrise_http_sig::canonical_json(v).map_err(|_| ApiError::unauthenticated())?,
-        None => Vec::new(),
-    };
-    verify_bytes(state, principal, sig, method, path, &canonical)
+) -> impl std::future::Future<Output = Result<Option<Device>, ApiError>> + Send + 'a {
+    let canonical = value.map_or_else(
+        || Ok(Vec::new()),
+        |v| sunrise_http_sig::canonical_json(v).map_err(|_| ApiError::unauthenticated()),
+    );
+    async move { verify_bytes(state, principal, sig, method, path, &canonical?).await }
 }
 
 /// [`verify`], against a body that is already in its canonical form.
@@ -162,7 +170,7 @@ pub fn verify<T: serde::Serialize>(
 ///
 /// # Errors
 /// As [`verify`], as are the effects: this is the function that performs them.
-pub fn verify_bytes(
+pub async fn verify_bytes(
     state: &ServerState,
     principal: &Principal,
     sig: &DeviceSig,
@@ -170,18 +178,20 @@ pub fn verify_bytes(
     path: &str,
     canonical_body: &[u8],
 ) -> Result<Option<Device>, ApiError> {
+    use sunrise_telemetry::FutureExt as _;
     // `auth.verify_signature`, with the device lookup beneath it. Neither the
     // signature nor the device id is span data.
     let span = sunrise_telemetry::span("auth.verify_signature", []);
-    let _current = span.enter();
-    let verified = verify_binding(state, principal, sig, method, path, canonical_body);
+    let verified = verify_binding(state, principal, sig, method, path, canonical_body)
+        .with_context(span.context())
+        .await;
     if verified.is_err() {
         span.fail("device signature refused");
     }
     verified
 }
 
-fn verify_binding(
+async fn verify_binding(
     state: &ServerState,
     principal: &Principal,
     sig: &DeviceSig,
@@ -223,7 +233,7 @@ fn verify_binding(
     let device = state
         .store
         .active_device(&principal.account.account_id, device_id)
-        .map_err(|_| ApiError::unauthenticated())?
+        .await?
         .ok_or_else(ApiError::unauthenticated)?;
 
     let date = sig
@@ -256,7 +266,8 @@ fn verify_binding(
 
     let _ = state
         .store
-        .touch_device(&device.device_id, state.clock.now_ms());
+        .touch_device(&device.device_id, state.clock.now_ms())
+        .await;
     Ok(Some(device))
 }
 
@@ -332,7 +343,8 @@ pub enum SignedRejection {
     /// The body was the wrong media type, unreadable, or did not fit `T`.
     #[error(transparent)]
     Body(#[from] BodyRejection),
-    /// The binding did not check out.
+    /// The binding did not check out, or a store the bearer or the binding
+    /// needed did not answer.
     #[error(transparent)]
     Binding(#[from] ApiError),
 }
@@ -377,11 +389,7 @@ async fn caller_of(
     // `MaybeAuth` rather than `Auth`, so an absent `Authorization` header
     // reaches the verifier as the empty string rather than being refused at the
     // carrier -- see `resolve_bearer` for why that distinction is load-bearing.
-    let MaybeAuth(presented) = MaybeAuth::<AccountToken>::from_request_parts(parts, state).await?;
-    let principal = match presented {
-        Some(principal) => principal,
-        None => crate::api::auth::resolve_bearer(state, "").await?,
-    };
+    let principal = crate::api::auth::resolve_bearer(parts, state).await?;
     let Headers(sig) = Headers::<DeviceSig>::from_request_parts(parts, state)
         .await
         .map_err(|_| ApiError::unauthenticated())?;
@@ -423,10 +431,22 @@ where
     // received is the one thing both sides can canonicalize identically. `T` is
     // then built from that same value, so everything the handler acts on is a
     // projection of what was verified. See ADR-0022's 2026-10 amendment.
-    let Json(received) =
-        Json::<serde_json::Value>::from_request(Request::from_parts(parts, body), state).await?;
+    //
+    // `Unchecked` because kynos refuses `serde_json::Value` as a schema on
+    // purpose. Nothing is described from it: `Describe` below declares
+    // `Json<T>`.
+    let Json(Unchecked(received)) =
+        Json::<Unchecked<serde_json::Value>>::from_request(Request::from_parts(parts, body), state)
+            .await?;
     // A value that does not fit `T` is the same 422 `Json<T>` renders, its
     // failure attributed to the root pointer as kynos does.
+    //
+    // `T`'s `#[schema]` bounds are *not* run here (`Schema::check_constraints`,
+    // which `Json<T>` runs). Every bound on a signed body is an id `pattern`,
+    // and each handler already parses that id and refuses a malformed one with
+    // the documented `400 VALIDATION_INVALID` and its `code`
+    // (docs/06-server/api.md). Running kynos's check first would turn that into
+    // a `422` with no `code` for the same request.
     let value =
         <T as serde::Deserialize>::deserialize(&received).map_err(|e| BodyRejection::Schema {
             failures: std::collections::BTreeMap::from([(String::new(), e.to_string())]),
@@ -435,7 +455,7 @@ where
     let device = if binding == Binding::Bootstrap && sig.device.is_none() {
         None
     } else {
-        verify(state, &principal, &sig, &method, &target, Some(&received))?
+        verify(state, &principal, &sig, &method, &target, Some(&received)).await?
     };
     Ok((Caller { principal, device }, value))
 }
@@ -479,7 +499,7 @@ impl FromRequestParts<ServerState> for SignedParts {
     ) -> Result<Self, Self::Rejection> {
         let (principal, sig) = caller_of(parts, context).await?;
         let (method, target) = target_of(parts);
-        let device = verify::<()>(context, &principal, &sig, &method, &target, None)?;
+        let device = verify::<()>(context, &principal, &sig, &method, &target, None).await?;
         Ok(Self(Caller { principal, device }))
     }
 }
@@ -560,7 +580,7 @@ impl FromRequest<ServerState> for SignedBinary {
         let binary =
             Binary::<OctetStream>::from_request(Request::from_parts(parts, body), context).await?;
         let bytes = binary.bytes.to_vec();
-        let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes)?;
+        let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes).await?;
         Ok(Self {
             caller: Caller { principal, device },
             bytes,

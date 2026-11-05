@@ -334,7 +334,8 @@ fn healthy_traffic_is_silent_at_info() {
     );
 
     // A blob root that is a *file* makes the pending-upload `create_dir_all`
-    // fail, which is the surface's own path to a 500 — no test-only seam and
+    // fail, which is the surface's own path to a 5xx — a 503, since a blob
+    // backend that cannot write is unavailable — with no test-only seam and
     // no panic.
     let dir = tempfile::tempdir().expect("a temp dir");
     let not_a_dir = dir.path().join("blobs");
@@ -359,13 +360,13 @@ fn healthy_traffic_is_silent_at_info() {
             .await;
         assert_eq!(
             status,
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
             "the obstruction must produce a 5xx, or this test proves nothing"
         );
     });
 
     let end = record(&loud, "srv.req.end");
-    assert_eq!(end["status"], 500);
+    assert_eq!(end["status"], 503);
     assert_eq!(end["result"], "failed");
     assert_eq!(
         end["level"], "WARN",

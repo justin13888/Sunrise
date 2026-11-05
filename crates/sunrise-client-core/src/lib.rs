@@ -1,29 +1,138 @@
-//! Client-side logic that is not any one client's.
+//! The client layer: everything between `sunrise-core` and a user interface
+//! that is not any one client's.
 //!
-//! Two things sit between `sunrise-core` and a user interface: they are not
-//! domain rules (the vault has no entity for either), and they are not
-//! rendering (no pixels, no keys, no terminal). Putting them in a client makes
-//! the next client reimplement them, and the two implementations then disagree
-//! about what `u` does or what a saved view means.
+//! None of it is a domain rule (the vault has no entity for an undo step), and none of it is rendering (no pixels, no keys, no terminal).
+//! Put in a client, it gets reimplemented by the next one, and the two then
+//! disagree about what undo does, what a saved view means, or when a recovery
+//! has finished. So every client links this crate — the `UniFFI` seam the
+//! Apple apps call (`sunrise-core-bindings`), the CLI, and the web core
+//! (`sunrise-core-wasm`, without `relay`) — and a seam's own code is the
+//! lowering of its records onto these functions and nothing else
+//! (`docs/01-architecture/shared-core.md` §The client layer).
 //!
 //! * [`undo`] — undo/redo built from **inverse commands**, read out of the
 //!   rows the client is already holding.
-//! * [`views`] — named saved views, stored per device as a preference.
-//! * [`config`] — the tiny TOML subset both preference files are written in.
+//! * [`history`] — a session's undo and redo stacks, recorded and replayed
+//!   against a live vault, and ([`history::persist`]) written down losslessly
+//!   for a client whose session outlives its process.
+//! * [`views`] — saved views: the one-time import of the per-device
+//!   `views.toml` into the synced entity, and the words a client shows one in.
+//! * [`preferences`] — the bootstrap preferences file a device reads before
+//!   it has a vault, written so a crash leaves one whole file or the other.
+//! * [`ids`] — lowercase hex for the ids that have no `EntityRef` prefix.
+//! * [`host`] — what a host hands the core at open: an injected clock, and a
+//!   vault root checked for its width.
+//! * [`gate`] — what this build may edit in a vault (ADR-0045 §8).
+//! * [`vocab`] — the shared vocabulary read in the caller's zone: Today's
+//!   sections, relative days, snoozes, block conflicts, session timers,
+//!   routine occurrence keys.
+//! * [`reminders`] — the core's reminder intents as an OS schedule: the cap,
+//!   the order, the body text, identifiers stable across re-plans, the
+//!   reconcile against what the OS holds, and the notification preferences
+//!   read off the core's `Preferences`.
+//! * [`focus`] — what an OS Focus filter lets through, for Today and for the
+//!   reminder schedule alike.
+//! * [`brief`] — the morning and evening briefs' sections and headlines.
+//! * [`review`] — the daily glance's civil window, the review snapshot, and
+//!   an export's file name.
+//! * [`civil`] — a picked moment turned into a time value of the kind the
+//!   user meant, in a zone the caller names, with no silent fallback.
+//! * [`editor`] — the task, block and routine editors' forms, turned into
+//!   patches that carry only what changed and keep every time's kind.
+//! * [`export`] — the full decrypted export written into a directory the
+//!   caller names (`docs/04-storage/export-format.md`).
+//! * [`schedule`] — defer, snooze, schedule and the Today capture default,
+//!   in civil days and in the kind the plan already has.
+//! * [`calendar`] — the grid's days and week start, block layout, snapping,
+//!   drags, and the Resolve menu's merge.
+//! * [`relay_url`] — the one rule for what a relay URL is, shared with the
+//!   web client through `vectors/relay-url.json`.
+//! * [`sync_status`] — the sync badge and the sync plan, as codes.
+//! * [`links`] — `sunrise://` deep links, parsed and built.
+//! * [`share`] — what shared text, a link and images become as an Inbox task.
+//! * [`pairing_flow`] — a pairing as a screen walks it: transport, legs,
+//!   phases and progress, as pure transitions that name the seam calls.
+//! * [`vault_session`] — the vault session's lifecycle: first run, locked,
+//!   unlocked, and the refusals that keep a key from being made over data.
+//! * [`secret_copies`] — which copy survives when one secret sits in two
+//!   keychains, and what a migration writes and deletes to get there.
+//! * `account_session` (feature `relay`) — the OIDC session: sign-in, silent
+//!   renewal at `sunrise-auth`'s renewal point, and sign-out.
+//! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
+//!   travel through.
+//! * [`palette`] — a command palette's ranking of a typed query against
+//!   command names, and its clamped highlight.
+//! * [`selection`] — a list's keyboard selection: cursor, ticked rows and the
+//!   anchor a range grows from.
+//! * [`task_order`] — a drag in a task list as the one `MoveTasks` it is,
+//!   and the one-time import of an order a device kept for itself.
+//! * [`note_blocks`] — a note body as a block editor edits it, and the
+//!   interlock that opens a body read-only rather than losing what it holds.
+//! * [`print`](mod@print) — a printed document's pagination and file name.
+//! * `account` (feature `relay`) — publishing a vault to the relay: seal a
+//!   recovery blob, create or adopt the account, register this device.
+//! * `sync` (feature `relay`) — the SSE transport factory every client dials
+//!   with, the bounded background `sync_once`, and the wait for an outbox or
+//!   a replay to catch up.
+//! * `recovery` (feature `relay`) — `docs/03-crypto/recovery.md` §Recovery
+//!   flow steps 3 to 8, from the typed code to a vault that has read its
+//!   history, over the REST client in `sunrise-relay-client`.
 //!
-//! Everything here is pure over its inputs. Nothing reads a clock, opens a
-//! socket, or touches a `Core`; [`views::load`] is the only function that
-//! touches the filesystem, and it takes the path.
+//! # Determinism
+//!
+//! Nothing here reads the host's clock or zone. Time is the core's injected
+//! clock ([`sunrise_core::Core::now_ms`]) or a zone name the caller passes;
+//! randomness is an injected [`sunrise_core::Rng`]; a file is a path the
+//! caller names. The workspace's `disallowed-methods` rules hold here as they
+//! do in the core (`docs/01-architecture/shared-core.md`), and every module is
+//! unit-tested without a seam.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![allow(clippy::module_name_repetitions)]
 
-pub mod config;
+#[cfg(feature = "relay")]
+pub mod account;
+#[cfg(feature = "relay")]
+pub mod account_session;
+pub mod brief;
+pub mod calendar;
+pub mod civil;
+pub mod editor;
+pub mod export;
+pub mod focus;
+pub mod gate;
+pub mod history;
+pub mod host;
+pub mod ids;
+pub mod links;
+pub mod note_blocks;
+#[cfg(feature = "relay")]
+pub mod pairing;
+pub mod pairing_flow;
+pub mod palette;
+pub mod preferences;
+pub mod print;
+#[cfg(feature = "relay")]
+pub mod recovery;
+pub mod relay_url;
+pub mod reminders;
+pub mod review;
+pub mod schedule;
+pub mod secret_copies;
+pub mod selection;
+pub mod share;
+#[cfg(feature = "relay")]
+pub mod sync;
+pub mod sync_status;
+pub mod task_order;
+#[cfg(test)]
+mod test_support;
 pub mod undo;
+pub mod vault_session;
 pub mod views;
+pub mod vocab;
 
-pub use config::parse_pairs;
 pub use undo::{
     invert, invert_create, is_create, rebind_creates, EntityLookup, NotUndoable, UndoEntry,
     MAX_DEPTH,

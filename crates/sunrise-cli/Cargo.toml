@@ -19,6 +19,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# The cheap Argon2id set for recovery blobs (`sunrise-crypto`'s
+# `test-cheap-kdf`), for the `sunrise` binary the e2e suite builds and spawns
+# (`sunrise-e2e`'s `src/cli.rs`, `mise run e2e-cli`). Never a release build's:
+# without `debug_assertions` it changes nothing.
+test-cheap-kdf = ["sunrise-crypto/test-cheap-kdf"]
+
 [dependencies]
 jiff = { workspace = true }
 # The runtime `src/i18n.rs` gives the generated string binding: CLDR plural
@@ -26,31 +33,40 @@ jiff = { workspace = true }
 icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_plurals = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
 tracing = { workspace = true }
 # `sunrise recover` has one error arm per thing the user can do about it, and a
 # recovery is run by someone who has already lost every device — "it failed" is
 # not an acceptable message there.
 thiserror = { workspace = true }
-# The recovery seed is drawn, used twice and dropped inside one function; this
-# is what makes "dropped" mean the bytes are gone rather than merely out of
-# scope.
-zeroize = { workspace = true }
 sunrise-auth = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-pairing = { workspace = true }
+# Every secret this binary writes: the vault key, the parked pairing secret,
+# the exported grant and the sealed undo history.
+sunrise-private-file = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
 sunrise-log = { workspace = true }
-sunrise-onboarding = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-relay-client = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
+# The `--json` output (`src/json.rs`).
+serde_json = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+proptest = { workspace = true }
+# `tests/recover_command.rs` and every test that bootstraps an account seal a
+# recovery blob without being about the KDF; the binary those tests run is
+# built with the same features, so both sides use the cheap set.
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
+sunrise-test-seed = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
+# `tests/rebuild_command.rs` damages a vault the binary wrote, through the
+# keyed connection only the storage crate opens.
+sunrise-storage = { workspace = true }
 tempfile = "3"

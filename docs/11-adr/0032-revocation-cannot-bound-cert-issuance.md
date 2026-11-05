@@ -29,7 +29,7 @@ admit the next one. A revoked device therefore mints a fresh keypair, signs a
 replica admits the new id — `Engine::backfill_key_envelopes` then seals it every
 key the revocation had just rotated away. This is
 [#105](https://github.com/justin13888/Sunrise/issues/105), and
-`engine::tests::a_revoked_device_rejoins_under_a_fresh_device_id` asserts the
+`engine::tests::device_admission::a_revoked_device_cannot_rejoin_under_a_fresh_device_id` asserts the
 round trip rather than describing it.
 
 Three documents and one module comment named a narrower fix as available and

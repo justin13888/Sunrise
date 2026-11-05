@@ -161,7 +161,7 @@ final class DeviceListModel {
         do {
             let result = try await bridge.query(.deviceList)
             guard case let .devices(devices) = result else {
-                errorMessage = "The core answered a device list with something else."
+                errorMessage = L10n.Identity.deviceListUnexpected
                 return
             }
             let me = await bridge.deviceId()

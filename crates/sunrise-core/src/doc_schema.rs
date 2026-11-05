@@ -12,10 +12,21 @@
 //! [`canonical_schema`] builds it from the code, never by hand:
 //!
 //! - every entity, its op variants and the records they write, with each
-//!   field's wire name, value type and CRDT type, from the entity registry
+//!   field's wire name, value type, CRDT type and conflict class, and the
+//!   default a field the decoder requires reads as, from the entity registry
 //!   ([`sunrise_id::registry::ENTITIES`]);
+//! - the rules the conflict classes are decided by (ADR-0065 §3): which task
+//!   states are terminal, the precedence inside a set of concurrent writes,
+//!   and that a generated write yields;
 //! - every `InnerOp` variant the decoder accepts, read out of the derive, so
-//!   the control families are covered as well as the registry's;
+//!   the control families are covered as well as the registry's, and the
+//!   payload type of each variant the registry does not declare
+//!   ([`crate::control_op::OP_PAYLOADS`]);
+//! - every value type a record or one of those payloads carries, field by
+//!   field: a record's fields, the type an alias encodes as, a tuple's items,
+//!   or an enum's variants and tag (`sunrise_domain::registry::VALUE_TYPES`
+//!   and [`crate::control_op::PAYLOAD_VALUE_TYPES`]). A test fails while a
+//!   type the schema names is described nowhere;
 //! - every lossless string enum on the wire, with the spellings its
 //!   `lossy_enum!` table holds and the arm an unknown value reads as;
 //! - every feature id this build supports ([`crate::feature::FEATURES`]),
@@ -61,10 +72,14 @@
 //! Never edit an existing registry entry to make the failure go away: an
 //! entry is what every build that shipped it believes the version means.
 
+use crate::bytes::hex_bytes;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use sunrise_cbor::version::{DOC_SCHEMA_FINGERPRINTS, DOC_SCHEMA_FP_DOMAIN};
-use sunrise_id::registry::{Crdt, Merge, OpClass, Owner, ENTITIES};
+use sunrise_id::registry::{
+    Conflict, Crdt, Merge, OpClass, Owner, Tagging, ValueField, ValueShape, ValueSpec,
+    VariantShape, ENTITIES, TERMINAL_STATES,
+};
 
 /// The version of this document's own layout. Bumped only if the schema's
 /// JSON structure changes, which also moves every fingerprint.
@@ -75,13 +90,15 @@ const SCHEMA_FORMAT: u64 = 1;
 ///
 /// The spellings and the fallback are read from each enum's own
 /// `lossy_enum!` table, so a variant added there reaches the schema. The list
-/// of enums is the one part written here: a new `lossy_enum!` user must be
-/// added to it.
+/// of enums is the one part written here, and the test
+/// `every_lossy_enum_user_is_described` fails while a `lossy_enum!`
+/// user in `sunrise-domain` is missing from it.
 fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str>)> {
     use sunrise_domain::constraint::ConstraintSeverity;
     use sunrise_domain::focus::{FocusKind, InterruptionReason};
     use sunrise_domain::routine::RoutineCatchupPolicy;
     use sunrise_domain::rrule::{Frequency, Weekday};
+    use sunrise_domain::saved_view::{LatenessPart, ViewKind, ViewSort, WindowField};
     use sunrise_domain::stream::{StreamColor, StreamReviewCadence};
     use sunrise_domain::task::TaskState;
     use sunrise_domain::Energy;
@@ -108,11 +125,15 @@ fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str
         with_fallback!("FocusKind", FocusKind),
         without_fallback!("Frequency", Frequency),
         with_fallback!("InterruptionReason", InterruptionReason),
+        without_fallback!("LatenessPart", LatenessPart),
         with_fallback!("RoutineCatchupPolicy", RoutineCatchupPolicy),
         with_fallback!("StreamColor", StreamColor),
         with_fallback!("StreamReviewCadence", StreamReviewCadence),
         with_fallback!("TaskState", TaskState),
+        without_fallback!("ViewKind", ViewKind),
+        with_fallback!("ViewSort", ViewSort),
         without_fallback!("Weekday", Weekday),
+        without_fallback!("WindowField", WindowField),
     ]
 }
 
@@ -153,6 +174,31 @@ const fn crdt_name(crdt: Crdt) -> &'static str {
     }
 }
 
+const fn conflict_name(conflict: Conflict) -> &'static str {
+    match conflict {
+        Conflict::Merge => "merge",
+        Conflict::Quiet => "quiet",
+        Conflict::Tracked => "tracked",
+        Conflict::State => "state",
+        Conflict::Tombstone => "tombstone",
+    }
+}
+
+/// How the conflict classes decide (ADR-0065 §3, and its clarification D7):
+/// the states [`Conflict::State`] ranks first, the order the merge compares
+/// concurrent writes in, and that a generated write never beats a concurrent
+/// user write. Hashed beside the classes, because two builds that disagreed
+/// about any of it would pick different winners from the same versions.
+///
+/// `precedence` is an order, so [`canonical_order`] leaves it as written.
+fn conflict_rules() -> Value {
+    json!({
+        "terminal_states": TERMINAL_STATES,
+        "precedence": ["origin", "class", "stamp"],
+        "generated_yields": true,
+    })
+}
+
 /// A type as the registry writes it, with the token spacing `stringify!`
 /// leaves (`Option < NoteBody >`) removed, and a payload's `Box<…>` removed
 /// because serde does not show it on the wire.
@@ -162,6 +208,69 @@ fn type_name(written: &str) -> String {
         .strip_prefix("Box<")
         .and_then(|inner| inner.strip_suffix('>'))
         .map_or_else(|| compact.clone(), str::to_owned)
+}
+
+/// Every value type the schema describes: the ones registered records carry
+/// (`sunrise_domain::registry::VALUE_TYPES`) and the ones the payloads of the
+/// ops the registry does not declare carry
+/// ([`crate::control_op::PAYLOAD_VALUE_TYPES`]).
+fn value_types() -> impl Iterator<Item = &'static ValueSpec> {
+    sunrise_domain::registry::VALUE_TYPES
+        .iter()
+        .chain(crate::control_op::PAYLOAD_VALUE_TYPES)
+}
+
+fn value_fields(fields: &[ValueField]) -> Vec<Value> {
+    fields
+        .iter()
+        .map(|f| json!({ "name": f.name, "type": type_name(f.value_type) }))
+        .collect()
+}
+
+/// One value type as the schema writes it. A tuple's items keep their
+/// order, because their position is their name on the wire.
+fn value_type_value(spec: &ValueSpec) -> Value {
+    match spec.shape {
+        ValueShape::Record {
+            fields,
+            keeps_unknowns,
+        } => json!({
+            "name": spec.name,
+            "shape": "record",
+            "keeps_unknowns": keeps_unknowns,
+            "fields": value_fields(fields),
+        }),
+        ValueShape::Alias(ty) => json!({
+            "name": spec.name,
+            "shape": "alias",
+            "type": type_name(ty),
+        }),
+        ValueShape::Tuple(items) => json!({
+            "name": spec.name,
+            "shape": "tuple",
+            "items": items.iter().map(|t| type_name(t)).collect::<Vec<_>>(),
+        }),
+        ValueShape::Variants {
+            tagging,
+            variants,
+            keeps_unknowns,
+        } => json!({
+            "name": spec.name,
+            "shape": "variants",
+            "tag": match tagging {
+                Tagging::External => Value::Null,
+                Tagging::Internal(key) => json!(key),
+            },
+            "keeps_unknowns": keeps_unknowns,
+            "variants": variants.iter().map(|v| match v.shape {
+                VariantShape::Unit => json!({ "name": v.name }),
+                VariantShape::Newtype(ty) => json!({ "name": v.name, "type": type_name(ty) }),
+                VariantShape::Fields(fields) => {
+                    json!({ "name": v.name, "fields": value_fields(fields) })
+                }
+            }).collect::<Vec<_>>(),
+        }),
+    }
 }
 
 /// `items` sorted by the string each holds at `key`, so the order they were
@@ -209,6 +318,23 @@ fn canonical_order(mut schema: Value) -> Value {
     }
     schema["entities"] = Value::Array(entities);
     sort_strings(&mut schema["op_kinds"]);
+    schema["op_payloads"] = Value::Array(take_sorted(&mut schema["op_payloads"], "variant"));
+    let mut values = take_sorted(&mut schema["values"], "name");
+    for value in &mut values {
+        if value.get("fields").is_some() {
+            value["fields"] = Value::Array(take_sorted(&mut value["fields"], "name"));
+        }
+        if value.get("variants").is_some() {
+            let mut variants = take_sorted(&mut value["variants"], "name");
+            for variant in &mut variants {
+                if variant.get("fields").is_some() {
+                    variant["fields"] = Value::Array(take_sorted(&mut variant["fields"], "name"));
+                }
+            }
+            value["variants"] = Value::Array(variants);
+        }
+    }
+    schema["values"] = Value::Array(values);
     let mut enums = take_sorted(&mut schema["enums"], "name");
     for e in &mut enums {
         sort_strings(&mut e["variants"]);
@@ -219,8 +345,10 @@ fn canonical_order(mut schema: Value) -> Value {
         sort_strings(&mut f["op_kinds"]);
         sort_strings(&mut f["fields"]);
         sort_strings(&mut f["field_op_kinds"]);
+        sort_strings(&mut f["retyped"]);
     }
     schema["features"] = Value::Array(features);
+    sort_strings(&mut schema["conflict_rules"]["terminal_states"]);
     schema
 }
 
@@ -245,11 +373,22 @@ fn raw_schema() -> Value {
                 "records": e.records.iter().map(|r| json!({
                     "name": r.name,
                     "keeps_unknowns": r.unknowns.is_some(),
-                    "fields": r.fields.iter().map(|f| json!({
-                        "name": f.name,
-                        "type": type_name(f.value_type),
-                        "crdt": crdt_name(f.crdt),
-                    })).collect::<Vec<_>>(),
+                    "fields": r.fields.iter().map(|f| {
+                        let mut field = json!({
+                            "name": f.name,
+                            "type": type_name(f.value_type),
+                            "crdt": crdt_name(f.crdt),
+                            "conflict": conflict_name(f.conflict),
+                        });
+                        // Only a declared default is hashed: every other
+                        // field reads as its decoder's, which its type
+                        // already pins (ADR-0044 §2).
+                        if let Some(default) = f.default {
+                            field["default"] = serde_json::from_str(default)
+                                .unwrap_or_else(|_| Value::String(default.to_owned()));
+                        }
+                        field
+                    }).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             })
         })
@@ -271,17 +410,30 @@ fn raw_schema() -> Value {
                 "op_kinds": f.op_kinds,
                 "fields": f.fields,
                 "field_op_kinds": f.field_op_kinds,
+                "retyped": f
+                    .retyped
+                    .iter()
+                    .map(|(variant, path)| format!("{variant}.{path}"))
+                    .collect::<Vec<_>>(),
                 "since": f.since,
             })
         })
+        .collect();
+
+    let op_payloads: Vec<Value> = crate::control_op::OP_PAYLOADS
+        .iter()
+        .map(|(variant, payload)| json!({ "variant": variant, "payload": type_name(payload) }))
         .collect();
 
     json!({
         "format": SCHEMA_FORMAT,
         "entities": entities,
         "op_kinds": crate::inner_op::known_kinds(),
+        "op_payloads": op_payloads,
+        "values": value_types().map(value_type_value).collect::<Vec<_>>(),
         "enums": enums,
         "features": features,
+        "conflict_rules": conflict_rules(),
     })
 }
 
@@ -317,20 +469,12 @@ pub(crate) fn render_schema() -> String {
 pub(crate) fn render_registry() -> String {
     let entries: serde_json::Map<String, Value> = DOC_SCHEMA_FINGERPRINTS
         .iter()
-        .map(|(v, fp)| (v.to_string(), Value::String(hex_lower(fp))))
+        .map(|(v, fp)| (v.to_string(), Value::String(hex_bytes(fp))))
         .collect();
     let mut out =
         serde_json::to_string_pretty(&Value::Object(entries)).expect("a JSON value serializes");
     out.push('\n');
     out
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 fn committed_path(file: &str) -> PathBuf {
@@ -342,6 +486,7 @@ fn committed_path(file: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use sunrise_cbor::version::{doc_schema_fingerprint, DOC_SCHEMA_V};
 
     /// Compare a committed file with what this build renders, or write it when
@@ -389,15 +534,15 @@ mod tests {
         let fp = fingerprint(&canonical_schema());
         let registered = doc_schema_fingerprint(u32::from(DOC_SCHEMA_V));
         assert_eq!(
-            registered.map(|r| hex_lower(&r)),
-            Some(hex_lower(&fp)),
+            registered.map(|r| hex_bytes(&r)),
+            Some(hex_bytes(&fp)),
             "the document schema does not match the fingerprint registered for \
              DOC_SCHEMA_V {DOC_SCHEMA_V}. A shape changed: bump DOC_SCHEMA_V, append \
              ({next}, {fp}) to DOC_SCHEMA_FINGERPRINTS and to \
              sunrise_crypto_test_vectors::protocol::DOC_SCHEMA_REGISTRY, then regenerate \
              schemas/doc-schema/. Never edit an existing entry.",
             next = DOC_SCHEMA_V + 1,
-            fp = hex_lower(&fp),
+            fp = hex_bytes(&fp),
         );
     }
 
@@ -480,6 +625,55 @@ mod tests {
         assert_ne!(fingerprint(&schema), fingerprint(&renamed));
     }
 
+    /// ADR-0065 §3: a field's conflict class is part of the document's
+    /// shape, so moving one field from quiet to tracked moves the
+    /// fingerprint, and so does any change to the rules the classes follow.
+    #[test]
+    fn the_conflict_class_reaches_the_fingerprint() {
+        let schema = canonical_schema();
+        let task = schema["entities"]
+            .as_array()
+            .expect("entities")
+            .iter()
+            .position(|e| e["tag"] == "task")
+            .expect("task is registered");
+        let fields = schema["entities"][task]["records"][0]["fields"]
+            .as_array()
+            .expect("fields");
+        let priority = fields
+            .iter()
+            .position(|f| f["name"] == "priority")
+            .expect("priority is registered");
+        assert_eq!(fields[priority]["conflict"], "quiet");
+        let title = fields
+            .iter()
+            .find(|f| f["name"] == "title")
+            .expect("title is registered");
+        assert_eq!(title["conflict"], "tracked");
+
+        let mut moved = schema.clone();
+        moved["entities"][task]["records"][0]["fields"][priority]["conflict"] = json!("tracked");
+        assert_ne!(fingerprint(&schema), fingerprint(&moved));
+
+        let mut ruled = schema.clone();
+        ruled["conflict_rules"]["terminal_states"] = json!(["done"]);
+        assert_ne!(fingerprint(&schema), fingerprint(&ruled));
+        let mut yielding = schema.clone();
+        yielding["conflict_rules"]["generated_yields"] = json!(false);
+        assert_ne!(fingerprint(&schema), fingerprint(&yielding));
+    }
+
+    /// Every terminal state is a `TaskState` spelling this build knows, so
+    /// the State class ranks real states.
+    #[test]
+    fn terminal_states_are_task_states() {
+        use sunrise_domain::task::TaskState;
+        let known: BTreeSet<&str> = TaskState::KNOWN.iter().map(TaskState::as_str).collect();
+        for state in TERMINAL_STATES {
+            assert!(known.contains(state), "{state} is not a TaskState");
+        }
+    }
+
     /// Declaration order is not on the wire, so reversing every list the
     /// code declares leaves the fingerprint where it was: reordering source
     /// never forces a `DOC_SCHEMA_V` bump.
@@ -501,15 +695,254 @@ mod tests {
             }
         }
         reverse(&mut raw["op_kinds"]);
+        reverse(&mut raw["op_payloads"]);
+        reverse(&mut raw["values"]);
+        // `get_mut`, not indexing: indexing a map by a missing key inserts it.
+        for value in raw["values"].as_array_mut().expect("values") {
+            if let Some(fields) = value.get_mut("fields") {
+                reverse(fields);
+            }
+            if let Some(variants) = value.get_mut("variants") {
+                reverse(variants);
+                for variant in variants.as_array_mut().expect("variants") {
+                    if let Some(fields) = variant.get_mut("fields") {
+                        reverse(fields);
+                    }
+                }
+            }
+        }
         reverse(&mut raw["enums"]);
         for e in raw["enums"].as_array_mut().expect("enums") {
             reverse(&mut e["variants"]);
         }
+        reverse(&mut raw["conflict_rules"]["terminal_states"]);
         assert_ne!(raw, raw_schema(), "the reversal changed the declared order");
         assert_eq!(
             fingerprint(&canonical_order(raw)),
             fingerprint(&canonical_schema())
         );
+    }
+
+    /// The types the schema names without describing: scalars, byte arrays,
+    /// the id and time types every record shares, `Unknowns`, a map kept as
+    /// raw CBOR, and `CborValue`, any CBOR value (a Preferences entry).
+    const LEAF_TYPES: &[&str] = &[
+        "CborValue",
+        "bool",
+        "u8",
+        "u32",
+        "u64",
+        "i32",
+        "i64",
+        "String",
+        "EntityRef",
+        "Timestamp",
+        "Date",
+        "Time",
+        "DateTime",
+        "ByteBuf",
+        "Unknowns",
+    ];
+
+    /// The containers a type may be written in, each with one parameter.
+    const WRAPPERS: &[&str] = &["Option", "Vec", "BTreeSet", "Box"];
+
+    /// The containers a type may be written in with a key and a value.
+    const MAPS: &[&str] = &["BTreeMap"];
+
+    /// `inner` split at its top-level commas: `A,B<C,D>` is `A` and `B<C,D>`.
+    fn type_params(inner: &str) -> Vec<&str> {
+        let (mut depth, mut start, mut out) = (0usize, 0, Vec::new());
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' | '[' => depth += 1,
+                '>' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(&inner[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        out.push(&inner[start..]);
+        out
+    }
+
+    /// The named types inside `ty` (already through [`type_name`]), past
+    /// every container. A byte array `[u8;N]` names none.
+    fn named_types(ty: &str) -> Vec<String> {
+        if let Some(array) = ty.strip_prefix('[') {
+            assert!(array.starts_with("u8;"), "unexpected array type {ty}");
+            return Vec::new();
+        }
+        match ty.split_once('<') {
+            Some((outer, rest)) => {
+                let inner = rest.strip_suffix('>').expect("a closed container");
+                let params = type_params(inner);
+                if MAPS.contains(&outer) {
+                    assert_eq!(params.len(), 2, "{outer} takes a key and a value in {ty}");
+                } else {
+                    assert!(WRAPPERS.contains(&outer), "unexpected container in {ty}");
+                    assert_eq!(params.len(), 1, "{outer} takes one parameter in {ty}");
+                }
+                params.into_iter().flat_map(named_types).collect()
+            }
+            None => vec![ty.to_owned()],
+        }
+    }
+
+    /// Every type string anywhere in the schema.
+    fn every_type_named(schema: &Value) -> Vec<String> {
+        fn walk(value: &Value, out: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (k, v) in map {
+                        match (k.as_str(), v) {
+                            ("type" | "payload", Value::String(t)) => out.push(t.clone()),
+                            ("items", Value::Array(items)) => out
+                                .extend(items.iter().filter_map(|i| i.as_str()).map(str::to_owned)),
+                            _ => walk(v, out),
+                        }
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(schema, &mut out);
+        out
+    }
+
+    /// The test #439 asks for: a type a record field, a value type or an op
+    /// payload names is described in the schema — as a record, a value type
+    /// or a lossless enum — or is a leaf. A nested type nobody describes
+    /// would change the wire shape without moving the fingerprint.
+    #[test]
+    fn every_type_the_schema_names_is_described() {
+        let schema = canonical_schema();
+        let mut described: BTreeSet<String> = LEAF_TYPES.iter().map(|t| (*t).to_owned()).collect();
+        for list in ["values", "enums"] {
+            described.extend(
+                schema[list]
+                    .as_array()
+                    .expect(list)
+                    .iter()
+                    .map(|v| v["name"].as_str().expect("a name").to_owned()),
+            );
+        }
+        for entity in schema["entities"].as_array().expect("entities") {
+            described.extend(
+                entity["records"]
+                    .as_array()
+                    .expect("records")
+                    .iter()
+                    .map(|r| r["name"].as_str().expect("a name").to_owned()),
+            );
+        }
+        for ty in every_type_named(&schema) {
+            for name in named_types(&ty) {
+                assert!(
+                    described.contains(&name),
+                    "`{name}` (in `{ty}`) is named by the schema and described nowhere. \
+                     Describe it in sunrise_domain::registry::VALUE_TYPES or \
+                     crate::control_op::PAYLOAD_VALUE_TYPES, or add it to lossless_enums()"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn named_types_reach_past_every_container() {
+        assert_eq!(
+            named_types("Option<Vec<ScheduleConstraint>>"),
+            ["ScheduleConstraint"]
+        );
+        assert_eq!(named_types("BTreeSet<EntityRef>"), ["EntityRef"]);
+        assert!(named_types("[u8;32]").is_empty());
+    }
+
+    /// Value types and records share one namespace in the schema, so a name
+    /// says which shape it is.
+    #[test]
+    fn value_type_names_are_unique_and_are_not_records() {
+        let records: BTreeSet<&str> = ENTITIES
+            .iter()
+            .flat_map(|e| e.records.iter().map(|r| r.name))
+            .collect();
+        let mut seen = BTreeSet::new();
+        for v in value_types() {
+            assert!(seen.insert(v.name), "{} is described twice", v.name);
+            assert!(!records.contains(v.name), "{} is also a record", v.name);
+        }
+    }
+
+    /// The other half of #439's lossy-enum check: `lossy_enum!` is private to
+    /// `sunrise-domain`, so every user is an invocation in its sources, and
+    /// each must be in [`lossless_enums`]. A test rather than a build
+    /// failure because no macro can collect its own call sites.
+    #[test]
+    fn every_lossy_enum_user_is_described() {
+        const CALL: &str = "lossy_enum!(";
+        fn sources(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read the domain sources") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sunrise-domain/src");
+        let mut files = Vec::new();
+        sources(&root, &mut files);
+        let described: BTreeSet<&str> = lossless_enums().iter().map(|(n, _, _)| *n).collect();
+        let mut users = BTreeSet::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read a domain source");
+            for (at, _) in text.match_indices(CALL) {
+                let name: String = text[at + CALL.len()..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                // The macro's own recursive arm passes `$ty`, which is not a name.
+                if !name.is_empty() {
+                    users.insert(name);
+                }
+            }
+        }
+        assert!(
+            users.contains("TaskState"),
+            "the scan found the users: {users:?}"
+        );
+        let missing: Vec<&String> = users
+            .iter()
+            .filter(|u| !described.contains(u.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "lossy_enum! users missing from doc_schema::lossless_enums(): {missing:?}"
+        );
+    }
+
+    /// Every `InnerOp` variant is either declared by the entity registry or
+    /// in [`crate::control_op::OP_PAYLOADS`], never both, so every op's
+    /// payload is described.
+    #[test]
+    fn every_op_the_decoder_accepts_has_a_described_payload() {
+        let registered: BTreeSet<&str> = ENTITIES
+            .iter()
+            .flat_map(|e| e.ops.iter().map(|o| o.variant))
+            .collect();
+        let others: BTreeSet<&str> = crate::control_op::OP_PAYLOADS
+            .iter()
+            .map(|(v, _)| *v)
+            .collect();
+        assert!(registered.is_disjoint(&others));
+        let all: BTreeSet<&str> = registered.union(&others).copied().collect();
+        let decoded: BTreeSet<&str> = crate::inner_op::known_kinds().iter().copied().collect();
+        assert_eq!(all, decoded);
     }
 
     #[test]

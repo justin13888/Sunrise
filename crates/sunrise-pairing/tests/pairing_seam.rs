@@ -17,7 +17,7 @@
 //! for it and rejoined. Neither key travels now, and the round trip is what
 //! replaces the second one — the sponsor cannot sign a cert for keys the joiner
 //! has not minted yet. See `docs/03-crypto/pairing-and-onboarding.md` and the
-//! module docs on `protocol.rs`.
+//! module docs on `crates/sunrise-pairing/src/protocol/mod.rs`.
 
 use std::collections::BTreeMap;
 

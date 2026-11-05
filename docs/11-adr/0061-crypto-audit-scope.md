@@ -29,7 +29,7 @@ Two mechanical gaps sit beside that one.
   how `sunrise-crypto` compares an identity id, a content hash or a key
   (`crates/sunrise-crypto/src/keys.rs`,
   `crates/sunrise-crypto/src/blob_chunk.rs`,
-  `crates/sunrise-crypto/src/device_cert.rs`,
+  `crates/sunrise-crypto/src/device_cert/mod.rs#verify_binding`,
   `crates/sunrise-crypto/src/identity_transition.rs`), and nothing stopped the
   next `==` on a MAC or a tag. `clippy.toml` banned only clocks and RNGs.
 - **Fuzzing never ran on a pull request.** The six `cargo-fuzz` targets ran
@@ -72,12 +72,16 @@ runs it and `constant-time-gate-contract` asserts that a `==` over a
 
 ### 4. A pull request that touches the crypto is fuzzed, for two minutes a target
 
-The `fuzz-pr` CI job runs on a pull request that changes
+The `fuzz-pr` CI job runs on a pull request that changes `crates/sunrise-cbor/`,
 `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`,
+`crates/sunrise-pairing/`, `crates/sunrise-core/`,
 `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/`, and
-only on one. It runs the targets those paths reach, for 120 seconds each,
-from the committed seeds in `fuzz/seeds/`, on the nightly toolchain pinned in
-the job. A failure uploads the reproducer, and the reproducer joins the seed
+only on one. It runs the targets those paths reach (for `crates/sunrise-cbor/`
+the eight that decode through it: `op_envelope`, `recovery_blob`,
+`identity_transition`, `device_cert`, `key_bundle`, `identity_chain`,
+`wire_frame` and `pairing_messages`), for
+120 seconds each, from the committed seeds in `fuzz/seeds/`, on the nightly
+toolchain pinned in the job. A failure uploads the reproducer, and the reproducer joins the seed
 corpus with its fix. A nightly toolchain that cannot be installed, or cannot
 build the harnesses, turns the job's verdict into a warning annotation rather
 than a red check, because that is a fact about the toolchain and not about the

@@ -29,12 +29,14 @@ unacked.
 
 - On every locally-emitted op: insert into `ops` (immediately applied to
   materialized state) and `INSERT OR IGNORE` into `outbox`, in the caller's
-  transaction (`crates/sunrise-storage/src/sync_local.rs:42-51`). The
+  transaction (`crates/sunrise-storage/src/sync_local.rs:42-51#enqueue`). The
   `OR IGNORE` makes enqueue idempotent.
-- Pending means `acked_at_ms IS NULL` (`sync_local.rs:61-62,95`), which the
+- Pending means `acked_at_ms IS NULL`
+  (`crates/sunrise-storage/src/sync_local.rs#list_unacked`,
+  `crates/sunrise-storage/src/sync_local.rs#pending_count`), which the
   partial index above serves directly.
 - An ack is a **soft** update — `UPDATE outbox SET acked_at_ms = ?`
-  (`sync_local.rs:79-87`) — not a delete. The row survives, so the outbox is an
+  (`crates/sunrise-storage/src/sync_local.rs#mark_acked`) — not a delete. The row survives, so the outbox is an
   append-only record of what was sent and when it was acknowledged.
 
 ## Backoff
@@ -44,23 +46,40 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:761` and `:817`, `ev = "sync.backoff"`).
+(`crates/sunrise-core/src/sync_driver.rs#run` and
+`crates/sunrise-core/src/sync_driver/schedule.rs#backoff_sleep`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
-(`sync_driver.rs:948-958`, `next_backoff_delay`); the attempt counter is then
+(`crates/sunrise-core/src/sync_driver/schedule.rs#next_backoff_delay`); the attempt counter is then
 back at zero and the
 sequence starts again at 100 ms. A client that cannot reach its relay for an hour
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
 that a long-lived client should never stop trying.
 
+Those are the schedule's delays; a relay that refuses with `Retry-After` raises
+the next one. When the last attempt ended in a refusal carrying the header (for
+example `429 RATE_LIMITED`), the delay is
+`max(scheduled, min(retry_after, MAX_RETRY_AFTER))`
+(`crates/sunrise-core/src/sync_driver/schedule.rs#reconnect_delay`), with
+`MAX_RETRY_AFTER` = 15 min
+(`crates/sunrise-core/src/sync_driver/schedule.rs#MAX_RETRY_AFTER`). It is a
+floor, not a replacement: a `Retry-After` shorter than the current step does not
+shorten it, and the attempt counter still advances. The cap keeps a
+misconfigured or hostile relay from parking the driver indefinitely. Only the
+delta-seconds form is read (`crates/sunrise-sync/src/sse/http.rs#retry_after`);
+an HTTP-date reads as absent. `retry_after_floors_the_reconnect_delay_up_to_a_cap`
+in `sync_driver/tests/scheduling.rs` pins the raise, the no-lower and the cap, and
+`a_refusal_s_retry_after_floors_the_next_reconnect` in
+`sync_driver/tests/session_end.rs` drives the driver through refusals that ask for 5 s.
+
 The counter is otherwise reset only when the relay **answers the handshake**
-(`sync_driver.rs:797`), not when a transport is constructed: no transport
+(`crates/sunrise-core/src/sync_driver.rs#run`), not when a transport is constructed: no transport
 factory dials at construction, so a reset there would zero the counter on every
 attempt and pin the driver to the 100 ms step
 ([#283](https://github.com/justin13888/Sunrise/issues/283)). A session that did
 handshake — however briefly — starts the next reconnect from 100 ms.
-`an_unanswered_reconnect_climbs_the_backoff_schedule` in `sync_driver.rs`
+`an_unanswered_reconnect_climbs_the_backoff_schedule` in `sync_driver/tests/credential.rs`
 drives the driver itself through unanswered and answered reconnects and asserts
 the `attempt` and `delay_ms` of every `sync.backoff` it emits.
 
@@ -73,13 +92,13 @@ the schedule, and at most one wake is held however many land.
 `a_reconnect_wake_cuts_the_backoff_short` asserts both.
 
 One consequence worth naming because it looks like a bug and is not: the
-`min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52`)
+`min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52#next_delay`)
 is **unreachable on this policy**. With `max_retries = 5` the largest base is
-1600 ms, so the cap never binds; the only 30 s that ever elapses is the flat
-sleep on the exhausted branch.
+1600 ms, so the cap never binds; the only 30 s the schedule itself ever waits
+is the flat sleep on the exhausted branch.
 
 Every number in this section is asserted, not just described. The `scheduling`
-module in `sync_driver.rs` drives `next_backoff_delay` through a full cycle and
+module in `sync_driver/tests/` drives `next_backoff_delay` through a full cycle and
 pins the sequence to `[100, 200, 400, 800, 1600, 30000, 100]` ms at the jitter
 midpoint, checks the ±20% band at each base, and checks that the exhausted
 30 s is identical at every jitter value. It does this without sleeping: the
@@ -90,11 +109,17 @@ without changing this section reddens that module.
 
 **Per-batch retransmit.** Each in-flight `OpBatch` carries its own timer and
 `Backoff`; when the deadline passes the batch frame is sent again
-(`sync_driver.rs:1214-1246`, `ev = "sync.op.retransmit"`). Exhausting the policy
-here *does* escalate: the driver tears the session down and reconnects
-(`sync_driver.rs:1082-1093`, `SYNC_NETWORK_UNAVAILABLE`), because a batch that
-went unacked through the full policy is evidence the link is not carrying ops at
-all. A fresh session re-drains the outbox from scratch.
+(`sync_driver::schedule::retransmit_due`, `ev = "sync.op.retransmit"`). Each deadline
+starts when that batch's send returns, not when the batch is built: on the SSE
+transport a send is a `POST` that holds the driver for a round trip, and its
+reply is the ack. The session pump also reads an inbound frame that has already
+arrived before it reacts to a submit or to the timer
+([#475](https://github.com/justin13888/Sunrise/issues/475)). Without both, a
+sustained commit rate at a real round trip resent batches whose acks sat unread
+until the policy ran out. Exhausting the policy here *does* escalate: the driver
+tears the session down and reconnects (`SYNC_NETWORK_UNAVAILABLE`), because a
+batch that went unacked through the full policy is evidence the link is not
+carrying ops at all. A fresh session re-drains the outbox from scratch.
 
 Neither timer is persisted. After a restart every unacked row is simply drained
 again, at attempt zero.
@@ -116,8 +141,8 @@ code change that has not been made.
 ## Ack handling
 
 The ack is `Ack { batch_id, stream_id, server_first_seen_ms }`
-(`crates/sunrise-wire-protocol/src/payloads.rs:85-94`). There is **no
-`applied_seq_range` field**; earlier revisions of this file specified one.
+(`crates/sunrise-wire-protocol/src/payloads.rs:91#AckPayload`). There is **no
+`applied_seq_range` field**.
 
 On receipt the client stamps `acked_at_ms` on each of the batch's outbox rows.
 `server_first_seen_ms` is advisory and is not persisted ([`wire-protocol.md`](./wire-protocol.md)
@@ -138,7 +163,7 @@ many ops.
 - Local writes are not throttled by outbox size.
 - *Target state:* a daily housekeeping job warning the user (in-app banner) if
   the outbox exceeds 10k ops or 50 MB. No such job exists; `sync_pending()`
-  reports the count (`sync_driver.rs:1002-1004`) and nothing thresholds it.
+  reports the count (`crates/sunrise-core/src/core/mod.rs#sync_pending`) and nothing thresholds it.
 
 ## Optimistic UI implications
 
@@ -155,7 +180,7 @@ today.
 ## Crash safety
 
 The outbox row commits in the same SQLite transaction as the op insert
-(`sync_local.rs:42-51`). A crash mid-commit either commits both `ops` and
+(`crates/sunrise-storage/src/sync_local.rs#enqueue`). A crash mid-commit either commits both `ops` and
 `outbox` rows, or neither.
 
 ## Network changes

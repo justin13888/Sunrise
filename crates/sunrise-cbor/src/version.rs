@@ -135,7 +135,113 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// refuses it as an invalid op; it never receives one, because a vault write
 /// waits until every device has advertised `preferences.entity`. Every v1..v10
 /// payload shape is unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 11;
+///
+/// `12` changes no shape on the wire. It is the version at which the
+/// canonical schema describes what it only named before (issue #439): every
+/// value type a record carries (`RRule`, `SunriseTime`, `ScheduleConstraint`
+/// and the rest) and every op payload the entity registry does not declare,
+/// field by field. A field added to one of them now moves the fingerprint.
+/// The payloads a v11 build writes are the payloads a v12 build writes, so
+/// the floor does not move.
+///
+/// `13` adds eight optional fields to the Attachment record, the original's
+/// `width` and `height` and six `thumbnail_*` fields, and their feature,
+/// `attachment.thumbnail` (issue #346, ADR-0053). An attachment without a
+/// thumbnail encodes exactly as before. A v12 build keeps the fields as
+/// unknowns and writes them back unchanged, and refuses to write attachments
+/// once the vault requires the feature. Every v1..v12 payload shape is
+/// unchanged, so the floor still does not move.
+///
+/// `14` gives every registered field a conflict class and adds the rules the
+/// classes follow to the schema: the terminal task states, the precedence
+/// among concurrent writes, and that a generated write yields (ADR-0065 §3).
+/// It also adds two optional keys to `Patch`, `parents` and `group`
+/// (ADR-0065 §1, §6), which no build writes yet. A `Patch` without them
+/// encodes exactly as before, and a v13 build keeps them as unknown keys.
+/// Every v1..v13 payload shape is unchanged, so the floor still does not
+/// move.
+///
+/// `15` retypes six fields from a bare instant to a `SunriseTime` (issue
+/// #506, ADR-0066 §1): `Routine.starts_at`, `ends_at`, `paused_until` and
+/// `last_completed_at`, `RRule.until`, and `Stream.paused_until`, each a
+/// `CompatTime`: an instant is still written as the bare timestamp, and
+/// every other kind tagged. A routine time a v14 build cannot read (a
+/// floating anchor, an all-day end, a non-instant pause) is written only into
+/// a vault that requires the feature `routine.civil_times`, which a v14 build
+/// lacks and so stops writing routines; a routine whose times all have a
+/// bare instant is written as one, so a v14 build reads it as it always did.
+/// A v14 payload still decodes, its bare instants read as zoned in the
+/// routine's zone, so the floor does not move. It also hashes each
+/// feature's `retyped` fields.
+///
+/// `16` adds one optional field to the Task record, `sort_order`, a
+/// fractional-index key (issue #340): a task's place in a hand-arranged
+/// list. A task nobody placed omits it and encodes exactly as before. A v15
+/// build keeps the key as an unknown field and writes it back unchanged in
+/// its own full-state ops, so it needs no feature: an older device keeps
+/// writing tasks, and only shows them in its own order. Every v1..v15
+/// payload shape is unchanged, so the floor does not move.
+///
+/// `17` adds the `svw_` saved-view entity (issue #341), written only by
+/// `Patch`, its value types (`ViewFilter`, `PriorityRange`, `DateWindow`)
+/// and lossless enums (`ViewKind`, `ViewSort`, `WindowField`), and its
+/// feature, `saved_view.entity`. A v16 build cannot decode a `Patch` naming a
+/// prefix it does not know, so none is written until every device has
+/// advertised the feature. Every v1..v16 payload shape is unchanged, so the
+/// floor does not move.
+///
+/// `18` adds the structural feature `core.field_ops` (ADR-0065 §7): once a
+/// vault requires it, every command writes `Patch` naming its writer's heads,
+/// and a multi-entity commit is a group of them. No shape changes: `parents`
+/// and `group` arrived in `14`, and a v17 build folds a `Patch` with them as
+/// this one does. A v17 build lacks the feature, so it stops writing entities
+/// in a vault that requires it and goes on applying what it receives. Every
+/// v1..v17 payload shape is unchanged, so the floor does not move.
+///
+/// `19` makes a stream optional (ADR-0046, issue #332). `Task.stream_id`,
+/// `Block.stream_id` and `TaskTemplate.stream_id` become `Option`s; "no
+/// stream" is still written as the legacy Inbox reference every older build
+/// reads as its Inbox, and that reference reads back as no stream, so the
+/// wire shape of the three fields does not change. `Task` gains `triaged_at`
+/// and `Stream` gains `rehomed_to`, both optional and absent when unset, and
+/// `ViewFilter` gains `no_stream`, absent when false. A v18 build keeps all
+/// three as unknown fields and writes them back unchanged, so none needs a
+/// feature: an older device keeps writing tasks, reads a stream-less task as
+/// an Inbox task, and reads a re-homed stream's late dependents in the
+/// deleted stream until it updates. Every v1..v18 payload shape is
+/// unchanged, so the floor does not move.
+///
+/// `20` gives a task a plan and two deadlines (ADR-0047, issue #334).
+/// `Task.planned_at` and `Task.hard_due_at` are the old `scheduled_at` and
+/// `due_at`, and keep those wire keys, which every older build reads with
+/// these meanings (ADR-0047 clarification C1); `Task.target_at`, the soft
+/// deadline, is new and absent when unset. `ViewFilter` gains `lateness`,
+/// absent when empty, and `WindowField` the spelling `target`. A v19 build
+/// keeps each as an unknown field or value and writes it back unchanged, so
+/// none needs a feature: an older device keeps writing tasks, and reads a
+/// target-only task as undated until it updates. Every v1..v19 payload shape
+/// is unchanged, so the floor does not move.
+///
+/// `21` adds what the triage queue writes (ADR-0047 §3–§4, issue #335):
+/// `Task.cancel_reason`, a Drop's reason, and `Task.late_acknowledged_at`, a
+/// Keep, both absent when unset. A backdated completion is the
+/// `completed_at` field every build since `DOC_SCHEMA_V` 2 decodes. A v20
+/// build keeps the two new fields as unknown fields and writes them back
+/// unchanged, so neither needs a feature. Every v1..v20 payload shape is
+/// unchanged, so the floor does not move.
+///
+/// `22` gives a routine a series (issue #331,
+/// `docs/02-domain/routines-and-recurrence.md` §Edit scope): `Routine`
+/// gains `split_from`, the series root a routine split off by an edit "this
+/// and future" continues, absent when unset, and its feature,
+/// `routine.series`, which an op carrying it uses: a build that did not read
+/// it would key the continuation's occurrences on the wrong id and generate
+/// them twice, so no split is written until every device has advertised it.
+/// `Task` gains `hard_constraint_violated`, absent when false, which a v21
+/// build keeps as an unknown field and writes back unchanged, so it needs no
+/// feature. Every v1..v21 payload shape is unchanged, so the floor does not
+/// move.
+pub const DOC_SCHEMA_V: u16 = 22;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -184,6 +290,50 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         11,
         hex32("3c75fc18c3369d0481d746a3534a34028ad1068a02ee6816e3062b830e6debd4"),
+    ),
+    (
+        12,
+        hex32("1be56767d868335916e893ff50e7a6097d942957f1687109b8cc17fb4e2176f1"),
+    ),
+    (
+        13,
+        hex32("09ede17ec2962b1bc05b1214681c7fc1f4af325955535c27119d709c35a2cf05"),
+    ),
+    (
+        14,
+        hex32("300fb530ec0d3b3c3e5e24ed878fb9cc866cb4f2a3496bd37388369887f3749b"),
+    ),
+    (
+        15,
+        hex32("953c59ed8729b185b79ca821da37d40facc115054b8c11150d19d8e0b6999de4"),
+    ),
+    (
+        16,
+        hex32("ac96923d0675fabe2162d286f5ba5af7cb15cc4c32a4311bcc36e2fa6ad6c9ef"),
+    ),
+    (
+        17,
+        hex32("2fc9c2a11793f1e1940133d9d5949ddff676fa2cb73fbfd65f2175c0215a2531"),
+    ),
+    (
+        18,
+        hex32("4093cc32794e193cf86235c9d79e31437b4e46f694f9b419e7f9414845617015"),
+    ),
+    (
+        19,
+        hex32("46ee3fe735d8a27674e96e7ea8962031c544c790aba22921c260dca4afee084e"),
+    ),
+    (
+        20,
+        hex32("7f0c318d6bb81e2f7d2c755d5271f3c229854133bbe21c1dbcf0a0da24979fc9"),
+    ),
+    (
+        21,
+        hex32("35b2c6020668ba962d8f799f533beebf2c3ee14d0237a05734b6cad8bb50cebe"),
+    ),
+    (
+        22,
+        hex32("878b79742cd6b1884edbbdc4977f89c29391aebff25cb005d9e1cfcaae9a9454"),
     ),
 ];
 
@@ -455,4 +605,137 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// projection of the vault's one `Preferences` entity, and this device's
 /// preference overlay. Schema-only: both start empty, and every key then
 /// resolves to its default, which is what a vault with no preferences means.
-pub const STORAGE_V: u16 = 37;
+///
+/// `38` is migration `0038_attachment_thumbnails.sql` (issue #346, ADR-0053):
+/// eight nullable `attachments` columns for the thumbnail and dimensions, and
+/// the device-local `blob_cache` index the LRU reads, with
+/// `blob_cache_backfill`, the record that the one pass indexing blobs from
+/// before the index has run. Schema-only: every new column is NULL and both
+/// tables start empty.
+///
+/// `39` is migration `0039_entity_versions.sql` (ADR-0065, issue #447): the
+/// version DAG of every mergeable entity (`entity_versions` and each
+/// version's causal frontier, `entity_frontier`), the concurrent writes a
+/// register keeps (`register_losers`), the members of a group waiting for the
+/// rest (`pending_groups`), and `projection_rebuild`, the record of the last
+/// full rebuild of the projection. Schema-only: every table starts empty, and
+/// the first `Core::open` after it fills them by rebuilding the projection
+/// from the op log, because `projection_rebuild` holds no row.
+///
+/// `40` is migration `0040_search_indexes.sql` (issue #345, ADR-0052): the
+/// task-only `search_idx` is dropped for two full-text indexes over every
+/// searchable kind, `search_words` (words, stemmed only for English) and
+/// `search_tri` (trigrams, for CJK and substrings), keyed through
+/// `search_docs`, with `search_meta` recording how they were built. Not
+/// schema-only in effect: no `search_idx` row is carried, and the first
+/// `Core::open` after it rebuilds both indexes from the entity rows, because
+/// `search_meta` holds no row.
+///
+/// `41` is migration `0041_civil_times.sql` (issue #506, ADR-0066 §2): every
+/// `SunriseTime` column gains a `*_civil` sidecar holding the wall-clock value a
+/// civil kind means, so a read never re-derives it from the index key, and
+/// the routine's anchor, end, pause and last completion and the stream's
+/// pause gain the `_kind` and `_tz` sidecars the task times have, back-filled
+/// with what their bare instants meant. Not schema-only in effect: no civil
+/// value is computed in SQL, and the first `Core::open` after it rebuilds the
+/// projection from the op log, which carries each civil value as written,
+/// because the fold's version moved with it.
+///
+/// `42` is migration `0042_task_sort_order.sql` (issue #340): a task's place in
+/// a hand-arranged list, `tasks.sort_order`, NULL for a task nobody placed,
+/// and the index a stream's list in manual order reads. Schema-only in what
+/// it writes; the first `Core::open` after it rebuilds the projection,
+/// because the fold's version moved with it, which moves a key a build
+/// before it kept as an unknown field into the column.
+///
+/// `43` is migration `0043_saved_views.sql` (issue #341): `saved_views`, the
+/// projection of the `SavedView` entity, empty. Schema-only: no build before
+/// it folded a saved-view op, and one it parked replays through the full
+/// apply path at the first open of this build, which changes `DOC_SCHEMA_V`.
+///
+/// `44` is migration `0044_optional_stream.sql` (issue #332, ADR-0046): the
+/// `stream_id` of `tasks`, `blocks` and `routines` becomes nullable, without
+/// its foreign key, and every value naming the old Inbox sentinel becomes
+/// NULL; the sentinel's synthetic `streams` row is deleted; `tasks` gains
+/// `triaged_at_ms` and `streams` gains `rehomed_to`. The three tables are
+/// rebuilt to drop the constraints, their bindings carried across. The first
+/// `Core::open` after it rebuilds the projection, because the fold's version
+/// moved with it.
+///
+/// `45` is migration `0045_task_deadlines.sql` (issue #334, ADR-0047 §1):
+/// the `scheduled_at_*` columns of `tasks` become `planned_at_*` and the
+/// `due_at_*` ones `hard_due_at_*`, value and kind unchanged, and
+/// `target_at_*` columns are added, NULL for every task, with an index. The
+/// first `Core::open` after it rebuilds the projection, because the fold's
+/// version moved with it, which moves a target a build before it kept as an
+/// unknown field into its column.
+///
+/// `46` is migration `0046_task_triage.sql` (issue #335, ADR-0047 §4):
+/// `tasks.cancel_reason` and `tasks.late_acknowledged_at_ms`, NULL for every
+/// task. The first `Core::open` after it rebuilds the projection, because the
+/// fold's version moved with it.
+///
+/// `47` is migration `0047_routine_series.sql` (issue #331): `routines` gains
+/// `split_from`, the series root a split routine continues, NULL for every
+/// existing routine, and `tasks` gains `hard_constraint_violated`, 0 for
+/// every existing task. Schema-only in what it writes; the first
+/// `Core::open` after it rebuilds the projection, because the fold's version
+/// moved with it, which moves either value a build before it kept as an
+/// unknown field into its column.
+pub const STORAGE_V: u16 = 47;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v22's registered fingerprint, written out byte by byte rather than
+    /// decoded, so the lookup is checked against something `hex32` did not
+    /// produce. Its hex form uses every digit `0`-`9` and `a`-`f`.
+    const V22: [u8; 32] = [
+        0x87, 0x8b, 0x79, 0x74, 0x2c, 0xd6, 0xb1, 0x88, 0x4e, 0xdb, 0xbd, 0xc4, 0x97, 0x7f, 0x89,
+        0xc2, 0x93, 0x91, 0xae, 0xbf, 0xf2, 0x5c, 0xb0, 0x05, 0xd9, 0xe1, 0xcf, 0xca, 0xae, 0x9a,
+        0x94, 0x54,
+    ];
+
+    #[test]
+    fn hex32_decodes_every_digit_high_nibble_first() {
+        let decoded = hex32("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        let row = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+        for (i, byte) in decoded.iter().enumerate() {
+            assert_eq!(*byte, row[i % row.len()], "byte {i}");
+        }
+    }
+
+    #[test]
+    fn a_registered_version_finds_its_own_fingerprint() {
+        assert_eq!(doc_schema_fingerprint(22), Some(V22));
+        // The first entry too, so a lookup that always answered with the last
+        // one would not pass.
+        let (first, first_fp) = DOC_SCHEMA_FINGERPRINTS[0];
+        assert_eq!(first, DOC_SCHEMA_FP_FIRST);
+        assert_eq!(doc_schema_fingerprint(u32::from(first)), Some(first_fp));
+        assert_ne!(first_fp, V22);
+    }
+
+    #[test]
+    fn an_unregistered_version_has_no_fingerprint() {
+        let last = DOC_SCHEMA_FINGERPRINTS[DOC_SCHEMA_FINGERPRINTS.len() - 1].0;
+        for v in [
+            0,
+            u32::from(DOC_SCHEMA_FP_FIRST) - 1,
+            u32::from(last) + 1,
+            u32::MAX,
+        ] {
+            assert_eq!(doc_schema_fingerprint(v), None, "v{v}");
+            assert_eq!(doc_schema_fp_prefix(v), None, "v{v}");
+        }
+    }
+
+    #[test]
+    fn the_prefix_is_the_fingerprints_leading_bytes() {
+        assert_eq!(
+            doc_schema_fp_prefix(22),
+            Some([0x87, 0x8b, 0x79, 0x74, 0x2c, 0xd6, 0xb1, 0x88])
+        );
+    }
+}

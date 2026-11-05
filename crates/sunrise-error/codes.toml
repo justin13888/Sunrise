@@ -1,12 +1,10 @@
 # Sunrise error code registry — single source of truth.
 #
 # Per docs/10-cross-cutting/error-handling.md §registry, this manifest is
-# authoritative; the Rust enum at crates/sunrise-error/src/codes.rs and the
-# TypeScript enum at packages/sunrise-error-ts/src/codes.ts are GENERATED
-# mirrors of this file. Hand-editing the generated files is a CI failure.
-#
-# Until the codegen build script lands (target: Phase 17), the Rust enum is
-# kept in sync manually; the keep-in-sync test in tests/ catches drift.
+# authoritative. The Rust enum at crates/sunrise-error/src/codes.rs is a
+# hand-kept mirror of it: adding a code means editing both files.
+# tests/manifest_in_sync.rs fails when a name is in one file and not the
+# other, or when the ids here repeat or do not increase.
 #
 # Rules:
 #  - Codes are stable across versions.
@@ -130,6 +128,30 @@ name = "STORAGE_V_TOO_OLD"
 kind = "user"
 retryable = false
 since = "v1"
+
+[[code]]
+id = 304
+name = "STORAGE_INTEGRITY_CHECK_FAILED"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Migration rigor rule 3: PRAGMA quick_check found the vault file damaged, so it was not opened or migrated. Not a wrong key, which stays FATAL_INTERNAL. The app offers the repair (rule 4), a copy beside the vault where one exists, and the recovery code."
+
+[[code]]
+id = 305
+name = "STORAGE_BACKUP_FAILED"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Migration rigor rule 2: the copy taken before a migration or a projection rebuild could not be written (a full disk, a read-only directory), so neither ran and the vault is as it was. Freeing space and opening again is the remedy."
+
+[[code]]
+id = 306
+name = "STORAGE_MIGRATION_FAILED"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "Per docs/04-storage/migrations.md §Failure recovery: a storage migration failed and rolled back, leaving the vault at the version it was found at. Opening again retries it; restoring from the recovery code is the way out when it fails every time."
 
 # --- Crypto ---------------------------------------------------------------
 

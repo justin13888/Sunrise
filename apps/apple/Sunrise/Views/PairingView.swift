@@ -52,13 +52,13 @@ struct PairingView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(
                 model.intent == .addThisMac
-                    ? "Pair this \(Platform.deviceName)"
-                    : "Add a device"
+                    ? L10n.Pairing.titleJoin(device: Platform.deviceName)
+                    : L10n.Pairing.titleAdd
             )
                 .font(.headline)
             Spacer()
             if let progress = model.progress {
-                Text("Step \(progress.leg) of \(progress.of)")
+                Text(L10n.Pairing.progress(step: progress.leg, total: progress.of))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("pairing.progress")
@@ -82,17 +82,17 @@ struct PairingView: View {
         HStack {
             if case .done = model.phase {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button(L10n.Action.done) { dismiss() }
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("pairing.done")
             } else {
-                Button("Cancel", role: .cancel) {
+                Button(L10n.Action.cancel, role: .cancel) {
                     model.cancel()
                     dismiss()
                 }
                 .accessibilityIdentifier("pairing.cancel")
                 if model.offersManualFallback {
-                    Button("Copy and paste instead") { model.useManualInstead() }
+                    Button(L10n.Pairing.manualInstead) { model.useManualInstead() }
                         .accessibilityIdentifier("pairing.useManual")
                 }
                 Spacer()
@@ -107,7 +107,7 @@ struct PairingView: View {
     private var primaryAction: some View {
         switch model.phase {
         case .idle:
-            Button("Show my pairing code") { Task { await model.begin() } }
+            Button(L10n.Pairing.begin) { Task { await model.begin() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.accountEmail.trimmed.isEmpty)
                 .accessibilityIdentifier("pairing.begin")
@@ -116,18 +116,20 @@ struct PairingView: View {
             // been read, and the digits replace it.
             ProgressView().controlSize(.small)
         case let .handOff(handOff):
-            Button(handOff.leg == .grant ? "I've pasted it" : "Continue") { model.advance() }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("pairing.continue")
+            Button(handOff.leg == .grant ? L10n.Pairing.pastedIt : L10n.Pairing.continueButton) {
+                model.advance()
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("pairing.continue")
         case .awaiting:
-            Button("Continue") { Task { await model.submit() } }
+            Button(L10n.Pairing.continueButton) { Task { await model.submit() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.pasted.trimmed.isEmpty)
                 .accessibilityIdentifier("pairing.submit")
         case .comparing, .working, .done:
             EmptyView()
         case .mismatch, .failed:
-            Button("Start over") { model.cancel() }
+            Button(L10n.Pairing.startOver) { model.cancel() }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("pairing.restart")
         }
@@ -172,27 +174,21 @@ struct PairingView: View {
             outcome(
                 symbol: "checkmark.seal",
                 tint: .green,
-                title: "Paired",
+                title: L10n.Pairing.paired,
                 detail: summary
             )
         case .mismatch:
             outcome(
                 symbol: "exclamationmark.shield",
                 tint: .red,
-                title: "The digits did not match",
-                detail: """
-                    Sunrise has thrown this pairing away and no key was sent. \
-                    Two devices talking directly to each other always show the \
-                    same six digits, so a mismatch means something was relaying \
-                    between them. Start again, and if it happens twice, do it \
-                    on a network you trust.
-                    """
+                title: L10n.Pairing.mismatchTitle,
+                detail: L10n.Pairing.mismatchDetail
             )
         case let .failed(message):
             outcome(
                 symbol: "exclamationmark.triangle",
                 tint: .orange,
-                title: "Pairing stopped",
+                title: L10n.Pairing.failedTitle,
                 detail: message
             )
         }
@@ -203,23 +199,21 @@ struct PairingView: View {
     /// what travels names the account without naming the person.
     private var accountForm: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Which account is this?")
+            Text(L10n.Pairing.accountQuestion)
                 .font(.title3.weight(.semibold))
-            Text(
-                """
-                Sunrise puts a four-byte hash of this address in the pairing \
-                code so the other device can tell it is being asked about the \
-                right account. The address itself does not travel.
-                """
+            Text(L10n.Pairing.accountExplanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            TextField(
+                L10n.Pairing.email,
+                text: $model.accountEmail,
+                prompt: Text(verbatim: "you@example.com")
             )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            TextField("Email", text: $model.accountEmail, prompt: Text("you@example.com"))
-                .textInput(.email)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("pairing.email")
+            .textInput(.email)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityIdentifier("pairing.email")
             if !model.accountTag.isEmpty {
-                LabeledContent("Account tag", value: model.accountTag)
+                LabeledContent(L10n.Pairing.accountTag, value: model.accountTag)
                     .monospaced()
                     .foregroundStyle(.secondary)
             }
@@ -242,20 +236,19 @@ struct PairingView: View {
                         .background(.white, in: RoundedRectangle(cornerRadius: 8))
                         .frame(maxWidth: .infinity, alignment: .center)
                         .accessibilityIdentifier("pairing.qr")
-                        .accessibilityLabel("Pairing QR code")
+                        .accessibilityLabel(L10n.Pairing.qrLabel)
                 } else {
                     // Saying so, rather than showing a blank square: the text
                     // below is a complete substitute and the user needs to know
                     // it is the one to use.
                     Label(
-                        "This \(Platform.deviceName) could not draw the code. "
-                            + "Copy the text instead.",
+                        L10n.Pairing.qrFailed(device: Platform.deviceName),
                         systemImage: "exclamationmark.triangle"
                     )
                     .foregroundStyle(.orange)
                 }
                 if !model.accountTag.isEmpty {
-                    LabeledContent("Account tag", value: model.accountTag)
+                    LabeledContent(L10n.Pairing.accountTag, value: model.accountTag)
                         .monospaced()
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -279,7 +272,7 @@ struct PairingView: View {
             // the only thing that can carry the Noise messages of the manual
             // flow — they are far too long to scan.
             if prompt.leg == .code {
-                Button("Scan the code", systemImage: "qrcode.viewfinder") { scanning = true }
+                Button(L10n.Pairing.scanCode, systemImage: "qrcode.viewfinder") { scanning = true }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .accessibilityIdentifier("pairing.scan")
@@ -296,7 +289,7 @@ struct PairingView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
                 .accessibilityIdentifier("pairing.paste")
             HStack {
-                Button("Paste", systemImage: "doc.on.clipboard") {
+                Button(L10n.Pairing.paste, systemImage: "doc.on.clipboard") {
                     model.pasted = PlatformPasteboard.string ?? model.pasted
                 }
                 Spacer()
@@ -323,10 +316,10 @@ struct PairingView: View {
 
     private static func label(for step: PairingStep) -> String {
         switch step {
-        case .handshaking: "handshaking"
-        case .awaitingConfirmation: "awaiting SAS"
-        case .confirmed: "confirmed"
-        case .finished: "finished"
+        case .handshaking: L10n.Pairing.stepHandshaking
+        case .awaitingConfirmation: L10n.Pairing.stepAwaitingConfirmation
+        case .confirmed: L10n.Pairing.stepConfirmed
+        case .finished: L10n.Pairing.stepFinished
         }
     }
 }
@@ -347,7 +340,7 @@ private struct SASConfirmation: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Do both devices show these digits?")
+            Text(L10n.Pairing.sasTitle)
                 .font(.title3.weight(.semibold))
 
             Text(spaced)
@@ -356,32 +349,18 @@ private struct SASConfirmation: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 8)
                 .accessibilityIdentifier("pairing.sas")
-                .accessibilityLabel("Pairing digits \(sas.map(String.init).joined(separator: " "))")
+                .accessibilityLabel(
+                    L10n.Pairing.sasLabel(digits: sas.map(String.init).joined(separator: " "))
+                )
 
-            Text(
-                """
-                Read them aloud, or look at the other screen. Both devices must be \
-                showing the same six digits, and both of you have to confirm \
-                before anything is sent.
-                """
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            Text(L10n.Pairing.sasInstruction)
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
             Text(
                 isNewDevice
-                    ? """
-                        These digits are derived from every message the two devices \
-                        have exchanged. If anything were sitting between them, it \
-                        could not make both screens agree — it would have to guess \
-                        six digits, once, with you watching.
-                        """
-                    : """
-                        Nothing has left this \(Platform.deviceName) yet. Your \
-                        vault key is sealed and sent only after you confirm \
-                        below, and only for the device on the other end of \
-                        these digits.
-                        """
+                    ? L10n.Pairing.sasJoining
+                    : L10n.Pairing.sasSponsoring(device: Platform.deviceName)
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -389,10 +368,10 @@ private struct SASConfirmation: View {
             HStack(spacing: 12) {
                 // No `.defaultAction`: a return keypress must not be able to
                 // confirm a code nobody compared.
-                Button("The digits match") { answer(true) }
+                Button(L10n.Pairing.sasMatch) { answer(true) }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("pairing.sas.match")
-                Button("They're different", role: .destructive) { answer(false) }
+                Button(L10n.Pairing.sasDiffer, role: .destructive) { answer(false) }
                     .accessibilityIdentifier("pairing.sas.mismatch")
             }
             .controlSize(.large)
@@ -429,7 +408,7 @@ private struct CopyableBlock: View {
             .accessibilityIdentifier(identifier)
 
             HStack(spacing: 8) {
-                Button(copied ? "Copied" : "Copy", systemImage: "doc.on.doc") {
+                Button(copied ? L10n.Pairing.copied : L10n.Pairing.copy, systemImage: "doc.on.doc") {
                     PlatformPasteboard.set(text)
                     copied = true
                 }

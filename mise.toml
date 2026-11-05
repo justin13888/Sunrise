@@ -16,6 +16,24 @@
 #    two concurrent release builds of the C dependencies are how the disk
 #    fills. Those chain `mise run` calls in `run` instead, which is sequential.
 
+# The toolchain the hooks and CI share. `mise install` is the first step of
+# setup (README §Getting started), and `mise run` puts these first on PATH for
+# every task, so a hook runs the same Node and SwiftLint as CI does.
+#
+# Rust is pinned by `rust-toolchain.toml` and Bun by nothing yet; neither is
+# here.
+[tools]
+# vitest runs under whatever `node` is on PATH and falls back to Bun when there
+# is none. Under Bun `navigator.languages` is undefined and
+# `apps/web/src/i18n.test.ts` fails, so a machine with no Node failed every
+# push. CI's Bun jobs install this same version through
+# `.github/actions/pinned-node`.
+node = "22.23.3"
+# The Apple jobs lint with this one instead of whatever `brew install` gives.
+# macOS only: the Apple tasks run nowhere else (`apple-preflight` refuses
+# them), so a Linux or Windows `mise install` has no reason to fetch it.
+swiftlint = { version = "0.57.1", os = ["macos"] }
+
 [env]
 # The UniFFI-exported crate, its underscored cargo lib name, and the framework.
 ffi_crate = "sunrise-core-bindings"
@@ -69,6 +87,21 @@ run = "bun run ci"
 description = "Type-check every workspace package"
 run = "bun run typecheck"
 
+# The pre-commit hook's typecheck. It decides here rather than with a lefthook
+# `glob`, which sees only added, copied, modified and renamed files: deleting
+# a module another one imports must still run `tsc`. `bun.lock` alone can move
+# a dependency's types. Pre-push and CI always run `typecheck`.
+[tasks.typecheck-staged]
+description = "Type-check when a staged change, deletions included, touches a file tsc reads (the pre-commit hook's)"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+if grep -qE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$|^bun\.lock$' <<<"$staged"; then
+  mise run typecheck
+fi
+'''
+
 [tasks.test]
 description = "Run the JS/TS test suite once"
 run = "bun run test:run"
@@ -85,7 +118,7 @@ run = "bun run test:coverage"
 # manifest names", and `fuzz/` is deliberately its own workspace
 # root (see `fuzz/Cargo.toml`), so the root invocation cannot reach it. Naming
 # its manifest here is also what puts `fuzz/Cargo.toml` in front of
-# `crates/sunrise-log/tests/event_catalog.rs`, which derives the
+# `crates/sunrise-log/tests/event_catalog/`, which derives the
 # out-of-workspace half of its file set from the `--manifest-path` arguments
 # this file names.
 #
@@ -110,8 +143,9 @@ run = [
   "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
-# The second invocation is #167. The six `fuzz/` harnesses were the only Rust
-# in the tree that was formatted and then linted by nothing, which matters more
+# `rust-clippy` runs both halves; the `fuzz/` one, `rust-clippy-fuzz`, is #167.
+# The `fuzz/` harnesses were the only Rust in the tree that was formatted and
+# then linted by nothing, which matters more
 # for them than for ordinary test code: a warning there is the shape — a `let _
 # =` swallowing a result, a branch nothing reaches — that makes a target
 # quietly stop exercising what its name claims. The pinned stable toolchain
@@ -119,10 +153,28 @@ run = [
 # The root `clippy.toml` binds here too, its lookup walking up out of `fuzz/`.
 [tasks.rust-clippy]
 description = "Lint Rust with Clippy (warnings denied), workspace and fuzz/"
-run = [
-  "cargo clippy --workspace --all-targets -- -D warnings",
-  "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings",
-]
+run = ["mise run rust-clippy-workspace", "mise run rust-clippy-fuzz"]
+
+[tasks.rust-clippy-workspace]
+description = "Lint the Rust workspace with Clippy (warnings denied), not fuzz/"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.rust-clippy-fuzz]
+description = "Lint fuzz/ with Clippy (warnings denied)"
+run = "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings"
+
+# What the pre-commit hook runs for `fuzz/` (#954). `fuzz/` keeps its own
+# lockfile and target directory, so its clippy builds the shared dependency
+# graph a second time; the hook pays that only when the staged changes reach
+# the harnesses or a crate they compile, as `.github/scripts/fuzz-closure-touched.py`
+# decides. `mise run rust-clippy`, `mise run pre-commit` and CI always lint it.
+[tasks.rust-clippy-fuzz-staged]
+description = "Lint fuzz/ with Clippy when the staged changes reach it (the pre-commit hook's)"
+run = '''
+set -euo pipefail
+answer="$(.github/scripts/fuzz-closure-touched.py)"
+if [ "$answer" = run ]; then mise run rust-clippy-fuzz; fi
+'''
 
 [tasks.rust-check]
 description = "Type-check the Rust workspace"
@@ -176,18 +228,31 @@ target/tools/bin/wasm-bindgen --target web --no-typescript \
 '''
 
 # `--all-targets` is load-bearing beyond "run the tests in the tree", and the
-# reason is `crates/sunrise-log/tests/event_catalog.rs`. That gate reads the
+# reason is `crates/sunrise-log/tests/event_catalog/`. That gate reads the
 # dep-info rustc leaves beside each artefact to learn which files the compiler
 # actually compiled, so its coverage is a fact about what has been built. It
 # compiles every target before it runs a test, which is what puts a record on
 # disk for the two files a plain `cargo build --workspace` never compiles:
-# `crates/sunrise-sync/src/sse.rs`, behind a feature off by default, and
+# `crates/sunrise-sync/src/sse/`, behind a feature off by default, and
 # `crates/sunrise-server/src/api/testing.rs`, behind `#[cfg(test)]`. Drop the
 # flag and that gate fails naming them. See `log-fields` below for running it
 # on its own.
 [tasks.rust-test]
 description = "Run the Rust test suite"
 run = "cargo test --workspace --all-targets"
+
+# The CLI end to end (`docs/10-cross-cutting/testing.md` §The CLI end to end):
+# a real relay and two vaults driven by the real `sunrise` binary. The binary is
+# built first so the scenarios never run a stale one, with `test-cheap-kdf` so
+# its recovery blobs use the cheap Argon2id set the scenarios' own process
+# does (`src/cli.rs` builds it the same way); `--include-ignored` so
+# this task runs every scenario these files hold, whatever a later one marks.
+[tasks.e2e-cli]
+description = "Two CLI vaults against a real relay, through the real sunrise binary"
+run = [
+  "cargo build -p sunrise-cli --bin sunrise --features test-cheap-kdf",
+  "cargo test -p sunrise-e2e --test cli_two_vaults --test cli_traveller --test cli_pair_relay --test cli_day_schedule --test cli_snapshot_catchup --test cli_recover_trimmed --test cli_recover_rotated --test cli_optional_stream --test cli_lateness --test cli_triage --test cli_routine_series --test cli_notifications --test cli_settle_outage -- --include-ignored",
+]
 
 # The log-event and log-field gate, on its own, with the build it reads from in
 # front of it (#153).
@@ -206,6 +271,56 @@ run = [
   "cargo test -p sunrise-log --test event_catalog",
 ]
 
+# `rust-test` under cargo-nextest and `.config/nextest.toml` (#958): a per-test
+# timeout that kills a hung test and names it, and at most four `sunrise-e2e`
+# scenarios at once. Opt-in; `rust-test`, the pre-push hook and CI are
+# unchanged. `--all-targets` for the same reason as in `rust-test`. nextest
+# cannot run doc tests, so the second step runs them through `rust-doctest`.
+#
+# cargo-nextest is pinned here rather than in `[tools]`, so only someone who
+# runs this task fetches it: mise installs the prebuilt release binary on the
+# first run instead of building it from source.
+[tasks.rust-test-nextest]
+description = "Run the Rust tests and doc tests under cargo-nextest, with per-test timeouts and capped e2e concurrency"
+tools = { "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.149" }
+run = [
+  "cargo nextest run --workspace --all-targets",
+  "mise run rust-doctest",
+]
+
+# What the pre-push hook runs instead of `rust-test` and `test`: only the tests
+# the push can affect (#953). `.github/scripts/prepush-scope.py` says which,
+# and why, from the files the push changes: the changed crates and every crate
+# depending on one (`cargo metadata`), and the crates whose sources name a
+# changed file. A change to the workspace manifest, `Cargo.lock`, `.cargo/`,
+# `rust-toolchain*` or `clippy.toml` runs `rust-test` whole. A scoped run still
+# runs the `event_catalog` gate at full coverage, through `log-fields`, before
+# the crates it picked. `SUNRISE_FULL_PREPUSH=1` runs everything, as
+# `mise run pre-push` and CI always do.
+[tasks.rust-test-changed]
+description = "Run the Rust tests the pushed changes can affect"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py rust)"
+case "$scope" in
+  none) ;;
+  all) mise run rust-test ;;
+  *)
+    mise run log-fields
+    # shellcheck disable=SC2086 # one `-p NAME` pair per word
+    cargo test $scope --all-targets
+    ;;
+esac
+'''
+
+[tasks.test-changed]
+description = "Run the JS/TS test suite when the pushed changes can affect it"
+run = '''
+set -euo pipefail
+scope="$(.github/scripts/prepush-scope.py bun)"
+if [ "$scope" = all ]; then mise run test; fi
+'''
+
 [tasks.apple-pairing-fixture]
 description = "Rewrite apps/apple/SunriseTests/PairingFixture.swift from the pairing encoder"
 # Swift has no constructor for a `PairingPayload` — one is built inside the core
@@ -223,7 +338,7 @@ git status --short apps/apple/SunriseTests/PairingFixture.swift
 '''
 
 [tasks.storage-fixtures]
-description = "Write the old-vault fixtures missing under crates/sunrise-storage/fixtures/"
+description = "Write the old-vault fixtures missing under crates/sunrise-storage/fixtures/ and crates/sunrise-core/fixtures/"
 shell = "bash -c"
 # The generator is an `#[ignore]`d test rather than a binary, so that the
 # fixtures and the assertions about them are the same code reading the same
@@ -238,13 +353,19 @@ shell = "bash -c"
 # rewritten at today's schema is no longer old, and the migration chain it
 # exists to exercise then runs over nothing. To rewrite one deliberately,
 # delete it first.
+#
+# The second generator writes the engine-built vault that rule 1's rebuild
+# equivalence is checked over (`engine/tests/rebuild/fixture.rs` in
+# `sunrise-core`): the storage fixtures' invented ops cannot be refolded.
 run = """
 set -euo pipefail
 cargo test -p sunrise-storage --lib \
   vault_fixtures::write_the_missing_vault_fixtures -- --ignored --exact
+cargo test -p sunrise-core --lib \
+  engine::tests::rebuild::fixture::write_the_missing_projection_fixture -- --ignored --exact
 echo
-echo "written: crates/sunrise-storage/fixtures/"
-git status --short crates/sunrise-storage/fixtures/
+echo "written: crates/sunrise-storage/fixtures/ crates/sunrise-core/fixtures/"
+git status --short crates/sunrise-storage/fixtures/ crates/sunrise-core/fixtures/
 """
 
 [tasks.keychain-fixture]
@@ -272,10 +393,8 @@ git status --short crates/sunrise-core/fixtures/
 [tasks.rust-doctest]
 description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 # `--all-targets` above silently excludes doc tests, so this is the only local
-# command that runs them. One run, matching CI exactly. It was two — an
-# `--exclude sunrise-server` and a `--skip relative_uri` — to contain the 18
-# doctests kynos 0.1.0's route macros generated out of English prose (#58). The
-# kynos pin carries the upstream fix, so nothing is excluded or filtered now.
+# command that runs them. One run, matching CI exactly, with no crate excluded
+# and no test filtered.
 run = "cargo test --workspace --doc"
 
 [tasks.rust-doc]
@@ -312,6 +431,69 @@ run = [
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
+
+# The ratchet on Swift that decides things (docs/01-architecture/shared-core.md
+# §The client layer): every file under apps/apple holding logic that is not a
+# view's is on the script's ALLOWED list with its reason, and the list only
+# shrinks. `--list` prints what the heuristic sees, for maintaining it.
+[tasks.swift-logic]
+description = "Reject non-view logic in Swift that is not on the shrinking allowlist (the CI gate, run locally)"
+run = ".github/scripts/swift-logic-gate.py"
+
+[tasks.publish-gate]
+description = "Reject a publishable crate or package, an app-train version that disagrees, or a uniffi version the binding generator and its runtime disagree on (the CI gate, run locally)"
+run = ".github/scripts/publish-gate.py"
+
+# The CI gates below had no task, so the only way to run one locally was to copy
+# its command line out of ci.yml. Each `run` is that command line verbatim; the
+# job it mirrors is named in the description, and the reason for each gate is in
+# the comment above its step in ci.yml.
+[tasks.file-size]
+description = "Reject a Rust file that grew past its package threshold (the CI File size gate, run locally)"
+run = "python3 .github/scripts/file-size-gate.py"
+
+[tasks.core-filesystem]
+description = "Reject filesystem access outside the core vault_dir seam (the CI Determinism gate step, run locally)"
+run = "python3 .github/scripts/core-filesystem-gate.py"
+
+[tasks.determinism-rng]
+description = "Reject ambient RNG in the crates (the CI Determinism gate step, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "determinism" \
+  '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
+  crates/*/src crates/*/tests crates/*/benches
+'''
+
+[tasks.log-redaction]
+description = "Reject .expose() in logging and telemetry surfaces (the CI Log redaction gate, run locally)"
+shell = "bash -c"
+run = '''
+.github/scripts/grep-gate.sh \
+  "log-redaction" \
+  '\bplain[a-z_]*\.expose[[:space:]]*\(' \
+  crates/sunrise-log/src \
+  crates/sunrise-server/src \
+  crates/sunrise-cli/src \
+  crates/sunrise-storage/src \
+  crates/sunrise-core/src \
+  crates/sunrise-sync/src \
+  crates/sunrise-client-core/src \
+  crates/sunrise-core-bindings/src \
+  crates/sunrise-http-sig/src \
+  crates/sunrise-relay-client/src \
+  crates/sunrise-telemetry/src \
+  crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+'''
+
+[tasks.constant-time]
+description = "Reject a variable-time comparison over a secret-named value (the CI Constant-time comparison gate, run locally)"
+run = ".github/scripts/constant-time-gate.sh"
+
+[tasks.kynos-waiver]
+description = "Reject any kynos escape hatch that would make the OpenAPI description opaque (the CI Kynos waiver gate, run locally)"
+run = ".github/scripts/kynos-waiver-gate.py"
 
 # `spargen` reads the committed file, so it is an input rather than a report:
 # `the_committed_description_is_current` fails until this has been re-run.
@@ -412,8 +594,11 @@ description = "Build every cargo-fuzz target (the compile gate for fuzz/, run lo
 shell = "bash -c"
 run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
 
-# Ten seconds a target, nine targets: about a minute and a half once the build
-# is warm.
+# Ten seconds a target: about a minute and a half for the whole set once the
+# build is warm.
+# The targets are the `[[bin]]` entries of `fuzz/Cargo.toml`, read through
+# `cargo metadata`, so a new harness is run here as soon as it is declared
+# there. CI's nightly `fuzz-plan` and `fuzz-pr-plan` read the same list.
 # This is not a search — ten seconds finds nothing a corpus does not already
 # contain. What it proves is that each harness starts, reads its committed
 # seeds, and does not abort on one of them, which is the failure `fuzz-build`
@@ -430,7 +615,13 @@ shell = "bash -c"
 run = """
 set -euo pipefail
 seconds="${SUNRISE_FUZZ_SECONDS:-10}"
-for target in op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope; do
+targets=$(cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 --no-deps |
+  python3 -c 'import json, sys; print(" ".join(t["name"] for p in json.load(sys.stdin)["packages"] for t in p["targets"] if t["kind"] == ["bin"]))')
+if [ -z "$targets" ]; then
+  echo "fuzz/Cargo.toml declares no [[bin]] target" >&2
+  exit 1
+fi
+for target in $targets; do
   mkdir -p "fuzz/corpus/$target"
   echo "== $target (${seconds}s)"
   cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$target" \
@@ -454,7 +645,7 @@ cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$usage_tar
 """
 
 [tasks.bench]
-description = "Run the Criterion benchmark suite (submit / query_today / fts / sync_session)"
+description = "Run the Criterion benchmark suite"
 run = "cargo bench -p sunrise-bench"
 
 [tasks.bench-baseline]
@@ -562,8 +753,9 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #     spells — a directory declares no items under any grammar, and it has no
 #     lines either, which is the same ground `dir:702` has always failed on.
 #   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
-#     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
-#     of it, which checks nothing; cite the `struct`, `trait` or `fn`.
+#     97.7% of `sync.rs` and `mod tests` in the since-split
+#     `api/sync/suite.rs` spanned 99.5% of it, which checks nothing; cite the
+#     `struct`, `trait` or `fn`.
 #   * A single-line `path:LINE#symbol` whose line is a `///` line of the
 #     item's doc comment below its summary line is a FAILURE, in every
 #     declaration of the name that contains it. That is where a line written
@@ -578,7 +770,7 @@ run = ".github/scripts/citation-gate.py"
 # --- Apple clients (Swift / UniFFI) ---
 #
 # `--manifest-path` arguments in this file are an input to a test in another
-# crate. `crates/sunrise-log/tests/event_catalog.rs` derives the out-of-workspace
+# crate. `crates/sunrise-log/tests/event_catalog/` derives the out-of-workspace
 # crates whose log vocabulary it gates by scanning this file for them, and it
 # refuses a path it cannot resolve — so every one of them has to stay a literal.
 # Factoring `tools/uniffi-bindgen/Cargo.toml` into a shell function parameter
@@ -601,7 +793,8 @@ run = ".github/scripts/citation-gate.py"
 # Every other need is a plain binary or a queryable fact, and is checked as one.
 #
 # Needs, all optional; the platform and Xcode checks always run:
-#   xcodegen, swiftlint  on PATH
+#   xcodegen             on PATH
+#   swiftlint            on PATH, at the version [tools] pins
 #   rust-targets         the iOS slices installed on the pinned toolchain
 #   sim                  the `ios_sim` simulator exists
 [tasks.apple-preflight]
@@ -619,8 +812,17 @@ xcodebuild -version >/dev/null 2>&1 \
   || missing "xcodebuild cannot run; install Xcode and select it: sudo xcode-select -s /Applications/Xcode.app"
 for need in ${usage_need:-}; do
   case "$need" in
-    xcodegen | swiftlint)
+    xcodegen)
       command -v "$need" >/dev/null || missing "$need is not on PATH; brew install $need" ;;
+    swiftlint)
+      # The version as well as the binary: `--strict` fails on warnings, and
+      # which warnings exist is a property of the version. [tools] pins it.
+      want="$(mise current swiftlint 2>/dev/null || true)"
+      command -v swiftlint >/dev/null \
+        || missing "swiftlint is not on PATH; mise install swiftlint"
+      have="$(swiftlint version)"
+      [ -z "$want" ] || [ "$have" = "$want" ] \
+        || missing "swiftlint $have is on PATH and mise.toml pins $want; mise install swiftlint" ;;
     rust-targets)
       installed="$(rustup target list --installed)"
       for t in $ios_slices $ios_sim_slices; do
@@ -696,7 +898,7 @@ mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 #    variable is set, its own `tools/uniffi-bindgen/target` when it is not.
 #
 #    Only the JSON reader is a shared function. The manifest cannot be a
-#    parameter: `event_catalog.rs` derives the set of out-of-workspace crates
+#    parameter: the `event_catalog` test derives the set of out-of-workspace crates
 #    whose log vocabulary it checks by scanning this file for the manifest
 #    paths its cargo calls name, and it refuses an interpolated one because
 #    it cannot tell which manifest that resolves to. So the bindgen manifest
@@ -794,7 +996,7 @@ echo "out/$ffi_fw.xcframework (macOS + iOS + iOS Simulator) + out/swift/$ffi_lib
 # would put a missing SwiftLint several minutes of release builds behind the
 # command that could have named it.
 [tasks.macos-app]
-description = "Generate the Xcode project, build the macOS app, and run its tests"
+description = "Generate the Xcode project, lint with swiftlint --strict, build the macOS app, and run its tests"
 dir = "apps/apple"
 shell = "bash -c"
 run = """
@@ -831,7 +1033,7 @@ fi
 # below. The framework is a step rather than a `depends` for the reason given
 # above `macos-app`, and the simulator is checked with the tools.
 [tasks.ios-app]
-description = "Generate the Xcode project, build the iOS app, and run its tests"
+description = "Generate the Xcode project, lint with swiftlint --strict, build the iOS app, and run its tests"
 dir = "apps/apple"
 shell = "bash -c"
 run = """
@@ -983,7 +1185,7 @@ description = "Both Apple apps, back to back. What CI runs across two of its thr
 run = ["mise run macos-app", "mise run ios-app"]
 
 [tasks.ios-open]
-description = "Generate the Xcode project and open it, with the iOS scheme selected"
+description = "Same as macos-open: generate the Xcode project and open it; pick the iOS scheme in Xcode"
 depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
@@ -1028,6 +1230,108 @@ description = "Generate the Xcode project and open it. Everyday development entr
 depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
+
+# --- Android seam (Kotlin / UniFFI) ---
+
+# The UniFFI seam's Kotlin half, checked on a JVM: build the seam crate for the
+# host, generate Kotlin from it, compile that Kotlin and `tools/kotlin-smoke/
+# Smoke.kt` against JNA, and run the result with the host library on JNA's
+# path. It opens a fresh vault and queries it. CI's `kotlin-smoke` job is this
+# task, on Linux; it runs on macOS too.
+#
+# What it catches is a seam change the Swift side accepts and Kotlin does not —
+# an exported name that collides with a Kotlin member, a type the Kotlin
+# generator refuses, a checksum JNA and the library disagree on. What it does
+# not prove is anything about Android: no Android target is compiled and no
+# ART, Bionic or NDK linker is involved (`docs/07-clients/mobile-android.md`).
+#
+# Needs `java` (17 or later) on PATH. The Kotlin compiler, JNA and
+# kotlinx-coroutines are downloaded into `<target>/kotlin-smoke/tools`, each
+# pinned by version and SHA-256, so nothing is installed outside the checkout.
+# `--no-format` because the generator otherwise shells out to `ktlint` when one
+# is on PATH, and whether one is should not change what gets compiled.
+[tasks.kotlin-smoke]
+description = "Generate Kotlin from the UniFFI seam, compile it, and open a vault through it on a JVM"
+shell = "bash -c"
+run = """
+set -euo pipefail
+command -v java >/dev/null \\
+  || { echo "kotlin-smoke: java is not on PATH; install a JDK, 17 or later" >&2; exit 1; }
+
+kotlin_version=2.4.21
+kotlin_sha256=7cc140e76daf416a0424a5557f99afd7ca89ebd463ea1101261e3e01c33e75cd
+jna_version=5.19.1
+jna_sha256=4fb141dd8ef6b0585ffceea4bc49602fbc6312fa977e2c488794ea3e6aafecae
+coroutines_version=1.11.0
+coroutines_sha256=d1d75aa01dffbb4d1c520e67e4c4e7f5f6174718e7cb4632412503f2f0e604fa
+
+# Where cargo writes, asked rather than assumed, as `apple-xcframework` does
+# and for the same reason.
+target_directory() {
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+}
+target_dir=$(cargo metadata --format-version 1 --no-deps | target_directory)
+bindgen_target_dir=$(cargo metadata --format-version 1 --no-deps \\
+  --manifest-path tools/uniffi-bindgen/Cargo.toml | target_directory)
+work="$target_dir/kotlin-smoke"
+tools="$work/tools"
+mkdir -p "$tools"
+
+# `shasum` ships with macOS and Ubuntu's Perl; a Linux host without it (Fedora's
+# minimal Perl, say) has coreutils' `sha256sum`, which reads the same format.
+sha256_check() {
+  if command -v sha256sum >/dev/null; then sha256sum -c --status; else shasum -a 256 -c --status; fi
+}
+# A file already present is reused only if it still matches its pin.
+fetch() {
+  local url="$1" sum="$2" dest="$3"
+  if [ -f "$dest" ] && echo "$sum  $dest" | sha256_check; then
+    return
+  fi
+  curl -fsSL --retry 3 -o "$dest.part" "$url"
+  if ! echo "$sum  $dest.part" | sha256_check; then
+    rm -f "$dest.part"
+    echo "kotlin-smoke: $url does not match its pinned SHA-256" >&2
+    exit 1
+  fi
+  mv "$dest.part" "$dest"
+}
+maven=https://repo1.maven.org/maven2
+fetch "https://github.com/JetBrains/kotlin/releases/download/v$kotlin_version/kotlin-compiler-$kotlin_version.zip" \\
+  "$kotlin_sha256" "$tools/kotlin-compiler-$kotlin_version.zip"
+fetch "$maven/net/java/dev/jna/jna/$jna_version/jna-$jna_version.jar" \\
+  "$jna_sha256" "$tools/jna-$jna_version.jar"
+fetch "$maven/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/$coroutines_version/kotlinx-coroutines-core-jvm-$coroutines_version.jar" \\
+  "$coroutines_sha256" "$tools/kotlinx-coroutines-core-jvm-$coroutines_version.jar"
+kotlinc="$tools/kotlin-$kotlin_version/kotlinc/bin/kotlinc"
+if [ ! -x "$kotlinc" ]; then
+  rm -rf "$tools/kotlin-$kotlin_version"
+  unzip -q "$tools/kotlin-compiler-$kotlin_version.zip" -d "$tools/kotlin-$kotlin_version"
+fi
+classpath="$tools/jna-$jna_version.jar:$tools/kotlinx-coroutines-core-jvm-$coroutines_version.jar"
+
+# The seam, as a host cdylib. A debug build: the smoke run measures nothing,
+# and the `rust` job's cache already holds most of a debug graph.
+cargo build -p "$ffi_crate"
+case "$(uname -s)" in
+  Darwin) lib="$target_dir/debug/lib$ffi_lib.dylib" ;;
+  *) lib="$target_dir/debug/lib$ffi_lib.so" ;;
+esac
+[ -f "$lib" ] || { echo "kotlin-smoke: cargo built no cdylib at $lib" >&2; exit 1; }
+
+cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
+rm -rf "$work/gen" "$work/smoke.jar"
+"$bindgen_target_dir/release/uniffi-bindgen" generate \\
+  --library "$lib" --language kotlin --no-format --out-dir "$work/gen"
+
+# `-nowarn`: the generated file draws warnings (unused expressions, at
+# uniffi 0.32) that are the generator's style and not ours to fix. An error
+# still fails here.
+"$kotlinc" "$work/gen" tools/kotlin-smoke/Smoke.kt \\
+  -nowarn -classpath "$classpath" -include-runtime -d "$work/smoke.jar"
+java -Djna.library.path="$(dirname "$lib")" \\
+  -cp "$work/smoke.jar:$classpath" SmokeKt
+"""
 
 # --- Running the apps ---
 #
@@ -1200,7 +1504,7 @@ set -euo pipefail
 # re-taken, and docs/10-cross-cutting/testing.md §"Cost, measured" now carries
 # the pass that supersedes it. Read the new figure as this crate's and nothing
 # else's: per-mutant cost does not transfer between crates and spans a factor
-# of eight across the four scoped ones, from `sunrise-crypto`'s ~1.9 s to
+# of eight across the four crates first measured, from `sunrise-crypto`'s ~1.9 s to
 # `sunrise-core`'s ~15.4 s. Deriving one crate's cost from another's is how the
 # CI job's timeout came to be set from the wrong crate.
 #
@@ -1277,8 +1581,8 @@ rc=0
 # See #193.
 #
 # Unconditional rather than a flag, because the failure it prevents is silent.
-# `sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
-# today, so this is a no-op for the other three — and it stays a no-op until
+# `sunrise-sync`'s `sse` is the only feature any of the six scoped crates has
+# today, so this is a no-op for the other five — and it stays a no-op until
 # someone adds a feature-gated module, which is exactly the moment the old
 # behaviour would have started under-reporting again with nothing to say so.
 # If a crate ever gains mutually exclusive features this fails the build
@@ -1362,10 +1666,7 @@ done
 [tasks.mutants-gate-test]
 description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
 # Runs in about a second: it synthesises outcomes.json fixtures in a temp
-# directory and never invokes cargo. That is the point — the gate's contract is
-# what CI and the printed remedies depend on, and it had drifted twice before
-# anything asserted it, because the only way to exercise it was a full mutation
-# run nobody waits for.
+# directory and never invokes cargo. Why: the script's docstring.
 run = "python3 .github/scripts/test_mutants_gate.py"
 
 [tasks.mutants-flags-gate]
@@ -1388,39 +1689,28 @@ run = "python3 .github/scripts/mutants-flags-gate.py"
 [tasks.mutants-flags-gate-test]
 description = "Assert the flag gate's exit-code contract (fast, no cargo)"
 # Runs in a few seconds: it synthesises a mise.toml and a ci.yml in a
-# temp directory and points the gate at those, so seeing the gate go red
-# never means editing the real files to find out. One case is the
-# exception and runs the gate against this repository, because the
-# invocation count the gate states is otherwise asserted nowhere a
-# developer runs — `Mutation flag gate` in ci.yml is not a required
-# check. That case costs a coupling to working-tree state: an untracked
-# .github/**/*.sh holding a cargo-mutants line fails this suite locally
-# while the tracked tree is perfectly in step.
+# temp directory and points the gate at those. Why, and the cases that read
+# this repository instead: the script's docstring.
 run = "python3 .github/scripts/test_mutants_flags_gate.py"
 
 [tasks.core-filesystem-gate-test]
 description = "Assert the core filesystem gate still reports (fast, no cargo)"
 # Runs in about a second: it synthesises a `crates/sunrise-core/src` in a temp
-# directory and never invokes cargo. It exists because the gate's first scanner
-# stopped reading at the first `#[cfg(test)]` line in a file, which after the
-# engine and keychain splits meant it read 3% of engine/oplog.rs and reported OK.
+# directory and never invokes cargo. Why: the script's docstring.
 run = "python3 .github/scripts/test_core_filesystem_gate.py"
 
 [tasks.file-size-gate-test]
 description = "Assert the file size gate's exit-code contract (fast, no cargo)"
 # Runs in under a second: it synthesises package trees in a temp directory and
 # overrides the gate's two tables, so it never reads the repository's own crates.
-# The gate shipped with three failure modes and no fixtures for any of them.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_file_size_gate.py"
 
 [tasks.appcast-gate-test]
 description = "Assert the Sparkle appcast generator's rules (fast, no network)"
 # Runs in under a second: it synthesises a Releases API body and the per-release
-# signature sidecars in a temp directory, so it never touches GitHub. What it
-# asserts has no other check -- which release lands on which Sparkle channel,
-# and whether the signature in hand describes the bytes being advertised -- and
-# the only other way to find out is to publish a release and watch every
-# installed copy either update or stop updating. See ADR-0038.
+# signature sidecars in a temp directory, so it never touches GitHub. Why: the
+# script's docstring, and ADR-0038.
 run = "python3 .github/scripts/test_appcast.py"
 
 [tasks.orphan-crate-gate-test]
@@ -1428,69 +1718,66 @@ description = "Assert the orphan crate gate's exit-code contract (fast, synthesi
 # A second or two: it synthesises Cargo workspaces of two to four one-line
 # crates in a temp directory and drives the gate at them with --manifest-path,
 # so it never reads this workspace. It does run `cargo metadata --no-deps`,
-# which reads manifests without resolving or compiling. The gate prints the
-# reachable count that overview.md cites and nothing checked the walk behind it.
+# which reads manifests without resolving or compiling. Why: the script's
+# docstring.
 run = "python3 .github/scripts/test_orphan_crate_gate.py"
+
+[tasks.swift-logic-gate-test]
+description = "Assert the Swift logic gate's exit-code contract (fast, synthesised trees)"
+# Milliseconds: small apps/apple trees in a temp directory, driven with --root,
+# so it never reads this repository's Swift. The shipped ALLOWED list is
+# checked against a tree built from its own entries.
+run = "python3 .github/scripts/test_swift_logic_gate.py"
+
+[tasks.publish-gate-test]
+description = "Assert the publish gate's exit-code contract (fast, synthesised repositories)"
+# Under five seconds: it builds repositories of manifests in a temp directory
+# and drives the gate at them with --root, so it never reads this one. Why: the
+# script's docstring.
+run = "python3 .github/scripts/test_publish_gate.py"
 
 [tasks.kynos-waiver-gate-test]
 description = "Assert the kynos waiver gate's exit-code contract (fast, synthesised workspaces)"
 # About a second: it synthesises a workspace with a stand-in `kynos` path
 # dependency in a temp directory and runs the gate with its cwd inside it,
-# which is the only thing that steers the gate — it takes no arguments. The
-# feature set it reads has already changed shape once under it.
+# which is the only thing that steers the gate — it takes no arguments. Why: the
+# script's docstring.
 run = "python3 .github/scripts/test_kynos_waiver_gate.py"
 
 [tasks.citation-gate-test]
 description = "Assert the citation gate's exit-code and discrimination contract (fast, synthesised repos)"
 # A few seconds: it synthesises git repositories in a temp directory, so it
-# never reads this tree. Half of it is the near-misses — `Vec<u8>`,
-# `cargo test --workspace`, a prose filename — because a gate that fires on
-# everything is as useless as one that fires on nothing, and the two halves fail
-# in opposite directions from the same edit to the regex.
+# never reads this tree. Why: the script's docstring.
 run = "python3 .github/scripts/test_citation_gate.py"
 
 [tasks.doc-comment-gate-test]
 description = "Assert the doc comment gate's exit-code contract (fast, synthesised crates)"
-# The gate's own --self-test runs scan_text over six string literals and reaches
-# nothing else: not the listing, not the 50-file floor that says "the scan is
-# broken" rather than "the tree is clean", not the exit codes those produce.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_doc_comment_gate.py"
 
 [tasks.docs-link-gate-test]
 description = "Assert the docs link gate's exit-code contract (fast, synthesised repos)"
-# The gate's own --self-test is an excellent test of `slugify` and no test at
-# all of `check()`, which was exercised only by this repository's own 1,239
-# links — a fixture that changes every week and can only prove the gate green.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_docs_link_gate.py"
 
 [tasks.observability-catalog-gate-test]
 description = "Assert the observability catalogue gate's exit-code contract (fast, synthesised docs)"
-# This gate reads its extraction command out of the document and runs it, which
-# is a second surface that can rot: a marker that loses its `grep` line, a path
-# that stops being a directory, a provenance ref that names no commit. The
-# gate's own self-test reaches none of those routes.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_observability_catalog_gate.py"
 
 [tasks.proptest-persistence-gate-test]
 description = "Assert the proptest persistence gate's exit-code contract (fast, synthesised crates)"
-# Three of the five codes this gate emits — ignored, untracked and flat — are
-# decided by the filesystem and the index rather than by the source text, so the
-# gate's own self-test cannot reach them from a string literal.
+# Why the gate's own --self-test is not enough: the script's docstring.
 run = "python3 .github/scripts/test_proptest_persistence_gate.py"
 
 [tasks.apply-refusal-gate-test]
 description = "Assert the apply-path refusal gate can still say no (fast, synthesised engine files)"
-# On the real tree the gate exits 0, which is also what a gate that reads
-# nothing exits. These cases plant the `?` and `return Err` #298 describes and
-# assert exit 1, and keep the caught-and-logged shapes at 0.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_apply_refusal_gate.py"
 
 [tasks.constant-time-gate-test]
 description = "Assert the constant-time gate can still say no (fast, synthesised crates)"
-# On the real tree the gate exits 0, which is also what a gate that reads
-# nothing exits. These cases plant a `==` over a `[u8; 32]` tag in
-# `sunrise-crypto` and assert exit 1, cover every operand shape and searched
-# crate, and refuse a stale, reasonless, missing or empty allowlist.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_constant_time_gate.py"
 
 [tasks.workflow-hardening]
@@ -1502,10 +1789,7 @@ run = ".github/scripts/workflow-hardening-gate.py"
 
 [tasks.workflow-hardening-gate-test]
 description = "Assert the workflow hardening gate's exit-code contract (fast, synthesised .github trees)"
-# The gate is a regex over YAML because nothing in CPython parses YAML and the
-# runners install nothing extra. These cases are where a regex is wrong if it
-# is wrong: a `uses:` inside a `run: |` block, and a job-level `permissions:`
-# mistaken for a top-level one.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_workflow_hardening_gate.py"
 
 [tasks.reverses-gate]
@@ -1517,11 +1801,25 @@ run = ".github/scripts/reverses-gate.py"
 
 [tasks.reverses-gate-test]
 description = "Assert the reverses gate's exit-code contract (fast, synthesised bodies and event payloads)"
-# The gate is a line reader over markdown, and a reader over prose goes quietly
-# green when its reading is wrong. These cases plant the two `Reverses:` lines
-# that closed #282 and #297 and assert exit 1, and keep the shapes #300 names
-# as safe at 0.
+# Why: the script's docstring.
 run = "python3 .github/scripts/test_reverses_gate.py"
+
+[tasks.prepush-scope-test]
+description = "Assert what the pre-push scope script reaches for a set of changed files (fast, synthesised workspaces and git repos)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_prepush_scope.py"
+
+[tasks.fuzz-closure-touched-test]
+description = "Assert when the pre-commit hook lints fuzz/ for a set of staged files (fast, synthesised metadata)"
+# Why: the script's docstring.
+run = "python3 .github/scripts/test_fuzz_closure_touched.py"
+
+[tasks.gate-contracts]
+description = "Run every gate contract under .github/scripts at once (each test_*.py)"
+# The single-file tasks above stay, for running one contract. This one discovers
+# every `test_*.py`, so a new contract is covered the moment it lands. About two
+# minutes; the cargo-reading contracts need a cargo on PATH.
+run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
 
 # --- Release artifacts ---
 #
@@ -1529,6 +1827,9 @@ run = "python3 .github/scripts/test_reverses_gate.py"
 # failure here is a failure there. Note the size of the job: a release build of
 # the workspace's C dependencies (SQLCipher, ring, zstd) inside a fresh
 # container wants ~10 GB of container storage and tens of minutes cold.
+# `VERSION` is the core train's (ADR-0064), read from `[workspace.package]` in
+# Cargo.toml exactly as `release.yml`'s `verify` reads it for a `core-v*` tag:
+# the server image belongs to the core train, never to the app train.
 
 # The two tasks that take arguments, and the one place mise is not a rename of
 # what `just` did. `just` bound named parameters with defaults; mise appends
@@ -1574,7 +1875,7 @@ run = [
 ]
 
 [tasks.pre-push]
-description = "Everything the pre-push hook runs"
+description = "Everything the pre-push hook can run, with both test suites whole"
 run = [
   "mise run ci",
   "mise run typecheck",

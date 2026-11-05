@@ -13,7 +13,8 @@ and operated by the same person.
 
 Everything else about a release — the tag, the CLI tarballs, the container
 image, the notes — is `.github/workflows/release.yml` and needs nothing from
-you beyond pushing the tag.
+you beyond pushing the tag. [§Two version trains](#two-version-trains) says
+which tag.
 
 **iOS is a different runbook and does not exist yet.** The `ios-release` job
 uploads to App Store Connect and no-ops, visibly, until six further secrets and
@@ -32,16 +33,50 @@ version is that the app is not sandboxed
 ([`desktop.md`](./desktop.md) §Sandboxing), the Mac App Store requires the
 sandbox, and a self-hosted relay should not be somebody else's review decision.
 
+## Two version trains
+
+Sunrise releases on two trains, and a tag releases exactly one of them
+([ADR-0064](../11-adr/0064-two-version-trains.md)). Neither number carries
+compatibility meaning ([ADR-0042](../11-adr/0042-v0-forever.md) §1); the
+protocol surfaces do.
+
+| Train | Version lives in | Tag | What the tag ships |
+|---|---|---|---|
+| core | `[workspace.package] version` in the root `Cargo.toml` | `core-vX.Y.Z`, `core-vX.Y.Z-rc.N` | the CLI and server tarballs, the `sunrise-server` image |
+| app | `version` in the root `package.json` | `app-vX.Y.Z`, `app-vX.Y.Z-rc.N` | this runbook's `.dmg` and update feed, the iOS upload, the web deployment |
+
+To cut a core release, bump `Cargo.toml`, merge, then tag the merge commit:
+
+```
+git tag -a core-v0.2.0 -m "Sunrise core 0.2.0"
+git push origin core-v0.2.0
+```
+
+To cut an app release, bump the root `package.json` **and every copy of it** —
+each `apps/*/package.json` and `packages/*/package.json` `version`, and
+`MARKETING_VERSION` in `apps/apple/project.yml` — merge, then tag
+`app-vX.Y.Z` the same way. The publish gate in `ci.yml` fails the pull request
+if a copy was missed, and names it; `verify` checks the tag against the root
+`package.json` and `MARKETING_VERSION` again before anything is built.
+
+A bare `vX.Y.Z` tag triggers nothing. `v0.1.0-rc.1`, cut before the split, is
+read as an app release by the update feed and as the predecessor of each
+train's first release notes.
+
+A core release never becomes GitHub's `latest` release; the `release` job
+creates it with `make_latest=false`. That is what keeps
+[§The update feed](#the-update-feed)'s URL pointing at an app release.
+
 ## The eight secrets
 
 All eight are **repository secrets** (Settings → Secrets and variables →
 Actions → Repository secrets). Only the repository owner can create them. Until
-all eight exist, **every tag push fails** — in the `verify` job, with a message
-naming the ones that are missing, before anything is built and before the
-container image is pushed. That placement is deliberate twice over: the
-alternative to failing is an unsigned `.dmg` on the Releases page that nobody
-notices until a user tries to open it, and the alternative to failing *early*
-is a tag whose image reached GHCR and whose Release never appeared.
+all eight exist, **every app tag push fails** — in the `verify` job, with a
+message naming the ones that are missing, before anything is built. A core tag
+does not need them. That placement is deliberate twice over: the alternative
+to failing is an unsigned `.dmg` on the Releases page that nobody notices until
+a user tries to open it, and the alternative to failing *early* is an app tag
+whose iOS build or web deployment went out and whose Release never appeared.
 
 Two error messages, not one, and the split is on purpose: the first seven are
 about the file a stranger downloads, and the eighth is about the feed every
@@ -324,8 +359,9 @@ code-signature check is a separate gate they do not hold.
    embedded `SunriseWidgets` extension, whose bundle id the profile does not
    match; the reference resolves to the profile for the app and to nothing for
    the extension, which needs none.
-   `MARKETING_VERSION` comes from the tag rather than from `project.yml`'s
-   pinned `0.1.0`, so the About box and the file name agree.
+   `MARKETING_VERSION` is passed from the tag. `verify` has already refused a
+   tag that disagrees with `project.yml`'s, so this restates the same number
+   and keeps the About box and the file name from ever disagreeing.
 
    **`ARCHS=arm64` is not optional**, and it is the one setting a local
    `mise run macos-app` does not teach you. That task builds Debug at
@@ -528,7 +564,8 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 
 | Symptom | Cause |
 |---|---|
-| `Missing repository secret(s): …` | The `verify` job's preflight step. Create the named secrets above, then delete and re-push the tag. |
+| `Missing repository secret(s): …` | The `verify` job's preflight step, on an app tag. Create the named secrets above, then delete and re-push the tag. |
+| `tag app-v… implies app version …, but package.json says …` or `… but apps/apple/project.yml's MARKETING_VERSION says …` | The tag and the app train disagree. Bump every copy ([§Two version trains](#two-version-trains)), merge, and tag the merge commit. The core train's version is `Cargo.toml`'s and gives `tag core-v… implies core version …` instead. |
 | `errSecInternalComponent` from `codesign` | `security set-key-partition-list` did not run or did not match the keychain password. The workflow does it; a local reproduction usually has not. |
 | `No Developer ID Application identity in the signing keychain` | The keychain step's assertion. The `.p12` decoded and imported, but the keychain holds no *valid* `Developer ID Application` identity: exported without its private key, a different certificate type, an expired certificate, or a chain that does not validate on the runner. The listings printed under the error say which — an expired or untrusted certificate appears in the non-`-v` identity list with its reason, and a `.p12` that carried no key leaves a certificate but no identity. |
 | `No signing certificate "Developer ID Application" found` from `xcodebuild` | Usually a valid identity that does not match `MACOS_TEAM_ID`, since the assertion above intercepts the missing-private-key case earlier under its own message. Check the team in the identity's name against the secret; a keychain search-list or partition-list problem affecting the `xcodebuild` step alone can also reach here. |
@@ -540,12 +577,13 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 | notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME: YES` is missing from `apps/apple/project.yml`'s `settings.base`, or a target overrode it back to `NO`. |
 | notarytool status `Invalid`, log says `The signature does not include a secure timestamp` | `--timestamp` did not reach `codesign`, usually because `OTHER_CODE_SIGN_FLAGS` was overridden elsewhere. |
 | `stapler` fails with `Error 65` | The submission is notarized but Apple's ticket has not propagated yet. It is a retry, not a rebuild. |
-| A tag pushed an image to GHCR but created no Release | `macos-app` (or `binaries`) failed after `image` had already pushed. `release` needs all three, so it did not run — which is the intended failure mode: no Release is better than one advertising an artifact that does not exist. Fix the cause and re-run the failed jobs; `release` runs on the same tag. The preflight on `verify` exists so that the commonest reason for this — no signing secrets — cannot reach that state at all. |
-| A published Release has the tarballs but no `.dmg` | Not reachable: `release` needs `macos-app` and uploads `dist/*.dmg`. A Release like that predates this pipeline. |
+| A core tag pushed an image to GHCR but created no Release | A `binaries` leg failed after `image` had already pushed. `release` runs only when nothing its train ran failed, so it did not — which is the intended failure mode: no Release is better than one advertising an artifact that does not exist. Fix the cause and re-run the failed jobs; `release` runs on the same tag. An app tag cannot reach this state: it pushes no image. |
+| A published Release has the tarballs but no `.dmg` | Expected for a `core-v*` release, which ships the CLI, the server and the image. The `.dmg` is on the `app-v*` releases. |
+| `The update feed resolves to a core release` | Somebody marked a `core-v*` release as `latest` by hand, so `SUFeedURL` finds no `appcast.xml` and no installed copy is offered anything. Mark the newest stable `app-v*` release as latest, then re-run `appcast`. |
 | `The app cannot verify the update feed it ships with` | `SUPublicEDKey` is empty in `apps/apple/project.yml` while `SPARKLE_ED_PRIVATE_KEY` exists. The pair is created in one sitting; do step 3 of [`SPARKLE_ED_PRIVATE_KEY`](#sparkle_ed_private_key) and re-push the tag. |
 | `Sparkle pin mismatch` | `apps/apple/project.yml`'s `exactVersion` and `.github/scripts/sparkle-tools.sh`'s `SPARKLE_VERSION` disagree. Bumping Sparkle means moving both, plus the tools tarball's SHA-256. |
 | `Sparkle tools checksum mismatch` | The pinned tarball hashed differently from `SPARKLE_SHA256`. Nothing was extracted and nothing was signed. Either the pin was bumped without its hash, or the asset changed under a released tag — which is worth looking into before updating the number. |
-| `v… is the release being published and it produced no feed item` | The `appcast` job could not find this tag's `appcast-item.json` on its Release. The `macos-app` job writes it and the `release` job uploads it; one of those did not. Re-run them, then re-run `appcast`. |
+| `app-v… is the release being published and it produced no feed item` | The `appcast` job could not find this tag's `appcast-item.json` on its Release. The `macos-app` job writes it and the `release` job uploads it; one of those did not. Re-run them, then re-run `appcast`. |
 | `… is N bytes on the Release and M bytes in appcast-item.json` | The `.dmg` attached to that Release is not the file that was signed — a manual re-upload, most likely. The signature is over specific bytes, so the feed refuses to advertise them. Re-run that tag's `macos-app` and `release`. |
 | `No stable release is serving the update feed yet` | A warning, not a failure: only prereleases exist, and GitHub's `latest` alias skips those. Cut a stable release. |
 | An old release has no feed item and is not in the appcast | Expected. Releases predating this pipeline carry no sidecar and cannot grow one; the generator skips them with a note. |
@@ -558,6 +596,8 @@ correct behaviour and it is why the file name says `UNSIGNED`.
   its EdDSA key is subordinate to the Developer ID certificate.
 - [ADR-0039](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
   not cover, and the six secrets it will need.
+- [ADR-0064](../11-adr/0064-two-version-trains.md) — the two version trains,
+  and why nothing publishes to a registry.
 - [ADR-0027](../11-adr/0027-v1-self-host-first.md) — self-host-first, which is
   half of the argument.
 - [`desktop.md`](./desktop.md) — §Sandboxing and §Update channel.

@@ -130,6 +130,9 @@ pub struct StoreStats {
     pub relay_bytes: u64,
     /// Blobs tombstoned and not yet collected.
     pub blob_tombstones: u64,
+    /// Ciphertext bytes of every readable blob, from the committed-blob
+    /// ledger (`store::blob_ledger`).
+    pub blob_bytes: u64,
 }
 
 fn signed(v: u64) -> i64 {
@@ -267,7 +270,7 @@ impl Store {
     pub fn erase_account(&self, account_id: &str) -> Result<bool, StoreError> {
         let mut conn = self.tx("store.erase_account");
         let tx = conn.transaction()?;
-        crate::relay_log::erase_account(&tx, crate::relay_log::account_key(account_id))?;
+        crate::relay_log::erase_account(&tx, crate::account_ns::account_key(account_id))?;
         let erased = tx.execute(
             "DELETE FROM accounts WHERE account_id = ?1",
             params![account_id],
@@ -355,7 +358,9 @@ impl Store {
     /// pin a blob forever. The device that asked for the deletion is left out
     /// too: it published the op. Every other active device must have declared,
     /// for the tombstone's stream and origin device, a cursor at or past the
-    /// tombstone's `seq`.
+    /// tombstone's `seq`. A blob a stream's snapshot pin or the account's key
+    /// bundle pin names is never collectable: it is not an attachment, and
+    /// only a newer pin releases it.
     pub fn collectable_blobs(
         &self,
         tombstoned_by_ms: u64,
@@ -378,6 +383,12 @@ impl Store {
                                           AND c.stream_id = t.stream_id
                                           AND c.origin_device = t.origin_device
                                           AND c.applied_seq >= t.seq))
+                AND NOT EXISTS (SELECT 1 FROM stream_snapshots s
+                                 WHERE s.account_id = t.account_id
+                                   AND s.blob_key = t.blob_key)
+                AND NOT EXISTS (SELECT 1 FROM key_bundles k
+                                 WHERE k.account_id = t.account_id
+                                   AND k.blob_key = t.blob_key)
               ORDER BY t.tombstoned_at_ms",
         )?;
         let rows = stmt
@@ -436,7 +447,8 @@ impl Store {
                 (SELECT COUNT(*) FROM devices WHERE revoked = 0),
                 (SELECT COUNT(*) FROM devices WHERE revoked = 1),
                 (SELECT COUNT(*) FROM push_tokens),
-                (SELECT COUNT(*) FROM blob_tombstones)",
+                (SELECT COUNT(*) FROM blob_tombstones),
+                (SELECT COALESCE(SUM(size_bytes), 0) FROM committed_blobs)",
             [],
             |r| {
                 Ok(StoreStats {
@@ -446,6 +458,7 @@ impl Store {
                     devices_revoked: count(r, 3)?,
                     push_tokens: count(r, 4)?,
                     blob_tombstones: count(r, 5)?,
+                    blob_bytes: count(r, 6)?,
                     ..StoreStats::default()
                 })
             },
@@ -512,6 +525,52 @@ mod tests {
             at,
         )
         .unwrap();
+    }
+
+    /// A blob a stream's snapshot pin names is not an attachment, and a
+    /// tombstone naming it collects nothing until a newer pin releases it.
+    #[test]
+    fn a_pinned_snapshot_blob_is_never_collected() {
+        let s = Store::open(None).unwrap();
+        let a = account(&s, "alice");
+        s.tombstone_blob(&a, &tombstone(7, None), NOW).unwrap();
+        let pin = |blob_key| crate::store::PinnedSnapshot {
+            stream_id: STREAM,
+            blob_key,
+            size_bytes: 1,
+            published_by: None,
+            published_at_ms: NOW,
+        };
+        s.pin_snapshot(&a, &pin(BLOB)).unwrap();
+        assert!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().is_empty());
+        assert_eq!(s.pin_snapshot(&a, &pin([0xee; 16])).unwrap(), Some(BLOB));
+        assert_eq!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().len(), 1);
+    }
+
+    /// The same for the account's key bundle (ADR-0069): pinned, its blob is
+    /// kept whatever tombstone names it, and released once a newer pin
+    /// replaces it.
+    #[test]
+    fn a_pinned_key_bundle_blob_is_never_collected() {
+        let s = Store::open(None).unwrap();
+        let a = account(&s, "alice");
+        s.tombstone_blob(&a, &tombstone(7, None), NOW).unwrap();
+        let pin = |blob_key| crate::store::PinnedKeyBundle {
+            blob_key,
+            size_bytes: 1,
+            manifest_digest: [0; 32],
+            published_by: None,
+            published_at_ms: NOW,
+        };
+        s.pin_key_bundle(&a, &pin(BLOB), None).unwrap();
+        assert!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().is_empty());
+        assert_eq!(
+            s.pin_key_bundle(&a, &pin([0xee; 16]), Some(BLOB)).unwrap(),
+            crate::store::KeyBundlePinned::Pinned {
+                released: Some(BLOB)
+            }
+        );
+        assert_eq!(s.collectable_blobs(NOW, NOW - 30 * DAY).unwrap().len(), 1);
     }
 
     /// The quorum, one condition at a time: an active device behind the
@@ -603,11 +662,12 @@ mod tests {
         s.tombstone_blob(&a, &tombstone(1, None), NOW).unwrap();
         s.put_delete_token(&a, &[1; 32], NOW + 1).unwrap();
         for who in [&a, &b] {
-            let key = (crate::relay_log::account_key(who), STREAM);
+            let key = (crate::account_ns::account_key(who), STREAM);
             s.relay_append(
                 key,
                 b"frame",
                 &[],
+                0,
                 None,
                 1,
                 NOW,
@@ -633,6 +693,7 @@ mod tests {
             "devices",
             "account_delete_tokens",
             "blob_tombstones",
+            "committed_blobs",
         ] {
             let sql = format!("SELECT COUNT(*) FROM {table} WHERE account_id = ?1");
             assert_eq!(left(&sql, &a), 0, "{table}");
@@ -642,9 +703,9 @@ mod tests {
             assert_eq!(left(&sql, &d), 0, "{table}");
         }
         let frames = "SELECT COUNT(*) FROM relay_frames WHERE account_h = ?1";
-        let ah = crate::relay_log::account_key(&a).to_vec();
+        let ah = crate::account_ns::account_key(&a).to_vec();
         assert_eq!(left(frames, &ah), 0);
-        let bh = crate::relay_log::account_key(&b).to_vec();
+        let bh = crate::account_ns::account_key(&b).to_vec();
         assert_eq!(left(frames, &bh), 1, "another account's log is untouched");
     }
 

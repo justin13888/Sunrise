@@ -11,14 +11,15 @@
 //! (sync wire layer, server). This crate alone proves out the lifecycle,
 //! single-writer guarantee, and shape of the API.
 
+use crate::bytes::to16;
 use crate::commands::{Command, CommandResult};
 use crate::config::CoreConfig;
 use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
-use crate::keychain::{to16, Keychain, KeychainError};
+use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
 use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
-use crate::unlock::Unlock;
+use crate::unlock::{IdentitySeed, Unlock};
 use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -66,11 +67,29 @@ pub enum CoreError {
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
+    /// [`Core::on_time_zone_changed`] was handed a zone name the bundled
+    /// tzdb does not resolve. The reader's zone is left as it was
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3).
+    #[error("time zone: unknown zone {zone:?}")]
+    UnknownTimeZone {
+        /// The name, as reported.
+        zone: String,
+    },
 }
 
-/// Default routine-materialization interval, per
-/// `docs/08-features/recurrence-engine.md` §generation-timing.
-pub const ROUTINE_TIMER_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+impl CoreError {
+    /// The storage error inside, whether the vault returned it directly or
+    /// through the engine: what a client reads to tell a damaged vault, a
+    /// failed migration or a copy that could not be written from the rest
+    /// (`DbError::as_error_code`).
+    #[must_use]
+    pub const fn db_error(&self) -> Option<&DbError> {
+        match self {
+            Self::Db(e) | Self::Engine(EngineError::Storage(e)) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// User-facing handle to the local vault.
 pub struct Core {
@@ -105,6 +124,9 @@ pub struct Core {
     /// any one session — that is the reason it is a table at all — while
     /// `SyncShared` is scoped to the driver's own connection state.
     blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
+    /// The network class the client last reported and the blobs open
+    /// previews hold, which the attachment cache and the fetch drain read.
+    cache: crate::blob_cache::CacheSignals,
     /// What [`Core::compact_op_log`] may fold (ADR-0059). Set by
     /// [`Core::set_compaction_policy`]; the design of record's numbers until
     /// then.
@@ -112,6 +134,25 @@ pub struct Core {
     /// When the sync driver's tick last ran compaction, so it runs at most
     /// once per [`COMPACT_EVERY_MS`] rather than on every tick.
     last_compaction_ms: Mutex<Option<u64>>,
+    /// The snapshot record this process last saw pinned on the relay for each
+    /// stream, by its blob id (ADR-0068), so a record is uploaded once rather
+    /// than on every tick. Memory only: after a restart the first publish
+    /// asks the relay what it pins before uploading anything.
+    published_snapshots: Mutex<std::collections::HashMap<[u8; 16], [u8; 16]>>,
+    /// The manifest digest of the key bundle this process last saw the relay
+    /// hold at least as much as (ADR-0069). Memory only, as
+    /// `published_snapshots` is.
+    published_key_bundle: Mutex<Option<[u8; 32]>>,
+    /// The BLAKE3 digest of the identity chain record this process last saw
+    /// the relay hold (ADR-0070). Memory only, as `published_key_bundle` is.
+    published_identity_chain: Mutex<Option<[u8; 32]>>,
+    /// Whether this process opened the vault from a recovery code
+    /// (`Unlock::RecoveryCode`). Such a vault asks for the account's key
+    /// bundle before its first replay (ADR-0070 §4).
+    restored_from_code: bool,
+    /// The clock the engine reads, holding the zone a client last reported
+    /// through [`Core::on_time_zone_changed`].
+    reader_clock: Arc<crate::config::ReportedZoneClock>,
     closed: Mutex<bool>,
 }
 
@@ -133,12 +174,26 @@ impl Core {
     /// Acquires the OS-level vault lock; if another process holds it, returns
     /// `VaultLock(AlreadyHeld { holder_pid, holder_started_at })`.
     pub async fn open(cfg: CoreConfig, unlock: Unlock) -> Result<Self, CoreError> {
+        Ok(Self::open_as(cfg, unlock, OpenMode::Ordinary).await?.0)
+    }
+
+    /// The open behind [`Self::open`] and [`Self::open_repairing`], and what
+    /// a repair's rebuild did.
+    pub(crate) async fn open_as(
+        cfg: CoreConfig,
+        unlock: Unlock,
+        mode: OpenMode,
+    ) -> Result<(Self, Option<crate::engine::RebuildReport>), CoreError> {
         let pid = holder_pid();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let (vault_root, identity_seed) = unlock.into_parts();
+        let restored_from_code = matches!(identity_seed, IdentitySeed::Recovered(_));
         let db_path = cfg.vault_dir.join("vault.db");
-        let mut db = Db::open(&db_path, &vault_root)?;
+        let mut db = match mode {
+            OpenMode::Ordinary => Db::open(&db_path, &vault_root)?,
+            OpenMode::Repair => Db::open_for_repair(&db_path, &vault_root)?,
+        };
         let (changes_tx, _) = broadcast::channel(256);
         let (sync_tx, _) = broadcast::channel(64);
         // Load-or-create the persistent device identity. The keychain takes
@@ -151,8 +206,11 @@ impl Core {
             cfg.rng.as_ref(),
             &identity_seed,
         )?);
+        // The engine reads the reader's zone through the zone a client last
+        // reported, ahead of the injected clock's own (time.md §7).
+        let reader_clock = Arc::new(crate::config::ReportedZoneClock::new(cfg.clock.clone()));
         let engine = Engine::new(
-            cfg.clock.clone(),
+            reader_clock.clone(),
             cfg.hlc.clone(),
             cfg.rng.clone(),
             keychain,
@@ -184,6 +242,54 @@ impl Core {
         // device arriving by pairing has already imported the account's epochs
         // in `Keychain::open` above, so this finds them and mints nothing.
         engine.ensure_base_epochs(&mut db)?;
+        // Rebuild the projection from the op log when it was folded by
+        // another version of the fold, or never: the first open after
+        // migration 0039, which adds the version DAG's tables empty, and the
+        // first open of a build whose fold differs (ADR-0065 §7,
+        // `migrations.md` §Migration rigor rule 4). Before anything below
+        // reads the projection or folds an op into it: a parked op's replay
+        // and routine materialization both do.
+        //
+        // One transaction, synchronously, here: a vault shows the projection
+        // it had or the rebuilt one, never a mix, and nothing is reachable
+        // until the open returns. Its progress is logged. A rebuild that
+        // fails is rolled back, so the vault opens on the projection it had,
+        // and the next open tries again: an op the rebuild cannot read is
+        // damage to report, not a reason to refuse the vault.
+        //
+        // Under a copy of the vault taken first (rule 4's "under a rule-2
+        // backup"), or the one this open took before migrating: a copy that
+        // cannot be written skips the rebuild like any other failure.
+        //
+        // A repair rebuilds whatever the fold, and its rebuild and the check
+        // after it are the open: a vault they cannot mend is not opened.
+        let repaired = match mode {
+            OpenMode::Ordinary => {
+                if let Err(e) = engine.rebuild_if_stale(&mut db) {
+                    tracing::warn!(
+                        ev = "core.rebuild.on_open_failed",
+                        cause = %e,
+                        "the projection could not be rebuilt at open; the vault opens on the one it had"
+                    );
+                }
+                None
+            }
+            OpenMode::Repair => Some(repair::rebuild_and_check(&engine, &mut db)?),
+        };
+        // Write both search indexes from the entity rows when the vault has
+        // no record of them in this build's layout: the first open after
+        // migration 0040 (ADR-0052). After the projection rebuild, which
+        // writes the rows they are built from. A re-index for a change of
+        // content language is not this: it runs in the background, through
+        // `Core::reindex_search`. A failure is logged and retried at the next
+        // open; search answers from what the indexes hold meanwhile.
+        if let Err(e) = engine.ensure_search_index(&mut db) {
+            tracing::warn!(
+                ev = "core.search.index_failed",
+                cause = %e,
+                "the search indexes could not be written at open; the next open tries again"
+            );
+        }
         // Replay what an earlier build parked because it did not know the
         // op's kind (issue #320, ADR-0045 §4). This is the upgrade the parking
         // was waiting for, and nothing else would bring those ops back: they
@@ -246,7 +352,7 @@ impl Core {
             .sync
             .as_ref()
             .map_or_else(TokenSource::empty, |s| s.credential.clone());
-        Ok(Self {
+        let core = Self {
             cfg,
             db: Mutex::new(db),
             _vault_lock: lock,
@@ -258,9 +364,92 @@ impl Core {
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
+            cache: crate::blob_cache::CacheSignals::default(),
             compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
             last_compaction_ms: Mutex::new(None),
+            published_snapshots: Mutex::new(std::collections::HashMap::new()),
+            published_key_bundle: Mutex::new(None),
+            published_identity_chain: Mutex::new(None),
+            restored_from_code,
+            reader_clock,
             closed: Mutex::new(false),
+        };
+        // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
+        // a reason to refuse to open the vault, so a failure here is logged
+        // and the open goes on.
+        if let Err(e) = core.enforce_attachment_cache() {
+            tracing::warn!(
+                ev = "core.attachment.cache_enforce_failed",
+                cause = %e,
+                "the attachment cache could not be brought under its limit at launch"
+            );
+        }
+        Ok((core, repaired))
+    }
+
+    /// The one core entry point for a time-zone change
+    /// (`docs/10-cross-cutting/time.md` §7).
+    ///
+    /// A client calls it when the OS reports a new zone
+    /// (`NSSystemTimeZoneDidChange` on Apple platforms) and on every
+    /// foreground, with the IANA name the OS gives it. From then on `zone` is
+    /// the reader's zone every query resolves in. Nothing stored changes: a
+    /// zone change is not an edit, so no op is written. When the zone did
+    /// change, [`DomainEvent::TimeZoneChanged`] tells every subscriber to read
+    /// its views again, and the result says how many open tasks moved and
+    /// whether the user asked to be notified.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::UnknownTimeZone`] for a name the tzdb does not know; the
+    /// reader's zone is then left as it was, and is never replaced by UTC
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3). [`CoreError::Closed`]
+    /// after close.
+    pub fn on_time_zone_changed(
+        &self,
+        zone: &str,
+    ) -> Result<crate::commands::TimeZoneChange, CoreError> {
+        self.ensure_open()?;
+        let Ok(to) = jiff::tz::TimeZone::get(zone) else {
+            return Err(CoreError::UnknownTimeZone {
+                zone: zone.to_string(),
+            });
+        };
+        // The zone reads were in. When the name the clock last gave does not
+        // resolve, that is the last zone that did, never UTC by default.
+        let reading_in = self.engine.device_zone();
+        let previous = self.reader_clock.report(zone);
+        let from = jiff::tz::TimeZone::get(&previous).unwrap_or(reading_in);
+        let now_ms = self.now_ms();
+        let around = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        // The zones, not their names: an alias, or UTC under another
+        // spelling, resolves every time the same way, so nothing moved.
+        let changed = !sunrise_domain::time::same_zone(&from, &to, around);
+        if changed {
+            // Published as soon as the new zone is the reader's, before the
+            // impact read: views must re-read even when that read fails,
+            // because the next report of this zone answers `changed: false`.
+            // Nobody listening is not an error.
+            let _ = self.changes_tx.send(DomainEvent::TimeZoneChanged {
+                zone: zone.to_string(),
+            });
+        }
+        let (affected_tasks, notify, hard_violations) = if changed {
+            let db = self.db.lock();
+            let (affected, notify) = self.engine.time_zone_impact(&db, &from, &to, now_ms)?;
+            let hard = self.engine.hard_constraint_violations(&db, &to)?;
+            (affected, notify, hard)
+        } else {
+            (0, false, Vec::new())
+        };
+        Ok(crate::commands::TimeZoneChange {
+            previous,
+            zone: zone.to_string(),
+            changed,
+            affected_tasks,
+            notify,
+            hard_violations,
         })
     }
 
@@ -271,35 +460,56 @@ impl Core {
     /// entry in a single `BEGIN IMMEDIATE` transaction, and emits a
     /// `DomainEvent` on `changes()`.
     pub async fn submit(&self, cmd: Command) -> Result<CommandResult, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let res = {
             let mut db = self.db.lock();
             self.engine.apply(&mut db, cmd.clone())?
         };
         // Best-effort change publish; receivers are bounded broadcast channels
         // and dropped subscribers are accepted.
+        // A command that writes a group touches more than its result names.
+        let also: Vec<DomainEvent> = match &cmd {
+            Command::MergeBlocks { a, b } => {
+                vec![DomainEvent::Deleted(*a), DomainEvent::Deleted(*b)]
+            }
+            Command::BulkTasks(items) => items
+                .iter()
+                .skip(1)
+                .map(|i| DomainEvent::Updated(i.id))
+                .collect(),
+            Command::MoveTasks { ids, .. } | Command::Triage { ids, .. } => ids
+                .iter()
+                .skip(1)
+                .map(|id| DomainEvent::Updated(*id))
+                .collect(),
+            _ => Vec::new(),
+        };
         let event = match cmd {
             Command::CreateTask(_)
             | Command::CreateStream(_)
             | Command::CreateContext(_)
             | Command::CreateRoutine(_)
             | Command::CreateBlock(_)
+            | Command::CreateSavedView(_)
+            | Command::MergeBlocks { .. }
             | Command::AttachFile(_)
             // A focus session is created, never mutated: `StartFocus` mints a
             // new `fcs_` entity, and `EndFocus` appends a separate record to
             // the same id (so it reads as an update of the session view).
             | Command::StartFocus(_) => DomainEvent::Created(res.entity),
             Command::DeleteTask(_)
-            | Command::DeleteStream(_)
+            | Command::DeleteStream { .. }
             | Command::DeleteContext(_)
             | Command::DeleteRoutine(_)
             | Command::DeleteBlock(_)
+            | Command::DeleteSavedView(_)
             | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
             _ => DomainEvent::Updated(res.entity),
         };
         let _ = self.changes_tx.send(event);
+        for event in also {
+            let _ = self.changes_tx.send(event);
+        }
         // Wake the sync driver (if running) so the new outbox row drains
         // immediately rather than waiting for the next inbound frame.
         if self.sync_shared.is_active() {
@@ -343,9 +553,7 @@ impl Core {
         &self,
         envelope_bytes: &[u8],
     ) -> Result<Vec<DomainEvent>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let (events, pending) = {
             let mut db = self.db.lock();
             let events = self.engine.apply_remote_all(&mut db, envelope_bytes)?;
@@ -384,18 +592,115 @@ impl Core {
     /// `VaultRequires` op that locks a scope is reported as an update to the
     /// vault-meta stream.
     pub fn missing_features(&self) -> Result<Vec<crate::feature::MissingFeature>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.missing_features(&db)?)
     }
 
+    /// Make the vault require `core.field_ops` (ADR-0065 §7), from which
+    /// every command on every device writes `Patch` and nothing else. Returns
+    /// the ids this added: empty when the vault already required it.
+    ///
+    /// A command does this by itself, before its first write, once every
+    /// paired device has advertised the feature. This is the path for the
+    /// rest: unless `confirmed`, it refuses with
+    /// [`EngineError::FeatureUnsupportedByDevices`] naming the devices that
+    /// have not said they support it; the client asks the user ("Your iPhone
+    /// needs an update first: it will be read-only until it is updated") and
+    /// retries with `confirmed`. Those devices keep syncing and reading, and
+    /// refuse to edit (ADR-0045 §8).
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; the refusal above; storage.
+    pub fn enable_field_ops(&self, confirmed: bool) -> Result<Vec<String>, CoreError> {
+        self.ensure_open()?;
+        let added = {
+            let mut db = self.db.lock();
+            self.engine.require_features(
+                &mut db,
+                &[crate::feature::FIELD_OPS_FEATURE],
+                confirmed,
+            )?
+        };
+        if !added.is_empty() && self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        Ok(added)
+    }
+
+    /// The other non-revoked devices of the vault whose newest
+    /// `DeviceFeatures` does not list feature `id`, including every device
+    /// that never advertised one, sorted.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage.
+    pub fn devices_lacking_feature(&self, id: &str) -> Result<Vec<[u8; 16]>, CoreError> {
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self
+            .engine
+            .devices_lacking(db.conn(), id)
+            .map_err(crate::EngineError::from)?)
+    }
+
+    /// What `Query::ReminderIntents` schedules, and the candidates it could
+    /// not because their time has no instant for this reader, each with the
+    /// reason (`docs/11-adr/0066-times-survive-travel.md` §3).
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Closed`] after close, or the failed read.
+    pub fn reminder_plan(
+        &self,
+        now_ms: u64,
+        horizon_ms: u64,
+        settings: &sunrise_domain::ReminderSettings,
+    ) -> Result<sunrise_domain::ReminderPlan, CoreError> {
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self
+            .engine
+            .reminder_plan(&db, now_ms, horizon_ms, settings)?)
+    }
+
+    /// Whether the reader's zone is a stand-in: no zone the tzdb resolves has
+    /// been reported or read since open, so times resolve in UTC
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3). A client that sees
+    /// it reports the OS zone through [`Core::on_time_zone_changed`].
+    #[must_use]
+    pub fn zone_unknown(&self) -> bool {
+        self.engine.zone_unknown()
+    }
+
+    /// The zone every query reads in: the one the clock last reported that
+    /// the tzdb resolves, or UTC while [`Core::zone_unknown`] says so
+    /// (`docs/11-adr/0066-times-survive-travel.md` §3).
+    ///
+    /// For client logic that renders what a query returned — a reminder's
+    /// "due 06:30", the split between yesterday and today — so it reads in
+    /// the zone the query did rather than asking the host a second time.
+    #[must_use]
+    pub fn reader_zone(&self) -> jiff::tz::TimeZone {
+        self.engine.device_zone()
+    }
+
+    /// Every live record, for the full export (`crate::export`, issue #350).
+    ///
+    /// One read under one lock, so the records are one consistent state of
+    /// the vault. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Closed`] after close, and a storage read error.
+    pub fn export_records(&self) -> Result<crate::export::VaultRecords, CoreError> {
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self.engine.export_records(&db)?)
+    }
+
     /// Run a read query.
     pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         if matches!(q, Query::SyncStatus) {
             // Outbox depth is DB truth (accurate offline and online); the live
             // session fields come from the driver's `SyncShared`.
@@ -405,11 +710,14 @@ impl Core {
                 u32::try_from(n).unwrap_or(u32::MAX)
             };
             let (state, last_sync_ms, peer_devices) = self.sync_shared.status_fields();
+            let (replay_applied, replay_remaining) = self.sync_shared.replay_fields();
             return Ok(QueryResult::SyncStatus(SyncStatus {
                 state,
                 outbox_pending,
                 peer_devices,
                 last_sync_ms,
+                replay_applied,
+                replay_remaining,
             }));
         }
         let db = self.db.lock();
@@ -428,12 +736,45 @@ impl Core {
         self.sync_tx.subscribe()
     }
 
+    /// The wire code the relay refused this vault's latest sync attempt with
+    /// (`RATE_LIMITED`, `AUTH_TOKEN_INVALID`, ...), or `None` once a session
+    /// has handshaked since, or when nothing was ever refused.
+    ///
+    /// The driver reconnects after a refusal and reports `Disconnected`, the
+    /// same as for a relay it cannot reach; this is what tells the two apart.
+    /// An accessor rather than a [`SyncStatus`] field so the status the
+    /// bindings carry is unchanged (#1036).
+    #[must_use]
+    pub fn sync_last_refusal(&self) -> Option<&'static str> {
+        self.sync_shared.last_refusal()
+    }
+
     /// Mark the core closed; subsequent submit/query calls fail with
     /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
     /// joins it, then drops the vault lock when this `Core` drops.
     pub async fn close(self) -> Result<(), CoreError> {
         self.shutdown().await;
         Ok(())
+    }
+
+    /// Whether [`Core::close`] or [`Core::shutdown`] has run on this handle.
+    pub(crate) fn is_closed(&self) -> bool {
+        *self.closed.lock()
+    }
+
+    /// The one closed check. Every public method that reads or writes the
+    /// vault's storage starts with it, before it touches anything, so a
+    /// closed handle answers [`CoreError::Closed`] and leaves the vault as it
+    /// was: no row read, no chunk written, nothing evicted.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] once the handle is closed.
+    pub(crate) fn ensure_open(&self) -> Result<(), CoreError> {
+        if self.is_closed() {
+            Err(CoreError::Closed)
+        } else {
+            Ok(())
+        }
     }
 
     /// Stop the sync driver (if running) and mark this handle closed, **without
@@ -539,11 +880,11 @@ impl Core {
 
     /// Start the periodic routine-materialization timer.
     ///
-    /// `docs/08-features/recurrence-engine.md` §generation-timing requires
-    /// materialization on every app launch **and** on a periodic timer every 6
-    /// hours while running. Only the launch half existed, so a long-running
-    /// client — the TUI, or a desktop app left open over a weekend — would
-    /// never generate occurrences past the horizon it computed at startup.
+    /// Materializes routines every `interval` while the vault is open, on top
+    /// of the pass [`Core::open`] runs at launch; the caller picks the
+    /// interval. Without the timer, a client left running never generates
+    /// occurrences past the horizon it computed at open. See
+    /// `docs/08-features/recurrence-engine.md` §Generation timing.
     ///
     /// Idempotent, and safe to skip: a client that never calls this still
     /// materializes at open. Requires a tokio runtime, which is why it is not
@@ -569,7 +910,7 @@ impl Core {
                 let Some(core) = weak.upgrade() else {
                     return; // Core dropped; nothing left to do.
                 };
-                if *core.closed.lock() {
+                if core.is_closed() {
                     return;
                 }
                 let now_ms = core.cfg.clock.now_ms();
@@ -609,6 +950,7 @@ impl Core {
         tz: &jiff::tz::TimeZone,
     ) -> Result<sunrise_domain::capture::Capture, CoreError> {
         use sunrise_domain::capture::NamedRef;
+        self.ensure_open()?;
         let streams = match self.query(Query::StreamList).await? {
             QueryResult::Streams(rows) => rows,
             _ => Vec::new(),
@@ -617,14 +959,16 @@ impl Core {
             QueryResult::Contexts(rows) => rows,
             _ => Vec::new(),
         };
-        let stream_refs: Vec<NamedRef<'_>> = streams
-            .iter()
-            .filter(|s| !s.archived)
-            .map(|s| NamedRef {
-                id: s.id,
-                name: s.name.as_str(),
-            })
-            .collect();
+        let stream_refs = sunrise_domain::with_inbox_alias(
+            streams
+                .iter()
+                .filter(|s| !s.archived)
+                .map(|s| NamedRef {
+                    id: s.id,
+                    name: s.name.as_str(),
+                })
+                .collect(),
+        );
         let context_refs: Vec<NamedRef<'_>> = contexts
             .iter()
             .filter(|c| !c.archived)
@@ -637,13 +981,9 @@ impl Core {
             i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
         )
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        Ok(sunrise_domain::capture::parse(
-            input,
-            now,
-            tz,
-            &stream_refs,
-            &context_refs,
-        ))
+        let mut c = sunrise_domain::capture::parse(input, now, tz, &stream_refs, &context_refs);
+        c.draft.stream_id = sunrise_domain::home_stream(c.draft.stream_id);
+        Ok(c)
     }
 
     /// **Capture-aside**: parse a mid-session thought and force it to the
@@ -705,6 +1045,25 @@ impl Core {
         self.cfg.rng.as_ref()
     }
 
+    /// The reported network and the open previews behind the attachment
+    /// cache ([`crate::blob_cache`]).
+    pub(crate) fn cache_signals(&self) -> &crate::blob_cache::CacheSignals {
+        &self.cache
+    }
+
+    /// One preference, resolved as [`Query::Preferences`] resolves it, or
+    /// `None` when it resolves to an absent default or cannot be read.
+    pub(crate) fn resolved_preference(&self, key: &str) -> Option<sunrise_domain::PrefValue> {
+        let db = self.db.lock();
+        match self.engine.query(&db, Query::Preferences) {
+            Ok(QueryResult::Preferences(prefs)) => prefs
+                .into_iter()
+                .find(|p| p.key == key)
+                .and_then(|p| p.value),
+            _ => None,
+        }
+    }
+
     /// Copy this vault's root key out, for handing to a device being paired.
     ///
     /// See [`crate::keychain::Keychain::export_vault_root_for_pairing`] for why
@@ -739,6 +1098,7 @@ impl Core {
     /// # Errors
     /// Storage failures reading this device's labels or the fold anchor.
     pub fn export_pairing_offer(&self) -> Result<sunrise_pairing::PairingOffer, CoreError> {
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.keychain().export_pairing_offer(&db)?)
     }
@@ -766,6 +1126,7 @@ impl Core {
         &self,
         request: &sunrise_pairing::PairingRequest,
     ) -> Result<sunrise_pairing::PairingGrant, CoreError> {
+        self.ensure_open()?;
         // The read bound travels with the keys, so the joiner starts with
         // this device's bound rather than none (#282). Read under the same
         // lock the keys are held under, from the table the engine owns.
@@ -819,6 +1180,7 @@ impl Core {
         seed_s: [u8; 32],
         seed_d: [u8; 32],
     ) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.keychain().pair_device_in_process(
             &db,
@@ -892,10 +1254,9 @@ impl Core {
     /// [`crate::keychain::KeychainError::IdentitySecretAbsent`] on a device
     /// admitted by pairing, which holds no `ID_D_priv` to seal.
     pub fn seal_recovery_blob(&self, seed: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
-        Ok(self
-            .engine
-            .keychain()
-            .seal_recovery_blob(seed, self.rng())?)
+        self.ensure_open()?;
+        let db = self.db.lock();
+        Ok(self.engine.seal_recovery_blob(&db, seed)?)
     }
 
     /// This device's stable id.
@@ -1007,7 +1368,7 @@ impl Core {
         let conn = db.conn();
         let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
         streams.insert(crate::engine::META_STREAM);
-        streams.insert(sunrise_domain::INBOX_STREAM_BYTES);
+        streams.insert(sunrise_domain::PRIVATE_DOMAIN_BYTES);
         {
             let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
@@ -1108,9 +1469,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn chain_integrity(&self) -> Result<crate::ChainIntegrity, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.chain_integrity(&db)?)
     }
@@ -1151,7 +1510,7 @@ impl Core {
     /// Run op-log compaction from the sync driver's tick, at most once per
     /// [`COMPACT_EVERY_MS`]. A failure is logged and retried on the next
     /// day's tick; nothing it would have folded is lost by waiting.
-    fn sync_compact_if_due(&self) {
+    pub(crate) fn sync_compact_if_due(&self) {
         let now_ms = self.cfg.clock.now_ms();
         {
             let mut last = self.last_compaction_ms.lock();
@@ -1190,12 +1549,67 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn compact_op_log(&self) -> Result<crate::engine::CompactionReport, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let policy = *self.compaction_policy.lock();
         let mut db = self.db.lock();
         Ok(self.engine.compact_op_log(&mut db, &policy)?)
+    }
+
+    /// Rebuild this vault's projection from its local op log: clear the
+    /// entity rows, their side tables, the task search index and the merge
+    /// state, and fold every applied entity op again, in one transaction
+    /// (issue #441). See [`Engine::rebuild_projection`].
+    ///
+    /// The vault is copied first, to `<vault>.pre-rebuild.bak`, which the
+    /// next open deletes ([`Db::back_up_for_rebuild`]).
+    ///
+    /// Nothing is broadcast on `changes()`: every row may have been
+    /// rewritten, so a client re-reads what it shows.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; [`DbError::RebuildBackup`] when the
+    /// copy cannot be written, and nothing is rebuilt;
+    /// [`EngineError::Invalid`] for an op in the log that cannot be read;
+    /// storage failures. On any error the projection is left as it was.
+    pub fn rebuild_projection(&self) -> Result<crate::engine::RebuildReport, CoreError> {
+        self.ensure_open()?;
+        let mut db = self.db.lock();
+        db.back_up_for_rebuild()?;
+        Ok(self.engine.rebuild_projection(&mut db)?)
+    }
+
+    /// Bring the word index of search into line with the vault's content
+    /// language (`search.content_language`, ADR-0052 §6), in the background:
+    /// it is re-tokenized into a shadow index a batch at a time, each batch
+    /// its own transaction with the vault released between them, and swapped
+    /// in with the last. Search answers from the old index until the swap,
+    /// and a re-index cut short resumes where it stopped at the next call.
+    ///
+    /// Cheap when the index already suits the language, which is the common
+    /// case, so a client may call it after every open and after the language
+    /// changes, here or on another device. Returns the last step's progress.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures, after which the
+    /// index is the old one and the next call resumes.
+    pub async fn reindex_search(&self) -> Result<crate::engine::SearchReindex, CoreError> {
+        loop {
+            self.ensure_open()?;
+            let step = {
+                let mut db = self.db.lock();
+                self.engine.reindex_search_step(&mut db)?
+            };
+            if step.finished {
+                return Ok(step);
+            }
+            tracing::debug!(
+                ev = "core.search.reindex_progress",
+                n_docs = step.copied,
+                n_total = step.total,
+                "the word index re-index is part way through"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 
     /// The latest snapshot record of `stream_id` this vault wrote or applied,
@@ -1204,9 +1618,7 @@ impl Core {
     /// # Errors
     /// [`CoreError::Closed`] after close; storage failures.
     pub fn stream_snapshot(&self, stream_id: [u8; 16]) -> Result<Option<Vec<u8>>, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let db = self.db.lock();
         Ok(self.engine.stream_snapshot(&db, &stream_id)?)
     }
@@ -1223,9 +1635,7 @@ impl Core {
         &self,
         record: &[u8],
     ) -> Result<crate::engine::SnapshotApplied, CoreError> {
-        if *self.closed.lock() {
-            return Err(CoreError::Closed);
-        }
+        self.ensure_open()?;
         let (outcome, events) = {
             let mut db = self.db.lock();
             self.engine.apply_snapshot(&mut db, record)?
@@ -1234,6 +1644,45 @@ impl Core {
             let _ = self.changes_tx.send(ev);
         }
         Ok(outcome)
+    }
+}
+
+impl Core {
+    /// The snapshot records this replica should publish now (ADR-0068): each
+    /// stream's latest record held here that this replica wrote, while it is
+    /// that stream's compactor, unless this process already saw the relay pin
+    /// it.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub(crate) fn snapshots_to_publish(
+        &self,
+    ) -> Result<Vec<crate::snapshot_sync::Publishable>, CoreError> {
+        self.ensure_open()?;
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        let own = self.engine.own_stream_snapshots(&db)?;
+        let published = self.published_snapshots.lock().clone();
+        let mut out = Vec::new();
+        for (stream, record) in own {
+            let blob_id = crate::snapshot_sync::blob_id_of(&record);
+            if published.get(&stream) == Some(&blob_id) {
+                continue;
+            }
+            if self.engine.is_stream_compactor(&mut db, &stream, &policy)? {
+                out.push(crate::snapshot_sync::Publishable {
+                    stream,
+                    blob_id,
+                    record,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remember that the relay pins `blob_id` as `stream`'s snapshot record.
+    pub(crate) fn note_snapshot_published(&self, stream: [u8; 16], blob_id: [u8; 16]) {
+        self.published_snapshots.lock().insert(stream, blob_id);
     }
 }
 
@@ -1310,6 +1759,13 @@ fn format_iso8601(ms: u64) -> String {
     // but the lock-file payload is human-readable for debugging only.
     format!("{ms}")
 }
+
+mod identity_chain;
+mod key_bundle;
+mod notify;
+mod repair;
+
+pub(crate) use repair::OpenMode;
 
 #[cfg(test)]
 mod tests;

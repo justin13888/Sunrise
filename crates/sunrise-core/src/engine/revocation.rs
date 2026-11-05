@@ -53,8 +53,8 @@
 //! re-entered every recipient set and one republished cert handed it every
 //! held epoch of every stream.
 
-use super::ids::{hex_bytes, hex_short};
 use super::{Engine, EngineError, META_STREAM};
+use crate::bytes::{hex_bytes, hex_short};
 use crate::commands::CommandResult;
 use crate::control_op::{DeviceRevokePayload, RevokeReason};
 use crate::inner_op::{encode_inner_op, InnerOp};
@@ -302,7 +302,7 @@ impl Engine {
             // command. The row goes in *this* transaction so the intent and the
             // op cannot diverge: a vault that believes it revoked a device and
             // never queued the telling is the failure this whole mechanism
-            // exists to prevent. `Core::drain_relay_revocations` makes the call
+            // exists to prevent. `relay_intents::drain` makes the call
             // when a session is up, and until then this row is what remembers
             // that it is owed.
             //
@@ -895,26 +895,26 @@ impl Engine {
     /// Everything above that turns on `sender != v` — the discount's rule, the
     /// walk's exception, and the twice-stated "a device authors only rows whose
     /// sender is itself" that bounds both residuals — needs `sender` to be the
-    /// *authenticated* device and not a value the op chose. Neither this
-    /// function nor `apply_device_revoke` checks that, and neither could: the
-    /// column is written from `env.device_id`
-    /// (`crates/sunrise-core/src/engine/sync.rs:348`), and what binds that id to
-    /// a key lives in the sync path and in `sunrise-crypto`. Cited rather than
-    /// assumed, because it is the load-bearing bound of this whole function and
-    /// it is enforced in another module:
+    /// *authenticated* device and not a value the op chose. Neither this function
+    /// nor `apply_device_revoke` checks that, and neither could: the column is
+    /// written from `env.device_id`
+    /// (`crates/sunrise-core/src/engine/sync.rs:498#apply_remote_all_unchecked`),
+    /// and what binds that id to a key lives in the sync path and in
+    /// `sunrise-crypto`. Cited rather than assumed, because it is the load-bearing
+    /// bound of this whole function and it is enforced in another module:
     ///
-    /// - `crates/sunrise-core/src/engine/sync.rs:247-253` resolves the signing
-    ///   key **by** `env.device_id` — the cert stored under that id, or, for a
-    ///   device publishing its first cert,
-    ///   [`Self::self_authenticating_signer`].
-    /// - `crates/sunrise-core/src/engine/sync.rs:257` verifies the envelope
-    ///   under that key before the op is decrypted or applied, and
-    ///   `crates/sunrise-crypto/src/op_envelope.rs#verify_envelope` is the check
-    ///   itself: an Ed25519 verify over the envelope's own signed bytes.
-    /// - `crates/sunrise-core/src/engine/sync.rs:411` closes the
-    ///   self-authenticating half, refusing a published cert whose
-    ///   `body.device_id` is not `env.device_id` — so a device cannot present
-    ///   another device's cert and author rows under its id.
+    /// - `crates/sunrise-core/src/engine/sync.rs:293-300#apply_remote_all_unchecked`
+    ///   resolves the signing key **by** `env.device_id` — the
+    ///   cert stored under that id, or, for a device publishing
+    ///   its first cert, [`Self::self_authenticating_signer`].
+    /// - `crates/sunrise-core/src/engine/sync.rs:302-304#apply_remote_all_unchecked`
+    ///   verifies the envelope under that key before the op is decrypted or
+    ///   applied, and `crates/sunrise-crypto/src/op_envelope/mod.rs#verify_envelope` is
+    ///   the check itself: an Ed25519 verify over the envelope's own signed bytes.
+    /// - `crates/sunrise-core/src/engine/sync.rs:569-573#self_authenticating_signer`
+    ///   closes the self-authenticating half, refusing a published cert
+    ///   whose `body.device_id` is not `env.device_id` — so a device cannot
+    ///   present another device's cert and author rows under its id.
     ///
     /// A sender that could forge the column would be gated by nobody and could
     /// discount anything out of anybody's set, which is every bound above at
@@ -1056,7 +1056,7 @@ impl Engine {
         // authenticated and not a field the op filled in. This function's doc
         // §"Why `sender` is the row's author" cites where that is enforced —
         // in `crates/sunrise-core/src/engine/sync.rs` and
-        // `crates/sunrise-crypto/src/op_envelope.rs`, with lines.
+        // `crates/sunrise-crypto/src/op_envelope/mod.rs`, with lines.
         //
         // Those citations are resolvable pointers, and not assertions about the
         // checks. `.github/scripts/citation-gate.py`'s `classify` fails a

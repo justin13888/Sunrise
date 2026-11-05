@@ -9,6 +9,14 @@ analysis intact. **Amends**
 rotation, which is corrected rather than implemented: as drawn it is
 unimplementable.
 
+**Amended by:** [ADR-0070](./0070-a-recovery-code-survives-a-rotation-that-carries-it.md) —
+`keep_recovery_code: false` now retires the code properly: the transition is
+sealed under a vault-meta epoch minted for it with no identity copy, every
+Stream rotates after it, the rotating device keeps the successor's `ID_D_priv`,
+and a new recovery blob is sealed. A device a rotation's roster does not name
+and that opens its carry share certifies itself under the successor, and
+adoption walks the chain one link at a time.
+
 Adds one op family (`identity_transition`), two migrations (0022, 0023), and
 moves `DOC_SCHEMA_V` 5 → 6, `STORAGE_V` 21 → 23. No primitive changes, so
 `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay where they are.
@@ -95,7 +103,7 @@ The split is the decision. Everything else follows from it.
      `a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds`
      pins it.
    - **A row's `meta_epoch` is not a free claim, even though an envelope's
-     `epoch` field is.** `sunrise_core::engine`'s `DEFERRED_TOTAL_CAP` says
+     `epoch` field is.** `sunrise_core::engine::sync`'s `DEFERRED_TOTAL_CAP` says
      "`epoch` is attacker-chosen", and it is — on the *deferral* path, which is
      reached because no key at that `(stream, epoch)` is held, so nothing has
      been opened. A row in `identity_transitions` is written only after the

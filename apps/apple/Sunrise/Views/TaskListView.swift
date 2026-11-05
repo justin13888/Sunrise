@@ -198,8 +198,8 @@ struct TaskRows: View {
         .contextMenu { rowMenu(task) }
         .swipeActions(edge: .trailing) {
             Group {
-                Button("Delete", role: .destructive) { Task { await model.delete(task) } }
-                Button("Tomorrow") { Task { await model.defer_(task, byDays: 1) } }
+                Button(L10n.Action.delete, role: .destructive) { Task { await model.delete(task) } }
+                Button(L10n.Tasks.tomorrow) { Task { await model.defer_(task, byDays: 1) } }
                     .tint(.orange)
             }
             .disabledUnlessEditable(.task)
@@ -217,26 +217,26 @@ struct TaskRows: View {
     private func rowMenu(_ task: TaskItem) -> some View {
         Group {
             if task.state == .done || task.state == .cancelled {
-                Button("Reopen") { Task { await model.reopen(task) } }
+                Button(L10n.Tasks.reopen) { Task { await model.reopen(task) } }
             } else {
-                Button(labelled("Complete", .markDone)) { Task { await model.complete(task) } }
+                Button(labelled(L10n.Tasks.complete, .markDone)) { Task { await model.complete(task) } }
             }
         }
         .disabledUnlessEditable(.task)
-        Button(labelled("Edit…", .openDetail)) { sheets.editing = task }
+        Button(labelled(L10n.Tasks.editEllipsis, .openDetail)) { sheets.editing = task }
         Divider()
         Group {
-            Button(labelled("Defer to tomorrow", .deferTask)) {
+            Button(labelled(L10n.Tasks.deferTomorrow, .deferTask)) {
                 Task { await model.defer_(task, byDays: 1) }
             }
-            Button("Defer a week") { Task { await model.defer_(task, byDays: 7) } }
-            Button(labelled("Schedule…", .schedule)) { sheets.scheduling = TaskBatch([task]) }
-            Button(labelled("Move to stream…", .moveToStream)) {
+            Button(L10n.Tasks.deferWeek) { Task { await model.defer_(task, byDays: 7) } }
+            Button(labelled(L10n.Tasks.scheduleEllipsis, .schedule)) { sheets.scheduling = TaskBatch([task]) }
+            Button(labelled(L10n.Tasks.moveToStreamEllipsis, .moveToStream)) {
                 sheets.moving = TaskBatch([task])
             }
         }
         .disabledUnlessEditable(.task)
-        Button(labelled("Start focus session", .focusMode)) {
+        Button(labelled(L10n.Tasks.startFocus, .focusMode)) {
             Task {
                 await model.startFocus(task)
                 escapes.showFocus()
@@ -244,7 +244,7 @@ struct TaskRows: View {
         }
         .disabledUnlessEditable(.focusSession)
         Divider()
-        Button("Delete", role: .destructive) { Task { await model.delete(task) } }
+        Button(L10n.Action.delete, role: .destructive) { Task { await model.delete(task) } }
             .disabledUnlessEditable(.task)
     }
 
@@ -269,16 +269,16 @@ struct ScheduleSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(count == 1 ? "Schedule" : "Schedule \(count) tasks")
+            Text(count == 1 ? L10n.Tasks.schedule : L10n.Tasks.scheduleMany(count: count))
                 .font(.headline)
-            DatePicker("When", selection: $date)
+            DatePicker(L10n.Tasks.when, selection: $date)
                 .datePickerStyle(.graphical)
                 .labelsHidden()
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(L10n.Action.cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Schedule") {
+                Button(L10n.Tasks.schedule) {
                     Task {
                         await commit(date)
                         dismiss()
@@ -303,9 +303,9 @@ struct MoveToStreamSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(count == 1 ? "Move to stream" : "Move \(count) tasks")
+            Text(count == 1 ? L10n.Tasks.moveTitle : L10n.Tasks.moveTitleMany(count: count))
                 .font(.headline)
-            Picker("Stream", selection: $chosen) {
+            Picker(L10n.Tasks.streamPicker, selection: $chosen) {
                 ForEach(streams) { stream in
                     Text(stream.name).tag(stream.id)
                 }
@@ -313,9 +313,9 @@ struct MoveToStreamSheet: View {
             .labelsHidden()
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(L10n.Action.cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Move") {
+                Button(L10n.Tasks.move) {
                     Task {
                         await commit(chosen)
                         dismiss()

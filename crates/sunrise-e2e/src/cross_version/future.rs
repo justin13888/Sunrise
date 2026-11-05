@@ -129,7 +129,7 @@ impl FutureWriter {
                     "phase".to_owned(),
                     CborValue(Value::Text(format!("waxing {n}"))),
                 );
-                t.due_at = Some(SunriseTime::Unknown {
+                t.hard_due_at = Some(SunriseTime::Unknown {
                     kind: FUTURE_TIME_KIND.to_owned(),
                     raw,
                 });

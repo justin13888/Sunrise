@@ -16,18 +16,70 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
     /// Current unix time in milliseconds.
     fn now_ms(&self) -> u64;
 
-    /// IANA name of the *device-local* timezone, used to pin the civil
-    /// (zone-less) window dimensions of a Task's scheduling constraints to real
-    /// instants — per `docs/02-domain/scheduling-constraints.md` §Evaluation
-    /// timezone, a Task evaluates in the device zone (a Routine evaluates in
-    /// its own).
+    /// IANA name of the *device-local* timezone: the **reader's zone** of
+    /// `docs/10-cross-cutting/time.md` §2, which every comparison of two
+    /// times, Today, the calendar windows, lateness and a Task's scheduling
+    /// constraints resolve in (a Routine evaluates in its own).
     ///
     /// Defaulted to `"UTC"` so existing implementors keep compiling and so a
     /// test that injects only a clock still gets a deterministic zone. Ambient
     /// timezone state is as much a determinism hazard as an ambient clock, so
     /// it enters the core through this one injected seam and nowhere else.
+    /// A client that observes the OS zone change reports it through
+    /// [`crate::Core::on_time_zone_changed`], which [`ReportedZoneClock`]
+    /// then answers with.
     fn timezone(&self) -> String {
         "UTC".to_string()
+    }
+}
+
+/// The [`Clock`] a [`crate::Core`] reads, with the zone a client last
+/// reported in front of the injected clock's own.
+///
+/// `docs/10-cross-cutting/time.md` §7: each client observes the OS zone change
+/// and forwards it to the core. The OS's answer is the authority, because the
+/// core's own reading can lag it or be unavailable (a sandboxed process that
+/// cannot read `/etc/localtime`), and a reader's zone that disagrees with the
+/// one the client renders in puts tasks on the wrong day. Until a client
+/// reports one, the injected clock's zone is used.
+#[derive(Debug)]
+pub struct ReportedZoneClock {
+    inner: Arc<dyn Clock>,
+    reported: parking_lot::RwLock<Option<String>>,
+}
+
+impl ReportedZoneClock {
+    /// Wrap `inner`, with no zone reported yet.
+    #[must_use]
+    pub fn new(inner: Arc<dyn Clock>) -> Self {
+        Self {
+            inner,
+            reported: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Make `zone` the reader's zone from now on, and return the one it
+    /// replaces. The caller checks the name resolves; this stores it.
+    pub fn report(&self, zone: &str) -> String {
+        // Read and replace under one lock, so two reports racing each other
+        // each see the zone the other replaced, never the same one twice.
+        let mut reported = self.reported.write();
+        let previous = reported.clone().unwrap_or_else(|| self.inner.timezone());
+        *reported = Some(zone.to_string());
+        previous
+    }
+}
+
+impl Clock for ReportedZoneClock {
+    fn now_ms(&self) -> u64 {
+        self.inner.now_ms()
+    }
+
+    fn timezone(&self) -> String {
+        self.reported
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.inner.timezone())
     }
 }
 
@@ -107,7 +159,7 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
 /// that merges both. The origin has no LWW gate on its own writes, so it keeps
 /// the new value while everyone else keeps the old: silent, permanent
 /// divergence, inside a five-minute window after every restart.
-/// `engine/tests.rs`'s `a_restart_does_not_make_this_device_emit_beneath_its_own_ops`
+/// `engine/tests/clock.rs`'s `a_restart_does_not_make_this_device_emit_beneath_its_own_ops`
 /// is that scenario.
 ///
 /// # What is left after priming
@@ -191,11 +243,18 @@ impl Clock for SystemClock {
     fn timezone(&self) -> String {
         // Only the production clock consults the OS zone; tests inject a fake
         // and get a fixed zone, so no test outcome depends on the host's.
-        system_iana_name().unwrap_or_else(|| "UTC".to_string())
+        //
+        // An OS that names no zone answers with no name, not with "UTC":
+        // the engine then keeps reading in the last zone it resolved, or in
+        // UTC flagged `zone_unknown` when it never had one
+        // (`docs/11-adr/0066-times-survive-travel.md` §3). "UTC" here would
+        // pass for a zone the device is really in.
+        system_iana_name().unwrap_or_default()
     }
 }
 
 /// Where every Unix keeps the pointer to the device's zone.
+#[cfg(unix)]
 const LOCALTIME: &str = "/etc/localtime";
 
 /// The device's IANA zone name, or `None` when the OS will not name one.
@@ -216,10 +275,29 @@ const LOCALTIME: &str = "/etc/localtime";
 /// zone the OS gives *them*. West of UTC the two disagree for the last hours
 /// of every evening, and the calendar grid quietly returns nothing for blocks
 /// that are plainly on it.
+///
+/// # Windows
+///
+/// jiff reads the zone out of the registry and maps the Windows zone id onto
+/// its IANA name, so the first branch answers there and the link fallback
+/// below is Unix-only: Windows has no `/etc/localtime` to read.
+/// `the_os_names_a_zone_on_windows` holds that.
 fn system_iana_name() -> Option<String> {
-    if let Some(name) = jiff::tz::TimeZone::system().iana_name() {
+    // The one place the host zone enters the workspace
+    // (`docs/11-adr/0066-times-survive-travel.md` §5, `clippy.toml`): every
+    // other reader's zone is `Clock::timezone`, which resolves here in
+    // production and to an injected zone in tests.
+    #[allow(clippy::disallowed_methods)]
+    let system = jiff::tz::TimeZone::system();
+    if let Some(name) = system.iana_name() {
         return Some(name.to_string());
     }
+    localtime_link_name()
+}
+
+/// The zone `/etc/localtime` names, by link.
+#[cfg(unix)]
+fn localtime_link_name() -> Option<String> {
     // `read_link` first: it is the shortest spelling, and the one that still
     // names the zone on a macOS whose canonical path buries it under a tzdb
     // version directory. `canonicalize` is the fallback for a chain of links.
@@ -233,6 +311,12 @@ fn system_iana_name() -> Option<String> {
         })
 }
 
+/// No link to read off Unix; the device zone is whatever jiff named, or UTC.
+#[cfg(not(unix))]
+fn localtime_link_name() -> Option<String> {
+    None
+}
+
 /// Pull `America/Toronto` out of `…/zoneinfo/America/Toronto`.
 ///
 /// Anchored on the **last** `zoneinfo` component so a versioned or nested tree
@@ -240,6 +324,7 @@ fn system_iana_name() -> Option<String> {
 /// some distributions ship are stepped over. The result is only returned when
 /// the tzdb actually knows it, so a path this does not understand degrades to
 /// UTC rather than naming a zone nothing can load.
+#[cfg(any(unix, test))]
 fn zone_name_in(path: &std::path::Path) -> Option<String> {
     let parts: Vec<&str> = path
         .components()
@@ -418,6 +503,33 @@ mod tests {
             return;
         };
         assert_eq!(SystemClock.timezone(), expected);
+    }
+
+    /// Whatever the host, the production clock names a zone the bundled tzdb
+    /// can load. A name it cannot load would fold every civil day in UTC
+    /// behind a label that says otherwise.
+    #[test]
+    fn the_production_clock_names_a_zone_the_tzdb_knows() {
+        let zone = SystemClock.timezone();
+        assert!(
+            jiff::tz::TimeZone::get(&zone).is_ok(),
+            "the device zone {zone:?} is not in the tzdb"
+        );
+    }
+
+    /// On Windows the zone comes from the registry through jiff's Windows-to-
+    /// IANA map, and nothing falls back behind it. So the OS has to answer:
+    /// `None` here is every Windows device silently claiming UTC, which is the
+    /// macOS defect above in a different place.
+    #[test]
+    #[cfg(windows)]
+    fn the_os_names_a_zone_on_windows() {
+        let name = system_iana_name().expect("jiff names no zone for this Windows host");
+        assert!(
+            jiff::tz::TimeZone::get(&name).is_ok(),
+            "{name:?} is not in the tzdb"
+        );
+        assert_eq!(SystemClock.timezone(), name);
     }
 
     #[test]

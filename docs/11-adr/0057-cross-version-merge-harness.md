@@ -13,7 +13,7 @@ checks are [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.
 ## Context
 
 Every two-replica test in `crates/sunrise-e2e/tests/` linked one build of
-`sunrise-core` into both replicas. `crates/sunrise-storage/src/vault_fixtures.rs`
+`sunrise-core` into both replicas. `crates/sunrise-storage/src/vault_fixtures/`
 opens old storage layouts with the current build, but no op ever crossed from
 one build to another. So nothing tested the invariant, and a fix for one way of
 breaking it (#320, #321, #322) could not be shown to hold.
@@ -35,6 +35,9 @@ as `crates/sunrise-baseline-driver` (which the baseline's own
 `Cargo.lock`. The binary is that commit's `sunrise-core` with no `HEAD` code in
 it. The test process talks to it one JSON object per line over stdin and
 stdout (`crates/sunrise-e2e/src/cross_version/baseline.rs` is the other end).
+The run holds A as a `Replica` (`cross_version/replica.rs`, which also holds
+the in-process `HEAD` implementation), so the same run drives A whether A is
+the baseline or `HEAD`.
 
 Rejected: the baseline as a renamed dependency,
 `sunrise-core-baseline = { package = "sunrise-core", git = ..., rev = ... }`.
@@ -80,7 +83,8 @@ whether the baseline kept what the op set.
 
 ### 4. The reference is computed from the ops, and a control run keeps it honest
 
-The property compares each final projection with what a `HEAD`-only run of the
+The property compares each final projection (the fields
+`cross_version/projection.rs` reads back out of a task) with what a `HEAD`-only run of the
 same ops would hold. A second `HEAD` run does not produce that: which of two
 concurrent writes wins depends on hybrid logical clocks, and a second run cannot
 reproduce them. `cross_version/model.rs` computes it instead. A settle opens an
@@ -102,7 +106,8 @@ expects is reported and passes. Any other violation fails the property. Each
 entry also has a fixed scenario that must still produce it, so an entry fails
 the suite on the day its defect stops reproducing and has to be removed then.
 
-A violation is any of these, on either side unless it names one:
+A violation is any of these, on either side unless it names one
+(`cross_version/violation.rs` names each kind and the replica it was seen on):
 
 - `HEAD` refuses to open a vault the baseline wrote, B at setup or A at the end.
 - A replica refuses a newer op handed to it, whether or not the refusal is the
@@ -118,9 +123,16 @@ A violation is any of these, on either side unless it names one:
 
 The classifier can explain three of these: a refusal as corruption on the
 baseline, a corruption the baseline logs after a `HEAD` write carried a newer
-value it kept or after a `HEAD` core published a `StreamDigest` (an op kind
-of `HEAD`'s own, [ADR-0043](./0043-commit-tree.md) §5, which `HEAD` logs as
-`core.chain.digest_published`), and a lost field. Every other violation has
+value it kept or after a `HEAD` core wrote an op kind of `HEAD`'s own, and a
+lost field. `HEAD` writes two such kinds: a `StreamDigest`
+([ADR-0043](./0043-commit-tree.md) §5, logged as
+`core.chain.digest_published`) on its anti-entropy tick, and a
+`DeviceFeatures` ([ADR-0045](./0045-schema-identity-and-feature-gating.md) §7,
+logged as `core.feature.advertised`) when it opens a vault, so every run has
+the second whether or not it lasts long enough for the first. A baseline that
+predates parking drops both as corruption, which is #320 and nothing more:
+ADR-0045 §7 has every device advertise, and an older build that cannot park
+is what §4 exists to replace, not a reason to withhold the op. Every other violation has
 no gap that can excuse it, so it always fails the property: a refusal the
 sync driver does not count as corruption, a refusal on `HEAD`, a logged warning or error, a failed
 command, a stopped replica, a refused upgrade.

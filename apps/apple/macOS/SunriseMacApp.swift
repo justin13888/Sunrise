@@ -42,7 +42,7 @@ struct SunriseApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Sunrise", id: SunriseWindow.main.rawValue) {
+        WindowGroup(L10n.Common.productName, id: SunriseWindow.main.rawValue) {
             RootView(session: session, surfaces: surfaces)
                 .frame(minWidth: 720, minHeight: 480)
         }

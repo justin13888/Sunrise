@@ -102,6 +102,9 @@ pub struct OidcVerifier {
     http: Arc<dyn HttpFetch>,
     clock: Arc<dyn Clock>,
     cache: Mutex<Option<CachedJwks>>,
+    /// Where `sunrise_oidc_jwks_fetch_total` is counted. A registry of its
+    /// own until [`with_metrics`](Self::with_metrics) hands it the server's.
+    metrics: crate::Metrics,
 }
 
 impl OidcVerifier {
@@ -113,32 +116,42 @@ impl OidcVerifier {
             http,
             clock,
             cache: Mutex::new(None),
+            metrics: crate::Metrics::new(),
         }
     }
 
-    /// Build the verifier a [`crate::ServerConfig`] describes, over the
-    /// production HTTPS fetcher.
+    /// Count key-set fetches into `metrics`, the server's registry.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: crate::Metrics) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Build the verifier a server's [`crate::ServerConfig`] describes, over
+    /// the production HTTPS fetcher, on the server's clock and counting its
+    /// key-set fetches in the server's registry.
     ///
     /// `None` when no issuer is configured, which is the self-host case: the
     /// caller then leaves [`crate::NullVerifier`] in place and
     /// `ServerConfig::validate` holds it to loopback.
     #[must_use]
-    pub fn from_server_config(
-        cfg: &crate::config::ServerConfig,
-        clock: Arc<dyn Clock>,
-    ) -> Option<Self> {
+    pub fn from_server_state(state: &crate::ServerState) -> Option<Self> {
+        let cfg = &state.config;
         let issuer = cfg.oidc_issuer.clone()?;
         let audience = cfg.oidc_client_id.clone()?;
-        Some(Self::new(
-            OidcConfig {
-                issuer,
-                audience,
-                leeway_secs: cfg.token_leeway_secs,
-                default_ttl_secs: cfg.jwks_default_ttl_secs,
-            },
-            Arc::new(super::http::HttpsFetch::new()),
-            clock,
-        ))
+        Some(
+            Self::new(
+                OidcConfig {
+                    issuer,
+                    audience,
+                    leeway_secs: cfg.token_leeway_secs,
+                    default_ttl_secs: cfg.jwks_default_ttl_secs,
+                },
+                Arc::new(super::http::HttpsFetch::new()),
+                Arc::clone(&state.clock),
+            )
+            .with_metrics(state.metrics.clone()),
+        )
     }
 
     /// The discovery URL for the configured issuer.
@@ -176,7 +189,15 @@ impl OidcVerifier {
             }
         }
 
-        let (keys, ttl_secs) = self.fetch_jwks().await?;
+        // Every fetch is counted, the throttled `kid`-miss refetch included:
+        // a rising rate of those is the forged-token traffic the throttle
+        // exists for.
+        let fetched = self.fetch_jwks().await;
+        self.metrics.incr_with(
+            "sunrise_oidc_jwks_fetch_total",
+            &[("result", if fetched.is_ok() { "ok" } else { "failed" })],
+        );
+        let (keys, ttl_secs) = fetched?;
         let expires_at_ms = now_ms.saturating_add(ttl_secs.saturating_mul(1000));
         let found = find_key(&keys, kid).cloned();
         *self.cache.lock() = Some(CachedJwks {

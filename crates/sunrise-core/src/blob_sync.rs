@@ -12,7 +12,7 @@
 //!
 //! From the **sync driver**, over the transport it already holds.
 //! [`crate::Core::attach_file`] writes a row into `blob_uploads` and returns;
-//! `drain_blob_transfers` in [`crate::sync_driver`] is what talks to the relay.
+//! [`drain`], which the driver runs, is what talks to the relay.
 //!
 //! Driving it from `attach_file` instead was the other candidate, and it is
 //! wrong for three reasons, each of which is a state the user is actually in:
@@ -107,7 +107,7 @@
 //! | Rows scanned per fetch drain | [`MAX_FETCH_SCAN`] | Bounds the filesystem work one drain does looking for missing chunks. |
 //!
 //! The upload queue itself needs no cap, and the reason is the one
-//! `DEFERRED_TOTAL_CAP` documents from the other side: that cap exists because
+//! `engine::sync::DEFERRED_TOTAL_CAP` documents from the other side: that cap exists because
 //! `defer_op` is reached before anything about the payload is checked, so a
 //! *peer* could park bytes of its choosing on every device in the account. A
 //! `blob_uploads` row is written only by this device's own `attach_file`, only
@@ -115,11 +115,16 @@
 //! this disk. The adversary is the user, and the user is bounded by their own
 //! storage.
 
+use crate::blob_cache::BlobRef;
+use crate::bytes::{hex_short, to16, to32};
 use crate::core::{Core, CoreError};
 use crate::engine::read_attachment;
 use sunrise_crypto::blob_chunk::{open_chunk, split_sealed, verify_content};
 use sunrise_domain::Attachment;
+use sunrise_error::ErrorCode;
+use sunrise_id::EntityRef;
 use sunrise_storage::BlobStore;
+use sunrise_sync::{Transport, TransportError};
 
 /// How many blobs one drain uploads before yielding, and therefore how many
 /// are ever in flight: they run one after another, so this is a ceiling on
@@ -198,7 +203,8 @@ pub(crate) struct PendingUpload {
 }
 
 impl Core {
-    /// Queue `att`'s sealed chunks for upload.
+    /// Queue one sealed blob of the attachment on `parent` for upload: its
+    /// original, or its thumbnail, which is a blob of its own (ADR-0053 §2).
     ///
     /// Called by [`Core::attach_file`] once the chunks are on disk and the
     /// metadata op is durable. `INSERT OR IGNORE`, so re-attaching the identical
@@ -206,31 +212,38 @@ impl Core {
     ///
     /// # Errors
     /// Storage failures.
-    pub(crate) fn enqueue_blob_upload(&self, att: &Attachment) -> Result<(), CoreError> {
+    pub(crate) fn enqueue_blob_upload(
+        &self,
+        parent: EntityRef,
+        blob: &BlobRef,
+        ciphertext_hash: &[u8; 32],
+    ) -> Result<(), CoreError> {
         let now_ms = i64::try_from(self.now_ms()).unwrap_or(i64::MAX);
         let db = self.db();
-        // The Stream the parent task lives on. `init` only checks that the
-        // field is non-empty — the relay stores nothing keyed by it — but
-        // sending the real one keeps the request honest and matches what the
-        // op it describes was routed under.
+        // The key domain the parent task lives in: its Stream's, or the
+        // private domain's for a task with none (ADR-0046 §2). `init` only
+        // checks that the field is non-empty — the relay stores nothing keyed
+        // by it — but sending the real one keeps the request honest and
+        // matches what the op it describes was routed under.
         let stream_id: Option<Vec<u8>> = db
             .conn()
             .query_row(
                 "SELECT stream_id FROM tasks WHERE id = ?",
-                rusqlite::params![&att.parent.bytes()[..]],
-                |r| r.get(0),
+                rusqlite::params![&parent.bytes()[..]],
+                |r| r.get::<_, Option<Vec<u8>>>(0),
             )
-            .ok();
+            .ok()
+            .map(|s| s.unwrap_or_else(|| sunrise_domain::PRIVATE_DOMAIN_BYTES.to_vec()));
         db.conn().execute(
             "INSERT OR IGNORE INTO blob_uploads
              (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
             rusqlite::params![
-                &att.blob_id[..],
+                &blob.blob_id[..],
                 stream_id.unwrap_or_else(|| vec![0u8; 16]),
-                att.chunk_count,
-                i64::try_from(att.size_bytes).unwrap_or(i64::MAX),
-                &att.ciphertext_hash[..],
+                blob.chunk_count,
+                i64::try_from(blob.size_bytes).unwrap_or(i64::MAX),
+                &ciphertext_hash[..],
                 now_ms,
             ],
         )?;
@@ -261,18 +274,57 @@ impl Core {
                     i64::try_from(MAX_UPLOADS_PER_DRAIN).unwrap_or(i64::MAX)
                 ],
                 |r| {
-                    Ok(PendingUpload {
-                        blob_id: sixteen(&r.get::<_, Vec<u8>>(0)?),
-                        stream_id: sixteen(&r.get::<_, Vec<u8>>(1)?),
-                        chunk_count: r.get::<_, i64>(2)?.try_into().unwrap_or(0),
-                        size_bytes: r.get::<_, i64>(3)?.try_into().unwrap_or(0),
-                        ciphertext_hash: thirty_two(&r.get::<_, Vec<u8>>(4)?),
-                        upload_id: r.get::<_, Option<String>>(5)?,
-                    })
+                    Ok((
+                        r.get::<_, Vec<u8>>(0)?,
+                        r.get::<_, Vec<u8>>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, Vec<u8>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
                 },
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        drop(stmt);
+        let mut out = Vec::with_capacity(rows.len());
+        for (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, upload_id) in rows {
+            let (Some(id), Some(stream), Some(hash)) =
+                (to16(&blob_id), to16(&stream_id), to32(&ciphertext_hash))
+            else {
+                // A wrong-width column is a corrupt row, not an id to pad
+                // (`to16`'s doc). It is marked out of attempts rather than
+                // skipped, so it leaves the `LIMIT` window instead of taking a
+                // slot in every drain, and the row stays inspectable.
+                let (reason, n_bytes) = if to16(&blob_id).is_none() {
+                    ("blob_id", blob_id.len())
+                } else if to16(&stream_id).is_none() {
+                    ("stream_id", stream_id.len())
+                } else {
+                    ("ciphertext_hash", ciphertext_hash.len())
+                };
+                tracing::warn!(
+                    ev = "sync.blob.upload_row_corrupt",
+                    reason = reason,
+                    n_bytes = n_bytes,
+                    "a queued upload's row holds a column of the wrong width; \
+                     it is marked out of attempts and not uploaded"
+                );
+                db.conn().execute(
+                    "UPDATE blob_uploads SET attempts = ? WHERE blob_id = ?",
+                    rusqlite::params![i64::from(MAX_UPLOAD_ATTEMPTS), &blob_id[..]],
+                )?;
+                continue;
+            };
+            out.push(PendingUpload {
+                blob_id: id,
+                stream_id: stream,
+                chunk_count: chunk_count.try_into().unwrap_or(0),
+                size_bytes: size_bytes.try_into().unwrap_or(0),
+                ciphertext_hash: hash,
+                upload_id,
+            });
+        }
+        Ok(out)
     }
 
     /// Remember the upload id `init` reserved.
@@ -373,54 +425,82 @@ impl Core {
         Ok(Some(out))
     }
 
-    /// Live attachments this device has metadata for and bytes for, and which
-    /// are small enough to fetch without being asked.
+    /// Blobs this device has metadata for and no bytes for, which it may
+    /// fetch without being asked on the network it is on now: thumbnails
+    /// first, whatever their attachment's size, then originals under the
+    /// threshold that have not been evicted (ADR-0053 §3, §5, §6).
     ///
     /// The read side's whole queue. See the module docs for why this is a query
     /// rather than a buffer.
     ///
     /// # Errors
     /// Storage or blob store failures.
-    pub(crate) fn attachments_awaiting_bytes(&self) -> Result<Vec<Attachment>, CoreError> {
-        let candidates: Vec<Attachment> = {
+    pub(crate) fn attachments_awaiting_bytes(&self) -> Result<Vec<BlobRef>, CoreError> {
+        let policy = self.current_auto_fetch_policy();
+        let mut candidates: Vec<BlobRef> = Vec::new();
+        {
             let db = self.db();
-            let mut stmt = db.conn().prepare(
-                "SELECT id FROM attachments
-                 WHERE deleted = 0 AND size_bytes <= ?
-                 ORDER BY created_at_ms DESC, id DESC
-                 LIMIT ?",
-            )?;
-            let ids = stmt
-                .query_map(
-                    rusqlite::params![
-                        i64::try_from(AUTO_FETCH_MAX_BYTES).unwrap_or(i64::MAX),
-                        i64::try_from(MAX_FETCH_SCAN).unwrap_or(i64::MAX)
-                    ],
-                    |r| r.get::<_, Vec<u8>>(0),
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut rows = Vec::new();
-            for raw in ids {
-                if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
-                    if a.is_fetchable() {
-                        rows.push(a);
+            let scan = i64::try_from(MAX_FETCH_SCAN).unwrap_or(i64::MAX);
+            if policy.thumbnails {
+                let ids = ids_where(
+                    db.conn(),
+                    "SELECT id FROM attachments
+                     WHERE deleted = 0 AND thumbnail_blob_id IS NOT NULL
+                     ORDER BY created_at_ms DESC, id DESC
+                     LIMIT ?",
+                    rusqlite::params![scan],
+                )?;
+                for raw in ids {
+                    let Some(id) = attachment_id(&raw) else {
+                        continue;
+                    };
+                    if let Some(a) = read_attachment(db.conn(), &id)? {
+                        candidates.extend(BlobRef::thumbnail(&a));
                     }
                 }
             }
-            rows
-        };
+            if policy.originals {
+                // An evicted original stays evicted until somebody opens it:
+                // fetching it back unasked would undo the eviction on the next
+                // drain and hold the cache at its limit by churning it.
+                let ids = ids_where(
+                    db.conn(),
+                    "SELECT a.id FROM attachments a
+                     WHERE a.deleted = 0 AND a.size_bytes <= ?
+                       AND NOT EXISTS (SELECT 1 FROM blob_cache c
+                                       WHERE c.blob_id = a.blob_id
+                                         AND c.evicted_at_ms IS NOT NULL)
+                     ORDER BY a.created_at_ms DESC, a.id DESC
+                     LIMIT ?",
+                    rusqlite::params![
+                        i64::try_from(AUTO_FETCH_MAX_BYTES).unwrap_or(i64::MAX),
+                        scan
+                    ],
+                )?;
+                for raw in ids {
+                    let Some(id) = attachment_id(&raw) else {
+                        continue;
+                    };
+                    if let Some(a) = read_attachment(db.conn(), &id)? {
+                        if a.is_fetchable() {
+                            candidates.push(BlobRef::original(&a));
+                        }
+                    }
+                }
+            }
+        }
 
         let store = BlobStore::new(self.vault_dir()).map_err(CoreError::from)?;
         let mut out = Vec::new();
-        for att in candidates {
+        for blob in candidates {
             if out.len() >= MAX_FETCHES_PER_DRAIN {
                 break;
             }
             if !store
-                .has_all(&att.blob_id, att.chunk_count)
+                .has_all(&blob.blob_id, blob.chunk_count)
                 .map_err(CoreError::from)?
             {
-                out.push(att);
+                out.push(blob);
             }
         }
         Ok(out)
@@ -452,18 +532,28 @@ impl Core {
         att: &Attachment,
         body: &[u8],
     ) -> Result<bool, CoreError> {
-        let Some(sealed) = split_sealed(body, att.chunk_count) else {
+        self.store_fetched(&BlobRef::original(att), body)
+    }
+
+    /// [`Core::store_fetched_blob`] for any blob, the original or the
+    /// thumbnail. Once the chunks are written the blob is indexed as opened
+    /// now and the cache is brought back under its limit.
+    ///
+    /// # Errors
+    /// Blob store failures.
+    pub(crate) fn store_fetched(&self, blob: &BlobRef, body: &[u8]) -> Result<bool, CoreError> {
+        let Some(sealed) = split_sealed(body, blob.chunk_count) else {
             return Ok(false);
         };
-        let mut plaintext = Vec::with_capacity(usize::try_from(att.size_bytes).unwrap_or(0));
+        let mut plaintext = Vec::with_capacity(usize::try_from(blob.size_bytes).unwrap_or(0));
         for (idx, piece) in sealed.iter().enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
-            match open_chunk(&att.blob_key, &att.blob_id, idx, att.chunk_count, piece) {
+            match open_chunk(&blob.blob_key, &blob.blob_id, idx, blob.chunk_count, piece) {
                 Ok(bytes) => plaintext.extend_from_slice(&bytes),
                 Err(_) => return Ok(false),
             }
         }
-        if verify_content(&plaintext, &att.content_hash).is_err() {
+        if verify_content(&plaintext, &blob.content_hash).is_err() {
             return Ok(false);
         }
 
@@ -471,65 +561,241 @@ impl Core {
         for (idx, piece) in sealed.iter().enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
             store
-                .put_chunk(&att.blob_id, idx, piece)
+                .put_chunk(&blob.blob_id, idx, piece)
                 .map_err(CoreError::from)?;
         }
+        self.note_blob_cached(blob)?;
         Ok(true)
     }
 }
 
-/// A stored blob narrowed to the 16 bytes it is; short or long is padded or
-/// truncated, the way `engine::ids` already treats one.
-fn sixteen(raw: &[u8]) -> [u8; 16] {
-    let mut a = [0u8; 16];
-    let take = raw.len().min(16);
-    a[..take].copy_from_slice(&raw[..take]);
-    a
+/// The raw ids one `SELECT id …` returns.
+fn ids_where(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<Vec<u8>>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map(params, |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
-/// [`sixteen`] at digest width.
-fn thirty_two(raw: &[u8]) -> [u8; 32] {
-    let mut a = [0u8; 32];
-    let take = raw.len().min(32);
-    a[..take].copy_from_slice(&raw[..take]);
-    a
+/// An `attachments.id` read through [`to16`], or `None`, with a warning, for a
+/// row whose id is not 16 bytes: padding it would look up some other
+/// attachment's id, or one that never existed.
+fn attachment_id(raw: &[u8]) -> Option<[u8; 16]> {
+    let id = to16(raw);
+    if id.is_none() {
+        tracing::warn!(
+            ev = "sync.blob.fetch_row_corrupt",
+            n_bytes = raw.len(),
+            "an attachment row's id is not 16 bytes; its bytes are not fetched"
+        );
+    }
+    id
+}
+
+/// Move attachment ciphertext in both directions: queued blobs up, missing
+/// blobs down.
+///
+/// This is the step that was absent, and its absence is issue #176: the
+/// attachment metadata op reached every device and the bytes reached none, so a
+/// Task's body was complete on the machine that made it and incomplete
+/// everywhere else. The module doc carries the reasoning for every policy
+/// decision below — where the upload is driven from, what a retry re-uses, why
+/// the read side is a query rather than a queue, and what each bound is.
+///
+/// Like [`crate::relay_intents::drain`], a [`TransportError::Unsupported`]
+/// transport ends the drain without counting an attempt: the in-process
+/// loopbacks carry the op stream and nothing else, and charging them would
+/// exhaust `MAX_UPLOAD_ATTEMPTS` on every convergence test that attaches a file.
+pub(crate) async fn drain<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    if upload_queued_blobs(core, transport).await.is_err() {
+        return;
+    }
+    // Asked-for downloads before unasked ones. Both halves are sequential and
+    // an attachment may be 100 MB, so the order decides how long somebody
+    // watching a Download button waits — and nobody is watching the automatic
+    // queue. See [`crate::blob_fetch`] for the rest of that route.
+    if crate::blob_fetch::drain_requested(core, transport)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    fetch_missing_blobs(core, transport).await;
+}
+
+/// `init` → `PUT` → `finalize`, for up to `MAX_UPLOADS_PER_DRAIN` queued blobs.
+///
+/// `Err(())` means this transport has no blob API, so the caller should stop
+/// rather than try the fetch half against it too.
+pub(crate) async fn upload_queued_blobs<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+) -> Result<(), ()> {
+    let Ok(pending) = core.pending_blob_uploads() else {
+        return Ok(());
+    };
+    for row in pending {
+        match upload_one_blob(core, transport, &row).await {
+            Ok(()) => {}
+            Err(TransportError::Unsupported) => return Err(()),
+            Err(e) => {
+                // The row survives every failure. Whatever went wrong, the
+                // bytes are still on this disk and still not on the relay, and
+                // that is exactly what the row says.
+                let attempts = core.note_blob_upload_attempt(&row.blob_id).unwrap_or(0);
+                // A refusal about the upload *id* is the one thing re-using it
+                // cannot survive, so this is where the id is dropped and a
+                // fresh `init` is allowed. Anything else — a dropped
+                // connection, a 5xx, a refused signature — keeps it, because
+                // keeping it is what stops a retry leaving a second pending
+                // directory on the relay.
+                if matches!(&e, TransportError::Server { code, .. }
+                    if *code == ErrorCode::SyncOpInvalid.as_str())
+                {
+                    let _ = core.forget_blob_upload_id(&row.blob_id);
+                }
+                tracing::warn!(
+                    ev = "sync.blob.upload_failed",
+                    err_code = "SYNC_NETWORK_UNAVAILABLE",
+                    err_kind = "transient",
+                    retryable = attempts < MAX_UPLOAD_ATTEMPTS,
+                    blob_h = hex_short(&row.blob_id),
+                    attempt = attempts,
+                    cause = %e,
+                    "an attachment's bytes have not reached the relay"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One blob, all the way to a committed relay-side copy.
+async fn upload_one_blob<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+    row: &PendingUpload,
+) -> Result<(), TransportError> {
+    let Ok(Some(chunks)) = core.sealed_chunks(&row.blob_id, row.chunk_count) else {
+        // The chunks are not on this disk. Nothing can be uploaded and no
+        // number of retries will change that, so the row goes rather than
+        // consuming a slot in every drain for the life of the vault.
+        let _ = core.clear_blob_upload(&row.blob_id);
+        tracing::warn!(
+            ev = "sync.blob.upload_abandoned",
+            blob_h = hex_short(&row.blob_id),
+            "a queued attachment's chunks are missing locally; nothing to upload"
+        );
+        return Ok(());
+    };
+
+    // The id from a previous attempt, or one reserved now. Persisted before the
+    // first chunk leaves, so even a crash here retries under this id.
+    let upload_id = if let Some(id) = &row.upload_id {
+        id.clone()
+    } else {
+        let id = transport
+            .blob_init(&row.stream_id, row.chunk_count, row.size_bytes)
+            .await?;
+        core.record_blob_upload_id(&row.blob_id, &id)
+            .map_err(|e| TransportError::Protocol(e.to_string()))?;
+        id
+    };
+
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        transport.blob_put_chunk(&upload_id, idx, chunk).await?;
+    }
+
+    let hashes: Vec<[u8; 32]> = chunks
+        .iter()
+        .map(|c| sunrise_crypto::ciphertext_hash(std::iter::once(c.as_slice())))
+        .collect();
+    let commit = transport
+        .blob_finalize(&upload_id, &row.ciphertext_hash, &hashes)
+        .await?;
+
+    // The relay content-addresses by the hash this device computed while
+    // sealing, so the committed id is one this device already predicted — and
+    // every other device predicts the same one from the same op. A
+    // disagreement would mean the two sides hashed different bytes, which
+    // `finalize` should have refused, so it is logged rather than trusted.
+    let mut expected = [0u8; 16];
+    expected.copy_from_slice(&row.ciphertext_hash[..16]);
+    if commit.blob_id != expected {
+        tracing::warn!(
+            ev = "sync.blob.upload_id_unexpected",
+            blob_h = hex_short(&row.blob_id),
+            "the relay committed this blob under an address no reader will ask for"
+        );
+    }
+
+    let _ = core.clear_blob_upload(&row.blob_id);
+    tracing::info!(
+        ev = "sync.blob.uploaded",
+        blob_h = hex_short(&row.blob_id),
+        n_chunks = row.chunk_count,
+        "an attachment's bytes are on the relay and readable by this account's other devices"
+    );
+    Ok(())
+}
+
+/// Pull the ciphertext for attachments this device has metadata for and bytes
+/// for.
+async fn fetch_missing_blobs<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    let Ok(wanted) = core.attachments_awaiting_bytes() else {
+        return;
+    };
+    for att in wanted {
+        match transport.blob_fetch(&att.relay_id).await {
+            // Not committed yet, or not this account's. Either way there is
+            // nothing to hold on to: the attachment row is already the durable
+            // record of what to ask for, so the next drain asks again.
+            Ok(None) => {}
+            Ok(Some(body)) => match core.store_fetched(&att, &body) {
+                Ok(true) => tracing::info!(
+                    ev = "sync.blob.fetched",
+                    blob_h = hex_short(&att.blob_id),
+                    "an attachment created on another device is now readable here"
+                ),
+                Ok(false) => tracing::warn!(
+                    ev = "sync.blob.fetch_rejected",
+                    err_code = "SYNC_OP_INVALID",
+                    err_kind = "user",
+                    retryable = true,
+                    blob_h = hex_short(&att.blob_id),
+                    "the relay returned bytes that are not this attachment's; nothing was stored"
+                ),
+                Err(e) => tracing::warn!(
+                    ev = "sync.blob.fetch_not_stored",
+                    blob_h = hex_short(&att.blob_id),
+                    cause = %e,
+                    "an attachment's bytes arrived and could not be written locally"
+                ),
+            },
+            Err(TransportError::Unsupported) => return,
+            Err(e) => tracing::warn!(
+                ev = "sync.blob.fetch_failed",
+                err_code = "SYNC_NETWORK_UNAVAILABLE",
+                err_kind = "transient",
+                retryable = true,
+                blob_h = hex_short(&att.blob_id),
+                cause = %e,
+                "an attachment's bytes could not be fetched; it stays unreadable here"
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::Command;
-    use crate::config::CoreConfig;
-    use crate::unlock::Unlock;
-    use std::sync::Arc;
-    use sunrise_crypto::keys::VaultRootKey;
-    use sunrise_domain::TaskDraft;
-    use sunrise_id::EntityRef;
-
-    async fn open_vault(dir: &std::path::Path) -> Arc<Core> {
-        let cfg = CoreConfig::production(dir.to_path_buf(), "0.1.0+test");
-        Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes([7u8; 32]),
-                    paired: None,
-                },
-            )
-            .await
-            .expect("open"),
-        )
-    }
-
-    async fn a_task(core: &Core) -> EntityRef {
-        core.submit(Command::CreateTask(TaskDraft {
-            title: "Renew the passport".into(),
-            ..Default::default()
-        }))
-        .await
-        .expect("create task")
-        .entity
-    }
+    use crate::test_support::{a_task, open_vault};
 
     /// Attaching a file queues its blob, and the queued row carries everything
     /// `init` and `finalize` need — so a driver that picks it up needs no
@@ -653,7 +919,7 @@ mod tests {
         std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
         let wanted = core.attachments_awaiting_bytes().expect("scan");
         assert_eq!(wanted.len(), 1);
-        assert_eq!(wanted[0].id, att.id);
+        assert_eq!(wanted[0].attachment, att.id);
     }
 
     /// A download is checked against this attachment's own key, blob id and
@@ -693,5 +959,94 @@ mod tests {
             core.attachment_bytes(att.id).await.expect("read"),
             b"hello".to_vec()
         );
+    }
+
+    /// A queued row whose `blob_id` is 15 bytes is a corrupt row. It is not
+    /// padded into a 16-byte id and offered for upload; it is marked out of
+    /// attempts, stays in the table, and the well-formed row beside it is
+    /// still offered.
+    #[tokio::test]
+    async fn a_queued_upload_with_a_short_blob_id_is_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "form.pdf".into(), "application/pdf".into(), b"hello")
+            .await
+            .expect("attach");
+        let short = [0xabu8; 15];
+        core.db()
+            .conn()
+            .execute(
+                "INSERT INTO blob_uploads
+                 (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
+                 VALUES (?, ?, 1, 5, ?, 0)",
+                rusqlite::params![&short[..], &[0u8; 16][..], &[0u8; 32][..]],
+            )
+            .expect("plant a corrupt row");
+
+        let queued = core.pending_blob_uploads().expect("read the queue");
+        assert_eq!(queued.len(), 1, "only the well-formed row: {queued:?}");
+        assert_eq!(queued[0].blob_id, att.blob_id);
+
+        let attempts: i64 = core
+            .db()
+            .conn()
+            .query_row(
+                "SELECT attempts FROM blob_uploads WHERE blob_id = ?",
+                rusqlite::params![&short[..]],
+                |r| r.get(0),
+            )
+            .expect("the corrupt row stays in the table");
+        assert_eq!(attempts, i64::from(MAX_UPLOAD_ATTEMPTS));
+    }
+
+    /// The same for the other two fixed-width columns: a short `stream_id` or
+    /// a long `ciphertext_hash` is refused, not padded or truncated.
+    #[tokio::test]
+    async fn a_queued_upload_with_a_wrong_width_stream_or_hash_is_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        for (blob_id, stream_id, hash) in [
+            ([1u8; 16], vec![0u8; 15], vec![0u8; 32]),
+            ([2u8; 16], vec![0u8; 16], vec![0u8; 33]),
+        ] {
+            core.db()
+                .conn()
+                .execute(
+                    "INSERT INTO blob_uploads
+                     (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
+                     VALUES (?, ?, 1, 5, ?, 0)",
+                    rusqlite::params![&blob_id[..], stream_id, hash],
+                )
+                .expect("plant a corrupt row");
+        }
+        assert!(core.pending_blob_uploads().expect("read").is_empty());
+    }
+
+    /// An attachment row whose id is 17 bytes is not truncated into its
+    /// neighbour's id, which would offer that attachment's blob twice.
+    #[tokio::test]
+    async fn an_attachment_row_with_a_wrong_width_id_is_not_offered_for_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "form.pdf".into(), "application/pdf".into(), b"hello")
+            .await
+            .expect("attach");
+        core.db()
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TABLE long_id AS SELECT * FROM attachments;
+                 UPDATE long_id SET id = CAST(id || x'00' AS BLOB);
+                 INSERT INTO attachments SELECT * FROM long_id;",
+            )
+            .expect("plant a row with a 17-byte id");
+        std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
+
+        let wanted = core.attachments_awaiting_bytes().expect("scan");
+        assert_eq!(wanted.len(), 1, "the real row only: {wanted:?}");
+        assert_eq!(wanted[0].attachment, att.id);
     }
 }

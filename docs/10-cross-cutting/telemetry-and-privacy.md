@@ -1,8 +1,33 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Telemetry and Privacy
+
+> **Status: proposed. Not yet built, and no roadmap issue
+> ([`../roadmap.md`](../roadmap.md)) builds it yet.** [§Categories](#categories)
+> and the telemetry and crash-reporting lines of
+> [§Third-party SDKs](#third-party-sdks) are the design of record, not a
+> description of anything that ships. No code, schema or CI check implements
+> the usage envelope, the crash-report flow or the diagnostic bundle, including
+> the CI assertion on the envelope's fields, `/api/v1/diagnostics/upload` and
+> `DIAGNOSTIC_INVALID_SIGNATURE`.
+>
+> **What exists:** `crates/sunrise-telemetry`, redacted OpenTelemetry tracing
+> for the relay, off unless the operator configures `[observability]`
+> ([`../06-server/observability.md`](../06-server/observability.md#tracing)).
+> It is operator tracing, and no client sends anything through it. The
+> `Plain<T>` wrapper and its gate in
+> [§Tagged types for content](#tagged-types-for-content) are also built.
+>
+> **Where the built parts are contracts:** this page is `proposed`, so nothing
+> quoted from it binds ([ADR-0042](../11-adr/0042-v0-forever.md) §4). The
+> `Plain<T>` wrapper is specified in
+> [`logging.md` §6](./logging.md#how-this-is-enforced) and its `log-redaction`
+> gate in [`logging.md` §6.3](./logging.md#63-ci-enforcement), and the
+> operator tracing in
+> [`../06-server/observability.md`](../06-server/observability.md#tracing).
+> Those `accepted` pages are the ones to cite.
 
 ## Default
 
@@ -77,7 +102,7 @@ In Rust core code, plaintext content fields are wrapped in `Plain<T>`:
 struct Plain<T>(T);
 ```
 
-`Plain<T>` deliberately implements **neither `Display`, nor `serde::Serialize`, nor `tracing::Value`** — each would make a different way of logging the payload compile (`crates/sunrise-log/src/plain.rs:89-93`). It *does* implement `Debug`, which prints the fixed marker `Plain<…>` and never the value (`plain.rs:83-87`); a `Debug` that refused to exist would only make the wrapper unusable in ordinary derives.
+`Plain<T>` deliberately implements **neither `Display`, nor `serde::Serialize`, nor `tracing::Value`** — each would make a different way of logging the payload compile. It *does* implement `Debug`, which prints the fixed marker `Plain<…>` and never the value (both at `crates/sunrise-log/src/plain.rs#Plain`); a `Debug` that refused to exist would only make the wrapper unusable in ordinary derives.
 
 To reach the value, code must call `.expose()` explicitly. What enforces that is not a clippy lint but a grep gate: `.github/scripts/grep-gate.sh` run as `log-redaction`, matching `\bplain[a-z_]*\.expose[[:space:]]*\(` — a POSIX ERE, exactly as the `log-redaction` job in `.github/workflows/ci.yml` spells it — across a fixed list of source directories, and failing the build on any hit. The gate and its directory list are specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); the message is the gate's own.
 

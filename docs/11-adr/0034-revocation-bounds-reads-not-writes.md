@@ -89,16 +89,16 @@ the code rather than from the issue:
   apply path reaches is the **bound**, twice, and both reads are on the
   **key-distribution** side: the anti-join is `emit_key_envelopes`'s
   `NOT EXISTS` against `device_read_bounds`
-  (`crates/sunrise-core/src/engine/oplog.rs:315-317#emit_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:358-360#emit_key_envelopes_to`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:424#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
-  (`crates/sunrise-core/src/engine/sync.rs:358#apply_remote_all`), routes a
+  (`crates/sunrise-core/src/engine/sync.rs:370#apply_remote_all_unchecked`), routes a
   control op into `apply_control_op`
-  (`crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`), and a
+  (`crates/sunrise-core/src/engine/sync.rs:415#apply_remote_all_unchecked`), and a
   published device cert carries it on into `backfill_key_envelopes`
   (`crates/sunrise-core/src/engine/sync.rs:1312#apply_control_op`). What no
   read of either table decides is whether an op **applies**; it decides which
@@ -106,7 +106,7 @@ the code rather than from the issue:
   sentence. An earlier draft of this bullet said nothing in the apply path
   consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:291-292#apply_remote_all`): *"A
+  (`crates/sunrise-core/src/engine/sync.rs:303-304#apply_remote_all_unchecked`): *"A
   revoked device's row is found here like any other, and its op is applied like
   any other."*
 - `upsert_sync_cursor`'s doc
@@ -115,7 +115,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7718-7720#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests/revocation_cursor.rs:5-7#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -162,7 +162,7 @@ Revocation today is a **register plus a read bound**:
   comparison in the path, and `is_revoked`'s own doc explains at length why a
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
-  easy to reach (`crates/sunrise-core/src/config.rs:71-79#peek`).
+  easy to reach (`crates/sunrise-core/src/config.rs:123-131#peek`).
 - **Entity writes are bounded at the relay, conditionally.** This bullet said
   until [#80](https://github.com/justin13888/Sunrise/issues/80) landed that
   nothing bounds writes and that `Command::RevokeDevice` *cannot* ask the relay
@@ -171,12 +171,12 @@ Revocation today is a **register plus a read bound**:
   peer's relay id. That was the obstacle, and #80 removed it by adding the route
   that takes the id a vault has:
   `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`
-  (`crates/sunrise-server/src/api/devices.rs:310#revoke_by_vault_id`).
+  (`crates/sunrise-server/src/api/devices.rs:317#revoke_by_vault_id`).
   `RevokeDevice` now inserts a `relay_revocation_intents` row in the op's own
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:317-324#revoke_device`), and
-  `sync_driver::drain_relay_revocations` retries it on every session
-  (`crates/sunrise-core/src/sync_driver.rs:1702#drain_relay_revocations`). The
+  `relay_intents::drain` retries it on every session
+  (`crates/sunrise-core/src/relay_intents.rs:87#drain`). The
   bound is real and **conditional**: the relay enforces only against a
   device-signed request, and `require_device_sig` defaults to false, so in the
   default deployment it is not in force
@@ -267,7 +267,7 @@ took five review rounds to bottom out, and it is not about convergence:
   and under the fold nothing is — the skipped op stays in the ledger.
 - **Do not advance it** and the cursor freezes while the relay keeps accepting
   the revoked device's uploads. Within retention, eviction raises
-  `evicted_through` past the frozen cursor, `relay_replay`'s gap loop fires on
+  `evicted_through` past the frozen cursor, `relay_replay_after`'s gap loop fires on
   every subscribe, and `mark_degraded()` latches. Within 30 days of an ordinary
   revocation, every device in the account permanently reports data loss as the
   expected outcome of an administrative action.
@@ -464,7 +464,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7683#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests/revocation_cursor.rs:5#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

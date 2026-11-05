@@ -5,8 +5,8 @@ Why this file exists
 --------------------
 
 The gate walks a dependency graph and prints a number —
-"20/24 crates reachable from a shipping artifact" — which
-`docs/implementation/overview.md` cites. Nothing checked the walk. If an
+"N/M crates reachable from a shipping artifact" — which
+`docs/implementation/overview.md` sends a reader to. Nothing checked the walk. If an
 edge stopped being followed, or a root stopped being a root, the number
 would come out smaller and the gate would still print OK, because the only
 thing that turns the gate red is a crate the walk failed to reach, and a
@@ -263,7 +263,7 @@ class Reachable(GateCase):
             OK,
             "OK: orphan-crates clean.",
             "orphan-crates: roots = app",
-            # The count is the number the overview cites. An edge that stopped
+            # The count is the number the overview sends a reader to. An edge that stopped
             # being walked would print 1/2 here and still exit 0 without it.
             "orphan-crates: 2/2 crates reachable",
         )

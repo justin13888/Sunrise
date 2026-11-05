@@ -10,12 +10,12 @@ Operate the server without violating the E2EE guarantee.
 > (`logging::account_h` / `id_h`), the request-log observer
 > (`api::observe::RequestLog`) with its redaction tests — in-module in
 > `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
-> and an in-process counter registry
-> exposed at `/metrics` (`metrics.rs`), and redacted OpenTelemetry tracing with
+> and an in-process registry of labelled counters, gauges and histograms
+> exposed at `/metrics` (`metrics.rs`, catalogued in [`metrics.md`](./metrics.md)),
+> and redacted OpenTelemetry tracing with
 > a capped sampler behind an off-by-default `[observability]` table
-> (`crates/sunrise-telemetry`, §Tracing). **Not built:** labelled metrics of any
-> kind, histograms, the deep health check's
-> disk-free-ratio probe, alerting, and the per-account audit log. Each section says which it is.
+> (`crates/sunrise-telemetry`, §Tracing). **Not built:** alerting, and the
+> per-account audit log. Each section says which it is.
 
 ## What we log
 
@@ -33,7 +33,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 49 `ev` names the server emits, complete:
+The 55 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -49,7 +49,7 @@ The 49 `ev` names the server emits, complete:
      already on the base branch: pull requests are squash-merged, so a commit
      on the pull request's own branch is gone once it merges, and the gate
      rejects one the base does not reach.
-     Last extracted: 3bc16cd0 -->
+     Last extracted: ce310ec1 -->
 
 ```
 srv.start                        srv.req.start
@@ -80,7 +80,12 @@ srv.push.token_unregistered      srv.push.delivery_failed
 srv.account.delete_initiated     srv.blob.tombstoned
 srv.account.delete_requested     srv.blob.gc_deleted
 srv.account.delete_completed     srv.blob.upload_swept
-srv.maintenance.failed
+srv.maintenance.failed           srv.snapshot.pinned
+                                 srv.snapshot.release_failed
+                                 srv.key_bundle.pinned
+                                 srv.key_bundle.release_failed
+                                 srv.identity_chain.pinned
+                                 srv.recovery_blob.replaced
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -157,11 +162,13 @@ extracted from the source and checked by a gate, so the catalogue's
      already on the base branch: pull requests are squash-merged, so a commit
      on the pull request's own branch is gone once it merges, and the gate
      rejects one the base does not reach.
-     Last extracted: 38a02c42 -->
+     Last extracted: ce310ec1 -->
 
 ```
 sunrise_account_create_total
 sunrise_account_delete_total
+sunrise_accounts
+sunrise_auth_verify_total                 {result, reason}
 sunrise_blob_bytes_total                  {direction}
 sunrise_blob_chunk_total
 sunrise_blob_fetch_total
@@ -169,38 +176,53 @@ sunrise_blob_finalize_total
 sunrise_blob_gc_deleted_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
+sunrise_blob_storage_bytes
+sunrise_blob_upload_duration_seconds
 sunrise_build_info                        {version, commit}
+sunrise_db_busy_total
+sunrise_db_query_duration_seconds         {endpoint}
 sunrise_db_size_bytes
 sunrise_device_sig_rejected_total         {reason}
+sunrise_devices                           {state}
 sunrise_devices_register_total
 sunrise_devices_revoke_total
+sunrise_http_in_flight_requests
 sunrise_http_request_duration_seconds     {endpoint, method}
 sunrise_http_requests_total               {endpoint, method, status}
+sunrise_identity_chain_pin_total
+sunrise_key_bundle_pin_total
 sunrise_metrics_series_dropped_total
+sunrise_oidc_jwks_fetch_total             {result}
 sunrise_pairing_total                     {result}
 sunrise_push_dispatch_duration_seconds    {provider}
 sunrise_push_dispatch_total               {provider, result}
 sunrise_push_register_total
 sunrise_ratelimit_rejected_total          {endpoint, scope}
 sunrise_recovery_blob_fetch_total
+sunrise_recovery_blob_replace_total
 sunrise_recovery_step_up_refused_total
 sunrise_relay_append_failed_total
 sunrise_relay_batch_duplicate_total
 sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
+sunrise_relay_log_bytes
+sunrise_relay_log_evicted_total
+sunrise_snapshot_pin_total
 sunrise_start_time_seconds
 sunrise_sync_batch_ops
 sunrise_sync_fanout_latency_seconds
 sunrise_sync_negotiate_refused_total      {reason}
+sunrise_sync_ops_delivered_total
 sunrise_sync_ops_received_total
 sunrise_sync_refresh_total
 sunrise_sync_resume_conflict_total
 sunrise_sync_session_total
 sunrise_sync_sessions_active
 sunrise_sync_stream_total
+sunrise_sync_streams_active
 ```
 
-38 metric names, and four that earlier revisions of this file listed and the
+55 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -501,11 +523,12 @@ any `crates/*/src/logging` module.
   handler reads no state, so it is liveness only. It stays 200 while the server
   drains, because a draining process is alive.
 - `GET /api/v1/health?deep=1` is the readiness probe. It answers 200 only when
-  the server is not draining, the store answers `SELECT 1` within 2 s, and the
-  blob root takes a probe write within 5 s; otherwise 503 with `failed` naming
-  the checks. A failed dependency check logs `srv.health.unready`; a drain does
-  not, since it is expected. The disk-free-ratio check `api.md` lists is not
-  built. See [`api.md`](./api.md) §Health / meta for the body.
+  the server is not draining, the store answers `SELECT 1` within 2 s, the
+  blob root takes a probe write within 5 s, and the blob root's filesystem has
+  more than 5% of its blocks free; otherwise 503 with `failed` naming the
+  checks. A failed dependency check logs `srv.health.unready`; a drain does
+  not, since it is expected. See [`api.md`](./api.md) §Health / meta for the
+  body.
 - On `SIGTERM` or `SIGINT` the server logs `srv.stop.draining`, flips readiness
   to 503, ends every open SSE stream with a retryable `closed` event, and gives
   in-flight requests `[server] shutdown_grace_secs` (default 25) to finish
@@ -532,8 +555,7 @@ No alerting exists, and several triggers below have no metric to fire from.
 There is no audit table in `store/`'s schema, no writer, no "Security" page,
 and no retention job. `[observability]` is rejected outright by the config
 parser (see [`self-hosting.md`](./self-hosting.md) §"Not yet wired"), so
-`audit_retention_days` cannot be set. Two of the five actions below could not be
-recorded anyway: "recovery blob fetched" and "account deleted" have no route.
+`audit_retention_days` cannot be set.
 
 For account-management actions only (not content):
 

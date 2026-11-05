@@ -1,4 +1,8 @@
-import PDFKit
+#if os(macOS)
+import Quartz
+#else
+import QuickLook
+#endif
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -8,6 +12,8 @@ struct AttachmentsView: View {
 
     @State private var picking = false
     @State private var selection: EntityRef?
+    /// The row whose Download is waiting on the cellular size confirmation.
+    @State private var confirming: AttachmentRow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -17,9 +23,9 @@ struct AttachmentsView: View {
             }
             if model.rows.isEmpty {
                 ContentUnavailableView(
-                    "No attachments",
+                    L10n.Attachments.emptyTitle,
                     systemImage: "paperclip",
-                    description: Text("Drop a file here, or use Attach.")
+                    description: Text(L10n.Attachments.emptyMessage)
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
@@ -41,14 +47,32 @@ struct AttachmentsView: View {
         }
         .task { await model.refresh() }
         .task { await model.follow() }
+        .onDisappear { model.closePreview() }
+        .confirmationDialog(
+            confirmTitle,
+            isPresented: Binding(
+                get: { confirming != nil },
+                set: { if !$0 { confirming = nil } }
+            ),
+            presenting: confirming
+        ) { row in
+            Button(L10n.Attachments.cellularDownload(size: row.sizeText)) { model.download(row) }
+        } message: { _ in
+            Text(L10n.Attachments.cellularMessage)
+        }
+    }
+
+    private var confirmTitle: String {
+        guard let row = confirming else { return "" }
+        return L10n.Attachments.cellularTitle(filename: row.item.filename)
     }
 
     private var header: some View {
         HStack {
-            Text("Attachments").font(.headline)
+            Text(L10n.Attachments.title).font(.headline)
             Spacer()
             if model.isBusy { ProgressView().controlSize(.small) }
-            Button("Attach…", systemImage: "paperclip") { picking = true }
+            Button(L10n.Attachments.attach, systemImage: "paperclip") { picking = true }
                 .disabledUnlessEditable(.attachment)
                 .accessibilityIdentifier("attach-file")
         }
@@ -60,8 +84,7 @@ struct AttachmentsView: View {
             // cannot disagree about what this attachment is doing.
             let transfer = model.transfer(row)
             HStack(spacing: 8) {
-                Image(systemName: symbol(for: row, transfer))
-                    .foregroundStyle(transfer == .here ? .primary : .secondary)
+                icon(for: row, transfer)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.item.filename)
                     Text(subtitle(for: row, transfer))
@@ -70,7 +93,7 @@ struct AttachmentsView: View {
                 }
                 Spacer()
                 transferControls(for: row, transfer)
-                Button("Remove", systemImage: "trash") {
+                Button(L10n.Action.remove, systemImage: "trash") {
                     Task { await model.detach(row) }
                 }
                 .labelStyle(.iconOnly)
@@ -104,7 +127,7 @@ struct AttachmentsView: View {
     ) -> some View {
         switch transfer {
         case .here:
-            Button("Open", systemImage: "arrow.up.forward.app") {
+            Button(L10n.Attachments.open, systemImage: "arrow.up.forward.app") {
                 Task {
                     if let url = await model.exportToTemporary(row) {
                         Platform.openExternal(url)
@@ -113,9 +136,10 @@ struct AttachmentsView: View {
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
+            .accessibilityIdentifier("open-attachment-in")
         case .running:
             ProgressView().controlSize(.small)
-            Button("Cancel", systemImage: "xmark.circle") {
+            Button(L10n.Action.cancel, systemImage: "xmark.circle") {
                 model.cancelDownload(row)
             }
             .labelStyle(.iconOnly)
@@ -123,10 +147,14 @@ struct AttachmentsView: View {
             .accessibilityIdentifier("cancel-attachment-download")
         case .interrupted, .absent:
             Button(
-                transfer == .interrupted ? "Download again" : "Download",
+                transfer == .interrupted ? L10n.Attachments.downloadAgain : L10n.Attachments.download,
                 systemImage: "arrow.down.circle"
             ) {
-                model.download(row)
+                if model.downloadNeedsConfirmation(row) {
+                    confirming = row
+                } else {
+                    model.download(row)
+                }
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
@@ -134,30 +162,60 @@ struct AttachmentsView: View {
         }
     }
 
-    /// The inline preview. Images and PDFs only — everything else opens in the
-    /// app that owns it, because guessing at a renderer for an arbitrary type
-    /// is how a text editor ends up showing a `.zip` as mojibake.
+    /// The preview (ADR-0053 §4). Only what a system framework renders: an
+    /// image through ImageIO, inline, and everything else through QuickLook,
+    /// out of process. A type QuickLook cannot preview says so and offers
+    /// **Open in…**; no decoder is bundled for it.
     @ViewBuilder
     private var preview: some View {
         if let previewing = model.previewing,
            let row = model.rows.first(where: { $0.id == previewing.id }) {
-            switch row.previewKind {
-            case .image:
-                if let image = PlatformImage(data: previewing.data) {
-                    Image(platformImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxHeight: 260)
-                        .accessibilityLabel(row.item.filename)
+            VStack(alignment: .trailing, spacing: 4) {
+                Button(L10n.Attachments.closePreview, systemImage: "xmark") { model.closePreview() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                switch previewing {
+                case let .image(_, data):
+                    if let image = PlatformImage(data: data) {
+                        Image(platformImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 260)
+                            .accessibilityLabel(row.item.filename)
+                    }
+                case let .file(_, url):
+                    if QuickLookPreview.canPreview(url) {
+                        QuickLookPreview(url: url)
+                            .frame(minHeight: 260)
+                            .accessibilityLabel(row.item.filename)
+                    } else {
+                        Text(L10n.Attachments.cannotPreview(filename: row.item.filename))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-            case .pdf:
-                PdfPreview(data: previewing.data)
-                    .frame(minHeight: 260)
-            case .none:
-                Text("\(row.item.filename) opens in another app.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// The row's leading image: its thumbnail when one has arrived, its
+    /// type's symbol otherwise, and the transfer's symbol while the bytes are
+    /// not here and there is no thumbnail to show instead.
+    @ViewBuilder
+    private func icon(for row: AttachmentRow, _ transfer: AttachmentTransfer) -> some View {
+        if let data = model.thumbnails[row.id], let image = PlatformImage(data: data) {
+            Image(platformImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 32, height: 32)
+                .clipShape(.rect(cornerRadius: 4))
+                .opacity(transfer == .here ? 1 : 0.7)
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: symbol(for: row, transfer))
+                .foregroundStyle(transfer == .here ? .primary : .secondary)
+                .frame(width: 32, height: 32)
         }
     }
 
@@ -167,11 +225,10 @@ struct AttachmentsView: View {
         case .interrupted: return "exclamationmark.icloud"
         case .absent: return "icloud.and.arrow.down"
         case .here:
-            switch row.previewKind {
-            case .image: return "photo"
-            case .pdf: return "doc.richtext"
-            case .none: return "doc"
-            }
+            let type = UTType(mimeType: row.item.mimeType)
+            if type?.conforms(to: .image) == true { return "photo" }
+            if type?.conforms(to: .pdf) == true { return "doc.richtext" }
+            return "doc"
         }
     }
 
@@ -185,46 +242,87 @@ struct AttachmentsView: View {
     private func subtitle(for row: AttachmentRow, _ transfer: AttachmentTransfer) -> String {
         switch transfer {
         case .here: return "\(row.sizeText) · \(row.item.mimeType)"
-        case .running: return "\(row.sizeText) · downloading…"
-        case .interrupted: return "\(row.sizeText) · download interrupted"
-        case .absent: return "\(row.sizeText) · not on this device"
+        case .running: return "\(row.sizeText) · \(L10n.Attachments.statusDownloading)"
+        case .interrupted: return "\(row.sizeText) · \(L10n.Attachments.statusInterrupted)"
+        case .absent: return "\(row.sizeText) · \(L10n.Attachments.statusAbsent)"
         }
     }
 }
 
-/// A PDF, drawn by the system's own viewer.
-///
-/// `PDFView` itself is the same class on both platforms — PDFKit ships on iOS
-/// too — so only the representable wrapper differs, and it differs in nothing
-/// but the two method names. Configuring the view is therefore written once,
-/// below, and each conformance forwards to it.
-private struct PdfPreview {
-    let data: Data
+/// A file, previewed by QuickLook: `QLPreviewView` on macOS,
+/// `QLPreviewController` on iOS. QuickLook renders PDFs and dozens of other
+/// types out of process, and the OS patches it, which is why the pane bundles
+/// no decoder of its own.
+struct QuickLookPreview {
+    let url: URL
 
-    // `@MainActor` because `PDFView` is, and because the representable methods
-    // these stand in for carry that isolation themselves — factoring them out
-    // is what dropped it.
+    /// Whether QuickLook can preview `url`. macOS has no such question to
+    /// ask: `QLPreviewView` draws a generic icon for a type it cannot render,
+    /// which reads as a preview of nothing, so there it answers for the types
+    /// the system declares previewable content for.
     @MainActor
-    fileprivate func makeView() -> PDFView {
-        let view = PDFView()
-        view.autoScales = true
-        return view
-    }
-
-    @MainActor
-    fileprivate func update(_ view: PDFView) {
-        view.document = PDFDocument(data: data)
+    static func canPreview(_ url: URL) -> Bool {
+        #if os(macOS)
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return [UTType.pdf, .text, .image, .movie, .audio, .presentation, .spreadsheet,
+                .rtf, .html, .compositeContent, .threeDContent]
+            .contains { type.conforms(to: $0) }
+        #else
+        return QLPreviewController.canPreview(url as NSURL)
+        #endif
     }
 }
 
 #if os(macOS)
-extension PdfPreview: NSViewRepresentable {
-    func makeNSView(context: Context) -> PDFView { makeView() }
-    func updateNSView(_ view: PDFView, context: Context) { update(view) }
+extension QuickLookPreview: NSViewRepresentable {
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        view.autostarts = true
+        return view
+    }
+
+    func updateNSView(_ view: QLPreviewView, context: Context) {
+        if (view.previewItem as? URL) != url {
+            view.previewItem = url as NSURL
+        }
+    }
+
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) {
+        view.close()
+    }
 }
 #else
-extension PdfPreview: UIViewRepresentable {
-    func makeUIView(context: Context) -> PDFView { makeView() }
-    func updateUIView(_ view: PDFView, context: Context) { update(view) }
+extension QuickLookPreview: UIViewControllerRepresentable {
+    func makeCoordinator() -> Source { Source(url: url) }
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+        if context.coordinator.url != url {
+            context.coordinator.url = url
+            controller.reloadData()
+        }
+    }
+
+    /// The one item the controller shows.
+    @MainActor
+    final class Source: NSObject, QLPreviewControllerDataSource {
+        var url: URL
+
+        init(url: URL) { self.url = url }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(
+            _ controller: QLPreviewController,
+            previewItemAt index: Int
+        ) -> QLPreviewItem {
+            url as NSURL
+        }
+    }
 }
 #endif

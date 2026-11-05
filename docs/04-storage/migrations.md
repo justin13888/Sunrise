@@ -18,11 +18,8 @@ status: accepted
 > [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/),
 > and `migrations.rs`'s `current_storage_v_matches_the_version_constant` fails
 > the build if those two ever disagree. So is the number of migrations: it is
-> the file count of that directory. A count in prose has to be hand-edited every
-> time a migration lands, which means it is wrong from the next merge until
-> someone notices — this page carried "`STORAGE_V` is **16** … four files"
-> through four appends, which is the whole argument for not saying it again.
-> Read the directory; it cannot drift from itself.
+> the file count of that directory. Read the directory; it cannot drift from
+> itself.
 >
 > Every file after 0013 was appended, and 0013 was not touched to make room for
 > any of them — which is exactly the append-only rule the reset reinstated. The
@@ -47,8 +44,7 @@ Each migration:
 
 ### Who provides the no-op
 
-This page used to say each migration "is idempotent (re-running is a no-op)".
-**That is false of the SQL and always was.** Not one migration in the tree is
+A migration's SQL **is not idempotent.** Not one migration in the tree is
 re-runnable on its own: they are bare `ALTER TABLE … ADD COLUMN` and
 `CREATE TABLE` statements, and SQLite fails the second one with "duplicate
 column name" or "table already exists". Replay 0017 and it renames a
@@ -105,15 +101,29 @@ Migrations run in a single transaction; failure rolls back; the app refuses to l
   1. **Retry** — re-run the migration; useful for transient I/O errors.
   2. **Restore from backup** — if user has an external backup of the vault directory.
   3. **Reset and resync** — delete local vault, re-pair the device; remote ops are intact.
+
+*Today:* a failed migration is `DbError::Migration`, on the wire
+`STORAGE_MIGRATION_FAILED` (id 306) with no structured fields: the message
+names the migration. What a client offers for it, and for every other open
+that fails, is one table, `open_remedies` in
+`crates/sunrise-client-core/src/vault_session.rs`: try again, and restore the
+account from its recovery code when it is on a relay. It does not offer the
+pre-migration copy, because a migration that rolled back left the vault as
+that copy holds it. "Reset and resync" is the recovery code: the vault is moved
+aside, not deleted (`Core::set_vault_aside`), and the account is restored into
+the directory it left, which now holds no vault. The CLI prints the table's
+lines under the error; the macOS app does not show them yet.
 - Downgrades require an explicit reverse migration with its own ADR; no reverse migrations exist today.
 
 ## Migration rigor
 
-> **Normative, and partly built.** Every rule in this section is a MUST.
-> Rules 2 and 3 ship, and so does rule 1 except its rebuild-equivalence check
-> ([#327](https://github.com/justin13888/Sunrise/issues/327)). Rule 4 is not
-> built ([#441](https://github.com/justin13888/Sunrise/issues/441)). The
-> *Today* notes say where the tree falls short. The rules exist because the one invariant every versioned surface
+> **Normative, and built outside the macOS app.** Every rule in this section
+> is a MUST. All four ship in the core, the UniFFI seam and the CLI
+> ([#327](https://github.com/justin13888/Sunrise/issues/327),
+> [#441](https://github.com/justin13888/Sunrise/issues/441)). What the macOS
+> app does not have yet is a screen that offers the repair, a restore or the
+> recovery code on a failed open. The *Today* notes say where the tree falls
+> short. The rules exist because the one invariant every versioned surface
 > serves ([ADR-0042](../11-adr/0042-v0-forever.md)) applies to a device's own
 > vault file as much as to the merge:
 >
@@ -137,8 +147,10 @@ goes wrong, and unable to destroy anything the op log cannot regenerate.
   asserts on **row contents**, not on the open succeeding. Each fixture states
   the rows it holds, and the assertions check that every one of them survives
   in its migrated shape.
-- **The gate.** Adding a migration `NNNN` without a fixture at `NNNN − 1` fails
-  CI.
+- **The gate.** Adding a migration without a fixture at the version before
+  it fails CI. The version before it is the previous migration's id, which is
+  `NNNN − 1` unless a parallel change has reserved that number and not landed
+  yet: no vault was ever at a reserved version, so none has a fixture.
 - **Rebuild equivalence.** After migrating, the job also runs the projection
   rebuild (rule 4). It asserts that the rebuilt projection equals the migrated
   one. A migration that transforms data differently from how the op log would
@@ -147,11 +159,25 @@ goes wrong, and unable to destroy anything the op log cannot regenerate.
 *Today:* a fixture exists for every `STORAGE_V` from 13 to the one before the
 current version, which is wider than the rule: it does not wait for a version
 to ship in a tagged release. `every_fixture_keeps_every_row_through_every_later_migration`
-in `crates/sunrise-storage/src/vault_fixtures.rs` is the row-content check,
+in `crates/sunrise-storage/src/vault_fixtures/chain.rs` is the row-content check,
 and `every_migration_has_a_fixture_at_the_version_before_it` is the gate. They
-run in the `Storage migration fixtures` CI job and in the workspace suite. The
-rebuild-equivalence check waits for the rebuild
-([#441](https://github.com/justin13888/Sunrise/issues/441)).
+run in the `Storage migration fixtures` CI job and in the workspace suite.
+
+The rebuild-equivalence check runs over other fixtures, in `sunrise-core`.
+The storage fixtures are seeded row by row with invented envelopes, so nothing
+can refold them, and a rebuild over one only clears its invented rows.
+`crates/sunrise-core/fixtures/projection_vault_storage_v<N>.db` is a vault the
+engine wrote at `STORAGE_V` `N`, through every command family.
+`every_projection_fixture_rebuilds_to_what_its_migration_left`
+(`crates/sunrise-core/src/engine/tests/rebuild/fixture.rs`) opens a copy with
+`Db::open`, which runs every migration after `N`, rebuilds it, and requires
+every projection table to read as the migration left it. The first is at 40,
+so the check bites from migration 0041 on. A migration meant to change what the
+fold produces bumps `FOLD_V`, and the open's own rebuild is then what the
+check compares against. There is one such fixture, not one per version, and no
+gate asks for the next: one is worth adding when a migration changes the shape
+of projection data. `mise run storage-fixtures` writes the one for the current
+version when it is missing.
 
 ### 2. A backup is taken before any migration
 
@@ -173,10 +199,20 @@ rebuild-equivalence check waits for the rebuild
 the copy under the connection's own SQLCipher key, to `Db::backup_path`. The
 copy is written under a temporary name, fsynced and renamed into place, and
 the directory is fsynced. A copy that cannot be written fails the open with
-`DbError::Backup`. The next open at the current version deletes every
-`<vault>.pre-v<N>.bak` beside the vault. An in-memory vault is not copied.
-Nothing in the apps offers the restore yet
-([#441](https://github.com/justin13888/Sunrise/issues/441)).
+`DbError::Backup`, on the wire `STORAGE_BACKUP_FAILED` (id 305). The next open
+at the current version deletes every `<vault>.pre-v<N>.bak` and
+`<vault>.pre-rebuild.bak` beside the vault (rule 4 adds the second). An
+in-memory vault is not copied.
+
+The restore is `Core::restore_vault_backup`
+(`crates/sunrise-core/src/core/repair.rs`), over UniFFI
+`restore_vault_backup`, and in the CLI `sunrise backups restore <file>`;
+`Core::vault_backups` (`vault_backups`, `sunrise backups`) lists the copies,
+newest first. It takes the vault's lock, so nothing restores a vault that is
+open. It moves the vault and its `-wal` aside to `<vault>.replaced-<n>`,
+deletes the `-shm`, and renames the copy into place: nothing that holds data is
+deleted. The next open migrates a restored pre-migration copy again, under a
+fresh copy of its own. The macOS app does not offer it yet.
 
 ### 3. Integrity is checked on open
 
@@ -195,8 +231,28 @@ bare `SQLITE_ERROR`. When that happens on a file, the open runs SQLCipher's
 one. A `quick_check` finding, an `SQLITE_CORRUPT` error, or a page the HMAC
 check names all return `DbError::IntegrityCheckFailed`. A wrong key
 (`SQLITE_NOTADB`) stays a plain `DbError::Sqlite`, because it is not damage. Both errors map to
-`ErrorCode::FatalInternal` on the wire, and no app offers the rebuild or the
-restore yet ([#441](https://github.com/justin13888/Sunrise/issues/441)).
+`STORAGE_INTEGRITY_CHECK_FAILED` (id 304) on the wire; a wrong key stays
+`FATAL_INTERNAL`. Over UniFFI a failed open raises `BindingError::VaultDamaged`,
+and one variant for each other failure a client branches on (`VaultBackupFailed`,
+`VaultMigrationFailed`, `VaultTooNew`, `VaultTooOld`, `VaultBusy`); their
+messages read as the `Core` message they replace.
+
+The rebuild offered here is a **repair**, `Core::open_repairing`
+(`crates/sunrise-core/src/core/repair.rs`), over UniFFI
+`SunriseCore::open_repairing`, and in the CLI `sunrise rebuild --repair`. It
+opens the file `Db::open` refused (`Db::open_for_repair`), after copying it
+byte for byte, with its `-wal`, to `<vault>.pre-rebuild.bak`: not with
+`VACUUM INTO`, which reads every page and stops at the damaged one. It
+rebuilds every index, brings the schema to this build's version (a vault
+behind it is checked first, and a failed check still starts no migration),
+rebuilds the projection from the op log whatever fold built it, and runs
+`quick_check` again. Damage in what the log re-derives is cleared by the
+rebuild; damage in the log, the keys or another source table is still there,
+and the second check refuses the vault again. The decision a client makes on
+a failed open is `open_remedies` (§Failure recovery): for damage, the repair
+(not after one has failed), the newest copy beside the vault where there is
+one, and the recovery code where the account has one. The macOS app does not
+offer them yet.
 
 ### 4. The projection can be rebuilt from the local op log
 
@@ -227,18 +283,147 @@ side tables deterministic. A test asserts the rebuilt projection is
 byte-identical to the live one for a vault built by random command sequences.
 
 **Where it is exposed.** The rebuild is exposed over UniFFI. Account recovery
-from the relay (`crates/sunrise-onboarding/src/recovery.rs#recover_account`) is
+from the relay (`crates/sunrise-client-core/src/recovery.rs#recover_account`) is
 exposed next to it. The macOS app has a path to each. The rebuild is offered on a
 rule-3 failure and on a migration failure. It runs automatically, in the same
 open, after any migration that changes materialization semantics. Adopting
 per-field ops is the first such migration.
 
-*Today:* the rebuild does not exist (§Materialized state rebuild below), and
-no table is classified yet. Account recovery is exposed over UniFFI as
-`SunriseCore::recover_account` and reached from the CLI and the Apple
-onboarding. It recovers an account from the relay into an empty vault. It is
-not a local rebuild. All of
-this rule is [#441](https://github.com/justin13888/Sunrise/issues/441).
+*Today:* the rebuild ships as `Engine::rebuild_projection` and
+`Core::rebuild_projection` (`crates/sunrise-core/src/engine/rebuild.rs`). It
+is exposed over UniFFI as `SunriseCore::rebuild_projection` and in the CLI as
+`sunrise rebuild`. It differs from the design above in four ways:
+
+- **The classification is a list in code, not a comment beside each
+  `CREATE TABLE`.** `TABLE_CLASSES` in `rebuild.rs` names every table, and
+  `every_table_in_the_schema_is_classified` fails when a migration adds a
+  table it does not name, or when the registry projects an entity to a table
+  it does not call a projection. The migration files are not edited.
+- **Only entity state is a projection.** The rebuild clears the entity rows,
+  their side tables, both full-text indexes and the per-field merge
+  state, and refolds every applied entity op. The control-op folds
+  (revocations, read bounds, features, key-envelope recipients) are classified
+  as source and kept, because refolding a control op re-absorbs keys and
+  re-emits envelopes.
+- **Compacted ops are carried, not replayed.** An op below a
+  `compaction_floor` has been deleted
+  ([ADR-0059](../11-adr/0059-client-op-log-compaction.md)), so the rebuild
+  first dumps the merge-state rows those ops wrote and joins them back before
+  refolding the log.
+- **Parked ops are not retried by the rebuild.** This build cannot read them,
+  so the live projection never held them; `Engine::replay_parked_ops` retries
+  them on the next open by a different build, as before.
+
+**The rule-2 backup is `<vault>.pre-rebuild.bak`.** `Db::back_up_for_rebuild`
+(`crates/sunrise-storage/src/backup.rs`) writes it with `VACUUM INTO` before
+`Core::rebuild_projection` and before the rebuild at open, and the next
+ordinary open deletes it, as it deletes a pre-migration copy. "No backup, no
+rebuild": a copy that cannot be written is `DbError::RebuildBackup`
+(`STORAGE_BACKUP_FAILED`), and nothing is rebuilt. An open that migrated the
+vault already holds a copy from before the migration, which is from before
+the rebuild too, and takes no second one. The rebuild at the first open of a
+new vault takes none: the vault holds nothing yet.
+
+Three things inside the cleared tables are kept, because no op still in the
+log derives them: a placeholder `streams` row no op has stamped (one a focus
+session named before the stream's create arrived; a task, block or routine
+no longer makes one, ADR-0046 clarification C12), each routine's
+`materialized_until_ms`, and the
+`pending_groups` rows whose ops compaction deleted, which tell the refold that
+those members of a group are present. The versions, frontiers and register
+losers of compacted ops come back with the base, a `doc_state` v2, which
+carries every one compaction has not pruned
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §8, D25).
+
+**It runs automatically at open when the fold changed.** A rebuild records the
+version of the fold it ran, `FOLD_V`, in `projection_rebuild`, a source table
+migration 0039 adds empty. `Core::open` calls `Engine::rebuild_if_stale`
+after the base epochs are ensured and before parked ops are replayed or
+routines materialized, and it rebuilds when that row is missing or names
+another `FOLD_V`. So the first open after migration 0039 rebuilds once,
+under the rule-2 backup that migration's open took, and so does the first
+open of any later build whose fold differs; a `STORAGE_V` bump alone does
+not. Migration 0039 relies on it: the version DAG's tables start empty, and
+the rows an older build wrote without folding (before migration 0033, or
+before ADR-0065's third pull request) are folded from their ops rather than
+read back from the row. `FOLD_V` 2 (ADR-0065's fifth pull request) folds
+registers by their conflict classes and keeps the losers in
+`register_losers`, which a vault folded at 1 holds none of, so a vault opened
+by that build rebuilds once more, with no migration: the tables are 0039's.
+`FOLD_V` 3 (#506) writes the `*_civil` sidecar of every `SunriseTime` column
+and the routine and stream time sidecars that migration 0041 adds. The
+migration cannot compute a civil time in SQL, which has no tzdata, so it
+adds the columns empty and relies on this rebuild: the ops carry each civil
+value as it was written, which is more faithful than any derivation from
+`*_ms`. `FOLD_V` 4 (#340) writes `Task.sort_order` to the `tasks.sort_order`
+column migration 0042 adds. A build before it kept a key a newer device wrote
+in `tasks.extra`, as an unknown field, and SQL cannot move it out of the CBOR
+blob, so the migration adds the column empty and this rebuild moves the key. `FOLD_V` 5 (ADR-0065's seventh pull request) derives
+a routine's streak fields from its `streak_keys` and `skipped_keys` once a
+`Patch` has written one of them (#331), with no migration; a routine only
+full-state ops wrote projects as it did at 4. `FOLD_V` 6 (#332, ADR-0046)
+projects each task's, block's and routine template's effective stream, NULL
+for no stream, into the `stream_id` columns migration 0044 makes nullable,
+and `Task.triaged_at` and `Stream.rehomed_to` into the columns it adds, where
+a build before it kept the last two in `extra`. `FOLD_V` 7 (#334, ADR-0047)
+projects `Task.target_at` into the `target_at_*` columns migration 0045 adds,
+beside the `planned_at_*` and `hard_due_at_*` columns it renames from
+`scheduled_at_*` and `due_at_*`, where a build before it kept a newer
+device's target in `extra`. The survival check over the old-vault fixtures
+reads a renamed column under its new name (`RENAMED_COLUMNS` in
+`crates/sunrise-storage/src/vault_fixtures/chain.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
+and `Task.late_acknowledged_at` into the columns migration 0046 adds. `FOLD_V` 9 (#331) projects `Routine.split_from` and
+`Task.hard_constraint_violated` into the columns migration 0047 adds, and
+a later write of `Task.routine_id` into its column.
+
+How it behaves on a large vault, decided for ADR-0065's fourth pull request:
+
+- **One transaction, in the open, before the vault is reachable.** The vault
+  shows the projection it had or the rebuilt one, never a mix. A rebuild in
+  chunks would commit a half-rebuilt projection that a later chunk's failure
+  or a killed process leaves behind, and one in the background would let
+  reads and folds meet a half-rebuilt projection.
+- **Progress is logged**, as `core.rebuild.progress` every 5,000 ops, after
+  `core.rebuild.stale` names the fold version it replaces. Nothing reaches a
+  client, since no subscriber exists before `Core::open` returns. Decided for
+  ADR-0065's fifth pull request, with the second rebuild a vault takes: no
+  progress sink in `CoreConfig` yet. One would be an additive callback a
+  client registers before `Core::open`, and a client can only use it with a
+  launch screen that shows a rebuild, which no client has. It is worth adding
+  when the rebuild bench or a field report shows an open blocking long
+  enough to need one, and adding it then breaks no caller.
+- **A failure is not fatal.** The transaction rolls back, `core.rebuild.on_open_failed`
+  is logged, the vault opens on the projection it had, and the next open
+  tries again.
+- **Cost.** A rebuild decrypts and refolds every entity op once per fold
+  change; `crates/sunrise-bench/benches/rebuild.rs` measures it. Should that
+  prove too slow on a device, the change to make is to the rebuild's own
+  cost, for instance by deriving an entity whose history is legacy only from
+  its envelope headers without decrypting, and not to its atomicity.
+
+`rebuild_projection_reproduces_every_projection_table` rebuilds a vault
+written by every command family on two replicas and compares every projection
+table byte for byte. The convergence tests, `convergence_under_random_interleaving`
+and `any_delivery_order_converges_and_loses_no_concurrent_write` among them,
+also rebuild each replica they converge and compare
+(`Engine::assert_rebuild_identity`), writers and receivers alike. Every engine
+test also runs the check after each command and each delivery: an engine the
+tests build turns it on for its thread, and a test that writes rows no op wrote,
+as a vault older than the merge holds them, turns it off. The check compares
+every projection table whole, the merge state included, since every local
+write goes through the fold ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+§5) and the merge keeps an OR-set remove whatever order its add's pruning
+arrived in.
+
+Account recovery is exposed over UniFFI as `SunriseCore::recover_account` and
+`SunriseCore::recover_account_with_replay`, and reached from the CLI and the
+Apple onboarding. It recovers an account from the relay into a directory
+holding no vault, and refuses one that holds `vault.db` or a non-empty
+`vault-id` marker (`check_recovery_directory` in
+`crates/sunrise-client-core/src/recovery.rs`). It is not a local rebuild. For a
+vault that will not open, `set_vault_aside` (`Core::set_vault_aside`) moves the
+directory aside whole, so the recovery has a directory holding no vault and the
+vault is kept.
 
 ### 5. Additive and destructive changes
 
@@ -304,26 +489,18 @@ The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-
 
 ## Materialized state rebuild
 
-> **Not implemented, at any layer.** There is no rebuild path in the workspace:
-> no command, no seam function, no CLI verb, and no internal helper — `rebuild`
-> appears nowhere in `crates/`. The op log genuinely does hold everything needed
-> (every op is full-state under
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), and `ops.envelope` keeps
-> the sealed bytes), so the capability is buildable; nothing has built it. Today
-> the recovery answer for a corrupt projection is §Failure recovery's option 3,
-> "reset and resync".
+> **Built.** `Engine::rebuild_projection` clears the entity projection and the
+> merge state and refolds the op log in one transaction, under a copy of the
+> vault, as §Migration rigor rule 4's *Today* note describes. It runs on its
+> own at the first open of a build whose fold changed. A user or a script runs
+> it with `sunrise rebuild`, and an app through
+> `SunriseCore::rebuild_projection`. For a vault the integrity check refuses,
+> the repair (`sunrise rebuild --repair`, `SunriseCore::open_repairing`) runs
+> it over the damaged file; rule 3's *Today* note says what that mends. The
+> macOS app does not offer the repair yet
+> ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
-The design of record for the rebuild is §Migration rigor rule 4, which
-supersedes the outline below where they differ (canonical order, parked ops,
-source/projection classification).
-
-If a migration is irrecoverable (a corrupt index, a bug), the user can trigger "rebuild from log":
-
-1. Wipe materialized tables.
-2. Re-apply ops in causal order.
-3. Rebuild FTS index.
-
-This is an internal capability used by the app on first launch after an upgrade that changes materialization logic.
+The design of record for the rebuild is §Migration rigor rule 4.
 
 ## No op-log migration
 
@@ -376,7 +553,8 @@ files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
 
 ## Migration testing
 
-`crates/sunrise-storage/src/db.rs` and `migrations.rs` assert:
+`crates/sunrise-storage/src/db/tests.rs`, `db/integrity.rs`, `backup/tests.rs`
+and `migrations.rs` assert:
 
 - a fresh vault applies all of them and lands at `STORAGE_V`, with the tables
   the collapse was supposed to preserve and without the schema it was supposed
@@ -400,14 +578,13 @@ files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
   `IntegrityCheckFailed`.
 
 Every one of those replays SQL into a connection this build just created. None
-of them opens an *old vault*, and for a long time nothing did — which meant the
-migrations had never run against the thing they exist for.
+of them opens an *old vault*.
 
 ### Old-vault fixtures
 
 `crates/sunrise-storage/fixtures/` holds encrypted SQLCipher vaults written at
 historical `STORAGE_V`s.
-[`src/vault_fixtures.rs`](../../crates/sunrise-storage/src/vault_fixtures.rs)
+[`src/vault_fixtures/`](../../crates/sunrise-storage/src/vault_fixtures/mod.rs)
 generates them, states their contents, copies each to a temporary directory,
 opens the copy with the ordinary public `Db::open`, and asserts on the contents
 afterwards — **not** on the open returning `Ok`. A migration that runs clean and
@@ -436,7 +613,7 @@ Three decisions are worth knowing before adding one.
   backfill and 0023's `genesis_id_s_pub` backfill — and the v13 fixture
   reaches the first two but structurally cannot reach the last three, because
   `identity` does not exist before 0017 and 0017 creates it empty. Every other
-  version is filled from one list, `src/vault_fixtures/seed.rs`, that puts a
+  version is filled from one list, `src/vault_fixtures/seed/`, that puts a
   row in every table the version has. A test fails when a migration adds a
   table the list does not fill.
 - **Every row is checked, not only the curated ones.** The survival test reads
@@ -450,8 +627,6 @@ Three decisions are worth knowing before adding one.
 
 What is still **specified and not implemented**:
 
-- The rebuild-equivalence half of §Migration rigor rule 1, which needs the
-  rebuild ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 - A "fuzz" job randomly orders migrations against random data states. Nothing
   like it exists, and it is a doubtful fit — the runner applies ids in ascending
   order and a random order is not a state any vault can reach.

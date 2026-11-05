@@ -35,7 +35,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.split_first() {
         Some((cmd, rest)) if cmd == "healthcheck" => healthcheck(rest).await,
-        Some((cmd, rest)) if cmd == "admin" => admin(rest),
+        Some((cmd, rest)) if cmd == "admin" => admin(rest).await,
         _ => run(args).await,
     };
     match result {
@@ -80,12 +80,13 @@ async fn healthcheck(args: &[String]) -> Result<(), u8> {
 ///
 /// Its output is the command's answer, for a person or a script, so it goes to
 /// stdout as text or JSON rather than through the NDJSON logger.
-fn admin(args: &[String]) -> Result<(), u8> {
+async fn admin(args: &[String]) -> Result<(), u8> {
     let code = sunrise_server::admin::cli::run(
         args,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
-    );
+    )
+    .await;
     if code == 0 {
         Ok(())
     } else {
@@ -96,8 +97,9 @@ fn admin(args: &[String]) -> Result<(), u8> {
 /// Run the maintenance pass every `[storage] maintenance_interval_secs`, the
 /// first one at startup.
 ///
-/// On a blocking thread, because every step is database or filesystem I/O, and
-/// one pass at a time, because the next tick waits for this one to finish.
+/// On a blocking thread, because every step against the single-binary
+/// backends is database or filesystem I/O that never yields, and one pass at a
+/// time, because the next tick waits for this one to finish.
 fn spawn_maintenance(state: ServerState) {
     let every = std::time::Duration::from_secs(state.config.maintenance_interval_secs);
     tokio::spawn(async move {
@@ -106,8 +108,13 @@ fn spawn_maintenance(state: ServerState) {
         loop {
             ticker.tick().await;
             let state = state.clone();
+            let runtime = tokio::runtime::Handle::current();
             let pass = tokio::task::spawn_blocking(move || {
-                sunrise_server::admin::maintenance::run(&state, state.clock.now_ms(), false)
+                runtime.block_on(sunrise_server::admin::maintenance::run(
+                    &state,
+                    state.clock.now_ms(),
+                    false,
+                ))
             })
             .await;
             match pass {
@@ -220,7 +227,7 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
             return Err(EX_CONFIG);
         }
     };
-    if let Some(oidc) = OidcVerifier::from_server_config(&state.config, state.clock.clone()) {
+    if let Some(oidc) = OidcVerifier::from_server_state(&state) {
         state = state.with_verifier(Arc::new(oidc));
     }
     // Validating against the *installed* verifier is the point: binding a

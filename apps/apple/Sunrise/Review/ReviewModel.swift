@@ -11,10 +11,10 @@ enum ReviewTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .weekly: "Weekly"
-        case .daily: "Daily"
-        case .trends: "Trends"
-        case .history: "History"
+        case .weekly: L10n.Review.tabWeekly
+        case .daily: L10n.Review.tabDaily
+        case .trends: L10n.Review.tabTrends
+        case .history: L10n.Review.tabHistory
         }
     }
 }
@@ -126,9 +126,9 @@ final class ReviewModel {
         )
         do {
             _ = try await bridge.submit(.saveReviewSnapshot(draft: draft))
-            savedNote = "This week is on the record."
+            savedNote = L10n.Review.savedNote
             await refresh()
-            savedNote = "This week is on the record."
+            savedNote = L10n.Review.savedNote
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -144,7 +144,7 @@ final class ReviewModel {
         guard case let .export(body)? = try? await bridge.query(
             .exportStats(dataset: dataset, format: format, weeks: weeks, nowMs: now)
         ) else {
-            errorMessage = "That export could not be produced."
+            errorMessage = L10n.Review.exportFailed
             return nil
         }
         return body
@@ -161,9 +161,17 @@ final class ReviewModel {
 }
 
 extension ExportDataset {
-    /// What the menu item says. Title case is this platform's convention; the
-    /// name itself comes from the seam, so it matches `sunrise-cli export`.
-    var title: String { exportDatasetName(dataset: self).capitalized }
+    /// What the menu item says. The file name still takes the seam's name
+    /// (`exportDatasetName`), so a saved file matches `sunrise-cli export`;
+    /// only the menu's words are translated.
+    var title: String {
+        switch self {
+        case .trends: L10n.Review.datasetTrends
+        case .activity: L10n.Review.datasetActivity
+        case .focus: L10n.Review.datasetFocus
+        case .streaks: L10n.Review.datasetStreaks
+        }
+    }
 
     static let all: [ExportDataset] = [.trends, .activity, .focus, .streaks]
 }

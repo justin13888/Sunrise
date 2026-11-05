@@ -60,38 +60,34 @@ extension KeychainError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .malformedItem:
-            "The Keychain item is not in the expected format."
+            L10n.Identity.keychainMalformed
         case let .unexpected(status):
-            SecCopyErrorMessageString(status, nil) as String?
-                ?? "Keychain error \(status)."
+            Self.systemReason(status)
         case let .accessibilityNotRaised(status):
             // "This secret" rather than "the vault key": the vault root was
             // the first caller and is no longer the only one — the OIDC
             // credential raises its class on the same path.
-            "This secret is stored under an older, weaker Keychain protection "
-                + "class and the Keychain would not change it: "
-                + (SecCopyErrorMessageString(status, nil) as String?
-                    ?? "Keychain error \(status).")
+            L10n.Identity.keychainNotRaised(reason: Self.systemReason(status))
         case let .writtenButOtherDomainRefused(status):
             // Leads with what *was* stored: every other message here describes
             // something that did not happen, and this one does not.
-            "This secret was saved, but an older copy of it in your other "
-                + "keychain could not be removed: "
-                + (SecCopyErrorMessageString(status, nil) as String?
-                    ?? "Keychain error \(status).")
+            L10n.Identity.keychainWrittenOtherRefused(reason: Self.systemReason(status))
         case let .otherDomainUnreadable(status):
             // Names the *other* keychain, and says the secret may still be
             // there. A message that only relayed the system's sentence would
             // read as a failure of the keychain the app just used
             // successfully, which is the one a user would then go and unlock.
-            "A copy of this secret may be in your other keychain, which could "
-                + "not be read: "
-                + (SecCopyErrorMessageString(status, nil) as String?
-                    ?? "Keychain error \(status).")
+            L10n.Identity.keychainOtherUnreadable(reason: Self.systemReason(status))
         case .migrationUnverified:
-            "Two different secrets are stored under the same Keychain name, so "
-                + "this app cannot tell which one belongs to your vault. "
-                + "Nothing has been deleted."
+            L10n.Identity.keychainMigrationUnverified
         }
+    }
+
+    /// The system's own sentence for `status`, or the bare code when it has
+    /// none. The code is passed as text so it renders as the digits the
+    /// system logs, never regrouped by a locale.
+    private static func systemReason(_ status: OSStatus) -> String {
+        SecCopyErrorMessageString(status, nil) as String?
+            ?? L10n.Identity.keychainError(status: String(status))
     }
 }

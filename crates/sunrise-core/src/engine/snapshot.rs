@@ -28,7 +28,9 @@
 //! The body is `{1: doc_state, 2: [* retained envelope]}`: the merge state of
 //! [`super::merge::dump_stream_state`], and every op of the stream at or below
 //! the frontier whose effect is not in that state, verbatim (control ops,
-//! focus and review records, parked ops of kinds this build does not know).
+//! focus and review records, parked ops of kinds this build does not know,
+//! and the members of a group still waiting for the rest of it, ADR-0065
+//! §6).
 //! The AEAD key is the stream key at `epoch` run through the BLAKE3 KDF under
 //! [`KEY_CONTEXT`]; the AAD is [`AAD_CONTEXT`], the five magic bytes and the
 //! canonical encoding of fields 1 to 8. The signature covers [`SIG_CONTEXT`],
@@ -65,10 +67,11 @@ use sunrise_storage::{Db, DbError};
 
 use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_floor};
 use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
-use super::ids::hex_short;
-use super::merge::{dump_stream_state, fold_rows, join_stream_state};
+use super::groups::event_of;
+use super::merge::{dump_stream_state, join_stream_state, to_sql};
 use super::oplog::upsert_sync_cursor;
 use super::{Engine, EngineError};
+use crate::bytes::hex_short;
 use crate::events::DomainEvent;
 
 /// The snapshot record's format version, carried in its magic prefix.
@@ -80,6 +83,9 @@ const KEY_CONTEXT: &str = "sunrise.snapshot.key.v1";
 const AAD_CONTEXT: &[u8] = b"sunrise.snapshot.aad.v1";
 /// Domain separator for the writer's signature.
 const SIG_CONTEXT: &[u8] = b"sunrise.snapshot.sig.v1";
+
+/// A stream and its snapshot record, verbatim.
+pub type StreamRecord = ([u8; 16], Vec<u8>);
 
 /// What [`Engine::apply_snapshot`] did with a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,8 +226,12 @@ fn parse(record: &[u8]) -> Result<Record, EngineError> {
     if magic.version != SNAPSHOT_FORMAT_V {
         return Err(invalid("unknown format version"));
     }
-    let map: Value = sunrise_cbor::decode_canonical(&record[MAGIC_LEN..])
-        .map_err(|_| invalid("not canonical CBOR"))?;
+    // Read before the signature is checked, so under the framing bound: the
+    // record is three levels deep (its map, the frontier, one entry), and a
+    // newer format is a new version, refused above.
+    let map: Value =
+        sunrise_cbor::decode_canonical_within(&record[MAGIC_LEN..], sunrise_cbor::MAX_VALUE_DEPTH)
+            .map_err(|_| invalid("not canonical CBOR"))?;
     let Value::Map(fields) = map else {
         return Err(invalid("not a map"));
     };
@@ -388,22 +398,14 @@ impl Engine {
             .map(|k| format!("'{k}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        let targets: Vec<(String, Vec<u8>)> = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT DISTINCT target_kind, target_id FROM ops
-                 WHERE stream_id = ?1 AND target_id IS NOT NULL AND inner_kind IN ({in_list})"
-            ))?;
-            let rows = stmt.query_map(params![&stream_id[..]], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        fold_rows(tx, &targets)?;
         let doc_state = dump_stream_state(tx, stream_id)?;
         let retained: Vec<Value> = {
             let mut stmt = tx.prepare(&format!(
                 "SELECT envelope FROM ops
                  WHERE stream_id = ?1
                    AND (inner_kind NOT IN ({in_list})
-                        OR op_id IN (SELECT op_id FROM parked_ops))
+                        OR op_id IN (SELECT op_id FROM parked_ops)
+                        OR op_id IN (SELECT op_id FROM pending_groups WHERE applied = 0))
                  ORDER BY ts_ms, device_id, seq"
             ))?;
             let rows = stmt.query_map(params![&stream_id[..]], |r| r.get::<_, Vec<u8>>(0))?;
@@ -472,6 +474,32 @@ impl Engine {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Every stream whose latest snapshot record held here is one this
+    /// replica wrote, with that record: what this replica may publish for
+    /// the devices that need one (ADR-0068). A stream whose latest record
+    /// another device wrote is left out, so a replica never re-publishes a
+    /// record over the one it applied.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn own_stream_snapshots(&self, db: &Db) -> Result<Vec<StreamRecord>, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT stream_id, record FROM stream_snapshots
+             WHERE generated_by = ?1 ORDER BY stream_id",
+        )?;
+        let rows = stmt.query_map(params![&self.keychain.device_id()[..]], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (stream, record) = row?;
+            if let Ok(stream) = <[u8; 16]>::try_from(stream.as_slice()) {
+                out.push((stream, record));
+            }
+        }
+        Ok(out)
     }
 
     /// The signing key of a snapshot's writer: its cert as this vault holds
@@ -670,6 +698,13 @@ impl Engine {
                 record,
             )?;
             events.extend(entities.iter().map(|t| DomainEvent::Updated(*t)));
+            // The join can bring the last members a held group was waiting
+            // for, as versions whose ops were compacted away.
+            events.extend(
+                self.complete_ready_groups(tx)?
+                    .into_iter()
+                    .map(|(t, e)| event_of(t, e)),
+            );
             Ok(entities.len())
         })?;
         tracing::info!(
@@ -692,17 +727,11 @@ impl Engine {
 /// Run `f` in one transaction, rolling it back on any error and carrying an
 /// [`EngineError`] out as itself rather than as the storage error the
 /// transaction closure has to speak.
-fn in_tx<R>(
+pub(super) fn in_tx<R>(
     db: &mut Db,
     f: impl FnOnce(&Transaction<'_>) -> Result<R, EngineError>,
 ) -> Result<R, EngineError> {
-    db.with_tx(|tx| {
-        f(tx).map_err(|e| match e {
-            EngineError::Sqlite(e) => e,
-            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
-        })
-    })
-    .map_err(|e| match e {
+    db.with_tx(|tx| f(tx).map_err(to_sql)).map_err(|e| match e {
         DbError::Sqlite(rusqlite::Error::ToSqlConversionFailure(b)) => {
             match b.downcast::<EngineError>() {
                 Ok(e) => *e,
@@ -739,4 +768,114 @@ fn store(
         ],
     )?;
     Ok(())
+}
+
+/// The record parser runs on relay bytes before any signature is checked,
+/// so it is held to: every input yields a record or [`EngineError::Invalid`],
+/// and nothing panics.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn bytes(n: usize, b: u8) -> Value {
+        Value::Bytes(vec![b; n])
+    }
+
+    /// The outer fields of a record `snapshot_record` would write, with one
+    /// frontier entry. Nothing in it verifies; `parse` does not ask.
+    fn fields() -> Vec<(Value, Value)> {
+        let entry = Value::Array(vec![
+            bytes(16, 4),
+            int(3),
+            bytes(32, 5),
+            bytes(32, 6),
+            int(1_700_000_000_000),
+            int(2),
+        ]);
+        vec![
+            (key(1), bytes(16, 1)),
+            (key(2), int(7)),
+            (key(3), bytes(16, 2)),
+            (key(4), int(1_700_000_000_001)),
+            (key(5), Value::Array(vec![entry])),
+            (key(6), bytes(32, 3)),
+            (key(7), bytes(40, 8)),
+            (key(8), bytes(AEAD_NONCE_LEN, 9)),
+            (key(9), bytes(64, 10)),
+            (key(10), bytes(64, 11)),
+        ]
+    }
+
+    fn record(fields: Vec<(Value, Value)>) -> Vec<u8> {
+        let mut out = prefix().to_vec();
+        out.extend_from_slice(&encode(&Value::Map(fields)).unwrap());
+        out
+    }
+
+    fn is_invalid<T>(r: &Result<T, EngineError>) -> bool {
+        matches!(r, Err(EngineError::Invalid(_)))
+    }
+
+    #[test]
+    fn a_well_formed_record_parses_into_its_fields() {
+        let rec = parse(&record(fields())).unwrap();
+        assert_eq!(rec.stream_id, [1; 16]);
+        assert_eq!(rec.epoch, 7);
+        assert_eq!(rec.generated_by, [2; 16]);
+        assert_eq!(rec.generated_at_ms, 1_700_000_000_001);
+        assert_eq!(rec.entries.len(), 1);
+        assert_eq!(rec.entries[0].device, [4; 16]);
+        assert_eq!(rec.entries[0].floor.seq, 3);
+        assert_eq!(rec.digest, [3; 32]);
+        assert_eq!(rec.sig, [11; 64]);
+    }
+
+    /// Each field is required, and a field of the wrong width is refused.
+    #[test]
+    fn a_missing_or_misshapen_field_is_invalid() {
+        for n in 1..=10 {
+            let without: Vec<_> = fields()
+                .into_iter()
+                .filter(|(k, _)| as_u64(k) != Some(n))
+                .collect();
+            assert!(is_invalid(&parse(&record(without))), "field {n} absent");
+            let mut wrong = fields();
+            wrong[usize::try_from(n - 1).unwrap()].1 = Value::Text("x".into());
+            assert!(is_invalid(&parse(&record(wrong))), "field {n} misshapen");
+        }
+    }
+
+    proptest! {
+        /// Any bytes at all, with or without a snapshot prefix.
+        #[test]
+        fn arbitrary_bytes_are_invalid_or_a_record(
+            body in proptest::collection::vec(any::<u8>(), 0..512),
+            prefixed in any::<bool>(),
+        ) {
+            let mut input = if prefixed { prefix().to_vec() } else { Vec::new() };
+            input.extend_from_slice(&body);
+            let r = parse(&input);
+            prop_assert!(r.is_ok() || is_invalid(&r));
+        }
+
+        /// A well-formed record with one byte replaced, or cut short.
+        #[test]
+        fn a_mutated_record_is_invalid_or_a_record(
+            at in any::<proptest::sample::Index>(),
+            byte in any::<u8>(),
+            cut in any::<bool>(),
+        ) {
+            let mut input = record(fields());
+            let i = at.index(input.len());
+            if cut {
+                input.truncate(i);
+                prop_assert!(is_invalid(&parse(&input)));
+            } else {
+                input[i] = byte;
+                let r = parse(&input);
+                prop_assert!(r.is_ok() || is_invalid(&r));
+            }
+        }
+    }
 }

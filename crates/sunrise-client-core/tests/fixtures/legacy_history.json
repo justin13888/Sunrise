@@ -1,0 +1,89 @@
+{
+    "version": 1,
+    "done": [
+        {
+            "label": "plan",
+            "forward": [
+                {
+                    "update_task": {
+                        "id": "tsk_01040G2081040G2081040G2081",
+                        "patch": {
+                            "scheduled_at": {
+                                "kind": "floating",
+                                "civil": "2026-03-06T09:00:00"
+                            },
+                            "due_at": {
+                                "kind": "all_day",
+                                "date": "2026-03-09"
+                            }
+                        }
+                    }
+                }
+            ],
+            "backward": [
+                {
+                    "update_task": {
+                        "id": "tsk_01040G2081040G2081040G2081",
+                        "patch": { "scheduled_at": null, "due_at": null }
+                    }
+                }
+            ]
+        },
+        {
+            "label": "capture",
+            "forward": [
+                {
+                    "create_task": {
+                        "title": "Renew passport",
+                        "body": null,
+                        "stream_id": null,
+                        "contexts": [],
+                        "priority": null,
+                        "energy": null,
+                        "estimated_duration_s": null,
+                        "scheduled_at": {
+                            "kind": "instant",
+                            "at": "2026-03-06T09:00:00Z"
+                        },
+                        "due_at": { "kind": "all_day", "date": "2026-03-09" },
+                        "assignee": null,
+                        "reminder_lead_s": null
+                    }
+                }
+            ],
+            "backward": [{ "delete_task": "tsk_01040G2081040G2081040G2081" }]
+        },
+        {
+            "label": "move routine",
+            "forward": [
+                {
+                    "update_routine": {
+                        "id": "rtn_040G2081040G2081040G208104",
+                        "patch": {
+                            "starts_at": "2026-03-06T09:00:00Z",
+                            "paused": true
+                        }
+                    }
+                }
+            ],
+            "backward": [
+                {
+                    "update_routine": {
+                        "id": "rtn_040G2081040G2081040G208104",
+                        "patch": {
+                            "starts_at": "2026-03-01T09:00:00Z",
+                            "paused": false
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "undone": [
+        {
+            "label": "delete stream",
+            "forward": [{ "delete_stream": "str_02081040G2081040G2081040G2" }],
+            "backward": [{ "restore": "str_02081040G2081040G2081040G2" }]
+        }
+    ]
+}

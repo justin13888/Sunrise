@@ -12,6 +12,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::i18n::strings;
+
 use sunrise_auth::{
     open_in_browser, CredentialStore, Credentials, FileStore, HttpClient, HttpsClient, LoginError,
     OidcClient, DEFAULT_REDIRECT_TIMEOUT,
@@ -35,15 +37,22 @@ impl LoginConfig {
     /// Read both from the environment, reporting which one is missing rather
     /// than a generic failure — the two are configured in different places.
     pub fn from_env() -> Result<Self, String> {
-        let issuer = std::env::var(ENV_ISSUER)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("{ENV_ISSUER} is not set"))?;
-        let client_id = std::env::var(ENV_CLIENT_ID)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("{ENV_CLIENT_ID} is not set"))?;
-        Ok(Self { issuer, client_id })
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::from_env`] over any source of variables, so the rule can be
+    /// tested without the test process's own environment. A blank value is
+    /// the same as none.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let read = |name: &str| {
+            lookup(name)
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| strings::login::not_set(name))
+        };
+        Ok(Self {
+            issuer: read(ENV_ISSUER)?,
+            client_id: read(ENV_CLIENT_ID)?,
+        })
     }
 }
 
@@ -54,11 +63,7 @@ impl LoginConfig {
 /// here is what makes a stolen token useless on another machine.
 #[must_use]
 pub fn device_id_hex(core: &sunrise_core::Core) -> String {
-    core.device_id().iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    sunrise_client_core::ids::hex_id(&core.device_id())
 }
 
 /// Run the full login flow and persist the result.
@@ -116,7 +121,7 @@ async fn login_with(
     // A browser that will not open is not fatal: the URL was just printed, and
     // a user on a headless box can paste it somewhere that has one.
     if let Err(e) = open_in_browser(session.authorize_url()) {
-        announce(&format!("(could not open a browser: {e})"));
+        announce(&strings::login::no_browser(&e.to_string()));
     }
 
     let capture = session.wait_for_redirect(DEFAULT_REDIRECT_TIMEOUT).await?;
@@ -134,15 +139,13 @@ pub fn logout(store: &dyn CredentialStore) -> Result<(), LoginError> {
 #[must_use]
 pub fn status_line(store: &dyn CredentialStore, now_ms: u64) -> String {
     match store.load() {
-        Ok(Some(c)) if c.is_expired_at(now_ms) => {
-            "logged in, but the access token has expired — run `sunrise login`".into()
-        }
+        Ok(Some(c)) if c.is_expired_at(now_ms) => strings::login::status_expired(),
         Ok(Some(c)) => {
             let secs = (c.expires_at_ms.saturating_sub(now_ms)) / 1000;
-            format!("logged in; access token valid for another {secs}s")
+            strings::login::status_valid(i64::try_from(secs).unwrap_or(i64::MAX))
         }
-        Ok(None) => "not logged in".into(),
-        Err(e) => format!("cannot read stored credentials: {e}"),
+        Ok(None) => strings::login::status_none(),
+        Err(e) => strings::login::status_unreadable(&e.to_string()),
     }
 }
 
@@ -192,11 +195,31 @@ mod tests {
 
     #[test]
     fn a_missing_env_var_names_itself() {
-        // Both unset in this test process unless someone exported them.
-        if std::env::var(ENV_ISSUER).is_ok() {
-            return;
-        }
-        let e = LoginConfig::from_env().unwrap_err();
+        let with = |vars: &'static [(&'static str, &'static str)]| {
+            LoginConfig::from_lookup(move |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            })
+        };
+
+        let e = with(&[]).unwrap_err();
         assert!(e.contains(ENV_ISSUER), "{e}");
+        let e = with(&[(ENV_CLIENT_ID, "sunrise")]).unwrap_err();
+        assert!(e.contains(ENV_ISSUER) && !e.contains(ENV_CLIENT_ID), "{e}");
+        let e = with(&[(ENV_ISSUER, "https://id.example")]).unwrap_err();
+        assert!(e.contains(ENV_CLIENT_ID) && !e.contains(ENV_ISSUER), "{e}");
+
+        // Blank is not set: an exported-but-empty variable is the usual slip.
+        let e = with(&[(ENV_ISSUER, "  "), (ENV_CLIENT_ID, "sunrise")]).unwrap_err();
+        assert!(e.contains(ENV_ISSUER), "{e}");
+
+        let cfg = with(&[
+            (ENV_ISSUER, "https://id.example"),
+            (ENV_CLIENT_ID, "sunrise"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.issuer, "https://id.example");
+        assert_eq!(cfg.client_id, "sunrise");
     }
 }

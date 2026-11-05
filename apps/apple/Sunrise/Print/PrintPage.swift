@@ -50,7 +50,7 @@ struct PrintPageView: View {
                 }
             }
             if document.sections.isEmpty {
-                Text("Nothing to print.")
+                Text(L10n.Print.empty)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }

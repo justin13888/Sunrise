@@ -58,8 +58,8 @@ default misbehaves.
 
 **Out, and deliberately:**
 
-* **Proptests under `src/`.** The default works there — `crates/sunrise-core`'s
-  `proptest-regressions/engine/tests.txt` is what it produces — so requiring an
+* **Proptests under `src/`.** The default works there — `crates/sunrise-id`'s
+  `proptest-regressions/entity_ref.txt` is what it produces — so requiring an
   explicit setting would be requiring a workaround for a problem that does not
   exist.
 * **What a `#![proptest_config(f())]` helper actually returns.** The `direct`

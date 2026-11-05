@@ -2,6 +2,7 @@
 
 use super::maintenance::{self, Report};
 use crate::api::testing::{register_device, send_signed_with, Client, Res};
+use crate::blob::{Area, FsBlobs};
 use crate::state::{Clock, ServerState};
 use crate::ServerConfig;
 use kynos::http::{Method, StatusCode};
@@ -37,6 +38,8 @@ impl Harness {
         let state = ServerState::with_clock(
             ServerConfig {
                 blob_root: Some(dir.path().to_path_buf()),
+                // Loopback, so `/metrics` is mounted for the gauge tests.
+                bind: "127.0.0.1:8443".to_owned(),
                 ..ServerConfig::default()
             },
             clock.clone(),
@@ -53,12 +56,23 @@ impl Harness {
         self.clock.0.store(ms, Ordering::SeqCst);
     }
 
-    fn pass(&self) -> Report {
-        maintenance::run(&self.state, self.clock.now_ms(), false).unwrap()
+    async fn pass(&self) -> Report {
+        maintenance::run(&self.state, self.clock.now_ms(), false)
+            .await
+            .unwrap()
+    }
+
+    /// The SQLite store under the seam, for the row-level assertions only a
+    /// database can answer.
+    fn db(&self) -> &crate::Store {
+        self.state
+            .store
+            .as_sqlite()
+            .expect("the default store is SQLite")
     }
 
     fn account_id(&self) -> String {
-        let accounts = self.state.store.account_summaries().unwrap();
+        let accounts = self.db().account_summaries().unwrap();
         assert_eq!(
             accounts.len(),
             1,
@@ -119,6 +133,18 @@ impl Harness {
         upload_id
     }
 
+    /// One `/metrics` scrape's line for an unlabelled series, value only.
+    async fn scraped(&self, series: &str) -> Option<String> {
+        let res = self
+            .client
+            .send_as(Method::GET, "/metrics", None, None)
+            .await;
+        res.assert_status(StatusCode::OK);
+        let body = String::from_utf8_lossy(&res.bytes).into_owned();
+        body.lines()
+            .find_map(|l| l.strip_prefix(series)?.strip_prefix(' ').map(str::to_owned))
+    }
+
     async fn tombstone(&self, blob_id: &str, seq: u64) -> Res {
         self.send(
             Method::DELETE,
@@ -138,9 +164,14 @@ impl Harness {
             .status
     }
 
-    fn area(&self, area: &str) -> std::path::PathBuf {
-        crate::api::blobs::account_dir(self.dir.path(), area, &self.account_id())
+    fn area(&self, area: Area) -> std::path::PathBuf {
+        account_dir(self.dir.path(), area, &self.account_id())
     }
+}
+
+/// Where the filesystem backend keeps `account_id`'s `area` under `root`.
+fn account_dir(root: &Path, area: Area, account_id: &str) -> std::path::PathBuf {
+    FsBlobs::new(root).account_dir(area, crate::account_ns::account_key(account_id))
 }
 
 fn hello() -> serde_json::Value {
@@ -203,17 +234,16 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     let (device_id, _key) = register_device(&h.client, 7, "phone", None).await;
     let _second = register_device(&h.client, 8, "laptop", None).await;
     let account_id = h.account_id();
-    h.state
-        .store
+    h.db()
         .upsert_push_token(&device_id, "apns", "tok", T0_MS)
         .unwrap();
-    let account_h = crate::relay_log::account_key(&account_id);
-    h.state
-        .store
+    let account_h = crate::account_ns::account_key(&account_id);
+    h.db()
         .relay_append(
             (account_h, [0x11; 16]),
             b"ciphertext",
             &[],
+            0,
             None,
             1,
             T0_MS,
@@ -229,7 +259,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     }
     let blob = h.upload(b"attachment").await;
     h.start_upload(b"abandoned").await;
-    assert!(h.area("pending").exists() && h.area("committed").exists());
+    assert!(h.area(Area::Pending).exists() && h.area(Area::Committed).exists());
 
     let res = h
         .send(Method::POST, "/api/v1/accounts/me/delete/initiate", None)
@@ -247,12 +277,12 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     assert_eq!(erase_after, T0_MS + 30 * DAY_MS);
 
     h.at(erase_after - 1);
-    assert_eq!(h.pass().accounts_erased, 0, "inside the grace period");
+    assert_eq!(h.pass().await.accounts_erased, 0, "inside the grace period");
     assert_eq!(h.fetch(&blob).await, StatusCode::OK);
     assert_eq!(h.state.relay.retained_len(own_channel), 1);
 
     h.at(erase_after);
-    let report = h.pass();
+    let report = h.pass().await;
     assert_eq!(report.accounts_erased, 1);
     assert_eq!(report.failures, 0);
     assert_eq!(h.state.metrics.get("sunrise_account_delete_total"), 1);
@@ -268,7 +298,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         "another account's channel went with it"
     );
 
-    let conn = h.state.store.conn.lock();
+    let conn = h.db().conn.lock();
     let by_id = |table: &str, column: &str, value: &str| -> i64 {
         conn.query_row(
             &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
@@ -282,6 +312,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         "devices",
         "account_delete_tokens",
         "blob_tombstones",
+        "committed_blobs",
     ] {
         assert_eq!(by_id(table, "account_id", &account_id), 0, "{table}");
     }
@@ -299,8 +330,8 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         assert_eq!(n, 0, "{table}");
     }
     drop(conn);
-    for area in ["pending", "committed"] {
-        let dir = crate::api::blobs::account_dir(h.dir.path(), area, &account_id);
+    for area in [Area::Pending, Area::Committed] {
+        let dir = account_dir(h.dir.path(), area, &account_id);
         assert!(!dir.exists(), "{} survived", dir.display());
     }
 }
@@ -331,23 +362,23 @@ async fn a_tombstoned_blob_waits_for_its_grace_period_and_its_quorum() {
     assert_eq!(res.json()["collect_after_ms"], T0_MS + 30 * DAY_MS);
 
     h.at(T0_MS + 30 * DAY_MS - 1);
-    assert_eq!(h.pass().blobs_collected, 0, "inside the grace period");
+    assert_eq!(h.pass().await.blobs_collected, 0, "inside the grace period");
     assert_eq!(h.fetch(&blob).await, StatusCode::OK, "still readable");
 
     h.at(T0_MS + 30 * DAY_MS);
     assert_eq!(
-        h.pass().blobs_collected,
+        h.pass().await.blobs_collected,
         0,
         "the peer has applied seq 4, not the tombstone's 5"
     );
     assert_eq!(h.fetch(&blob).await, StatusCode::OK);
 
     declare(&h, &peer, 5).await;
-    let report = h.pass();
+    let report = h.pass().await;
     assert_eq!(report.blobs_collected, 1);
     assert_eq!(h.fetch(&blob).await, StatusCode::NOT_FOUND);
     assert_eq!(h.state.metrics.get("sunrise_blob_gc_deleted_total"), 1);
-    assert_eq!(h.pass().blobs_collected, 0, "collected once");
+    assert_eq!(h.pass().await.blobs_collected, 0, "collected once");
 }
 
 /// Re-uploading tombstoned ciphertext brings the attachment back, so the
@@ -359,15 +390,113 @@ async fn a_reupload_lifts_the_tombstone_and_an_unknown_blob_is_not_found() {
     h.tombstone(&blob, 1)
         .await
         .assert_status(StatusCode::ACCEPTED);
-    assert_eq!(h.state.store.stats().unwrap().blob_tombstones, 1);
+    assert_eq!(h.db().stats().unwrap().blob_tombstones, 1);
     assert_eq!(h.upload(b"same bytes").await, blob);
-    assert_eq!(h.state.store.stats().unwrap().blob_tombstones, 0);
+    assert_eq!(h.db().stats().unwrap().blob_tombstones, 0);
 
     h.at(T0_MS + 365 * DAY_MS);
-    assert_eq!(h.pass().blobs_collected, 0);
+    assert_eq!(h.pass().await.blobs_collected, 0);
 
     let missing = h.tombstone(&format!("blb_{}", "0".repeat(32)), 1).await;
     missing.assert_status(StatusCode::NOT_FOUND);
+}
+
+/// **The bytes at rest follow the blobs a reader can have.** A finalize grows
+/// `sunrise_blob_storage_bytes` by the blob's size, the same bytes finalized
+/// again do not grow it twice, and the blob's collection shrinks it by the
+/// same amount.
+#[tokio::test]
+async fn the_storage_gauge_grows_on_finalize_and_shrinks_on_collection() {
+    let h = Harness::new();
+    let storage = "sunrise_blob_storage_bytes";
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("0"));
+
+    let kept = h.upload(b"twelve bytes").await;
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("12"));
+    let blob = h.upload(b"seven b").await;
+    assert_eq!(h.upload(b"seven b").await, blob);
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("19"));
+
+    h.tombstone(&blob, 1)
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    assert_eq!(
+        h.scraped(storage).await.as_deref(),
+        Some("19"),
+        "a tombstoned blob is still at rest, and still readable"
+    );
+    h.at(T0_MS + 30 * DAY_MS);
+    assert_eq!(h.pass().await.blobs_collected, 1);
+    assert_eq!(h.fetch(&blob).await, StatusCode::NOT_FOUND);
+    assert_eq!(h.scraped(storage).await.as_deref(), Some("12"));
+    assert_eq!(h.fetch(&kept).await, StatusCode::OK);
+}
+
+/// **A blob the ledger does not know is backfilled from its manifest** by the
+/// next pass: a blob committed before the ledger existed, or one whose
+/// finalize stopped between its manifest and its row, both look like this.
+#[tokio::test]
+async fn the_pass_backfills_a_readable_blob_the_ledger_does_not_hold() {
+    let h = Harness::new();
+    let blob = h.upload(b"from before the ledger").await;
+    let key: [u8; 16] = hex::decode(blob.trim_start_matches("blb_"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    h.db().forget_blob(&h.account_id(), &key).unwrap();
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("0")
+    );
+
+    let report = h.pass().await;
+    assert_eq!(report.failures, 0, "{report:?}");
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("22")
+    );
+    h.pass().await;
+    assert_eq!(
+        h.scraped("sunrise_blob_storage_bytes").await.as_deref(),
+        Some("22"),
+        "backfilled once"
+    );
+}
+
+/// **An upload's duration runs from its `init` to its `finalize`**, on the
+/// injected clock: one sample per finalize, of the time between the two.
+#[tokio::test]
+async fn a_finalize_observes_the_time_since_its_init() {
+    let h = Harness::new();
+    let bytes = b"timed";
+    let upload_id = h.start_upload(bytes).await;
+    h.at(T0_MS + 2_500);
+    let hash = hex::encode(blake3::hash(bytes).as_bytes());
+    h.send(
+        Method::POST,
+        "/api/v1/blobs/finalize",
+        Some(serde_json::json!({
+            "upload_id": upload_id,
+            "content_hash": hash,
+            "chunk_hashes": [hash],
+        })),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let name = "sunrise_blob_upload_duration_seconds";
+    assert_eq!(h.state.metrics.histogram_count(name, &[]), 1);
+    assert_eq!(
+        h.scraped(&format!("{name}_sum")).await.as_deref(),
+        Some("2.5")
+    );
+    assert_eq!(
+        h.scraped(&format!("{name}_bucket{{le=\"2.5\"}}"))
+            .await
+            .as_deref(),
+        Some("1"),
+        "2.5 s falls in the 2.5 s transfer bucket"
+    );
 }
 
 /// **An abandoned upload is swept once untouched past its TTL**, and one
@@ -378,15 +507,19 @@ async fn an_abandoned_upload_is_swept_after_its_ttl() {
     let h = Harness::new();
     let committed = h.upload(b"keep me").await;
     h.start_upload(b"half done").await;
-    let pending = h.area("pending");
+    let pending = h.area(Area::Pending);
     let newest = newest_ms(&pending);
     let ttl = 24 * 60 * 60 * 1000;
 
-    let kept = maintenance::run(&h.state, newest + ttl, false).unwrap();
+    let kept = maintenance::run(&h.state, newest + ttl, false)
+        .await
+        .unwrap();
     assert_eq!(kept.uploads_swept, 0);
     assert_eq!(std::fs::read_dir(&pending).unwrap().count(), 1);
 
-    let dry = maintenance::run(&h.state, newest + ttl + 1, true).unwrap();
+    let dry = maintenance::run(&h.state, newest + ttl + 1, true)
+        .await
+        .unwrap();
     assert_eq!((dry.dry_run, dry.uploads_swept), (true, 1));
     assert_eq!(
         std::fs::read_dir(&pending).unwrap().count(),
@@ -394,7 +527,9 @@ async fn an_abandoned_upload_is_swept_after_its_ttl() {
         "a dry run deletes nothing"
     );
 
-    let swept = maintenance::run(&h.state, newest + ttl + 1, false).unwrap();
+    let swept = maintenance::run(&h.state, newest + ttl + 1, false)
+        .await
+        .unwrap();
     assert_eq!(swept.uploads_swept, 1);
     assert_eq!(
         swept.orphans_swept, 0,
@@ -414,10 +549,31 @@ async fn an_orphaned_account_directory_is_swept() {
     std::fs::create_dir_all(orphan.join("manifests")).unwrap();
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     assert_eq!(report.orphans_swept, 1);
     assert!(!orphan.exists());
-    assert!(h.area("committed").exists());
+    assert!(h.area(Area::Committed).exists());
+}
+
+/// A stale directory whose name is 32 uppercase hex characters is not one the
+/// backend could have written, which only writes lowercase, so the sweep
+/// leaves it in place rather than decoding it as an account.
+#[tokio::test]
+async fn an_uppercase_account_directory_is_not_swept() {
+    let h = Harness::new();
+    h.upload(b"keep me").await;
+    let foreign = h.dir.path().join("committed").join("AB".repeat(16));
+    std::fs::create_dir_all(foreign.join("manifests")).unwrap();
+    let newest = newest_ms(&foreign);
+
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
+    assert_eq!(report.orphans_swept, 0);
+    assert_eq!(report.failures, 0);
+    assert!(foreign.exists(), "an uppercase-named directory was swept");
 }
 
 /// An account tree goes manifests first, so a removal that stops part-way
@@ -442,7 +598,9 @@ async fn an_account_tree_loses_its_manifests_before_its_chunks() {
     }
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     for dir in &locked {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
@@ -452,31 +610,29 @@ async fn an_account_tree_loses_its_manifests_before_its_chunks() {
     assert!(locked.iter().all(|d| d.join("0").exists()));
 }
 
-/// Under the default blob root, a temp directory other processes share, a
-/// stale orphan-shaped directory is left in place: the sweep only runs under
-/// a root the operator named. The state's root is redirected to a private
-/// directory so the pass cannot reach the real shared one, while the config
-/// still names none.
+/// Under a blob root the operator did not name, a stale orphan-shaped
+/// directory is left in place: the sweep only runs under a root the config
+/// sets. The state's root is redirected to a directory the test plants the
+/// orphan in, while the config still names none.
 #[tokio::test]
-async fn the_orphan_sweep_skips_the_default_shared_root() {
+async fn the_orphan_sweep_skips_an_unnamed_root() {
     let dir = tempfile::tempdir().unwrap();
     let mut state = ServerState::with_clock(
         ServerConfig::default(),
         Arc::new(TestClock(AtomicU64::new(T0_MS))),
     );
     assert!(state.config.blob_root.is_none());
-    state.blob_root = Arc::new(dir.path().to_path_buf());
+    state.blobs = Arc::new(FsBlobs::new(dir.path()));
     let orphan = dir.path().join("committed").join("ab".repeat(16));
     std::fs::create_dir_all(orphan.join("manifests")).unwrap();
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     assert_eq!(report.orphans_swept, 0);
     assert_eq!(report.failures, 0);
-    assert!(
-        orphan.exists(),
-        "an orphan under the default root was swept"
-    );
+    assert!(orphan.exists(), "an orphan under an unnamed root was swept");
 }
 
 /// A signed subscribe records the device's cursors; an unsigned one has no
@@ -487,7 +643,7 @@ async fn a_signed_subscribe_records_the_devices_cursors() {
     let device = register_device(&h.client, 3, "phone", None).await;
     declare(&h, &device, 9).await;
     let rows: Vec<(Vec<u8>, i64, i64)> = {
-        let conn = h.state.store.conn.lock();
+        let conn = h.db().conn.lock();
         let mut stmt = conn
             .prepare(
                 "SELECT origin_device, applied_seq, reported_at_ms FROM device_cursors

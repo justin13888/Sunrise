@@ -4,8 +4,9 @@
 //! call the token verifier: [`session`] mints a session from a `Hello`
 //! negotiation, [`refresh`] replaces the bearer behind one without ending it,
 //! and [`resolve`] is the ownership check every other operation in this surface
-//! performs before it touches a session. [`account_hash`] is here because the
-//! relay channel namespace is fixed at establishment and nowhere else.
+//! performs before it touches a session. A session's relay channel namespace
+//! is fixed at establishment, as [`crate::account_ns::account_key`] of the
+//! verified account, the same key erasure and maintenance delete by.
 //!
 //! Every body on this surface — here, in `cursors` and in `publish` — is open
 //! to extension: none is `deny_unknown_fields`, so a field a newer client adds
@@ -112,7 +113,8 @@ pub async fn session(
     crate::api::account_deletion::refuse_if_pending_deletion(
         &state,
         &caller.principal.account.account_id,
-    )?;
+    )
+    .await?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
     state
@@ -177,7 +179,7 @@ pub async fn session(
             ApiError::validation_coded(code.as_str(), e.to_string())
         })?;
 
-    let account = account_hash(&caller.principal.account.account_id);
+    let account = crate::account_ns::account_key(&caller.principal.account.account_id);
     let stored = Session {
         account,
         account_id: caller.principal.account.account_id.clone(),
@@ -331,16 +333,4 @@ pub(super) async fn resolve(
         return Err(ApiError::unauthenticated());
     }
     Ok((id.to_owned(), session))
-}
-
-/// The relay channel namespace for an account.
-///
-/// The account id never travels to another account, and the hash is what keys
-/// the channel, so a stream is addressable only by someone who already knows
-/// whose it is.
-fn account_hash(account_id: &str) -> [u8; 16] {
-    let h = blake3::hash(account_id.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h.as_bytes()[..16]);
-    out
 }

@@ -16,6 +16,14 @@ by an authority the ledger did not carry: a revocation signed by the identity
 in force, which the fold never gates and never discounts. Every row without
 that signature is folded as this record says.
 
+**Amended by:** [ADR-0063](./0063-peer-side-refusal-stands-where-the-relay-bound-is-in-force.md)
+— revisit trigger 1 has fired: `require_device_sig` now defaults on wherever an
+OIDC issuer is configured. Where this record says "the default deployment",
+read single-tenant self-host and a multi-tenant relay with the flag set
+`false`, where peer-side refusal is still the only line. On a multi-tenant
+relay with the default config it is defence in depth. §Alternatives (a) still
+fails and the decision is unchanged.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,
@@ -46,7 +54,7 @@ trigger and #82 as the re-entry point. It has landed, on both sides:
 
 - **Client.** `Command::RevokeDevice` records a durable intent in the same
   transaction as the op — `relay_revocation_intents`, migration 0020 — and
-  `sync_driver::drain_relay_revocations` drains it with retry on every connect
+  `relay_intents::drain` drains it with retry on every connect
   and reconnect, clearing the row on success and on a relay that never knew the
   device, and counting attempts otherwise. `Core::relay_revocation_pending`
   crosses the seam so a client can tell "revoked locally" from "the relay has

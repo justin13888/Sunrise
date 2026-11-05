@@ -34,12 +34,17 @@ pub mod blobs;
 pub mod devices;
 pub mod error;
 pub mod health;
+pub mod identity_chain;
+pub(crate) mod ids;
+pub mod key_bundle;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
 pub mod pairing;
 pub mod ratelimit;
+pub mod recovery_blob;
 pub mod signed;
+pub mod snapshots;
 pub mod sync;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -73,10 +78,13 @@ pub type ApiRouter = kynos::Router<
     kynos::middleware::stack::Cons<
         kynos::middleware::cors::Cors,
         kynos::middleware::stack::Cons<
-            kynos::middleware::limits::BodySize,
+            kynos::middleware::limits::body_size::BodySize,
             kynos::middleware::stack::Cons<
                 ratelimit::Admission,
-                kynos::middleware::stack::Cons<observe::TraceRequest, ()>,
+                kynos::middleware::stack::Cons<
+                    observe::RequestMeter,
+                    kynos::middleware::stack::Cons<observe::TraceRequest, ()>,
+                >,
             >,
         >,
     >,
@@ -106,7 +114,8 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         .mount(kynos::routes![
             accounts::create,
             accounts::me,
-            accounts::recovery_blob,
+            recovery_blob::recovery_blob,
+            recovery_blob::replace_recovery_blob,
             account_deletion::initiate,
             account_deletion::delete
         ])
@@ -121,9 +130,12 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             blobs::init,
             blobs::finalize,
             blobs::put_chunk,
-            blobs::fetch,
-            blobs::delete
+            blobs::fetch::fetch,
+            blobs::delete::delete
         ])
+        .mount(kynos::routes![snapshots::pin, snapshots::latest])
+        .mount(kynos::routes![key_bundle::pin, key_bundle::latest])
+        .mount(kynos::routes![identity_chain::pin, identity_chain::latest])
         .mount(kynos::routes![
             sync::session,
             sync::subscribe,
@@ -140,7 +152,14 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // Who the client is. Empty, nothing a request says about its own
         // origin is believed and the socket peer is the client; the rate
         // limiter below keys on whatever this resolves.
+        //
+        // `X-Forwarded-For` is the one field read, because it is the one both
+        // shipped proxy configurations (`deploy/caddy`, `deploy/nginx`) write.
+        // A proxy appends to one field and passes the other through from the
+        // client, so reading both would let a client choose its own address
+        // through whichever field its proxy does not touch.
         .trusted_proxies(kynos::http::forwarded::TrustedProxies::networks(
+            kynos::http::forwarded::ProxyHeader::XForwarded,
             config.trusted_proxy_networks(),
         ))
         // Outermost of all, so a request the limiter refuses is still one
@@ -148,6 +167,10 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // it. Declares nothing, so the description is unchanged; does nothing
         // at all without `[observability]`.
         .intercept(observe::TraceRequest)
+        // Inside the root span and outside everything that can refuse, so a
+        // request the limiter turns away was still in flight while it was
+        // being turned away, and its store reads are under its span.
+        .intercept(observe::RequestMeter)
         // Next, so outside the rest: a flood is refused before `BodySize` reads a
         // chunked body into memory to measure it. Covering every operation is
         // also what puts `429` in every operation's description.
@@ -155,7 +178,7 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // Configuring the limit and documenting that a limit exists are one
         // action here: `BodySize` contributes 413 to every operation it covers,
         // so an API cannot quietly reject payloads it claims to accept.
-        .intercept(kynos::middleware::limits::BodySize::new(
+        .intercept(kynos::middleware::limits::body_size::BodySize::new(
             config.max_body_bytes as u64,
         ))
         .intercept(cors(config))
@@ -397,6 +420,7 @@ mod tests {
             "/api/v1/accounts",
             "/api/v1/accounts/me",
             "/api/v1/accounts/me/recovery_blob",
+            "/api/v1/accounts/me/identity_chain",
             "/api/v1/devices",
             "/api/v1/devices/{device_id}",
             "/api/v1/devices/push-tokens",

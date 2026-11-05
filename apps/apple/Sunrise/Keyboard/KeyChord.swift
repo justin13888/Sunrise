@@ -124,7 +124,7 @@ struct KeyChord: Hashable, Sendable {
         case .returnKey: "↩"
         case .escape: "esc"
         case .tab: "⇥"
-        case .space: "space"
+        case .space: L10n.Keyboard.keySpace
         case .deleteKey: "⌫"
         default:
             if key.isLetter { key.uppercased() } else { String(key) }

@@ -26,6 +26,10 @@ injected clock. It works, it is tested, and the byte layout is defined **only in
 `crates/sunrise-server/src/auth/device_sig.rs`** — the module says so itself:
 "The document does not pin a byte layout, so this does."
 
+> Annotation: this paragraph records the tree when the decision was made. The
+> device-signature code has since moved to `crates/sunrise-http-sig/src/lib.rs`,
+> and the quoted line no longer exists.
+
 The construction hashes the body *as received*. That is why every authenticated
 handler takes `body: Bytes`: deserialising first would leave the signature
 checking a re-serialisation rather than the bytes the device signed.

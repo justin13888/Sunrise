@@ -80,9 +80,9 @@ fn capture_commits_and_is_readable_back() {
 #[test]
 fn capture_applies_annotations_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    // `^+6h` lands inside Today's rolling 24h window; `^+30h` does not. This
-    // pins the window boundary through the real query path.
-    run(dir.path(), &["capture", "Standup ^+6h !2"]);
+    // Today is the device zone's day: `^today` is on it at any hour, `^+30h`
+    // past its end (no day exceeds 25h). Pins that boundary end to end.
+    run(dir.path(), &["capture", "Standup ^today !2"]);
     run(dir.path(), &["capture", "Far future ^+30h"]);
     run(dir.path(), &["capture", "Unscheduled thing"]);
 
@@ -104,15 +104,13 @@ fn capture_applies_annotations_end_to_end() {
 #[test]
 fn capture_resolves_a_stream_by_name() {
     let dir = tempfile::tempdir().unwrap();
-    // The synthetic Inbox row is resolvable by name with no setup.
+    // `#inbox` still names "no stream" (ADR-0046), and leaves the title alone.
     let out = run(dir.path(), &["capture", "Triage me #inbox"]);
     assert!(out.status.success());
-    let streams = stdout(&run(dir.path(), &["streams"]));
-    assert!(streams.contains("Inbox"), "got {streams:?}");
-    assert!(
-        streams.contains("1 open"),
-        "the captured task must count against Inbox: {streams:?}"
-    );
+    let inbox = stdout(&run(dir.path(), &["inbox"]));
+    assert!(inbox.contains("Triage me"), "got {inbox:?}");
+    assert!(!inbox.contains('#'), "got {inbox:?}");
+    assert!(!stdout(&run(dir.path(), &["streams"])).contains("Inbox"));
 }
 
 /// The parser's governing invariant, asserted through the binary: an
@@ -242,10 +240,9 @@ fn done_refuses_something_that_is_not_a_task_id() {
 // ---------------------------------------------------------------------------
 
 /// The scheduling facet, observed through the query path rather than through
-/// the write's own output — `^+6h` lands inside Today's rolling window and
-/// `^-` takes it back out, which is the same boundary
-/// `capture_applies_annotations_end_to_end` pins. Relative spans, not
-/// `tomorrow`, so the assertion does not depend on the host's zone.
+/// the write's own output — `^today` lands inside Today and `^-` takes it
+/// back out, the boundary `capture_applies_annotations_end_to_end` pins; it
+/// holds in any host zone and at any hour, unlike a relative span.
 #[test]
 fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -255,7 +252,7 @@ fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
         "an unscheduled task must not start in Today"
     );
 
-    let out = run(dir.path(), &["edit", &id, "^+6h"]);
+    let out = run(dir.path(), &["edit", &id, "^today"]);
     assert!(out.status.success(), "edit failed: {out:?}");
     assert!(
         stdout(&out).starts_with(&id),
@@ -408,7 +405,7 @@ fn edit_defer_and_drop_all_take_several_ids() {
     let a = id_of(&run(dir.path(), &["capture", "First thing"]));
     let b = id_of(&run(dir.path(), &["capture", "Second thing"]));
 
-    let out = run(dir.path(), &["edit", &a, &b, "^+6h"]);
+    let out = run(dir.path(), &["edit", &a, &b, "^today"]);
     assert!(out.status.success(), "bulk edit failed: {out:?}");
     assert_eq!(stdout(&out).lines().count(), 2, "one line per task");
     let today = stdout(&run(dir.path(), &["today"]));
@@ -845,11 +842,12 @@ fn contexts_and_routines_are_listable_without_a_terminal() {
 #[test]
 fn stream_lists_the_tasks_in_one_stream() {
     let dir = tempfile::tempdir().unwrap();
-    run(dir.path(), &["capture", "Renew passport"]);
-    run(dir.path(), &["capture", "Book the movers"]);
+    run(dir.path(), &["streams", "create", "Errands"]);
+    run(dir.path(), &["capture", "Renew passport #errands"]);
+    run(dir.path(), &["capture", "Book the movers #errands"]);
 
-    // By name, resolved the same way `#inbox` is in a capture line.
-    let by_name = stdout(&run(dir.path(), &["stream", "inbox"]));
+    // By name, resolved the same way `#errands` is in a capture line.
+    let by_name = stdout(&run(dir.path(), &["stream", "errands"]));
     assert!(by_name.contains("Renew passport"), "got {by_name:?}");
     assert!(by_name.contains("Book the movers"), "got {by_name:?}");
 
@@ -1057,22 +1055,12 @@ fn the_four_pair_commands_make_a_second_vault_a_second_device() {
     // The grant is the one file worth stealing — the vault root and every
     // Stream key — and it is the *third*, not the first. Under the old
     // affordance the first file a vault wrote unprompted was the whole account.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&grant).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
-        let pending = std::fs::metadata(joiner.path().join(sunrise_cli::pair::PENDING_FILE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(
-            pending & 0o777,
-            0o600,
-            "the parked D_S_priv is a secret too, mode was {:o}",
-            pending & 0o777
-        );
-    }
+    // Owner-only on every platform: mode `0600`, or a protected DACL allowing
+    // the current user alone.
+    sunrise_private_file::verify_owner_only(&grant).unwrap();
+    // The parked D_S_priv is a secret too.
+    sunrise_private_file::verify_owner_only(&joiner.path().join(sunrise_cli::pair::PENDING_FILE))
+        .unwrap();
 
     // 4. Accept, which is the joiner's first open.
     let out = run(joiner.path(), &["pair", "accept", "--response", g]);
@@ -1608,11 +1596,11 @@ fn identity_rotate_moves_the_key_and_keeps_the_account() {
         .expect("an account line")
         .to_owned();
 
-    let out = run(dir.path(), &["identity", "rotate"]);
+    let out = run(dir.path(), &["identity", "rotate", "--keep-code"]);
     assert!(out.status.success(), "rotate failed: {out:?}");
     assert!(
         stdout(&out).contains("your existing recovery code still works"),
-        "the default carries the code forward, got {:?}",
+        "--keep-code carries the code forward, got {:?}",
         stdout(&out)
     );
 
@@ -1637,21 +1625,28 @@ fn identity_rotate_moves_the_key_and_keeps_the_account() {
     );
 }
 
-/// `--new-recovery-code` refuses to carry the old code and says so on stderr.
+/// A rotation that retires the code issues the next one on the relay, so with
+/// no relay it refuses before anything moves: rotating anyway would leave the
+/// account with no working code at all (ADR-0070).
 #[test]
-fn identity_rotate_can_refuse_to_carry_the_recovery_code() {
+fn identity_rotate_without_keep_code_needs_the_relay_and_moves_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let out = run(dir.path(), &["identity", "rotate", "--new-recovery-code"]);
-    assert!(out.status.success(), "rotate failed: {out:?}");
+    for args in [
+        &["identity", "rotate"][..],
+        &["identity", "rotate", "--new-recovery-code"][..],
+    ] {
+        let out = run(dir.path(), args);
+        assert!(!out.status.success(), "{args:?} must refuse: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--keep-code") && err.contains("SUNRISE_SYNC_URL"),
+            "the refusal names both ways forward, got {err:?}"
+        );
+    }
+    let after = stdout(&run(dir.path(), &["identity", "status"]));
     assert!(
-        !stdout(&out).contains("still works"),
-        "it must not claim the old code survives, got {:?}",
-        stdout(&out)
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("no longer opens this account"),
-        "the user has to be told, got {err:?}"
+        after.contains("rotations 0"),
+        "nothing moved, got {after:?}"
     );
 }
 

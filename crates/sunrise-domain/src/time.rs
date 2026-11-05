@@ -37,6 +37,16 @@
 //! and [`SunriseTime::from_parts`].
 
 mod codec;
+mod resolve;
+mod shift;
+mod week;
+mod zone;
+
+pub use codec::compat;
+pub use resolve::Unresolvable;
+pub use shift::shift_civil_days;
+pub use week::first_day_of_week;
+pub use zone::same_zone;
 
 use crate::unknown::Unknowns;
 use codec::{decode_raw_sidecar, encode_raw_sidecar};
@@ -47,8 +57,13 @@ use std::borrow::Cow;
 
 /// A time value that knows what kind of time it is.
 ///
-/// Ordering is by [`SunriseTime::index_ms`] — the same key storage indexes on —
-/// so a sorted list of mixed kinds matches a `ORDER BY *_at_ms` from SQL.
+/// [`Ord`] is by [`SunriseTime::index_ms`] — the same key storage indexes on —
+/// so a sorted list of mixed kinds matches a `ORDER BY *_at_ms` from SQL. That
+/// order is **storage's**, and only storage's: `index_ms` anchors the zone-less
+/// kinds in UTC, up to 14 hours from where any real reader puts them
+/// (`docs/10-cross-cutting/time.md` §2). A domain decision — a validator, a
+/// view, lateness, overlap, a sort a user sees — compares with
+/// [`SunriseTime::cmp_in`] in the reader's zone instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SunriseTime {
     /// A fixed point on the timeline, zone-independent.
@@ -87,14 +102,35 @@ pub enum SunriseTime {
     },
 }
 
+/// A [`SunriseTime`] in a field that was a bare instant before
+/// `DOC_SCHEMA_V` 15, written through [`compat`]: an instant as the bare
+/// timestamp, every other kind tagged.
+///
+/// The same Rust type; the name is what the entity registry and the
+/// canonical document schema call such a field, so the encoding is part of
+/// the schema's fingerprint.
+pub type CompatTime = SunriseTime;
+
 /// The key an [`SunriseTime::Unknown`] value with no `at` instant is indexed
-/// and resolved at: `9999-01-01T00:00:00Z`.
+/// at, and the instant [`SunriseTime::instant_or_last`] sorts a value that
+/// cannot be placed at: `9999-01-01T00:00:00Z`.
 ///
 /// Late rather than early, so a value this build cannot place sorts after
 /// every value it can, and never reads as overdue or already past. A year
 /// short of `jiff`'s maximum, so arithmetic on the resolved instant does not
 /// overflow.
 pub const UNANCHORED_MS: i64 = 253_370_764_800_000;
+
+/// How far a query that selects by time widens its `index_ms` bounds on each
+/// side before the exact filter runs: 48 hours.
+///
+/// `docs/10-cross-cutting/time.md` §2 rule 2. `index_ms` puts a floating or
+/// all-day value up to 14 hours from where a reader in any real zone resolves
+/// it (UTC−12 to UTC+14), and an all-day value occupies a whole planner day
+/// that can extend up to 24 hours past its start; 38 hours rounded up. A row
+/// the prefilter admits is then kept or dropped on its resolved instant, so
+/// the slack decides only how much is read, never what is returned.
+pub const PREFILTER_SLACK_MS: i64 = 48 * 60 * 60 * 1000;
 
 /// The `_kind` sidecar values. Stable strings: they are persisted.
 pub mod kind {
@@ -184,33 +220,121 @@ impl SunriseTime {
     /// * `Floating` and `AllDay` resolve in `tz`, which is the reading
     ///   device's zone. `AllDay` resolves to the START of the day.
     ///
-    /// An unresolvable zone name, or a civil time that does not exist in it (a
-    /// spring-forward gap), falls back to the compatible resolution `jiff`
-    /// offers rather than failing: a scheduled time that cannot be rendered is
-    /// worse than one rendered an hour off, and the stored civil value is
-    /// unchanged either way.
+    /// A civil time resolves by the one DST rule in
+    /// `docs/10-cross-cutting/time.md` §3, jiff's `Compatible`
+    /// disambiguation: a time inside a spring-forward gap moves forward by the
+    /// length of the gap, and a time inside a fall-back fold takes the earlier
+    /// of its two instants. That is the defined answer, not a fallback. A
+    /// `Zoned` value naming a zone this build does not know resolves in `tz`
+    /// and reports [`SunriseTime::zone_unknown`]; its stored value is
+    /// unchanged.
     ///
-    /// An unknown kind resolves to its `at` instant when it carries one
-    /// ([`SunriseTime::unknown_anchor`]), and to [`UNANCHORED_MS`] otherwise.
-    #[must_use]
-    pub fn to_instant(&self, tz: &TimeZone) -> Timestamp {
+    /// # Errors
+    ///
+    /// [`Unresolvable`] when there is no instant to give, and never a
+    /// stand-in (`docs/11-adr/0066-times-survive-travel.md` §3): an unknown
+    /// kind that carries no `at` instant, or a civil value at the edge of the
+    /// calendar that has no instant in the zone it resolves in. Each caller
+    /// decides what that means for its reader: a sort places the value last
+    /// ([`SunriseTime::instant_or_last`], [`SunriseTime::cmp_in`]), a
+    /// reminder is not scheduled and the plan says why, and a view shows the
+    /// stored civil text ([`std::fmt::Display`]).
+    pub fn to_instant(&self, tz: &TimeZone) -> Result<Timestamp, Unresolvable> {
+        let civil_in = |zone: &TimeZone, dt: civil::DateTime| {
+            zone.to_zoned(dt)
+                .map(|z| z.timestamp())
+                .map_err(|_| Unresolvable::OutOfRange {
+                    value: self.to_string(),
+                })
+        };
         match self {
-            Self::Unknown { .. } => self.unknown_anchor().unwrap_or_else(|| {
-                Timestamp::from_millisecond(UNANCHORED_MS).unwrap_or(Timestamp::UNIX_EPOCH)
-            }),
-            Self::Instant { at } => *at,
+            Self::Unknown { kind, .. } => self
+                .unknown_anchor()
+                .ok_or_else(|| Unresolvable::UnknownKind { kind: kind.clone() }),
+            Self::Instant { at } => Ok(*at),
             Self::Zoned { civil, tz: name } => {
                 let zone = TimeZone::get(name).unwrap_or_else(|_| tz.clone());
-                zone.to_zoned(*civil)
-                    .map_or_else(|_| Timestamp::UNIX_EPOCH, |z| z.timestamp())
+                civil_in(&zone, *civil)
             }
-            Self::Floating { civil } => tz
-                .to_zoned(*civil)
-                .map_or_else(|_| Timestamp::UNIX_EPOCH, |z| z.timestamp()),
-            Self::AllDay { date } => tz
-                .to_zoned(date.to_datetime(civil::Time::midnight()))
-                .map_or_else(|_| Timestamp::UNIX_EPOCH, |z| z.timestamp()),
+            Self::Floating { civil } => civil_in(tz, *civil),
+            Self::AllDay { date } => civil_in(tz, date.to_datetime(civil::Time::midnight())),
         }
+    }
+
+    /// The instant this value is compared at by a reader in `tz`, or `None`
+    /// when [`SunriseTime::to_instant`] has none to give: a value this build
+    /// cannot place, which is compared with nothing rather than with a
+    /// stand-in, because a stand-in would invent an answer.
+    ///
+    /// An `AllDay` value resolves to the start of its day.
+    /// `docs/10-cross-cutting/time.md` §2 rule 1.
+    #[must_use]
+    pub fn resolve_in(&self, tz: &TimeZone) -> Option<Timestamp> {
+        self.to_instant(tz).ok()
+    }
+
+    /// The instant this value is **missed** at, read as a deadline in `tz`:
+    /// the end of the day for an `AllDay` value, and
+    /// [`SunriseTime::resolve_in`] for every other kind.
+    ///
+    /// `due()` in ADR-0047 §Due instant, and the one exception
+    /// `docs/10-cross-cutting/time.md` §2 rule 1 makes to start-of-day: a task
+    /// due "Friday" is on time all of Friday. Here the day is the civil day,
+    /// ending at the next civil midnight in `tz`.
+    ///
+    /// A reader with a day schedule reads deadlines through
+    /// [`crate::deadline_at`], which ends an all-day value's day at the end
+    /// of its planner day, `boundary(d + 1)`, and reduces to this with an
+    /// empty schedule. Lateness, the briefs and the ordering warnings read
+    /// that one.
+    #[must_use]
+    pub fn due_in(&self, tz: &TimeZone) -> Option<Timestamp> {
+        match self {
+            Self::AllDay { date } => {
+                let next = date.tomorrow().ok()?;
+                tz.to_zoned(next.to_datetime(civil::Time::midnight()))
+                    .ok()
+                    .map(|z| z.timestamp())
+            }
+            _ => self.resolve_in(tz),
+        }
+    }
+
+    /// The civil date a reader in `tz` sees this value on: its own date for
+    /// `AllDay`, and the date of its resolved instant in `tz` for every other
+    /// kind. `None` where [`SunriseTime::resolve_in`] is.
+    ///
+    /// Membership in a day is decided on this, never on an instant window,
+    /// because an `AllDay` value occupies its whole day and a timed value
+    /// belongs to exactly one.
+    #[must_use]
+    pub fn day_in(&self, tz: &TimeZone) -> Option<civil::Date> {
+        match self {
+            Self::AllDay { date } => Some(*date),
+            _ => self.resolve_in(tz).map(|at| at.to_zoned(tz.clone()).date()),
+        }
+    }
+
+    /// The order a reader in `tz` sees two values in
+    /// (`docs/10-cross-cutting/time.md` §2 rule 3): by resolved instant, then
+    /// `AllDay` before a timed value at the same instant, then the storage
+    /// order as a total tiebreak so two different values never compare
+    /// `Equal`. A value [`SunriseTime::resolve_in`] cannot place sorts after
+    /// every value it can.
+    ///
+    /// This is the comparison every domain decision uses; [`Ord`] is
+    /// storage's.
+    #[must_use]
+    pub fn cmp_in(&self, other: &Self, tz: &TimeZone) -> std::cmp::Ordering {
+        let placed = |t: &Self| t.resolve_in(tz);
+        match (placed(self), placed(other)) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| other.is_all_day().cmp(&self.is_all_day()))
+        .then_with(|| self.cmp(other))
     }
 
     /// The epoch-millisecond key this value is INDEXED under.
@@ -226,21 +350,28 @@ impl SunriseTime {
     /// * The key is **lossless**: `from_parts` reconstructs the exact civil
     ///   value from it, because anchoring in UTC is a bijection.
     ///
-    /// It is within a day of the true instant for any real zone, which is what
-    /// makes it a usable coarse filter. Anything that must be exact resolves
-    /// with `to_instant` after reading.
+    /// It is up to 14 hours from the true instant in any real zone, so it is a
+    /// **storage key and nothing else** (`docs/10-cross-cutting/time.md` §2):
+    /// a SQL prefilter widens its bounds by [`PREFILTER_SLACK_MS`] and the
+    /// result is decided in Rust with [`SunriseTime::resolve_in`] or
+    /// [`SunriseTime::cmp_in`]. No domain decision compares it, and
+    /// `tests/index_ms_lint.rs` holds every caller outside storage to that.
     ///
     /// An unknown kind indexes at its `at` instant when it carries one, and at
     /// [`UNANCHORED_MS`] otherwise, so it sorts after every value this build
-    /// can place. [`SunriseTime::index_key`] tells the two apart.
+    /// can place. [`SunriseTime::index_key`] tells the two apart. A civil
+    /// value at the calendar's edge, with no instant even in UTC, indexes at
+    /// the nearer end of the timestamp range, never at the epoch.
     #[must_use]
     pub fn index_ms(&self) -> i64 {
         match self {
             Self::Instant { at } => at.as_millisecond(),
-            Self::Zoned { .. }
-            | Self::Floating { .. }
-            | Self::AllDay { .. }
-            | Self::Unknown { .. } => self.to_instant(&TimeZone::UTC).as_millisecond(),
+            Self::Unknown { .. } => self
+                .unknown_anchor()
+                .map_or(UNANCHORED_MS, Timestamp::as_millisecond),
+            Self::Zoned { .. } | Self::Floating { .. } | Self::AllDay { .. } => self
+                .to_instant(&TimeZone::UTC)
+                .map_or_else(|_| self.edge_index_ms(), Timestamp::as_millisecond),
         }
     }
 
@@ -273,7 +404,40 @@ impl SunriseTime {
         (self.index_ms(), self.kind_str(), tz)
     }
 
-    /// Rebuild from the three storage columns.
+    /// The `_civil` storage column: the wall-clock value a civil kind means,
+    /// as its ISO 8601 text, beside the index key and the sidecars
+    /// (`docs/11-adr/0066-times-survive-travel.md` §2).
+    ///
+    /// `Some` for [`SunriseTime::Zoned`] and [`SunriseTime::Floating`] (a
+    /// civil date-time, `2026-03-08T02:30:00`) and [`SunriseTime::AllDay`] (a
+    /// date, `2026-03-08`); `None` for the kinds that are not civil. Storing
+    /// it is what makes [`SunriseTime::from_parts`] read a stored value back
+    /// without consulting a zone: a tzdata change cannot move a stored 09:00,
+    /// and a zone this build does not know keeps its civil time byte for
+    /// byte.
+    #[must_use]
+    pub fn civil_part(&self) -> Option<String> {
+        match self {
+            Self::Zoned { civil, .. } | Self::Floating { civil } => Some(civil.to_string()),
+            Self::AllDay { date } => Some(date.to_string()),
+            Self::Instant { .. } | Self::Unknown { .. } => None,
+        }
+    }
+
+    /// Rebuild from the storage columns: the index key, the `_kind` and `_tz`
+    /// sidecars, and the `_civil` column [`SunriseTime::civil_part`] wrote.
+    ///
+    /// A civil kind is rebuilt from `civil` and its zone name and nothing
+    /// else (`docs/11-adr/0066-times-survive-travel.md` §2): `index_ms` is a
+    /// storage key, and is not read back for one. A `Zoned` value naming a
+    /// zone this build cannot resolve keeps its civil time and its name.
+    ///
+    /// A row written before the `_civil` column existed (migration 0041) has
+    /// `civil` NULL until the projection is rebuilt from the op log, which the
+    /// first open after that migration does. Such a value is derived from
+    /// `index_ms` as it was before: a zoned one in its own zone, a floating
+    /// or all-day one in UTC. That derivation is the fallback, and nothing a
+    /// build after 0041 writes reaches it.
     ///
     /// An unrecognised `kind` reads back as the [`SunriseTime::Unknown`] value
     /// [`SunriseTime::to_parts`] stored, its other fields decoded from the
@@ -285,23 +449,33 @@ impl SunriseTime {
     /// still a real time, a well-formed one to re-emit, and refusing to read
     /// it would lose the whole task over one column.
     #[must_use]
-    pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>) -> Self {
+    pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>, civil: Option<&str>) -> Self {
         let at = Timestamp::from_millisecond(index_ms).unwrap_or(Timestamp::UNIX_EPOCH);
         let utc_civil = || at.to_zoned(TimeZone::UTC).datetime();
+        let stored_civil = civil.and_then(|c| c.parse::<civil::DateTime>().ok());
         match kind {
             kind::ZONED => {
-                // A zoned value's index key IS its true instant, so the civil
-                // time comes back by converting into its OWN zone — not UTC.
                 let name = tz.unwrap_or("UTC");
-                let zone = TimeZone::get(name).unwrap_or(TimeZone::UTC);
+                let civil = stored_civil.unwrap_or_else(|| {
+                    // Pre-0041 rows only: a zoned value's index key was its
+                    // true instant, so the civil time comes back in its OWN
+                    // zone.
+                    let zone = TimeZone::get(name).unwrap_or(TimeZone::UTC);
+                    at.to_zoned(zone).datetime()
+                });
                 Self::Zoned {
-                    civil: at.to_zoned(zone).datetime(),
+                    civil,
                     tz: name.to_string(),
                 }
             }
-            kind::FLOATING => Self::Floating { civil: utc_civil() },
+            kind::FLOATING => Self::Floating {
+                civil: stored_civil.unwrap_or_else(utc_civil),
+            },
             kind::ALL_DAY => Self::AllDay {
-                date: utc_civil().date(),
+                date: civil
+                    .and_then(|c| c.parse::<civil::Date>().ok())
+                    .or_else(|| stored_civil.map(civil::DateTime::date))
+                    .unwrap_or_else(|| utc_civil().date()),
             },
             kind::INSTANT => Self::Instant { at },
             other => match tz.and_then(decode_raw_sidecar) {
@@ -352,6 +526,11 @@ impl PartialOrd for SunriseTime {
     }
 }
 
+/// Storage order: by [`SunriseTime::index_ms`], the key `ORDER BY *_at_ms`
+/// sorts on, then a total tiebreak. Kept so a value can sit in a `BTreeSet` or
+/// be sorted the way a SQL scan returns it; it MUST NOT decide anything a user
+/// sees (`docs/10-cross-cutting/time.md` §2 rule 3, which amends ADR-0017).
+/// Use [`SunriseTime::cmp_in`] for that.
 impl Ord for SunriseTime {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Index order, then a total tiebreak so `Ord` stays consistent with
@@ -372,271 +551,4 @@ impl Ord for SunriseTime {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::unknown::CborValue;
-
-    fn ny() -> TimeZone {
-        TimeZone::get("America/New_York").unwrap()
-    }
-
-    #[test]
-    fn an_instant_is_the_same_moment_in_every_zone() {
-        let t = SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_000).unwrap());
-        assert_eq!(t.to_instant(&TimeZone::UTC), t.to_instant(&ny()));
-    }
-
-    /// The point of `Zoned`: the zone travels with the value.
-    #[test]
-    fn a_zoned_time_ignores_the_reading_device() {
-        let t = SunriseTime::zoned(civil::date(2024, 6, 1).at(9, 0, 0, 0), "America/New_York");
-        let berlin = TimeZone::get("Europe/Berlin").unwrap();
-        assert_eq!(t.to_instant(&berlin), t.to_instant(&TimeZone::UTC));
-        // 09:00 EDT on 2024-06-01 is 13:00 UTC.
-        assert_eq!(
-            t.to_instant(&TimeZone::UTC)
-                .to_zoned(TimeZone::UTC)
-                .datetime()
-                .hour(),
-            13
-        );
-    }
-
-    /// ...and the point of `Floating`: it follows the reader instead.
-    #[test]
-    fn a_floating_time_follows_the_device_zone() {
-        let t = SunriseTime::floating(civil::date(2024, 6, 1).at(9, 0, 0, 0));
-        assert_ne!(t.to_instant(&TimeZone::UTC), t.to_instant(&ny()));
-        for zone in [TimeZone::UTC, ny()] {
-            assert_eq!(
-                t.to_instant(&zone).to_zoned(zone.clone()).datetime().hour(),
-                9,
-                "a floating 09:00 is 09:00 wherever it is read"
-            );
-        }
-    }
-
-    /// The bug the AllDay kind exists to prevent: a birthday on the 4th
-    /// showing as the 3rd for everyone west of UTC.
-    #[test]
-    fn an_all_day_date_is_that_date_in_the_reading_zone() {
-        let t = SunriseTime::all_day(civil::date(2024, 7, 4));
-        for zone in [
-            TimeZone::UTC,
-            ny(),
-            TimeZone::get("Pacific/Auckland").unwrap(),
-        ] {
-            let d = t.to_instant(&zone).to_zoned(zone.clone()).date();
-            assert_eq!(d, civil::date(2024, 7, 4), "in {zone:?}");
-        }
-    }
-
-    #[test]
-    fn every_kind_round_trips_through_storage() {
-        let cases = [
-            SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_123).unwrap()),
-            SunriseTime::zoned(civil::date(2024, 6, 1).at(9, 30, 0, 0), "America/New_York"),
-            SunriseTime::floating(civil::date(2024, 6, 1).at(9, 30, 0, 0)),
-            SunriseTime::all_day(civil::date(2024, 7, 4)),
-            lunar(Some("2024-06-01T09:30:00Z")),
-            lunar(None),
-            SunriseTime::Unknown {
-                kind: "bare".into(),
-                raw: Unknowns::new(),
-            },
-        ];
-        for c in cases {
-            let (ms, k, tz) = c.to_parts();
-            assert_eq!(
-                SunriseTime::from_parts(ms, k, tz.as_deref()),
-                c,
-                "round trip {c:?}"
-            );
-        }
-    }
-
-    /// A kind a newer build added, with an optional `at` anchor.
-    fn lunar(at: Option<&str>) -> SunriseTime {
-        let mut raw = Unknowns::new();
-        raw.insert(
-            "phase".into(),
-            CborValue(ciborium::value::Value::Text("waxing".into())),
-        );
-        if let Some(at) = at {
-            raw.insert(
-                "at".into(),
-                CborValue(ciborium::value::Value::Text(at.into())),
-            );
-        }
-        SunriseTime::Unknown {
-            kind: "lunar".into(),
-            raw,
-        }
-    }
-
-    #[test]
-    fn the_unanchored_key_is_the_start_of_9999() {
-        assert_eq!(
-            Timestamp::from_millisecond(UNANCHORED_MS).unwrap(),
-            "9999-01-01T00:00:00Z".parse::<Timestamp>().unwrap()
-        );
-    }
-
-    /// A kind this build does not know decodes, keeps every field, and writes
-    /// back the bytes it arrived as.
-    #[test]
-    fn an_unknown_kind_round_trips_byte_exact() {
-        for t in [lunar(Some("2024-06-01T09:30:00Z")), lunar(None)] {
-            let bytes = sunrise_cbor::encode_canonical(&t).unwrap();
-            let back: SunriseTime = sunrise_cbor::decode_canonical(&bytes).unwrap();
-            assert_eq!(back, t);
-            assert!(back.is_unknown());
-            assert_eq!(back.kind_str(), "lunar");
-            assert_eq!(sunrise_cbor::encode_canonical(&back).unwrap(), bytes);
-        }
-        let j = serde_json::json!({ "kind": "lunar", "phase": "waxing" });
-        let t: SunriseTime = serde_json::from_value(j.clone()).unwrap();
-        assert_eq!(t, lunar(None));
-        assert_eq!(serde_json::to_value(&t).unwrap(), j);
-    }
-
-    /// A known kind whose fields do not parse is still an error: it is not
-    /// "a kind this build does not know".
-    #[test]
-    fn a_malformed_known_kind_is_refused_not_kept() {
-        for j in [
-            serde_json::json!({ "kind": "instant", "at": "not a time" }),
-            serde_json::json!({ "kind": "zoned", "civil": "2024-06-01T09:00:00" }),
-        ] {
-            assert!(serde_json::from_value::<SunriseTime>(j).is_err());
-        }
-    }
-
-    /// Placed by its `at` when it has one; after everything else when not.
-    #[test]
-    fn an_unknown_kind_orders_by_its_anchor_or_last() {
-        let anchored = lunar(Some("2024-06-01T09:30:00Z"));
-        assert_eq!(
-            anchored.index_ms(),
-            "2024-06-01T09:30:00Z"
-                .parse::<Timestamp>()
-                .unwrap()
-                .as_millisecond()
-        );
-        assert_eq!(anchored.index_key(), Some(anchored.index_ms()));
-
-        let unanchored = lunar(None);
-        assert_eq!(unanchored.index_ms(), UNANCHORED_MS);
-        assert_eq!(unanchored.index_key(), None);
-
-        let mut v = [
-            unanchored.clone(),
-            SunriseTime::all_day(civil::date(2024, 7, 4)),
-            anchored.clone(),
-            SunriseTime::instant(Timestamp::from_millisecond(0).unwrap()),
-        ];
-        v.sort();
-        assert_eq!(v[1], anchored);
-        assert_eq!(v[3], unanchored);
-
-        // Two unknown values that differ only in a field are not Equal.
-        let mut other = lunar(None);
-        if let SunriseTime::Unknown { raw, .. } = &mut other {
-            raw.insert(
-                "phase".into(),
-                CborValue(ciborium::value::Value::Text("waning".into())),
-            );
-        }
-        assert_ne!(unanchored.cmp(&other), std::cmp::Ordering::Equal);
-    }
-
-    /// A row with an unknown kind and no sidecar this build wrote has nothing
-    /// to rebuild from; it degrades to an instant, as before.
-    #[test]
-    fn an_unknown_kind_without_its_sidecar_degrades_to_an_instant() {
-        for tz in [None, Some("Europe/Berlin"), Some("cbor:zz"), Some("cbor:0")] {
-            assert_eq!(
-                SunriseTime::from_parts(1_700_000_000_000, "lunar_phase", tz),
-                SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_000).unwrap()),
-                "sidecar {tz:?}"
-            );
-        }
-    }
-
-    /// The index key must not move when the device's zone does — an index
-    /// built on one device has to stay valid on another.
-    #[test]
-    fn the_index_key_is_independent_of_the_device_zone() {
-        let t = SunriseTime::floating(civil::date(2024, 6, 1).at(9, 30, 0, 0));
-        let before = t.index_ms();
-        // `index_ms` takes no zone argument at all; this asserts the contract
-        // rather than the implementation, by checking the value equals the UTC
-        // resolution and nothing else.
-        assert_eq!(before, t.to_instant(&TimeZone::UTC).as_millisecond());
-    }
-
-    #[test]
-    fn ordering_matches_the_storage_index() {
-        let mut v = [
-            SunriseTime::all_day(civil::date(2024, 7, 4)),
-            SunriseTime::instant(Timestamp::from_millisecond(0).unwrap()),
-            SunriseTime::floating(civil::date(2024, 6, 1).at(9, 30, 0, 0)),
-        ];
-        v.sort();
-        let keys: Vec<i64> = v.iter().map(SunriseTime::index_ms).collect();
-        let mut sorted = keys.clone();
-        sorted.sort_unstable();
-        assert_eq!(keys, sorted);
-    }
-
-    #[test]
-    fn display_shows_the_kind() {
-        assert_eq!(
-            SunriseTime::zoned(civil::date(2024, 6, 1).at(9, 0, 0, 0), "America/New_York")
-                .to_string(),
-            "2024-06-01T09:00:00[America/New_York]"
-        );
-        assert_eq!(
-            SunriseTime::floating(civil::date(2024, 6, 1).at(9, 0, 0, 0)).to_string(),
-            "2024-06-01T09:00:00"
-        );
-        assert_eq!(
-            SunriseTime::all_day(civil::date(2024, 7, 4)).to_string(),
-            "2024-07-04"
-        );
-        assert_eq!(
-            lunar(Some("2024-06-01T09:30:00Z")).to_string(),
-            "2024-06-01T09:30:00Z[unknown kind lunar]"
-        );
-        assert_eq!(lunar(None).to_string(), "[unknown kind lunar]");
-    }
-
-    /// A payload written at `DOC_SCHEMA_V = 1`, where the field was a bare
-    /// instant with no kind, still reads.
-    #[test]
-    fn a_pre_schema_bare_instant_still_deserializes() {
-        let legacy = sunrise_cbor::encode_canonical(
-            &Timestamp::from_millisecond(1_762_680_600_789).unwrap(),
-        )
-        .expect("encode legacy");
-        let t: SunriseTime = ciborium::de::from_reader(&legacy[..]).expect("legacy decodes");
-        assert_eq!(
-            t,
-            SunriseTime::instant(Timestamp::from_millisecond(1_762_680_600_789).unwrap())
-        );
-    }
-
-    #[test]
-    fn cbor_round_trips_every_kind() {
-        for c in [
-            SunriseTime::instant(Timestamp::from_millisecond(1).unwrap()),
-            SunriseTime::zoned(civil::date(2024, 6, 1).at(9, 0, 0, 0), "Europe/Berlin"),
-            SunriseTime::floating(civil::date(2024, 6, 1).at(9, 0, 0, 0)),
-            SunriseTime::all_day(civil::date(2024, 7, 4)),
-        ] {
-            let bytes = sunrise_cbor::encode_canonical(&c).expect("encode");
-            let back: SunriseTime = sunrise_cbor::decode_canonical(&bytes).expect("decode");
-            assert_eq!(back, c);
-        }
-    }
-}
+mod tests;

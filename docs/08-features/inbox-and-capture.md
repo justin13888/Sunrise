@@ -14,25 +14,26 @@ The capture surface is the most-used surface in the app. It must be uncompromisi
 
 ## Capture parser
 
-A pure function `parse(input: &str, at: DateTime, tz: Tz, contexts: &[ContextRef], streams: &[StreamRef]) -> TaskDraft`.
+A pure function `parse(input: &str, now: Timestamp, tz: &TimeZone, streams: &[NamedRef<'_>], contexts: &[NamedRef<'_>]) -> Capture`, in `crates/sunrise-domain/src/capture.rs`. A `Capture` is the `TaskDraft` plus the tokens it could not apply (`unresolved`), whose text stays in the title.
 
 Recognized syntax:
 
 | Token | Effect |
 |---|---|
-| `#name` | Stream — exact match if exists; ambiguous matches → suggestions |
-| `@name` | Context — exact match preferred |
-| `^when` | Planned at (`planned_at`); "when" parsed by date library, kind per [`time.md`](../10-cross-cutting/time.md) §1 |
+| `#name` | Stream — case-insensitive exact match, else a unique prefix; ambiguous or unknown → unresolved, with the candidates when ambiguous |
+| `@name` | Context — matched the same way |
+| `^when` | Planned at (`planned_at`); "when" is the bounded phrase set of `parse_when_time`, kind per [`time.md`](../10-cross-cutting/time.md) §1 |
 | `!N` (1..5) | Priority |
-| `~Xm` / `~Xh` | Estimated duration |
-| `*due:when*` | Hard deadline (`hard_due_at`; less common, more verbose to avoid collision with markdown) |
+| `~Xm` / `~Xh` / `~Xd` | Estimated duration; units combine (`~1h30m`), and a bare `~90` is minutes |
+| `*due:when*` | Hard deadline (`hard_due_at`; less common, more verbose to avoid collision with markdown). One word: "when" holds no space |
+| `*target:when*` | Soft deadline (`target_at`), written the same way |
 | Naked text | Title (everything else) |
 
 Examples:
 
 - `Renew passport #travel @errands ^next saturday !1 ~1h`
 - `Email Sara about Q3` → unsorted Inbox task
-- `Standup ^weekday 9:30 #work-acme` → schedule + stream
+- `Standup ^weekday 9:30 #work-acme` → stream, with `^weekday` unresolved and left in the title: recurrence belongs to a Routine's RRULE
 
 Parser runs *as the user types*; an inline preview shows the structured interpretation. Pressing Enter commits the parsed draft.
 

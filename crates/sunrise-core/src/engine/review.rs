@@ -10,12 +10,13 @@
 
 use super::ids::{blob16, ms_to_ts};
 use super::lww::LwwStamp;
+use super::merge::{check_patch, set_field, FieldOp};
 use super::routine::read_routines;
 use super::stream::{paused_streams, stream_member_tasks};
 use super::task::{actionable_scan, read_task};
-use super::{Engine, EngineError, MAX_TREND_WEEKS, META_STREAM};
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
+use crate::inner_op::{decode_inner_op, InnerOp, PatchPayload};
 use crate::queries::QueryResult;
 use rusqlite::{params, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,11 +28,30 @@ use sunrise_domain::{
     fold_activity, fold_trends, inbox_stream_ref, routine_drift, streaks_table, trends_table,
     ActivityEvent, ExportDataset, ExportFormat, OpPayload, OpRecord, ReviewSnapshot,
     ReviewSnapshotDraft, ReviewStream, ReviewWindow, RoutineDrift, StreakRow, Task, Trends,
-    WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
-    DRIFT_WINDOW_WEEKS, TREND_WEEKS,
+    WeekGrid, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS,
+    TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
+
+/// Upper end of the trend window, applied as a silent clamp at **both** ends.
+///
+/// Enforcement is the single `weeks.clamp(1, MAX_TREND_WEEKS)` in the trend
+/// query, and nothing above it validates: a caller asking for 500 weeks gets
+/// 104 and a caller asking for 0 gets 1, each with no error and no signal that
+/// the request was rewritten. It is a bound on what the fold will *do*, not on
+/// what a caller may *ask*.
+///
+/// Deliberately unlike [`MAX_EPOCH_LEAP`](super::sync::MAX_EPOCH_LEAP), which
+/// refuses what it cannot accept and documents the residual that refusal leaves
+/// behind. A rewritten chart window still renders a correct chart of a
+/// different size, so there is nothing for a caller to recover from; a rewritten
+/// epoch would be a key the caller silently does not hold.
+///
+/// The trend fold re-reads and decrypts op history, so an unbounded `weeks`
+/// would turn one keypress into a full-log scan. Two years is far past the
+/// point where a weekly chart is still readable.
+const MAX_TREND_WEEKS: u32 = 104;
 
 impl Engine {
     /// Record a completed weekly review as an append-only `rvw_` record.
@@ -53,34 +73,11 @@ impl Engine {
             note: d.note,
             unknown: Unknowns::new(),
         };
-        let inner = encode_inner_op(&InnerOp::ReviewSnapshotCreate(Box::new(snapshot.clone())))?;
-        let op_id = self.fresh_op_id(now_ms);
         // A review spans the whole vault, so it routes to the meta log the way
         // Stream and Routine lifecycle ops do.
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let slot = self.meta_slot(tx, now_ms)?;
-            let seq = slot.seq;
-            let lww = slot.lww;
-            insert_review_snapshot_row(tx, &snapshot, &lww)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                lww.hlc,
-                &inner,
-                "review.snapshot",
-                "review_snapshot",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            Ok(seq)
-        })?;
+        let op = InnerOp::ReviewSnapshotCreate(Box::new(snapshot));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -92,15 +89,16 @@ impl Engine {
     /// history. Nothing filters on revocation anywhere on this path — not here
     /// and not in [`Self::lookup_device_cert`], whose own doc explains why
     /// membership is not a fact about which key verifies a signature.
-    fn device_signing_keys(&self, db: &Db) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
+    pub(super) fn device_signing_keys(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
         let mut keys = BTreeMap::new();
         keys.insert(
             self.keychain.device_id(),
             self.keychain.device_signing_pub(),
         );
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT device_id, cert_blob FROM devices")?;
+        let mut stmt = conn.prepare("SELECT device_id, cert_blob FROM devices")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -123,20 +121,60 @@ impl Engine {
     /// A row that cannot be opened (an envelope from a device whose cert this
     /// replica never stored) is **skipped, not an error**: a partial history is
     /// still a useful history, and one unreadable op must not blank a review.
+    ///
+    /// A task `Patch` carries only the fields it wrote, and the folds read
+    /// whole tasks. So each one is replayed onto the task as the record
+    /// before it left it ([`replay_task_patch`]), or, when the history read
+    /// holds no earlier record of that task (compacted, or outside the
+    /// window), onto the task as it projects now. It then reads as the
+    /// `TaskCreated`, `TaskUpdated` or `TaskDeleted` of that whole task, and
+    /// `fold_activity` and `fold_trends` read it as any other.
     fn decode_op_records(
         &self,
+        conn: &rusqlite::Connection,
         keys: &BTreeMap<[u8; 16], [u8; 32]>,
         rows: Vec<OpRow>,
     ) -> Vec<OpRecord> {
+        let mut tasks: BTreeMap<EntityRef, Task> = BTreeMap::new();
         rows.into_iter()
             .filter_map(|row| {
                 let inner = self.open_logged_op(keys, &row.envelope)?;
+                let target = inner.target_ref();
+                let (payload, after) = match inner {
+                    InnerOp::Patch(p) if target.kind() == EntityKind::Task => {
+                        // A create starts from nothing, never from the task
+                        // as it projects now, which already holds every later
+                        // write.
+                        let base = match tasks.get(&target) {
+                            Some(t) => Some(t.clone()),
+                            None if p.create => None,
+                            None => read_task(conn, target.bytes()).ok().flatten(),
+                        };
+                        replay_task_patch(base, &p, row.ts_ms)
+                    }
+                    InnerOp::Patch(p) if target.kind() == EntityKind::Stream => {
+                        (stream_patch_payload(&p, row.ts_ms), None)
+                    }
+                    InnerOp::TaskCreate(t) => {
+                        let after = Some(t.clone());
+                        (OpPayload::TaskCreated(Box::new(t)), after)
+                    }
+                    InnerOp::TaskUpdate(t) => {
+                        let after = Some(t.clone());
+                        (OpPayload::TaskUpdated(Box::new(t)), after)
+                    }
+                    InnerOp::TaskDelete(t) => (OpPayload::TaskDeleted, Some(t)),
+                    other => (op_payload(other), None),
+                };
+                if let Some(t) = after {
+                    tasks.insert(target, t);
+                }
                 Some(OpRecord {
                     op_id: row.op_id,
                     at_ms: row.ts_ms,
                     device: row.device,
-                    target: inner.target_ref(),
-                    payload: op_payload(inner),
+                    target,
+                    payload,
                 })
             })
             .collect()
@@ -169,13 +207,14 @@ impl Engine {
     /// only cares about tasks something happened to inside the window. So the
     /// window picks the tasks and the outer query takes their whole history.
     fn task_history_ops(&self, db: &Db, since_ms: u64) -> Result<Vec<OpRecord>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let since = i64::try_from(since_ms).unwrap_or(i64::MAX);
         let mut stmt = db.conn().prepare(
-            // Filtered on `target_kind`, not on `inner_kind`: a defer is
-            // logged locally as `task.defer` but arrives from a peer as
-            // `task.update` (both are a full-state `TaskUpdate`), so an
-            // inner-kind list would quietly lose one device's defers.
+            // Filtered on `target_kind`, not on `inner_kind`: a vault's own
+            // defers from before ADR-0065 PR 3 are logged as `task.defer`,
+            // though each arrived at a peer as `task.update` (both are a
+            // full-state `TaskUpdate`), so an inner-kind list would quietly
+            // lose one device's defers.
             //
             // Ordered by `(ts_ms, device_id, seq)`, **not** by `(ts_ms,
             // op_id)`. `fold_activity` is a state machine over successive
@@ -199,7 +238,7 @@ impl Engine {
         let rows = stmt
             .query_map(params![since], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(self.decode_op_records(&keys, rows))
+        Ok(self.decode_op_records(db.conn(), &keys, rows))
     }
 
     /// The ops that make up one entity's activity feed.
@@ -213,7 +252,7 @@ impl Engine {
         db: &Db,
         entity: EntityRef,
     ) -> Result<Vec<OpRecord>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let id: Vec<u8> = entity.bytes().to_vec();
         let sql = match entity.kind() {
             EntityKind::Task => {
@@ -239,16 +278,18 @@ impl Engine {
         let rows = stmt
             .query_map(params![id], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(self.decode_op_records(&keys, rows))
+        Ok(self.decode_op_records(db.conn(), &keys, rows))
     }
 
-    /// The device-local week grid, anchored on Monday.
+    /// The device-local week grid, each week beginning on the `week_start`
+    /// preference (`docs/10-cross-cutting/time.md` §4).
     ///
     /// The timezone comes from the injected clock — the same seam scheduling
     /// constraints use — so a week boundary is never read from ambient state.
-    fn week_grid(&self, now_ms: u64, weeks: u32) -> Result<WeekGrid, EngineError> {
-        let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
-        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, &Weekday::Mo)
+    fn week_grid(&self, db: &Db, now_ms: u64, weeks: u32) -> Result<WeekGrid, EngineError> {
+        let tz = self.device_zone();
+        let week_start = self.week_start(db)?;
+        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, &week_start)
             .map_err(|e| EngineError::Invalid(format!("week grid: {e}")))
     }
 
@@ -264,7 +305,7 @@ impl Engine {
     }
 
     fn trends(&self, db: &Db, weeks: u32, now_ms: u64) -> Result<Trends, EngineError> {
-        let grid = self.week_grid(now_ms, weeks)?;
+        let grid = self.week_grid(db, now_ms, weeks)?;
         let ops = self.task_history_ops(db, grid.starts().first().copied().unwrap_or(0))?;
         Ok(fold_trends(&ops, &grid))
     }
@@ -311,7 +352,7 @@ impl Engine {
         week_start_ms: Option<u64>,
         now_ms: u64,
     ) -> Result<WeeklyReview, EngineError> {
-        let grid = self.week_grid(now_ms, TREND_WEEKS)?;
+        let grid = self.week_grid(db, now_ms, TREND_WEEKS)?;
         let start = week_start_ms.unwrap_or_else(|| grid.last_start_ms());
         let end = grid
             .starts()
@@ -353,12 +394,23 @@ impl Engine {
             .collect();
 
         let tasks = read_live_tasks(db.conn())?;
-        let routines = read_routines(db.conn())?;
+        let routines: Vec<_> = read_routines(db.conn())?
+            .into_iter()
+            .map(|r| self.streak_now(r, now_ms))
+            .collect();
         let drift_window = drift_window(window, DRIFT_WINDOW_WEEKS)?;
         let drift: Vec<RoutineDrift> = routines
             .iter()
             .filter(|r| !r.deleted && !r.archived)
-            .filter_map(|r| routine_drift(r, drift_window, DEFAULT_DRIFT_THRESHOLD).ok())
+            .filter_map(|r| {
+                routine_drift(
+                    r,
+                    drift_window,
+                    DEFAULT_DRIFT_THRESHOLD,
+                    &self.device_zone(),
+                )
+                .ok()
+            })
             .collect();
 
         Ok(build_weekly_review(WeeklyReviewInput {
@@ -370,6 +422,7 @@ impl Engine {
             drift,
             focus: *focus,
             trends,
+            zone: self.device_zone(),
         }))
     }
 
@@ -383,7 +436,7 @@ impl Engine {
         db: &Db,
         window: ReviewWindow,
     ) -> Result<Vec<ActivityEvent>, EngineError> {
-        let keys = self.device_signing_keys(db)?;
+        let keys = self.device_signing_keys(db.conn())?;
         let since = i64::try_from(window.start_ms).unwrap_or(i64::MAX);
         let until = i64::try_from(window.end_ms).unwrap_or(i64::MAX);
         let mut stmt = db.conn().prepare(
@@ -395,7 +448,11 @@ impl Engine {
         let rows = stmt
             .query_map(params![since, until], op_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(fold_activity(&self.decode_op_records(&keys, rows)))
+        Ok(fold_activity(&self.decode_op_records(
+            db.conn(),
+            &keys,
+            rows,
+        )))
     }
 
     pub(super) fn query_daily_review(
@@ -404,8 +461,7 @@ impl Engine {
         since_ms: u64,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let QueryResult::StreamTasks(inbox) = self.query_stream_tasks(db, &inbox_stream_ref())?
-        else {
+        let QueryResult::StreamTasks(inbox) = self.query_inbox(db)? else {
             return Err(EngineError::Invalid("inbox shape".into()));
         };
         let QueryResult::Tasks(today) = self.query_today(db, now_ms, &[])? else {
@@ -461,7 +517,7 @@ impl Engine {
         let table = match dataset {
             ExportDataset::Trends => trends_table(&self.trends(db, weeks, now_ms)?, &names),
             ExportDataset::Activity => {
-                let grid = self.week_grid(now_ms, weeks)?;
+                let grid = self.week_grid(db, now_ms, weeks)?;
                 let start = grid.starts().first().copied().unwrap_or(0);
                 let ops = self.task_history_ops(db, start)?;
                 let mut events = fold_activity(&ops);
@@ -471,7 +527,7 @@ impl Engine {
                 activity_table(&events)
             }
             ExportDataset::Focus => {
-                let grid = self.week_grid(now_ms, weeks)?;
+                let grid = self.week_grid(db, now_ms, weeks)?;
                 let QueryResult::FocusStats(stats) =
                     self.query_focus_stats(db, None, grid.starts().first().copied(), now_ms)?
                 else {
@@ -483,12 +539,14 @@ impl Engine {
                 let rows: Vec<StreakRow> = read_routines(db.conn())?
                     .into_iter()
                     .filter(|r| !r.deleted && !r.archived)
+                    .map(|r| self.streak_now(r, now_ms))
                     .map(|r| StreakRow {
                         routine: r.id,
                         title: r.template.title,
                         streak: r.streak_counter,
                         last_completed_at_ms: r
                             .last_completed_at
+                            .and_then(|t| t.resolve_in(&jiff::tz::TimeZone::UTC))
                             .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
                         unknown: sunrise_domain::Unknowns::new(),
                     })
@@ -564,12 +622,151 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceFeatures(_)
         // A digest says what a replica holds, not what anyone did.
         | InnerOp::StreamDigest(_)
-        // A field-level write carries no whole task to diff against, and this
-        // build never emits one (ADR-0044 §9). The timeline reads it once
-        // commands emit it.
+        // A field-level write of a task is replayed onto the task before
+        // it by the history reader (`replay_task_patch`), which never hands
+        // one here; one of any other entity is bookkeeping, as the full-state
+        // ops of those entities are.
         | InnerOp::Patch(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
+}
+
+/// What a task `Patch` stamped at `at_ms` reads as in the history: its
+/// register, set and counter writes replayed onto `base`, the task as the
+/// record before it left it, as a whole task (ADR-0065 PR 7).
+///
+/// A create starts from the defaults a `Patch` create projects with when
+/// there is no earlier record. `deleted` set to `true` reads as
+/// `TaskDeleted`, a create as `TaskCreated`, anything else as
+/// `TaskUpdated`. A `Patch` this build cannot read, or whose result is not
+/// a whole task, reads as `Ignored`, as it did before.
+pub(super) fn replay_task_patch(
+    base: Option<Task>,
+    p: &PatchPayload,
+    at_ms: u64,
+) -> (OpPayload, Option<Task>) {
+    use ciborium::value::Value;
+    let Ok(ops) = check_patch(p) else {
+        return (OpPayload::Ignored, None);
+    };
+    let stamp = Value::serialized(&ms_to_ts(i64::try_from(at_ms).unwrap_or(i64::MAX)))
+        .unwrap_or(Value::Null);
+    let mut entries: Vec<(Value, Value)> = match base.as_ref().map(Value::serialized) {
+        Some(Ok(Value::Map(m))) => m,
+        None if p.create => {
+            let text = |s: &str| Value::Text(s.to_owned());
+            vec![
+                (
+                    text("id"),
+                    Value::serialized(&p.target).unwrap_or(Value::Null),
+                ),
+                (text("created_at"), stamp.clone()),
+                (text("title"), text("")),
+                (text("state"), text("todo")),
+                (
+                    text("stream_id"),
+                    Value::serialized(&inbox_stream_ref()).unwrap_or(Value::Null),
+                ),
+            ]
+        }
+        _ => return (OpPayload::Ignored, None),
+    };
+    let deletes = replay_field_ops(EntityKind::Task, &mut entries, ops);
+    set_field(EntityKind::Task, &mut entries, "updated_at", stamp);
+    let Ok(task) = Value::Map(entries).deserialized::<Task>() else {
+        return (OpPayload::Ignored, None);
+    };
+    let payload = if p.create {
+        OpPayload::TaskCreated(Box::new(task.clone()))
+    } else if deletes {
+        OpPayload::TaskDeleted
+    } else {
+        OpPayload::TaskUpdated(Box::new(task.clone()))
+    };
+    (payload, Some(task))
+}
+
+/// What a stream `Patch` stamped at `at_ms` reads as in the history, as its
+/// full-state op would: a create is `StreamCreated` with the stream it
+/// writes, a `deleted` set to `true` is `StreamDeleted`, and anything else is
+/// bookkeeping, as a `StreamUpdate` is.
+fn stream_patch_payload(p: &PatchPayload, at_ms: u64) -> OpPayload {
+    use ciborium::value::Value;
+    let Ok(ops) = check_patch(p) else {
+        return OpPayload::Ignored;
+    };
+    let stamp = Value::serialized(&ms_to_ts(i64::try_from(at_ms).unwrap_or(i64::MAX)))
+        .unwrap_or(Value::Null);
+    let mut entries = vec![
+        (
+            Value::Text("id".into()),
+            Value::serialized(&p.target).unwrap_or(Value::Null),
+        ),
+        (Value::Text("created_at".into()), stamp.clone()),
+        (Value::Text("updated_at".into()), stamp),
+    ];
+    let deletes = replay_field_ops(EntityKind::Stream, &mut entries, ops);
+    if p.create {
+        return Value::Map(entries)
+            .deserialized::<sunrise_domain::Stream>()
+            .map_or(OpPayload::Ignored, |s| {
+                OpPayload::StreamCreated(Box::new(s))
+            });
+    }
+    if deletes {
+        OpPayload::StreamDeleted
+    } else {
+        OpPayload::Ignored
+    }
+}
+
+/// Apply a `Patch`'s field ops to `entries`, a whole entity of `kind` as
+/// CBOR: a register write, an OR-set edit and a counter delta each as the
+/// fold reads it for one writer. Returns whether it sets `deleted` to `true`.
+fn replay_field_ops(
+    kind: EntityKind,
+    entries: &mut Vec<(ciborium::value::Value, ciborium::value::Value)>,
+    ops: Vec<(String, FieldOp)>,
+) -> bool {
+    use ciborium::value::Value;
+    let mut deletes = false;
+    for (name, op) in ops {
+        match op {
+            FieldOp::Set(v) => {
+                if name == "deleted" {
+                    deletes = v == Value::Bool(true);
+                }
+                set_field(kind, entries, &name, v);
+            }
+            FieldOp::Edit { add, remove } => {
+                let mut held: Vec<Value> = entries
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some(name.as_str()))
+                    .and_then(|(_, v)| v.as_array().cloned())
+                    .unwrap_or_default();
+                held.retain(|e| !remove.iter().any(|(r, _)| r == e));
+                for e in add {
+                    if !held.contains(&e) {
+                        held.push(e);
+                    }
+                }
+                set_field(kind, entries, &name, Value::Array(held));
+            }
+            FieldOp::Inc(n) => {
+                let held = entries
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some(name.as_str()))
+                    .and_then(|(_, v)| v.as_integer())
+                    .and_then(|i| i64::try_from(i).ok())
+                    .unwrap_or(0);
+                let v = Value::Integer(held.saturating_add(n).into());
+                set_field(kind, entries, &name, v);
+            }
+            // Neither a task nor a stream has a map field.
+            FieldOp::Map(_) => {}
+        }
+    }
+    deletes
 }
 
 /// The routine-tuning window: the `weeks` civil weeks ending with the reviewed

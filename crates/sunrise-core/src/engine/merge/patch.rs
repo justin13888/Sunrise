@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
     Attachment, Block, Context, Frequency, Preferences, RRule, Routine, RoutineCatchupPolicy,
-    Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
+    SavedView, Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
+    ViewFilter, ViewKind, ViewSort,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, FieldSpec, Merge, RecordSpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -81,6 +82,7 @@ pub(in crate::engine) fn check_patch(
             )))
         }
     }
+    check_causal_keys(p).map_err(PatchProblem::Invalid)?;
     if p.fields.is_empty() {
         return Err(PatchProblem::Invalid("a patch writes no field".into()));
     }
@@ -94,6 +96,29 @@ pub(in crate::engine) fn check_patch(
         check_field(spec, p.target.kind(), name, op).map_err(PatchProblem::Invalid)?;
     }
     Ok(out)
+}
+
+/// The causal keys of ADR-0065: every parent is an op-ref that can name an op
+/// (§1), none is named twice (§2), and a group has at least two members (§6).
+/// Nothing reads them yet, so only their shape is checked.
+fn check_causal_keys(p: &PatchPayload) -> Result<(), String> {
+    if let Some(parents) = &p.parents {
+        let mut seen = BTreeSet::new();
+        for parent in parents {
+            // Seq 0 is the chain's empty position, never an op, and the op
+            // log stores seq as an SQLite integer.
+            if parent.2 == 0 || i64::try_from(parent.2).is_err() {
+                return Err("a malformed op-ref: seq is not an op's".into());
+            }
+            if !seen.insert(parent) {
+                return Err("a parent named twice".into());
+            }
+        }
+    }
+    if p.group.as_ref().is_some_and(|g| g.size < 2) {
+        return Err("a group has fewer than two members".into());
+    }
+    Ok(())
 }
 
 /// The `kind` a parked `Patch` is recorded under.
@@ -195,7 +220,7 @@ fn parse_field_op(raw: &Value) -> Result<FieldOp, PatchProblem> {
 
 /// The registered field `name` names, and the record it belongs to: a
 /// top-level field, or `parent.child` under a nested record.
-fn registered_field(
+pub(super) fn registered_field(
     spec: &'static EntitySpec,
     name: &str,
 ) -> Option<(&'static RecordSpec, &'static FieldSpec)> {
@@ -278,14 +303,40 @@ fn value_fits(kind: EntityKind, field: &str, value: &Value) -> bool {
     let Some(Value::Map(mut entries)) = probe(kind) else {
         return true;
     };
-    let path: Vec<&str> = match field.split_once('.') {
+    set_field(kind, &mut entries, field, value.clone());
+    deserializes_as(kind, Value::Map(entries))
+}
+
+/// Whether `value` is a write a `Patch` could make to `kind`'s register
+/// `name`: a field the registry declares a register, or one it does not
+/// know, and a value the field's type can hold. The same check
+/// [`check_patch`] makes of a `set`.
+///
+/// # Errors
+/// Why it is not, for a caller to report.
+pub(in crate::engine) fn check_register_set(
+    kind: EntityKind,
+    name: &str,
+    value: &Value,
+) -> Result<(), String> {
+    check_field(kind.spec(), kind, name, &FieldOp::Set(value.clone()))
+}
+
+/// Write `value` at field `name` of an entity's CBOR map: under its parent's
+/// map for a nested field (`template.title`), at the top otherwise.
+pub(in crate::engine) fn set_field(
+    kind: EntityKind,
+    entries: &mut Vec<(Value, Value)>,
+    name: &str,
+    value: Value,
+) {
+    let path: Vec<&str> = match name.split_once('.') {
         Some((parent, child)) if nested_record(kind.spec(), parent).is_some() => {
             vec![parent, child]
         }
-        _ => vec![field],
+        _ => vec![name],
     };
-    set_path(&mut entries, &path, value.clone());
-    deserializes_as(kind, Value::Map(entries))
+    set_path(entries, &path, value);
 }
 
 fn set_path(entries: &mut Vec<(Value, Value)>, path: &[&str], value: Value) {
@@ -318,7 +369,27 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
         EntityKind::Block => value.deserialized::<Block>().is_ok(),
         EntityKind::Attachment => value.deserialized::<Attachment>().is_ok(),
         EntityKind::Preferences => value.deserialized::<Preferences>().is_ok(),
+        EntityKind::SavedView => value.deserialized::<SavedView>().is_ok(),
         _ => true,
+    }
+}
+
+/// `value` decoded as `kind`'s record and encoded again: what the record
+/// reads as, with every key it leaves out at its default. `None` when it does
+/// not decode, or for a kind with no full-state op.
+pub(in crate::engine) fn round_trip(kind: EntityKind, value: Value) -> Option<Value> {
+    fn again<T: serde::Serialize + serde::de::DeserializeOwned>(value: Value) -> Option<Value> {
+        Value::serialized(&value.deserialized::<T>().ok()?).ok()
+    }
+    match kind {
+        EntityKind::Task => again::<Task>(value),
+        EntityKind::Stream => again::<Stream>(value),
+        EntityKind::Context => again::<Context>(value),
+        EntityKind::Routine => again::<Routine>(value),
+        EntityKind::Block => again::<Block>(value),
+        EntityKind::Attachment => again::<Attachment>(value),
+        // Preferences and saved views have no full-state op to round-trip.
+        _ => None,
     }
 }
 
@@ -333,14 +404,15 @@ fn probe(kind: EntityKind) -> Option<Value> {
             updated_at: at,
             title: String::new(),
             body: None,
-            stream_id: id(EntityKind::Stream),
+            stream_id: Some(id(EntityKind::Stream)),
             contexts: BTreeSet::new(),
             state: TaskState::Todo,
             priority: None,
             energy: None,
             estimated_duration_s: None,
-            scheduled_at: None,
-            due_at: None,
+            planned_at: None,
+            target_at: None,
+            hard_due_at: None,
             scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
@@ -349,7 +421,12 @@ fn probe(kind: EntityKind) -> Option<Value> {
             assignee: None,
             routine_id: None,
             routine_occurrence: None,
+            hard_constraint_violated: false,
             reminder_lead_s: None,
+            sort_order: None,
+            triaged_at: None,
+            cancel_reason: None,
+            late_acknowledged_at: None,
             archived: false,
             deleted: false,
             unknown: Unknowns::new(),
@@ -370,6 +447,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
             reminder_lead_s: None,
+            rehomed_to: None,
             deleted: false,
             unknown: Unknowns::new(),
         }),
@@ -389,7 +467,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             updated_at: at,
             template: TaskTemplate {
                 title: String::new(),
-                stream_id: id(EntityKind::Stream),
+                stream_id: Some(id(EntityKind::Stream)),
                 contexts: Vec::new(),
                 energy: None,
                 priority: None,
@@ -410,7 +488,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
                 unknown: Unknowns::new(),
             },
             timezone: "UTC".into(),
-            starts_at: at,
+            starts_at: at.into(),
             ends_at: None,
             scheduling_constraints: Vec::new(),
             skip_dates: Vec::new(),
@@ -422,6 +500,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             forgiveness_enabled: true,
             streak_started_at: None,
             forgivenesses_in_window: 0,
+            split_from: None,
             streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
@@ -433,7 +512,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             id: id(EntityKind::Block),
             created_at: at,
             updated_at: at,
-            stream_id: id(EntityKind::Stream),
+            stream_id: Some(id(EntityKind::Stream)),
             starts_at: SunriseTime::Instant { at },
             ends_at: SunriseTime::Instant { at },
             title: None,
@@ -455,6 +534,14 @@ fn probe(kind: EntityKind) -> Option<Value> {
             chunk_count: 0,
             content_hash: [0u8; 32],
             ciphertext_hash: [0u8; 32],
+            width: None,
+            height: None,
+            thumbnail_blob_id: None,
+            thumbnail_blob_key: None,
+            thumbnail_mime: None,
+            thumbnail_size_bytes: None,
+            thumbnail_content_hash: None,
+            thumbnail_ciphertext_hash: None,
             deleted: false,
             unknown: Unknowns::new(),
         }),
@@ -465,7 +552,44 @@ fn probe(kind: EntityKind) -> Option<Value> {
             values: BTreeMap::new(),
             unknown: Unknowns::new(),
         }),
+        EntityKind::SavedView => Value::serialized(&SavedView {
+            id: id(EntityKind::SavedView),
+            created_at: at,
+            updated_at: at,
+            name: String::new(),
+            view: ViewKind::Today,
+            filter: ViewFilter::default(),
+            sort: ViewSort::Default,
+            sort_order: None,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }),
         _ => return None,
     };
     value.ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each kind's probe is a record of that kind: a value its field holds
+    /// fits, and one it cannot hold is refused.
+    #[test]
+    fn a_register_set_is_checked_against_the_kinds_own_record() {
+        let text = |s: &str| Value::Text(s.into());
+        let number = Value::Integer(5.into());
+        for (kind, field, good) in [
+            (EntityKind::Task, "title", text("t")),
+            (EntityKind::Stream, "name", text("s")),
+            (EntityKind::Routine, "timezone", text("UTC")),
+            (EntityKind::Block, "title", text("b")),
+        ] {
+            assert!(value_fits(kind, field, &good), "{kind:?}.{field} fits");
+            assert!(
+                !value_fits(kind, field, &number),
+                "{kind:?}.{field} cannot hold a number"
+            );
+        }
+    }
 }

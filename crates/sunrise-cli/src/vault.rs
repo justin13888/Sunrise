@@ -62,7 +62,10 @@
 
 use std::path::{Path, PathBuf};
 
+use sunrise_client_core::ids::hex;
 use sunrise_core::Rng;
+
+use crate::i18n::strings;
 
 /// Env var: where per-vault root keys are stored. Default
 /// `$XDG_DATA_HOME/sunrise/keys`, falling back to `~/.local/share/sunrise/keys`.
@@ -165,34 +168,31 @@ pub enum VaultError {
 impl std::fmt::Display for VaultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PreMultiAccount { dir } => write!(
-                f,
-                "the vault at {} was created before vaults had their own keys, \
-                 when every vault shared one root compiled into this binary. \
-                 It is not opened by guessing that root, because that would \
-                 leave it readable by anyone holding a copy of `sunrise`. \
-                 To open it once and move the work somewhere new:\n\
-                 \x20   {ENV_VAULT_ROOT}={LEGACY_DEV_ROOT_HEX} sunrise export activity json > out.json\n\
-                 Otherwise pick a fresh directory; this build makes a new key for it.",
-                dir.display()
-            ),
-            Self::RootMissing { id, keystore } => write!(
-                f,
-                "no key for vault {id} in {}. The key never lives beside the \
-                 data — a vault directory copied on its own is ciphertext. \
-                 Bring the keystore over from the machine that made it, or \
-                 supply the root directly with {ENV_VAULT_ROOT}=<64 hex chars>.",
-                keystore.display()
-            ),
-            Self::BadRootHex { len } => write!(
-                f,
-                "{ENV_VAULT_ROOT} must be exactly {} hex characters ({ROOT_LEN} bytes); got {len}",
-                ROOT_LEN * 2
-            ),
+            Self::PreMultiAccount { dir } => f.write_str(&strings::vault::pre_multi_account(
+                &dir.display().to_string(),
+                ENV_VAULT_ROOT,
+                LEGACY_DEV_ROOT_HEX,
+            )),
+            Self::RootMissing { id, keystore } => f.write_str(&strings::vault::root_missing(
+                id,
+                &keystore.display().to_string(),
+                ENV_VAULT_ROOT,
+            )),
+            Self::BadRootHex { len } => f.write_str(&strings::vault::bad_root_hex(
+                ENV_VAULT_ROOT,
+                count(ROOT_LEN * 2),
+                count(ROOT_LEN),
+                count(*len),
+            )),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Malformed { path, detail } => write!(f, "{}: {detail}", path.display()),
         }
     }
+}
+
+/// A length as the catalog's integer argument.
+fn count(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 impl std::error::Error for VaultError {
@@ -306,7 +306,7 @@ pub fn open_or_create(
 
     let mut id_bytes = [0u8; ID_LEN];
     rng.fill_bytes(&mut id_bytes);
-    let id = to_hex(&id_bytes);
+    let id = hex(&id_bytes);
     let mut root = [0u8; ROOT_LEN];
     rng.fill_bytes(&mut root);
 
@@ -314,7 +314,7 @@ pub fn open_or_create(
     // and a directory that still reads as fresh, which the next run recovers
     // from by minting again; the other order would leave a vault naming a key
     // that was never written, which is indistinguishable from a lost key.
-    write_private(&key_path(keystore, &id), &to_hex(&root))?;
+    write_private(&key_path(keystore, &id), &hex(&root))?;
     write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
     register(keystore, &id, vault_dir)?;
     Ok(root)
@@ -350,13 +350,13 @@ pub fn adopt(
     }
     let mut id_bytes = [0u8; ID_LEN];
     rng.fill_bytes(&mut id_bytes);
-    let id = to_hex(&id_bytes);
+    let id = hex(&id_bytes);
     // Key first, marker second, for the reason `open_or_create` gives: the
     // other order leaves a vault naming a key that was never written, which is
     // indistinguishable from a lost key. The vault *id* is still minted here
     // and is still local — it names the keystore entry, not the account, and
     // two devices on one account have different ones.
-    write_private(&key_path(keystore, &id), &to_hex(&root))?;
+    write_private(&key_path(keystore, &id), &hex(&root))?;
     write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
     register(keystore, &id, vault_dir)?;
     Ok(())
@@ -399,7 +399,7 @@ fn read_vault_id(vault_dir: &Path) -> Result<Option<String>, VaultError> {
         // silently minting a second vault over the first one's data.
         return Err(VaultError::Malformed {
             path,
-            detail: format!("expected {} hex characters naming a vault", ID_LEN * 2),
+            detail: strings::vault::bad_id(count(ID_LEN * 2)),
         });
     }
     Ok(Some(id))
@@ -433,7 +433,10 @@ fn register(keystore: &Path, id: &str, vault_dir: &Path) -> Result<(), VaultErro
     body.push(' ');
     body.push_str(path);
     body.push('\n');
-    write_line(&file, body.trim_end_matches('\n'))
+    // Staged and renamed into place, so a crash mid-write leaves the previous
+    // listing whole instead of truncated. That makes the file owner-only too,
+    // which a list of this user's vault paths can be.
+    write_private(&file, body.trim_end_matches('\n'))
 }
 
 /// Read one line of `N * 2` hex characters, or `None` when the file is absent.
@@ -454,21 +457,21 @@ fn read_hex_line<const N: usize>(path: &Path) -> Result<Option<[u8; N]>, VaultEr
         // vault whose data is keyed by the old one.
         VaultError::Malformed {
             path: path.to_path_buf(),
-            detail: format!("expected {} hex characters", N * 2),
+            detail: strings::vault::bad_key(count(N * 2)),
         }
     })
 }
 
 /// Write one newline-terminated line to `path`, owner-only.
 ///
-/// The permission work is [`crate::private_file::write_private`], which the
+/// The permission work is [`sunrise_private_file::write_private`], which the
 /// pairing-payload export shares; this only adds the trailing newline every
 /// vault file here carries and maps the error into [`VaultError`].
 fn write_private(path: &Path, line: &str) -> Result<(), VaultError> {
     let mut body = String::with_capacity(line.len() + 1);
     body.push_str(line);
     body.push('\n');
-    crate::private_file::write_private(path, body.as_bytes()).map_err(|source| VaultError::Io {
+    sunrise_private_file::write_private(path, body.as_bytes()).map_err(|source| VaultError::Io {
         path: path.to_path_buf(),
         source,
     })
@@ -483,14 +486,6 @@ fn write_line(path: &Path, line: &str) -> Result<(), VaultError> {
         std::fs::create_dir_all(parent).map_err(io)?;
     }
     std::fs::write(path, format!("{line}\n")).map_err(io)
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
 }
 
 fn from_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
@@ -566,7 +561,7 @@ mod tests {
     fn the_key_is_not_written_into_the_vault_directory() {
         let (vault, keys) = dirs();
         let root = open_or_create(vault.path(), keys.path(), &SystemRng).unwrap();
-        let hex = to_hex(&root);
+        let hex = hex(&root);
         for entry in std::fs::read_dir(vault.path()).unwrap() {
             let path = entry.unwrap().path();
             let body = std::fs::read_to_string(&path).unwrap_or_default();
@@ -578,18 +573,14 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// Mode `0600` on Unix; a protected DACL allowing the current user alone
+    /// on Windows.
     #[test]
     fn the_key_file_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
         let (vault, keys) = dirs();
         open_or_create(vault.path(), keys.path(), &SystemRng).unwrap();
         let id = read_vault_id(vault.path()).unwrap().unwrap();
-        let mode = std::fs::metadata(key_path(keys.path(), &id))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        sunrise_private_file::verify_owner_only(&key_path(keys.path(), &id)).unwrap();
     }
 
     /// A vault directory that travelled without its keystore is a typed,
@@ -678,6 +669,30 @@ mod tests {
         assert_ne!(rows[0].id, rows[1].id);
     }
 
+    /// A registration stages the new registry and renames it over the old
+    /// one, so the old file is never truncated and rewritten in place: a crash
+    /// mid-write leaves the previous listing whole. A hard link to the old
+    /// file is how a test sees that: an in-place write changes what it reads.
+    #[test]
+    fn a_registration_replaces_the_registry_rather_than_rewriting_it_in_place() {
+        let keys = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        open_or_create(a.path(), keys.path(), &SystemRng).unwrap();
+        let registry = keys.path().join(REGISTRY_FILE);
+        let before = std::fs::read_to_string(&registry).unwrap();
+        let old = keys.path().join("old-registry");
+        std::fs::hard_link(&registry, &old).unwrap();
+
+        open_or_create(b.path(), keys.path(), &SystemRng).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&old).unwrap(),
+            before,
+            "the file the old listing was in was written in place"
+        );
+        assert_eq!(registered(keys.path()).len(), 2);
+        sunrise_private_file::verify_owner_only(&registry).unwrap();
+    }
+
     #[test]
     fn an_absent_registry_lists_nothing_rather_than_failing() {
         let keys = tempfile::tempdir().unwrap();
@@ -708,7 +723,7 @@ mod tests {
     #[test]
     fn hex_round_trips_and_rejects_the_wrong_length() {
         let bytes = [0xab_u8; ROOT_LEN];
-        assert_eq!(from_hex::<ROOT_LEN>(&to_hex(&bytes)), Some(bytes));
+        assert_eq!(from_hex::<ROOT_LEN>(&hex(&bytes)), Some(bytes));
         assert_eq!(from_hex::<ROOT_LEN>("ab"), None);
         assert_eq!(from_hex::<ROOT_LEN>(&"zz".repeat(ROOT_LEN)), None);
         assert_eq!(

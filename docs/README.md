@@ -2,7 +2,7 @@
 
 This directory is the design source of truth for Sunrise: a local-first, end-to-end encrypted productivity system for people running many parallel streams of work (multiple jobs, household, relationships, travel, side projects, etc.).
 
-The live implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype now lives in `legacy/` and is not load-bearing for this design.
+The live implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype was deleted; git history keeps it, and it is not load-bearing for this design.
 
 This tree fully covers the design from first principles; every design decision is asserted with a brief justification; exact dependency pins live in `01-architecture/dependencies.md` (and the ADRs).
 
@@ -21,7 +21,7 @@ Read top-down, 00 → 11, then `implementation/`. Each numbered section builds o
 | 06 | [`06-server/`](./06-server) | What the server does (and does not). |
 | 07 | [`07-clients/`](./07-clients) | Per-platform: macOS, CLI, iOS, Android, web. |
 | 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…). |
-| 09 | [`09-integrations/`](./09-integrations) | External: Google Calendar, iCalendar import/export. |
+| 09 | [`09-integrations/`](./09-integrations) | External: calendar goals and design, Google Calendar, Microsoft Graph, CalDAV, iCalendar import/export. |
 | 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, logging, versioning, testing, perf. |
 | 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why*, not *what*. |
 | — | [`implementation/`](./implementation) | Living tracker of the build against this design. |

@@ -5,11 +5,14 @@
 # operator or return value at a time and reports the changes nothing caught.
 #
 # `docs/10-cross-cutting/testing.md` §Mutation testing scopes this to
-# `sunrise-core`, `sunrise-crypto`, `sunrise-sync` and `sunrise-domain`, and to
-# release candidates rather than pull requests. The scoping is a cost decision
-# and it is the right one: those four crates alone generate 3,269 mutants — the
-# sum of the four populations the campaign recorded below — and each one is an
-# incremental rebuild plus a test run.
+# `sunrise-core`, `sunrise-crypto`, `sunrise-sync`, `sunrise-domain`,
+# `sunrise-cbor` and `sunrise-id`, and to release candidates rather than pull
+# requests. The scoping is a cost decision and it is the right one: those six
+# crates alone generate 3,512 mutants — the 3,269 the campaign recorded below
+# for the first four, plus 134 and 109 for the two wire-format crates counted at
+# `b94bcd5` — and each one is an incremental rebuild plus a test run. The
+# paragraphs below that say "four scoped crates" predate those two and describe
+# the measurements they name.
 #
 # Run it with `mise run mutants <crate>`, never bare — the task pins `--jobs 1`
 # for a reason recorded there.
@@ -28,8 +31,11 @@
 #   sunrise-bench           Benchmarks. Not correctness code.
 #   sunrise-e2e             A test harness. Mutating a harness measures the
 #                           harness's own tests, which do not exist.
-#   sunrise-relay-client    Generated from the OpenAPI description by build.rs.
-#                           A mutant here is a change to a file nobody edits.
+#   sunrise-relay-client    Excluded for cost. The generated client is emitted
+#                           into OUT_DIR by build.rs, so cargo-mutants never
+#                           sees it; what it would mutate is the hand-written
+#                           src/ (bootstrap, account, push, recovery refusal
+#                           classification), and that is what this skips.
 #   sunrise-crypto-test-vectors
 #                           Frozen literals. There is nothing to mutate but the
 #                           constants the vectors exist to pin, and flipping one
@@ -130,9 +136,13 @@ exclude_re = [
     "<impl (?:[A-Za-z0-9_]+::)*Display for ",
 ]
 
-# `sunrise-crypto` runs Argon2id at production parameters — 64 MiB, t=3, p=1
-# (`crates/sunrise-crypto/src/recovery.rs`), deliberately not weakened for
-# tests. Under mutation each surviving mutant pays that cost again, and a
+# `sunrise-crypto`'s own tests run Argon2id at production parameters — 64 MiB,
+# t=3, p=1 (`crates/sunrise-crypto/src/recovery.rs`). The KDF is weakened for
+# tests outside that crate only, through its `test-cheap-kdf` feature; its own
+# unit tests and frozen vector keep the production set even under the
+# `--all-features` `mise run mutants` passes (`docs/10-cross-cutting/testing.md`
+# §The recovery KDF in tests). Under mutation each surviving mutant pays that
+# cost again, and a
 # machine under load pays it slower still. Without a generous multiplier those
 # runs are scored as timeouts, which reads identically to "caught" in the
 # summary and is not the same claim at all.

@@ -133,14 +133,13 @@ mod tests {
     #[test]
     fn validate_title_rejects_too_long() {
         let long = "x".repeat(513);
-        let err = validate_title(&long, "task.title", 512).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::Field {
-                constraint: "max_length",
-                ..
-            }
-        ));
+        assert_eq!(
+            validate_title(&long, "task.title", 512),
+            Err(ValidationError::Field {
+                field: "task.title",
+                constraint: "max_length"
+            })
+        );
     }
 
     #[test]
@@ -149,7 +148,13 @@ mod tests {
         let s = "🌅".repeat(512);
         assert!(validate_title(&s, "task.title", 512).is_ok());
         let too = "🌅".repeat(513);
-        assert!(validate_title(&too, "task.title", 512).is_err());
+        assert_eq!(
+            validate_title(&too, "task.title", 512),
+            Err(ValidationError::Field {
+                field: "task.title",
+                constraint: "max_length"
+            })
+        );
     }
 
     #[test]

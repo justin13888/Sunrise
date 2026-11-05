@@ -9,8 +9,9 @@ status: accepted
 > ops write individual fields, and each field merges by its declared CRDT
 > type. A schema version has a fingerprint. Nothing that verifies is dropped.
 > A vault declares the features it requires. The per-device hash chain and
-> state digest in [ADR-0043](../11-adr/0043-commit-tree.md) are **proposed**,
-> and nothing here depends on them.
+> state digest in [ADR-0043](../11-adr/0043-commit-tree.md) are accepted and
+> built ([#325](https://github.com/justin13888/Sunrise/issues/325)), and
+> nothing here depends on them.
 >
 > **Rules marked *Today* describe the tree before those ADRs are built.** Each
 > one names the issue that closes the gap.
@@ -104,7 +105,7 @@ The details are in
 | The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs` |
 | The committed registry | `schemas/doc-schema/registry.json`, version (as a decimal string) to lowercase hex |
 | The frozen entries | `DOC_SCHEMA_REGISTRY` in `crates/sunrise-crypto-test-vectors/src/protocol.rs` |
-| The writer | `crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13 |
+| The writer | `crates/sunrise-crypto/src/op_envelope/mod.rs#encode_envelope` stamps field 13 |
 
 `DOC_SCHEMA_V` 7 is the first fingerprinted version (`DOC_SCHEMA_FP_FIRST`).
 Versions 1 through 6 have no entry. Their envelopes carry no field 13 and are
@@ -135,18 +136,27 @@ signature and the AEAD open, and before the payload is decoded, it parks an
 op at a registered version whose field 13 differs or is missing, with reason
 `schema_fp_mismatch`, and logs `core.op.schema_fp_mismatch`.
 
-*Today:* one part of the design is not built yet.
-
-- **The schema does not yet cover every shape**
-  ([#439](https://github.com/justin13888/Sunrise/issues/439)). Value types that
-  are not registry records appear only as a type name. These are
-  `ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk` and the
-  review rows. The control-op payloads are not described either. A field added
-  to one of them does not move the fingerprint. Field defaults wait for
-  [#319](https://github.com/justin13888/Sunrise/issues/319). Feature ids are
-  covered: each registered feature, with its scope, op kinds, fields,
-  field-op kinds and arrival version, is hashed from `DOC_SCHEMA_V` 10
-  ([#324](https://github.com/justin13888/Sunrise/issues/324)).
+Value types and op payloads are covered from `DOC_SCHEMA_V` 12
+([#439](https://github.com/justin13888/Sunrise/issues/439)). The schema's
+`values` list describes every value type a record carries
+(`ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk`, the review
+rows and the rest) and every type an op payload outside the entity registry
+carries. Each is a record of named fields, an alias of the type it encodes
+as, a positional tuple, or a set of variants with its tag. `op_payloads` names
+each such op's payload. The descriptions are declared with
+`sunrise_id::describe_value_types!` in `crates/sunrise-domain/src/registry.rs`
+and `crates/sunrise-core/src/control_op.rs`. That macro checks each one
+against its type, so a field or variant added to the type and not described
+fails the build. A test in `doc_schema.rs` fails while any type the schema
+names is described nowhere, and another fails while a `lossy_enum!` user is
+missing from the schema's enums. Feature ids are covered too: each registered
+feature, with its scope, op kinds, fields, field-op kinds and arrival
+version, is hashed from `DOC_SCHEMA_V` 10
+([#324](https://github.com/justin13888/Sunrise/issues/324)). Each field's conflict
+class, and the schema's `conflict_rules` (the terminal task states, the
+precedence among concurrent writes, and that a generated write yields), are
+hashed from `DOC_SCHEMA_V` 14
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §3).
 
 ## How fields merge
 
@@ -168,10 +178,12 @@ Each field has a CRDT type, declared in the entity registry
 - **A field's CRDT type never changes.** Changing it is a new field under a new
   name.
 
-*Today:* every entity merges by entity-level LWW over full-state ops
-([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A
+*Today:* every entity merges field by field, and every command writes the
+`Patch` of the fields it changed once the vault requires `core.field_ops`
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §7). A vault one
+of whose devices lacks the feature stays on full-state ops, under which a
 concurrent edit to a different field, a set addition or a counter increment
-can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
+can still be lost to a later full-state write.
 
 ## Compatibility rules
 
@@ -290,7 +302,7 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
 6. Add a case to the cross-version harness ([#326](https://github.com/justin13888/Sunrise/issues/326)): an older build merges
    ops that set the field, and the field survives. The case is a step that
    sets the field on B (`HEAD`) and a `Field` in
-   `crates/sunrise-e2e/src/cross_version/model.rs` that reads it back.
+   `crates/sunrise-e2e/src/cross_version/projection.rs` that reads it back.
 
 ## Adding an op kind or a field-op kind
 
@@ -393,7 +405,7 @@ gating. Nothing else is allowed.
 - **Per-enum round trip.** Any string must survive decode, storage and
   re-encode unchanged.
 - **Schema drift.** The fingerprint test above. The older per-entity
-  `serde_json_shape_matches_cddl` pattern (in `constraint.rs`) is subsumed once
+  `serde_json_shape_matches_cddl` pattern (in `constraint/mod.rs`) is subsumed once
   the CDDL blocks are generated from the same registry.
 
 ## Record: the CDDL re-derivation at `DOC_SCHEMA_V` 4–6
@@ -406,7 +418,7 @@ re-checked:
 
 | Spec | Was | Repair |
 |---|---|---|
-| `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
+| `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint/mod.rs`. |
 | `tasks.md` | drifted | Added `reminder_lead_s`. `estimated_duration` → `estimated_duration_s` (seconds). Dropped the `blocked` state and the `blocks_others` field, neither of which is serialized. `deferred_count` is `int`, not `uint`. |
 | `streams.md` | drifted | Added `reminder_lead_s`. Deleted the `integrations` map and the `StreamIcon`/`IntegrationConfig` types. `icon` is a free `tstr`. `review_cadence` is required. |
 | `contexts-and-tags.md` | drifted | Deleted the `color` field and `ContextColor`. |

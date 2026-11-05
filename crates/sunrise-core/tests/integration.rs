@@ -92,7 +92,7 @@ async fn create_then_complete_round_trip() {
     core.submit(Command::UpdateTask {
         id: entity,
         patch: TaskPatch {
-            due_at: Some(Some(
+            hard_due_at: Some(Some(
                 jiff::Timestamp::from_millisecond(1_700_000_000_000 + 3_600_000)
                     .unwrap()
                     .into(),
@@ -113,22 +113,29 @@ async fn create_then_complete_round_trip() {
         "due in an hour puts it in Today, and nothing else is there"
     );
 
+    // A task with a deadline is not in the Inbox view (ADR-0046 §3), but it
+    // is one of the tasks of no stream.
     let inbox = core.query(Query::Inbox).await.unwrap();
     let inbox_n = match inbox {
         QueryResult::StreamTasks(v) => v.len(),
         _ => panic!(),
     };
-    assert_eq!(inbox_n, 1);
+    assert_eq!(inbox_n, 0);
+    let no_stream = Query::StreamTasks(sunrise_domain::inbox_stream_ref());
+    let stray_n = match core.query(no_stream.clone()).await.unwrap() {
+        QueryResult::StreamTasks(v) => v.len(),
+        _ => panic!(),
+    };
+    assert_eq!(stray_n, 1);
 
     core.submit(Command::CompleteTask(entity)).await.unwrap();
 
-    let inbox = core.query(Query::Inbox).await.unwrap();
-    let inbox_after = match inbox {
+    let stray_after = match core.query(no_stream).await.unwrap() {
         QueryResult::StreamTasks(v) => v,
         _ => panic!(),
     };
-    assert_eq!(inbox_after.len(), 1);
-    assert_eq!(inbox_after[0].state, TaskState::Done);
+    assert_eq!(stray_after.len(), 1);
+    assert_eq!(stray_after[0].state, TaskState::Done);
 
     core.close().await.unwrap();
 }
@@ -138,16 +145,20 @@ async fn changes_event_emitted_on_create() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
     let mut rx = core.changes();
-    let _ = core
+    let created = core
         .submit(Command::CreateTask(TaskDraft {
             title: "x".into(),
             ..Default::default()
         }))
         .await
         .unwrap();
-    let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(evt, sunrise_core::DomainEvent::Created(_)));
+    // `submit` publishes before it returns, so the event is already queued:
+    // no wait, and so no real-time budget a loaded host could overrun.
+    let evt = rx
+        .try_recv()
+        .expect("submit must publish its event before it returns");
+    assert!(
+        matches!(evt, sunrise_core::DomainEvent::Created(id) if id == created.entity),
+        "{evt:?}"
+    );
 }

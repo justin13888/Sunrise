@@ -44,9 +44,19 @@ hex = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = "3"
+# The CLI harness (`src/cli.rs`) drives the real `sunrise` binary. It writes a
+# stored sign-in the way `sunrise login` would, through the CLI's own store,
+# so `sunrise bootstrap` runs against the self-host relay.
+sunrise-auth = { workspace = true }
+sunrise-cli = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }
+# The scenarios create and recover accounts without being about the KDF: the
+# cheap Argon2id set (`sunrise-crypto`'s `test-cheap-kdf`). The `sunrise`
+# binary `src/cli.rs` builds gets it too, so a blob crosses the process
+# boundary under one set; the baseline driver handles no recovery blob.
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
 # The device-bound scenario registers a real `D_S_pub` and reads the scheme's
 # own clock tolerance; both belong to the crate that defines `header_sig_v2`
 # rather than being restated here.
@@ -55,7 +65,7 @@ sunrise-http-sig = { workspace = true }
 # shapes it sends, rather than hand-rolling requests: the point of that test is
 # that the bytes a real client produces survive a real relay.
 sunrise-relay-client = { workspace = true }
-sunrise-onboarding = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 # The Apple clients reach the relay through this crate and nothing else, so it
 # is where "a vault created by the app now has a recovery blob" can be asserted
 # against a real server rather than against a mock of one (#181).

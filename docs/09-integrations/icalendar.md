@@ -4,14 +4,14 @@ status: accepted
 
 # iCalendar (.ics) Import / Export
 
-**One-shot file import and export. There are no subscription URLs.** `URL` is
+**One-shot file import and export. There are no subscription URLs yet; they are
+ranked as [#931](https://github.com/justin13888/Sunrise/issues/931).** `URL` is
 explicitly unsupported by the parser — it raises a notice like any other
 unmodelled property — and nothing in the workspace fetches an `.ics` over the
-network. The read-only calendar integrations (Google Calendar, Microsoft Graph
-and CalDAV, [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md))
-are not built; they are ranked on the roadmap ([`../roadmap.md`](../roadmap.md))
-as [#4](https://github.com/justin13888/Sunrise/issues/4), and they write
-read-only `ExternalEvent`s, never Blocks. So this is the only calendar path a
+network. The calendar integrations (Google Calendar, Microsoft Graph and CalDAV,
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md))
+are not built; they are ranked on the roadmap ([`../roadmap.md`](../roadmap.md)),
+and they write `ExternalEvent`s, never Blocks. So this is the only calendar path a
 user can actually take today, and the only one that creates Blocks.
 
 > **Status: partly implemented. This document is the target; the list below is
@@ -20,9 +20,8 @@ user can actually take today, and the only one that creates Blocks.
 > (`ical_vault`), reached today by `sunrise ical import` / `sunrise ical export`
 > and by `import_ical` / `export_ical` on the UniFFI seam. **Both shipping
 > clients call it**: the macOS app through File → Import Calendar… (⌘⇧I) and
-> Export Calendar ▸ Today | This Week, which closed the last open parity gap
-> on that client. The import's notices reach the user there, grouped by code,
-> rather than being counted.
+> Export Calendar ▸ Today | This Week. The import's notices reach the user
+> there, grouped by code, rather than being counted.
 >
 > Where this document and the build disagree:
 >
@@ -58,9 +57,13 @@ user can actually take today, and the only one that creates Blocks.
 > - **Imported entities are not marked read-only.** Nothing enforces it.
 >
 > What does hold as written: line unfolding and escapes both directions, CRLF
-> and LF input, the four RFC 5545 time forms preserved distinctly (UTC instant,
-> zoned civil, floating, whole date) all the way into `SunriseTime`, and the
-> rule that lossy imports are surfaced rather than dropped.
+> and LF input (the content-line lexer,
+> `crates/sunrise-integrations/src/ical/lex.rs`), the four RFC 5545 time forms
+> preserved distinctly (UTC instant, zoned civil, floating, whole date) all the
+> way into `SunriseTime` (the date and date-time grammar,
+> `crates/sunrise-integrations/src/ical/time.rs`), and the rule that lossy
+> imports are surfaced rather than dropped (the component parser and writer,
+> `crates/sunrise-integrations/src/ical/mod.rs`).
 
 ## Import
 
@@ -75,18 +78,17 @@ user can actually take today, and the only one that creates Blocks.
 ## Export
 
 - Export covers exactly two windows, **Today** and **This Week**:
-  `ExportWindow::{Day, Week}` (`crates/sunrise-integrations/src/ical_vault.rs:137-145`),
-  surfaced as `sunrise ical export [today|week] [path]`
-  (`crates/sunrise-cli/src/main.rs:84`). A whole-Stream export is target state,
+  `ExportWindow::{Day, Week}` (`crates/sunrise-integrations/src/ical_vault.rs:70-76#ExportWindow`),
+  surfaced as `sunrise ical export [today|day|week] [path]`
+  (`crates/sunrise-cli/src/cmd/reports.rs#ical_export`). A whole-Stream export is target state,
   not a shipped option.
 - Useful for: sharing a calendar slice with someone outside Sunrise; importing into Outlook etc.
 
 ## Mapping rules
 
-**This is not the CalDAV mapping.** This section used to say "same as CalDAV
-mapping table", a table that was never written. CalDAV is now a read-only
-integration ([`caldav.md`](./caldav.md)), and it maps events onto
-`ExternalEvent`, not onto Blocks, so it shares no table with this file. The
+**This is not the CalDAV mapping.** CalDAV is a live integration
+([`caldav.md`](./caldav.md)), and it maps events onto `ExternalEvent`, not
+onto Blocks, so it shares no table with this file. The
 `.ics` file mapping is below, and it is read off
 `crates/sunrise-integrations/src/ical_map.rs` — `event_to_block` (line 65) and
 `block_to_event` (line 146) — which is the only place it exists.
@@ -192,12 +194,13 @@ Two deliberate carve-outs:
 
 ## Edge cases
 
-- **Long descriptions:** no client-side truncation. Round-trip preserves DESCRIPTION verbatim. The Block's description field is plain text; iCalendar HTML in `X-ALT-DESC` is dropped on import (logged) and not regenerated on export.
+- **Descriptions:** `DESCRIPTION` is reported as an `ICalNotice` (`UnmappedProperty`), not stored, and not exported, because a Block has no notes field. `X-ALT-DESC` is reported the same way, as any `X-` property is.
+  - *Target state:* a Block field that holds the description, so import → export preserves `DESCRIPTION` verbatim with no client-side truncation.
 - **Attached files (`ATTACH`):** dropped on import. The UI shows `"This event had attachments which were not imported."` once per event. Documented in user-facing help. Not produced on export (attachments are heavy and require separate handling).
 - **Time zones:**
   - *Target state:* `VTIMEZONE` blocks emitted on export. The exporter does not emit them; zoned times go out as TZID references without an accompanying definition.
-  - *Target state:* parsing an inline `VTIMEZONE` on import and using it to resolve VEVENT TZID values. The parser skips `VTIMEZONE` bodies entirely (`crates/sunrise-integrations/src/ical.rs:37-39,259-264`); a `TZID` is resolved against the **bundled IANA tzdb** instead, and the skipped component is reported as an `ICalNotice` rather than dropped silently.
-  - A TZID that the bundled IANA tzdb does not know falls back to UTC and logs `int.import.tz_unknown`.
+  - *Target state:* parsing an inline `VTIMEZONE` on import and using it to resolve VEVENT TZID values. The parser skips `VTIMEZONE` bodies entirely (`crates/sunrise-integrations/src/ical/mod.rs:37-39,267-272`); a `TZID` is resolved against the **bundled IANA tzdb** instead, and the skipped component is reported as an `ICalNotice` rather than dropped silently.
+  - A TZID that the bundled IANA tzdb does not know is read as UTC and reported as an `unknown_timezone` notice.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 
 ## Subscribed `.ics` URLs — not implemented

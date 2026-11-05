@@ -128,9 +128,9 @@ extension VaultRootError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .wrongLength(count):
-            "A vault key must be \(VaultRoot.byteCount) bytes; this one is \(count)."
+            L10n.Identity.vaultKeyWrongLength(expected: VaultRoot.byteCount, actual: count)
         case .randomnessUnavailable:
-            "The system could not generate a new vault key."
+            L10n.Identity.vaultKeyUnavailable
         }
     }
 }

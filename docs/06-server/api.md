@@ -74,13 +74,15 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 |---|---|---|---|---|
 | POST | `/api/v1/accounts` | `AccountCreateRequest` = `{ email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }` | `201` + `AccountInfo` | implemented |
 | GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
-| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
-| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
+| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | `200 { retired }` | implemented, device-bound ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)) |
+| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob, identity_chain?, retired? }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
 | POST | `/api/v1/accounts/me/delete/initiate` | — | `202 { confirm_phrase, expires_at_ms }`: a single-use confirmation phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) | implemented, behind an OIDC step-up |
 | DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | `202 { requested_at_ms, erase_after_ms }`; erased by the first maintenance pass after `[storage] account_delete_grace_days` (default 30) | implemented, behind an OIDC step-up |
 
-Both request and response types live in `sunrise-onboarding` (`account.rs`) and
-are shared with the client:
+The request shape the client fills lives in `sunrise-relay-client`
+(`src/account.rs`), with the base64url encodings of its keys and blob; the
+server declares its own types in `api/accounts.rs`, and the description
+generated from them is what the client is generated from:
 
 ```rust
 AccountCreateRequest { email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }
@@ -88,7 +90,7 @@ AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
 `AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
-provisioning (`crates/sunrise-server/src/store/accounts.rs:107`) and nothing
+provisioning (`crates/sunrise-server/src/store/accounts.rs:115-116#resolve_account`) and nothing
 updates it or reads it for a decision. It is retained for wire compatibility,
 not because it means anything — there are no plan tiers
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
@@ -105,11 +107,28 @@ idempotent by construction — `Store::set_identity` writes each field under
 `recovery_blob`, which is write-once and *reports* the conflict rather than
 coalescing it; see below.
 
-**The `GET` is built; the `PUT` is not.** `Store::recovery_blob` reads the
-column and `getRecoveryBlob` serves it, so a fresh device can fetch the
-ciphertext it must decrypt — which is what
-[ADR-0024](../11-adr/0024-key-hierarchy.md)'s recovery path depends on, since it
-opens identity-sealed `key_envelope` ops with the `ID_D_priv` this blob carries.
+**Both are built.** `Store::recovery_blob` reads the column and
+`getRecoveryBlob` serves it, so a fresh device can fetch the ciphertext it must
+decrypt — which is what [ADR-0024](../11-adr/0024-key-hierarchy.md)'s recovery
+path depends on, since it opens identity-sealed `key_envelope` ops with the
+`ID_D_priv` this blob carries. Beside the blob it serves, when the account has
+them, the account's **identity chain record** (`identity_chain`, base64url) and
+the **retired checks** of the blobs a replacement retired (`retired`, newest
+first, each `{ check, retired_at_ms }`): what a code made before an identity
+rotation needs to reach the identity in force, and what tells a retired code
+from a mistyped one ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+This route is where they are served because it is the one a recovering device
+can call: it holds a stepped-up bearer and no device binding yet.
+
+`replaceRecoveryBlob` (`PUT`) replaces the blob for a **registered device of the
+account**: a request with no device binding is `401 AUTH_DEVICE_SIG_INVALID`
+whatever `require_device_sig` says. The new blob must start with the recovery
+blob's magic (kind `0x03`) and be longer than 49 bytes, or it is
+`400 VALIDATION_INVALID`. The blob in place is not kept; its first 49 bytes are,
+as a retired check, the newest eight per account (`store/recovery.rs`, relay
+migration 0008). Re-sending the blob in place answers `{ "retired": false }` and
+retires nothing. It answers `403 ACCOUNT_PENDING_DELETION` for an account whose
+deletion is confirmed, and is in the `account` rate-limit group.
 
 Two things gate it.
 
@@ -125,9 +144,9 @@ Two things gate it.
   answer `201` and discard it under the `COALESCE` below — after which a client
   had shown its user a recovery code for a blob the relay does not hold.
   Re-sending identical bytes still succeeds, so the dropped-response retry is
-  unchanged. Rotation therefore has no route yet; it needs the `PUT`.
+  unchanged. A replacement goes through the `PUT`, never through this.
 
-The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
+The `recovery_blob` is stored opaquely. The server validates nothing of it but the magic prefix's kind, and only on the `PUT`. On the `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature; the `PUT` needs a device binding and is bounded by the same body cap. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
 #### Account deletion
 
@@ -198,7 +217,9 @@ and so does `sunrise recover` (`sunrise_relay_client::register_device`).
 | 403 | `AUTH_SIGNUP_DISABLED` | First-login attempt for unknown account when `auth.allow_signup = false`. | No. |
 | 403 | `AUTH_STEP_UP_REQUIRED` | `GET /accounts/me/recovery_blob` with a bearer whose authentication is not recent or strong enough. | After a fresh OIDC authorization request (`max_age=0` / `prompt=login`), **not** after a token refresh — a refresh does not move `auth_time`. |
 | 404 | `RECOVERY_BLOB_NOT_FOUND` | The account has no recovery blob. Only reachable *after* the step-up, so it is not an oracle for which accounts have one. | No. |
-| 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; rotation needs the unbuilt `PUT`. |
+| 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; a replacement goes through `PUT /accounts/me/recovery_blob`. |
+| 409 | `IDENTITY_CHAIN_SUPERSEDED` | `PUT /accounts/me/identity_chain` named a record that is not the one in place. | After reading the record again. |
+| 404 | `IDENTITY_CHAIN_NOT_FOUND` | The account has no identity chain record pinned: it never rotated, or no device has published the rotation yet. | No. |
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
 | 403 | `ACCOUNT_PENDING_DELETION` | The account's deletion is confirmed: `POST /sync/session`, `POST /sync/ops` and every blob upload step are refused. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
@@ -375,7 +396,7 @@ it is the **content address** of bytes the server has not seen yet.
 | DELETE | `/api/v1/blobs/<blob_id>` | `{ stream_id, device_id, seq }` | `202 { collect_after_ms }`; a tombstone, collected later (below) |
 
 Every route is authenticated and device-bound like the rest of the REST API —
-`api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
+`api/blobs/` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
 answers `200`, a chunk `PUT` answers `204`, and `finalize` answers `200`.
 Alongside the hash checks, `init` and `finalize` enforce
 `1 <= chunk_count <= 4096`, `1 <= chunk_bytes <= 1 MiB`, and a
@@ -426,13 +447,12 @@ workspace called any of the four, so an attachment was readable only on the
 device that made it.
 
 The client does **not** go through the generated relay client. All four are
-reached with the transport's own hyper client, because two of them — the
-raw-binary chunk `PUT` and the blob `GET` — are absent from the generated
-surface: kynos and spargen disagree about how OpenAPI 3.1 describes a raw
-binary body, and `crates/sunrise-relay-client/build.rs:42`, `:46` record the
-disagreement as two omit rules. Splitting one two-phase commit across two HTTP
-clients to use generated code for half of it would buy nothing and cost a
-second place for the bearer, the base URL and the device binding to live.
+reached with the transport's own hyper client, which already holds the bearer,
+the base URL and the device binding the sync session uses. The generated
+client has carried all four since spargen 0.5 accepted the empty Schema Object
+kynos describes a raw binary body with (until then the chunk `PUT` and the
+blob `GET` were omitted from it); moving the upload onto it would add a second
+place for those three to live and simplify nothing.
 
 **Deletion is a tombstone, not an unlink.**
 `DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
@@ -468,6 +488,122 @@ lifts the tombstone, because the attachment is back.
 | 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**, on a fetch or a `DELETE`. | No. |
 | 403 | `ACCOUNT_PENDING_DELETION` | `init`, a chunk `PUT` or `finalize` for an account whose deletion is confirmed. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
+
+### Stream snapshots
+
+Each stream's latest snapshot record, pinned
+([ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md)).
+A record (ADR-0059 §4) is what a device past the relay's op retention, or a new
+device joining an old account, catches up from. It outgrows a 4 MiB frame past
+a few thousand tasks, so it travels as a blob: the compactor uploads it through
+the three blob steps above and then pins it here.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/snapshots/<stream_id>` | `{ blob_id }` | `200 { stream_id, blob_id, size_bytes, published_at_ms }` |
+| GET | `/api/v1/snapshots/<stream_id>` | — | `200 { stream_id, blob_id, size_bytes, published_at_ms }`, or `404` |
+
+`stream_id` is 32 lowercase hex characters. Both routes are signed like the
+blob routes (`Signed` for the `PUT`, `SignedParts` for the `GET`) and are in
+the `blob` rate-limit group. Implemented in `api/snapshots.rs`, over
+`store/snapshots.rs` (relay migration 0006).
+
+- **One per stream, the last one pinned.** The relay cannot order two records
+  it cannot open, so a pin replaces the one before it. It then deletes the
+  blob the old pin named, unless another of the account's pins names it. Pins
+  are not touched by op retention, and go only with the account. The
+  maintenance pass never collects a pinned blob, even one with a tombstone.
+- **The blob must be a committed snapshot record of this account.** A blob
+  this account has not committed is the fetch route's `404 BLOB_NOT_FOUND`.
+  The relay reads the blob's cleartext magic prefix and refuses any kind but
+  the snapshot record's (`0x04`) with `400 VALIDATION_INVALID`, so a replaced
+  pin can never delete an attachment. It reads nothing else of the record.
+- **A stream with no pin** is `404 BLOB_NOT_FOUND`, the same answer an account
+  that is not the caller's gets.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed, like the upload steps.
+
+The client is `sunrise_sync::Transport::snapshot_latest` and
+`Transport::snapshot_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/snapshot_sync.rs`.
+
+### Key bundle
+
+The account's key bundle, pinned
+([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md)).
+A bundle is every Stream key a device may write under, sealed to the account
+identity's `ID_D_pub` and signed by the device that published it. A device
+restored from the recovery code holds the identity and no Stream key, and the
+identity-addressed `key_envelope` ops that used to be its only source of keys
+are trimmed with the rest of the op log. The bundle travels as a snapshot
+record does: through the three blob steps, then pinned here.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/accounts/me/key_bundle` | `{ blob_id, manifest_digest, replaces? }` | `200 { blob_id, size_bytes, manifest_digest, published_at_ms }` |
+| GET | `/api/v1/accounts/me/key_bundle` | — | `200 { blob_id, size_bytes, manifest_digest, published_at_ms }`, or `404` |
+
+Both routes are signed like the blob routes (`Signed` for the `PUT`,
+`SignedParts` for the `GET`), need no step-up (the bundle opens under
+`ID_D_priv`, not under anything a guess can reach), and are in the `blob`
+rate-limit group. Implemented in `api/key_bundle.rs`, over
+`store/key_bundles.rs` (relay migration 0007).
+
+- **One per account, replaced only by a publisher that read it.** `replaces`
+  is the `blob_id` of the pin the publisher last read, absent or `null` when
+  it read none. Any other pin in place is `409 KEY_BUNDLE_SUPERSEDED` and
+  nothing is written; the publisher reads again. After a replacement the relay
+  deletes the blob the old pin named. Pins are not touched by op retention and
+  go only with the account; maintenance never collects a pinned blob.
+- **The blob must be a committed key bundle of this account.** As for a
+  snapshot pin, the relay reads only the cleartext magic prefix and refuses any
+  kind but the key bundle's (`0x08`) with `400 VALIDATION_INVALID`.
+- **`manifest_digest`** is 64 lowercase hex characters, the publisher's digest
+  of the bundle's cleartext manifest. The relay cannot check it and only hands
+  it back, so a device can tell an unchanged bundle without fetching it.
+- **No pin** is `404 BLOB_NOT_FOUND`.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed.
+
+The client is `sunrise_sync::Transport::key_bundle_latest` and
+`Transport::key_bundle_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/key_bundle_sync.rs`.
+
+### Identity chain
+
+The account's identity chain record, pinned
+([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md)).
+A recovery code opens the identity it was sealed under; after an identity
+rotation, what leads from it to the identity in force is the transitions, which
+travel as vault-meta ops and are trimmed. The record is those links: each
+transition's signed body and both signatures, the fold's ranking inputs, and
+the carry share sealed to the identity before it, or `null`. It carries no
+roster. Magic kind `0x09`; the format is
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+§Identity chain record.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| PUT | `/api/v1/accounts/me/identity_chain` | `{ chain, replaces? }` | `200 { chain, digest, published_at_ms }` |
+| GET | `/api/v1/accounts/me/identity_chain` | — | `200 { chain, digest, published_at_ms }`, or `404 IDENTITY_CHAIN_NOT_FOUND` |
+
+Signed like the key bundle routes, no step-up, `blob` rate-limit group.
+Implemented in `api/identity_chain.rs`, over `store/recovery.rs` (relay
+migration 0008).
+
+- **One per account, replaced only by a publisher that read it.** `replaces`
+  is the BLAKE3 digest (64 lowercase hex) of the record the publisher last read,
+  absent or `null` when it read none; `digest` is the relay's BLAKE3 of the
+  record it holds. Anything else in place is `409 IDENTITY_CHAIN_SUPERSEDED`.
+- **The record must be one.** The relay reads its magic prefix and refuses any
+  kind but `0x09`, or a record over 2 MiB, with `400 VALIDATION_INVALID`.
+- `PUT` answers `403 ACCOUNT_PENDING_DELETION` for an account whose deletion is
+  confirmed. The record goes with the account.
+
+The client is `sunrise_sync::Transport::identity_chain_latest` and
+`Transport::identity_chain_pin`, implemented by `SseTransport` and driven by
+`crates/sunrise-core/src/identity_chain_sync.rs`; a recovery reads the record
+from `getRecoveryBlob` instead.
 
 ### Sharing — NOT IMPLEMENTED
 
@@ -535,7 +671,7 @@ Clients poll `receive`; there is no stream.
 |---|---|---|---|---|
 | GET | `/api/v1/meta` | — | `MetaResponse` (below) | implemented |
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
-| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented (no disk-free check) |
+| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented |
 
 `MetaResponse` (`api/meta.rs`) is:
 
@@ -569,19 +705,22 @@ the signed operations' canonical target (`api/signed.rs`) is untouched. A
 | `accepting` | the server is not draining; it fails from the moment `SIGTERM` arrives |
 | `store` | `SELECT 1` against the relay database returns within 2 s |
 | `blob_root` | a probe file is written and removed under the blob root within 5 s |
+| `disk` | the filesystem holding the blob root has more than 5% of its blocks available to the relay (`statvfs`'s `f_bavail / f_blocks`), read within 5 s |
 
 Both answers carry the outcomes, and a `503` names the failures in `failed`:
 
 ```json
-{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true}}
-{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true},"failed":["accepting"]}
+{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true,"disk":true}}
+{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true,"disk":true},"failed":["accepting"]}
 ```
 
-Two checks an earlier draft listed are not here. An object store `HEAD` on
+One check an earlier draft listed is not here. An object store `HEAD` on
 `_health/probe` has nothing to probe: self-host blobs are files, and
-`blob_root` is that store's check. A local disk free ratio above 5% is not
-built, because reading it needs a `statvfs` the crate's `forbid(unsafe_code)`
-leaves no safe dependency for yet.
+`blob_root` is that store's check. `disk` is read through `rustix`'s safe
+`statvfs`, so the crate's `forbid(unsafe_code)` holds; at exactly 5% it fails.
+A filesystem that reports no blocks at all has no ratio and passes, and one
+that cannot be read fails. On a platform without `statvfs` there is no reading
+and `disk` passes.
 
 `oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration. Both are `null` in single-tenant self-host mode, where no issuer is configured.
 
@@ -603,7 +742,7 @@ The envelope `ApiError` actually renders carries two members and no
 
 A `429` is always `RATE_LIMITED` with a `Retry-After` header; see §Rate limits.
 
-Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
+Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a storage failure — the metadata store or the blob backend not answering — renders as a retryable `503 RELAY_STORAGE_UNAVAILABLE` naming only which store, never the backend's own message (ADR-0062 §1).
 
 ### Quota responses — REMOVED
 
@@ -648,8 +787,8 @@ refills continuously.
 | `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
-| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
-| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle`, `GET /api/v1/accounts/me/identity_chain`, `PUT /api/v1/accounts/me/identity_chain` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
@@ -659,13 +798,16 @@ refused with `429` *before* the bearer verifier runs, a valid bearer included,
 until the budget refills. `probe` and `meta` verify nothing and are exempt.
 
 The test `every_operation_in_the_description_has_a_group` reads the generated
-OpenAPI description and fails for any operation this table does not name, so a
-route added later is a red build until it is given a row. At run time an
+OpenAPI description and fails for any operation that `route_group`
+(`crates/sunrise-server/src/api/ratelimit/policy.rs`) does not classify, so a
+route added later is a red build until it is given a group there. The test
+reads the code's table, not this one; keep the two in step by hand. At run time an
 unlisted route is held to `bootstrap`, the tightest authenticated group.
 
 **Which address.** The socket peer, unless it is listed in `[server]
-trusted_proxies`; then the right-most address in `Forwarded` (or, in its
-absence, `X-Forwarded-For`) that is not itself a listed proxy. With the list
+trusted_proxies`; then the right-most address in `X-Forwarded-For` that is
+not itself a listed proxy. RFC 7239 `Forwarded` is never read: a proxy writes
+one field and passes the other through from the client. With the list
 empty — the default — forwarding headers are ignored, because a client can
 write them. IPv6 clients are counted by `/64`, since one subscriber routinely
 holds a whole `/64`; an IPv4-mapped address counts as its IPv4 address.
@@ -736,11 +878,13 @@ that have not been built.
 | `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
 | `/api/v1/accounts/me/recovery_blob` (GET) | yes | yes | **yes — built, behind an OIDC step-up** |
 | `/api/v1/accounts/me/delete/initiate` (POST), `/api/v1/accounts/me` (DELETE) | yes | yes | **yes — built, behind an OIDC step-up** |
-| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **no route** |
+| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **yes — built, device-bound ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md))** |
 | `/api/v1/identities` (discovery) | yes | yes | **no route** |
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
-| `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
+| `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **yes — built; delivery is APNs only, with `[push.apns]` configured** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
+| `/api/v1/snapshots/*` | yes | yes | **yes — built; the record is a local-disk blob** |
+| `/api/v1/accounts/me/key_bundle` | yes | yes | **yes — built; the bundle is a local-disk blob** |
 | `/api/v1/shares/*` | yes | yes | **no route** |
 | `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |

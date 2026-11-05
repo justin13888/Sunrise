@@ -9,7 +9,7 @@ use super::{ApnsProvider, PushError, PushIntent, PushKind, PushProvider, PushSet
 use crate::config::PushConfig;
 use crate::metrics::{Metrics, LATENCY_BUCKETS};
 use crate::state::{Clock, ServerState};
-use crate::store::Store;
+use crate::store::MetadataStore;
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -382,7 +382,7 @@ impl Dispatcher {
 pub(super) struct Worker {
     inner: Arc<Inner>,
     presence: Presence,
-    store: Arc<Store>,
+    store: Arc<dyn MetadataStore>,
     clock: Arc<dyn Clock>,
     metrics: Metrics,
     planner: Planner,
@@ -402,10 +402,10 @@ impl Worker {
         loop {
             let intents = tokio::select! {
                 wake = rx.recv() => match wake {
-                    Some(wake) => self.plan_wake(&wake),
+                    Some(wake) => self.plan_wake(&wake).await,
                     None => return,
                 },
-                _ = tick.tick() => self.plan_due(),
+                _ = tick.tick() => self.plan_due().await,
             };
             for intent in intents {
                 let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
@@ -436,12 +436,13 @@ impl Worker {
     }
 
     /// The pushes one wake earns.
-    pub(super) fn plan_wake(&mut self, wake: &Wake) -> Vec<PushIntent> {
+    pub(super) async fn plan_wake(&mut self, wake: &Wake) -> Vec<PushIntent> {
         let now_ms = self.clock.now_ms();
         let platform = self.inner.provider.platform();
         let targets = match self
             .store
             .push_targets(&wake.account_id, platform.store_tag())
+            .await
         {
             Ok(targets) => targets,
             Err(e) => {
@@ -477,7 +478,7 @@ impl Worker {
     }
 
     /// The trailing pushes owed by windows that just closed.
-    pub(super) fn plan_due(&mut self) -> Vec<PushIntent> {
+    pub(super) async fn plan_due(&mut self) -> Vec<PushIntent> {
         let now_ms = self.clock.now_ms();
         let platform = self.inner.provider.platform();
         let mut out = Vec::new();
@@ -487,7 +488,11 @@ impl Worker {
             }
             // Read again: the device may have been revoked, or re-registered,
             // since the window opened.
-            let Ok(Some(token)) = self.store.push_target(&device_id, platform.store_tag()) else {
+            let Ok(Some(token)) = self
+                .store
+                .push_target(&device_id, platform.store_tag())
+                .await
+            else {
                 continue;
             };
             if let Some(intent) = self.admit(device_id, token, stream_id, kind, now_ms) {
@@ -535,7 +540,7 @@ impl Worker {
 #[derive(Debug)]
 pub(super) struct Delivery {
     provider: Arc<dyn PushProvider>,
-    store: Arc<Store>,
+    store: Arc<dyn MetadataStore>,
     metrics: Metrics,
     tuning: Tuning,
 }
@@ -552,7 +557,7 @@ fn device_h(device_id: &str) -> String {
 impl Delivery {
     pub(super) const fn new(
         provider: Arc<dyn PushProvider>,
-        store: Arc<Store>,
+        store: Arc<dyn MetadataStore>,
         metrics: Metrics,
         tuning: Tuning,
     ) -> Self {
@@ -612,7 +617,7 @@ impl Delivery {
                 Err(e) => e,
             };
             self.count(provider, error.result());
-            self.give_up(intent, &error, attempt);
+            self.give_up(intent, &error, attempt).await;
             return;
         }
     }
@@ -624,15 +629,18 @@ impl Delivery {
         );
     }
 
-    fn give_up(&self, intent: &PushIntent, error: &PushError, attempt: u32) {
+    async fn give_up(&self, intent: &PushIntent, error: &PushError, attempt: u32) {
         let registration = &intent.registration;
         let provider = registration.platform.metric_label();
         if let PushError::Unregistered(reason) = error {
-            let deleted = self.store.delete_push_token(
-                &registration.device_id,
-                registration.platform.store_tag(),
-                &registration.token,
-            );
+            let deleted = self
+                .store
+                .delete_push_token(
+                    &registration.device_id,
+                    registration.platform.store_tag(),
+                    &registration.token,
+                )
+                .await;
             tracing::info!(
                 ev = "srv.push.token_unregistered",
                 provider,

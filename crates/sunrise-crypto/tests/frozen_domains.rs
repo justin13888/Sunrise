@@ -296,8 +296,19 @@ fn the_frozen_wrapped_stream_key_opens_only_at_its_own_epoch() {
 /// A recovery blob is the last copy of an account that exists. This opens one
 /// this build did not write in this process, which is the only way to check
 /// the AAD prefix, the Argon2id parameters and the header layout at once.
+///
+/// At the spec's parameters even where `test-cheap-kdf` reaches this build,
+/// as it does under `cargo test --workspace`: the vector is the production
+/// set's.
 #[test]
 fn the_frozen_recovery_blob_opens() {
+    #[cfg(all(feature = "test-cheap-kdf", debug_assertions))]
+    sunrise_crypto::recovery::test_cheap_kdf::at_production_strength(frozen_recovery_blob_opens);
+    #[cfg(not(all(feature = "test-cheap-kdf", debug_assertions)))]
+    frozen_recovery_blob_opens();
+}
+
+fn frozen_recovery_blob_opens() {
     use vectors::at_rest::recovery_blob as r;
 
     let payload = unseal_recovery_blob(&r::BLOB, &r::SEED, &r::IDENTITY_ID)
@@ -311,6 +322,8 @@ fn the_frozen_recovery_blob_opens() {
             id_d_pub: r::ID_D_PUB,
             identity_id: r::IDENTITY_ID,
             created_at_ms: r::CREATED_AT_MS,
+            account_id_s_pub: None,
+            meta_genesis_keys: Vec::new(),
         }
     );
 

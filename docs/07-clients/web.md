@@ -11,12 +11,17 @@ A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capab
 > Pages, and not yet deployed
 > ([#11](https://github.com/justin13888/Sunrise/issues/11)).**
 > `crates/sunrise-core-wasm` compiles `sunrise-core` to `wasm32-unknown-unknown`
-> and exposes it as JSON in, JSON out. `apps/web/src/core.worker.ts` runs it in a
+> and exposes it as JSON in, JSON out, beside the four typed calls the page
+> makes (`createTask`, `completeTask`, `today`, `inbox`;
+> `crates/sunrise-core-wasm/src/calls.rs`), so the page spells no command or
+> query JSON itself. `apps/web/src/core.worker.ts` runs it in a
 > dedicated worker over the OPFS `SyncAccessHandle` pool VFS, and
 > `apps/web/src/wasm.ts`'s `loadCore()` uses it where the browser has workers,
 > OPFS and `navigator.locks`, falling back to the `localStorage` stub elsewhere
-> or when no bundle was built (`mise run web-wasm`). The `web-pages` job in
-> `.github/workflows/release.yml` deploys it on a tag once the Pages project
+> or when no bundle was built (`mise run web-wasm`). The stub keeps captured tasks
+> in an Inbox and has no Today: which tasks are on Today is the core's decision,
+> and a stub that guessed it would disagree with the core the moment it loads. The `web-pages` job in
+> `.github/workflows/release.yml` deploys it on an `app-v*` tag once the Pages project
 > and its secrets exist, and deploys nothing until then (§Self-host vs managed
 > cloud).
 >
@@ -140,13 +145,15 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 The web client connects to whatever relay its browser has chosen, so one deployment of the static assets serves every self-hosted relay. There is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
 
-*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — resolved in this order:
+*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — by the rule every client shares (`sunrise_client_core::relay_url`; the TypeScript restatement and the Rust rule are both tested against `crates/sunrise-client-core/vectors/relay-url.json`, and the web core exports the Rust one as `checkRelayUrl`). It is resolved in this order:
 
 1. **The stored choice**, in `localStorage`. A relay URL is not sensitive: the relay sees ciphertext only.
-2. **A link**, `?server=https://relay.example` on the app's address — how an operator points a user at their relay. Followed only while nothing is stored, then stored, and taken off the address. A link to a different relay than the stored one is ignored with a console warning: a link must not move a user onto another relay without anything on screen saying so.
+2. **A link**, `?server=https://relay.example` on the app's address — how an operator points a user at their relay. Followed only while nothing is stored, then stored, and taken off the address. A link to a different relay than the stored one is not followed at start-up (a console warning says so): a link must not move a user onto another relay without anything on screen saying so, and the settings view below is where it is offered.
 3. **The build default**, `SUNRISE_WEB_DEFAULT_SERVER_URL` at build time — for an operator hosting the app for their own relay. Not stored, so a rebuilt default reaches every browser that never chose. Only `SUNRISE_WEB_*` variables reach the bundle (`envPrefix`), and all of them are public.
 
-*Not built.* A settings screen to see, change or clear the relay; until one exists, changing it means clearing the site's data. Nothing reads the setting until the web core syncs. There is no "settings handshake" protocol beyond the link.
+*Built* (`apps/web/src/server-settings.ts`, rendered by `ServerSettings.tsx`). The settings view shows the relay in use and where it came from, accepts a new one through the same rule, and asks before a stored relay is replaced. A link the start-up read ignored for naming a different relay is offered there behind the same confirmation, so following an operator's link onto another relay is one deliberate tap rather than clearing the site's data. "Forget this server" removes only the stored choice — the build default applies again, if there is one — and never touches the vault. A browser that refuses the write keeps the choice for the visit and says so.
+
+*Not built.* Nothing reads the setting until the web core syncs. There is no "settings handshake" protocol beyond the link.
 
 *Deploy.* `apps/web/wrangler.toml` names the Cloudflare Pages project (`sunrise-web`) and its output directory. The `web-pages` job in `.github/workflows/release.yml` builds the core bundle and the client on a tag and deploys them — a prerelease to the `prerelease` preview alias — once the owner has created the project (`bunx wrangler pages project create sunrise-web --production-branch master`) and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Until then it deploys nothing and says so in the job summary, which is the intended state while a deployed copy has no relay to reach. `ci.yml`'s `web-build` job builds the client on every push.
 

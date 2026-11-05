@@ -1,15 +1,16 @@
 //! Preferences (ADR-0050, `docs/02-domain/preferences.md`): the commands that
-//! write them, the query that resolves them, the row the merge projects the
-//! synced entity to, and the plaintext store that holds the keys needed
-//! before the vault unlocks.
+//! write them, the query that resolves them, the read of the row the merge
+//! projects the synced entity to, and the plaintext store that holds the keys
+//! needed before the vault unlocks.
 //!
 //! # Two stores in the vault, one outside it
 //!
 //! - **The entity** is written only by `Patch` ops on the vault-meta stream,
 //!   one map register per key (ADR-0044 §4's singleton rule: a device's first
 //!   write carries `"create": true` under the fixed `prf_` id). The local write
-//!   folds its own op through the same merge a peer's goes through, so this
-//!   replica and every other one project the same row.
+//!   folds its own op through the same merge a peer's goes through, as every
+//!   command does (`Engine::append_and_fold`), so this replica and every
+//!   other one project the same row.
 //! - **The overlay** is `device_preferences`, written directly and never an
 //!   op.
 //! - **The bootstrap file** is plaintext beside the vault databases and holds
@@ -28,18 +29,17 @@
 //! and no build has a full-state op for this one.
 
 use super::ids::ms_to_ts;
-use super::lww::LwwStamp;
-use super::merge::merge_op;
+use super::write::Appended;
 use super::{EngineError, META_STREAM};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp, PatchPayload};
+use crate::inner_op::{InnerOp, PatchPayload};
 use ciborium::value::Value;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use sunrise_domain::preferences::{check_write, is_pref_key};
 use sunrise_domain::{
     pref_spec, preferences_ref, resolve_preferences, CborValue, DeviceClass, PrefTarget, PrefValue,
-    Preferences, ResolvedPref, Unknowns, PREFERENCE_KEYS,
+    Preferences, ResolvedPref, Unknowns, Weekday, PREFERENCE_KEYS,
 };
 use sunrise_storage::Db;
 
@@ -52,46 +52,6 @@ fn cbor_err(e: impl std::fmt::Display) -> rusqlite::Error {
 
 fn encode(v: &impl serde::Serialize) -> rusqlite::Result<Vec<u8>> {
     sunrise_cbor::encode_canonical(v).map_err(cbor_err)
-}
-
-/// Write the merged entity to its row. The row is only ever the merge's
-/// projection, so it is written whole.
-pub(super) fn upsert_preferences_row(
-    tx: &Transaction<'_>,
-    p: &Preferences,
-    head: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let extra = if p.unknown.is_empty() {
-        None
-    } else {
-        Some(encode(&p.unknown)?)
-    };
-    tx.execute(
-        "INSERT INTO preferences
-         (id, values_cbor, created_at_ms, updated_at_ms,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device, extra)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-            values_cbor = excluded.values_cbor,
-            updated_at_ms = excluded.updated_at_ms,
-            lww_hlc_ms = excluded.lww_hlc_ms,
-            lww_hlc_logical = excluded.lww_hlc_logical,
-            lww_seq = excluded.lww_seq,
-            lww_device = excluded.lww_device,
-            extra = excluded.extra",
-        params![
-            &p.id.bytes()[..],
-            encode(&p.values)?,
-            p.created_at.as_millisecond(),
-            p.updated_at.as_millisecond(),
-            i64::try_from(head.hlc.physical_ms).unwrap_or(i64::MAX),
-            i64::from(head.hlc.logical),
-            i64::try_from(head.seq).unwrap_or(i64::MAX),
-            &head.device[..],
-            extra,
-        ],
-    )?;
-    Ok(())
 }
 
 /// The projected entity, or `None` before any create has been applied.
@@ -169,6 +129,31 @@ impl super::Engine {
         ))
     }
 
+    /// One key's resolved value, through the same resolver
+    /// [`Self::query_preferences`] uses. `None` when it resolves to an absent
+    /// default or the key is not in the table.
+    pub(super) fn resolved_preference(
+        &self,
+        db: &Db,
+        key: &str,
+    ) -> Result<Option<PrefValue>, EngineError> {
+        Ok(self
+            .query_preferences(db)?
+            .into_iter()
+            .find(|p| p.key == key)
+            .and_then(|p| p.value))
+    }
+
+    /// The `week_start` preference: the first day of every week the core
+    /// builds (`docs/10-cross-cutting/time.md` §4). Sunday when unset, the
+    /// table's default.
+    pub(super) fn week_start(&self, db: &Db) -> Result<Weekday, EngineError> {
+        Ok(match self.resolved_preference(db, "week_start")? {
+            Some(PrefValue::Weekday(day)) => day,
+            _ => Weekday::Su,
+        })
+    }
+
     /// `Command::SetPreference` (`Some`) and `Command::ClearPreference`
     /// (`None`).
     pub(super) fn write_preference(
@@ -178,7 +163,7 @@ impl super::Engine {
         value: Option<PrefValue>,
         target: PrefTarget,
     ) -> Result<CommandResult, EngineError> {
-        let spec = check_write(key, value.as_ref(), target)?;
+        check_write(key, value.as_ref(), target)?;
         let encoded = value.as_ref().map(PrefValue::encode);
         match target {
             PrefTarget::Device => {
@@ -187,11 +172,11 @@ impl super::Engine {
                         Some(v) => tx.execute(
                             "INSERT INTO device_preferences (key, value) VALUES (?, ?)
                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                            params![spec.key, encode(v)?],
+                            params![key, encode(v)?],
                         )?,
                         None => tx.execute(
                             "DELETE FROM device_preferences WHERE key = ?",
-                            params![spec.key],
+                            params![key],
                         )?,
                     };
                     Ok(())
@@ -201,7 +186,9 @@ impl super::Engine {
             }
             PrefTarget::Vault => {
                 self.require_features(db, &[PREFERENCES_FEATURE], false)?;
-                self.patch_preferences(db, spec.key, encoded)
+                // `key`, not `spec.key`: an entry of a map-valued key is its
+                // own register, and its spec's key is the map's prefix.
+                self.patch_preferences(db, key, encoded)
             }
         }
     }
@@ -211,13 +198,12 @@ impl super::Engine {
     fn patch_preferences(
         &self,
         db: &mut Db,
-        key: &'static str,
+        key: &str,
         value: Option<CborValue>,
     ) -> Result<CommandResult, EngineError> {
         let target = preferences_ref();
         let now_ms = self.clock.now_ms();
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
             let created = read_preferences(tx, target.bytes())
                 .map_err(|e| cbor_err(e.to_string()))?
                 .is_some();
@@ -235,31 +221,14 @@ impl super::Engine {
                 target,
                 create: !created,
                 origin: None,
+                parents: None,
+                group: None,
                 fields,
                 unknown: Unknowns::new(),
             }));
-            let inner = encode_inner_op(&op).map_err(cbor_err)?;
-            let slot = self.meta_slot(tx, now_ms)?;
-            self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                slot.seq,
-                slot.lww.hlc,
-                &inner,
-                op.inner_kind(),
-                op.target_kind(),
-                Some(target.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                slot.epoch,
-                &slot.key,
-            )?;
-            merge_op(tx, &op, &slot.lww, META_STREAM)?;
-            Ok(slot.seq)
+            self.append_and_fold(tx, &op, &META_STREAM, now_ms)
         })?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(target, None, op_id, seq))
     }
 }

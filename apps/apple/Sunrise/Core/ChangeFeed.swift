@@ -13,19 +13,25 @@ enum CoreChange: Equatable, Sendable {
     /// `skipped` notifications were dropped. Re-read everything; do not try to
     /// reconstruct what was missed.
     case lagged(skipped: UInt64)
+    /// The reader's zone changed (`docs/10-cross-cutting/time.md` §7). No
+    /// entity did, and every view derived from the zone — Today, lateness,
+    /// the calendar — has to be read again.
+    case zoneChanged
     /// The vault closed. Nothing further will arrive.
     case closed
 }
 
 extension CoreChange {
-    /// Every `ChangeEvent` case carries an entity and nothing else — the core
-    /// sends a prompt to re-read, never a payload — so the four collapse to
-    /// one here.
+    /// Every entity `ChangeEvent` carries an entity and nothing else — the
+    /// core sends a prompt to re-read, never a payload — so the four collapse
+    /// to one here.
     init(_ event: ChangeEvent) {
         switch event {
         case let .created(entity), let .updated(entity),
              let .deleted(entity), let .forgotten(entity):
             self = .entity(entity)
+        case .timeZoneChanged:
+            self = .zoneChanged
         }
     }
 }
@@ -63,6 +69,11 @@ struct ChangeAccumulator {
             // The ids collected so far are still true, but they are no longer
             // *all* of the truth. Keeping them and clearing the flag would be
             // the bug: a partial list that looks complete.
+            lostNotifications = true
+        case .zoneChanged:
+            // No id names what moved: everything derived from the zone did.
+            // The batch is incomplete in exactly the sense a lag is, so every
+            // consumer re-runs every query on screen.
             lostNotifications = true
         case .closed:
             closed = true

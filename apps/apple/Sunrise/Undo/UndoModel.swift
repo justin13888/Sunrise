@@ -31,11 +31,11 @@ final class UndoModel {
     /// nothing. Naming the step is the difference between an undo the user
     /// trusts and one they try in order to find out what it does.
     var undoTitle: String {
-        state.undoLabel.map { "Undo \($0)" } ?? "Undo"
+        state.undoLabel.map { L10n.Undo.undoNamed(action: $0) } ?? L10n.Undo.undo
     }
 
     var redoTitle: String {
-        state.redoLabel.map { "Redo \($0)" } ?? "Redo"
+        state.redoLabel.map { L10n.Undo.redoNamed(action: $0) } ?? L10n.Undo.redo
     }
 
     func refresh() async {
@@ -44,7 +44,7 @@ final class UndoModel {
 
     func undo() async {
         do {
-            lastAction = try await bridge.undo().map { "Undid \($0)" }
+            lastAction = try await bridge.undo().map { L10n.Undo.undid(action: $0) }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -54,7 +54,7 @@ final class UndoModel {
 
     func redo() async {
         do {
-            lastAction = try await bridge.redo().map { "Redid \($0)" }
+            lastAction = try await bridge.redo().map { L10n.Undo.redid(action: $0) }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

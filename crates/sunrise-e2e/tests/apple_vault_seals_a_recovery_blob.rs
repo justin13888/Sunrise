@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use sunrise_core_bindings::SunriseCore;
 use sunrise_e2e::spawn_relay_with;
-use sunrise_server::{ServerConfig, Store, Subject};
+use sunrise_server::{MetadataStore, ServerConfig, Store, Subject};
 
 const BEARER: &str = "self-host";
 const ROOT: [u8; 32] = [0x4d; 32];
@@ -59,8 +59,8 @@ fn vault_device_id(core: &SunriseCore) -> String {
 }
 
 /// A relay, and a handle on its own store to read what it recorded.
-async fn relay_with_store() -> (String, tokio::task::JoinHandle<()>, Arc<Store>) {
-    let mut captured: Option<Arc<Store>> = None;
+async fn relay_with_store() -> (String, tokio::task::JoinHandle<()>, Arc<dyn MetadataStore>) {
+    let mut captured: Option<Arc<dyn MetadataStore>> = None;
     let (addr, relay) = spawn_relay_with(ServerConfig::default(), |state| {
         captured = Some(state.store.clone());
         state
@@ -98,7 +98,7 @@ async fn identity_id(base_url: &str) -> [u8; 16] {
         .await
         .expect("the account record")
         .into_inner();
-    let key = sunrise_onboarding::decode_public_key(
+    let key = sunrise_relay_client::decode_public_key(
         account
             .identity_signing_pub
             .as_deref()
@@ -110,7 +110,8 @@ async fn identity_id(base_url: &str) -> [u8; 16] {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_relay() {
-    let (base_url, relay, store) = relay_with_store().await;
+    let (base_url, relay, held) = relay_with_store().await;
+    let store = held.as_sqlite().expect("the default store is SQLite");
 
     let dir = tempfile::tempdir().expect("a vault dir");
     let core = SunriseCore::open(
@@ -156,7 +157,7 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
 
     // The id handed back names a row the relay holds for *this* device — the
     // one the app now records and every later request presents (#183).
-    let account = self_host_account(&store);
+    let account = self_host_account(store);
     let rows = store
         .list_devices(&account.account_id)
         .expect("list devices");
@@ -181,11 +182,14 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
     let served = fetch_blob(&base_url)
         .await
         .expect("the relay serves it back");
-    let blob = sunrise_onboarding::decode_recovery_blob(&served).expect("base64url");
+    let blob = sunrise_relay_client::decode_recovery_blob(&served).expect("base64url");
 
-    let restored =
-        sunrise_onboarding::recover_identity_from_code(&blob, &code, &identity_id(&base_url).await)
-            .expect("the code the app displayed opens the blob the app uploaded");
+    let restored = sunrise_client_core::recovery::recover_identity_from_code(
+        &blob,
+        &code,
+        &identity_id(&base_url).await,
+    )
+    .expect("the code the app displayed opens the blob the app uploaded");
 
     // And the key inside is the one the vault's `key_envelope` ops are sealed
     // to, which is the whole point of sealing it: a blob carrying a mismatched
@@ -211,7 +215,8 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
 /// terms acceptance asserted on the holder's behalf.
 #[tokio::test(flavor = "multi_thread")]
 async fn registering_a_device_alone_binds_it_and_publishes_nothing_else() {
-    let (base_url, relay, store) = relay_with_store().await;
+    let (base_url, relay, held) = relay_with_store().await;
+    let store = held.as_sqlite().expect("the default store is SQLite");
 
     let dir = tempfile::tempdir().expect("a vault dir");
     let core = SunriseCore::open(
@@ -231,7 +236,7 @@ async fn registering_a_device_alone_binds_it_and_publishes_nothing_else() {
     .expect("registration must not hang")
     .expect("the relay registers the device");
 
-    let account = self_host_account(&store);
+    let account = self_host_account(store);
     let rows = store
         .list_devices(&account.account_id)
         .expect("list devices");

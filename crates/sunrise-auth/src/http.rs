@@ -9,6 +9,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::LoginError;
 
@@ -40,8 +41,22 @@ pub trait HttpClient: Send + Sync + std::fmt::Debug {
 /// Discovery documents and token responses are a few kilobytes. The cap is
 /// what stops a hostile or broken issuer from streaming the client out of
 /// memory — the client is the more exposed side here, because the issuer URL
-/// can come from a self-hoster's config.
+/// can come from a self-hoster's config. It bounds what is *read*: the body is
+/// taken a frame at a time and abandoned as soon as it passes the cap, so an
+/// issuer that never stops sending is refused after about this many bytes.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// 30 s for one whole exchange: connecting, the TLS handshake, the response
+/// head and every byte of the body.
+///
+/// A discovery document or a token response arrives in well under a second
+/// from a working issuer, and 30 s still leaves a slow self-hosted one on a
+/// poor link room to answer. What it stops is an issuer that accepts the
+/// connection and then says nothing, or trickles the body a byte at a time,
+/// which would otherwise hold `sunrise login` open for as long as the issuer
+/// liked. One deadline over the whole exchange rather than one per phase,
+/// because a per-read timeout is what a trickle defeats.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Production client: hyper + rustls over the Mozilla root bundle, HTTPS only.
 ///
@@ -92,39 +107,76 @@ impl HttpClient for HttpsClient {
     fn call(&self, request: Request) -> CallFuture {
         let client = self.client.clone();
         Box::pin(async move {
-            use http_body_util::BodyExt;
-
-            let uri = request.uri().to_string();
             if request.uri().scheme_str() != Some("https") {
                 return Err(LoginError::Provider(format!(
-                    "refusing to talk to an OIDC endpoint over a non-HTTPS URL: {uri}"
+                    "refusing to talk to an OIDC endpoint over a non-HTTPS URL: {}",
+                    request.uri()
                 )));
             }
-
-            let (parts, body) = request.into_parts();
-            let body = String::from_utf8(body)
-                .map_err(|_| LoginError::Transport("request body is not UTF-8".into()))?;
-            let req = hyper::Request::from_parts(parts, body);
-
-            let res = client
-                .request(req)
-                .await
-                .map_err(|e| LoginError::Transport(format!("{uri}: {e}")))?;
-
-            let (parts, body) = res.into_parts();
-            let collected = body
-                .collect()
-                .await
-                .map_err(|e| LoginError::Transport(format!("read body of {uri}: {e}")))?;
-            let bytes = collected.to_bytes();
-            if bytes.len() > MAX_BODY_BYTES {
-                return Err(LoginError::Transport(format!(
-                    "response from {uri} exceeds {MAX_BODY_BYTES} bytes"
-                )));
-            }
-            Ok(http::Response::from_parts(parts, bytes.to_vec()))
+            exchange(&client, request, REQUEST_TIMEOUT, MAX_BODY_BYTES).await
         })
     }
+}
+
+/// Send `request` on `client` and read the response, the whole of it within
+/// `timeout` and its body no longer than `cap`.
+///
+/// Generic over the connector so a test can drive it over plain TCP against a
+/// local server; [`HttpsClient::call`] is the only production caller, and it
+/// refuses a non-HTTPS URL before this runs.
+async fn exchange<C>(
+    client: &hyper_util::client::legacy::Client<C, String>,
+    request: Request,
+    timeout: Duration,
+    cap: usize,
+) -> Result<Response, LoginError>
+where
+    C: hyper_util::client::legacy::connect::Connect + Clone + Send + Sync + 'static,
+{
+    let uri = request.uri().to_string();
+    let (parts, body) = request.into_parts();
+    let body = String::from_utf8(body)
+        .map_err(|_| LoginError::Transport("request body is not UTF-8".into()))?;
+    let req = hyper::Request::from_parts(parts, body);
+
+    let whole = async {
+        let res = client
+            .request(req)
+            .await
+            .map_err(|e| LoginError::Transport(format!("{uri}: {e}")))?;
+        let (parts, body) = res.into_parts();
+        let bytes = read_capped(body, cap, &uri).await?;
+        Ok(http::Response::from_parts(parts, bytes))
+    };
+    tokio::time::timeout(timeout, whole).await.map_err(|_| {
+        LoginError::Transport(format!("{uri}: no complete response within {timeout:?}"))
+    })?
+}
+
+/// Read `body` to its end, a frame at a time, and stop as soon as it would
+/// pass `cap` bytes: at most `cap` bytes are ever held, and nothing after the
+/// frame that crossed it is read.
+async fn read_capped<B>(mut body: B, cap: usize, uri: &str) -> Result<Vec<u8>, LoginError>
+where
+    B: hyper::body::Body<Data = hyper::body::Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+{
+    use http_body_util::BodyExt;
+
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| LoginError::Transport(format!("read body of {uri}: {e}")))?;
+        let Ok(data) = frame.into_data() else {
+            continue; // Trailers carry nothing the flow reads.
+        };
+        if data.len() > cap - out.len() {
+            return Err(LoginError::Transport(format!(
+                "response from {uri} exceeds {cap} bytes"
+            )));
+        }
+        out.extend_from_slice(&data);
+    }
+    Ok(out)
 }
 
 /// Adapt an [`HttpClient`] into the closure shape `oauth2` accepts.
@@ -137,17 +189,4 @@ pub(crate) fn as_oauth2_client(http: Arc<dyn HttpClient>) -> impl Fn(Request) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn plaintext_endpoints_are_refused_before_the_socket_opens() {
-        let c = HttpsClient::new();
-        let req = http::Request::builder()
-            .uri("http://idp.example/.well-known/openid-configuration")
-            .body(Vec::new())
-            .unwrap();
-        let err = c.call(req).await.expect_err("http:// must be refused");
-        assert!(matches!(err, LoginError::Provider(_)), "{err:?}");
-    }
-}
+mod tests;

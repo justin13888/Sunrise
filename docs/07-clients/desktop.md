@@ -12,11 +12,6 @@ Target: **macOS 26**, Apple Silicon. Swift 6 with
 `-strict-concurrency=complete`. Universal (Intel) is one `rustup target add`
 and one entry in `mise.toml`'s `macos_slices`; it is not built today.
 
-> An earlier revision of this file specified a Tauri 2 + React app across
-> macOS, Windows and Linux. That app never existed — there was no `main.rs`, no
-> `tauri.conf.json`, and Tauri was not a dependency anywhere. ADR-0019 records
-> the replacement and why.
-
 ## What the app is today
 
 Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 477 Swift
@@ -53,20 +48,18 @@ older client from silently flattening a body it does not fully understand.
 
 **Not built here:** the free-standing `Note` entity
 ([ADR-0020](../11-adr/0020-v1-must-demotions.md)), stream sharing (a MUST in
-the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133)), and read-only calendar integrations
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), ranked as
-[#4](https://github.com/justin13888/Sunrise/issues/4)).
+the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133)), and calendar integrations
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md), ranked on
+the [roadmap](../roadmap.md)).
 
-That list used to carry a fourth entry — **iCal import/export**, the one
-MUST this client did not meet — and it no longer does: File → Import Calendar…
-(⌘⇧I) and Export Calendar ▸ Today | This Week now call the seam's
-`import_ical` / `export_ical` through `IcalModel`. The audit now grades 24
-macOS MUSTs, and **23 are met**. The 24th is the widget row. The widget is
+**iCal import/export is built:** File → Import Calendar… (⌘⇧I) and Export
+Calendar ▸ Today | This Week call the seam's `import_ical` / `export_ical`
+through `IcalModel`. The status audit in
+[`parity-matrix.md`](./parity-matrix.md#status-audit) grades every macOS MUST
+and names the ones not met. One of them is the widget row: the widget is
 built, but no build this repository makes has the team the Mac's grant is keyed
 to, so nobody has watched a Mac offer it
-([#376](https://github.com/justin13888/Sunrise/issues/376)). See the status
-audit in
-[`parity-matrix.md`](./parity-matrix.md#status-audit).
+([#376](https://github.com/justin13888/Sunrise/issues/376)).
 
 ## Architecture
 
@@ -211,10 +204,9 @@ document's intent, not yet implemented).
   the window server; the permission is only required by
   `NSEvent.addGlobalMonitorForEvents`, which observes every keystroke in every
   app. Reserving one chord is narrower and asks less of the user, so that is
-  what `HotkeyCenter` does. An earlier revision of this file specified the
-  permission, and the app's settings screen still displays its status with the
-  caption "Not required for the shortcut above" precisely because this document
-  said otherwise. Registration fails when another app already holds the chord;
+  what `HotkeyCenter` does. The app's settings screen displays the
+  permission's status with the caption "Not required for the shortcut above".
+  Registration fails when another app already holds the chord;
   that is an ordinary state (`HotkeyStatus`), not an error — the menu bar item
   still opens capture.
 - **built — Notification Center** for reminders, with action buttons.
@@ -394,7 +386,7 @@ ship; a team-less Release build that is wanted anyway adds
 What is still missing is outside this repository's files: an Apple Developer
 Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile
 that grants the group. The release pipeline installs that profile from the
-`MACOS_PROVISIONING_PROFILE` secret, refuses a tag without it, and checks the
+`MACOS_PROVISIONING_PROFILE` secret, refuses an app tag without it, and checks the
 exported app carries both the group and the embedded profile before
 notarizing ([#389](https://github.com/justin13888/Sunrise/issues/389);
 [`releasing.md`](./releasing.md#macos_provisioning_profile) says how to create
@@ -446,22 +438,19 @@ the tree:
   the app read an empty login keychain and present the lost-vault screen to a
   user whose vault is intact. **`nil` out of that method means both keychains
   answered *not-found*, and nothing else** — a refusal from the other domain is
-  **raised**. An earlier revision wrapped the second read in a blanket `try?`,
-  and because `nil` is the one answer `SessionModel` reads as absence, a store
-  that was reached and *refused* — locked, or a prompt denied — produced the
-  lost-vault screen the fallback exists to prevent, for a condition an unlock
-  fixes.
+  **raised**. Because `nil` is the one answer `SessionModel` reads as absence,
+  swallowing that refusal in a blanket `try?` would turn a store that was
+  reached and *refused* — locked, or a prompt denied — into the lost-vault
+  screen the fallback exists to prevent, for a condition an unlock fixes.
 
-  The argument that swallow rested on — a refused read has changed nothing, so
+  The argument for that swallow — a refused read has changed nothing, so
   answering `nil` is no worse than the answer before the fallback existed — is
   true about the **Keychain** and false about the **caller**: before the
   fallback existed there was no second store to be wrong about, and once there
   is one, `nil` asserts something about it. Its companion, that propagating
   would fail a genuine first run, is false outright: not-found is a refusal in
   neither domain, so nothing-anywhere still answers `nil`, and the first read
-  keeps `read()`'s contract in full. This page carried both arguments as the
-  reason for the shipped code for one round after the code stopped agreeing
-  with them.
+  keeps `read()`'s contract in full.
 
   The refusal is raised as `KeychainError.otherDomainUnreadable` rather than as
   the bare status underneath, because a bare `unexpected` shows the *other*
@@ -483,8 +472,7 @@ the tree:
   Gating on the fact of a throw rather than on its shape left that one shape
   with no remedy at all.
 
-  **The entitlement is not what the second read has to survive**, and an earlier
-  revision of this page said it was. Measured on the same ad-hoc Mac as the
+  **The entitlement is not what the second read has to survive.** Measured on the same ad-hoc Mac as the
   three results above: a `.dataProtection` **query** answers
   `errSecItemNotFound` (-25300). The -34018 refusal is on the *mutating* calls —
   `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. That is also why the raise
@@ -544,9 +532,7 @@ the tree:
   of cross-domain mutations described above (1, 2 and 4), one is in the
   re-raise both of those consult (3), one is in the `save` that consumes the
   write (5), one is in `loadMigratingIfNeeded` (6), and one is in the
-  cross-domain **read** (7). This is the whole set and the only count of it,
-  since an earlier revision of this page named two of the seven here while a
-  second record named five:
+  cross-domain **read** (7). This is the whole set:
 
   1. `writeAcrossDomains`'s raise of `writtenButOtherDomainRefused`. Every
      other-domain delete this repository can build either succeeds or is
@@ -599,23 +585,6 @@ the tree:
      `domainsAreDistinctStores` guard short-circuits before the `do` is entered,
      so the `catch` is never entered either.
 
-     This item **replaced** an earlier one at the same line rather than leaving
-     the set at six, and the distinction matters to anyone auditing the count.
-     The line used to be a blanket `try?`, and that swallow was the single line
-     collapsing "the other keychain was reached and refused" into "absent" —
-     `nil` being the one answer `SessionModel` reads as absence, it reported a
-     vault root that exists and is momentarily unreadable as one that is gone,
-     and offered a two-machine pairing ceremony for a condition an unlock fixes.
-     Raising repaired that. It did not make the line *reachable*: what blocks it
-     is the other store refusing a read mid-case, which no configuration this
-     repository builds can produce, so the blocker carried over intact along
-     with the item's place in the three-way split below.
-
-     The measurement that used to sit here is **deleted rather than carried
-     forward**. It recorded that replacing the `try?` with `try` left the macOS
-     suite green — and that replacement is now the shipped code, so it would be
-     asserting a survivor for a mutant that no longer exists.
-
   **Where item 4's measurement comes from, and what does not supply it.** It was
   taken by hand in a worktree on 2026-09-17: the one-line mutation applied,
   `mise run macos-app` run, the result read off `out/test-results/macos.xcresult`,
@@ -627,14 +596,7 @@ the tree:
   one. If the line's surroundings change, the measurement is stale and has to be
   retaken; nothing will fail to tell you so.
 
-  It used to be one of **two**. Item 7 carried the other until the `try?` it
-  measured was replaced by the raise described above, at which point the
-  measurement's mutant became the shipped code and the sentence was deleted
-  rather than reworded. That is the failure mode this paragraph exists to warn
-  about, arriving on schedule.
-
-  **The set does not split in two, and an earlier revision of this page said it
-  did.** It splits three ways, because two of the items wait on *both* blockers
+  **The set splits three ways**, because two of the items wait on *both* blockers
   rather than on one:
 
   - **Reach only — item 2.** Its path is a write that succeeds, a cross-domain
@@ -683,22 +645,18 @@ the tree:
   `.dataProtection`, address the item at `.login`, and watch the delete take
   that copy away.
 
-  **For 3, 4, 6 and 7 an entitled, signed build is the wrong answer** — which is
-  what this page used to say and, for those items, said wrongly. A locked login
+  **For 3, 4, 6 and 7 an entitled, signed build is the wrong answer.** A locked login
   keychain or a denied prompt already returns a hard status on the ad-hoc build
   this repository produces, so the statuses those lines wait for are reachable
   here today; what no suite here can drive is the lock or the denial arriving
   mid-case. An entitlement supplies no part of that.
 
-  **Why the suite cannot drive it — the mechanism, in place of the premise this
-  page used to give.** The premise was that "the suite holds the keychain
-  unlocked for its whole run by construction". It is false, and it was asserted
-  in five places and evidenced in none: the suite performs no keychain-state
-  call of any kind — it never creates, opens, locks, unlocks or queries the
-  status of a keychain — so it holds nothing. It inherits whatever the host
-  login session already unlocked, which is a property of the machine asserted
-  as a property of the suite. Two things are true instead, and both can be
-  checked against the SDK and this target:
+  **Why the suite cannot drive it.** The suite does not hold the keychain
+  unlocked: it performs no keychain-state call of any kind — it never creates,
+  opens, locks, unlocks or queries the status of a keychain — so it holds
+  nothing. It inherits whatever the host login session already unlocked, which
+  is a property of the machine, not of the suite. Two things are true, and both
+  can be checked against the SDK and this target:
 
   - `SecKeychainLock`, `SecKeychainUnlock` and
     `SecKeychainSetUserInteractionAllowed` *are* still declared in the macOS
@@ -1023,16 +981,18 @@ read and the re-registration's cross-domain write is what collapses them.
 
 ## Pairing
 
-A second device is paired over a **six-leg copy/paste handshake**: the QR/text
+A second device is paired over the relay or, as a fallback, a **six-leg copy/paste handshake**: the QR/text
 code, three Noise XX messages, a SAS comparison, and the sealed vault root.
 
-**The app does not use the relay's pairing rendezvous yet, so the user is the
-transport.** The rendezvous exists on the relay, and so does the `RelayPairing`
-seam that drives it from the `relay_url` in the QR
-([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). The app does
-not call either yet ([#464](https://github.com/justin13888/Sunrise/issues/464)).
-Five legs move bytes the user copies between the two Macs; the sixth moves
-none, because it is the SAS.
+**The relay is the default transport; the user is the fallback.** When this
+device has a relay and a signed-in account, `PairingModel` drives the
+`RelayPairing` seam over the relay's rendezvous
+([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous) in three
+phases: show or take the code, compare the SAS, done. With no relay, no
+account, or a relay that does not answer, it falls back to the copy/paste legs
+below and says why. Of those, five move bytes the user copies between the two
+Macs; the sixth moves none, because it is the SAS. There is still no camera
+scanner ([#464](https://github.com/justin13888/Sunrise/issues/464)).
 
 - **Show QR** is a real CoreImage render, with the same payload as copyable text
   beside it — which is what actually gets used, since there is **no camera
@@ -1097,6 +1057,35 @@ does not exist yet, so `SUPublicEDKey` is empty in the committed project file.
 Until it is filled in, the app starts no updater at all and both menu items are
 disabled with the reason attached — fail-closed, because an updater that cannot
 verify what it downloads is worse than none.
+
+## Windows
+
+There is no Windows client. The portable core a Windows client would link is
+built and tested on Windows by CI's `rust-windows` job
+([dependencies.md](../01-architecture/dependencies.md) §Windows), and the
+`sunrise` CLI is part of it. Two things about how secrets are written there
+are decided here.
+
+**Writes are staged and renamed.** Every secret the CLI writes (the vault key,
+the parked pairing secret, the exported pairing grant) and the credential file
+`sunrise_auth::FileStore` keeps go through a sibling file that is renamed over
+the target. A crash mid-write leaves the previous file whole on every platform.
+Before issue #369 the CLI's Windows branch truncated the target in place. A
+hard-link test in each crate tells a rename from an in-place rewrite and runs
+on Windows too.
+
+**Files are owner-only.** On Unix those files are created mode `0600`. On
+Windows they are created with a protected DACL holding one entry, which allows
+the current user full control. Nothing is inherited from the directory, so a
+vault directory under `C:\`, which hands `Authenticated Users` modify to new
+files, hands them nothing. `SYSTEM` and `Administrators` get no entry. An
+administrator can still take ownership, and backup software reads past a DACL
+by design. The DACL is set at creation, before any secret byte is written, by
+`sunrise-private-file`, the one crate allowed `unsafe` for it
+([ADR-0067](../11-adr/0067-windows-owner-only-files.md)). Tests in that crate,
+`sunrise-auth` and `sunrise-cli` read the DACL back on Windows CI. A file
+written before that change keeps its inherited ACL until it is next written.
+For a vault key, that means until the vault is created again.
 
 ## Telemetry
 

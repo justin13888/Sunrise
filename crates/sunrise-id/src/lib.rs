@@ -4,6 +4,10 @@
 //! base-32, 26 chars) namespaced by entity kind. The 16 raw bytes are the
 //! authoritative form; the prefixed string `"tsk_…"` is the I/O-boundary
 //! representation.
+//!
+//! [`registry`] is the entity registry: the single declaration of each entity
+//! kind's fields, merge class and conflict class; the doc-schema fingerprint
+//! hashes it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

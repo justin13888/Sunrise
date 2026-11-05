@@ -49,14 +49,15 @@ pub const SAS_VECTORS: [SasVector; 3] = [
 /// `BLAKE3.derive_key("sunrise.account_email_hash.v1", lowercase(trim(email)),
 /// 4)`, per `docs/03-crypto/pairing-and-onboarding.md`.
 ///
-/// The bucket key a pairing rate limit counts against. A build that derived it
-/// differently would file the same user under a different bucket on a
-/// different device, which is a rate limit that does not limit.
+/// The account tag a pairing QR carries, so a screen can say which account it
+/// is pairing without holding the address. It is not a rate-limit key: the
+/// relay buckets attempts by `account_id`. A build that derived it differently
+/// would show a different tag for the same account on a different device.
 #[derive(Debug, Clone, Copy)]
 pub struct EmailHashVector {
     /// The address as supplied, before normalisation.
     pub email: &'static str,
-    /// The 4-byte bucket key.
+    /// The 4-byte account tag.
     pub hash: [u8; 4],
 }
 
@@ -244,5 +245,49 @@ pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[
     (
         11,
         crate::hex("3c75fc18c3369d0481d746a3534a34028ad1068a02ee6816e3062b830e6debd4"),
+    ),
+    (
+        12,
+        crate::hex("1be56767d868335916e893ff50e7a6097d942957f1687109b8cc17fb4e2176f1"),
+    ),
+    (
+        13,
+        crate::hex("09ede17ec2962b1bc05b1214681c7fc1f4af325955535c27119d709c35a2cf05"),
+    ),
+    (
+        14,
+        crate::hex("300fb530ec0d3b3c3e5e24ed878fb9cc866cb4f2a3496bd37388369887f3749b"),
+    ),
+    (
+        15,
+        crate::hex("953c59ed8729b185b79ca821da37d40facc115054b8c11150d19d8e0b6999de4"),
+    ),
+    (
+        16,
+        crate::hex("ac96923d0675fabe2162d286f5ba5af7cb15cc4c32a4311bcc36e2fa6ad6c9ef"),
+    ),
+    (
+        17,
+        crate::hex("2fc9c2a11793f1e1940133d9d5949ddff676fa2cb73fbfd65f2175c0215a2531"),
+    ),
+    (
+        18,
+        crate::hex("4093cc32794e193cf86235c9d79e31437b4e46f694f9b419e7f9414845617015"),
+    ),
+    (
+        19,
+        crate::hex("46ee3fe735d8a27674e96e7ea8962031c544c790aba22921c260dca4afee084e"),
+    ),
+    (
+        20,
+        crate::hex("7f0c318d6bb81e2f7d2c755d5271f3c229854133bbe21c1dbcf0a0da24979fc9"),
+    ),
+    (
+        21,
+        crate::hex("35b2c6020668ba962d8f799f533beebf2c3ee14d0237a05734b6cad8bb50cebe"),
+    ),
+    (
+        22,
+        crate::hex("878b79742cd6b1884edbbdc4977f89c29391aebff25cb005d9e1cfcaae9a9454"),
     ),
 ];

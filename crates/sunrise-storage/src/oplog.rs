@@ -29,7 +29,7 @@ impl OpLog {
     /// at-least-once delivery from sync.
     ///
     /// `applied_at` should be `None` if the op cannot be applied yet (deps
-    /// unsatisfied); the materializer will set it later.
+    /// unsatisfied); [`Self::unpark`] sets it when the parked op is released.
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         tx: &rusqlite::Transaction<'_>,
@@ -93,7 +93,8 @@ impl OpLog {
     }
 
     /// All ops for a Stream in ascending `seq` order.
-    pub fn list_for_stream(
+    #[cfg(test)]
+    pub(crate) fn list_for_stream(
         db: &Db,
         stream_id: &[u8; 16],
     ) -> Result<Vec<(Vec<u8>, u64)>, OpLogError> {
@@ -108,19 +109,6 @@ impl OpLog {
             out.push(r?);
         }
         Ok(out)
-    }
-
-    /// Mark `op_id` as applied at `ts_ms`.
-    pub fn mark_applied(
-        tx: &rusqlite::Transaction<'_>,
-        op_id: &[u8; 16],
-        ts_ms: u64,
-    ) -> Result<(), OpLogError> {
-        tx.execute(
-            "UPDATE ops SET applied_at = ? WHERE op_id = ?",
-            params![ts_ms, op_id],
-        )?;
-        Ok(())
     }
 
     /// Mark an op already inserted into `ops` as parked (migration 0031,
@@ -261,6 +249,39 @@ impl OpLog {
         )?;
         Ok(())
     }
+
+    /// How many ops are parked, grouped by `parked_ops.reason`, in reason
+    /// order. A reason with no parked op has no row (ADR-0045 §4,
+    /// "Visibility").
+    ///
+    /// The reason is the stored string rather than a [`ParkReason`]: a vault a
+    /// newer build parked ops in can be opened by an older one, and a count
+    /// under a reason this build has no name for is still a count to show.
+    pub fn parked_counts_by_reason(db: &Db) -> Result<Vec<ParkedCount>, OpLogError> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT reason, count(*) FROM parked_ops GROUP BY reason ORDER BY reason")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ParkedCount {
+                reason: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+/// One row of [`OpLog::parked_counts_by_reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedCount {
+    /// The `parked_ops.reason` string, e.g. [`ParkReason::as_str`].
+    pub reason: String,
+    /// How many ops are parked under it. Never zero.
+    pub count: u64,
 }
 
 /// The `ops.inner_kind` and `ops.target_kind` a parked op is stored under
@@ -286,6 +307,11 @@ pub enum ParkReason {
     /// apply path refused it. The kind is no longer missing, so the
     /// `unknown_kind` it was parked under would misstate why it is kept.
     ReplayRefused,
+    /// The inner op nests deeper than this build reads
+    /// (`sunrise_cbor::MAX_DOC_DEPTH`). Nothing a build writes today comes
+    /// near the bound; a newer build's fields may, and a build with a larger
+    /// bound reads the op.
+    TooDeep,
 }
 
 impl ParkReason {
@@ -296,6 +322,7 @@ impl ParkReason {
             Self::UnknownKind => "unknown_kind",
             Self::SchemaFpMismatch => "schema_fp_mismatch",
             Self::ReplayRefused => "replay_refused",
+            Self::TooDeep => "too_deep",
         }
     }
 }
@@ -548,6 +575,40 @@ mod tests {
         };
         assert_eq!(reason(1), ("unknown_kind".into(), 6));
         assert_eq!(reason(2), ("replay_refused".into(), 6));
+    }
+
+    #[test]
+    fn parked_counts_group_by_reason_and_omit_empty_reasons() {
+        let mut db = Db::open_memory(&vault_key()).unwrap();
+        assert!(OpLog::parked_counts_by_reason(&db).unwrap().is_empty());
+        park(&mut db, 1, 2, 1, 100, 0, 5);
+        park(&mut db, 2, 2, 2, 100, 0, 5);
+        park(&mut db, 3, 2, 3, 100, 0, 5);
+        db.with_tx(|tx| {
+            OpLog::restamp_parked(tx, &[3u8; 16], 6, Some(ParkReason::ReplayRefused)).map_err(sq)
+        })
+        .unwrap();
+        let counts = |db: &Db| {
+            OpLog::parked_counts_by_reason(db)
+                .unwrap()
+                .into_iter()
+                .map(|c| (c.reason, c.count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            counts(&db),
+            vec![
+                ("replay_refused".to_owned(), 1),
+                ("unknown_kind".to_owned(), 2)
+            ]
+        );
+        // A released op leaves the count, and a reason whose last op leaves
+        // has no row rather than a zero.
+        db.with_tx(|tx| {
+            OpLog::unpark(tx, &[3u8; 16], &[3u8; 8], "task.create", "task", None, 2).map_err(sq)
+        })
+        .unwrap();
+        assert_eq!(counts(&db), vec![("unknown_kind".to_owned(), 2)]);
     }
 
     #[test]

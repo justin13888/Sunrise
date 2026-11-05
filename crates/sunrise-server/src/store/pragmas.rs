@@ -205,6 +205,31 @@ mod tests {
         assert!(ms > 0);
     }
 
+    /// A write another connection holds off past the busy timeout fails with
+    /// `SQLITE_BUSY`, and that failure is what `sunrise_db_busy_total` counts.
+    #[test]
+    fn a_write_held_off_past_the_timeout_is_counted_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        let s = Store::open_with(Some(&path), Duration::from_millis(1)).unwrap();
+        let other = rusqlite::Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        let before = crate::store::busy_total();
+        let refused = s.resolve_account(&crate::auth::Subject::new("i", "s"), true, 1);
+        assert!(
+            matches!(&refused, Err(crate::store::StoreError::Sqlite(e))
+                if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)),
+            "{refused:?}"
+        );
+        assert!(crate::store::busy_total() > before);
+
+        other.execute_batch("ROLLBACK;").unwrap();
+        assert!(s
+            .resolve_account(&crate::auth::Subject::new("i", "s"), true, 1)
+            .is_ok());
+    }
+
     #[test]
     fn the_integrity_check_passes_on_a_sound_database() {
         let s = Store::open(None).unwrap();

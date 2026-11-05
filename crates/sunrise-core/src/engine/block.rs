@@ -1,8 +1,9 @@
 //! Time blocks (`docs/02-domain/time-blocks.md`).
 //!
-//! Block ops route under the Block's **own Stream**, like task ops and unlike
-//! routine ops: a calendar is per-Stream in the UI, so routing there keeps a
-//! Block's `seq` independent of the meta stream's.
+//! Block ops are sealed under the Block's **key domain**, like task ops and
+//! unlike routine ops: its own Stream's, or the private domain's for a block
+//! with no stream (ADR-0046 §2). A calendar is per-Stream in the UI, so
+//! routing there keeps a Block's `seq` independent of the meta stream's.
 //!
 //! `Task.blocks` is never written. It is derived from the `block_tasks` join
 //! every time a Task is read, which is what makes the spec's "Bound Task's
@@ -13,20 +14,16 @@
 //! query bounds are a *day* and a *week* rather than a timestamp; `notify` is
 //! their one other caller.
 
-use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind,
-    require_writable_stream, ExtraTable,
-};
-use super::lww::LwwStamp;
-use super::stream::ensure_stream_row;
+use super::ids::{blob16, decode_unknowns, domain_bytes, home_of, ms_to_ts, require_kind};
 use super::task::read_task;
+use super::write::Appended;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::{BlockRow, QueryResult};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;
-use sunrise_domain::time::SunriseTime;
+use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{imported_block_id, Block, BlockDraft, BlockPatch};
 use sunrise_id::{EntityKind, EntityRef};
@@ -38,14 +35,22 @@ impl Engine {
         db: &mut Db,
         d: BlockDraft,
     ) -> Result<CommandResult, EngineError> {
-        d.validate()?;
-        require_writable_stream(d.stream_id)?;
+        let now_ms = self.clock.now_ms();
+        let block = self.new_block(db, d, now_ms)?;
+        let done = self.emit_block(db, &block, now_ms, "block.create")?;
+        Ok(CommandResult::new(block.id, None, done.op_id, done.seq))
+    }
+
+    /// The Block a create of `d` writes, validated and given a fresh id, and
+    /// not yet logged.
+    fn new_block(&self, db: &Db, d: BlockDraft, now_ms: u64) -> Result<Block, EngineError> {
+        let tz = self.device_zone();
+        d.validate(&tz)?;
+        let home = home_of(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
-        let now_ms = self.clock.now_ms();
         let block_id = self.fresh_id(EntityKind::Block, now_ms);
-        let op_id = self.fresh_op_id(now_ms);
         let tasks: BTreeSet<EntityRef> = d.tasks.iter().copied().collect();
         // Shadow copy: a Block created around exactly one Task and given no
         // title of its own takes that Task's title AS IT IS NOW. Later renames
@@ -58,7 +63,7 @@ impl Engine {
             id: block_id,
             created_at: ms_to_ts(now_ms as i64),
             updated_at: ms_to_ts(now_ms as i64),
-            stream_id: d.stream_id,
+            stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
             title,
@@ -67,16 +72,61 @@ impl Engine {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        block.validate_invariants()?;
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.create")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        block.validate_invariants(&tz)?;
+        Ok(block)
+    }
+
+    /// [`Command::MergeBlocks`](crate::commands::Command::MergeBlocks): the
+    /// union's create and both tombstones, appended as one group (ADR-0065
+    /// §6), each in its block's own stream.
+    pub(super) fn merge_blocks(
+        &self,
+        db: &mut Db,
+        a: EntityRef,
+        b: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(a, EntityKind::Block)?;
+        require_kind(b, EntityKind::Block)?;
+        if a == b {
+            return Err(EngineError::Invalid(format!(
+                "block {a} cannot be merged with itself"
+            )));
+        }
+        let now_ms = self.clock.now_ms();
+        let live = |id: EntityRef| -> Result<Block, EngineError> {
+            let block = read_block(db.conn(), id.bytes())?
+                .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+            if block.deleted {
+                return Err(EngineError::Invalid(format!("block {id} is deleted")));
+            }
+            Ok(block)
+        };
+        let (first, second) = (live(a)?, live(b)?);
+        let draft = sunrise_domain::merge_blocks(&first, &second, &self.device_zone())?;
+        let union = self.new_block(db, draft, now_ms)?;
+        let id = union.id;
+        let mut members = vec![(
+            InnerOp::BlockCreate(Box::new(union.clone())),
+            domain_bytes(union.stream_id),
+        )];
+        for mut original in [first, second] {
+            original.deleted = true;
+            original.updated_at = ms_to_ts(now_ms as i64);
+            let stream = domain_bytes(original.stream_id);
+            members.push((InnerOp::BlockDelete(Box::new(original)), stream));
+        }
+        let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
+        let created = done
+            .first()
+            .ok_or_else(|| EngineError::Invalid("a merge wrote nothing".into()))?;
+        Ok(CommandResult::new(id, None, created.op_id, created.seq))
     }
 
     /// Write the Block one external calendar item maps onto, at the id
     /// [`imported_block_id`] derives from `(source, uid)`.
     ///
-    /// Create and update are the same code path because the row write already
-    /// is one (`upsert_block_row`): re-importing an unchanged file rewrites
+    /// Create and update are the same code path because both are a full-state
+    /// Block op folded the same way: re-importing an unchanged file projects
     /// identical column values, which is what makes the whole operation
     /// idempotent without a "have I seen this UID" table to keep in step.
     ///
@@ -95,15 +145,15 @@ impl Engine {
                 "import: an external item needs a UID".into(),
             ));
         }
-        d.validate()?;
-        require_writable_stream(d.stream_id)?;
+        let tz = self.device_zone();
+        d.validate(&tz)?;
+        let home = home_of(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
         let now_ms = self.clock.now_ms();
         let block_id = imported_block_id(source, uid);
         let existing = read_block(db.conn(), block_id.bytes())?;
-        let op_id = self.fresh_op_id(now_ms);
 
         // Union, not replace: a task the user bound to an imported Block is
         // theirs, and a re-import must not quietly unbind it.
@@ -123,7 +173,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(|| ms_to_ts(now_ms as i64), |e| e.created_at),
             updated_at: ms_to_ts(now_ms as i64),
-            stream_id: d.stream_id,
+            stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
             title,
@@ -140,7 +190,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(Unknowns::new, |e| e.unknown.clone()),
         };
-        block.validate_invariants()?;
+        block.validate_invariants(&tz)?;
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
         // remote replica — every Block op is full-state.
@@ -149,8 +199,8 @@ impl Engine {
         } else {
             "block.create"
         };
-        let seq = self.emit_block(db, &block, now_ms, &op_id, inner_kind)?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, inner_kind)?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
     pub(super) fn update_block(
@@ -160,9 +210,7 @@ impl Engine {
         patch: BlockPatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Block)?;
-        if let Some(s) = patch.stream_id {
-            require_writable_stream(s)?;
-        }
+        let home = patch.stream_id.map(home_of).transpose()?;
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?
@@ -179,15 +227,13 @@ impl Engine {
         if let Some(track) = patch.title_track_task {
             block.title_track_task = track;
         }
-        if let Some(s) = patch.stream_id {
-            require_kind(s, EntityKind::Stream)?;
-            block.stream_id = s;
+        if let Some(home) = home {
+            block.stream_id = home;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
-        block.validate_invariants()?;
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(id, None, op_id, seq))
+        block.validate_invariants(&self.device_zone())?;
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
 
     /// Tombstone a Block. The op carries the Block's **whole state** with
@@ -205,9 +251,8 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
         block.deleted = true;
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.delete")?;
-        Ok(CommandResult::new(id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.delete")?;
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
 
     /// Bind a Task to a Block. Idempotent on the membership set: re-binding an
@@ -232,9 +277,8 @@ impl Engine {
             block.title = self.shadow_title(db, &block.tasks)?;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
     /// Unbind a Task from a Block. The Block survives with no tasks bound: an
@@ -252,53 +296,26 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
         block.tasks.remove(&task);
         block.updated_at = ms_to_ts(now_ms as i64);
-        let op_id = self.fresh_op_id(now_ms);
-        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
-        Ok(CommandResult::new(block_id, None, op_id, seq))
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
-    /// Seal a full-state Block op, materialize the row and its bindings, and
-    /// append the op — all in one transaction. Returns the op's `seq`.
+    /// Append a full-state Block op and fold it, which projects the row and
+    /// its bindings, in one transaction.
     fn emit_block(
         &self,
         db: &mut Db,
         block: &Block,
         now_ms: u64,
-        op_id: &[u8; 16],
         inner_kind: &str,
-    ) -> Result<u64, EngineError> {
+    ) -> Result<Appended, EngineError> {
         let inner = match inner_kind {
             "block.create" => InnerOp::BlockCreate(Box::new(block.clone())),
             "block.delete" => InnerOp::BlockDelete(Box::new(block.clone())),
             _ => InnerOp::BlockUpdate(Box::new(block.clone())),
         };
-        let inner_op = encode_inner_op(&inner)?;
-        let seq = self.next_seq(db, block.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let stream_bytes = *block.stream_id.bytes();
-        let block = block.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &block.stream_id, now_ms)?;
-            upsert_block_row(tx, &block, &lww)?;
-            replace_block_tasks(tx, &block)?;
-            self.ops_insert(
-                tx,
-                op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner_op,
-                inner_kind,
-                "block",
-                Some(block.id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
-        Ok(seq)
+        let stream = domain_bytes(block.stream_id);
+        Ok(db.with_tx(|tx| self.append_and_fold(tx, &inner, &stream, now_ms))?)
     }
 
     /// The title a single bound Task lends a Block. `None` when the Block binds
@@ -327,8 +344,9 @@ impl Engine {
         self.query_blocks_between(db, from, to)
     }
 
-    /// Blocks overlapping the seven civil days beginning at the Monday of the
-    /// week containing `week_ms`, in the device zone.
+    /// Blocks overlapping the seven civil days of the week containing
+    /// `week_ms`, in the device zone, the week beginning on the `week_start`
+    /// preference (`docs/10-cross-cutting/time.md` §4).
     pub(super) fn query_week_blocks(
         &self,
         db: &Db,
@@ -336,13 +354,9 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
         let anchor = ms_to_ts(week_ms as i64).to_zoned(tz).date();
-        // Monday-first, matching `WeekGrid` and every other weekly fold here.
-        let back = i64::from(anchor.weekday().to_monday_zero_offset());
-        let monday = anchor
-            .checked_sub(jiff::Span::new().days(back))
-            .unwrap_or(anchor);
-        let monday_ms = self.civil_day_start_ms(monday)?;
-        let (from, to) = self.civil_span(monday_ms, 7)?;
+        let first = sunrise_domain::first_day_of_week(anchor, &self.week_start(db)?);
+        let first_ms = self.civil_day_start_ms(first)?;
+        let (from, to) = self.civil_span(first_ms, 7)?;
         self.query_blocks_between(db, from, to)
     }
 
@@ -352,6 +366,12 @@ impl Engine {
     /// Computed over civil dates rather than by adding `86_400_000` so a day
     /// that is 23 or 25 hours long across a DST transition is still exactly one
     /// day on the grid.
+    ///
+    /// Only the calendar grid reads it (`DayBlocks`, `WeekBlocks`): a grid
+    /// column is a calendar date, midnight to midnight, and a block that runs
+    /// past midnight is drawn on both columns. Every planner day (Today,
+    /// Upcoming, the briefs) reads `planner_day_at` instead
+    /// (`docs/02-domain/day-schedule.md` §Planner day).
     pub(super) fn civil_span(&self, at_ms: i64, days: i64) -> Result<(i64, i64), EngineError> {
         let tz = self.device_zone();
         let date = ms_to_ts(at_ms).to_zoned(tz).date();
@@ -372,36 +392,60 @@ impl Engine {
         Ok(zoned.timestamp().as_millisecond())
     }
 
-    /// The device-local zone, from the injected clock. An unknown IANA name
-    /// degrades to UTC rather than failing a read.
-    pub(super) fn device_zone(&self) -> jiff::tz::TimeZone {
-        jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC)
-    }
-
     /// Every live Block whose `[starts_at, ends_at)` overlaps `[from, to)`.
     ///
     /// Overlap, not containment: a two-hour block that started before the
     /// window still belongs on the grid, which is why the `blocks_by_end`
     /// index exists.
+    ///
+    /// The SQL reads the storage index widened by [`PREFILTER_SLACK_MS`] on
+    /// each side, and the overlap is then decided on each bound resolved in
+    /// the device zone (`docs/10-cross-cutting/time.md` §2 rule 2): the index
+    /// puts a floating or all-day bound up to 14 hours from where this reader
+    /// sees it, so on its own it drops evening blocks west of UTC and invents
+    /// morning ones east of it. Rows come back by resolved start, then id.
     pub(super) fn query_blocks_between(
         &self,
         db: &Db,
         from: i64,
         to: i64,
     ) -> Result<QueryResult, EngineError> {
+        let tz = self.device_zone();
         let mut stmt = db.conn().prepare(
             "SELECT id FROM blocks
-             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?
-             ORDER BY starts_at_ms ASC, id ASC",
+             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?",
         )?;
         let ids = stmt
-            .query_map(params![to, from], |r| r.get::<_, Vec<u8>>(0))?
+            .query_map(
+                params![
+                    to.saturating_add(PREFILTER_SLACK_MS),
+                    from.saturating_sub(PREFILTER_SLACK_MS)
+                ],
+                |r| r.get::<_, Vec<u8>>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut rows = Vec::with_capacity(ids.len());
+        let mut blocks = Vec::with_capacity(ids.len());
         for raw in ids {
             let Some(block) = read_block(db.conn(), &blob16(&raw))? else {
                 continue;
             };
+            let resolved = (
+                block.starts_at.resolve_in(&tz),
+                block.ends_at.resolve_in(&tz),
+            );
+            if let (Some(s), Some(e)) = resolved {
+                if s.as_millisecond() < to && e.as_millisecond() > from {
+                    blocks.push(block);
+                }
+            }
+        }
+        blocks.sort_by(|a, b| {
+            a.starts_at
+                .cmp_in(&b.starts_at, &tz)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let mut rows = Vec::with_capacity(blocks.len());
+        for block in blocks {
             rows.push(block_row(db.conn(), block)?);
         }
         Ok(QueryResult::Blocks(rows))
@@ -432,84 +476,6 @@ pub(super) fn block_row(
     })
 }
 
-/// INSERT-or-REPLACE a Block row, stamping the LWW columns.
-pub(super) fn upsert_block_row(
-    tx: &Transaction<'_>,
-    b: &Block,
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    let (start_ms, start_kind, start_tz) = b.starts_at.to_parts();
-    let (end_ms, end_kind, end_tz) = b.ends_at.to_parts();
-    let extra_blob = extra_over_opaque(
-        tx,
-        ExtraTable::Blocks,
-        &b.id.bytes()[..],
-        encode_unknowns(&b.unknown)?,
-    )?;
-    tx.execute(
-        "INSERT INTO blocks
-         (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
-          ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
-          deleted, extra, created_at_ms, updated_at_ms,
-          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-            stream_id = excluded.stream_id,
-            starts_at_ms = excluded.starts_at_ms,
-            starts_at_kind = excluded.starts_at_kind,
-            starts_at_tz = excluded.starts_at_tz,
-            ends_at_ms = excluded.ends_at_ms,
-            ends_at_kind = excluded.ends_at_kind,
-            ends_at_tz = excluded.ends_at_tz,
-            title = excluded.title,
-            title_track_task = excluded.title_track_task,
-            deleted = excluded.deleted,
-            extra = excluded.extra,
-            updated_at_ms = excluded.updated_at_ms,
-            lww_hlc_ms = excluded.lww_hlc_ms,
-            lww_hlc_logical = excluded.lww_hlc_logical,
-            lww_seq = excluded.lww_seq,
-            lww_device = excluded.lww_device",
-        params![
-            &b.id.bytes()[..],
-            &b.stream_id.bytes()[..],
-            start_ms,
-            start_kind,
-            start_tz,
-            end_ms,
-            end_kind,
-            end_tz,
-            b.title.as_deref(),
-            b.title_track_task as i64,
-            b.deleted as i64,
-            extra_blob,
-            b.created_at.as_millisecond(),
-            b.updated_at.as_millisecond(),
-            lww.hlc.physical_ms as i64,
-            lww.hlc.logical,
-            lww.seq as i64,
-            &lww.device[..],
-        ],
-    )?;
-    Ok(())
-}
-
-/// Replace a Block's bindings with the op's set. Full-state, like every other
-/// entity op: the set on the winning op is the set.
-pub(super) fn replace_block_tasks(tx: &Transaction<'_>, b: &Block) -> rusqlite::Result<()> {
-    tx.execute(
-        "DELETE FROM block_tasks WHERE block_id = ?",
-        params![&b.id.bytes()[..]],
-    )?;
-    for t in &b.tasks {
-        tx.execute(
-            "INSERT OR IGNORE INTO block_tasks (block_id, task_id) VALUES (?, ?)",
-            params![&b.id.bytes()[..], &t.bytes()[..]],
-        )?;
-    }
-    Ok(())
-}
-
 /// Read one Block, with its bindings.
 pub(super) fn read_block(
     conn: &rusqlite::Connection,
@@ -519,12 +485,13 @@ pub(super) fn read_block(
         .query_row(
             "SELECT stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
                     ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
-                    deleted, extra, created_at_ms, updated_at_ms
+                    deleted, extra, created_at_ms, updated_at_ms,
+                    starts_at_civil, ends_at_civil
              FROM blocks WHERE id = ?",
             params![&id[..]],
             |r| {
                 Ok((
-                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
@@ -537,6 +504,8 @@ pub(super) fn read_block(
                     r.get::<_, Option<Vec<u8>>>(10)?,
                     r.get::<_, i64>(11)?,
                     r.get::<_, i64>(12)?,
+                    r.get::<_, Option<String>>(13)?,
+                    r.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -548,9 +517,9 @@ pub(super) fn read_block(
         id: EntityRef::new(EntityKind::Block, *id),
         created_at: ms_to_ts(b.11.max(0)),
         updated_at: ms_to_ts(b.12.max(0)),
-        stream_id: EntityRef::new(EntityKind::Stream, blob16(&b.0)),
-        starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref()),
-        ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref()),
+        stream_id: b.0.map(|s| EntityRef::new(EntityKind::Stream, blob16(&s))),
+        starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref(), b.13.as_deref()),
+        ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref(), b.14.as_deref()),
         title: b.7,
         title_track_task: b.8 != 0,
         tasks: read_block_tasks(conn, id)?,

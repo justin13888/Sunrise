@@ -14,7 +14,6 @@ workspace = true
 
 [dependencies]
 snow = { workspace = true }
-blake3 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -25,7 +24,8 @@ zeroize = { workspace = true }
 sunrise-cbor = { workspace = true }
 subtle = { workspace = true }
 sunrise-crypto = { workspace = true }
-sunrise-error = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
+sunrise-test-seed = { workspace = true }

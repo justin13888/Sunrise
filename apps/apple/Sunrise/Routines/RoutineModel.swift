@@ -69,13 +69,13 @@ final class RoutineModel {
     // MARK: - Writing
 
     func create(_ draft: RoutineDraftIn) async {
-        await run(.createRoutine(draft: draft), label: "new routine “\(draft.template.title)”")
+        await run(.createRoutine(draft: draft), label: L10n.Routines.undoNew(title: draft.template.title))
     }
 
     func update(_ routine: RoutineItem, _ edit: RoutineEdit) async {
         await run(
             .updateRoutine(id: routine.id, edit: edit),
-            label: "edit “\(routine.template.title)”"
+            label: L10n.Routines.undoEdit(title: routine.template.title)
         )
     }
 
@@ -85,8 +85,8 @@ final class RoutineModel {
         await run(
             .updateRoutine(id: routine.id, edit: edit),
             label: paused
-                ? "pause “\(routine.template.title)”"
-                : "resume “\(routine.template.title)”"
+                ? L10n.Routines.undoPause(title: routine.template.title)
+                : L10n.Routines.undoResume(title: routine.template.title)
         )
     }
 
@@ -96,15 +96,15 @@ final class RoutineModel {
         await run(
             .updateRoutine(id: routine.id, edit: edit),
             label: archived
-                ? "archive “\(routine.template.title)”"
-                : "unarchive “\(routine.template.title)”"
+                ? L10n.Routines.undoArchive(title: routine.template.title)
+                : L10n.Routines.undoUnarchive(title: routine.template.title)
         )
     }
 
     func delete(_ routine: RoutineItem) async {
         await run(
             .deleteRoutine(id: routine.id),
-            label: "delete “\(routine.template.title)”"
+            label: L10n.Routines.undoDelete(title: routine.template.title)
         )
     }
 
@@ -118,7 +118,7 @@ final class RoutineModel {
         guard let key = Self.occurrenceKey(atMs: at, timeZone: routine.timezone) else { return }
         await run(
             .skipRoutineOccurrence(id: routine.id, occurrenceKey: key),
-            label: "skip \(key) of “\(routine.template.title)”"
+            label: L10n.Routines.undoSkip(occurrence: key, title: routine.template.title)
         )
     }
 
@@ -126,7 +126,7 @@ final class RoutineModel {
     /// thing the periodic timer does, on demand.
     func materializeNow() async {
         let now = await bridge.nowMs()
-        await run(.materializeRoutines(nowMs: now), label: "materialize routines")
+        await run(.materializeRoutines(nowMs: now), label: L10n.Routines.undoMaterialize)
     }
 
     func dismissUndoNote() { undoNote = nil }

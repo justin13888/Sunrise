@@ -80,7 +80,7 @@ final class SavedViewsModel {
         let missing = view.contexts.count - resolved.count
         recallNote = missing == 0
             ? nil
-            : "\(missing) of this view's contexts no longer exist and were not applied."
+            : L10n.SavedViews.missingContexts(count: missing)
 
         return destination(for: view.view, contexts: resolved, book: book)
     }

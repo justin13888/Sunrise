@@ -10,8 +10,9 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 ┌──────────────────────────────────────────────────────────────────┐
 │  Presentation                                                    │
 │  Per-platform UI: macOS and iOS/iPadOS (SwiftUI, one shared      │
-│  view layer) and the `sunrise` CLI (Rust); Android and Web       │
-│  are deferred. Owns: layout, input, native APIs.                 │
+│  view layer), the `sunrise` CLI (Rust) and the local-only web    │
+│  client (React over the WASM core); Android is deferred.         │
+│  Owns: layout, input, native APIs.                               │
 └──────────────────────────────────────────────────────────────────┘
                                 │  uses
                                 ▼
@@ -46,9 +47,11 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 | Crypto, key handling | Core | Audit surface stays small |
 | Local DB schema | Core | UI doesn't touch SQLite directly |
 | Sync state machine | Core | Reconnect logic is too subtle to duplicate per-platform |
+| Undo/redo, saved views, edit gate, zone-read vocabulary | Client layer (`sunrise-client-core`) | Not domain rules, not rendering, and every client needs the same answer ([shared-core.md §The client layer](shared-core.md#the-client-layer)) |
+| Account bootstrap, recovery flow, bounded `sync_once` | Client layer (`sunrise-client-core`, `relay` feature) | Orchestrates the core and the REST client; one implementation for the CLI and the Apple apps |
 | Notifications scheduling | Per-platform UI | Each OS has its own scheduler |
 | Filesystem / keychain | Per-platform UI | Each OS has its own APIs; core gets injected handles |
-| Background sync | Per-platform UI | iOS BGTasks vs Android WorkManager vs systemd vs browser SW |
+| Background sync scheduling | Per-platform UI | iOS BGTasks vs Android WorkManager vs systemd vs browser SW; what runs inside the budget is the client layer's `sync_once` |
 | Rendering | Per-platform UI | Native look-and-feel per platform |
 
 ## Why a shared core in Rust
@@ -56,26 +59,12 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 See [`../11-adr/0002-shared-core-rust.md`](../11-adr/0002-shared-core-rust.md). Summary:
 
 - We need *one* implementation of merge, crypto, and sync — not four.
-- It must run inside a macOS app (Swift via UniFFI), a CLI (Rust native), and — when they are scheduled — iOS (Swift via UniFFI), Android (Kotlin via UniFFI) and the browser (WASM).
+- It runs inside the macOS and iOS apps (Swift via UniFFI), a CLI (Rust native) and the browser (WASM, local only — [ADR-0055](../11-adr/0055-web-wasm-core.md)), and must run inside Android (Kotlin via UniFFI) when that is scheduled.
 - Rust gives us memory safety, deterministic builds, and one ecosystem (RustCrypto, rusqlite, sqlcipher).
 
 ## What the core exposes
 
-A narrow, async, message-passing API. No callbacks across the FFI boundary except for **two** push channels: domain change events, and sync status events.
-
-```rust
-// Pseudocode — see 01-architecture/shared-core.md for the full surface
-pub struct Core { /* … */ }
-
-impl Core {
-    pub async fn open(vault_path: &Path, unlock: Unlock) -> Result<Core>;
-    pub async fn submit(&self, cmd: Command) -> Result<CommandResult>;
-    pub async fn query(&self, q: Query) -> Result<QueryResult>;
-    pub fn changes(&self) -> Stream<DomainEvent>;
-    pub fn sync_status(&self) -> Stream<SyncStatus>;
-    pub async fn close(self) -> Result<()>;
-}
-```
+A narrow, async, message-passing API. No callbacks across the FFI boundary except for **two** push channels: domain change events, and sync status events. The surface is sketched in [shared-core.md §Public surface](shared-core.md#public-surface-sketch); `crates/sunrise-core/src/core/mod.rs` is the real one.
 
 UI layers do not call SQLite, do not invoke crypto, and do not parse the wire protocol. They send commands and render queries.
 

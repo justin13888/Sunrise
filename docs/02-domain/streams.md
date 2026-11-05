@@ -52,8 +52,7 @@ ReviewCadence = "weekly" / "biweekly" / "monthly" / "none" / tstr
   device's global default is the floor. See
   [`../08-features/notifications.md`](../08-features/notifications.md).
 - **There is no `integrations` map**, and no `IntegrationKey` /
-  `IntegrationConfig` type. Earlier revisions declared one; nothing has ever
-  serialized it, and the field was deleted rather than deferred. Integration
+  `IntegrationConfig` type. Integration
   credentials are **account-scoped**, not Stream-scoped: they belong to
   [ADR-0025](../11-adr/0025-integration-account-entity.md)'s
   `IntegrationAccount` entity, because one Google authorization backs many
@@ -97,8 +96,10 @@ no `stream_id` belongs to no stream, and its ops are sealed under the vault's
 - The **Inbox** is a view over stream-less, untriaged tasks
   ([`tasks.md` §Inbox](./tasks.md#inbox)), not a stream.
 
-Until [#332](https://github.com/justin13888/Sunrise/issues/332) lands, the tree still models this as a fixed-id Stream,
-`str_0000076XBEE9MQ6S9ED5Q64VVR`, that commands refuse to delete.
+In the tree it is `sunrise_domain::KeyDomain::Private`
+(`crates/sunrise-domain/src/key_domain.rs`); a stream command that names its
+id is refused with `ReservedStream`, and a share carries only `StreamId`s
+(`Keychain::stream_grant_keys`), which cannot name it.
 
 ## Why one-level nesting only
 
@@ -183,10 +184,6 @@ The string is bounded by a defrag rule:
 > roughly a digit per 26 insertions, without limit — and
 > `sort_order::DEFRAG_THRESHOLD_BYTES` records the bound that nothing reads
 > yet. Adding the op is a `DOC_SCHEMA_V` bump, not a breaking change.
->
-> The *write path* is implemented, and that is a change from an earlier
-> revision of this section, which claimed `sort_order` was "written and read"
-> while every construction site hardcoded `"a0"`.
 
 ## Sharing
 
@@ -201,8 +198,8 @@ See [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 Every Stream field is a per-field LWW register on `(hlc, device_id, seq)`
 ([ADR-0044](../11-adr/0044-per-field-ops.md),
 [ADR-0016](../11-adr/0016-hlc-timestamps.md)). Renaming a stream on one device
-and recolouring it on another both survive. The tree still merges the whole
-Stream as one full-state unit until [#319](https://github.com/justin13888/Sunrise/issues/319) lands.
+and recolouring it on another both survive. That is a `core.field_ops` vault; a
+legacy vault merges the whole Stream as one full-state unit.
 
 `sort_order` is worth calling out: it is one register per stream, so two
 devices moving the *same* stream concurrently produce one survivor, and two
@@ -211,7 +208,7 @@ keeps a single reorder from rewriting every sibling.
 
 Under today's full-state merge the test
 `concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge`
-in `crates/sunrise-core/src/engine/tests.rs` has two devices drag the same stream at
+in `crates/sunrise-core/src/engine/tests/streams.rs` has two devices drag the same stream at
 the same instant and asserts that both land on one of the two keys and never on
 a third. Two rows can also end up *sharing* a key that way — a device can only
 lose a reorder wholesale, so it can lose it onto a key a sibling already holds —
@@ -223,7 +220,12 @@ replica.
 - `name` MUST be non-empty.
 - `parent_id` MUST refer to a non-archived, non-deleted, top-level Stream **at the time the `parent_id` is set or changed**. A `parent_id` that later names a tombstone reads as top-level (see §Deleting a stream).
 - `DeleteStream` with `MoveTo` MUST name a live stream other than the one being deleted.
-- Cycles are impossible by structure (one-level limit + no parent self-reference).
+- Cycles are impossible by structure on one device (one-level limit + no
+  parent self-reference). Two devices that each nest one stream under the
+  other concurrently merge into a loop; every replica reads the stream whose
+  `parent_id` write is newest as top-level, and reports the loop as a
+  `dependency_cycle` conflict ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+  §5, D18).
 
 ## Deleting a stream
 
@@ -256,6 +258,10 @@ value. So no reader ever sees a live entity in a deleted stream.
 A child whose parent is deleted concurrently with a re-parent on another device
 also resolves at read time: a `parent_id` naming a tombstone reads as top-level.
 
-Until [#332](https://github.com/justin13888/Sunrise/issues/332) lands, `delete_stream` tombstones the stream row only
-(`crates/sunrise-core/src/engine/stream.rs#delete_stream`), and its dependents
-keep naming it.
+In the tree, `delete_stream` writes every member of the command as one group
+(`crates/sunrise-core/src/engine/stream.rs#delete_stream`, ADR-0065 §6), and
+the fold projects each task's, block's and routine's effective stream into its
+row, re-projecting a stream's dependents when its tombstone or `rehomed_to`
+changes (`crates/sunrise-core/src/engine/merge/project.rs#rehome_dependents`,
+ADR-0046 clarification C3). A device on a build before ADR-0046 that deletes a
+stream writes a tombstone with no `rehomed_to`, which reads as a detach.

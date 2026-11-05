@@ -14,8 +14,9 @@
 //! ```
 //!
 //! Deliberately hand-rolled rather than pulling in an arg parser: the surface
-//! is a handful of positional subcommands, and the crate has no dependency
-//! that is not already earning its place.
+//! is positional subcommands with a few flags each, and the crate has no
+//! dependency that is not already earning its place. This file opens the
+//! vault; the subcommands are in `cmd`, one module per family.
 //!
 //! # stdout is the contract; logs go to a file
 //!
@@ -38,160 +39,12 @@
     clippy::too_many_lines
 )]
 
+mod cmd;
+
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::i18n::strings;
-use sunrise_cli::{livesync, login, pair, vault};
-use sunrise_core::commands::FocusStartDraft;
-use sunrise_core::{
-    AttachmentFetchState, Command, Core, Query, QueryResult, RevokeReason, SystemRng,
-};
-use sunrise_domain::routine_rows;
-use sunrise_id::{EntityKind, EntityRef};
-
-const USAGE: &str = "\
-sunrise — command-line client for Sunrise
-
-USAGE:
-  capture and triage
-    sunrise capture <text>...    parse and commit one task, then exit
-    sunrise edit <id>... <tokens>...
-                                 change a task's fields (see EDIT SYNTAX)
-    sunrise retitle <id> <text>...
-                                 give one task a new title
-    sunrise defer <id>... <when> push tasks out, counting the deferral
-    sunrise done <id>...         complete one or more tasks
-    sunrise drop <id>...         soft-delete one or more tasks
-    sunrise today                list today's tasks
-    sunrise inbox                list inbox tasks
-    sunrise next                 the focus planner's top picks
-    sunrise search <query>...    full-text search
-
-  the vault's shape
-    sunrise streams              list streams with open counts
-    sunrise streams move <id|name> before <id|name>
-    sunrise streams move <id|name> last
-                                 reorder the stream list; syncs to every device
-    sunrise stream <id|name>     list the tasks in one stream
-    sunrise contexts             list contexts with task counts
-    sunrise context <id|name>    list the tasks carrying one context
-    sunrise routines             list routines with cadence and streak
-
-  attachments
-    sunrise attachments <task-id>
-                                 list a task's attachments, marking which are
-                                 on this device
-    sunrise attachment get <attachment-id> [path]
-                                 download one attachment's bytes on demand,
-                                 whatever its size, and write them to `path`
-                                 or to stdout
-    sunrise attachment cancel <attachment-id>
-                                 stop a download this vault has outstanding and
-                                 mark it partial; `get` restarts it from byte 0
-
-  review and reporting
-    sunrise review               print this week's review summary
-    sunrise export <dataset> [json|csv] [path]
-                                 trends | activity | focus | streaks
-
-  calendar interchange (RFC 5545)
-    sunrise ical import <path|-> [--stream <id>] [--source <name>]
-                                 read an .ics file (or stdin) as time blocks
-    sunrise ical export [today|week] [path]
-                                 write .ics to stdout, or to a path
-
-  devices and identity
-    sunrise pair offer --out <file>
-                                 (on the device with the vault) write the
-                                 account's public identity. Carries no key
-    sunrise pair request --offer <file> --out <file>
-                                 (on the device being added) mint this device's
-                                 keys and ask for a certificate
-    sunrise pair issue --request <file> --out <file>
-                                 (on the device with the vault) certify those
-                                 keys and hand over the vault. This file carries
-                                 your vault key
-    sunrise pair accept --response <file>
-                                 (on the device being added) adopt the
-                                 certificate and open the vault
-    sunrise devices              list this account's devices, marking revoked
-                                 and non-current ones distinctly
-    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
-                                 revoke a device and rotate every Stream key, so
-                                 it reads nothing written afterwards. Also
-                                 rotates the account identity, on the device
-                                 that created the account. It cannot be
-                                 undone: to use the device again, pair it
-                                 as a new device
-    sunrise identity status      the account's identity chain: its stable name,
-                                 the identity in force, and whether this device
-                                 still speaks for it
-    sunrise identity rotate [--new-recovery-code]
-                                 replace the account identity, keeping every
-                                 current device. --new-recovery-code refuses to
-                                 carry the old code forward, which is what to
-                                 use when the code itself is suspected
-
-  account
-    sunrise vaults               list this machine's vaults, marking the open one
-    sunrise login                sign in via OIDC and store the token
-    sunrise logout               forget the stored token
-    sunrise whoami               report the stored token's state
-    sunrise bootstrap [email]    publish this vault's identity to the relay,
-                                 register this device, and print the 24-word
-                                 recovery code once. Write that code down
-    sunrise recover <word>...    rebuild this account in an EMPTY vault
-                                 directory from the 24-word code. Reads the
-                                 code from stdin if none is given, and signs
-                                 you in again first — the relay only releases
-                                 a recovery blob to a fresh authentication
-
-  plumbing
-    sunrise focus <id>           open a focus session on a task
-    sunrise focus end [--done]   close every running session; --done also
-                                 completes the task it was opened on
-    sunrise sync --once          drain the outbox and exit (cron / CI)
-    sunrise help                 show this message
-
-CAPTURE SYNTAX:
-    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
-
-    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
-
-EDIT SYNTAX:
-    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when
-    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-
-
-    sunrise edit tsk_01J… '#work !1 ^next friday'
-    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
-
-    Bare words are refused: an edit line is not a title, and the whole
-    line is rejected if any token is, so nothing is half-applied.
-    The title is `sunrise retitle`, which is all title and no grammar.
-
-ENVIRONMENT:
-    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
-                              Each one is a separate account: the first open
-                              mints a random 32-byte root for it
-    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one
-                              file per vault (default
-                              $XDG_DATA_HOME/sunrise/keys). Deliberately not
-                              inside the vault: a vault directory copied on
-                              its own must stay ciphertext. Back both up
-    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
-                              keystore — how two vaults share one account
-                              until pairing lands, and how to open a vault
-                              made before per-vault keys
-    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
-    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
-                              login. Unset, with no stored login, only works
-                              against a self-host relay
-    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
-    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
-    SUNRISE_LOG_FILE          override the NDJSON log destination
-
-  Joining an account is `sunrise pair`, not a variable. The two that used to do
-  it carried the account's signing key in one file; see `sunrise pair`.
-";
+use sunrise_cli::{livesync, login, open_failure, pair, pair_relay, undo_file, vault, zone};
+use sunrise_core::SystemRng;
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
 /// `Termination` impl for a `Result` prints the error's **`Debug`** form.
@@ -219,107 +72,36 @@ async fn main() -> std::process::ExitCode {
         crypto_v = u64::from(proto.crypto),
         "sunrise-cli starting"
     );
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    // `--json` and `--tz` are recognised anywhere on the line
+    // (`sunrise_cli::args`), so they come off before the subcommand is read.
+    let (global, args) = match sunrise_cli::args::split(&raw) {
+        Ok(split) => split,
+        Err(e) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("{}", strings::general::error(&e));
+            }
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let Some(sub) = args.first() else {
         #[allow(clippy::print_stdout)]
         {
-            print!("{USAGE}");
+            print!("{}", strings::usage::text());
         }
         return std::process::ExitCode::SUCCESS;
     };
-    match run(sub, &args[1..]).await {
+    match run(&global, sub, &args[1..]).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             // stderr, because stdout is the contract a script reads.
             #[allow(clippy::print_stderr)]
             {
-                eprintln!("error: {e}");
+                eprintln!("{}", strings::general::error(&e.to_string()));
             }
             std::process::ExitCode::FAILURE
         }
-    }
-}
-
-/// Lowercase hex of a 16-byte id, for the device and identity listings.
-///
-/// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
-/// of `D_S_pub` and an identity id one of `ID_S_pub`, neither of them a ULID —
-/// so hex is the only form they have ever had on screen or in a log.
-fn hex16(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(32);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
-/// Report the devices the account has stopped calling revoked while still
-/// giving them no keys.
-///
-/// Printed on **both** branches of `devices revoke` — the gated one and the
-/// ordinary one — because it is not about the revocation the user just asked
-/// for. `device_revocations` is a fold (ADR-0041), so applying any revocation
-/// can discard an older one whose own author the ledger revokes, and the
-/// devices that drops go back to reading as ordinary members on `sunrise
-/// devices`. `core.device.revocation_unwound` says so in NDJSON; this is the
-/// same fact where the person who ran the command can see it.
-///
-/// Silent when the set is empty, which is the overwhelmingly common case.
-fn print_revocation_unwound(unwound: &[String]) {
-    // Same reason as `run` below: a CLI's whole job is writing to stdout, and
-    // the workspace-wide ban exists to keep it out of *library* code.
-    #![allow(clippy::print_stdout)]
-    if unwound.is_empty() {
-        return;
-    }
-    // The indentation is this report's layout, not the message's: it stays
-    // here, and the catalog holds only the words.
-    println!(
-        "  - {}",
-        strings::devices::unwound(i64::try_from(unwound.len()).unwrap_or(i64::MAX))
-    );
-    let row_note = strings::devices::unwound_row();
-    for id in unwound {
-        println!("      {id}  {row_note}");
-    }
-    println!("    {}", strings::devices::unwound_remedy());
-}
-
-/// The value after `--name`, if the flag is present with one.
-fn flag_value(args: &[String], name: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == name)?;
-    args.get(i + 1).cloned()
-}
-
-/// Resolve a device id from a hex **prefix**, refusing an ambiguous one.
-///
-/// Full 32-character ids are not something a user retypes, and this CLI already
-/// resolves streams and contexts by partial name. Ambiguity is an error rather
-/// than a first match: the whole point of the command that uses this is to cut
-/// off one specific device, and picking the wrong one is both destructive and
-/// silent.
-async fn resolve_device(core: &Core, prefix: &str) -> Result<[u8; 16], Box<dyn std::error::Error>> {
-    let prefix = prefix.trim().to_ascii_lowercase();
-    if prefix.is_empty() {
-        return Err("give a device id or a prefix of one".into());
-    }
-    let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
-        return Err("expected a device list".into());
-    };
-    let hits: Vec<[u8; 16]> = rows
-        .iter()
-        .filter(|d| hex16(&d.device_id).starts_with(&prefix))
-        .map(|d| d.device_id)
-        .collect();
-    match hits.as_slice() {
-        [one] => Ok(*one),
-        [] => Err(format!("no device id starts with `{prefix}`").into()),
-        many => Err(format!(
-            "`{prefix}` matches {} devices; use more characters",
-            many.len()
-        )
-        .into()),
     }
 }
 
@@ -365,13 +147,17 @@ fn vaults() {
 
 /// Dispatch a subcommand. Returns `Ok` on success; the process exit code
 /// is non-zero only on a real failure, so scripts can branch on it.
-async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    global: &sunrise_cli::args::Global,
+    sub: &str,
+    rest: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     // A CLI's whole job is writing to stdout; the workspace-wide ban on
     // print_stdout exists to keep it out of *library* code.
     #![allow(clippy::print_stdout)]
     match sub {
         "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            print!("{}", strings::usage::text());
             return Ok(());
         }
         "--version" | "-V" => {
@@ -392,6 +178,15 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         // account identity the joiner could never replace, because the identity
         // a vault belongs to is decided when it is created. Each `pair` step
         // opens exactly what it needs, which for two of them is nothing.
+        // `join` and `add` are the same exchange over the relay
+        // (`sunrise_cli::pair_relay`), and `join` is the one with no vault.
+        "pair" if pair_relay::is_relay_step(rest) => {
+            let cmd = pair_relay::parse(rest)?;
+            let dir = vault_dir();
+            std::fs::create_dir_all(&dir).ok();
+            pair_relay::run(&dir, &cmd, global.json).await?;
+            return Ok(());
+        }
         "pair" => {
             let cmd = pair::parse(rest)?;
             let dir = vault_dir();
@@ -408,7 +203,33 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         // belongs to is decided when it is created — so the recovery would
         // then have nothing left to join.
         "recover" => {
-            recover(rest).await?;
+            cmd::recover(&vault_dir(), rest).await?;
+            return Ok(());
+        }
+        // Both answer a vault that will not open, so neither can wait for
+        // the open below: it is what refuses the vault
+        // (`sunrise_cli::open_failure`).
+        "backups" => {
+            for line in open_failure::backups(&vault_dir(), env!("CARGO_PKG_VERSION"), rest)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        "rebuild" if rest.first().is_some_and(|a| a == "--repair") => {
+            if rest.len() != 1 {
+                return Err(strings::rebuild::usage().into());
+            }
+            let dir = vault_dir();
+            // Checked before the root is resolved, which mints one for a
+            // directory that has none.
+            if !dir.join("vault.db").exists() {
+                return Err(strings::rebuild::no_vault(&dir.display().to_string()).into());
+            }
+            let root = vault::resolve(&dir, &SystemRng)?;
+            println!(
+                "{}",
+                open_failure::repair(&dir, env!("CARGO_PKG_VERSION"), root).await?
+            );
             return Ok(());
         }
         _ => {}
@@ -417,6 +238,15 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     let dir = vault_dir();
     std::fs::create_dir_all(&dir).ok();
     let dir_for_store = dir.clone();
+    // The reader's zone, if someone named one (`sunrise_cli::zone`). Checked
+    // before anything is opened, so an unknown name is refused with nothing
+    // touched rather than read as UTC.
+    let env_zone = std::env::var(zone::ENV_TZ).ok();
+    let chosen = zone::choose(
+        global.tz.as_deref(),
+        env_zone.as_deref(),
+        zone::stored(&dir).as_deref(),
+    )?;
     // This vault's own root — see `sunrise_cli::vault`. Minted on the first
     // open of a directory and kept in the keystore from then on, so two
     // `SUNRISE_VAULT` values are two accounts and not two folders sharing one
@@ -440,7 +270,11 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         &livesync::SyncPlan::default(),
         None,
     )
-    .await?;
+    .await
+    // What to do next comes with the error: a damaged vault, a copy that
+    // could not be written and a failed migration each have their own way
+    // out (`sunrise_cli::open_failure`).
+    .map_err(|e| open_failure::explain(&dir_for_store, &e, false))?;
 
     // Then the real plan. Almost nothing starts a driver: opening one for a
     // command that exits milliseconds later would just churn the relay.
@@ -452,7 +286,14 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     // `sunrise attachment get` with no `SUNRISE_SYNC_URL` reports it instead of
     // waiting; an attachment whose bytes are already here still works offline,
     // because locality is checked before the relay is.
-    if !matches!(sub, "sync" | "attachment") {
+    // `identity rotate` and `identity new-code` are the third: a rotation has
+    // to reach the relay before the code it issues is worth showing, and the
+    // new code's blob goes to the relay before the words do (ADR-0070).
+    let pushes_identity = sub == "identity"
+        && rest
+            .first()
+            .is_some_and(|v| v == "rotate" || v == "new-code");
+    if !matches!(sub, "sync" | "attachment") && !pushes_identity {
         env.url = None;
     }
     let plan = livesync::plan_from_env(
@@ -471,1657 +312,47 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         eprintln!("{line}");
     }
 
-    let result = dispatch(&core, &dir_for_store, sub, rest).await;
+    // Reported the one way a client reports a zone (ADR-0066 §5), so every
+    // query, the capture parser and the client layer read in it.
+    let zone_source = match &chosen {
+        Some(c) => {
+            core.on_time_zone_changed(&c.name)
+                .map_err(|_| zone::ZoneError::Unknown {
+                    name: c.name.clone(),
+                    from: c.source,
+                })?;
+            c.source
+        }
+        None => zone::ZoneSource::System,
+    };
+
+    // The undo history this vault's earlier commands left (`sunrise undo`).
+    let loaded = undo_file::load(&dir_for_store, &root);
+    #[allow(clippy::print_stderr)]
+    if let Some(why) = &loaded.discarded {
+        eprintln!("{}", strings::general::note(&strings::undo::discarded(why)));
+    }
+    let ctx = cmd::Ctx {
+        core: &core,
+        shared: &core,
+        vault_dir: &dir_for_store,
+        history: loaded.history,
+        dirty: std::cell::Cell::new(false),
+        json: global.json,
+        zone_source: std::cell::Cell::new(zone_source),
+    };
+    let result = cmd::dispatch(&ctx, sub, rest).await;
+    // Written back only when something was recorded, so a read never writes
+    // a file into the vault directory.
+    if ctx.dirty.get() {
+        #[allow(clippy::print_stderr)]
+        if let Err(e) = undo_file::save(&dir_for_store, &root, &ctx.history, &SystemRng) {
+            eprintln!(
+                "{}",
+                strings::general::note(&strings::undo::unsaved(&e.to_string()))
+            );
+        }
+    }
     core.shutdown().await;
     result
-}
-
-async fn dispatch(
-    core: &Core,
-    vault_dir: &std::path::Path,
-    sub: &str,
-    rest: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    match sub {
-        "login" => {
-            let cfg = login::LoginConfig::from_env().map_err(|e| {
-                format!(
-                    "{e}; set {} and {} first",
-                    login::ENV_ISSUER,
-                    login::ENV_CLIENT_ID
-                )
-            })?;
-            let store = login::store_for(vault_dir);
-            let device_id = login::device_id_hex(core);
-            let mut announce = |line: &str| println!("{line}");
-            println!("{}", strings::login::opening_browser());
-            let creds =
-                login::login(&cfg, &device_id, &store, core.now_ms(), &mut announce).await?;
-            let secs = creds.expires_at_ms.saturating_sub(core.now_ms()) / 1000;
-            println!(
-                "{}",
-                strings::login::signed_in(i64::try_from(secs).unwrap_or(i64::MAX))
-            );
-            return Ok(());
-        }
-        "logout" => {
-            login::logout(&login::store_for(vault_dir))?;
-            println!("{}", strings::login::signed_out());
-            return Ok(());
-        }
-        "whoami" => {
-            println!(
-                "{}",
-                login::status_line(&login::store_for(vault_dir), core.now_ms())
-            );
-            return Ok(());
-        }
-        // The caller ADR-0021 opens by observing does not exist: "the
-        // account-and-device bootstrap flow the crypto design depends on was
-        // specified, served, and never invoked, and nothing detected that".
-        //
-        // Both calls are idempotent server-side, so running this twice adopts
-        // the existing account rather than failing.
-        "bootstrap" => {
-            let store = login::store_for(vault_dir);
-            let creds = sunrise_auth::store::CredentialStore::load(&store)?
-                .ok_or("not signed in; run `sunrise login` first")?;
-            let url = std::env::var(livesync::ENV_SYNC_URL)
-                .map_err(|_| format!("set {} to the relay origin", livesync::ENV_SYNC_URL))?;
-
-            let (account, recovery_code) = bootstrap_account(core, rest)?;
-            let outcome = sunrise_relay_client::bootstrap(
-                &url,
-                &creds.access_token,
-                account,
-                bootstrap_device(core),
-            )
-            .await?;
-
-            // Recorded, not merely printed: `X-Sunrise-Device` names this row
-            // on every later request, and the relay never sends the id again.
-            // A client that dropped it would hold a signing key it could not
-            // say whose it was.
-            if let Err(e) = livesync::save_relay_device_id(vault_dir, &outcome.device_id) {
-                return Err(format!(
-                    "registered as {} but could not record it at {}: {e}",
-                    outcome.device_id,
-                    livesync::relay_device_path(vault_dir).display()
-                )
-                .into());
-            }
-
-            println!(
-                "Account {} ({}) ready; this device is {}.",
-                outcome.identity_id, outcome.email, outcome.device_id
-            );
-            // Printed only after the relay accepted the blob. A second
-            // bootstrap that seals a *different* blob is refused with
-            // `409 RECOVERY_BLOB_EXISTS` and never reaches this line, so a code
-            // this command shows is always the code the stored blob opens.
-            match recovery_code {
-                Some(code) => print_recovery_code(&code),
-                None => {
-                    #[allow(clippy::print_stderr)]
-                    {
-                        eprintln!(
-                            "note: this vault was paired into an existing account, so it holds no \
-                             identity key and cannot produce a recovery code. The device that \
-                             created the account is the one that can."
-                        );
-                    }
-                }
-            }
-            return Ok(());
-        }
-        _ => {}
-    }
-    match sub {
-        "capture" => {
-            let text = rest.join(" ");
-            if text.trim().is_empty() {
-                return Err("capture needs some text; see `sunrise help`".into());
-            }
-            // System zone, so `^tomorrow 9am` means the user's 9am.
-            let tz = jiff::tz::TimeZone::system();
-            let parsed = core.capture(&text, &tz).await?;
-            for u in &parsed.unresolved {
-                // Warnings go to stderr so stdout stays parseable. This is
-                // CLI output for the human running the command, not a log
-                // record — the subcommand path never enters the alternate
-                // screen, so stderr is safe here and only here.
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("note: {}", unresolved_note(u));
-                }
-            }
-            let title = parsed.draft.title.clone();
-            let res = core.submit(Command::CreateTask(parsed.draft)).await?;
-            println!("{}  {title}", res.entity.to_str());
-            Ok(())
-        }
-        "today" => {
-            let q = Query::Today {
-                now_ms: core.now_ms(),
-                contexts: vec![],
-            };
-            print_tasks(core.query(q).await?);
-            Ok(())
-        }
-        "inbox" => {
-            print_tasks(core.query(Query::Inbox).await?);
-            Ok(())
-        }
-        // The listing, and the one mutation that belongs to the list rather
-        // than to any one row. `move` is a subcommand here instead of a verb
-        // of its own because it is about the *order of the plural*, which is
-        // what `streams` names; a top-level `sunrise move` would read as
-        // moving a task between streams, which `edit #stream` already does.
-        "streams" if rest.first().map(String::as_str) == Some("move") => {
-            move_stream(core, &rest[1..]).await
-        }
-        // Two states, printed distinctly, because they are different facts
-        // and a user who conflates them will draw the wrong conclusion.
-        // `revoked` is a register entry naming a device id; `current` is
-        // whether the identity that certified the device is the one in force.
-        // A device that left and certified itself back in under a fresh id is
-        // `revoked: no, current: no` — the register has never heard of the new
-        // id, and `current` is the only column that shows it (ADR-0032, #105).
-        "devices" => {
-            let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
-                return Err("expected a device list".into());
-            };
-            let me = core.device_id();
-            for d in rows {
-                let mut marks: Vec<&str> = Vec::new();
-                if d.device_id == me {
-                    marks.push("this device");
-                }
-                if d.revoked {
-                    marks.push("revoked");
-                } else if d.read_bounded {
-                    // The two revocation facts have come apart, which since
-                    // ADR-0041 is ordinary rather than exotic: the register is
-                    // a fold, so a revocation stops being believed once the
-                    // ledger shows its own author was revoked first, while
-                    // `device_read_bounds` never gives the key bound back.
-                    // Printing only `revoked` hid this device entirely — it
-                    // read as a plain member while receiving nothing. The
-                    // remedy is named because there is one.
-                    marks.push(
-                        "removed earlier; the account no longer records that, \
-                         but it still receives no keys -- remove it again from \
-                         a device you trust",
-                    );
-                }
-                if !d.current {
-                    // Deliberately not "compromised" or "impostor". An honest
-                    // device that has not yet applied a rotation reads exactly
-                    // the same way for a moment, and nothing on this replica
-                    // can separate the two.
-                    marks.push("not active on this account");
-                }
-                if d.admitted_after_revocation {
-                    // The third state, and the only one that is invisible in
-                    // the two above when the revocation could not rotate the
-                    // identity: the fresh id is then certified under the
-                    // identity in force and reads `revoked: no, current: yes`.
-                    // Worded as an event rather than a verdict, because the
-                    // ordinary cause is an honest pairing (#144).
-                    marks.push("joined after a device was removed");
-                }
-                let suffix = if marks.is_empty() {
-                    String::new()
-                } else {
-                    format!("  [{}]", marks.join(", "))
-                };
-                println!(
-                    "{}  {:<20} {}{suffix}",
-                    hex16(&d.device_id),
-                    d.nickname,
-                    d.platform
-                );
-            }
-            // The other half of what a device list is for: not only "what has
-            // access" but "what happens if this one goes". `ID_D_priv` lives on
-            // the device that created the account and on one restored from the
-            // recovery code, and nowhere else; the consequence of losing it is
-            // permanent and no recovery feature added later can undo it, so it
-            // belongs under the list rather than in a document
-            // (`docs/03-crypto/recovery.md`, #144).
-            //
-            // Printed only when it is true. A device that does not hold the key
-            // has nothing to be careful about here, and a line saying so on
-            // every listing is how a warning stops being read.
-            if core.holds_identity_key() {
-                println!();
-                println!(
-                    "This device holds the account identity key. A sealed recovery code is \n\
-                     its only other copy: without one, losing this vault destroys the key \n\
-                     permanently and no recovery feature added later can retrieve it."
-                );
-                println!("  - `sunrise bootstrap` seals that second copy");
-            }
-            Ok(())
-        }
-        "device" => {
-            let Some(verb) = rest.first().map(String::as_str) else {
-                return Err("usage: sunrise device revoke <id-prefix> [--reason <r>]".into());
-            };
-            if verb != "revoke" {
-                return Err(format!("unknown device subcommand `{verb}`").into());
-            }
-            let args = &rest[1..];
-            let prefix = args
-                .iter()
-                .find(|a| !a.starts_with("--"))
-                .ok_or("usage: sunrise device revoke <id-prefix> [--reason <r>]")?;
-            let reason = match flag_value(args, "--reason").as_deref() {
-                None | Some("lost") => RevokeReason::Lost,
-                Some("stolen") => RevokeReason::Stolen,
-                Some("retired") => RevokeReason::Retired,
-                Some("compromised") => RevokeReason::Compromised,
-                Some(other) => {
-                    return Err(format!(
-                        "unknown reason `{other}`; use lost, stolen, retired or compromised"
-                    )
-                    .into())
-                }
-            };
-            let target = resolve_device(core, prefix).await?;
-            let outcome = core
-                .submit(Command::RevokeDevice {
-                    device_id: EntityRef::new(EntityKind::Device, target),
-                    reason,
-                })
-                .await?;
-
-            // The two-state disclosure `docs/03-crypto/key-rotation.md`
-            // §Revocation asks for, and issue #160. These are different
-            // guarantees and the second is the one a user pressing the button
-            // believes they are getting: the local half is done and durable,
-            // the relay half is a queued intent that needs a session. Printing
-            // only "revoked" would let a user with no network believe a stolen
-            // laptop had been cut off from the server, which it has not.
-            // Before any of it, because it makes the rest of the report moot.
-            // The fold judges the sender of every `device_revoke` row it
-            // holds, including the one this command has just written, and when
-            // this device is itself revoked the op is stored and skipped on
-            // every replica — so nothing was cut. The keys still rotated and
-            // the target is still a recipient of the new epochs, the register
-            // saying it is current, and the relay half was deliberately not
-            // queued. Printing "revoked" over that would be the same
-            // disclosure failure as printing it over a queued relay intent.
-            //
-            // The relay line is fixed copy rather than a read of
-            // `relay_revocation_pending`, and that is exact rather than
-            // assumed: a gated command leaves the target current in the
-            // register, and an intent is owed only while the register calls
-            // its device revoked. So an older intent for the same device — one
-            // an earlier, effective revocation queued before it unwound — is
-            // held and not sent (`crates/sunrise-core/src/relay_intents.rs`,
-            // #257).
-            if outcome.revocation_gated {
-                println!(
-                    "NOT revoked: this device has itself been revoked, so the account \
-                     discards its revocations of other devices."
-                );
-                println!("  - {} is still a current device", hex16(&target));
-                println!("  - this revocation tells the relay nothing");
-                println!(
-                    "  - the op is kept, not dropped: revoke from a device the account \
-                     still trusts, or see `sunrise devices` for which those are"
-                );
-                println!("  - no Stream key was rotated and the account identity is untouched");
-                print_revocation_unwound(&outcome.revocation_unwound);
-                return Ok(());
-            }
-            println!("Revoked {} locally.", hex16(&target));
-            // Not "every Stream key rotated" unconditionally: that was a claim
-            // this command could not always make. A vault row whose stream id
-            // is malformed names no stream to rotate, and the revoked device
-            // goes on holding whatever key it was last given for it.
-            if outcome.unrotated_streams.is_empty() {
-                println!("  - every Stream key rotated, and the account identity with it");
-            } else {
-                println!("  - the account identity rotated, and every Stream key BUT these:");
-                for raw in &outcome.unrotated_streams {
-                    println!("      {raw}  (not a 16-byte stream id; nothing to rotate)");
-                }
-                println!(
-                    "    that device may still read them. This is a corrupt row in the \
-                     local vault, not something the revocation can retry."
-                );
-            }
-            println!("  - that device cannot certify itself back in under a new id");
-            // Said on the effective branch only: a gated revocation revoked
-            // nothing, so there is nothing to be unable to undo. ADR-0056
-            // decides a withdrawal by this device, and until #383 builds it,
-            // pairing again is the only way back.
-            println!(
-                "  - this cannot be undone: to use that device again, pair it as a new device"
-            );
-            print_revocation_unwound(&outcome.revocation_unwound);
-            let pending = core.relay_revocation_pending(&target)?;
-            if pending {
-                println!(
-                    "  - the relay has NOT been told yet; it is queued and will be sent \
-                     on the next `sunrise sync`"
-                );
-            } else {
-                println!("  - the relay has been told");
-            }
-            Ok(())
-        }
-        "identity" => {
-            let verb = rest.first().map_or("status", String::as_str);
-            match verb {
-                "status" => {
-                    let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
-                        return Err("expected an identity status".into());
-                    };
-                    // The genesis first and labelled "account": it is the
-                    // value that does not move, and the one two devices
-                    // compare to decide they belong together. The identity in
-                    // force is a key, not a name.
-                    println!("account   {}", hex16(&st.genesis_identity_id));
-                    println!("current   {}", hex16(&st.current_identity_id));
-                    println!("rotations {}", st.transitions);
-                    println!(
-                        "this device {}",
-                        if st.this_device_is_current {
-                            "speaks for the account"
-                        } else {
-                            "does NOT speak for the account (no share of the current identity)"
-                        }
-                    );
-                    println!(
-                        "recovery  {}",
-                        if st.holds_recovery_key {
-                            "this device can seal a recovery code"
-                        } else {
-                            "this device cannot seal a recovery code"
-                        }
-                    );
-                    // The line above and this one look alike and answer
-                    // different questions: that one is `ID_D_priv` and what
-                    // this device can read back, this is `ID_S_priv` and what
-                    // it can say. A device added by pairing is a full member
-                    // that can admit nobody, and it should not have to discover
-                    // that from a failed `pair offer`.
-                    println!(
-                        "pairing   {}",
-                        if st.can_sponsor {
-                            "this device can add another device"
-                        } else {
-                            "this device was added by pairing and cannot add another; \
-                             run `sunrise pair` on the device the account was created on"
-                        }
-                    );
-                    Ok(())
-                }
-                "rotate" => {
-                    // The flag is phrased as what the user wants to happen —
-                    // a new code — rather than as the internal
-                    // `keep_recovery_code`, which is a double negative at the
-                    // one moment a user must not misread it.
-                    let keep = !rest.iter().any(|a| a == "--new-recovery-code");
-                    core.submit(Command::RotateIdentity {
-                        keep_recovery_code: keep,
-                    })
-                    .await?;
-                    let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
-                        return Err("expected an identity status".into());
-                    };
-                    println!(
-                        "Rotated. The account is still {}.",
-                        hex16(&st.genesis_identity_id)
-                    );
-                    println!(
-                        "  current identity is now {}",
-                        hex16(&st.current_identity_id)
-                    );
-                    if keep {
-                        println!("  your existing recovery code still works");
-                    } else {
-                        #[allow(clippy::print_stderr)]
-                        {
-                            eprintln!(
-                                "  your old recovery code no longer opens this account; \
-                                 run `sunrise bootstrap` to mint a new one"
-                            );
-                        }
-                    }
-                    Ok(())
-                }
-                other => Err(format!("unknown identity subcommand `{other}`").into()),
-            }
-        }
-        "streams" => {
-            if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
-                for s in rows {
-                    println!(
-                        "{}  {:<24} {} open",
-                        s.id.to_str(),
-                        s.name,
-                        s.open_task_count
-                    );
-                }
-            }
-            Ok(())
-        }
-        // Singular lists the tasks *in* one; plural lists the rows. Chosen
-        // over `streams <id>` and over a `--stream` flag: this CLI's other
-        // targeted verbs are bare positionals (`done <id>`, `focus <id>`), and
-        // `streams <id>` would read as "list streams, filtered" rather than
-        // "list that stream's tasks". One subcommand, one shape of output.
-        //
-        // The argument is joined rather than taken as `rest[0]` so an unquoted
-        // multi-word name (`sunrise stream home renovation`) works, exactly as
-        // `capture` and `search` already join theirs.
-        "stream" => {
-            let id = resolve_stream(core, &rest.join(" "), Archived::Include).await?;
-            print_tasks(core.query(Query::StreamTasks(id)).await?);
-            Ok(())
-        }
-        "context" => {
-            let id = resolve_context(core, &rest.join(" "), Archived::Include).await?;
-            print_tasks(core.query(Query::ContextTasks(id)).await?);
-            Ok(())
-        }
-        "search" => {
-            let text = rest.join(" ");
-            if text.trim().is_empty() {
-                return Err("search needs a query".into());
-            }
-            let q = Query::Search { text, limit: 100 };
-            print_tasks(core.query(q).await?);
-            Ok(())
-        }
-        "done" => done(core, rest).await,
-        "contexts" => {
-            if let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? {
-                for c in rows {
-                    let mark = if c.archived { " [archived]" } else { "" };
-                    println!(
-                        "{}  @{:<20} {} tasks{mark}",
-                        c.id.to_str(),
-                        c.name,
-                        c.task_count
-                    );
-                }
-            }
-            Ok(())
-        }
-        "routines" => {
-            if let QueryResult::Routines(rs) = core.query(Query::Routines).await? {
-                let now =
-                    jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap_or(0))
-                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-                for r in routine_rows(&rs, now) {
-                    let next = r.next.map_or_else(|| "-".to_string(), |t| t.to_string());
-                    let paused = if r.paused { " [paused]" } else { "" };
-                    println!(
-                        "{}  {:<28} {:<24} next {next} streak {}{paused}",
-                        r.id.to_str(),
-                        r.title,
-                        r.rrule,
-                        r.streak
-                    );
-                }
-            }
-            Ok(())
-        }
-        // `docs/07-clients/tui.md` §Capture from anywhere: "sunrise focus
-        // next — picks next Today task and enters focus".
-        "next" => next(core, false).await,
-        // `end` sits beside `next` for the same reason: neither is a task id
-        // (`tsk_…` is the only thing `focus_on` accepts), so a bare word here
-        // is unambiguously a mode and never a mistyped target.
-        "focus" => match rest.first().map(String::as_str) {
-            Some("next") | None => next(core, true).await,
-            Some("end") => end_focus(core, &rest[1..]).await,
-            Some(id) => focus_on(core, id).await,
-        },
-        "edit" => edit(core, rest).await,
-        "retitle" => retitle(core, rest).await,
-        "defer" => defer(core, rest).await,
-        "drop" => drop_tasks(core, rest).await,
-        "review" => review(core).await,
-        "export" => export(core, rest).await,
-        "ical" => ical(core, rest).await,
-        "attachments" => attachments(core, rest).await,
-        "attachment" => attachment(core, rest).await,
-        "sync" => sync_once(core, rest).await,
-        other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
-    }
-}
-
-/// Whether a resolver may land on an archived Stream / Context.
-///
-/// The domain rule (`docs/02-domain/contexts-and-tags.md`, and
-/// [`sunrise_domain::annotate`]'s module docs) is that an archived entity stays
-/// on the Tasks that carry it but must never be a target for **new input**.
-/// Listing is not new input — `sunrise contexts` prints archived rows, and a
-/// row you can see but cannot open is a dead end — so the two cases differ and
-/// the caller says which one it is.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Archived {
-    /// Listing (`sunrise stream`, `sunrise context`): archived rows count.
-    Include,
-    /// New input (`sunrise edit`'s `#stream` / `@context`): live rows only.
-    Exclude,
-}
-
-/// How long `attachment get` waits before handing the request back to the next
-/// session.
-///
-/// Ten times `sync --once`'s deadline, because they are waiting for different
-/// things: that one drains an outbox of small ops, and this one may be moving
-/// 100 MB. `Core::fetch_attachment` itself has no deadline — a GUI caller holds
-/// a Cancel button and a person — so the CLI supplies its own, and supplies it
-/// as a *report* rather than a failure: the request row is durable, so a
-/// download that outlasts this is still a download, and the next
-/// `sunrise sync --once` finishes it.
-const DOWNLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// `attachments <task-id>` — one task's attachments and where their bytes are.
-///
-/// The CLI had no attachment surface at all before this, which made the
-/// download verb below unusable on its own terms: a subcommand that takes an
-/// attachment id needs a subcommand that prints one.
-async fn attachments(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let raw = rest.first().ok_or("usage: attachments <task-id>")?;
-    let task = EntityRef::parse(raw, EntityKind::Task)
-        .map_err(|e| format!("not a task id: {raw} ({e})"))?;
-    let QueryResult::Attachments(rows) = core.query(Query::TaskAttachments(task)).await? else {
-        return Err("unexpected query result".into());
-    };
-    for att in rows {
-        println!(
-            "{}  {:<32} {:>10}  {}",
-            att.id.to_str(),
-            att.filename,
-            att.size_bytes,
-            where_the_bytes_are(core, &att)?
-        );
-    }
-    Ok(())
-}
-
-/// The state column of `sunrise attachments`, in the vocabulary the user acts
-/// on rather than the vocabulary the schema uses.
-///
-/// "here" is the only one that needs no further action, and the other three
-/// each name the next step: `get` it, wait for it, or `get` it again.
-fn where_the_bytes_are(
-    core: &Core,
-    att: &sunrise_domain::Attachment,
-) -> Result<&'static str, Box<dyn std::error::Error>> {
-    if core.attachment_is_local(att)? {
-        return Ok("here");
-    }
-    Ok(match core.attachment_fetch_state(att.id)? {
-        AttachmentFetchState::Requested => "downloading",
-        AttachmentFetchState::Partial => "partial (interrupted; `attachment get` restarts it)",
-        AttachmentFetchState::Idle if att.is_fetchable() => {
-            "not here (`attachment get` fetches it)"
-        }
-        // No `ciphertext_hash`, so this replica cannot name the blob on the
-        // relay and no amount of asking will produce it. Said plainly rather
-        // than offered as a button that cannot work.
-        AttachmentFetchState::Idle => "not here, and never uploaded",
-    })
-}
-
-/// `attachment get|cancel <attachment-id> [path]`.
-async fn attachment(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    match rest.first().map(String::as_str) {
-        Some("get") => attachment_get(core, &rest[1..]).await,
-        Some("cancel") => attachment_cancel(core, &rest[1..]),
-        _ => Err("usage: attachment get <attachment-id> [path] | attachment cancel <id>".into()),
-    }
-}
-
-/// `attachment get <attachment-id> [path]` — the CLI's Download button.
-///
-/// The bytes go to `path`, or to stdout when none is given, so
-/// `sunrise attachment get att_… > scan.png` works the way `ical export`
-/// already does. Written with `write_all` rather than printed: this is the one
-/// output in the CLI that is not text.
-async fn attachment_get(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // stdout carries the bytes, so the note about them goes to stderr — that is
-    // what keeps `sunrise attachment get att_… > scan.png` a valid file.
-    #![allow(clippy::print_stderr)]
-    use std::io::Write as _;
-    let raw = rest
-        .first()
-        .ok_or("usage: attachment get <attachment-id> [path]")?;
-    let id = EntityRef::parse(raw, EntityKind::Attachment)
-        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
-
-    match tokio::time::timeout(DOWNLOAD_DEADLINE, core.fetch_attachment(id)).await {
-        Ok(r) => r?,
-        // Not an error. The row is durable and still says what this device
-        // wants, so the honest report is that the work outlived the command.
-        Err(_) => {
-            return Err(format!(
-                "the download did not finish within {}s. The request stands: \
-                 `sunrise sync --once` will finish it",
-                DOWNLOAD_DEADLINE.as_secs()
-            )
-            .into())
-        }
-    }
-
-    let bytes = core.attachment_bytes(id).await?;
-    match rest.get(1) {
-        Some(path) => {
-            std::fs::write(path, &bytes).map_err(|e| format!("{path}: {e}"))?;
-            eprintln!("{} bytes written to {path}", bytes.len());
-        }
-        None => std::io::stdout().write_all(&bytes)?,
-    }
-    Ok(())
-}
-
-/// `attachment cancel <attachment-id>` — stop a download this vault has
-/// outstanding.
-///
-/// Useful across processes rather than within one: a `get` interrupted at the
-/// terminal leaves its request standing, which is deliberate — the next session
-/// finishes it — and this is how to say that was not what you wanted.
-fn attachment_cancel(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // A confirmation, not data: nothing should be piping this.
-    #![allow(clippy::print_stderr)]
-    let raw = rest.first().ok_or("usage: attachment cancel <id>")?;
-    let id = EntityRef::parse(raw, EntityKind::Attachment)
-        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
-    core.cancel_attachment_fetch(id)?;
-    eprintln!("{}  download cancelled; marked partial", id.to_str());
-    Ok(())
-}
-
-/// Readable phrasing for an unresolved capture / annotate token.
-///
-/// The parser reports these as data so each surface can word them; this is the
-/// CLI's wording, and it is the *only* one, so `capture`'s note and a failed
-/// `sunrise stream <name>` do not describe the same condition two ways.
-fn unresolved_note(u: &sunrise_domain::capture::Unresolved) -> String {
-    use sunrise_domain::capture::Unresolved as U;
-    match u {
-        U::UnknownStream(t) => format!("no stream matches \"{t}\" (try `sunrise streams`)"),
-        U::UnknownContext(t) => format!("no context matches \"{t}\" (try `sunrise contexts`)"),
-        U::AmbiguousStream { typed, candidates } | U::AmbiguousContext { typed, candidates } => {
-            format!("\"{typed}\" matches {}", candidates.join(", "))
-        }
-        U::UnparseableDate(t) => format!("could not read the date \"{t}\""),
-        U::PriorityOutOfRange(t) => format!("priority \"{t}\" is not 1-5"),
-        U::UnparseableDuration(t) => format!("could not read the duration \"{t}\""),
-    }
-}
-
-/// The live (or, for a listing, every) Stream as capture-parser candidates.
-///
-/// Returned as owned pairs because [`sunrise_domain::NamedRef`] borrows its
-/// name and the query result is a temporary.
-async fn stream_names(
-    core: &Core,
-    archived: Archived,
-) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
-    let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
-        return Err("unexpected query result".into());
-    };
-    Ok(rows
-        .into_iter()
-        .filter(|s| archived == Archived::Include || !s.archived)
-        .map(|s| (s.id, s.name))
-        .collect())
-}
-
-/// The Contexts as capture-parser candidates. See [`stream_names`].
-async fn context_names(
-    core: &Core,
-    archived: Archived,
-) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
-    let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? else {
-        return Err("unexpected query result".into());
-    };
-    Ok(rows
-        .into_iter()
-        .filter(|c| archived == Archived::Include || !c.archived)
-        .map(|c| (c.id, c.name))
-        .collect())
-}
-
-fn named(rows: &[(EntityRef, String)]) -> Vec<sunrise_domain::NamedRef<'_>> {
-    rows.iter()
-        .map(|(id, name)| sunrise_domain::NamedRef {
-            id: *id,
-            name: name.as_str(),
-        })
-        .collect()
-}
-
-/// Turn `<id|name>` into a Stream id.
-///
-/// An `str_…` id wins outright; anything else is a name, resolved by
-/// [`sunrise_domain::resolve_named`] — the same exact-then-unique-prefix rule
-/// `#stream` obeys in a capture line, because a user who types `#work` in one
-/// place and `sunrise stream work` in another means the same Stream.
-async fn resolve_stream(
-    core: &Core,
-    raw: &str,
-    archived: Archived,
-) -> Result<EntityRef, Box<dyn std::error::Error>> {
-    let typed = raw.trim().trim_start_matches('#').trim();
-    if typed.is_empty() {
-        return Err("usage: stream <id|name>; `sunrise streams` lists them".into());
-    }
-    if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
-        return Ok(id);
-    }
-    let rows = stream_names(core, archived).await?;
-    let mut unresolved = Vec::new();
-    sunrise_domain::resolve_named(
-        typed,
-        &named(&rows),
-        &mut unresolved,
-        sunrise_domain::NameKind::Stream,
-    )
-    .ok_or_else(|| {
-        unresolved
-            .first()
-            .map_or_else(|| format!("no stream matches \"{typed}\""), unresolved_note)
-            .into()
-    })
-}
-
-/// `sunrise streams move <id|name> before <id|name>` /
-/// `sunrise streams move <id|name> last`.
-///
-/// The reorder the sidebar does by dragging, as one shot. Both halves are
-/// joined rather than taken positionally, so an unquoted multi-word name works
-/// exactly as it does for `sunrise stream home renovation`; `before` and
-/// `last` are what separate the two names, which is why a stream may not be
-/// called either. That is a cheaper rule than a flag, and it reads aloud.
-///
-/// The Inbox is refused on both sides: it is synthetic, it has no Stream
-/// entity to write a key to, and it is pinned to the top of every listing.
-async fn move_stream(core: &Core, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    const USAGE: &str = "usage: streams move <id|name> before <id|name>\n\
-                                streams move <id|name> last";
-
-    let sep = args
-        .iter()
-        .position(|a| a == "before" || a == "last")
-        .ok_or(USAGE)?;
-    let moved = args[..sep].join(" ");
-    let target = args[sep + 1..].join(" ");
-    let to_last = args[sep] == "last";
-    if moved.trim().is_empty() || to_last != target.trim().is_empty() {
-        return Err(USAGE.into());
-    }
-
-    let moved = resolve_stream(core, &moved, Archived::Include).await?;
-    let target = if to_last {
-        None
-    } else {
-        Some(resolve_stream(core, &target, Archived::Include).await?)
-    };
-    if moved == sunrise_domain::inbox_stream_ref() || target == Some(moved) {
-        return Err("the Inbox is not a stream and cannot be reordered".into());
-    }
-
-    let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
-        return Err("unexpected query result".into());
-    };
-    // Everything but the moved row and the synthetic Inbox, in list order.
-    // Dropping the moved row first is what makes "move it one place down"
-    // work: its own key must not be one of the bounds it lands between.
-    let others: Vec<_> = rows
-        .iter()
-        .filter(|s| s.id != moved && s.id != sunrise_domain::inbox_stream_ref())
-        .collect();
-    let at = match target {
-        None => others.len(),
-        Some(t) => others
-            .iter()
-            .position(|s| s.id == t)
-            .ok_or("that stream is not in the list")?,
-    };
-    let after = at.checked_sub(1).map(|i| others[i].sort_order.as_str());
-    let before = others.get(at).map(|s| s.sort_order.as_str());
-
-    let key = sunrise_domain::sort_order::between(after, before)
-        .map_err(|e| format!("cannot place that stream: {e}"))?;
-    let patch = sunrise_domain::StreamPatch {
-        sort_order: Some(key),
-        ..Default::default()
-    };
-    core.submit(Command::UpdateStream { id: moved, patch })
-        .await?;
-
-    // Print the new order, because the whole point of the command is the
-    // order and a silent success would have to be checked with a second one.
-    #[allow(clippy::print_stdout)]
-    if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
-        for s in rows {
-            println!("{}  {}", s.id.to_str(), s.name);
-        }
-    }
-    Ok(())
-}
-
-/// Turn `<id|name>` into a Context id. See [`resolve_stream`].
-async fn resolve_context(
-    core: &Core,
-    raw: &str,
-    archived: Archived,
-) -> Result<EntityRef, Box<dyn std::error::Error>> {
-    let typed = raw.trim().trim_start_matches('@').trim();
-    if typed.is_empty() {
-        return Err("usage: context <id|name>; `sunrise contexts` lists them".into());
-    }
-    if let Ok(id) = EntityRef::parse(typed, EntityKind::Context) {
-        return Ok(id);
-    }
-    let rows = context_names(core, archived).await?;
-    let mut unresolved = Vec::new();
-    sunrise_domain::resolve_named(
-        typed,
-        &named(&rows),
-        &mut unresolved,
-        sunrise_domain::NameKind::Context,
-    )
-    .ok_or_else(|| {
-        unresolved
-            .first()
-            .map_or_else(
-                || format!("no context matches \"{typed}\""),
-                unresolved_note,
-            )
-            .into()
-    })
-}
-
-/// `done <id>...` — complete tasks by id.
-async fn done(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    if rest.is_empty() {
-        return Err("done needs at least one task id".into());
-    }
-    for raw in rest {
-        let id = EntityRef::parse(raw, EntityKind::Task)
-            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
-        core.submit(Command::CompleteTask(id)).await?;
-        println!("done  {raw}");
-    }
-    Ok(())
-}
-
-/// Split `<id>... <rest>...` at the first argument that is not a task id.
-///
-/// Lets every mutating verb take a list of tasks and then its own tail —
-/// `edit tsk_a tsk_b '!1 ^tomorrow'`, `defer tsk_a tsk_b tomorrow` — with the
-/// same shape `done <id>...` already has. An argument that is not a task id
-/// ends the list rather than failing, because the tail is a legitimate part of
-/// the line; a *leading* argument that is not an id yields an empty list, and
-/// the caller refuses that.
-fn split_task_ids(rest: &[String]) -> (Vec<EntityRef>, &[String]) {
-    let mut ids = Vec::new();
-    for (i, raw) in rest.iter().enumerate() {
-        match EntityRef::parse(raw, EntityKind::Task) {
-            Ok(id) => ids.push(id),
-            Err(_) => return (ids, &rest[i..]),
-        }
-    }
-    (ids, &[])
-}
-
-/// One task's current contexts, which an annotate line needs because contexts
-/// are a *replace* field: "add `@home`" is only expressible as the union of
-/// `@home` with what that particular task already carries.
-async fn task_contexts(
-    core: &Core,
-    id: EntityRef,
-) -> Result<Vec<EntityRef>, Box<dyn std::error::Error>> {
-    let QueryResult::Task(t) = core.query(Query::EntityById(id)).await? else {
-        return Err(format!("no such task: {}", id.to_str()).into());
-    };
-    Ok(t.contexts.iter().copied().collect())
-}
-
-/// `edit <id>... <tokens>...` — change a task's facets with the annotate
-/// grammar.
-///
-/// The grammar is [`sunrise_domain::annotate`]'s, unchanged and unextended:
-/// `#stream @ctx @-ctx !N %energy ~30m ^when due:when`, with `-` clearing any
-/// of them. It is the same vocabulary the app's edit line uses, which is the
-/// point — `docs/07-clients/overview.md` §"What clients share" puts the
-/// annotate grammar in `sunrise-domain` so two surfaces cannot disagree about
-/// what `^next friday` means.
-///
-/// **Nothing is written unless the whole line parses.** Capture's rule is the
-/// opposite — an unrecognised token stays in the title, because a capture line
-/// *is* a title — but an edit has no title to fall back into, and a script
-/// that mistyped `!9` and got four of its five changes applied is worse off
-/// than one that got a non-zero exit. So the errors are reported first and the
-/// command exits without touching the vault.
-///
-/// A `#stream` token becomes [`Command::PromoteToStream`] rather than a patch
-/// field: moving between Streams re-keys the task's storage, and `TaskPatch`
-/// deliberately does not carry it.
-async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout, clippy::print_stderr)]
-    let (ids, tail) = split_task_ids(rest);
-    if ids.is_empty() {
-        return Err("usage: edit <id>... <tokens>...; see `sunrise help`".into());
-    }
-    let line = tail.join(" ");
-    if line.trim().is_empty() {
-        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
-    }
-
-    // Live rows only: an archived Stream or Context stays on the tasks that
-    // carry it but must never be the target of new input.
-    let streams = stream_names(core, Archived::Exclude).await?;
-    let contexts = context_names(core, Archived::Exclude).await?;
-    let streams = named(&streams);
-    let contexts = named(&contexts);
-    // System zone, so `^tomorrow 9am` means the user's 9am, exactly as in
-    // `capture`.
-    let tz = jiff::tz::TimeZone::system();
-    let edit = sunrise_domain::parse_annotate(
-        &line,
-        &streams,
-        &contexts,
-        sunrise_domain::epoch_ms::from_u64(core.now_ms()),
-        &tz,
-    );
-    if !edit.errors.is_empty() {
-        for e in &edit.errors {
-            eprintln!("note: {}", e.describe());
-        }
-        return Err("nothing was changed; fix the line and run it again".into());
-    }
-    if edit.is_empty() {
-        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
-    }
-
-    let preview = edit.preview(&streams, &contexts, &tz);
-    for id in ids {
-        let patch = edit.patch_for(&task_contexts(core, id).await?);
-        core.submit(Command::UpdateTask { id, patch }).await?;
-        if let Some(stream) = edit.stream() {
-            core.submit(Command::PromoteToStream { id, stream }).await?;
-        }
-        println!("{}  {preview}", id.to_str());
-    }
-    Ok(())
-}
-
-/// `retitle <id> <text>...` — give one task a new title.
-///
-/// **Its own verb rather than a token in the annotate grammar, and rather than
-/// a flag on `edit`.** [`sunrise_domain::annotate`] states the rule this
-/// preserves: an edit line is not a title, so a bare word there is refused and
-/// one bad token rejects the whole line. A title is free text containing
-/// spaces and, sooner or later, a `#` or a `!`; putting it inside that grammar
-/// would make a bare word mean "title text" in one reading and "malformed
-/// token" in another, and the refusal `edit` depends on would have to be
-/// weakened to tell them apart. A `--title` flag has the same defect one level
-/// up — it has to swallow the rest of the line, so `edit <id> --title fix the
-/// typo !1` has no answer for where the title stops.
-///
-/// Split into two verbs, each gets the rule that is right for it: `retitle`'s
-/// tail is a title by construction and absorbs anything, exactly as `capture`'s
-/// does, while `edit`'s stays all grammar. Nothing here touches
-/// [`sunrise_domain::parse_annotate`].
-///
-/// **One task, not a list.** Every other mutating verb takes `<id>...` because
-/// its change is uniform across them; a title is the field that tells two tasks
-/// apart, so applying one to five is a mistake worth refusing rather than a
-/// bulk operation worth offering.
-///
-/// The write path already existed: [`sunrise_domain::TaskPatch`] carries
-/// `title`, and both it and the engine trim and reject an empty one. This
-/// checks it here as well so the refusal costs no round trip and names the
-/// command the user typed.
-async fn retitle(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let (ids, tail) = split_task_ids(rest);
-    let [id] = ids[..] else {
-        if ids.is_empty() {
-            return Err("usage: retitle <id> <text>...; see `sunrise help`".into());
-        }
-        return Err("retitle takes one task: a title is what tells two tasks \
-                    apart, so one title for several of them loses the \
-                    difference rather than saving a command"
-            .into());
-    };
-    // A title is the one field where empty is not a value to store but a line
-    // to refuse — `!-` clears a priority, and nothing clears a title.
-    let title = sunrise_domain::validation::validate_title(
-        &tail.join(" "),
-        "task.title",
-        sunrise_domain::MAX_TASK_TITLE_LEN,
-    )
-    .map_err(|e| format!("that title will not do: {e}"))?;
-
-    // Read first, so a mistyped id fails before anything is written and the
-    // old title can be shown beside the new one.
-    let QueryResult::Task(before) = core.query(Query::EntityById(id)).await? else {
-        return Err(format!("no such task: {}", id.to_str()).into());
-    };
-    let patch = sunrise_domain::TaskPatch {
-        title: Some(title.clone()),
-        ..Default::default()
-    };
-    core.submit(Command::UpdateTask { id, patch }).await?;
-    // Both titles, because the whole point of the command is that the old one
-    // was wrong and a silent success would have to be checked with a `search`.
-    println!("{}  {title}  (was {:?})", id.to_str(), before.title);
-    Ok(())
-}
-
-/// `defer <id>... <when>` — push tasks out to a new date.
-///
-/// Separate from `edit ^when`, which merely sets `scheduled_at`. This is
-/// [`Command::DeferTask`], which also bumps the task's `deferred_count`, and
-/// that counter is what `sunrise review` reports as "deferred" — a task moved
-/// four times is the signal the weekly review exists to surface. Spelling a
-/// real defer as a schedule change would quietly zero that signal out.
-async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let (ids, tail) = split_task_ids(rest);
-    if ids.is_empty() {
-        return Err("usage: defer <id>... <when>; see `sunrise help`".into());
-    }
-    let phrase = tail.join(" ");
-    if phrase.trim().is_empty() {
-        return Err("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`".into());
-    }
-    let tz = jiff::tz::TimeZone::system();
-    let now = sunrise_domain::epoch_ms::from_u64(core.now_ms());
-    let to = sunrise_domain::capture::parse_when(&phrase, now, &tz)
-        .ok_or_else(|| format!("could not read the date \"{phrase}\""))?;
-    let to_ms = u64::try_from(to.as_millisecond()).map_err(|_| "that date is before the epoch")?;
-    for id in ids {
-        core.submit(Command::DeferTask { id, to_ms }).await?;
-        println!("{}  deferred to {}", id.to_str(), stamp(to, &tz));
-    }
-    Ok(())
-}
-
-/// `drop <id>...` — soft-delete tasks.
-///
-/// Named for the review's own vocabulary: `sunrise review` counts "dropped",
-/// and a triage surface that can only say yes (`done`) and not no is half a
-/// surface. Soft, like every other client's delete — the op is a tombstone,
-/// not an erase.
-async fn drop_tasks(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    if rest.is_empty() {
-        return Err("drop needs at least one task id".into());
-    }
-    for raw in rest {
-        let id = EntityRef::parse(raw, EntityKind::Task)
-            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
-        core.submit(Command::DeleteTask(id)).await?;
-        println!("dropped  {raw}");
-    }
-    Ok(())
-}
-
-/// `YYYY-MM-DD HH:MM` in `tz`, the same shape the annotate preview uses.
-fn stamp(ts: jiff::Timestamp, tz: &jiff::tz::TimeZone) -> String {
-    let dt = ts.to_zoned(tz.clone()).datetime();
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        dt.year(),
-        dt.month(),
-        dt.day(),
-        dt.hour(),
-        dt.minute()
-    )
-}
-
-/// `next` / `focus next` — the planner's ranked picks, optionally opening
-/// a session on the top one.
-///
-/// The ranking is the core's (`Query::FocusPlan`), not a re-sort here:
-/// "what should I do next" must give the same answer here and in the app,
-/// or one of them is lying.
-async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    /// Enough to choose from without becoming a list.
-    const PICKS: u32 = 5;
-    let q = Query::FocusPlan {
-        stream: None,
-        energy: None,
-        length: sunrise_domain::SessionLength::OnePomodoro,
-        limit: PICKS,
-    };
-    let QueryResult::FocusPlan(rows) = core.query(q).await? else {
-        return Err("unexpected query result".into());
-    };
-    if rows.is_empty() {
-        println!("{}", strings::focus::nothing_actionable());
-        return Ok(());
-    }
-    for (i, r) in rows.iter().enumerate() {
-        let marker = if i == 0 && start { "▶" } else { " " };
-        println!(
-            "{marker} {}  {:<40} unblocks {}",
-            r.task.id.to_str(),
-            r.task.title,
-            r.unblocks
-        );
-    }
-    if start {
-        let top = &rows[0];
-        core.submit(Command::StartFocus(FocusStartDraft {
-            task_id: top.task.id,
-            kind: sunrise_domain::FocusKind::Work,
-            length: sunrise_domain::SessionLength::OnePomodoro,
-            energy: None,
-        }))
-        .await?;
-        println!("{}", strings::focus::started_on(&top.task.title));
-    }
-    Ok(())
-}
-
-/// `focus <id>` — open a session on one task.
-async fn focus_on(core: &Core, raw: &str) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let id = EntityRef::parse(raw, EntityKind::Task)
-        .map_err(|e| format!("not a task id: {raw} ({e})"))?;
-    let res = core
-        .submit(Command::StartFocus(FocusStartDraft {
-            task_id: id,
-            kind: sunrise_domain::FocusKind::Work,
-            length: sunrise_domain::SessionLength::OnePomodoro,
-            energy: None,
-        }))
-        .await?;
-    println!("{}  focus session started", res.entity.to_str());
-    Ok(())
-}
-
-/// `focus end [--done]` — close the running session(s).
-///
-/// The session id is looked up rather than typed: `focus <id>` and `next` both
-/// take a **task**, and neither prints the `fcs_` id they minted, so requiring
-/// one here would name a thing this surface never gave the user.
-///
-/// Every running session is closed, not just one. Two devices starting
-/// concurrently mint different ids and both are valid
-/// ([`Command::StartFocus`]), so "end my focus" means all of them; closing one
-/// and leaving the rest running is the state a user would have to discover
-/// with a second command.
-///
-/// `actual_focused_ms` is left `None`, which freezes the derived elapsed time.
-/// A one-shot process tracked no pauses, so it has no smaller real figure to
-/// offer and must not invent one.
-async fn end_focus(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let completed_task = match rest.first().map(String::as_str) {
-        None => false,
-        Some("--done") if rest.len() == 1 => true,
-        Some(other) => return Err(format!("usage: focus end [--done]; got {other:?}").into()),
-    };
-    let QueryResult::FocusSessions(rows) = core.query(Query::RunningFocusSessions).await? else {
-        return Err("unexpected query result".into());
-    };
-    if rows.is_empty() {
-        return Err("no focus session is running; `sunrise focus <id>` opens one".into());
-    }
-    for r in rows {
-        let id = r.session.start.id;
-        core.submit(Command::EndFocus {
-            session: id,
-            actual_focused_ms: None,
-            completed_task,
-        })
-        .await?;
-        // Minutes, because a focus session is reported in minutes everywhere
-        // else and a millisecond count is not a thing anyone reads.
-        println!("{}  focused {}m", id.to_str(), r.focused_ms / 60_000);
-    }
-    Ok(())
-}
-
-/// `review` — this week's counts, the same fold the Review view renders.
-async fn review(core: &Core) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    let q = Query::WeeklyReview {
-        week_start_ms: None,
-        now_ms: core.now_ms(),
-    };
-    let QueryResult::WeeklyReview(w) = core.query(q).await? else {
-        return Err("unexpected query result".into());
-    };
-    println!(
-        "completed {}  deferred {}  dropped {}  created {}  reopened {}",
-        w.totals.completed,
-        w.totals.deferred,
-        w.totals.dropped,
-        w.totals.created,
-        w.totals.reopened
-    );
-    for s in &w.streams {
-        println!(
-            "  {:<24} {} done · {} deferred · {} untouched",
-            s.name,
-            s.completed.len(),
-            s.deferred.len(),
-            s.created_untouched.len()
-        );
-    }
-    if !w.slipped.is_empty() {
-        println!("slipped:");
-        for t in &w.slipped {
-            println!("  {}  {}", t.id.to_str(), t.title);
-        }
-    }
-    Ok(())
-}
-
-/// `export <dataset> [json|csv] [path]`.
-///
-/// With no path the document goes to **stdout**: a CLI's stdout is its
-/// contract, so `sunrise export trends json | jq` has to work.
-async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    use sunrise_domain::{ExportDataset, ExportFormat};
-    let Some(name) = rest.first() else {
-        return Err("usage: export <trends|activity|focus|streaks> [json|csv] [path]".into());
-    };
-    let dataset = match name.as_str() {
-        "trends" | "trend" => ExportDataset::Trends,
-        "activity" | "timeline" => ExportDataset::Activity,
-        "focus" => ExportDataset::Focus,
-        "streaks" | "streak" => ExportDataset::Streaks,
-        other => return Err(format!("unknown dataset: {other}").into()),
-    };
-    let mut format = ExportFormat::Csv;
-    let mut path: Option<String> = None;
-    for w in &rest[1..] {
-        match w.as_str() {
-            "json" => format = ExportFormat::Json,
-            "csv" => format = ExportFormat::Csv,
-            other if path.is_none() => path = Some(other.to_string()),
-            other => return Err(format!("unexpected argument: {other}").into()),
-        }
-    }
-    let q = Query::ExportStats {
-        dataset,
-        format,
-        weeks: 12,
-        now_ms: core.now_ms(),
-    };
-    let QueryResult::Export(body) = core.query(q).await? else {
-        return Err("unexpected query result".into());
-    };
-    match path {
-        Some(p) => {
-            std::fs::write(&p, body.as_bytes())?;
-            println!("{p}");
-        }
-        None => print!("{body}"),
-    }
-    Ok(())
-}
-
-/// `ical import …` / `ical export …` — RFC 5545 interchange.
-///
-/// One subcommand with two modes rather than a top-level `import` and a second
-/// meaning for `export`: `sunrise export` already names the *stats* datasets,
-/// and overloading it with a format that produces a calendar rather than a
-/// table would make `sunrise export ics json` a question with no answer.
-async fn ical(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    match rest.first().map(String::as_str) {
-        Some("import") => ical_import(core, &rest[1..]).await,
-        Some("export") => ical_export(core, &rest[1..]).await,
-        Some(other) => Err(format!("unknown ical mode {other:?}; try import or export").into()),
-        None => Err("usage: ical import <path|-> | ical export [today|week] [path]".into()),
-    }
-}
-
-/// `ical import <path|-> [--stream <id>] [--source <name>]`.
-///
-/// Idempotent by construction: the Block an event lands on is derived from
-/// `(source, UID)`, so running this twice on the same file updates the same
-/// Blocks instead of making a second copy of the calendar. `--source` is what
-/// a user reaches for when two calendars really do share a UID and they want
-/// both.
-///
-/// The Block ids go to **stdout**, one per line with the title, so a script
-/// can pipe them onward. Everything the import could not carry goes to stderr,
-/// where it is visible without corrupting that contract.
-async fn ical_import(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout, clippy::print_stderr)]
-    use sunrise_integrations::ical_vault::{import, ICS_SOURCE};
-
-    let mut path: Option<&str> = None;
-    let mut stream = sunrise_domain::inbox_stream_ref();
-    let mut source = ICS_SOURCE.to_string();
-    let mut args = rest.iter();
-    while let Some(w) = args.next() {
-        match w.as_str() {
-            "--stream" => {
-                let v = args.next().ok_or("--stream needs a stream id")?;
-                stream = EntityRef::parse(v, EntityKind::Stream)
-                    .map_err(|e| format!("not a stream id: {v} ({e})"))?;
-            }
-            "--source" => {
-                let v = args.next().ok_or("--source needs a name")?;
-                if v.trim().is_empty() {
-                    return Err("--source needs a non-empty name".into());
-                }
-                source = v.trim().to_string();
-            }
-            other if path.is_none() => path = Some(other),
-            other => return Err(format!("unexpected argument: {other}").into()),
-        }
-    }
-    let path = path.ok_or("usage: ical import <path|-> [--stream <id>] [--source <name>]")?;
-
-    // `-` is the conventional spelling of stdin, and it is what makes
-    // `curl … | sunrise ical import -` work without a temporary file.
-    let text = if path == "-" {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        buf
-    } else {
-        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?
-    };
-
-    let report = import(core, &text, stream, &source).await?;
-    for n in &report.notices {
-        let uid = n.uid.as_deref().unwrap_or("-");
-        eprintln!("note: [{}] {uid}: {}", n.code.as_str(), n.detail);
-    }
-    for b in &report.blocks {
-        let verb = if b.created { "new" } else { "upd" };
-        println!("{verb}  {}  {}", b.block.to_str(), b.title);
-    }
-    eprintln!("{}", report.summary_line());
-    Ok(())
-}
-
-/// `ical export [today|week] [path]`.
-///
-/// With no path the document goes to stdout, exactly as `sunrise export`
-/// does — `sunrise ical export week | pbcopy` has to work.
-async fn ical_export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    use sunrise_integrations::ical_vault::{export, ExportWindow};
-
-    let mut window = ExportWindow::Day;
-    let mut path: Option<&str> = None;
-    for w in rest {
-        match w.as_str() {
-            "today" | "day" => window = ExportWindow::Day,
-            "week" => window = ExportWindow::Week,
-            other if path.is_none() => path = Some(other),
-            other => return Err(format!("unexpected argument: {other}").into()),
-        }
-    }
-    let body = export(core, window, core.now_ms()).await?;
-    match path {
-        Some(p) => {
-            std::fs::write(p, body.as_bytes())?;
-            println!("{p}");
-        }
-        None => print!("{body}"),
-    }
-    Ok(())
-}
-
-/// `sync --once` — bring the relay up, drain the outbox, exit.
-///
-/// Named for cron and CI in `docs/07-clients/overview.md`. It is a *bounded*
-/// wait, not a loop: a job that hangs forever because the relay is down is
-/// worse than one that fails, since nothing downstream ever runs.
-async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    /// How long to wait for the outbox to empty before giving up.
-    const DEADLINE_MS: u64 = 30_000;
-    /// How often to re-read the outbox depth.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
-
-    if !rest.is_empty() && rest[0] != "--once" {
-        return Err("usage: sync --once".into());
-    }
-    if std::env::var("SUNRISE_SYNC_URL").is_err() {
-        return Err("sync needs SUNRISE_SYNC_URL".into());
-    }
-    // Timed against the core's injected clock rather than `Instant`, which
-    // the workspace lint bans so that time is never read from two sources.
-    let deadline = core.now_ms().saturating_add(DEADLINE_MS);
-    let mut last = u32::MAX;
-    while core.now_ms() < deadline {
-        let QueryResult::SyncStatus(s) = core.query(Query::SyncStatus).await? else {
-            return Err("unexpected query result".into());
-        };
-        if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
-            println!("{}", strings::sync::live());
-            return Ok(());
-        }
-        if s.outbox_pending != last {
-            last = s.outbox_pending;
-            println!(
-                "{}",
-                strings::sync::pending(i64::from(s.outbox_pending), &format!("{:?}", s.state))
-            );
-        }
-        tokio::time::sleep(POLL).await;
-    }
-    Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into())
-}
-
-fn print_tasks(r: QueryResult) {
-    #![allow(clippy::print_stdout)]
-    let (QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = r else {
-        return;
-    };
-    for t in tasks {
-        let mark = if t.state == sunrise_domain::TaskState::Done {
-            "x"
-        } else {
-            " "
-        };
-        println!("[{mark}] {}  {}", t.id.to_str(), t.title);
-    }
-}
-
-/// The account this device is claiming, and the recovery code that goes with
-/// it.
-///
-/// The email is a fallback the server reads only when the IdP emits no `email`
-/// claim, so a CLI that has one passes it and otherwise sends the empty string
-/// rather than inventing an address.
-///
-/// # The identity keys, which used to be empty strings
-///
-/// This function sent `String::new()` for both, and `POST /api/v1/accounts`
-/// answers `400 "identity keys required"` to that — so `sunrise bootstrap`
-/// against a real relay could not create an account at all. They come from the
-/// vault now, which is the only place they exist.
-///
-/// # The recovery code
-///
-/// `Some` on the device that created the account, `None` on one admitted by
-/// pairing. Only the creator holds `ID_D_priv`, so only the creator can seal a
-/// blob that restores an identity able to open the identity-addressed
-/// `key_envelope` ops recovery replays; a paired device that sealed one would
-/// hand its user a code that decrypts to a key opening nothing, which is worse
-/// than having no code because the user believes they are covered.
-///
-/// The seed is drawn here, used twice, and dropped: nothing writes it to disk,
-/// and the returned code is the only copy that leaves this function.
-fn bootstrap_account(
-    core: &Core,
-    rest: &[String],
-) -> Result<
-    (
-        sunrise_onboarding::account::AccountCreateRequest,
-        Option<sunrise_crypto::bip39::RecoveryCode>,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    use sunrise_core::config::Rng as _;
-
-    let (recovery_blob, code) = if core.holds_identity_key() {
-        let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
-        SystemRng.fill_bytes(&mut seed);
-        let blob = core.seal_recovery_blob(&seed)?;
-        let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
-        zeroize::Zeroize::zeroize(&mut seed);
-        (Some(blob), Some(code))
-    } else {
-        (None, None)
-    };
-
-    Ok((
-        sunrise_onboarding::account::AccountCreateRequest {
-            email: rest.first().cloned().unwrap_or_default(),
-            identity_signing_pub: core.identity_signing_pub(),
-            identity_dh_pub: core.identity_dh_pub(),
-            recovery_blob,
-            terms_at_ms: core.now_ms(),
-        },
-        code,
-    ))
-}
-
-/// `recover` — `docs/03-crypto/recovery.md` §Recovery flow, end to end.
-///
-/// The whole of it happens before there is a vault to open, which is why this
-/// runs from `run`'s pre-open match rather than from `dispatch`. The sequence
-/// and the reasons are in [`sunrise_cli::recover`]; what lives here is the part
-/// that belongs to a terminal — where the words come from, and what is said
-/// afterwards.
-///
-/// Progress goes to **stderr** and the outcome to stdout, the same split every
-/// other subcommand makes: a script that runs this wants the identity id, not
-/// the narration. The 24 words are never echoed back, printed, or logged.
-async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    #![allow(clippy::print_stdout)]
-    use std::io::Read as _;
-
-    let dir = vault_dir();
-    std::fs::create_dir_all(&dir).ok();
-    sunrise_cli::recover::require_empty(&dir)?;
-
-    let url = std::env::var(livesync::ENV_SYNC_URL)
-        .map_err(|_| sunrise_cli::recover::RecoverError::NoRelay)?;
-
-    // Read stdin only when there are no arguments, so a terminal session that
-    // typed the words does not then block on a pipe nobody is writing to.
-    let mut piped = String::new();
-    if rest.is_empty() {
-        std::io::stdin().read_to_string(&mut piped).ok();
-    }
-    let code = sunrise_cli::recover::code_from(rest, &piped)
-        .ok_or(sunrise_cli::recover::RecoverError::NoCode)?;
-
-    // stderr, because stdout is the contract a script reads.
-    #[allow(clippy::print_stderr)]
-    let mut announce = |line: &str| eprintln!("{line}");
-
-    // The clock: there is no vault yet, so there is no `Core::now_ms` to ask,
-    // and this value is only used to price the credential this call is about
-    // to mint. `jiff` is already the CLI's time source everywhere else.
-    let now_ms = u64::try_from(jiff::Timestamp::now().as_millisecond()).unwrap_or(0);
-    let bearer = sunrise_cli::recover::step_up_bearer(&dir, now_ms, &mut announce).await?;
-
-    let identity = sunrise_cli::recover::restore_identity(&url, &bearer, &code).await?;
-    drop(code);
-    announce("recovery code accepted; the account identity is restored");
-
-    let done = sunrise_cli::recover::rejoin_account(
-        &dir,
-        identity,
-        &url,
-        &bearer,
-        env!("CARGO_PKG_VERSION"),
-        &mut announce,
-    )
-    .await?;
-
-    println!("{}", done.identity_id);
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("{}", sunrise_cli::recover::aftercare(&done.identity_id));
-    }
-    Ok(())
-}
-
-/// Show the recovery code, once, with what it is for and what losing it costs.
-///
-/// **On stdout and nowhere else.** It never becomes a `tracing` field: the type
-/// implements no `Display` and no `tracing::Value`, its `Debug` prints only the
-/// word count, and `sunrise-log`'s allowlist carries no field name for it — so
-/// there is no spelling of a log call that could carry it even by accident. It
-/// is also never written to a file: `docs/03-crypto/key-rotation.md` records
-/// that a vault holding the only copy of `ID_D_priv` cannot be recovered by any
-/// feature added later, and a copy this process saved would be a copy an
-/// attacker who reaches the machine also has, while doing nothing for the user
-/// who loses the machine.
-fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
-    #![allow(clippy::print_stdout)]
-    println!();
-    println!("{}", strings::recover::code_heading());
-    println!();
-    // Six lines of four, because twenty-four words on one wrapped terminal
-    // line is what a transcription error looks like before it happens.
-    for row in code.reveal().split(' ').collect::<Vec<_>>().chunks(4) {
-        println!("    {}", row.join(" "));
-    }
-    println!();
-    println!(
-        "This code and your devices are the only two ways into this account. \n\
-         Sunrise is end-to-end encrypted: the relay stores your recovery blob \n\
-         as ciphertext it cannot open, and nobody — including us — can reset \n\
-         the account for you. Lose every device and this code, and the data is \n\
-         gone permanently.\n\
-         \n\
-         It is shown once. It is not written to any file and not in any log."
-    );
-}
-
-/// How this device introduces itself.
-fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
-    sunrise_relay_client::DeviceIdentity {
-        // `D_S_pub`, the key the relay checks every `X-Sunrise-Device-Sig`
-        // against. This was `login::device_id_hex(core)` — hex of the 16-byte
-        // *device id*, which is what the OIDC `device_id` claim carries and has
-        // nothing to do with a signing key. It base64url-decodes to 24 bytes,
-        // so `POST /api/v1/devices` answered 400 and `sunrise login` against a
-        // real relay could not register a device at all.
-        device_pub_s: core.device_signing_pub(),
-        device_pub_d: None,
-        device_cert: None,
-        // The only name a peer can revoke this device by: the relay mints its
-        // own id and never sends it back through the op stream, so a sibling
-        // device holds this one and nothing else. Omitting it registers a
-        // device that cannot be revoked at the relay at all.
-        vault_device_id: Some(sunrise_id::crockford::encode_bytes(&core.device_id())),
-        nickname: "sunrise-cli".to_owned(),
-        platform: if cfg!(target_os = "macos") {
-            "macos".to_owned()
-        } else if cfg!(target_os = "windows") {
-            "windows".to_owned()
-        } else {
-            "linux".to_owned()
-        },
-        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-    }
 }

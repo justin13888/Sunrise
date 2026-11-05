@@ -16,10 +16,10 @@ enum TaskEditorPane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .details: "Details"
-        case .notes: "Notes"
-        case .attachments: "Attachments"
-        case .activity: "Activity"
+        case .details: L10n.TaskEditor.paneDetails
+        case .notes: L10n.TaskEditor.paneNotes
+        case .attachments: L10n.TaskEditor.paneAttachments
+        case .activity: L10n.TaskEditor.paneActivity
         }
     }
 }
@@ -69,18 +69,31 @@ struct TaskEditorView: View {
         // the picker at "now" and then submitting it — which is what this did
         // — silently moved every deadline to today the moment anyone opened
         // the sheet to change something else.
-        _due = State(initialValue: task.dueAt.map {
+        let seeded = task.dueAt.map {
             Date(
                 timeIntervalSince1970: Double(
                     timeValueMs(value: $0, tz: TimeZone.current.identifier)
                 ) / 1000
             )
-        } ?? Date())
+        } ?? Date()
+        seededDue = seeded
+        _due = State(initialValue: seeded)
+    }
+
+    /// The picker's starting point, so a save can tell whether the user moved it.
+    private let seededDue: Date
+
+    /// Whether the deadline is of a kind this build does not know and the user
+    /// left it where it was. Sending it back as an instant would replace the
+    /// stored kind with the one moment it happens to resolve to (ADR-0045 §6).
+    private var keepsUnknownDue: Bool {
+        guard case .unknown? = task.dueAt else { return false }
+        return hasDue && due == seededDue
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Pane", selection: $pane) {
+            Picker(L10n.TaskEditor.panePicker, selection: $pane) {
                 ForEach(TaskEditorPane.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -100,14 +113,14 @@ struct TaskEditorView: View {
 
     private var details: some View {
         Form {
-            TextField("Title", text: $title)
+            TextField(L10n.TaskEditor.titleField, text: $title)
 
-            Picker("Priority", selection: $priority) {
-                Text("None").tag(0)
+            Picker(L10n.TaskEditor.priority, selection: $priority) {
+                Text(L10n.TaskEditor.priorityNone).tag(0)
                 ForEach(1...5, id: \.self) { Text("!\($0)").tag($0) }
             }
 
-            Picker("Energy", selection: $energy) {
+            Picker(L10n.TaskEditor.energy, selection: $energy) {
                 Text(energyLabel(energy: nil)).tag(nil as Energy?)
                 Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                 Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
@@ -119,24 +132,26 @@ struct TaskEditorView: View {
                 }
             }
 
-            LabeledContent("Estimate") {
+            LabeledContent(L10n.TaskEditor.estimate) {
                 HStack {
                     TextField("", value: $estimateMinutes, format: .number)
                         .textInput(.number)
                         .frame(width: 60)
-                    Text(estimateMinutes > 0 ? shortDuration(secs: UInt64(estimateMinutes * 60)) : "none")
+                    Text(estimateMinutes > 0
+                        ? shortDuration(secs: UInt64(estimateMinutes * 60))
+                        : L10n.TaskEditor.estimateNone)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Toggle("Has a deadline", isOn: $hasDue)
+            Toggle(L10n.TaskEditor.hasDeadline, isOn: $hasDue)
             if hasDue {
-                DatePicker("Due", selection: $due, displayedComponents: [.date, .hourAndMinute])
+                DatePicker(L10n.TaskEditor.due, selection: $due, displayedComponents: [.date, .hourAndMinute])
             }
 
             Section {
                 HStack {
-                    Button("Delete", role: .destructive) {
+                    Button(L10n.Action.delete, role: .destructive) {
                         Task {
                             await delete()
                             dismiss()
@@ -146,8 +161,8 @@ struct TaskEditorView: View {
                     // build (ADR-0045 §8); Cancel never writes, so it stays.
                     .disabledUnlessEditable(.task)
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button("Save") {
+                    Button(L10n.Action.cancel) { dismiss() }
+                    Button(L10n.Action.save) {
                         Task {
                             await apply(edit)
                             dismiss()
@@ -182,7 +197,9 @@ struct TaskEditorView: View {
         } else {
             edit.clearEstimatedDuration = true
         }
-        if hasDue {
+        if keepsUnknownDue {
+            // Neither set nor clear: the stored value stays exactly as it arrived.
+        } else if hasDue {
             // An instant, not a civil time: a deadline the user picked on a
             // wall clock in this zone is a fixed point, and the seam is what
             // decides how it is stored.

@@ -1,0 +1,121 @@
+//! The `streams` row: the Stream projection's writers. The placeholder row
+//! an op naming an unknown stream hangs off is
+//! [`crate::engine::stream::ensure_stream_row`]'s, which writes no entity.
+
+use super::search::index_stream;
+use crate::engine::ids::{encode_unknowns, extra_over_opaque, time_to_parts, ExtraTable};
+use crate::engine::lww::LwwStamp;
+use crate::engine::stream::cadence_str;
+use rusqlite::{params, Transaction};
+use sunrise_domain::Stream;
+
+pub(in crate::engine::merge) fn insert_stream_row(
+    tx: &Transaction<'_>,
+    s: &Stream,
+    lww: &LwwStamp,
+) -> rusqlite::Result<()> {
+    let id_blob: Vec<u8> = s.id.bytes().to_vec();
+    let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
+    let extra_blob = encode_unknowns(&s.unknown)?;
+    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
+    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
+    tx.execute(
+        "INSERT INTO streams
+         (stream_id, head_root, last_op_seq,
+          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
+          paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order, extra,
+          description, default_context,
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            id_blob,
+            vec![0u8; 32],
+            parent_blob,
+            s.archived as i64,
+            s.deleted as i64,
+            s.created_at.as_millisecond(),
+            s.updated_at.as_millisecond(),
+            s.name,
+            s.color.as_str(),
+            s.icon,
+            s.paused as i64,
+            time_to_parts(s.paused_until.as_ref()).0,
+            cadence_str(&s.review_cadence),
+            s.reminder_lead_s,
+            s.sort_order,
+            extra_blob,
+            description_blob,
+            default_ctx_blob,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+        ],
+    )?;
+    write_pause_sidecars(tx, &id_blob, s)?;
+    index_stream(tx, s)
+}
+
+/// The `paused_until` sidecars (migration 0041), beside the index key the
+/// row statement writes, and `rehomed_to` (migration 0044, ADR-0046 §4).
+fn write_pause_sidecars(tx: &Transaction<'_>, id: &[u8], s: &Stream) -> rusqlite::Result<()> {
+    let (_, kind, tz, civil) = time_to_parts(s.paused_until.as_ref());
+    let rehomed: Option<Vec<u8>> = s.rehomed_to.map(|r| r.bytes().to_vec());
+    tx.execute(
+        "UPDATE streams SET paused_until_kind = ?, paused_until_tz = ?, paused_until_civil = ?,
+                            rehomed_to = ?
+         WHERE stream_id = ?",
+        params![kind, tz, civil, rehomed, id],
+    )?;
+    Ok(())
+}
+
+pub(in crate::engine::merge) fn update_stream_row(
+    tx: &Transaction<'_>,
+    s: &Stream,
+    lww: &LwwStamp,
+) -> rusqlite::Result<()> {
+    let id_blob: Vec<u8> = s.id.bytes().to_vec();
+    let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Streams,
+        &id_blob,
+        encode_unknowns(&s.unknown)?,
+    )?;
+    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
+    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
+    tx.execute(
+        "UPDATE streams
+         SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
+             name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
+             review_cadence = ?, reminder_lead_s = ?, sort_order = ?, extra = ?,
+             description = ?, default_context = ?,
+             lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+         WHERE stream_id = ?",
+        params![
+            parent_blob,
+            s.archived as i64,
+            s.deleted as i64,
+            s.updated_at.as_millisecond(),
+            s.name,
+            s.color.as_str(),
+            s.icon,
+            s.paused as i64,
+            time_to_parts(s.paused_until.as_ref()).0,
+            cadence_str(&s.review_cadence),
+            s.reminder_lead_s,
+            s.sort_order,
+            extra_blob,
+            description_blob,
+            default_ctx_blob,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+            id_blob,
+        ],
+    )?;
+    write_pause_sidecars(tx, &id_blob, s)?;
+    index_stream(tx, s)
+}

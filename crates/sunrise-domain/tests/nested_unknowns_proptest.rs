@@ -146,11 +146,11 @@ fn task() -> Task {
         "state": "todo",
     }))
     .expect("a minimal task");
-    t.scheduled_at = Some(SunriseTime::zoned(
+    t.planned_at = Some(SunriseTime::zoned(
         date(2026, 3, 1).at(9, 0, 0, 0),
         "Europe/Berlin",
     ));
-    t.due_at = Some(SunriseTime::all_day(date(2026, 3, 2)));
+    t.hard_due_at = Some(SunriseTime::all_day(date(2026, 3, 2)));
     t.scheduling_constraints = vec![full_constraint(), full_constraint()];
     t
 }
@@ -158,7 +158,7 @@ fn task() -> Task {
 fn routine() -> Routine {
     let template = TaskTemplate {
         title: "r".into(),
-        stream_id: eref(EntityKind::Stream, 2),
+        stream_id: Some(eref(EntityKind::Stream, 2)),
         contexts: vec![eref(EntityKind::Context, 3)],
         energy: None,
         priority: Some(2),
@@ -186,7 +186,7 @@ fn block() -> Block {
         id: eref(EntityKind::Block, 5),
         created_at: ts(0),
         updated_at: ts(0),
-        stream_id: eref(EntityKind::Stream, 2),
+        stream_id: Some(eref(EntityKind::Stream, 2)),
         starts_at: SunriseTime::floating(date(2026, 3, 1).at(9, 0, 0, 0)),
         ends_at: SunriseTime::floating(date(2026, 3, 1).at(10, 0, 0, 0)),
         title: Some("b".into()),
@@ -334,8 +334,8 @@ proptest! {
         per_map in proptest::collection::vec(injection(), 0..12),
     ) {
         let mut t = task();
-        t.scheduled_at = Some(scheduled);
-        t.due_at = Some(due);
+        t.planned_at = Some(scheduled);
+        t.hard_due_at = Some(due);
         survives(&t, &per_map)?;
 
         let mut b = block();

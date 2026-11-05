@@ -19,6 +19,23 @@
 //! - **partition** — a runtime switch on [`FaultHandle`]; while partitioned all
 //!   sends and receives return a transport error, modelling a cut link.
 //!
+//! The faults apply to the frame stream. The account API beside it (blobs,
+//! snapshots, key bundle, identity chain, revocation) passes straight through
+//! to the inner transport, except that a partition refuses it too: a cut link
+//! carries nothing.
+//!
+//! ## Counters
+//!
+//! [`FaultHandle`] counts what the wrapper actually did, so a test can wait
+//! for a fault to fire before it heals and prove it fired, rather than
+//! sleeping and hoping: [`dropped`](FaultHandle::dropped),
+//! [`corrupted`](FaultHandle::corrupted) and
+//! [`refused_sends`](FaultHandle::refused_sends). It also counts the
+//! `Subscribe` frames it forwarded
+//! ([`subscribes_sent`](FaultHandle::subscribes_sent)): on an idle live
+//! session each one is an anti-entropy resync round, which is what an absence
+//! check waits on in place of a fixed sleep.
+//!
 //! ## Determinism
 //!
 //! All random decisions are drawn from a seeded `rand_chacha` `ChaCha20` RNG.
@@ -32,15 +49,18 @@
 //! variable — the property tests draw from the same one.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
-use sunrise_sync::transport::{Transport, TransportError};
+use sunrise_sync::transport::{
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
+    Transport, TransportError,
+};
+use sunrise_wire_protocol::{decode_frame, MsgKind};
 
 // The seed convention itself lives in `sunrise-test-seed`, which is the one
 // reader in the workspace: the property tests plumb the same resolved value
@@ -48,6 +68,10 @@ use sunrise_sync::transport::{Transport, TransportError};
 // sight, because `chaos.rs` and `docs/10-cross-cutting/testing.md` both name
 // these two symbols on this path.
 pub use sunrise_test_seed::{seed_from_env, DEFAULT_FUZZ_SEED};
+
+mod handle;
+
+pub use handle::FaultHandle;
 
 /// Static configuration for a [`Toxic`] wrapper.
 ///
@@ -103,97 +127,6 @@ impl ToxicConfig {
             ..Self::passthrough()
         }
     }
-}
-
-/// Shared, cheaply-clonable runtime switches for a [`Toxic`] wrapper.
-///
-/// A clone of the handle is held by the wrapper and (typically) by the test, so
-/// the test can flip a [`partition`](Self::partition) or retune probabilities
-/// while traffic is in flight. All operations are lock-free.
-#[derive(Clone)]
-pub struct FaultHandle {
-    inner: Arc<FaultState>,
-}
-
-struct FaultState {
-    partitioned: AtomicBool,
-    /// `f64` drop probability stored as raw bits.
-    drop_bits: AtomicU64,
-    /// `f64` corrupt probability stored as raw bits.
-    corrupt_bits: AtomicU64,
-}
-
-impl FaultHandle {
-    fn new(drop_prob: f64, corrupt_prob: f64) -> Self {
-        Self {
-            inner: Arc::new(FaultState {
-                partitioned: AtomicBool::new(false),
-                drop_bits: AtomicU64::new(clamp_prob(drop_prob).to_bits()),
-                corrupt_bits: AtomicU64::new(clamp_prob(corrupt_prob).to_bits()),
-            }),
-        }
-    }
-
-    /// Cut (or restore) the link. While partitioned, every `send_frame` and
-    /// `recv_frame` on the associated [`Toxic`] returns a transport error.
-    pub fn partition(&self, on: bool) {
-        self.inner.partitioned.store(on, Ordering::Relaxed);
-    }
-
-    /// Whether the link is currently partitioned.
-    #[must_use]
-    pub fn is_partitioned(&self) -> bool {
-        self.inner.partitioned.load(Ordering::Relaxed)
-    }
-
-    /// Set the per-frame drop probability (clamped to `[0.0, 1.0]`).
-    pub fn set_drop_prob(&self, p: f64) {
-        self.inner
-            .drop_bits
-            .store(clamp_prob(p).to_bits(), Ordering::Relaxed);
-    }
-
-    /// Current per-frame drop probability.
-    #[must_use]
-    pub fn drop_prob(&self) -> f64 {
-        f64::from_bits(self.inner.drop_bits.load(Ordering::Relaxed))
-    }
-
-    /// Set the per-frame corruption probability (clamped to `[0.0, 1.0]`).
-    pub fn set_corrupt_prob(&self, p: f64) {
-        self.inner
-            .corrupt_bits
-            .store(clamp_prob(p).to_bits(), Ordering::Relaxed);
-    }
-
-    /// Current per-frame corruption probability.
-    #[must_use]
-    pub fn corrupt_prob(&self) -> f64 {
-        f64::from_bits(self.inner.corrupt_bits.load(Ordering::Relaxed))
-    }
-
-    /// Build a handle initialised from `config`'s drop/corruption probabilities,
-    /// with the link un-partitioned. Share it across every [`Toxic`] a
-    /// transport factory produces (via [`Toxic::with_handle`]) so one handle
-    /// steers the live connection *and* every reconnect.
-    #[must_use]
-    pub fn from_config(config: ToxicConfig) -> Self {
-        Self::new(config.drop_prob, config.corrupt_prob)
-    }
-}
-
-impl fmt::Debug for FaultHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FaultHandle")
-            .field("partitioned", &self.is_partitioned())
-            .field("drop_prob", &self.drop_prob())
-            .field("corrupt_prob", &self.corrupt_prob())
-            .finish()
-    }
-}
-
-fn clamp_prob(p: f64) -> f64 {
-    p.clamp(0.0, 1.0)
 }
 
 /// Fault-injecting [`Transport`] wrapper. See the [module docs](self) for the
@@ -290,17 +223,39 @@ impl<T: Transport> Toxic<T> {
 
     /// With probability `corrupt_prob`, flip a single bit of a single
     /// (RNG-chosen) byte. Length is preserved and, when it fires, exactly one
-    /// byte differs. Empty frames are left untouched.
-    fn maybe_corrupt(&mut self, mut frame: Vec<u8>) -> Vec<u8> {
+    /// byte differs. Empty frames are left untouched. Returns whether it
+    /// fired, having counted it on the handle.
+    fn maybe_corrupt(&mut self, frame: &mut [u8]) -> bool {
         if frame.is_empty() {
-            return frame;
+            return false;
         }
-        if self.rng.gen_bool(self.faults.corrupt_prob()) {
-            let idx = self.rng.gen_range(0..frame.len());
-            let bit = self.rng.gen_range(0u32..8);
-            frame[idx] ^= 1u8 << bit;
+        if !self.rng.gen_bool(self.faults.corrupt_prob()) {
+            return false;
         }
-        frame
+        let idx = self.rng.gen_range(0..frame.len());
+        let bit = self.rng.gen_range(0u32..8);
+        frame[idx] ^= 1u8 << bit;
+        self.faults.inner.corrupted.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Draw the drop fault for one frame, counting it on the handle when it
+    /// fires.
+    fn should_drop(&mut self) -> bool {
+        let drop = self.rng.gen_bool(self.faults.drop_prob());
+        if drop {
+            self.faults.inner.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        drop
+    }
+
+    /// Refuse a call while partitioned. Uncounted: only
+    /// [`send_frame`](Transport::send_frame) counts its refusals.
+    fn refuse_if_partitioned(&self) -> Result<(), TransportError> {
+        if self.faults.is_partitioned() {
+            return Err(TransportError::Unavailable("partitioned".into()));
+        }
+        Ok(())
     }
 
     /// Sample a uniform delay within the configured range (inclusive). Returns
@@ -320,20 +275,33 @@ impl<T: Transport> Toxic<T> {
 
 #[async_trait]
 impl<T: Transport> Transport for Toxic<T> {
-    async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
+    async fn send_frame(&mut self, mut frame: Vec<u8>) -> Result<(), TransportError> {
         if self.faults.is_partitioned() {
+            self.faults
+                .inner
+                .refused_sends
+                .fetch_add(1, Ordering::Relaxed);
             return Err(TransportError::Unavailable("partitioned".into()));
         }
         // Drop: the frame vanishes, but the send still "succeeds".
-        if self.rng.gen_bool(self.faults.drop_prob()) {
+        if self.should_drop() {
             return Ok(());
         }
-        let frame = self.maybe_corrupt(frame);
+        let subscribe =
+            decode_frame(&frame).is_ok_and(|(header, _)| header.msg_kind == MsgKind::Subscribe);
+        let corrupted = self.maybe_corrupt(&mut frame);
         let delay = self.sample_delay();
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        self.inner.send_frame(frame).await
+        self.inner.send_frame(frame).await?;
+        if subscribe && !corrupted {
+            self.faults
+                .inner
+                .subscribes_sent
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -345,14 +313,14 @@ impl<T: Transport> Transport for Toxic<T> {
             // frame and its due time are parked in `self.held` before either
             // one, so a cancelled poll costs latency and never a frame.
             if self.held.is_none() {
-                let Some(frame) = self.inner.recv_frame().await? else {
+                let Some(mut frame) = self.inner.recv_frame().await? else {
                     return Ok(None);
                 };
                 // Drop: swallow this inbound frame and keep waiting.
-                if self.rng.gen_bool(self.faults.drop_prob()) {
+                if self.should_drop() {
                     continue;
                 }
-                let frame = self.maybe_corrupt(frame);
+                self.maybe_corrupt(&mut frame);
                 let delay = if self.delay_send_only {
                     Duration::ZERO
                 } else {
@@ -375,18 +343,107 @@ impl<T: Transport> Transport for Toxic<T> {
     async fn close(&mut self) -> Result<(), TransportError> {
         self.inner.close().await
     }
+
+    async fn revoke_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<RevokeOutcome, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.revoke_device(device_id).await
+    }
+
+    async fn blob_init(
+        &mut self,
+        stream_id: &[u8; 16],
+        chunk_count: u32,
+        size_bytes: u64,
+    ) -> Result<String, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .blob_init(stream_id, chunk_count, size_bytes)
+            .await
+    }
+
+    async fn blob_put_chunk(
+        &mut self,
+        upload_id: &str,
+        chunk_idx: u32,
+        bytes: &[u8],
+    ) -> Result<(), TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.blob_put_chunk(upload_id, chunk_idx, bytes).await
+    }
+
+    async fn blob_finalize(
+        &mut self,
+        upload_id: &str,
+        ciphertext_hash: &[u8; 32],
+        chunk_hashes: &[[u8; 32]],
+    ) -> Result<BlobCommit, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .blob_finalize(upload_id, ciphertext_hash, chunk_hashes)
+            .await
+    }
+
+    async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.blob_fetch(blob_id).await
+    }
+
+    async fn snapshot_latest(
+        &mut self,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.snapshot_latest(stream_id).await
+    }
+
+    async fn snapshot_pin(
+        &mut self,
+        stream_id: &[u8; 16],
+        blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.snapshot_pin(stream_id, blob_id).await
+    }
+
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.key_bundle_latest().await
+    }
+
+    async fn key_bundle_pin(
+        &mut self,
+        blob_id: &[u8; 16],
+        manifest_digest: &[u8; 32],
+        replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner
+            .key_bundle_pin(blob_id, manifest_digest, replaces)
+            .await
+    }
+
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.identity_chain_latest().await
+    }
+
+    async fn identity_chain_pin(
+        &mut self,
+        chain: &[u8],
+        replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.identity_chain_pin(chain, replaces).await
+    }
+
+    async fn recovery_blob_replace(&mut self, blob: &[u8]) -> Result<(), TransportError> {
+        self.refuse_if_partitioned()?;
+        self.inner.recovery_blob_replace(blob).await
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn probabilities_clamp() {
-        let h = FaultHandle::new(2.0, -1.0);
-        assert!((h.drop_prob() - 1.0).abs() < f64::EPSILON);
-        assert!(h.corrupt_prob().abs() < f64::EPSILON);
-        h.set_drop_prob(0.5);
-        assert!((h.drop_prob() - 0.5).abs() < f64::EPSILON);
-    }
-}
+mod tests;

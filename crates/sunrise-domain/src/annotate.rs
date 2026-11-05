@@ -3,7 +3,11 @@
 //! [`crate::capture::parse`] can set a Task's stream, contexts, priority,
 //! schedule, due date and estimate in one line, but only at creation. This is
 //! the other half: the same sigils, applied to a Task that already exists, so
-//! every field [`TaskPatch`] carries is reachable without a form.
+//! every field [`TaskPatch`] carries is reachable without a form. A `~duration`
+//! reads alike in both, refusals included: `~1h30` is a typo in either prompt,
+//! and `tests/annotate_capture_sigils.rs` holds the two parsers to that. The
+//! form a list displays, [`crate::phrase::short_duration`], is `1h30m`, so an
+//! estimate copied from the CLI's task detail reads back unchanged.
 //!
 //! | Token | Effect |
 //! |---|---|
@@ -13,9 +17,10 @@
 //! | `!N` | set priority (1-5) |
 //! | `%low\|med\|high` | set energy |
 //! | `~30m` | set the estimate |
-//! | `^when` | set `scheduled_at` |
-//! | `due:when` | set `due_at` |
-//! | `!-` `%-` `~-` `^-` `due:-` `@-` | clear that facet |
+//! | `^when` | set `planned_at` |
+//! | `target:when` | set `target_at`, the soft deadline |
+//! | `due:when` | set `hard_due_at`, the hard deadline |
+//! | `!-` `%-` `~-` `^-` `target:-` `due:-` `@-` | clear that facet |
 //!
 //! Two deliberate differences from [`crate::capture`]:
 //!
@@ -35,9 +40,10 @@
 //! **live** rows only: an archived Stream or Context stays on the Tasks that
 //! carry it but must never be a target for new input.
 
-use crate::capture::{parse_energy, parse_when, NamedRef};
+use crate::capture::{parse_energy, parse_when_time, NamedRef};
 use crate::common::Energy;
 use crate::task::TaskPatch;
+use crate::time::SunriseTime;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use sunrise_id::EntityRef;
@@ -64,7 +70,7 @@ pub enum EditError {
     BadEnergy(String),
     /// `~x` was not a duration.
     BadDuration(String),
-    /// `^x` / `due:x` was not a date.
+    /// `^x` / `target:x` / `due:x` was not a date.
     BadDate(String),
     /// A bare word: an annotate line is not a title.
     NotAToken(String),
@@ -99,8 +105,9 @@ pub struct TaskEdit {
     priority: Option<Set<u8>>,
     energy: Option<Set<Energy>>,
     duration_s: Option<Set<u64>>,
-    scheduled: Option<Set<Timestamp>>,
-    due: Option<Set<Timestamp>>,
+    scheduled: Option<Set<SunriseTime>>,
+    target: Option<Set<SunriseTime>>,
+    due: Option<Set<SunriseTime>>,
     /// Tokens that could not be applied.
     pub errors: Vec<EditError>,
 }
@@ -117,6 +124,7 @@ impl TaskEdit {
             && self.energy.is_none()
             && self.duration_s.is_none()
             && self.scheduled.is_none()
+            && self.target.is_none()
             && self.due.is_none()
     }
 
@@ -158,15 +166,21 @@ impl TaskEdit {
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.scheduled {
-            patch.scheduled_at = Some(match set {
-                Set::To(t) => Some(t.into()),
+        if let Some(set) = &self.scheduled {
+            patch.planned_at = Some(match set {
+                Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.due {
-            patch.due_at = Some(match set {
-                Set::To(t) => Some(t.into()),
+        if let Some(set) = &self.target {
+            patch.target_at = Some(match set {
+                Set::To(t) => Some(t.clone()),
+                Set::Clear => None,
+            });
+        }
+        if let Some(set) = &self.due {
+            patch.hard_due_at = Some(match set {
+                Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
         }
@@ -223,13 +237,16 @@ impl TaskEdit {
             energy_word(&e).to_string()
         });
         push_set(&mut parts, self.duration_s, "estimate", |s| {
-            format!("~{}", duration_label(s))
+            format!("~{}", crate::phrase::short_duration(s))
         });
-        push_set(&mut parts, self.scheduled, "schedule", |t| {
-            format!("^{}", stamp(t, tz))
+        push_set(&mut parts, self.scheduled.clone(), "schedule", |t| {
+            format!("^{}", stamp(&t, tz))
         });
-        push_set(&mut parts, self.due, "due", |t| {
-            format!("due {}", stamp(t, tz))
+        push_set(&mut parts, self.target.clone(), "target", |t| {
+            format!("target {}", stamp(&t, tz))
+        });
+        push_set(&mut parts, self.due.clone(), "due", |t| {
+            format!("due {}", stamp(&t, tz))
         });
         if parts.is_empty() {
             return "nothing to change".into();
@@ -318,6 +335,13 @@ pub fn parse(
                 Some(v) => edit.duration_s = Some(v),
                 None => edit.errors.push(EditError::BadDuration(body.into())),
             }
+        } else if let Some(body) = strip_target(w) {
+            let (consumed, parsed) = take_date(&words, i, body, now, tz);
+            i += consumed;
+            match parsed {
+                Some(v) => edit.target = Some(v),
+                None => edit.errors.push(EditError::BadDate(body.into())),
+            }
         } else if let Some(body) = strip_due(w) {
             let (consumed, parsed) = take_date(&words, i, body, now, tz);
             i += consumed;
@@ -372,7 +396,7 @@ fn take_date(
     head: &str,
     now: Timestamp,
     tz: &TimeZone,
-) -> (usize, Option<Set<Timestamp>>) {
+) -> (usize, Option<Set<SunriseTime>>) {
     /// Words a date expression may span, matching the capture parser.
     const MAX_DATE_WORDS: usize = 3;
     if head == "-" {
@@ -385,8 +409,8 @@ fn take_date(
             text.push(' ');
             text.push_str(w);
         }
-        if let Some(ts) = parse_when(&text, now, tz) {
-            return (extra, Some(Set::To(ts)));
+        if let Some(at) = parse_when_time(&text, now, tz) {
+            return (extra, Some(Set::To(at)));
         }
     }
     (0, None)
@@ -400,6 +424,12 @@ fn strip_due(w: &str) -> Option<&str> {
         .strip_prefix("*due:")
         .and_then(|b| b.strip_suffix('*'))
         .or_else(|| w.strip_prefix("due:"))?;
+    (!body.is_empty()).then_some(body)
+}
+
+/// `target:friday`, the soft deadline, as `due:` is the hard one.
+fn strip_target(w: &str) -> Option<&str> {
+    let body = w.strip_prefix("target:")?;
     (!body.is_empty()).then_some(body)
 }
 
@@ -447,26 +477,22 @@ fn parse_duration_s(s: &str) -> Option<u64> {
         };
         total = total.checked_add(n.checked_mul(unit)?)?;
     }
-    // A trailing bare number ("1h30") is minutes.
-    if !digits.is_empty() {
-        total = total.checked_add(digits.parse::<u64>().ok()?.checked_mul(60)?)?;
-    }
-    (total > 0).then_some(total)
+    // A trailing number with no unit ("1h30") is a typo, as it is in capture.
+    (digits.is_empty() && total > 0).then_some(total)
 }
 
-/// `5400` → `1h30m`.
-fn duration_label(secs: u64) -> String {
-    let (h, m) = (secs / 3600, (secs % 3600) / 60);
-    match (h, m) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m}m"),
+/// `2026-01-02 09:00` in the user's zone, or `2026-01-02` for a whole day.
+///
+/// A value with no instant to show in `tz` shows its stored text instead
+/// (`docs/11-adr/0066-times-survive-travel.md` §3), never another time.
+fn stamp(t: &SunriseTime, tz: &TimeZone) -> String {
+    if let SunriseTime::AllDay { date } = t {
+        return format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day());
     }
-}
-
-/// `2026-01-02 09:00` in the user's zone.
-fn stamp(ts: Timestamp, tz: &TimeZone) -> String {
-    let dt = ts.to_zoned(tz.clone()).datetime();
+    let Ok(at) = t.to_instant(tz) else {
+        return t.to_string();
+    };
+    let dt = at.to_zoned(tz.clone()).datetime();
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         dt.year(),
@@ -537,16 +563,46 @@ mod tests {
 
     #[test]
     fn every_facet_the_patch_carries_is_reachable() {
-        let e = edit("!2 %high ~90m ^tomorrow due:tomorrow @home #travel");
+        // Three different days, so routing one date word to another's field
+        // fails: `now()` is Thursday 2026-01-01.
+        let e = edit("!2 %high ~90m ^tomorrow target:saturday due:monday @home #travel");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
         assert_eq!(p.priority, Some(Some(2)));
         assert_eq!(p.energy, Some(Some(Energy::High)));
         assert_eq!(p.estimated_duration_s, Some(Some(90 * 60)));
-        assert!(p.scheduled_at.is_some());
-        assert!(p.due_at.is_some());
+        let day = |d| Some(Some(SunriseTime::all_day(jiff::civil::date(2026, 1, d))));
+        assert_eq!(p.planned_at, day(2));
+        assert_eq!(p.target_at, day(3));
+        assert_eq!(p.hard_due_at, day(5));
         assert_eq!(p.contexts, Some(vec![cid(1)]));
         assert_eq!(e.stream(), Some(sid(2)));
+    }
+
+    /// A target alone is an edit, and a target that spans words consumes
+    /// them and only them.
+    #[test]
+    fn a_target_alone_is_an_edit_and_may_span_words() {
+        assert!(edit("").is_empty());
+        let e = edit("target:friday");
+        assert!(!e.is_empty());
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let e = edit("target:next friday @home");
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let p = e.patch_for(&[]);
+        assert_eq!(
+            p.target_at,
+            edit("target:next friday").patch_for(&[]).target_at
+        );
+        assert_ne!(p.target_at, edit("target:next").patch_for(&[]).target_at);
+        assert_eq!(p.contexts, Some(vec![cid(1)]));
+        assert!(e
+            .preview(&streams(), &contexts(), &TimeZone::UTC)
+            .contains("target"));
+        assert!(matches!(
+            edit("target:someday-ish").errors.as_slice(),
+            [EditError::BadDate(_)]
+        ));
     }
 
     #[test]
@@ -554,14 +610,15 @@ mod tests {
         // `TaskPatch` distinguishes "leave alone" from "set to nothing"; with
         // no `-` form the second is unreachable, so a priority set by accident
         // could never be removed.
-        let e = edit("!- %- ~- ^- due:-");
+        let e = edit("!- %- ~- ^- target:- due:-");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
         assert_eq!(p.priority, Some(None));
         assert_eq!(p.energy, Some(None));
         assert_eq!(p.estimated_duration_s, Some(None));
-        assert_eq!(p.scheduled_at, Some(None));
-        assert_eq!(p.due_at, Some(None));
+        assert_eq!(p.planned_at, Some(None));
+        assert_eq!(p.hard_due_at, Some(None));
+        assert_eq!(p.target_at, Some(None));
     }
 
     #[test]
@@ -604,7 +661,7 @@ mod tests {
         let c = edit("^tomorrow !1");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(c.patch_for(&[]).priority, Some(Some(1)));
-        assert!(c.patch_for(&[]).scheduled_at.is_some());
+        assert!(c.patch_for(&[]).planned_at.is_some());
     }
 
     #[test]
@@ -615,12 +672,12 @@ mod tests {
         let e = edit("^next friday !1 due:next monday @home");
         assert!(e.errors.is_empty(), "{:?}", e.errors);
         let p = e.patch_for(&[]);
+        assert_eq!(p.planned_at, edit("^next friday").patch_for(&[]).planned_at);
         assert_eq!(
-            p.scheduled_at,
-            edit("^next friday").patch_for(&[]).scheduled_at
+            p.hard_due_at,
+            edit("due:next monday").patch_for(&[]).hard_due_at
         );
-        assert_eq!(p.due_at, edit("due:next monday").patch_for(&[]).due_at);
-        assert_ne!(p.scheduled_at, edit("^next").patch_for(&[]).scheduled_at);
+        assert_ne!(p.planned_at, edit("^next").patch_for(&[]).planned_at);
         assert_eq!(p.priority, Some(Some(1)));
         assert_eq!(p.contexts, Some(vec![cid(1)]));
     }
@@ -638,6 +695,30 @@ mod tests {
                 e.patch_for(&[]).estimated_duration_s,
                 Some(Some(secs)),
                 "{text}"
+            );
+        }
+    }
+
+    /// The estimate a list shows is one `edit` accepts back: the CLI's task
+    /// detail prints [`crate::phrase::short_duration`], and a user who types
+    /// that text after `~` must get the same estimate, not a refusal.
+    #[test]
+    fn the_displayed_estimate_reads_back_as_the_same_seconds() {
+        for secs in [60, 30 * 60, 3600, 3900, 5400, 7200, 25 * 3600 + 59 * 60] {
+            let shown = crate::phrase::short_duration(secs);
+            let e = edit(&format!("~{shown}"));
+            assert!(e.errors.is_empty(), "{shown}: {:?}", e.errors);
+            assert_eq!(
+                e.patch_for(&[]).estimated_duration_s,
+                Some(Some(secs)),
+                "{shown}"
+            );
+            // The edit's own change summary names the estimate in the same
+            // form the list shows, so the two never disagree.
+            assert!(
+                e.preview(&streams(), &contexts(), &TimeZone::UTC)
+                    .contains(&format!("~{shown}")),
+                "{shown}"
             );
         }
     }

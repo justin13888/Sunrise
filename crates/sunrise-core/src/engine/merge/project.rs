@@ -6,54 +6,56 @@
 //! the entity as a CBOR map. [`write_projection`] decodes it and writes it.
 
 use super::patch::nested_record;
+use super::rows::{
+    ftsr_delete_task, ftsr_upsert_task, insert_context_row, insert_routine_row, insert_stream_row,
+    insert_task_contexts, insert_task_row, purge_context_from_tasks, replace_block_tasks,
+    replace_task_blockers, replace_task_contexts, update_context_row, update_routine_row,
+    update_stream_row, update_task_row, upsert_attachment_row, upsert_block_row,
+    upsert_preferences_row, upsert_saved_view_row,
+};
 use super::state::{dec, enc, hlc_of, Meta};
 use super::{refresh, to_sql, OpRef, Stamp};
-use crate::engine::attachment::{read_attachment, upsert_attachment_row};
-use crate::engine::block::{read_block, replace_block_tasks, upsert_block_row};
-use crate::engine::context::{
-    insert_context_row, purge_context_from_tasks, read_context, update_context_row,
-};
 use crate::engine::ids::{blob16, ms_to_ts};
 use crate::engine::lww::{read_row_lww, LwwStamp, RowLww};
-use crate::engine::preferences::{read_preferences, upsert_preferences_row};
-use crate::engine::routine::{insert_routine_row, read_routine, update_routine_row};
-use crate::engine::stream::{ensure_stream_row, insert_stream_row, read_stream, update_stream_row};
-use crate::engine::task::{
-    ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row, read_task,
-    replace_task_blockers, replace_task_contexts, update_task_row,
-};
-use crate::engine::{EngineError, META_STREAM};
+use crate::engine::stream::stream_fate;
 use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::{
-    inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, Stream, Task, TaskState,
+    effective_stream, Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task,
 };
-use sunrise_id::registry::{Crdt, EntitySpec, Owner};
+use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// What a field reads as when no write has reached it, for the fields whose
-/// domain type has no serde default. Only these are given one: an entity
-/// created by a `Patch` that leaves out any other required field is not
-/// projected until a write supplies it (ADR-0044 §4, "nothing is dropped
+/// domain type has no serde default: the default the registry declares for
+/// it (`sunrise_id::registry` §Defaults), as CBOR. Only these are given one:
+/// an entity created by a `Patch` that leaves out any other required field is
+/// not projected until a write supplies it (ADR-0044 §4, "nothing is dropped
 /// while it waits").
-fn field_default(kind: EntityKind, field: &str) -> Option<Value> {
-    match (kind, field) {
-        (EntityKind::Task | EntityKind::Context, "title" | "name") => {
-            Some(Value::Text(String::new()))
-        }
-        (EntityKind::Task, "state") => Value::serialized(&TaskState::Todo).ok(),
-        (EntityKind::Task, "stream_id") => Value::serialized(&inbox_stream_ref()).ok(),
-        _ => None,
-    }
+pub(in crate::engine) fn field_default(kind: EntityKind, field: &str) -> Option<Value> {
+    let json = kind
+        .spec()
+        .records
+        .first()?
+        .fields
+        .iter()
+        .find(|f| f.name == field)?
+        .default?;
+    let json: serde_json::Value = serde_json::from_str(json).ok()?;
+    Value::serialized(&json).ok()
 }
 
-const DEFAULTED: [(EntityKind, &str); 4] = [
-    (EntityKind::Task, "title"),
-    (EntityKind::Task, "state"),
-    (EntityKind::Task, "stream_id"),
-    (EntityKind::Context, "name"),
-];
+/// The fields of `kind`'s own record that declare a default.
+fn defaulted(kind: EntityKind) -> impl Iterator<Item = &'static str> {
+    kind.spec()
+        .records
+        .first()
+        .into_iter()
+        .flat_map(|r| r.fields.iter())
+        .filter(|f| f.default.is_some())
+        .map(|f| f.name)
+}
 
 /// The order a merged set's elements are written in: text by its string, so
 /// a `Vec<String>` set reads back sorted (the streak code binary-searches
@@ -256,7 +258,7 @@ pub(super) fn project(
     }
 
     // Maps: every key whose register is not a tombstone.
-    let mut maps: BTreeMap<String, Vec<(Value, Value)>> = BTreeMap::new();
+    let mut maps: BTreeMap<String, Vec<(String, Value, Stamp)>> = BTreeMap::new();
     for f in record.map_or(&[][..], |r| r.fields) {
         if f.crdt == Crdt::Map {
             maps.insert(f.name.to_owned(), Vec::new());
@@ -278,15 +280,23 @@ pub(super) fn project(
         for row in rows {
             let (field, key, value, at) = row?;
             let entry = maps.entry(field).or_default();
-            let value = dec(&value);
-            if superseded(at, legacy) || value.is_null() {
+            if superseded(at, legacy) {
                 continue;
             }
-            entry.push((Value::Text(key), value));
+            entry.push((key, dec(&value), at));
         }
     }
     for (field, entries) in maps {
-        top.insert(field, Value::Map(entries));
+        // A field this build does not register as a map can also hold a
+        // register: a full-state op writes every unknown key it carries as one
+        // (ADR-0044 §7), and cannot tell a map from any other value.
+        let whole = registers
+            .get(&field)
+            .filter(|(v, at)| v.is_some() && !superseded(*at, legacy) && crdt_of(&field).is_none())
+            .and_then(|(v, at)| v.clone().map(|v| (v, *at)));
+        if let Some(value) = map_over_whole(whole, entries) {
+            top.insert(field, value);
+        }
     }
 
     // Identity and the two derived timestamps.
@@ -317,22 +327,140 @@ pub(super) fn project(
     } else if let Some(created) = top.get("created_at").cloned() {
         top.insert("updated_at".into(), created);
     }
-    for (k, f) in DEFAULTED {
-        if k == kind && !top.contains_key(f) {
+    for f in defaulted(kind) {
+        if !top.contains_key(f) {
             if let Some(v) = field_default(kind, f) {
                 top.insert(f.to_owned(), v);
             }
         }
+    }
+    if kind == EntityKind::Routine && keys_written_by_a_patch(tx, id, legacy)? {
+        derive_streak(&mut top);
     }
     Ok(Some(Value::Map(
         top.into_iter().map(|(k, v)| (Value::Text(k), v)).collect(),
     )))
 }
 
+/// The routine fields [`derive_streak`] computes (ADR-0044 §3).
+const STREAK_FIELDS: [&str; 4] = [
+    "streak_counter",
+    "last_completed_at",
+    "streak_started_at",
+    "forgivenesses_in_window",
+];
+
+/// Whether a `Patch` stamped above the legacy floor `legacy` wrote the
+/// routine's `streak_keys` or `skipped_keys`.
+///
+/// Until one has, the streak fields are the registers the newest full-state
+/// op carried, as they always were, so a history of full-state ops alone
+/// projects exactly as before (the legacy guard, ADR-0065 §5). Once one has,
+/// the keys hold a write that op never saw, and only a derivation from the
+/// keys counts it.
+fn keys_written_by_a_patch(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    legacy: Option<Stamp>,
+) -> rusqlite::Result<bool> {
+    let mut stmt = tx.prepare(
+        "SELECT fields, hlc_ms, hlc_logical, device, seq, stream FROM entity_versions
+         WHERE entity_id = ? AND kind = 'patch'",
+    )?;
+    let rows = stmt.query_map(params![&id[..]], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, load_stamp(r, 1)?))
+    })?;
+    for row in rows {
+        let (fields, at) = row?;
+        if legacy.is_some_and(|l| at <= l) {
+            continue;
+        }
+        let writes_keys = dec(&fields).as_array().is_some_and(|names| {
+            names
+                .iter()
+                .any(|n| matches!(n.as_text(), Some("streak_keys" | "skipped_keys")))
+        });
+        if writes_keys {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Replace the routine's streak fields in `top` with the ones its keys add up
+/// to ([`Routine::derived_streak`]). A routine that does not decode yet is
+/// left as it is: it is not projected until it does.
+fn derive_streak(top: &mut BTreeMap<String, Value>) {
+    let map = Value::Map(
+        top.iter()
+            .map(|(k, v)| (Value::Text(k.clone()), v.clone()))
+            .collect(),
+    );
+    let Ok(mut routine) = map.deserialized::<Routine>() else {
+        return;
+    };
+    routine.derived_streak().apply_to(&mut routine);
+    let Ok(Value::Map(written)) = Value::serialized(&routine) else {
+        return;
+    };
+    for name in STREAK_FIELDS {
+        // A field serde leaves out at its default is left out here too.
+        match written.iter().find(|(k, _)| k.as_text() == Some(name)) {
+            Some((_, v)) => {
+                top.insert(name.to_owned(), v.clone());
+            }
+            None => {
+                top.remove(name);
+            }
+        }
+    }
+}
+
+/// A map field's value from its entries, all at or above the legacy floor,
+/// and from `whole`, the register a write of the whole field left, if any.
+///
+/// The whole write is the field's value as of its stamp, the way a legacy op
+/// is the entity's: an entry stamped before it is superseded, and one stamped
+/// after it is applied on top, setting its key or, with `null`, removing it.
+/// So a full-state op that carried an unknown map (the map a newer build's
+/// `Patch` wrote) keeps every key it carried, and a later `Patch` still edits
+/// it. Where the whole write is not a map, the newer entries replace it, and
+/// with none it stands. `None` leaves the register's value where it is.
+pub(in crate::engine) fn map_over_whole(
+    whole: Option<(Value, Stamp)>,
+    entries: Vec<(String, Value, Stamp)>,
+) -> Option<Value> {
+    let Some((value, at)) = whole else {
+        let live = entries
+            .into_iter()
+            .filter(|(_, v, _)| !v.is_null())
+            .map(|(k, v, _)| (Value::Text(k), v))
+            .collect();
+        return Some(Value::Map(live));
+    };
+    let newer: Vec<(String, Value)> = entries
+        .into_iter()
+        .filter(|(_, _, s)| *s > at)
+        .map(|(k, v, _)| (k, v))
+        .collect();
+    let mut base = match value {
+        Value::Map(base) => base,
+        _ if newer.is_empty() => return None,
+        _ => Vec::new(),
+    };
+    for (key, v) in newer {
+        base.retain(|(k, _)| k.as_text() != Some(key.as_str()));
+        if !v.is_null() {
+            base.push((Value::Text(key), v));
+        }
+    }
+    Some(Value::Map(base))
+}
+
 // ---- row I/O ----
 
 /// The row stamp of `id` in its table, `None` when there is no row.
-pub(super) fn row_stamp(
+fn row_stamp(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
     id: &[u8; 16],
@@ -341,67 +469,6 @@ pub(super) fn row_stamp(
         return Ok(None);
     };
     read_row_lww(tx, storage.table, storage.key, id)
-}
-
-/// The entity's row read back as the full-state value a legacy op would
-/// carry.
-pub(super) fn read_row_state(
-    tx: &Transaction<'_>,
-    kind: EntityKind,
-    id: &[u8; 16],
-) -> Result<Option<Value>, EngineError> {
-    let value = match kind {
-        EntityKind::Task => read_task(tx, id)?.map(|t| Value::serialized(&t)),
-        EntityKind::Stream => read_stream(tx, id)?.map(|s| Value::serialized(&s)),
-        EntityKind::Context => read_context(tx, id)?.map(|c| Value::serialized(&c)),
-        EntityKind::Routine => read_routine(tx, id)?.map(|r| Value::serialized(&r)),
-        EntityKind::Block => read_block(tx, id)?.map(|b| Value::serialized(&b)),
-        EntityKind::Attachment => read_attachment(tx, id)?.map(|a| Value::serialized(&a)),
-        EntityKind::Preferences => read_preferences(tx, id)?.map(|p| Value::serialized(&p)),
-        _ => None,
-    };
-    value
-        .transpose()
-        .map_err(|e| EngineError::Cbor(e.to_string()))
-}
-
-/// The stream an op on this entity was sealed under, and its op-log
-/// `inner_kind`, for an op this replica logged: read from `ops` by the op's
-/// device and `seq`. An op this replica has no log row for has no kind, and
-/// its stream falls back to the entity's owning stream as the registry
-/// declares it.
-pub(super) fn logged_op(
-    tx: &Transaction<'_>,
-    spec: &'static EntitySpec,
-    id: &[u8; 16],
-    device: &[u8],
-    seq: u64,
-    state: &Value,
-) -> rusqlite::Result<([u8; 16], Option<String>)> {
-    let found: Option<(Vec<u8>, String)> = tx
-        .query_row(
-            "SELECT stream_id, inner_kind FROM ops
-             WHERE target_id = ? AND device_id = ? AND seq = ?
-             ORDER BY rowid DESC LIMIT 1",
-            params![&id[..], device, seq],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if let Some((stream, kind)) = found {
-        return Ok((blob16(&stream), Some(kind)));
-    }
-    let owned_by = |field: &str| -> Option<[u8; 16]> {
-        let entries = state.as_map()?;
-        let v = entries.iter().find(|(k, _)| k.as_text() == Some(field))?;
-        EntityRef::parse_any(v.1.as_text()?)
-            .ok()
-            .map(|r| *r.bytes())
-    };
-    let stream = match spec.owner {
-        Owner::Field(field) => owned_by(field).unwrap_or(META_STREAM),
-        Owner::Meta | Owner::Parent | Owner::Unowned => META_STREAM,
-    };
-    Ok((stream, None))
 }
 
 /// Whether `table` holds a row for `id`.
@@ -425,7 +492,6 @@ pub(super) fn write_projection(
     head: &LwwStamp,
 ) -> rusqlite::Result<bool> {
     let id = target.bytes();
-    let ts_ms = head.hlc.physical_ms;
     let present = row_exists(tx, spec, id)?;
     macro_rules! decode {
         ($ty:ty) => {
@@ -463,7 +529,11 @@ pub(super) fn write_projection(
                 }
             }
             t.contexts = live;
-            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
+            // No placeholder `streams` row for a stream that has not
+            // arrived: its row is the fold of its own ops, and one made for
+            // every stream an entity passed through would depend on the
+            // order its versions came in (ADR-0046 clarification C12).
+            t.stream_id = effective(tx, t.stream_id)?;
             if present {
                 update_task_row(tx, &t, head)?;
                 replace_task_contexts(tx, &t)?;
@@ -480,10 +550,19 @@ pub(super) fn write_projection(
         }
         EntityKind::Stream => {
             let s: Stream = decode!(Stream);
+            // A stream with no row reads as live (`effective`), so only a
+            // tombstone, a restore or a new `rehomed_to` moves a dependent.
+            let fate = |tx: &Transaction<'_>| -> rusqlite::Result<sunrise_domain::StreamFate> {
+                Ok(stream_fate(tx, id)?.unwrap_or(sunrise_domain::StreamFate::Live))
+            };
+            let before = fate(tx)?;
             if present {
                 update_stream_row(tx, &s, head)?;
             } else {
                 insert_stream_row(tx, &s, head)?;
+            }
+            if fate(tx)? != before {
+                rehome_dependents(tx, &target)?;
             }
         }
         EntityKind::Context => {
@@ -509,8 +588,8 @@ pub(super) fn write_projection(
             }
         }
         EntityKind::Routine => {
-            let r: Routine = decode!(Routine);
-            ensure_stream_row(tx, &r.template.stream_id, ts_ms)?;
+            let mut r: Routine = decode!(Routine);
+            r.template.stream_id = effective(tx, r.template.stream_id)?;
             if present {
                 update_routine_row(tx, &r, head)?;
             } else {
@@ -523,8 +602,8 @@ pub(super) fn write_projection(
             }
         }
         EntityKind::Block => {
-            let b: Block = decode!(Block);
-            ensure_stream_row(tx, &b.stream_id, ts_ms)?;
+            let mut b: Block = decode!(Block);
+            b.stream_id = effective(tx, b.stream_id)?;
             upsert_block_row(tx, &b, head)?;
             replace_block_tasks(tx, &b)?;
         }
@@ -535,6 +614,10 @@ pub(super) fn write_projection(
         EntityKind::Preferences => {
             let p: Preferences = decode!(Preferences);
             upsert_preferences_row(tx, &p, head)?;
+        }
+        EntityKind::SavedView => {
+            let v: SavedView = decode!(SavedView);
+            upsert_saved_view_row(tx, &v, head)?;
         }
         _ => return Ok(false),
     }
@@ -558,6 +641,78 @@ pub(super) fn write_projection(
         }
     }
     Ok(true)
+}
+
+/// The stream an entity whose `stream_id` register holds `stream` is
+/// projected into (ADR-0046 §4): a tombstone it names reads as wherever that
+/// stream's deletion re-homed its dependents, and a chain longer than
+/// [`sunrise_domain::MAX_REHOME_CHAIN`] or a cycle as no stream. A pure
+/// function of the `streams` rows, which are the fold of the stream ops.
+fn effective(
+    tx: &Transaction<'_>,
+    stream: Option<EntityRef>,
+) -> rusqlite::Result<Option<EntityRef>> {
+    let mut failed = None;
+    let out = effective_stream(stream, |s| match stream_fate(tx, s.bytes()) {
+        Ok(fate) => fate.unwrap_or(sunrise_domain::StreamFate::Live),
+        Err(e) => {
+            failed = Some(e);
+            sunrise_domain::StreamFate::Live
+        }
+    });
+    failed.map_or(Ok(out), Err)
+}
+
+/// A stream's tombstone or `rehomed_to` changed: re-project every task,
+/// block and routine whose `stream_id` register names a stream that resolves
+/// through it, so each reads in its new effective stream (ADR-0046 §4), as a
+/// context delete re-projects its tasks.
+///
+/// The registers are read from the merge state, not the rows: a row holds
+/// the effective stream, and the register is what the entity names. The set
+/// is every stream whose chain of re-homing tombstones reaches `stream`.
+fn rehome_dependents(tx: &Transaction<'_>, stream: &EntityRef) -> rusqlite::Result<()> {
+    let mut through: BTreeSet<[u8; 16]> = BTreeSet::from([*stream.bytes()]);
+    let mut frontier = vec![*stream.bytes()];
+    while let Some(at) = frontier.pop() {
+        let mut stmt =
+            tx.prepare("SELECT stream_id FROM streams WHERE deleted = 1 AND rehomed_to = ?")?;
+        let rows = stmt.query_map(params![&at[..]], |r| r.get::<_, Vec<u8>>(0))?;
+        for raw in rows {
+            let id = blob16(&raw?);
+            if through.insert(id) {
+                frontier.push(id);
+            }
+        }
+    }
+    let mut dependents: BTreeSet<(String, [u8; 16])> = BTreeSet::new();
+    for id in &through {
+        let value = enc(
+            &Value::serialized(&EntityRef::new(EntityKind::Stream, *id)).unwrap_or(Value::Null)
+        )?;
+        let mut stmt = tx.prepare(
+            "SELECT m.kind, r.entity_id FROM merge_registers r
+             JOIN merge_entities m ON m.entity_id = r.entity_id
+             WHERE r.field IN ('stream_id', 'template.stream_id') AND r.value = ?
+               AND m.kind IN ('task', 'block', 'routine')",
+        )?;
+        let rows = stmt.query_map(params![value], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (kind, raw) = row?;
+            dependents.insert((kind, blob16(&raw)));
+        }
+    }
+    for (kind, id) in dependents {
+        let kind = match kind.as_str() {
+            "task" => EntityKind::Task,
+            "block" => EntityKind::Block,
+            _ => EntityKind::Routine,
+        };
+        refresh(tx, EntityRef::new(kind, id)).map_err(to_sql)?;
+    }
+    Ok(())
 }
 
 /// A context came back from a tombstone: re-project every task whose

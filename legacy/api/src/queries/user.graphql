@@ -1,9 +1,0 @@
-query GetMe {
-    me {
-        id
-        email
-        name
-        picture
-        verified
-    }
-}

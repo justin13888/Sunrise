@@ -15,10 +15,7 @@ pub const SAS_LEN: usize = 6;
 /// Compute the 6-digit SAS from a Noise XX handshake hash (32 bytes).
 #[must_use]
 pub fn compute_sas(handshake_hash: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new_derive_key(SAS_DOMAIN);
-    hasher.update(handshake_hash);
-    let mut out = [0u8; 3];
-    hasher.finalize_xof().fill(&mut out);
+    let out = sunrise_crypto::derive_key(SAS_DOMAIN, handshake_hash, 3);
     let n: u32 = (u32::from(out[0]) << 16) | (u32::from(out[1]) << 8) | u32::from(out[2]);
     let modded = n % 1_000_000;
     format!("{modded:06}")

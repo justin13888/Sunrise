@@ -1,9 +1,9 @@
 //! Read-only queries that belong to no single entity.
 //!
-//! `query_entity` and `query_search` fan out across every table by
-//! construction — one resolves an `EntityRef` of any kind, the other searches
-//! all of them — so in any entity module they would force it to import every
-//! other. `query_today`, `query_actionable` and `query_unblock_cascade` are
+//! `query_entity` fans out across every table by construction — it resolves
+//! an `EntityRef` of any kind — so in any entity module it would force it to
+//! import every other. Search, which fans out the same way, is
+//! `engine::search`. `query_today`, `query_actionable` and `query_unblock_cascade` are
 //! cross-entity folds for the same reason: what is actionable depends on
 //! streams, contexts, blockers and blocks at once.
 
@@ -13,14 +13,77 @@ use super::context::read_context;
 use super::ids::require_kind;
 use super::routine::read_routine;
 use super::stream::read_stream;
-use super::task::{actionable_scan, read_task, ref_of};
+use super::task::{actionable_scan, read_task, ref_of, suppressed_edge_keys};
 use super::{Engine, EngineError};
-use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, QueryResult};
+use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, ParkedOpCount, QueryResult};
 use rusqlite::params;
 use std::collections::BTreeMap;
+use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
 use sunrise_id::{EntityKind, EntityRef};
-use sunrise_storage::Db;
+use sunrise_storage::{Db, OpLog};
+
+/// Where [`sort_by_landing`] puts a task with no plan and no deadline.
+#[derive(Clone, Copy)]
+pub(super) enum Unlanded {
+    /// Before every task that has a time: a Stream or Context listing, which
+    /// leads with what is still unplanned.
+    First,
+    /// After every task that has a time: Today, which leads with what is due.
+    Last,
+}
+
+/// Order a task list by when each task lands ([`landing`]: its plan, else
+/// its earlier deadline) as a reader in `tz` sees it, with
+/// [`SunriseTime::cmp_in`] (`docs/10-cross-cutting/time.md` §2 rule 3), then
+/// by id.
+///
+/// The one ordering every user-visible task list uses. The storage index
+/// cannot stand in for it: a floating or all-day value is indexed in UTC, so
+/// `ORDER BY` on it puts a floating 09:00 and a New York 09:00 in an order
+/// that is wrong for every reader west of Greenwich.
+pub(super) fn sort_by_landing(
+    tasks: &mut [sunrise_domain::Task],
+    tz: &jiff::tz::TimeZone,
+    unlanded: Unlanded,
+) {
+    let lands = |t: &sunrise_domain::Task| landing(t, tz).cloned();
+    tasks.sort_by(|a, b| {
+        match (lands(a), lands(b)) {
+            (Some(x), Some(y)) => x.cmp_in(&y, tz),
+            (x, y) => match unlanded {
+                Unlanded::First => y.is_none().cmp(&x.is_none()),
+                Unlanded::Last => x.is_none().cmp(&y.is_none()),
+            },
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+/// The time a task lands on for a reader in `tz`: its plan, or, when it has
+/// none, the earlier of its two deadlines (ADR-0047 §1), compared with
+/// [`SunriseTime::cmp_in`]. `None` for a task with no time at all.
+pub(super) fn landing<'t>(
+    t: &'t sunrise_domain::Task,
+    tz: &jiff::tz::TimeZone,
+) -> Option<&'t SunriseTime> {
+    if t.planned_at.is_some() {
+        return t.planned_at.as_ref();
+    }
+    match (t.target_at.as_ref(), t.hard_due_at.as_ref()) {
+        (Some(a), Some(b)) => Some(if b.cmp_in(a, tz).is_lt() { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Order a Stream or Context listing: manual order
+/// ([`sunrise_domain::task_order::sort_manually`], issue #340), so every
+/// task someone placed leads by its key, and the rest follow by when they
+/// land, unplanned first, as [`sort_by_landing`] orders them.
+pub(super) fn sort_listing(tasks: &mut [sunrise_domain::Task], tz: &jiff::tz::TimeZone) {
+    sort_by_landing(tasks, tz, Unlanded::First);
+    sunrise_domain::task_order::sort_manually(tasks);
+}
 
 impl Engine {
     /// What completing `task` released — the mid-session unblock cascade.
@@ -36,23 +99,28 @@ impl Engine {
         require_kind(task, EntityKind::Task)?;
         // Dependents that are still open, with their *remaining* open-blocker
         // count. An unknown blocker counts as open, matching `query_actionable`.
+        // An edge the cycle rule suppresses releases nothing and holds
+        // nothing back (`task::resolved_dependencies`).
+        let suppressed = suppressed_edge_keys(db.conn())?;
         let mut stmt = db.conn().prepare(
             "SELECT d.id,
                     (SELECT COUNT(*) FROM task_blockers tb2
                        LEFT JOIN tasks b ON b.id = tb2.blocker_id
                       WHERE tb2.task_id = d.id
+                        AND instr(?2, '|' || hex(tb2.task_id) || hex(tb2.blocker_id) || '|') = 0
                         AND (b.id IS NULL
                              OR (b.deleted = 0
                                  AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers
              FROM task_blockers tb
                JOIN tasks d ON d.id = tb.task_id
              WHERE tb.blocker_id = ?1
+               AND instr(?2, '|' || hex(tb.task_id) || hex(tb.blocker_id) || '|') = 0
                AND d.deleted = 0 AND d.archived = 0
                AND d.state NOT IN ('done', 'cancelled')
              ORDER BY d.id ASC",
         )?;
         let rows = stmt
-            .query_map(params![task.bytes().to_vec()], |r| {
+            .query_map(params![task.bytes().to_vec(), suppressed], |r| {
                 Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -70,16 +138,32 @@ impl Engine {
         ))))
     }
 
+    /// Today: every open task planned, or with a deadline of either kind, on
+    /// or before the reader's planner day (`docs/10-cross-cutting/time.md` §4,
+    /// `docs/02-domain/day-schedule.md`).
+    ///
+    /// Today is the planner day containing `now_ms` in the device zone, not a
+    /// rolling 24 hours: with no day schedule the civil day, and with one the
+    /// span from today's start to tomorrow's, so at 00:30 someone who sleeps
+    /// at 01:00 is still on the day they were living. A task belongs to the
+    /// planner day its time falls on ([`sunrise_domain::planner_day_of`]): an
+    /// all-day value occupies its whole day. Overdue and slipped tasks stay,
+    /// as before; `today_section_in` sorts them out.
+    ///
+    /// The SQL reads the storage index up to the end of the day plus
+    /// [`PREFILTER_SLACK_MS`], and membership is then decided in Rust on the
+    /// resolved value (§2 rule 2). Rows come back by when they land
+    /// ([`landing`]) with [`SunriseTime::cmp_in`], then id.
     pub(super) fn query_today(
         &self,
         db: &Db,
         now_ms: u64,
         contexts: &[EntityRef],
     ) -> Result<QueryResult, EngineError> {
-        // Today = (a) tasks scheduled within today's local-day window OR
-        //         (b) tasks due_at <= now + 24h, AND not done/deleted.
-        // Currently we use a simple rolling 24h window forward from `now_ms`.
-        let window_end = now_ms.saturating_add(24 * 60 * 60 * 1000);
+        let tz = self.device_zone();
+        let schedule = self.day_schedule(db)?;
+        let (today, _, day_end_ms) = self.planner_day_at(&schedule, now_ms)?;
+        let window_end = day_end_ms.saturating_add(PREFILTER_SLACK_MS);
 
         // `contexts` is an OR-set filter per docs/02-domain/contexts-and-tags.md:
         // an empty slice means "no filter", and a non-empty one keeps tasks
@@ -102,14 +186,17 @@ impl Engine {
             "SELECT id FROM tasks
              WHERE deleted = 0 AND archived = 0
                AND state != 'done' AND state != 'cancelled'
-               AND ((scheduled_at_ms IS NOT NULL AND scheduled_at_ms <= ?)
-                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?)){ctx_clause}
-             ORDER BY COALESCE(scheduled_at_ms, due_at_ms) ASC"
+               AND ((planned_at_ms IS NOT NULL AND planned_at_ms <= ?)
+                 OR (target_at_ms IS NOT NULL AND target_at_ms <= ?)
+                 OR (hard_due_at_ms IS NOT NULL AND hard_due_at_ms <= ?)){ctx_clause}"
         );
         let mut stmt = db.conn().prepare(&sql)?;
 
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(window_end), Box::new(window_end)];
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(window_end),
+            Box::new(window_end),
+            Box::new(window_end),
+        ];
         for c in contexts {
             bound.push(Box::new(c.bytes().to_vec()));
         }
@@ -128,7 +215,70 @@ impl Engine {
                 tasks.push(t);
             }
         }
+        let on_or_before_today = |v: Option<&SunriseTime>| {
+            v.and_then(|v| sunrise_domain::planner_day_of(&schedule, v, &tz))
+                .is_some_and(|d| d <= today)
+        };
+        tasks.retain(|t| {
+            on_or_before_today(t.planned_at.as_ref())
+                || on_or_before_today(t.target_at.as_ref())
+                || on_or_before_today(t.hard_due_at.as_ref())
+        });
+        // A routine's past occurrences, as its catch-up policy shows them
+        // (`docs/02-domain/routines-and-recurrence.md` §Catch-up for
+        // occurrences already materialized).
+        self.apply_catchup(db.conn(), &mut tasks, now_ms)?;
+        sort_by_landing(&mut tasks, &tz, Unlanded::Last);
         Ok(QueryResult::Tasks(tasks))
+    }
+
+    /// What moving the reader from `from` to `to` at `now_ms` changes, for
+    /// [`crate::Core::on_time_zone_changed`] (`docs/10-cross-cutting/time.md`
+    /// §7). Reads only; nothing stored is rewritten.
+    ///
+    /// Counts the open tasks one of whose three times resolves to a
+    /// different instant in the two zones, or whose lateness (ADR-0047 §2)
+    /// is another state or began at another instant in one than in the
+    /// other, and reports whether the
+    /// `notifications.timezone_changed.enabled` preference asks for a
+    /// notification.
+    pub(crate) fn time_zone_impact(
+        &self,
+        db: &Db,
+        from: &jiff::tz::TimeZone,
+        to: &jiff::tz::TimeZone,
+        now_ms: u64,
+    ) -> Result<(u32, bool), EngineError> {
+        let moved =
+            |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
+        let schedule = self.day_schedule(db)?;
+        let stale_after_days = self.stale_after_days(db)?;
+        let now = super::ids::ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
+        let late_moved = |t: &sunrise_domain::Task| {
+            sunrise_domain::lateness(t, now, from, &schedule, stale_after_days)
+                != sunrise_domain::lateness(t, now, to, &schedule, stale_after_days)
+        };
+        let affected = super::review::read_live_tasks(db.conn())?
+            .iter()
+            .filter(|t| {
+                !t.archived
+                    && matches!(
+                        t.state.effective(),
+                        sunrise_domain::TaskState::Todo | sunrise_domain::TaskState::InProgress
+                    )
+            })
+            .filter(|t| {
+                moved(t.planned_at.as_ref())
+                    || moved(t.target_at.as_ref())
+                    || moved(t.hard_due_at.as_ref())
+                    || late_moved(t)
+            })
+            .count();
+        let notify = matches!(
+            self.resolved_preference(db, "notifications.timezone_changed.enabled")?,
+            Some(sunrise_domain::PrefValue::Bool(true))
+        );
+        Ok((u32::try_from(affected).unwrap_or(u32::MAX), notify))
     }
 
     /// Open tasks with their derived dependency state, ranked for a planner.
@@ -186,6 +336,7 @@ impl Engine {
             EntityKind::Routine => {
                 let rt = read_routine(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
+                let rt = self.streak_now(rt, self.clock.now_ms());
                 Ok(QueryResult::Routine(Box::new(rt)))
             }
             EntityKind::Block => {
@@ -203,11 +354,29 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("attachment {r}")))?;
                 Ok(QueryResult::Attachments(vec![a]))
             }
+            // The one view, deleted or not, in the list shape.
+            EntityKind::SavedView => {
+                let v = super::saved_view::read_saved_view(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("saved view {r}")))?;
+                Ok(QueryResult::SavedViews(vec![v]))
+            }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?}",
                 r.kind()
             ))),
         }
+    }
+
+    /// The count of parked ops by reason (ADR-0045 §4, "Visibility").
+    pub(super) fn query_parked_ops_summary(db: &Db) -> Result<QueryResult, EngineError> {
+        let counts = OpLog::parked_counts_by_reason(db)?
+            .into_iter()
+            .map(|c| ParkedOpCount {
+                reason: c.reason,
+                count: c.count,
+            })
+            .collect();
+        Ok(QueryResult::ParkedOps(counts))
     }
 
     pub(super) fn query_device_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
@@ -276,67 +445,4 @@ impl Engine {
             can_sponsor: self.keychain.can_rotate_identity(),
         })))
     }
-
-    pub(super) fn query_search(
-        &self,
-        db: &Db,
-        text: &str,
-        limit: u32,
-    ) -> Result<QueryResult, EngineError> {
-        let match_expr = sanitize_fts_query(text);
-        // Empty/whitespace-only input yields no results (never touch FTS).
-        if match_expr.is_empty() {
-            return Ok(QueryResult::Tasks(Vec::new()));
-        }
-        let mut stmt = db.conn().prepare(
-            "SELECT id FROM search_idx
-             WHERE search_idx MATCH ? AND kind = 'task'
-             ORDER BY bm25(search_idx)
-             LIMIT ?",
-        )?;
-        let ids = stmt
-            .query_map(params![match_expr, i64::from(limit)], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut tasks = Vec::with_capacity(ids.len());
-        for raw in ids {
-            let mut bytes = [0u8; 16];
-            let take = raw.len().min(16);
-            bytes[..take].copy_from_slice(&raw[..take]);
-            if let Some(t) = read_task(db.conn(), &bytes)? {
-                if !t.deleted {
-                    tasks.push(t);
-                }
-            }
-        }
-        Ok(QueryResult::Tasks(tasks))
-    }
-}
-
-// ---- helpers ----
-
-/// Turn arbitrary user input into a safe FTS5 MATCH expression.
-///
-/// FTS5's query grammar treats characters like `"`, `*`, `:`, `-`, `(`, `)`,
-/// and bare-word operators (`AND`/`OR`/`NOT`/`NEAR`) as syntax; hostile or
-/// accidental input can otherwise produce a MATCH syntax error. We defuse it
-/// completely: split on whitespace, strip embedded double quotes and control
-/// characters (a NUL would truncate the C string SQLite receives) from each
-/// token, wrap each token in double quotes (making it a literal phrase — no
-/// operator or special character survives), and join with spaces (implicit
-/// AND). An empty result means "no query".
-fn sanitize_fts_query(text: &str) -> String {
-    text.split_whitespace()
-        .map(|tok| {
-            let cleaned: String = tok
-                .chars()
-                .filter(|&c| c != '"' && !c.is_control())
-                .collect();
-            cleaned
-        })
-        .filter(|tok| !tok.is_empty())
-        .map(|tok| format!("\"{tok}\""))
-        .collect::<Vec<_>>()
-        .join(" ")
 }

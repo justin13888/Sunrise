@@ -62,8 +62,8 @@
 //! still bounds its own memory, but the gap a *client* is told about comes
 //! from durable retention, not from this.
 //!
-//! Multi-node servers swap the fan-out for a Postgres NOTIFY / Redis backend
-//! (Phase 17) without touching the WS handler.
+//! Multi-node fan-out is ADR-0062 §2 (#481): Postgres `LISTEN/NOTIFY` as a
+//! wake-up, with the durable relay log as the payload.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -128,6 +128,11 @@ pub struct RelayFrame {
     /// Raw wire-frame bytes (full 11-byte header + payload). Forwarded
     /// verbatim to subscribers.
     pub bytes: Vec<u8>,
+    /// How many ops the frame carries, counted by the publisher that decoded
+    /// them, so a delivery adds it to `sunrise_sync_ops_delivered_total`
+    /// without decoding the frame again. 0 for a frame with no ops or none
+    /// the publisher knows of.
+    pub n_ops: u64,
     /// Per-device high-water marks this frame carries.
     ///
     /// Empty means "unknown" — a control frame, or ops whose routing header
@@ -150,6 +155,7 @@ impl RelayFrame {
         Self {
             from,
             bytes,
+            n_ops: 0,
             heads: Vec::new(),
             fanout: None,
         }
@@ -432,6 +438,7 @@ mod tests {
         RelayFrame {
             from,
             bytes: vec![byte],
+            n_ops: 1,
             heads: vec![FrameHead {
                 device_id: device,
                 max_seq: seq,
@@ -531,6 +538,7 @@ mod tests {
             RelayFrame {
                 from: 1,
                 bytes: vec![7],
+                n_ops: 2,
                 heads: vec![
                     FrameHead {
                         device_id: DEV_A,
@@ -594,6 +602,7 @@ mod tests {
                 RelayFrame {
                     from: 0,
                     bytes: vec![i; 4],
+                    n_ops: 1,
                     heads: vec![FrameHead {
                         device_id: DEV_A,
                         max_seq: u64::from(i) + 1,

@@ -9,7 +9,9 @@
 
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
-use sunrise_domain::capture::{normalize_title, parse, parse_when, Capture, NamedRef, Unresolved};
+use sunrise_domain::capture::{
+    normalize_title, parse, parse_when, parse_when_time, Capture, NamedRef, Unresolved,
+};
 use sunrise_domain::SunriseTime;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -60,7 +62,7 @@ fn run(input: &str) -> Capture {
 
 /// Local civil time of a [`SunriseTime`] in UTC, as `YYYY-MM-DD HH:MM`.
 fn civil(t: &SunriseTime) -> String {
-    let z = t.to_instant(&utc()).to_zoned(utc());
+    let z = t.to_instant(&utc()).unwrap().to_zoned(utc());
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         z.year(),
@@ -85,7 +87,7 @@ fn spec_example_full_annotation() {
     assert_eq!(c.draft.estimated_duration_s, Some(3600));
     // Friday 2026-08-21; "next saturday" is the Saturday of the following
     // week, not tomorrow.
-    assert_eq!(civil(&c.draft.scheduled_at.unwrap()), "2026-08-29 00:00");
+    assert_eq!(civil(&c.draft.planned_at.unwrap()), "2026-08-29 00:00");
     assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
 }
 
@@ -98,7 +100,7 @@ fn spec_example_plain_text_goes_to_inbox() {
         "no #stream means Inbox, which the core resolves"
     );
     assert!(c.draft.priority.is_none());
-    assert!(c.draft.scheduled_at.is_none());
+    assert!(c.draft.planned_at.is_none());
     assert!(c.unresolved.is_empty());
 }
 
@@ -110,7 +112,7 @@ fn spec_example_weekday_recurrence_is_declined_not_guessed() {
     let c = run("Standup ^weekday 9:30 #work-acme");
     assert_eq!(c.draft.stream_id, Some(stream_ref(2)));
     assert!(
-        c.draft.scheduled_at.is_none(),
+        c.draft.planned_at.is_none(),
         "a recurrence rule must not be silently collapsed to one datetime"
     );
     assert!(c
@@ -221,6 +223,27 @@ fn duration_trailing_number_without_unit_is_rejected() {
     assert!(c.draft.title.contains("~1h30"));
 }
 
+/// A duration whose seconds do not fit a `u64` is not a duration. It used to
+/// overflow: a panic in a debug build, a wrapped estimate in a release one.
+/// `307445734561825861` minutes is the first bare count whose seconds
+/// overflow; the second token overflows only when its two parts are added.
+#[test]
+fn a_duration_too_large_to_hold_is_reported_not_wrapped() {
+    for tok in ["~307445734561825861", "~5124095576030431h5124095576030431h"] {
+        let c = run(&format!("t {tok}"));
+        assert_eq!(c.draft.estimated_duration_s, None, "for {tok}");
+        assert!(
+            matches!(
+                c.unresolved.as_slice(),
+                [Unresolved::UnparseableDuration(_)]
+            ),
+            "for {tok}: {:?}",
+            c.unresolved
+        );
+        assert!(c.draft.title.contains(tok), "for {tok}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dates.
 // ---------------------------------------------------------------------------
@@ -293,6 +316,30 @@ fn relative_spans() {
     }
 }
 
+/// A relative span whose unit is a multi-byte character is not a date. It used
+/// to panic: the unit was split off one *byte* from the end, which lands
+/// inside the character.
+#[test]
+fn a_relative_span_with_a_non_ascii_unit_is_not_a_date() {
+    for bad in ["+3\u{e9}", "+3\u{65e5}", "+\u{e9}", "+\u{1f600}"] {
+        assert!(parse_when(bad, now(), &utc()).is_none(), "{bad:?}");
+        assert!(parse_when_time(bad, now(), &utc()).is_none(), "{bad:?}");
+    }
+}
+
+/// The capture line keeps such a token in the title and reports it, the same
+/// as any other date it cannot read.
+#[test]
+fn a_capture_token_with_a_non_ascii_unit_is_reported_not_a_crash() {
+    let c = run("Call mum ^+3\u{e9}");
+    assert_eq!(c.draft.planned_at, None);
+    assert!(c.draft.title.contains("^+3\u{e9}"), "{:?}", c.draft.title);
+    assert!(c
+        .unresolved
+        .iter()
+        .any(|u| matches!(u, Unresolved::UnparseableDate(_))));
+}
+
 #[test]
 fn unparseable_dates_return_none_rather_than_guessing() {
     for bad in [
@@ -330,8 +377,8 @@ fn dst_gap_is_resolved_compatibly() {
 #[test]
 fn due_token_sets_due_not_scheduled() {
     let c = run("File taxes *due:2026-04-15*");
-    assert_eq!(civil(&c.draft.due_at.unwrap()), "2026-04-15 00:00");
-    assert!(c.draft.scheduled_at.is_none());
+    assert_eq!(civil(&c.draft.hard_due_at.unwrap()), "2026-04-15 00:00");
+    assert!(c.draft.planned_at.is_none());
     assert_eq!(c.draft.title, "File taxes");
 }
 
@@ -381,7 +428,7 @@ fn empty_input_yields_empty_title_for_live_preview() {
     assert_eq!(c.draft.title, "");
     assert!(c.unresolved.is_empty());
     assert!(
-        c.draft.validate().is_err(),
+        c.draft.validate(&utc()).is_err(),
         "an empty title must not commit"
     );
 }
@@ -393,7 +440,7 @@ fn parse_is_deterministic() {
     let b = run(input);
     assert_eq!(a.draft.title, b.draft.title);
     assert_eq!(a.draft.stream_id, b.draft.stream_id);
-    assert_eq!(a.draft.scheduled_at, b.draft.scheduled_at);
+    assert_eq!(a.draft.planned_at, b.draft.planned_at);
     assert_eq!(a.draft.priority, b.draft.priority);
     assert_eq!(a.unresolved, b.unresolved);
 }
@@ -402,8 +449,102 @@ fn parse_is_deterministic() {
 fn parsed_drafts_pass_domain_validation() {
     let c = run("Renew passport #travel @errands ^next saturday !1 ~1h");
     c.draft
-        .validate()
+        .validate(&utc())
         .expect("a fully-annotated parse must produce a valid draft");
+}
+
+// ---------------------------------------------------------------------------
+// Which kind of time each phrase class writes (docs/10-cross-cutting/time.md §1).
+// ---------------------------------------------------------------------------
+
+/// The kind `parse_when_time` gives `input`, and the value it holds.
+fn kind_of(input: &str) -> SunriseTime {
+    parse_when_time(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"))
+}
+
+/// A date with no time is a whole day: "friday" is not 00:00 UTC Friday,
+/// which west of UTC is Thursday evening.
+#[test]
+fn a_date_phrase_is_all_day() {
+    use jiff::civil::date;
+    for (input, want) in [
+        ("today", date(2026, 8, 21)),
+        ("tomorrow", date(2026, 8, 22)),
+        ("friday", date(2026, 8, 28)),
+        ("next saturday", date(2026, 8, 29)),
+        ("2026-12-25", date(2026, 12, 25)),
+    ] {
+        assert_eq!(kind_of(input), SunriseTime::all_day(want), "for {input}");
+    }
+}
+
+/// A wall-clock time, with or without a date, floats: "at 9" is 09:00
+/// wherever the user is when it comes round.
+#[test]
+fn a_wall_clock_phrase_is_floating() {
+    use jiff::civil::date;
+    for (input, want) in [
+        ("9am", date(2026, 8, 21).at(9, 0, 0, 0)),
+        ("14:00", date(2026, 8, 21).at(14, 0, 0, 0)),
+        ("tonight", date(2026, 8, 21).at(20, 0, 0, 0)),
+        ("tomorrow 9am", date(2026, 8, 22).at(9, 0, 0, 0)),
+        ("saturday 14:30", date(2026, 8, 22).at(14, 30, 0, 0)),
+        ("2026-03-08 02:30", date(2026, 3, 8).at(2, 30, 0, 0)),
+    ] {
+        assert_eq!(kind_of(input), SunriseTime::floating(want), "for {input}");
+    }
+}
+
+/// A relative offset is a point on the timeline counted from now.
+#[test]
+fn a_relative_phrase_is_an_instant() {
+    for (input, want) in [
+        ("+6h", "2026-08-21T18:00:00Z"),
+        ("+90m", "2026-08-21T13:30:00Z"),
+        ("+3d", "2026-08-24T12:00:00Z"),
+    ] {
+        assert_eq!(
+            kind_of(input),
+            SunriseTime::instant(want.parse().unwrap()),
+            "for {input}"
+        );
+    }
+}
+
+/// A floating capture keeps its wall-clock time when the reader moves: the
+/// whole reason it is not an instant.
+#[test]
+fn a_captured_time_follows_the_reader() {
+    let c = run("Call mum ^tomorrow 9am");
+    let at = c.draft.planned_at.expect("scheduled");
+    for zone in ["America/New_York", "Asia/Kolkata", "Pacific/Kiritimati"] {
+        let tz = TimeZone::get(zone).unwrap();
+        let z = at.to_instant(&tz).unwrap().to_zoned(tz);
+        assert_eq!((z.hour(), z.minute()), (9, 0), "in {zone}");
+    }
+    let due = run("File taxes *due:friday*")
+        .draft
+        .hard_due_at
+        .expect("due");
+    assert!(due.is_all_day());
+}
+
+/// `*target:when*` is the soft deadline, apart from the hard one, and an
+/// unreadable one stays in the title.
+#[test]
+fn a_target_is_captured_apart_from_the_hard_deadline() {
+    let c = run("File taxes *target:friday* *due:2026-04-15*");
+    assert!(c
+        .draft
+        .target_at
+        .as_ref()
+        .is_some_and(SunriseTime::is_all_day));
+    assert!(c.draft.hard_due_at.is_some());
+    assert_ne!(c.draft.target_at, c.draft.hard_due_at);
+    assert_eq!(c.draft.title, "File taxes");
+    let bad = run("File taxes *target:someday-ish*");
+    assert!(bad.draft.target_at.is_none());
+    assert!(bad.draft.title.contains("*target:someday-ish*"));
 }
 
 // ---------------------------------------------------------------------------

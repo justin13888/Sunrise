@@ -28,7 +28,7 @@ struct TaskFacets: Equatable {
     /// "low" / "med" / "high"; absent when the task carries no facet, because
     /// "any" is a planner input rather than something to show on a row.
     let energy: String?
-    /// `30m`, `1h30`.
+    /// `30m`, `1h30m`.
     let estimate: String?
     let scheduled: DayLabel?
     let due: DayLabel?
@@ -88,9 +88,9 @@ extension TodaySection {
 
     var heading: String {
         switch self {
-        case .scheduled: "Scheduled"
-        case .due: "Due today"
-        case .overdue: "Overdue"
+        case .scheduled: L10n.Tasks.sectionScheduled
+        case .due: L10n.Tasks.sectionDue
+        case .overdue: L10n.Tasks.sectionOverdue
         }
     }
 

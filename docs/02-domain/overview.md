@@ -102,7 +102,7 @@ bytes) — the rule `validate_title` enforces.
 
 ## Hard rules
 
-- A **Task** belongs to exactly **one Stream** at a time. Tasks not yet assigned live in a special pseudo-stream `Inbox`.
+- A **Task** belongs to at most **one Stream**; with none it is in the Inbox view ([ADR-0046](../11-adr/0046-optional-stream.md)).
 - A **Task** can be tagged with **0..N Contexts**.
 - A **Block** can bind to **0..N Tasks**. Tasks can have **0..N Blocks** scheduled.
 - **Notes** are children of an entity; they cannot float free.
@@ -138,11 +138,10 @@ When sharing, only Persons with linked cryptographic identities can be granted a
 ## Relationship to CRDT shape
 
 > **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
-> ops).** The merge model of record is ADR-0044's, not built yet
-> ([#319](https://github.com/justin13888/Sunrise/issues/319)). Today the core
-> merges each entity as one unit by last-writer-wins
-> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded), and the
-> rules in force are
+> ops).** A `core.field_ops` vault merges per field, as ADR-0044 says. A legacy
+> vault merges an entity as one last-writer-wins unit
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). The rules
+> in force are
 > [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 
 Under ADR-0044 the workspace still ships **no CRDT library**. Each entity is a
@@ -166,7 +165,7 @@ Each entity spec's §Merge mapping names its fields' types.
 ## The entity registry
 
 Every entity kind is declared once, in the entity registry: the
-`for_each_entity!` macro in `crates/sunrise-id/src/registry.rs`. An entry
+`for_each_entity!` macro in `crates/sunrise-id/src/registry/table.rs`. An entry
 records the kind's id prefix, its op-log tag, how its ops merge (`Lww`,
 `AppendOnly`, `Control` or `Unsynced`), which stream seals its ops, the feature
 ids scoped to it, the op variants that carry it, and the records those ops
@@ -184,8 +183,8 @@ none of them keeps a second list:
 | `sunrise-domain` (`registry.rs`) | an exhaustive, type-checked destructuring of every record, and a wire-name check | the build; the wire names fail a test |
 | `sunrise-core` (`inner_op.rs`) | `InnerOp`'s entity variants and their `inner_kind`, `target_kind`, target, effect and kind | the build |
 | `sunrise-core` (`engine/lww.rs`) | the materializer's merge class, table and key column | the build: its per-op match is exhaustive |
-| `sunrise-core-bindings` (`dto.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
-| `sunrise-storage` (`db.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
+| `sunrise-core-bindings` (`dto/registry.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
+| `sunrise-storage` (`db/tests.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
 
 `ENTITIES` is also the input the canonical schema and its fingerprint are built
 from ([#323](https://github.com/justin13888/Sunrise/issues/323)), and the field
@@ -204,13 +203,20 @@ catalogue per-field merge reads
    crate does not build.
 3. Write the migration that creates its table with the registered key column,
    the four `lww_*` stamp columns for an `Lww` entity, and an `extra` blob.
-4. Write its row writers in `crates/sunrise-core/src/engine/` and its arms in
+4. Write its row writers in `crates/sunrise-core/src/engine/merge/rows/`, its
+   arm in `merge/project.rs#write_projection`, and its arms in
    `materialize_remote`. The match there is exhaustive over `InnerOp`, so each
-   new op variant fails the build until it has an arm. Each local write passes
-   its `inner_kind` and `target_kind` strings to `ops_insert` by hand, and
-   nothing checks them. Copy them from the registry entry.
-5. Write its `UniFFI` mirror and `From` conversion in
-   `crates/sunrise-core-bindings/src/dto.rs`, and add its `Mirrored` impl.
+   new op variant fails the build until it has an arm. A command builds its op
+   and calls `Engine::append_and_fold`, which logs the op under the
+   `inner_kind` and `target_kind` the registry gives it and folds it; a
+   command cannot write the row itself, because the writers are private to
+   the merge.
+5. Write its `UniFFI` mirror and `From` conversion in its domain area's
+   module under `crates/sunrise-core-bindings/src/dto/`, and add its
+   `Mirrored` impl in `crates/sunrise-core-bindings/src/dto/registry.rs`. The
+   saved view is the one exception: its mirror and its `Mirrored` impl live
+   in `crates/sunrise-core-bindings/src/saved_views.rs`, beside the rest of
+   its seam.
 6. Add the commands, queries and undo rules the feature needs. These are
    product surfaces rather than wiring, so the registry does not require them:
    an append-only entity has no delete command, and an attachment has no

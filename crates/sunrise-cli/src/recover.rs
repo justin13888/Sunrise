@@ -1,12 +1,12 @@
 //! `sunrise recover` — spend a recovery code and come back with a vault.
 //!
 //! `docs/03-crypto/recovery.md` §Recovery flow is eight steps. Steps 2-5 were
-//! already built and reachable (`sunrise_onboarding::recover_identity_from_code`
+//! already built and reachable (`sunrise_client_core::recovery::recover_identity_from_code`
 //! opens the blob and hands back the identity); what had no caller was
 //! everything that turns an opened blob into something a user can use, and an
 //! opened blob is not a vault.
 //!
-//! Steps 3 to 8 are not here. They are `sunrise_onboarding::recovery`, which
+//! Steps 3 to 8 are not here. They are `sunrise_client_core::recovery`, which
 //! the UniFFI seam's `recover_account` runs too, over the same relay adapter
 //! (`sunrise_relay_client::RelayRecovery`). What stays in this module is what
 //! only a command line has: where the words come from, which directory the
@@ -14,10 +14,10 @@
 //! printed at the end.
 //!
 //! ```text
-//!  step 1   the user points this at an empty vault directory
-//!  steps 3-5 sunrise_onboarding::restore_identity
+//!  step 1   the user points this at a directory holding no vault
+//!  steps 3-5 sunrise_client_core::recovery::restore_identity
 //!  step 6   mint a fresh vault root in the keystore, then
-//!  step 8   sunrise_onboarding::rejoin_account opens the vault from the
+//!  step 8   sunrise_client_core::recovery::rejoin_account opens the vault from the
 //!           restored identity, registers it, and waits for the replay
 //!  step 7   tell the user to revoke the devices they lost and rotate their
 //!           Stream keys — last, because it is advice about a vault that now
@@ -27,27 +27,27 @@
 //! The root is minted only once the code has opened the blob, so a mistyped
 //! code leaves nothing in the keystore.
 //!
-//! # Why the vault directory has to be empty
+//! # Why the directory has to hold no vault
 //!
 //! The identity a vault belongs to is decided when it is created and cannot be
 //! changed afterwards (`Keychain::open`'s case 4 loads what is on disk and
 //! never replaces it). Recovering *into* an existing vault would therefore
 //! either fail with `IdentityConflict` or, worse, quietly leave the old
 //! identity in place — so this refuses up front, with the directory named.
+//! `vault.db` or a non-empty `vault-id` marker is what counts as a vault, by
+//! the rule the `UniFFI` seam shares
+//! ([`sunrise_client_core::recovery::check_recovery_directory`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use sunrise_client_core::recovery::{check_recovery_directory, RecoveryProgress, RestoreError};
 use sunrise_core::{Core, CoreConfig, SystemRng};
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_crypto::recovery::RecoveryPayload;
-use sunrise_onboarding::{RecoveryProgress, RestoreError};
 use sunrise_relay_client::RelayRecovery;
 
+use crate::i18n::strings;
 use crate::{livesync, login, vault};
-
-/// The file whose presence means "there is already a vault here".
-const VAULT_DB_FILE: &str = "vault.db";
 
 /// How long to wait for the replay of §Recovery flow step 8 to reach the
 /// vault before reporting that it did not.
@@ -62,17 +62,13 @@ const CATCH_UP_MS: u64 = 60_000;
 #[derive(Debug, thiserror::Error)]
 pub enum RecoverError {
     /// The target directory already holds a vault.
-    #[error(
-        "{} already holds a vault; a recovery creates one and cannot merge into another. \
-         Point SUNRISE_VAULT at an empty directory and run this again.",
-        .0.display()
-    )]
-    NotEmpty(PathBuf),
+    #[error("{}", strings::recover::not_empty(&.0.display().to_string()))]
+    HoldsVault(PathBuf),
     /// No relay origin.
-    #[error("set {} to the relay origin", livesync::ENV_SYNC_URL)]
+    #[error("{}", strings::bootstrap::needs_relay(livesync::ENV_SYNC_URL))]
     NoRelay,
     /// No recovery code on the command line and nothing on stdin.
-    #[error("a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in")]
+    #[error("{}", strings::recover::needs_code())]
     NoCode,
     /// The step-up sign-in could not be run, or the relay origin is unusable.
     #[error("{0}")]
@@ -93,17 +89,10 @@ pub enum RecoverError {
 /// shared flow cannot name.
 fn cli_wording(e: &RestoreError) -> String {
     match e {
-        RestoreError::StepUpRequired(detail) => format!(
-            "the relay will not serve the recovery blob to this session: {detail}. \
-             It requires a fresh sign-in (an OIDC step-up), which is what \
-             `sunrise recover` performs when it runs the login itself — so this \
-             means the token in {} is an ordinary one. Unset it and let this \
-             command sign you in.",
-            livesync::ENV_SYNC_TOKEN
-        ),
-        RestoreError::NeverCaughtUp { .. } => {
-            format!("{e}. Nothing is lost: run `sunrise sync --once` when the network is better.")
+        RestoreError::StepUpRequired(detail) => {
+            strings::recover::step_up_required(detail, livesync::ENV_SYNC_TOKEN)
         }
+        RestoreError::NeverCaughtUp { .. } => strings::recover::never_caught_up(&e.to_string()),
         other => other.to_string(),
     }
 }
@@ -141,16 +130,13 @@ pub fn code_from(args: &[String], piped: &str) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-/// Refuse a directory that already holds a vault, per §Why the vault directory
-/// has to be empty.
+/// Refuse a directory that already holds a vault, per §Why the directory has to
+/// hold no vault.
 ///
 /// # Errors
-/// [`RecoverError::NotEmpty`].
-pub fn require_empty(vault_dir: &Path) -> Result<(), RecoverError> {
-    if vault_dir.join(VAULT_DB_FILE).exists() {
-        return Err(RecoverError::NotEmpty(vault_dir.to_path_buf()));
-    }
-    Ok(())
+/// [`RecoverError::HoldsVault`].
+pub fn require_no_vault(vault_dir: &Path) -> Result<(), RecoverError> {
+    check_recovery_directory(vault_dir).map_err(|refused| RecoverError::HoldsVault(refused.0))
 }
 
 /// The relay at `base_url`, as the shared flow reads it.
@@ -159,7 +145,7 @@ fn relay(base_url: &str, bearer: &str) -> Result<RelayRecovery, RecoverError> {
 }
 
 /// Fetch the account record and the sealed blob, and open it with `code`:
-/// steps 3 to 5, through [`sunrise_onboarding::restore_identity`].
+/// steps 3 to 5, through [`sunrise_client_core::recovery::restore_identity`].
 ///
 /// `bearer` must carry a completed OIDC step-up: the blob route refuses an
 /// ordinary session with `403 AUTH_STEP_UP_REQUIRED`, which is the whole reason
@@ -173,9 +159,9 @@ pub async fn restore_identity(
     base_url: &str,
     bearer: &str,
     code: &str,
-) -> Result<RecoveryPayload, RecoverError> {
+) -> Result<sunrise_client_core::recovery::RestoredIdentity, RecoverError> {
     let relay = relay(base_url, bearer)?;
-    Ok(sunrise_onboarding::restore_identity(&relay, code, &mut |_| {}).await?)
+    Ok(sunrise_client_core::recovery::restore_identity(&relay, code, &mut |_| {}).await?)
 }
 
 /// What [`rejoin_account`]'s two callbacks share while the flow runs.
@@ -189,7 +175,7 @@ struct Rejoining {
 
 /// Steps 6 and 8: mint the vault root, then build the vault from the restored
 /// identity, register it, and replay the log, through
-/// [`sunrise_onboarding::rejoin_account`].
+/// [`sunrise_client_core::recovery::rejoin_account`].
 ///
 /// Named for what it does to the account rather than `rebuild_vault`, which
 /// is what rebuilding a vault's projection from its own op log is called
@@ -215,7 +201,7 @@ struct Rejoining {
 /// device could not be recorded.
 pub async fn rejoin_account(
     vault_dir: &Path,
-    identity: RecoveryPayload,
+    identity: sunrise_client_core::recovery::RestoredIdentity,
     base_url: &str,
     bearer: &str,
     app: &str,
@@ -268,37 +254,41 @@ pub async fn rejoin_account(
         }
     };
 
-    let outcome = sunrise_onboarding::rejoin_account(
+    let outcome = sunrise_client_core::recovery::rejoin_account(
         &relay,
         cfg,
         VaultRootKey::from_bytes(root),
         identity,
-        sunrise_onboarding::DeviceLabel {
-            nickname: "sunrise-cli".to_owned(),
-            platform: platform(),
-            app_version: Some(app.to_owned()),
-        },
+        crate::device_label(app),
         &start_sync,
         CATCH_UP_MS,
         &mut |step| {
             drain(&mut *announce);
             match step {
                 RecoveryProgress::DeviceRegistered { relay_device_id } => {
-                    announce("vault rebuilt from the recovery code");
+                    announce(&strings::recover::vault_rebuilt());
                     match livesync::save_relay_device_id(vault_dir, &relay_device_id) {
-                        Ok(()) => announce(&format!("re-keyed as device {relay_device_id}")),
+                        Ok(()) => announce(&strings::recover::rekeyed(&relay_device_id)),
                         Err(e) => {
                             shared_ref
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .unrecorded = Some(format!(
-                                "registered as {relay_device_id} but could not record it: {e}"
+                                .unrecorded = Some(strings::recover::unrecorded(
+                                &relay_device_id,
+                                &e.to_string(),
                             ));
                         }
                     }
                 }
-                RecoveryProgress::Replaying { applied } => {
-                    announce(&format!("replaying history: {applied} changes applied"));
+                RecoveryProgress::Replaying { applied, total } => {
+                    let count = i64::try_from(applied).unwrap_or(i64::MAX);
+                    announce(&match total {
+                        Some(total) => strings::recover::replaying_of(
+                            i64::try_from(total).unwrap_or(i64::MAX),
+                            &count.to_string(),
+                        ),
+                        None => strings::recover::replaying(count),
+                    });
                 }
                 _ => {}
             }
@@ -330,31 +320,7 @@ pub async fn rejoin_account(
 /// exists.
 #[must_use]
 pub fn aftercare(identity_id: &str) -> String {
-    format!(
-        "Account {identity_id} is restored on this device.\n\
-         \n\
-         Two things are worth doing now, and neither is automatic:\n\
-         \n\
-           * Revoke the devices you lost. Until you do, anything still\n\
-             holding them can read what this account writes.\n\
-           * Rotate your Stream keys. A recovery means an unknown-state\n\
-             environment, and rotation is what bounds what a lost device\n\
-             keeps reading. See docs/03-crypto/key-rotation.md.\n\
-         \n\
-         Your recovery code still works and has not changed. This device now\n\
-         holds ID_D_priv, so it can seal a new one if you ever rotate it."
-    )
-}
-
-/// This build's platform tag, as `POST /api/v1/devices` names them.
-fn platform() -> String {
-    if cfg!(target_os = "macos") {
-        "macos".to_owned()
-    } else if cfg!(target_os = "windows") {
-        "windows".to_owned()
-    } else {
-        "linux".to_owned()
-    }
+    strings::recover::aftercare(identity_id)
 }
 
 /// Obtain a bearer that carries a completed step-up.
@@ -376,19 +342,19 @@ pub async fn step_up_bearer(
     if let Ok(token) = std::env::var(livesync::ENV_SYNC_TOKEN) {
         let token = token.trim().to_owned();
         if !token.is_empty() {
-            announce(&format!("using the bearer in {}", livesync::ENV_SYNC_TOKEN));
+            announce(&strings::recover::using_bearer(livesync::ENV_SYNC_TOKEN));
             return Ok(token);
         }
     }
     let cfg = login::LoginConfig::from_env().map_err(|e| {
-        RecoverError::Relay(format!(
-            "{e}; set {} and {}, or set {} to a token that carries a fresh sign-in",
+        RecoverError::Relay(strings::recover::needs_config(
+            &e,
             login::ENV_ISSUER,
             login::ENV_CLIENT_ID,
-            livesync::ENV_SYNC_TOKEN
+            livesync::ENV_SYNC_TOKEN,
         ))
     })?;
-    announce("signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob");
+    announce(&strings::recover::signing_in());
     // The device id claim is empty: this device does not exist yet, and the
     // vault that will name it is not created until the blob has been opened.
     let creds = login::step_up_login(&cfg, "", &login::store_for(vault_dir), now_ms, announce)
@@ -453,14 +419,28 @@ mod tests {
     #[test]
     fn a_directory_that_already_holds_a_vault_is_refused_by_name() {
         let dir = tempfile::tempdir().unwrap();
-        require_empty(dir.path()).expect("an empty directory is fine");
-        std::fs::write(dir.path().join(VAULT_DB_FILE), b"not really a vault").unwrap();
-        let err = require_empty(dir.path()).unwrap_err();
-        assert!(matches!(err, RecoverError::NotEmpty(_)));
+        require_no_vault(dir.path()).expect("an empty directory is fine");
+        std::fs::write(dir.path().join("vault.db"), b"not really a vault").unwrap();
+        let err = require_no_vault(dir.path()).unwrap_err();
+        assert!(matches!(err, RecoverError::HoldsVault(_)));
         assert!(
             err.to_string().contains(&dir.path().display().to_string()),
             "the message has to name the directory the user must change: {err}"
         );
+    }
+
+    /// The marker this command line really writes, by `vault`'s own hand: the
+    /// shared rule names the file, and the two must not drift apart.
+    #[test]
+    fn a_directory_this_cli_has_keyed_is_refused_before_it_has_a_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let keystore = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stray"), b"not a vault").unwrap();
+        require_no_vault(dir.path()).expect("a stray file is not a vault");
+
+        vault::adopt(dir.path(), keystore.path(), [7; 32], &SystemRng).unwrap();
+        let err = require_no_vault(dir.path()).unwrap_err();
+        assert!(matches!(err, RecoverError::HoldsVault(_)), "{err:?}");
     }
 
     #[test]

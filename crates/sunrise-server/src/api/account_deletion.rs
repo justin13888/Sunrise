@@ -34,7 +34,7 @@
 //! the erasure earlier.
 
 use crate::api::error::{codes, ApiError};
-use crate::api::signed::{Signed, SignedParts};
+use crate::api::signed::{Caller, Signed, SignedParts};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
@@ -96,11 +96,14 @@ pub async fn initiate(
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
     let confirm_phrase = crockford(&raw);
     let expires_at_ms = state.clock.now_ms().saturating_add(PHRASE_TTL_MS);
-    state.store.put_delete_token(
-        &principal.account.account_id,
-        &phrase_hash(&confirm_phrase),
-        expires_at_ms,
-    )?;
+    state
+        .store
+        .put_delete_token(
+            &principal.account.account_id,
+            &phrase_hash(&confirm_phrase),
+            expires_at_ms,
+        )
+        .await?;
 
     tracing::info!(
         ev = "srv.account.delete_initiated",
@@ -130,7 +133,8 @@ pub async fn delete(
     let now_ms = state.clock.now_ms();
     if !state
         .store
-        .consume_delete_token(account_id, &phrase_hash(&body.confirm_phrase), now_ms)?
+        .consume_delete_token(account_id, &phrase_hash(&body.confirm_phrase), now_ms)
+        .await?
     {
         return Err(ApiError::forbidden(
             codes::ACCOUNT_DELETE_PHRASE_INVALID,
@@ -138,7 +142,10 @@ pub async fn delete(
              initiate the deletion again",
         ));
     }
-    let requested_at_ms = state.store.request_account_deletion(account_id, now_ms)?;
+    let requested_at_ms = state
+        .store
+        .request_account_deletion(account_id, now_ms)
+        .await?;
     let erase_after_ms =
         requested_at_ms.saturating_add(state.config.retention().account_delete_grace_ms);
 
@@ -160,17 +167,28 @@ pub async fn delete(
 /// chase: opening a sync session, publishing ops, and every step of an upload.
 /// Reads and the account's own routes stay open, so a client can still learn
 /// why it is being refused.
-pub(crate) fn refuse_if_pending_deletion(
+pub(crate) async fn refuse_if_pending_deletion(
     state: &ServerState,
     account_id: &str,
 ) -> Result<(), ApiError> {
-    match state.store.account_deletion_requested(account_id)? {
+    match state.store.account_deletion_requested(account_id).await? {
         None => Ok(()),
         Some(_) => Err(ApiError::forbidden(
             codes::ACCOUNT_PENDING_DELETION,
             "this account is being deleted and accepts no new sessions, ops or uploads",
         )),
     }
+}
+
+/// [`refuse_if_pending_deletion`] for the routes that hold a verified
+/// [`Caller`]: every upload step, and the recovery-blob, key-bundle,
+/// identity-chain and snapshot pins. An upload finished after the mark would
+/// write files the erasure then has to chase.
+pub(crate) async fn refuse_if_pending(
+    state: &ServerState,
+    caller: &Caller,
+) -> Result<(), ApiError> {
+    refuse_if_pending_deletion(state, &caller.principal.account.account_id).await
 }
 
 /// The stored form of a phrase: BLAKE3 of it, uppercased, so a database copy

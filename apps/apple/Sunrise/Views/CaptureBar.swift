@@ -21,9 +21,9 @@ struct CaptureBar: View {
                 Image(systemName: "plus.circle")
                     .foregroundStyle(.secondary)
                 TextField(
-                    "Capture",
+                    L10n.Capture.field,
                     text: $model.text,
-                    prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
+                    prompt: Text(L10n.Capture.prompt)
                 )
                 .textFieldStyle(.plain)
                 // The grammar in the placeholder is the reason. Left to the
@@ -42,7 +42,7 @@ struct CaptureBar: View {
                     focus.wrappedValue = .rows
                     return .handled
                 }
-                Button("Add", action: submit)
+                Button(L10n.Action.add, action: submit)
                     .accessibilityIdentifier("capture.add")
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canCommit)
@@ -84,7 +84,7 @@ struct CaptureBar: View {
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
-                Button("Done") { focus.wrappedValue = nil }
+                Button(L10n.Action.done) { focus.wrappedValue = nil }
                     .accessibilityIdentifier("capture.done")
             }
         }
@@ -115,7 +115,7 @@ struct CaptureBar: View {
                 Text(energyLabel(energy: energy)).font(.caption).foregroundStyle(.secondary)
             }
             if draft.streamId != nil || !draft.contexts.isEmpty {
-                Text("\(draft.contexts.count + (draft.streamId == nil ? 0 : 1)) tags")
+                Text(L10n.Capture.tags(count: draft.contexts.count + (draft.streamId == nil ? 0 : 1)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

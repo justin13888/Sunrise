@@ -36,11 +36,12 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case let .today(contexts): contexts.isEmpty ? "Today" : "Today · \(contexts.count) contexts"
-        case .inbox: "Inbox"
+        case let .today(contexts):
+            contexts.isEmpty ? L10n.Browse.today : L10n.Browse.todayFiltered(count: contexts.count)
+        case .inbox: L10n.Browse.inbox
         case let .stream(_, name): name
         case let .context(_, name): "@\(name)"
-        case .search: "Search"
+        case .search: L10n.Browse.search
         }
     }
 
@@ -58,15 +59,15 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         switch self {
         case let .today(contexts):
             contexts.isEmpty
-                ? "Nothing is scheduled or due today."
-                : "Nothing in those contexts is scheduled or due today."
-        case .inbox: "Your Inbox is empty."
-        case let .stream(_, name): "Nothing in \(name) yet."
-        case let .context(_, name): "Nothing carries @\(name)."
+                ? L10n.Browse.emptyToday
+                : L10n.Browse.emptyTodayFiltered
+        case .inbox: L10n.Browse.emptyInbox
+        case let .stream(_, name): L10n.Browse.emptyStream(name: name)
+        case let .context(_, name): L10n.Browse.emptyContext(name: name)
         case let .search(text):
             text.trimmed.isEmpty
-                ? "Type to search titles and notes."
-                : "Nothing matches \u{201c}\(text.trimmed)\u{201d}."
+                ? L10n.Browse.emptySearchBlank
+                : L10n.Browse.emptySearch(text: text.trimmed)
         }
     }
 
@@ -77,13 +78,13 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     var emptyHint: String {
         switch self {
         case .today, .inbox, .stream:
-            acceptsCapture ? Keymap.pressHint(.quickCapture, to: "capture") : ""
+            acceptsCapture ? Keymap.pressHint(.quickCapture, L10n.Browse.hintCapture(keys:)) : ""
         case .context:
             ""
         case let .search(text) where text.trimmed.isEmpty:
-            Keymap.pressHint(.searchInView, to: "jump to the field")
+            Keymap.pressHint(.searchInView, L10n.Browse.hintSearchField(keys:))
         case .search:
-            Keymap.pressHint(.searchGlobal, to: "start a new search")
+            Keymap.pressHint(.searchGlobal, L10n.Browse.hintSearchNew(keys:))
         }
     }
 
@@ -179,13 +180,13 @@ enum Destination: Equatable, Hashable, Identifiable {
     var title: String {
         switch self {
         case let .list(kind): kind.title
-        case .search: "Search"
-        case .calendar: "Calendar"
-        case .focus: "Focus"
-        case .routines: "Routines"
-        case .review: "Review"
-        case .morning: "Morning"
-        case .evening: "Evening"
+        case .search: L10n.Search.title
+        case .calendar: L10n.Browse.calendar
+        case .focus: L10n.Focus.title
+        case .routines: L10n.Browse.routines
+        case .review: L10n.Browse.review
+        case .morning: L10n.Brief.morningTitle
+        case .evening: L10n.Brief.eveningTitle
         }
     }
 

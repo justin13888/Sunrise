@@ -4,7 +4,7 @@
 //! `docs/08-features/notifications.md` §Preference keys; a test in this
 //! module's parent holds the keys and scopes equal to those pages.
 
-use super::{PrefDefault, PrefScope, PrefSpec, PrefType};
+use super::{PrefDefault, PrefEntries, PrefScope, PrefSpec, PrefType};
 use sunrise_id::EntityKind;
 
 const fn key(key: &'static str, ty: PrefType, default: PrefDefault, scope: PrefScope) -> PrefSpec {
@@ -14,6 +14,19 @@ const fn key(key: &'static str, ty: PrefType, default: PrefDefault, scope: PrefS
         default,
         scope,
         bootstrap: false,
+        entries: None,
+    }
+}
+
+/// A `vault` map whose entries of `entries` each hold a `ty`.
+const fn entries(prefix: &'static str, ty: PrefType, entries: PrefEntries) -> PrefSpec {
+    PrefSpec {
+        key: prefix,
+        ty,
+        default: PrefDefault::Absent,
+        scope: PrefScope::Vault,
+        bootstrap: false,
+        entries: Some(entries),
     }
 }
 
@@ -24,6 +37,7 @@ const fn bootstrap(key: &'static str, ty: PrefType) -> PrefSpec {
         default: PrefDefault::Absent,
         scope: PrefScope::Device,
         bootstrap: true,
+        entries: None,
     }
 }
 
@@ -66,6 +80,23 @@ pub static PREFERENCE_KEYS: &[PrefSpec] = &[
         PrefType::OneOf(&["locale", "h12", "h24"]),
         PrefDefault::Text("locale"),
         VaultOverridable,
+    ),
+    // The day schedule (`docs/02-domain/day-schedule.md`): one register per
+    // entry, so two devices editing two entries both keep their edit.
+    entries(
+        "day_schedule.weekday",
+        PrefType::DayWindow,
+        PrefEntries::Weekday,
+    ),
+    entries(
+        "day_schedule.month_day",
+        PrefType::DayWindow,
+        PrefEntries::MonthDay,
+    ),
+    entries(
+        "day_schedule.date",
+        PrefType::DayOverride,
+        PrefEntries::Date,
     ),
     // Tasks, triage and reviews.
     key(

@@ -34,11 +34,12 @@ use std::sync::Arc;
 use sunrise_auth::CredentialStore;
 
 use sunrise_core::{
-    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, CredentialRead, SyncConfig,
-    TokenSource, TransportFactory, Unlock,
+    Core, CoreConfig, CoreError, SyncConfig, TokenSource, TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_sync::{DeviceSigner, SseTransport};
+use sunrise_sync::DeviceSigner;
+
+use crate::i18n::strings;
 
 /// Env var: relay **origin** for the `/api/v1/sync` surface. Unset ⇒ sync
 /// stays off.
@@ -64,6 +65,32 @@ pub const ENV_SYNC_TOKEN: &str = "SUNRISE_SYNC_TOKEN";
 /// same reason [`ENV_SYNC_TOKEN`] does: a relay whose registration happened
 /// somewhere else.
 pub const ENV_SYNC_DEVICE_ID: &str = "SUNRISE_SYNC_DEVICE_ID";
+
+/// `raw` as the relay origin every command dials, or why it is not one.
+///
+/// The rule is the client layer's
+/// ([`sunrise_client_core::relay_url::parse_relay_url`]): `https://`, or
+/// `http://` to this machine, with no path; the words are this CLI's.
+///
+/// # Errors
+/// The catalog sentence for the issue, naming the variable it came from.
+pub fn relay_origin(raw: &str) -> Result<String, String> {
+    use sunrise_client_core::relay_url::{parse_relay_url, RelayUrlIssue as I};
+    parse_relay_url(raw)
+        .map(sunrise_client_core::relay_url::RelayOrigin::into_string)
+        .map_err(|issue| {
+            let why = match issue {
+                I::Empty => strings::relay_url::empty(),
+                I::TooLong => strings::relay_url::too_long(),
+                I::NotAUrl => strings::relay_url::not_a_url(),
+                I::WebSocket => strings::relay_url::web_socket(),
+                I::UnsupportedScheme => strings::relay_url::unsupported_scheme(),
+                I::InsecureRemote => strings::relay_url::insecure_remote(),
+                I::NotAnOrigin => strings::relay_url::not_an_origin(),
+            };
+            strings::relay_url::bad(ENV_SYNC_URL, &why)
+        })
+}
 
 /// Filename, inside the vault directory, of the relay's id for this device.
 ///
@@ -158,6 +185,26 @@ impl SyncEnv {
         self.stored_device_id = load_relay_device_id(vault_dir);
         self
     }
+
+    /// The bearer these inputs choose: the env token trimmed, if it is not
+    /// blank, else the stored token as stored.
+    ///
+    /// The env var beats a stored login: `SUNRISE_SYNC_TOKEN` stays as the
+    /// override for CI and for a relay whose token comes from somewhere else,
+    /// but a user who ran `sunrise login` should not have to also export it.
+    ///
+    /// A stored token is deliberately not cleaned here: [`plan_from_env`]
+    /// cleans the choice, so it never presents a blank one, and pairing over
+    /// the relay takes it as it is.
+    #[must_use]
+    pub fn bearer(&self) -> Option<String> {
+        clean(self.token.as_deref()).or_else(|| self.stored_token.clone())
+    }
+}
+
+/// `s` trimmed, a blank or whitespace-only value collapsing to `None`.
+fn clean(s: Option<&str>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// Parsed, validated live-sync plan the runtime executes on startup.
@@ -188,14 +235,7 @@ impl SyncPlan {
 /// `None`, so an exported-but-empty env var behaves as unset.
 #[must_use]
 pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
-    fn clean(s: Option<&str>) -> Option<String> {
-        s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-    }
-    // A stored login beats the env var. `SUNRISE_SYNC_TOKEN` stays as the
-    // override for CI and for a relay whose token comes from somewhere else,
-    // but a user who ran `sunrise login` should not have to also export it.
-    let token = clean(env.token.as_deref()).or_else(|| clean(env.stored_token.as_deref()));
-    let credential = TokenSource::new(token);
+    let credential = TokenSource::new(clean(env.bearer().as_deref()));
     SyncPlan {
         sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
         // Same precedence as the bearer, for the same reason: the override is
@@ -206,7 +246,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     }
 }
 
-/// Build a [`TransportFactory`] that reaches `url` with the real [`SseTransport`]
+/// Build a [`TransportFactory`] that reaches `url` with the real [`sunrise_sync::SseTransport`]
 /// on every connect attempt (initial connect + every reconnect), presenting
 /// the bearer the driver read for **that attempt**.
 ///
@@ -215,8 +255,9 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// reconnect after a renewal presents the new token, and the driver knows
 /// which version each attempt carried.
 ///
-/// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
-/// transport-agnostic and calls it once per connection attempt.
+/// The factory itself is [`sunrise_client_core::sync::sse_factory`], the one
+/// the Apple clients dial with too; the driver is transport-agnostic and calls
+/// it once per connection attempt.
 ///
 /// `signer` is the ADR-0022 device binding. It is cloned per attempt rather
 /// than captured into one transport for the same reason the bearer is read per
@@ -224,20 +265,8 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// and the one route where that matters most is the revocation `DELETE`, which
 /// runs on whatever connection the driver has at the time.
 #[must_use]
-pub fn ws_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
-    let url = url.to_string();
-    Arc::new(move |read: CredentialRead| {
-        let url = url.clone();
-        let signer = signer.clone();
-        Box::pin(async move {
-            let t = SseTransport::connect_with_bearer(&url, read.bearer());
-            let t = match signer {
-                Some(s) => t.with_device_signer(s),
-                None => t,
-            };
-            Ok(Box::new(t) as BoxTransport)
-        }) as ConnectFuture
-    })
+pub fn sse_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
+    sunrise_client_core::sync::sse_factory(url, signer, None)
 }
 
 /// Execute `plan` against an already-opened `core`: start the sync driver.
@@ -278,7 +307,7 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
             // registering — so the plan's bearer is handed to that cell here,
             // the way the FFI seam's `start_sync` does.
             core.sync_credential().set(sc.credential.get());
-            match core.start_sync(ws_factory(&sc.url, signer.clone())) {
+            match core.start_sync(sse_factory(&sc.url, signer.clone())) {
                 Ok(()) => {
                     // The relay *host* is the sanctioned connection-diagnostic
                     // identifier (logging.md §6.2); the full URL could carry a
@@ -289,12 +318,9 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
                         result = "ok",
                         "sync driver started"
                     );
-                    log.push(format!("sync driver started -> {}", sc.url));
+                    log.push(strings::sync::driver_started(&sc.url));
                     if signer.is_none() {
-                        log.push(format!(
-                        "sync is not device-bound (no relay device id); run `sunrise bootstrap` \
-                         or set {ENV_SYNC_DEVICE_ID}"
-                    ));
+                        log.push(strings::sync::not_device_bound(ENV_SYNC_DEVICE_ID));
                     }
                 }
                 Err(e) => {
@@ -308,13 +334,13 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
                         cause = %e,
                         "sync driver did not start"
                     );
-                    log.push(format!("start_sync failed: {e}"));
+                    log.push(strings::sync::start_failed(&e.to_string()));
                 }
             }
         }
         None => {
             tracing::info!(ev = "sync.session.off", result = "skipped", "sync disabled");
-            log.push(format!("sync off (set {ENV_SYNC_URL} to enable)"));
+            log.push(strings::sync::off(ENV_SYNC_URL));
         }
     }
 
@@ -636,6 +662,91 @@ mod tests {
                 .get()
                 .as_deref(),
             Some("from-env")
+        );
+    }
+
+    /// A blank `SUNRISE_SYNC_TOKEN` is unset, so a stored login behind it
+    /// still supplies the bearer rather than the blank export hiding it.
+    #[test]
+    fn a_blank_env_token_falls_back_to_a_stored_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sunrise_auth::FileStore::in_dir(dir.path());
+        store
+            .save(&sunrise_auth::Credentials::new(
+                "stored-access".into(),
+                None,
+                Some(3600),
+                0,
+            ))
+            .unwrap();
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            token: Some("   ".into()),
+            ..SyncEnv::default()
+        }
+        .with_stored(&store, 0);
+        assert_eq!(
+            plan_from_env(&env)
+                .sync
+                .unwrap()
+                .credential
+                .get()
+                .as_deref(),
+            Some("stored-access")
+        );
+    }
+
+    /// A stored login whose token is blank is not offered, empty or
+    /// whitespace: it collapses to no bearer exactly as a blank export does.
+    #[test]
+    fn a_blank_stored_token_is_not_offered() {
+        for blank in ["", "   "] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = sunrise_auth::FileStore::in_dir(dir.path());
+            store
+                .save(&sunrise_auth::Credentials::new(
+                    blank.into(),
+                    None,
+                    Some(3600),
+                    0,
+                ))
+                .unwrap();
+            let env = SyncEnv {
+                url: Some("wss://relay.example/sync".into()),
+                ..SyncEnv::default()
+            }
+            .with_stored(&store, 0);
+            assert_eq!(
+                env.stored_token.as_deref(),
+                Some(blank),
+                "the store hands the blank token back as it was saved"
+            );
+            assert_eq!(
+                plan_from_env(&env).sync.unwrap().credential.get(),
+                None,
+                "a blank stored token {blank:?} must not be presented"
+            );
+        }
+    }
+
+    /// The plan cleans what [`SyncEnv::bearer`] chose, so a stored token that
+    /// the bearer hands over as stored reaches the relay trimmed.
+    #[test]
+    fn the_plan_trims_the_stored_token_the_bearer_chose() {
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            stored_token: Some("  stored-access  ".into()),
+            ..SyncEnv::default()
+        };
+        assert_eq!(env.bearer().as_deref(), Some("  stored-access  "));
+        assert_eq!(
+            plan_from_env(&env)
+                .sync
+                .unwrap()
+                .credential
+                .get()
+                .as_deref(),
+            Some("stored-access")
         );
     }
 

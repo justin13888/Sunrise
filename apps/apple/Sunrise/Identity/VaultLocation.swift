@@ -89,7 +89,7 @@ enum VaultLocationError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .unusableIdentifier(id):
-            "\"\(id)\" is not a usable vault identifier."
+            L10n.Vaults.unusableIdentifier(id: id)
         }
     }
 }

@@ -52,23 +52,18 @@
 //! The channel is unchanged: Noise XX confirmed by a SAS both users read
 //! aloud, which is the same channel the vault root already travelled over, and
 //! the vault root was never the smaller secret.
+//!
+//! # Where the protocol object lives
+//!
+//! In the client layer, as [`sunrise_client_core::pairing::PairingDevice`],
+//! which the CLI's `sunrise pair join` and `sunrise pair add` drive too. This
+//! type is that one behind UniFFI: the same calls, lowered onto
+//! [`BindingError`].
 
-use std::sync::{Mutex, PoisonError};
-
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
-use sunrise_pairing::{
-    account_email_hash, decode_pairing_grant, decode_pairing_offer, decode_pairing_request,
-    decode_qr_payload, encode_pairing_payload, encode_qr_payload, PairedChannel, PairingJoiner,
-    PairingSession, QrPayload, Role, MAGIC_V1_HEX,
-};
-
-use zeroize::Zeroize;
+use sunrise_client_core::pairing::{DeviceStep, PairingDevice, PairingFault, RendezvousRole};
+use sunrise_pairing::{encode_pairing_payload, PairingPayload, Role};
 
 use crate::BindingError;
-
-/// How long a vault root is.
-const VAULT_ROOT_LEN: usize = 32;
 
 /// Which side of a pairing this device is.
 ///
@@ -111,37 +106,49 @@ pub enum PairingStep {
     Finished,
 }
 
+impl From<RendezvousRole> for PairingRole {
+    fn from(r: RendezvousRole) -> Self {
+        match r {
+            RendezvousRole::NewDevice => Self::NewDevice,
+            RendezvousRole::ExistingDevice => Self::ExistingDevice,
+        }
+    }
+}
+
+impl From<DeviceStep> for PairingStep {
+    fn from(s: DeviceStep) -> Self {
+        match s {
+            DeviceStep::Handshaking => Self::Handshaking,
+            DeviceStep::AwaitingConfirmation => Self::AwaitingConfirmation,
+            DeviceStep::Confirmed => Self::Confirmed,
+            DeviceStep::Finished => Self::Finished,
+        }
+    }
+}
+
+/// The client layer's pairing failures, as the variants a Swift `switch`
+/// already branches on.
+impl From<PairingFault> for BindingError {
+    fn from(e: PairingFault) -> Self {
+        match e {
+            PairingFault::Pairing(why) => Self::Pairing(why),
+            // Reused for its length field: "a 32-byte key came across at the
+            // wrong length", which a second variant would only restate.
+            PairingFault::BadLength { len } => Self::BadVaultRoot { len },
+            PairingFault::Vault(why) => Self::Core(why),
+            PairingFault::Rendezvous(e) => e.into(),
+        }
+    }
+}
+
 /// One device's half of a pairing.
 ///
-/// The state machine is `sunrise-pairing`'s; this holds it behind a `Mutex` so
-/// the object is `Send + Sync` for UniFFI, and translates bytes to text at the
-/// boundary.
+/// The state machine is `sunrise-pairing`'s, held between calls by the client
+/// layer's [`PairingDevice`] — `Send + Sync`, so it can sit behind UniFFI —
+/// which translates bytes to text at the boundary.
 #[derive(uniffi::Object)]
 pub struct DevicePairing {
-    role: PairingRole,
-    /// The QR this device publishes; only the new device has one.
-    qr: Option<String>,
-    session: Mutex<Option<PairingSession>>,
-    /// The `n_static_pub` this device scanned, on the existing device.
-    ///
-    /// `None` on the new device, which published the QR rather than reading
-    /// one and so has nothing to compare the peer against. On the existing
-    /// device it is the QR path's authentication, and
-    /// [`DevicePairing::receive_message`] is where it is spent.
-    expected_peer_static: Option<Vec<u8>>,
-    channel: Mutex<Option<PairedChannel>>,
-    /// The joiner's minted device keys, between message 2 and message 3.
-    ///
-    /// The state a one-shot pairing did not need. `D_S_priv` and `D_D_priv` are
-    /// minted in [`DevicePairing::request_device_cert`] and consumed in
-    /// [`DevicePairing::open_pairing_grant`], and they never leave this object:
-    /// only the public halves went into the request, and a sponsor that minted
-    /// them instead would hold permanent impersonation of this device.
-    ///
-    /// `None` on the sponsoring device, which mints nothing.
-    joiner: Mutex<Option<PairingJoiner>>,
-    /// Set once the channel has carried the grant, so a UI can stop.
-    finished: Mutex<bool>,
+    inner: PairingDevice,
 }
 
 impl std::fmt::Debug for DevicePairing {
@@ -149,7 +156,7 @@ impl std::fmt::Debug for DevicePairing {
     /// would put the material a MITM needs into whatever log the app writes.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DevicePairing")
-            .field("role", &self.role)
+            .field("role", &self.role())
             .finish_non_exhaustive()
     }
 }
@@ -167,25 +174,9 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] if key generation or payload encoding fails.
     #[uniffi::constructor]
     pub fn offer(relay_url: String, account_email: String) -> Result<Self, BindingError> {
-        let keys = PairingSession::generate_static_keypair()?;
-        let mut pair_id = [0u8; 16];
-        // The pair id is the routing label the relay keys its rendezvous on.
-        // It is not a secret and it is not authentication —
-        // `n_static_pub` is — so drawing it from the same CSPRNG that made the
-        // key is enough.
-        let filler = PairingSession::generate_static_keypair()?;
-        pair_id.copy_from_slice(&filler.public[..16]);
-
-        let payload = QrPayload {
-            magic_v1: MAGIC_V1_HEX.to_string(),
-            pair_id: URL_SAFE_NO_PAD.encode(pair_id),
-            n_static_pub: URL_SAFE_NO_PAD.encode(&keys.public),
-            account_email_hash: hex4(account_email_hash(&account_email)),
-            relay_url,
-        };
-        let qr = encode_qr_payload(&payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let session = PairingSession::new(Role::NewDevice, &keys.private)?;
-        Ok(Self::wrap(PairingRole::NewDevice, Some(qr), session, None))
+        Ok(Self {
+            inner: PairingDevice::offer(relay_url, &account_email)?,
+        })
     }
 
     /// Begin pairing on the **existing** device, from the QR the new one
@@ -208,56 +199,27 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] with the decoder's own message.
     #[uniffi::constructor]
     pub fn accept(qr_payload: String) -> Result<Self, BindingError> {
-        let scanned =
-            decode_qr_payload(&qr_payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let expected = decode_b64(&scanned.n_static_pub, "n_static_pub")?;
-        let keys = PairingSession::generate_static_keypair()?;
-        let session = PairingSession::new(Role::ExistingDevice, &keys.private)?;
-        Ok(Self::wrap(
-            PairingRole::ExistingDevice,
-            None,
-            session,
-            Some(expected),
-        ))
+        Ok(Self {
+            inner: PairingDevice::accept(&qr_payload)?,
+        })
     }
 
     /// This device's role.
     #[must_use]
     pub fn role(&self) -> PairingRole {
-        self.role
+        self.inner.role().into()
     }
 
     /// The QR payload to display, on the new device.
     #[must_use]
     pub fn qr_payload(&self) -> Option<String> {
-        self.qr.clone()
+        self.inner.qr_payload()
     }
 
     /// Where the pairing has got to.
     #[must_use]
     pub fn step(&self) -> PairingStep {
-        if *self.finished.lock().unwrap_or_else(PoisonError::into_inner) {
-            return PairingStep::Finished;
-        }
-        if self
-            .channel
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-        {
-            return PairingStep::Confirmed;
-        }
-        let complete = self
-            .session
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(PairingSession::is_complete);
-        if complete {
-            PairingStep::AwaitingConfirmation
-        } else {
-            PairingStep::Handshaking
-        }
+        self.inner.step().into()
     }
 
     /// The next handshake message to hand the peer, base64url.
@@ -271,11 +233,7 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when it is not this side's turn to write, or
     /// the session is already consumed.
     pub fn next_message(&self) -> Result<String, BindingError> {
-        let mut guard = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("this pairing is over".into()))?;
-        Ok(URL_SAFE_NO_PAD.encode(session.write_message(&[])?))
+        Ok(self.inner.next_message()?)
     }
 
     /// Consume the peer's handshake message.
@@ -295,25 +253,7 @@ impl DevicePairing {
     /// tampered transcript looks like — and for a completed transcript whose
     /// peer static is not the QR's `n_static_pub`.
     pub fn receive_message(&self, message: String) -> Result<(), BindingError> {
-        let raw = decode_b64(&message, "handshake message")?;
-        let mut guard = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("this pairing is over".into()))?;
-        session.read_message(&raw)?;
-        if let Some(expected) = self.expected_peer_static.as_deref() {
-            if session.is_complete() && session.peer_static_key().as_deref() != Some(expected) {
-                // Drop the handshake state with it: there is no recovering
-                // from this, and a session left in the map is one a UI could
-                // still call `sas()` on.
-                *guard = None;
-                *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-                return Err(BindingError::Pairing(
-                    "the peer's Noise static key is not the one the QR published".into(),
-                ));
-            }
-        }
-        Ok(())
+        Ok(self.inner.receive_message(&message)?)
     }
 
     /// The six digits both users compare out of band.
@@ -326,11 +266,7 @@ impl DevicePairing {
     ///
     /// [`BindingError::Pairing`] before the handshake finishes.
     pub fn sas(&self) -> Result<String, BindingError> {
-        let guard = self.session.lock().unwrap_or_else(PoisonError::into_inner);
-        let session = guard
-            .as_ref()
-            .ok_or_else(|| BindingError::Pairing("this pairing is over".into()))?;
-        Ok(session.sas()?)
+        Ok(self.inner.sas()?)
     }
 
     /// Record this user's answer to the SAS screen.
@@ -345,22 +281,7 @@ impl DevicePairing {
     /// completes. A rejection is an error on purpose: it is the one outcome a
     /// UI must not treat as "carry on".
     pub fn confirm(&self, matched: bool) -> Result<(), BindingError> {
-        let session = self
-            .session
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| BindingError::Pairing("this pairing is over".into()))?;
-        match session.into_channel(matched) {
-            Ok(channel) => {
-                *self.channel.lock().unwrap_or_else(PoisonError::into_inner) = Some(channel);
-                Ok(())
-            }
-            Err(e) => {
-                *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-                Err(e.into())
-            }
-        }
+        Ok(self.inner.confirm(matched)?)
     }
 
     /// Seal message 1 — the offer — for the joiner, on the sponsoring device.
@@ -376,12 +297,7 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
     pub fn seal_pairing_offer(&self, offer: Vec<u8>) -> Result<String, BindingError> {
-        self.send_as(
-            PairingRole::ExistingDevice,
-            &offer,
-            "the pairing offer",
-            false,
-        )
+        Ok(self.inner.seal_pairing_offer(&offer)?)
     }
 
     /// Mint this device's keys and seal message 2 — the cert request — on the
@@ -419,24 +335,9 @@ impl DevicePairing {
         seed_s: Vec<u8>,
         seed_d: Vec<u8>,
     ) -> Result<String, BindingError> {
-        if self.role != PairingRole::NewDevice {
-            return Err(BindingError::Pairing(
-                "only the device being added asks for a cert".into(),
-            ));
-        }
-        let seed_s = seed32(seed_s)?;
-        let seed_d = seed32(seed_d)?;
-        let plain =
-            self.receive_from(PairingRole::NewDevice, &sealed_offer, "the pairing offer")?;
-        let offer =
-            decode_pairing_offer(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let joiner = PairingJoiner::new(offer, nickname, platform, seed_s, seed_d);
-        let request = joiner
-            .request()
-            .encode()
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        *self.joiner.lock().unwrap_or_else(PoisonError::into_inner) = Some(joiner);
-        self.send_as(PairingRole::NewDevice, &request, "the cert request", false)
+        Ok(self
+            .inner
+            .request_device_cert(&sealed_offer, nickname, platform, seed_s, seed_d)?)
     }
 
     /// Open message 2 on the sponsor, returning the request for the core to
@@ -456,12 +357,10 @@ impl DevicePairing {
     /// device is the one being added, or when the ciphertext does not open —
     /// which is what a tampered or replayed frame looks like.
     pub fn open_cert_request(&self, sealed: String) -> Result<Vec<u8>, BindingError> {
-        let plain = self.receive_from(PairingRole::ExistingDevice, &sealed, "the cert request")?;
-        // Decoded and thrown away: the point is to refuse a malformed or
-        // self-named request here, where the error reaches the sponsor's screen,
-        // rather than inside the core where it would surface as a failed grant.
-        decode_pairing_request(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        Ok(plain)
+        // Decoded there and thrown away: the point is to refuse a malformed or
+        // self-named request here, where the error reaches the sponsor's
+        // screen, rather than inside the core as a failed grant.
+        Ok(self.inner.open_cert_request(&sealed)?)
     }
 
     /// Seal message 3 — the grant — for the joiner, on the sponsor.
@@ -475,12 +374,13 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
     pub fn seal_pairing_grant(&self, grant: Vec<u8>) -> Result<String, BindingError> {
-        self.send_as(
-            PairingRole::ExistingDevice,
-            &grant,
-            "the pairing grant",
-            true,
-        )
+        // The encoding is the vault root serialized, with none of the
+        // zeroizing its type has; the seal wipes its own copy, and this one
+        // is the caller's.
+        let mut grant = grant;
+        let sealed = self.inner.seal_pairing_grant(&grant);
+        zeroize::Zeroize::zeroize(&mut grant);
+        Ok(sealed?)
     }
 
     /// Open message 3 on the joiner and assemble what `SunriseCore::open`
@@ -504,34 +404,31 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, when
     /// [`Self::request_device_cert`] has not run, when the ciphertext does not
     /// open, or when the grant does not decode or its cert is not one this
-    /// device can use, and [`BindingError::BadVaultRoot`] if the root inside is
-    /// not 32 bytes.
+    /// device can use.
     pub fn open_pairing_grant(&self, sealed: String) -> Result<PairedBundle, BindingError> {
-        let plain = self.receive_from(PairingRole::NewDevice, &sealed, "the pairing grant")?;
-        let grant =
-            decode_pairing_grant(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        let joiner = self
-            .joiner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| {
-                BindingError::Pairing("ask for a cert before trying to accept one".into())
-            })?;
-        let payload = joiner
-            .accept(grant)
-            .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        if payload.vault_root.len() != VAULT_ROOT_LEN {
-            return Err(BindingError::BadVaultRoot {
-                len: u32::try_from(payload.vault_root.len()).unwrap_or(u32::MAX),
-            });
-        }
-        let vault_root = payload.vault_root.to_vec();
+        PairedBundle::try_from(&self.inner.open_pairing_grant(&sealed)?)
+    }
+}
+
+impl DevicePairing {
+    /// The client layer's half this object wraps, for the seam calls that
+    /// take one ([`crate::SunriseCore::send_pairing_offer`] and
+    /// [`crate::SunriseCore::send_pairing_grant`]).
+    pub(crate) const fn inner(&self) -> &PairingDevice {
+        &self.inner
+    }
+}
+
+impl TryFrom<&PairingPayload> for PairedBundle {
+    type Error = BindingError;
+
+    /// The two halves `SunriseCore::open` takes: the root, and the payload
+    /// encoded for `paired_bundle`.
+    fn try_from(payload: &PairingPayload) -> Result<Self, BindingError> {
         let payload_bytes =
-            encode_pairing_payload(&payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
-        *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        Ok(PairedBundle {
-            vault_root,
+            encode_pairing_payload(payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        Ok(Self {
+            vault_root: payload.vault_root.to_vec(),
             payload_bytes,
         })
     }
@@ -564,101 +461,6 @@ impl std::fmt::Debug for PairedBundle {
     }
 }
 
-impl DevicePairing {
-    fn wrap(
-        role: PairingRole,
-        qr: Option<String>,
-        session: PairingSession,
-        expected_peer_static: Option<Vec<u8>>,
-    ) -> Self {
-        Self {
-            role,
-            qr,
-            session: Mutex::new(Some(session)),
-            expected_peer_static,
-            channel: Mutex::new(None),
-            joiner: Mutex::new(None),
-            finished: Mutex::new(false),
-        }
-    }
-
-    /// Seal one pairing message, checking this device is the side that sends
-    /// it.
-    ///
-    /// Six public methods would otherwise each repeat the role check, the lock,
-    /// the "confirm the SAS first" error and the base64 — and the role check is
-    /// the one that must not be forgotten: a UI that called a sponsor method on
-    /// a joiner would produce a message the peer cannot make sense of, several
-    /// legs after the mistake.
-    ///
-    /// `plaintext` is wiped after sealing. `PairingPayload` and `PairingGrant`
-    /// zeroize themselves on drop; their *encodings* are the same secrets in
-    /// serialized form and have no such courtesy, so the place that consumes
-    /// one is the place that has to end its life.
-    fn send_as(
-        &self,
-        sender: PairingRole,
-        plaintext: &[u8],
-        what: &str,
-        finishes: bool,
-    ) -> Result<String, BindingError> {
-        if self.role != sender {
-            return Err(BindingError::Pairing(format!(
-                "this device is not the one that sends {what}"
-            )));
-        }
-        let mut plain = plaintext.to_vec();
-        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
-        let sealed = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))
-            .and_then(|channel| Ok(channel.send(&plain)?));
-        plain.zeroize();
-        let sealed = sealed?;
-        if finishes {
-            *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        }
-        Ok(URL_SAFE_NO_PAD.encode(sealed))
-    }
-
-    /// Open one pairing message, checking this device is the side that receives
-    /// it.
-    fn receive_from(
-        &self,
-        receiver: PairingRole,
-        sealed: &str,
-        what: &str,
-    ) -> Result<Vec<u8>, BindingError> {
-        if self.role != receiver {
-            return Err(BindingError::Pairing(format!(
-                "this device is not the one that receives {what}"
-            )));
-        }
-        let raw = decode_b64(sealed, what)?;
-        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
-        let channel = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        Ok(channel.receive(&raw)?)
-    }
-}
-
-/// Read a 32-byte seed off the seam.
-///
-/// [`BindingError::BadVaultRoot`] is reused rather than a new variant: it is
-/// already "a 32-byte key came across at the wrong length", it carries the
-/// length, and a second error case meaning the same thing is a second string
-/// for a Swift `switch` to miss.
-fn seed32(bytes: Vec<u8>) -> Result<[u8; 32], BindingError> {
-    let len = bytes.len();
-    let mut bytes = bytes;
-    let out = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| BindingError::BadVaultRoot {
-        len: u32::try_from(len).unwrap_or(u32::MAX),
-    });
-    bytes.zeroize();
-    out
-}
-
 /// Read the account-scoping hash a pairing QR carries.
 ///
 /// Exported so an "add a device" screen can show which account it is pairing
@@ -667,19 +469,5 @@ fn seed32(bytes: Vec<u8>) -> Result<[u8; 32], BindingError> {
 #[uniffi::export]
 #[must_use]
 pub fn pairing_account_tag(account_email: String) -> String {
-    hex4(account_email_hash(&account_email))
-}
-
-fn hex4(bytes: [u8; 4]) -> String {
-    bytes.iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
-}
-
-fn decode_b64(s: &str, what: &str) -> Result<Vec<u8>, BindingError> {
-    URL_SAFE_NO_PAD
-        .decode(s.trim())
-        .map_err(|_| BindingError::Pairing(format!("{what} is not base64url text")))
+    sunrise_client_core::pairing::account_tag(&account_email)
 }

@@ -6,7 +6,7 @@
 //! `apply_remote_all`. A relay that omits, reorders or equivocates is played
 //! by the test choosing which envelopes to hand over and in what order.
 
-use super::testutil::*;
+use super::support::*;
 use super::*;
 use crate::engine::chain::{digest_payload, ForkKind};
 use crate::ChainIntegrity;
@@ -56,7 +56,7 @@ fn cursor(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> i64 {
         .unwrap_or(0)
 }
 
-fn digest_of(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> [u8; 32] {
+pub(super) fn digest_of(e: &Engine, db: &mut Db, stream: &[u8; 16]) -> [u8; 32] {
     let now = e.clock.now_ms();
     db.with_tx(|tx| digest_payload(tx, stream, now))
         .unwrap()
@@ -213,7 +213,10 @@ fn a_forked_chain_is_kept_as_evidence_and_never_refused() {
     );
     assert_eq!(integrity(&eb, &dbb).forks, 2);
     assert_eq!(read_task_t(&eb, &dbb, kept).title, "kept");
-    assert!(eb.query(&dbb, Query::EntityById(forked)).is_err());
+    assert!(matches!(
+        eb.query(&dbb, Query::EntityById(forked)),
+        Err(EngineError::NotFound(_))
+    ));
 
     // The evidence is a proof: the kept envelope verifies under A's key.
     let (held, other_hash, kept_env): (Vec<u8>, Vec<u8>, Vec<u8>) = dbb

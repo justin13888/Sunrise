@@ -1,15 +1,14 @@
 # Clippy deny list enforcing the determinism rules from
 # docs/01-architecture/shared-core.md §determinism-rules.
 # Direct calls to non-deterministic stdlib surfaces are forbidden in core
-# crates; use the injected `Clock`, `Rng`, `Storage` handles instead.
+# crates; use the injected `Clock` and `Rng` handles instead.
 
 disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "use CoreConfig::clock" },
     { path = "std::time::Instant::now", reason = "use CoreConfig::clock" },
     { path = "std::process::exit", reason = "return Err(CoreError::Fatal) instead" },
-    # These bind only inside the crates that declare `rand` directly (crypto,
-    # core, e2e, bench, onboarding, crypto-test-vectors) — which are the ones
-    # that matter. Elsewhere clippy has no `rand` in scope to resolve the path
+    # These bind only in crates that declare `rand` directly — which are the
+    # ones that matter. Elsewhere clippy has no `rand` in scope to resolve the path
     # against, and without `allow-invalid` it emits
     #
     #     warning: `rand::random` does not refer to an existing function
@@ -19,7 +18,7 @@ disallowed-methods = [
     # never catches it and it simply accumulates as noise — noise that reads
     # like the rule is dead. It is not: `allow-invalid` silences the
     # unresolvable case and leaves the rule binding where `rand` is reachable,
-    # which is verifiable by calling `rand::random()` in `sunrise-crypto` and
+    # which is verifiable by calling `rand::random()` in `sunrise-core` and
     # watching clippy reject it.
     #
     # Path-based matching here is immune to turbofish and aliasing; the
@@ -27,6 +26,15 @@ disallowed-methods = [
     # see. Keep both.
     { path = "rand::thread_rng", reason = "use CoreConfig::rng", allow-invalid = true },
     { path = "rand::random", reason = "use CoreConfig::rng", allow-invalid = true },
+    # The host zone enters in exactly one place, `SystemClock` in
+    # crates/sunrise-core/src/config.rs, which carries the one `#[allow]`
+    # (docs/11-adr/0066-times-survive-travel.md §5). Everything else reads the
+    # reader's zone from `Clock::timezone`. `Zoned::now` is the same read
+    # spelled differently: it resolves "now" in the host zone. `allow-invalid`
+    # for the crates that do not depend on jiff, as for `rand` above.
+    { path = "jiff::tz::TimeZone::system", reason = "use Clock::timezone (ADR-0066 §5)", allow-invalid = true },
+    { path = "jiff::tz::TimeZone::try_system", reason = "use Clock::timezone (ADR-0066 §5)", allow-invalid = true },
+    { path = "jiff::Zoned::now", reason = "use Clock::now_ms and Clock::timezone (ADR-0066 §5)", allow-invalid = true },
 ]
 
 disallowed-types = [

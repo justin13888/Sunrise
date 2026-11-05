@@ -50,11 +50,17 @@
 //! applies through the same path as the corresponding update, so the whole row
 //! is replaced. See ADR-0014.
 //!
+//! Since ADR-0065 §7 the two cores here write `Patch`es once each has the
+//! other's `DeviceFeatures`, and a delete is a `Patch` of `deleted` alone that
+//! wins over a concurrent rename whatever the clocks, the rename kept inside
+//! the tombstone. Which mode a race runs in depends on whether the
+//! advertisement has crossed yet; the convergence assertion holds in both.
+//!
 //! # Where the deterministic coverage lives
 //!
 //! `BlockDelete` and `AttachmentDelete` were converted last, and their coverage
-//! deliberately does **not** rest on a race. `crates/sunrise-core/src/engine/tests.rs`
-//! carries three unit tests over two `Engine`s on `FakeClock`s that *choose*
+//! deliberately does **not** rest on a race. `crates/sunrise-core/src/engine/tests/blocks.rs`
+//! and `attachments.rs` beside it carry three unit tests over two `Engine`s on `FakeClock`s that *choose*
 //! the stamps so the delete always wins, and that drive a delete which
 //! overtakes its own create:
 //!
@@ -79,9 +85,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{
-    inbox_stream_ref, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Frequency, RRule,
-    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, SunriseTime,
-    TaskTemplate,
+    BlockDraft, BlockPatch, ContextDraft, ContextPatch, Frequency, RRule, RoutineCatchupPolicy,
+    RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, SunriseTime, TaskTemplate,
 };
 use sunrise_e2e::{open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero};
 use sunrise_id::EntityRef;
@@ -177,7 +182,10 @@ async fn stream_delete_vs_update_converges() {
         &a,
         &b,
         id,
-        Command::DeleteStream(id),
+        Command::DeleteStream {
+            id,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
         Command::UpdateStream {
             id,
             patch: StreamPatch {
@@ -240,7 +248,7 @@ async fn routine_delete_vs_update_converges() {
         .submit(Command::CreateRoutine(RoutineDraft {
             template: TaskTemplate {
                 title: "occurrence".into(),
-                stream_id: inbox_stream_ref(),
+                stream_id: None,
                 contexts: vec![],
                 energy: None,
                 priority: None,
@@ -261,7 +269,9 @@ async fn routine_delete_vs_update_converges() {
                 unknown: sunrise_domain::Unknowns::new(),
             },
             timezone: "UTC".into(),
-            starts_at: Timestamp::from_millisecond(1_700_000_000_000).unwrap(),
+            starts_at: Timestamp::from_millisecond(1_700_000_000_000)
+                .unwrap()
+                .into(),
             ends_at: None,
             scheduling_constraints: vec![],
             catchup_policy: RoutineCatchupPolicy::Skip,
@@ -278,6 +288,7 @@ async fn routine_delete_vs_update_converges() {
         id,
         Command::DeleteRoutine(id),
         Command::UpdateRoutine {
+            scope: sunrise_domain::EditScope::All,
             id,
             patch: RoutinePatch {
                 timezone: Some("Europe/London".into()),
@@ -300,7 +311,7 @@ async fn block_delete_vs_update_converges() {
 
     let id = a
         .submit(Command::CreateBlock(BlockDraft {
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             starts_at: SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(9, 0, 0, 0)),
             ends_at: SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(10, 0, 0, 0)),
             title: Some("contested".into()),

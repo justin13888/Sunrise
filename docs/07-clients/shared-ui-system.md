@@ -37,8 +37,8 @@ runs, and `lefthook.yaml` runs on pre-push), `mise run tokens-check` (which
 additionally compiles and rustfmt-checks `tokens.rs`), and a `tokens-current`
 CI job. [ADR-0029](../11-adr/0029-design-token-pipeline.md) records why the
 outputs are committed rather than generated at build time, why `tokens.rs` is
-an `include!`-ready file rather than a crate, and why the spacing scale below
-supersedes the one `packages/sunrise-ui` used to carry.
+an `include!`-ready file rather than a crate, and why the spacing scale is the
+one below.
 
 **`tokens.kt` is not emitted.** There is no Android target to compile it and no
 Kotlin consumer to read it; it lands with the Android client, not before.
@@ -237,23 +237,29 @@ Every view MUST implement three states. This is the canonical table; per-view fi
 | `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
 | `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
 
-**There is no `conflict` state.** Its data source was asserted absent by
-[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
-§Merge journal — removed: `merge_journal` was dropped by
+**There is no `conflict` view state.**
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) deleted it, and a view shows the
+deterministic winner at once:
+[ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) makes a conflict "a
+badge, not a gate". The merge state behind that badge is recorded: a register
+keeps every concurrent write that lost (`register_losers`), and
+`Query::Conflicts` reports them
+([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
+§No merge history). `sunrise conflicts` prints it; no app view reads it today.
+The older
+`merge_journal` stays dropped by
 [ADR-0018](../11-adr/0018-storage-baseline-reset.md), and
-`baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db.rs` fails if
-it returns. Nothing records that a concurrent edit lost, so a view has nothing to
-raise a toast about. This is not an omission to be filled in later by the UI: the
-state cannot exist until a journal does, and reinstating one needs an ADR
-superseding 0018's removal. [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)
-§What would force revisiting this, trigger 2 (per-field merge becoming
-user-visible), is the likeliest place both come back together.
+`baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db/tests.rs` fails if
+it returns.
 
 ### Per-view empty-state copy
 
 | View | Empty copy | Empty action |
 |---|---|---|
 | Today | "Nothing scheduled for today. Add a task or take it easy." | "Add a task" |
+| Upcoming, nothing at all | "Nothing coming up in the next <span> days, and nothing undated." | "Add a task" |
+| Upcoming, only undated | "Nothing scheduled in the next <span> days. Your undated tasks are below." | "Plan a task" |
+| Upcoming, a filter hides everything | "Nothing in those contexts in the next <span> days." | "Clear filter" |
 | Inbox | "Inbox zero. Capture something quickly with ⌘N." | "Capture" |
 | Stream | "No tasks in <stream> yet." | "Add task" |
 | Calendar | "No blocks for this week." | "Add block" |

@@ -7,14 +7,92 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Client-side logic shared by every Sunrise client: undo/redo, saved views."
+description = "The platform-agnostic client layer every Sunrise client shares: undo/redo, saved views, the edit gate, the shared vocabulary, account bootstrap, recovery and background sync."
 
 [lints]
 workspace = true
 
+[features]
+# The flows that talk to a relay: account bootstrap, recovery, and the bounded
+# background sync. On by default for this crate's own builds and tests. The
+# workspace entry turns default features off, so each consumer says what it
+# links: the UniFFI seam, the CLI and the e2e suite ask for `relay`, and
+# `sunrise-core-wasm` does not — the web build has no relay flow yet
+# (ADR-0055), and the REST client and the SSE transport are native-only, so
+# the pure half of this crate is what it links. (A member cannot opt out of a
+# workspace dependency's default features itself; cargo ignores the attempt.)
+default = ["relay"]
+relay = [
+    "dep:async-trait",
+    "dep:base64",
+    "dep:sunrise-auth",
+    "dep:sunrise-pairing",
+    "dep:sunrise-relay-client",
+    "sunrise-sync/sse",
+    "dep:tokio",
+    "dep:zeroize",
+]
+
 [dependencies]
 jiff = { workspace = true }
+# The client settings file (`src/preferences/client.rs`) is JSON, with the
+# fields a newer build wrote kept as they came.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# The persisted undo history writes a saved view's draft and edit as
+# canonical CBOR (`history/persist.rs`): its filter carries CBOR values.
+sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
+# The wire codes a vault that will not open is classified by
+# (`vault_session::OpenProblem`).
+sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
+# The full export's `calendar.ics` (`src/export.rs`) goes through the same
+# Block-to-event mapping and writer `sunrise ical export` does.
+sunrise-integrations = { workspace = true }
+# The connection states the sync badge reads (`sync_status`). The SSE
+# transport is the `relay` feature's; the states are not.
+sunrise-sync = { workspace = true }
+# The one relay URL rule (`relay_url`): a WHATWG parser, so the web client's
+# `URL` and this agree on every input the shared vectors hold.
+url = { workspace = true }
 
+# --- `relay` ---
+# `Transport` is an `async_trait`, and `sync::SyncLink` wraps the transport the
+# driver dials so a bounded sync can end a session that was up before the app
+# was suspended (`src/sync.rs`).
+async-trait = { workspace = true, optional = true }
+# A pairing's messages cross as base64url text (`pairing::PairingDevice`),
+# whoever carries them.
+base64 = { workspace = true, optional = true }
+# The OIDC credential and its renewal point (`account_session`): the 75% rule
+# is `sunrise-auth`'s, and the account flow reads it rather than restating it.
+sunrise-auth = { workspace = true, optional = true }
+# The pairing rendezvous (`pairing`) reads the session id out of
+# the scanned QR with the decoder that wrote it.
+sunrise-pairing = { workspace = true, optional = true }
+# The REST client the account and recovery flows call. It names no engine;
+# this crate is what puts a vault and the relay together.
+sunrise-relay-client = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
+# The recovery seed is drawn, used twice and dropped inside one function.
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+# The account and recovery tests seal and open blobs without being about the
+# KDF: the cheap Argon2id set (`sunrise-crypto`'s `test-cheap-kdf`).
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
+sunrise-test-seed = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
+tempfile = "3"
+# `net` and `test-util`: the pairing rendezvous's tests run against a loopback
+# fake relay on a paused clock (`src/pairing/rendezvous_tests.rs`). The
+# account tests' sync driver runs on that clock too (`src/account.rs`).
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "test-util", "time"] }

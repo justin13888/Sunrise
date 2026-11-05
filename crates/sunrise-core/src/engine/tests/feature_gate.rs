@@ -15,6 +15,7 @@ static NEWER: &[Feature] = &[Feature {
     op_kinds: &["TaskProbe"],
     fields: &[],
     field_op_kinds: &[],
+    retyped: &[],
     since: 8,
 }];
 
@@ -23,6 +24,7 @@ static STRUCTURAL: &[Feature] = &[Feature {
     op_kinds: &[],
     fields: &[],
     field_op_kinds: &[],
+    retyped: &[],
     since: 8,
 }];
 
@@ -377,10 +379,10 @@ fn an_op_that_uses_a_feature_the_vault_does_not_require_is_refused() {
 fn requiring_a_feature_this_build_lacks_is_invalid() {
     let e = engine_seeded(ROOT, [1u8; 32], clock());
     let mut db = db_root(ROOT);
-    assert!(matches!(
+    invalid(
         e.require_features(&mut db, &["task.probe"], true),
-        Err(EngineError::Invalid(_))
-    ));
+        "`task.probe` is not a feature this build supports",
+    );
 }
 
 /// `DeviceFeatures` is read as the latest per device, whatever order the ops
@@ -448,6 +450,59 @@ fn a_build_advertises_its_features_once_per_change() {
     assert_eq!(p.features, vec!["task.probe".to_owned()]);
 }
 
+/// Every `ev` an event emitted on this thread carried, while `f` runs.
+fn evs_logged(f: impl FnOnce()) -> Vec<String> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct EvLog(Arc<PLMutex<Vec<String>>>);
+    struct Ev<'a>(&'a mut Vec<String>);
+    impl tracing::field::Visit for Ev<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "ev" {
+                self.0.push(value.to_owned());
+            }
+        }
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EvLog {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            event.record(&mut Ev(&mut self.0.lock()));
+        }
+    }
+
+    let log = EvLog::default();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(log.clone()), f);
+    let evs = log.0.lock().clone();
+    evs
+}
+
+/// The advertisement is logged exactly when it is written. A build that
+/// predates parking (#320) logs a `DeviceFeatures` it receives as a corrupt
+/// op, and the cross-version harness attributes that log to #320 only by
+/// this event, so an advertisement that went unlogged would leave the
+/// floor's corruption log unexplained (the nightly `Cross-version merge`
+/// failure whose seed is in `crates/sunrise-e2e/proptest-regressions`).
+#[test]
+fn an_advertisement_is_logged_once_per_op_written() {
+    const EV: &str = "core.feature.advertised";
+    let mut db = db_root(ROOT);
+    let none = engine_seeded(ROOT, [1u8; 32], clock()).with_features(&[]);
+    let evs = evs_logged(|| assert!(!none.advertise_features(&mut db).unwrap()));
+    assert!(!evs.iter().any(|e| e == EV), "nothing written: {evs:?}");
+
+    let newer = engine_seeded(ROOT, [1u8; 32], clock()).with_features(NEWER);
+    let evs = evs_logged(|| assert!(newer.advertise_features(&mut db).unwrap()));
+    assert_eq!(evs.iter().filter(|e| *e == EV).count(), 1, "{evs:?}");
+
+    let evs = evs_logged(|| assert!(!newer.advertise_features(&mut db).unwrap()));
+    assert!(!evs.iter().any(|e| e == EV), "unchanged list: {evs:?}");
+}
+
 /// Creating or editing a routine writes the routine op and then its
 /// occurrences in a second transaction. Under a task lock the command is
 /// refused before either, so no routine op is sealed and queued behind a
@@ -489,7 +544,7 @@ fn a_routine_command_under_a_task_lock_writes_no_routine_op() {
     assert!(matches!(
         e.apply(
             &mut db,
-            Command::UpdateRoutine {
+            Command::UpdateRoutine { scope: sunrise_domain::EditScope::All,
                 id: rid,
                 patch: RoutinePatch {
                     rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),

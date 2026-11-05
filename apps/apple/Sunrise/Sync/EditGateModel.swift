@@ -76,7 +76,7 @@ struct ReadOnlyBanner: View {
                 Image(systemName: "lock")
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Update Sunrise to edit").font(.headline)
+                    Text(L10n.Sync.readOnlyTitle).font(.headline)
                     Text(detail).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -92,11 +92,9 @@ struct ReadOnlyBanner: View {
 
     private var detail: String {
         if model.gate.locksAll {
-            return "This vault uses features a newer version of Sunrise added. "
-                + "You can still read and sync everything here."
+            return L10n.Sync.readOnlyAll
         }
-        return "Some items in this vault use features a newer version of Sunrise added. "
-            + "You can still read and sync them."
+        return L10n.Sync.readOnlySome
     }
 }
 

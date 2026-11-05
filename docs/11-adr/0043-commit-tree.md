@@ -35,7 +35,7 @@ holds the same op set as another.
 
 - **Ops are signed one at a time and linked to nothing.** The envelope binds
   `(stream_id, device_id, seq, hlc)`
-  (`crates/sunrise-crypto/src/op_envelope.rs#OpEnvelope`). It carries no
+  (`crates/sunrise-crypto/src/op_envelope/mod.rs#OpEnvelope`). It carries no
   reference to any earlier op.
 - **The one integrity structure in the tree is unused.** The per-stream Merkle
   fold in `crates/sunrise-crypto/src/merkle.rs` is called only by
@@ -94,7 +94,7 @@ an op in the system, not two.
 - **`op_hash` is computed from a re-encoding**, not from the bytes a peer
   sent, and excludes the 5-byte magic prefix. Two replicas holding one
   envelope therefore agree on its hash whatever encoding reached them
-  (`crates/sunrise-crypto/src/op_envelope.rs#op_hash`).
+  (`crates/sunrise-crypto/src/op_envelope/mod.rs#op_hash`).
 
 ### 2. Each op names what its writer had seen: `heads`, envelope field 15
 

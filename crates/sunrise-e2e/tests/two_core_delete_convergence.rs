@@ -17,12 +17,12 @@
 //!
 //! # Concurrent delete vs update
 //!
-//! A delete is not privileged. It is an op like any other and settles under the
-//! same entity-level last-writer-wins rule as a title change (ADR-0014),
-//! ordered by `(hlc, device_id, seq)`. The test below therefore does not assert
-//! that *delete wins* — it asserts that both replicas reach the **same**
-//! answer, whichever it is, because that is the actual invariant. Asserting a
-//! fixed winner would be asserting the clock.
+//! Both cores are this build and have told each other so, so their vault
+//! requires `core.field_ops` and each write is a `Patch` naming the heads its
+//! writer had (ADR-0065 §7). A delete concurrent with an edit then wins
+//! whatever the clocks say, and the edit is kept inside the tombstone, so a
+//! restore shows it (§3). The test asserts that, and that both replicas reach
+//! the **same** answer.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -33,7 +33,7 @@ use sunrise_core::{Clock, Command, Core, SystemClock};
 use sunrise_domain::{TaskDraft, TaskPatch};
 use sunrise_e2e::{
     assert_task_converged, canonical_task_by_id, open_paired_core, open_synced_core, spawn_relay,
-    wait_live, wait_pending_zero, wait_task_converges, wait_tasks_converge,
+    wait_field_ops, wait_live, wait_pending_zero, wait_task_converges, wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
 
@@ -113,9 +113,12 @@ async fn a_delete_replicates_as_a_tombstone() {
 
 /// A delete on one replica racing an update on the other.
 ///
-/// The assertion is convergence, not a winner: entity-level LWW orders the two
-/// ops by `(hlc, device_id, seq)`, and which one lands last is a property of
-/// the clock, not of the operation being a delete.
+/// Both replicas converge, and the delete wins whichever op the clocks order
+/// last: `deleted` is a tombstone register (ADR-0065 §3). The rename is kept
+/// inside the tombstone, and a restore brings the task back with it. Under the
+/// entity-level LWW of the full-state ops this build writes into a vault an
+/// older device shares (clarification D9), the later op's whole state would
+/// win instead.
 ///
 /// # Why this shape, and what it used to catch
 ///
@@ -141,10 +144,11 @@ async fn a_delete_replicates_as_a_tombstone() {
 /// read. It stopped being invisible on undelete, export, or any byte-identical
 /// convergence check — which is exactly what this suite is.
 ///
-/// `TaskDelete` now carries full entity state (`DOC_SCHEMA_V = 4`) and applies
-/// through the same path as `TaskUpdate`, so the whole row is replaced and both
-/// replicas land on the deleting replica's state. The assertions below are
-/// unchanged from when they were failing.
+/// `TaskDelete` then came to carry full entity state (`DOC_SCHEMA_V = 4`) and
+/// apply through the same path as `TaskUpdate`, so the whole row was replaced
+/// and both replicas landed on the deleting replica's state. A delete is now a
+/// `Patch` of `deleted` alone, and the convergence assertion is the one that
+/// used to fail.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_delete_and_update_converge() {
     let (addr, _relay) = spawn_relay().await;
@@ -157,6 +161,7 @@ async fn concurrent_delete_and_update_converge() {
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
+    wait_field_ops(&[&a, &b], TIMEOUT).await;
     let contested = create_task(&a, "contested").await;
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
 
@@ -174,14 +179,20 @@ async fn concurrent_delete_and_update_converge() {
         ta, tb,
         "both replicas must land on the same answer, whichever op won"
     );
-    // Whatever won, the outcome must be one of the two authored states — never
-    // a blend of them, which is what an accidental field-level merge produces.
-    let deleted_won = ta.deleted;
-    let renamed_won = ta.title == "renamed";
-    assert!(
-        deleted_won || renamed_won,
-        "converged on neither authored state: {ta:?}"
-    );
+    // The delete wins whatever the stamps, and the rename is applied inside
+    // the tombstone: two writes to different fields, both kept.
+    assert!(ta.deleted, "a delete beats a concurrent edit: {ta:?}");
+    assert_eq!(ta.title, "renamed", "the edit is kept inside the tombstone");
+
+    // A restore descends from both and brings the task back with the edit.
+    a.submit(Command::Restore(contested))
+        .await
+        .expect("restore");
+    wait_pending_zero(&a, TIMEOUT).await;
+    wait_task_converges(&a, &b, contested, TIMEOUT).await;
+    let tb = canonical_task_by_id(&b, contested).await.unwrap();
+    assert!(!tb.deleted, "restored on B");
+    assert_eq!(tb.title, "renamed");
 
     a.shutdown().await;
     b.shutdown().await;

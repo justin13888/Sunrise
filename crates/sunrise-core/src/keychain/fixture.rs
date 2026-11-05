@@ -4,7 +4,7 @@
 //! # What was missing
 //!
 //! Nothing pinned the wrapping side of the key hierarchy. The two "legacy
-//! vault" tests in [`super`] synthesise their vault in-process with the same
+//! vault" tests in `tests::legacy` synthesise their vault in-process with the same
 //! [`wrap_secret`](super::crypto::wrap_secret) and
 //! [`device_aad`](super::crypto::device_aad) they then read it back with, so
 //! they are self-consistent by construction: rename an AAD prefix, change
@@ -189,6 +189,8 @@ fn fixture_identity_seed() -> IdentitySeed {
         id_d_pub: id_d.public_bytes(),
         identity_id: identity_id_from_pub(&id_s.public_bytes()),
         created_at_ms: FIXTURE_NOW_MS,
+        account_id_s_pub: None,
+        meta_genesis_keys: Vec::new(),
     }))
 }
 

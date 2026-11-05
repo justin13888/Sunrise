@@ -1,5 +1,10 @@
 //! `sunrise pair` — the four-command file exchange that adds a device.
 //!
+//! With a relay, `sunrise pair join` and `sunrise pair add` carry the same
+//! three messages through the relay's rendezvous instead, with the SAS
+//! confirmed on both devices ([`crate::pair_relay`]). This file exchange is
+//! the way that needs no relay, and what follows is about it.
+//!
 //! # The problem this shape solves
 //!
 //! Pairing is three messages since #105, because the account's signing key
@@ -82,9 +87,10 @@ use sunrise_core::{Core, SystemRng};
 use sunrise_pairing::{
     decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingJoiner,
 };
+use sunrise_private_file::write_private;
 
+use crate::i18n::strings;
 use crate::livesync;
-use crate::private_file::write_private;
 use crate::vault;
 
 /// The joiner's minted device keys, between `pair request` and `pair accept`.
@@ -122,17 +128,6 @@ pub enum PairCommand {
     },
 }
 
-/// What a user typed wrong.
-pub const USAGE: &str = "\
-usage:
-  sunrise pair offer    --out <file>                 (on the device with the vault)
-  sunrise pair request  --offer <file> --out <file>  (on the device being added)
-  sunrise pair issue    --request <file> --out <file>(on the device with the vault)
-  sunrise pair accept   --response <file>            (on the device being added)
-
-Run them in that order, moving each file to the other machine as it is written.
-";
-
 /// Parse `pair`'s arguments.
 ///
 /// Hand-rolled like the rest of this binary's parsing, and flag-per-message
@@ -140,7 +135,8 @@ Run them in that order, moving each file to the other machine as it is written.
 /// `--offer`/`--request`/`--response` say which one a command is being handed.
 ///
 /// # Errors
-/// [`USAGE`] for an unknown subcommand or a missing flag.
+/// The usage text (`cli.pair.usage`) for an unknown subcommand or a missing
+/// flag.
 pub fn parse(args: &[String]) -> Result<PairCommand, String> {
     let sub = args.first().map(String::as_str).unwrap_or_default();
     let flag = |name: &str| -> Option<PathBuf> {
@@ -149,7 +145,9 @@ pub fn parse(args: &[String]) -> Result<PairCommand, String> {
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from)
     };
-    let need = |name: &str| flag(name).ok_or_else(|| format!("{name} is required\n\n{USAGE}"));
+    let need = |name: &str| {
+        flag(name).ok_or_else(|| strings::pair::flag_required(name, &strings::pair::usage()))
+    };
     match sub {
         "offer" => Ok(PairCommand::Offer {
             out: need("--out")?,
@@ -165,8 +163,11 @@ pub fn parse(args: &[String]) -> Result<PairCommand, String> {
         "accept" => Ok(PairCommand::Accept {
             response: need("--response")?,
         }),
-        "" => Err(USAGE.to_string()),
-        other => Err(format!("unknown pair step {other:?}\n\n{USAGE}")),
+        "" => Err(strings::pair::usage()),
+        other => Err(strings::pair::unknown_step(
+            &format!("{other:?}"),
+            &strings::pair::usage(),
+        )),
     }
 }
 
@@ -198,7 +199,7 @@ pub async fn run(
 /// No sync driver: these commands run for milliseconds and a relay session
 /// opened for one would just churn. Pairing needs no network at all — the
 /// transport is the user carrying files.
-async fn open_sponsor(
+pub(crate) async fn open_sponsor(
     vault_dir: &Path,
 ) -> Result<std::sync::Arc<Core>, Box<dyn std::error::Error>> {
     let root = vault::resolve(vault_dir, &SystemRng)?;
@@ -217,12 +218,7 @@ async fn offer(vault_dir: &Path, out: &Path) -> Result<Vec<String>, Box<dyn std:
     let core = open_sponsor(vault_dir).await?;
     if !core.can_sponsor_pairing() {
         core.shutdown().await;
-        return Err(
-            "this vault was itself added by pairing, so it holds the account's public \
-                    identity and no signing key; it cannot certify another device. Run this on \
-                    the device the account was created on."
-                .into(),
-        );
+        return Err(strings::pair::cannot_sponsor().into());
     }
     let offer = core.export_pairing_offer()?;
     core.shutdown().await;
@@ -235,10 +231,8 @@ async fn offer(vault_dir: &Path, out: &Path) -> Result<Vec<String>, Box<dyn std:
         result = "ok",
         "pairing offer written"
     );
-    Ok(vec![format!(
-        "wrote the pairing offer -> {}\nmove it to the device you are adding, then run:\n  \
-         sunrise pair request --offer <that file> --out request.cbor",
-        out.display()
+    Ok(vec![strings::pair::offer_written(
+        &out.display().to_string(),
     )])
 }
 
@@ -248,12 +242,7 @@ fn request(
     out: &Path,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     if vault_dir.join("vault.db").exists() {
-        return Err(format!(
-            "{} already holds a vault; a device joins an account when its vault is created, so \
-             pair into an empty directory (set SUNRISE_VAULT)",
-            vault_dir.display()
-        )
-        .into());
+        return Err(strings::pair::not_empty(&vault_dir.display().to_string()).into());
     }
     let offer = decode_pairing_offer(&std::fs::read(offer_path)?)?;
 
@@ -287,10 +276,8 @@ fn request(
         result = "ok",
         "pairing request written"
     );
-    Ok(vec![format!(
-        "minted this device's keys and wrote the cert request -> {}\nmove it back to the device \
-         with your vault, then run:\n  sunrise pair issue --request <that file> --out grant.cbor",
-        out.display()
+    Ok(vec![strings::pair::request_written(
+        &out.display().to_string(),
     )])
 }
 
@@ -314,10 +301,8 @@ async fn issue(
         result = "ok",
         "pairing grant written"
     );
-    Ok(vec![format!(
-        "issued a certificate and wrote the grant -> {}\nthis file carries your vault key. Move \
-         it to the device you are adding, then run:\n  sunrise pair accept --response <that file>",
-        out.display()
+    Ok(vec![strings::pair::grant_written(
+        &out.display().to_string(),
     )])
 }
 
@@ -326,12 +311,8 @@ async fn accept(
     response: &Path,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let pending_path = vault_dir.join(PENDING_FILE);
-    let pending = std::fs::read(&pending_path).map_err(|e| {
-        format!(
-            "no pending pairing in {} ({e}); run `sunrise pair request` on this device first",
-            vault_dir.display()
-        )
-    })?;
+    let pending = std::fs::read(&pending_path)
+        .map_err(|e| strings::pair::no_pending(&vault_dir.display().to_string(), &e.to_string()))?;
     let joiner = PairingJoiner::decode(&pending)?;
     let grant = decode_pairing_grant(&std::fs::read(response)?)?;
     // The check that makes a second sponsor useless: the cert must verify under
@@ -339,22 +320,8 @@ async fn accept(
     // keys this device minted. A grant from anywhere else is refused here,
     // before a vault exists to be confused by it.
     let payload = joiner.accept(grant)?;
-
-    // The account's root, not one minted locally. This is the only path in the
-    // binary that keys a vault with a root it did not generate, and it is what
-    // makes the new directory a second *device* rather than a second account.
-    let root = payload.vault_root;
-    vault::adopt(vault_dir, &vault::keystore_dir(), root, &SystemRng)?;
-
-    let (core, _log) = livesync::open_with_plan(
-        vault_dir.to_path_buf(),
-        env!("CARGO_PKG_VERSION"),
-        root,
-        &livesync::SyncPlan::default(),
-        Some(Box::new(payload)),
-    )
-    .await?;
-    let device = crate::hex16_public(&core.device_id());
+    let core = adopt(vault_dir, payload).await?;
+    let device = sunrise_client_core::ids::hex_id(&core.device_id());
     core.shutdown().await;
 
     // Only now. The secrets in it have been consumed, and until the vault above
@@ -363,10 +330,36 @@ async fn accept(
     // holds a certificate it cannot sign under.
     let _ = std::fs::remove_file(&pending_path);
     tracing::info!(ev = "ui.pair.accepted", result = "ok", "pairing accepted");
-    Ok(vec![format!(
-        "this device joined the account as {device}\nrun `sunrise sync --once` against the \
-         account's relay to pull its history"
-    )])
+    Ok(vec![strings::pair::joined(&device)])
+}
+
+/// Key the empty `vault_dir` with the account's root a completed pairing
+/// handed over, and open it for the first time with the rest of `payload`.
+///
+/// Shared by `pair accept` and `pair join`: the two transports end in the
+/// same payload, and from here the vault cannot tell which carried it.
+///
+/// # Errors
+/// A directory that already holds a vault, a keystore that cannot be
+/// written, and a vault that will not open.
+pub async fn adopt(
+    vault_dir: &Path,
+    payload: sunrise_pairing::PairingPayload,
+) -> Result<std::sync::Arc<Core>, Box<dyn std::error::Error>> {
+    // The account's root, not one minted locally. This is the only path in the
+    // binary that keys a vault with a root it did not generate, and it is what
+    // makes the new directory a second *device* rather than a second account.
+    let root = payload.vault_root;
+    vault::adopt(vault_dir, &vault::keystore_dir(), root, &SystemRng)?;
+    let (core, _log) = livesync::open_with_plan(
+        vault_dir.to_path_buf(),
+        env!("CARGO_PKG_VERSION"),
+        root,
+        &livesync::SyncPlan::default(),
+        Some(Box::new(payload)),
+    )
+    .await?;
+    Ok(core)
 }
 
 #[cfg(test)]

@@ -21,29 +21,31 @@ superseding decision named in the **Governing decision** column.
 | Signatures (identity, device keys) | `ed25519-dalek` | 2.2.0 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen crypto suite; consumed only by `sunrise-crypto`. |
 | Key agreement (X25519 / DHKEM) | `x25519-dalek` | 2.0.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
 | AEAD (XChaCha20-Poly1305) | `chacha20poly1305` | 0.10.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
-| Public-key encryption (key envelopes, share grants) | `hpke` | *declared 0.13; not in lock* | [ADR-0004](../11-adr/0004-crypto-primitives.md), [primitives.md](../03-crypto/primitives.md) | Declared in `[workspace.dependencies]` but unconsumed — pending the sharing key-envelope implementation. Not yet resolved into `Cargo.lock` because no crate references it. See Reconciliations §b. |
+| Public-key encryption (key envelopes, share grants) | `hpke` | 0.13.0 | [ADR-0004](../11-adr/0004-crypto-primitives.md), [primitives.md](../03-crypto/primitives.md) | `sunrise-crypto` only (`hpke_seal.rs`), `default-features = false` + `alloc`/`x25519`. See Reconciliations §b. |
 | Handshake (Noise) | `snow` | 0.9.6 | [ADR-0004](../11-adr/0004-crypto-primitives.md), [pairing-and-onboarding.md](../03-crypto/pairing-and-onboarding.md) | `sunrise-pairing` only. |
 | Hashing / KDF context | `blake3` | 1.8.5 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Content hashing + SQLCipher key derivation. |
 | Password hashing | `argon2` | 0.5.3 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | `sunrise-crypto` only, and on **one** path: stretching the recovery code in `recovery.rs`. Not used at unlock — there is no passphrase unlock; the vault root is 32 random bytes from a keystore. See [`../03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md). |
-| Local database | `rusqlite` | 0.31.0 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. |
+| Local database | `rusqlite` | 0.40.2 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. SQLCipher's crypto is CommonCrypto on Apple targets and the system `libcrypto` on Linux; on Windows `sunrise-storage` adds `bundled-sqlcipher-vendored-openssl`, which builds OpenSSL from source and links it statically. See §Windows. |
 | CBOR serialization | `ciborium` | 0.2.2 | [wire-protocol.md](../05-sync/wire-protocol.md), [data-encryption-format.md](../03-crypto/data-encryption-format.md) | Canonical op / envelope encoding. |
-| HTTP server framework + OpenAPI document | `kynos` | 0.1.0 | [ADR-0021](../11-adr/0021-kynos-openapi-server.md) | `sunrise-server` only, `default-features = false` + `openapi32`/`macros`/`server`/`http1`/`http2`/`json`/`trace`. Routing, security schemes, middleware and the authoritative `schemas/generated/openapi.v1.json` all come off the handlers. `openapi32` is load-bearing rather than a preference: 3.1 has no `itemSchema`, so `response::stream` is a 3.2-only subtree and [ADR-0023](../11-adr/0023-sse-sync-transport.md)'s event stream is undescribable without it. It replaced `axum`, which no longer resolves in `Cargo.lock`. |
-| Async runtime | `tokio` | 1.52.3 | — (runtime substrate) | Multi-thread runtime for server + sync driver. |
-| Sync client transport (SSE down, `POST` up) | `hyper` | 1.9.0 | [ADR-0023](../11-adr/0023-sse-sync-transport.md) | `SseTransport` (`crates/sunrise-sync/src/sse.rs`) behind the crate's `sse` feature, with `hyper-rustls`, `hyper-util` and `http-body-util` alongside it — the same four crates `sunrise-auth` and `sunrise-server` already drive for their own HTTP clients. Replacing the socket therefore added **no new dependency class** and removed a protocol: `tokio-tungstenite` left the lock with `axum`. `sunrise-cli`, `sunrise-core-bindings` and `sunrise-e2e` enable the feature; the crate's default surface stays runtime-agnostic. |
-| TLS | `rustls` | 0.23.40 | [ADR-0023](../11-adr/0023-sse-sync-transport.md) (superseding [ADR-0005](../11-adr/0005-sync-transport.md)) | `ring` backend, no OpenSSL. One TLS stack for the whole tree: `hyper-rustls` and `reqwest`'s `rustls-tls-webpki-roots` both resolve to it. |
+| HTTP server framework + OpenAPI document | `kynos` | 0.4.0 | [ADR-0021](../11-adr/0021-kynos-openapi-server.md) | `sunrise-server` only, `default-features = false` + `openapi32`/`macros`/`server`/`http1`/`http2`/`json`/`trace`. Routing, security schemes, middleware and the authoritative `schemas/generated/openapi.v1.json` all come off the handlers. `openapi32` is load-bearing rather than a preference: 3.1 has no `itemSchema`, so `response::stream` is a 3.2-only subtree and [ADR-0023](../11-adr/0023-sse-sync-transport.md)'s event stream is undescribable without it. It replaced `axum`, which no longer resolves in `Cargo.lock`. |
+| Async runtime | `tokio` | 1.53.3 | — (runtime substrate) | Multi-thread runtime for server + sync driver. |
+| Sync client transport (SSE down, `POST` up) | `hyper` | 1.9.0 | [ADR-0023](../11-adr/0023-sse-sync-transport.md) | `SseTransport` (`crates/sunrise-sync/src/sse/`) behind the crate's `sse` feature, with `hyper-rustls`, `hyper-util` and `http-body-util` alongside it — the same four crates `sunrise-auth` and `sunrise-server` already drive for their own HTTP clients. Replacing the socket therefore added **no new dependency class** and removed a protocol: `tokio-tungstenite` left the lock with `axum`. `sunrise-cli`, `sunrise-core-bindings` and `sunrise-e2e` enable the feature; the crate's default surface stays runtime-agnostic. |
+| TLS | `rustls` | 0.23.46 | [ADR-0023](../11-adr/0023-sse-sync-transport.md) (superseding [ADR-0005](../11-adr/0005-sync-transport.md)) | `ring` backend, no OpenSSL. One TLS stack for the whole tree: `hyper-rustls` and `reqwest`'s `rustls-tls-webpki-roots` both resolve to it. |
 | Frame compression | `zstd` | 0.13.3 | [wire-protocol.md](../05-sync/wire-protocol.md) | Wire-frame payload compression. |
 | Server config parsing | `toml` | 1.1.4 | [self-hosting.md](../06-server/self-hosting.md) | `sunrise-server` only, `default-features = false` + `parse`/`serde`. Added **zero** crates to the lock: it was already resolved as a `uniffi_macros` dependency of `sunrise-core-bindings`. See Reconciliations §g. |
+| Filesystem free space (`statvfs`) | `rustix` | 1.1.4 | [api.md](../06-server/api.md) §Health / meta, issue #448 | `sunrise-server` only, unix targets only, `default-features = false` + `std`/`fs`. A safe `statvfs` for readiness's `disk` check and `doctor`'s `free_space`, which the crate's `forbid(unsafe_code)` rules out calling through `libc`. Added **zero** crates to the lock: it was already resolved as a `tempfile` dependency. |
 | Structured logging | `tracing` | 0.1.44 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) | The logging API for the whole workspace. It first entered the lock transitively, under the `axum`/`tower-http` stack ADR-0021 removed; it is now a direct dependency of `sunrise-log`, `-server`, `-storage`, `-core`, `-cli`, which is why the removal cost nothing. (`-tui` was listed here until [ADR-0019](../11-adr/0019-swiftui-macos-client.md) deleted that crate.) |
 | Log subscriber | `tracing-subscriber` | 0.3.23 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended) | `default-features = false` + `std`/`fmt`/`env-filter`/`json`/`registry`. `ansi` deliberately off — no colour codes in NDJSON, and it drops `nu-ansi-term`. Adds `sharded-slab`, `thread_local`, `matchers`, `tracing-serde` to the lock, all MIT/Apache-2.0. |
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
 | Trace export (OpenTelemetry) | `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `opentelemetry-http` | 0.33.0 | [observability.md](../06-server/observability.md) §Tracing, issue #361 | `sunrise-telemetry` only, and through it `sunrise-server`; nothing runs unless `[observability]` is written. `default-features = false` everywhere, with the `trace` signal alone — the relay's metrics are its own Prometheus registry and its logs are `sunrise-log`'s NDJSON — plus `internal-logs`, so an export failure reaches the operator's log. `opentelemetry-otlp` takes `http-proto` and none of its HTTP clients: the bundled ones pin `reqwest` 0.13 beside the workspace's 0.12, and `grpc-tonic` is a second HTTP/2 and TLS stack. `sunrise_telemetry::HyperExport` sends on the `hyper` + `hyper-rustls` stack above instead. The four crates add `prost`, `prost-derive` and `futures-executor` to the lock, all Apache-2.0 or MIT, and `rand` 0.9 beside the workspace's 0.8 (already resolved); `cargo deny check` is clean. |
 | Redacted tracing | `sunrise-telemetry` (workspace) | — | [observability.md](../06-server/observability.md) §Tracing | The closed span-attribute set (every key on `sunrise-log`'s allowlist), the capped parent-based sampler, and the OTLP exporter. |
+| Text folding for search (NFKD, combining marks) | `unicode-normalization` | 0.1.26 | [ADR-0052](../11-adr/0052-search-v2.md) §2 | `sunrise-domain` only, `default-features = false` + `std`. The trigram index holds text the core folds before writing it, because the SQLite SQLCipher bundles has no `remove_diacritics` for `trigram`; the fold and the highlight ranges mapped back through it live in `sunrise_domain::search`. Its one dependency, `tinyvec`, was already in the lock. Revisit when an SQLCipher release carries SQLite ≥ 3.45 (ADR-0052 §What would force revisiting this, 3). |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. Its `#[derive(Arbitrary)]` companion `proptest-derive` was declared beside it at `0.5` and inherited by no crate, so it never reached `Cargo.lock`; issue #108 removed the declaration on the same reasoning as `insta`. Every strategy in the workspace is written out with `proptest::strategy` combinators, because the inputs that matter here are constrained boundary values a structural derive would only reach by chance. |
-| Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md), [ADR-0026](../11-adr/0026-msrv-bump.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. 0.32's only default feature is `cargo-metadata`, which serves the UDL/build-script path; these bindings are generated in `--library` mode from the compiled dylib, so it is dead weight here and turning it off keeps `cargo_metadata` + `cargo-platform` out of the seam crate. The generator lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile — for **feature unification**, not MSRV: as a member it would ask `uniffi` for `cli`, and resolver 2 would unify that onto the seam crate's build, adding 20 third-party packages (`askama`, `goblin`, `uniffi_bindgen`, `uniffi_udl`, …) to every workspace build. It formerly also pinned `cargo-platform` to 0.3.2 against the 1.88 toolchain; ADR-0026 lifted that and the pin is gone. `mise run apple-xcframework` builds it `--locked`. |
+| Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md), [ADR-0026](../11-adr/0026-msrv-bump.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. 0.32's only default feature is `cargo-metadata`, which serves the UDL/build-script path; these bindings are generated in `--library` mode from the compiled dylib, so it is dead weight here and turning it off keeps `cargo_metadata` + `cargo-platform` out of the seam crate. The generator lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile — for **feature unification**, not MSRV: as a member it would ask `uniffi` for `cli`, and resolver 2 would unify that onto the seam crate's build, adding 20 third-party packages (`askama`, `goblin`, `uniffi_bindgen`, `uniffi_udl`, …) to every workspace build. It formerly also pinned `cargo-platform` to 0.3.2 against the 1.88 toolchain; ADR-0026 lifted that and the pin is gone. `mise run apple-xcframework` builds it `--locked`. Kotlin is generated and compiled on every pull request by `mise run kotlin-smoke`, with a Kotlin-only rename in `crates/sunrise-core-bindings/uniffi.toml`; [mobile-android.md](../07-clients/mobile-android.md) §The Kotlin smoke build says what that proves. |
 | Snapshot testing | *none (`insta` removed)* | — | [testing.md](../10-cross-cutting/testing.md) | `insta` was declared `1.40` with the `yaml` feature and is **no longer declared at all**. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); it resolved to `1.48.0` while that consumer existed and left `Cargo.lock` when it went. The declaration was kept after that on the reasoning in Reconciliations §e, and issue #36 reversed it: a declaration with no consumer reads as coverage that is already there. Nothing resolves it, so re-adding it costs one line whenever a renderer needs snapshots. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / sync_session benches that feed `bench/baseline.json`. The last was `ws_handshake` until [ADR-0023](../11-adr/0023-sse-sync-transport.md) removed the upgrade it measured. |
-| Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
-| Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
+| Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto` (dev only), `sunrise-client-core` (dev only, the recovery tests), `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). `sunrise-crypto-test-vectors` depends on nothing. |
+| Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `tz-system` is on, so `TimeZone::system()` asks the OS for the device's zone name (`TZ` and `/etc/localtime` on Unix, the registry on Windows); without it the call fails everywhere and every Windows device reported UTC. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
 | OIDC client (PKCE, code + refresh grants) | `oauth2` | 5.0.0 | [auth.md](../06-server/auth.md), issue #7 | `sunrise-auth` only, `default-features = false`. Disabling defaults is load-bearing: the defaults pull `reqwest`, a second HTTP stack beside the `hyper` + `hyper-rustls` one `sunrise-server` already uses for JWKS. With them off, `oauth2` speaks `http::Request`/`Response` and the client is supplied — which is also what makes the whole flow testable against an in-memory issuer. **Costs `chrono` and its timezone-detection stack (10 crates) transitively**, used only by `oauth2`'s RFC 7662 introspection module, which Sunrise never calls; accepted rather than hand-writing PKCE and refresh. MIT OR Apache-2.0; clean under `cargo deny check`. |
 | URL parsing (redirect + query handling) | `url` | 2.5.8 | — (supporting `oauth2`) | Already present transitively; made direct in `sunrise-auth` so the loopback redirect's query parsing does not depend on a transitive. |
 | `http` request/response types | `http` | 1.4.0 | — (supporting `oauth2`/`hyper`) | Already present via `hyper`; made direct in `sunrise-auth` because it is the currency `oauth2` hands the HTTP client. |
@@ -60,6 +62,41 @@ they carry no independent design decision. The auth crates above are the
 exception in the other direction: `jsonwebtoken` and `hyper-rustls` are
 utility-shaped but their *feature* choices are security decisions, so they are
 listed.
+
+## Windows
+
+CI's `rust-windows` job builds and tests the portable core on
+`windows-latest`: `sunrise-core`, `sunrise-core-bindings`, `sunrise-storage`,
+`sunrise-crypto`, `sunrise-sync`, `sunrise-domain`, `sunrise-auth`,
+`sunrise-cli` (issue #369) and `sunrise-private-file` (issue #486). It is not a required check until it has a record of
+passing. No Windows client ships, and `release.yml` builds no Windows binary.
+
+- **SQLCipher's OpenSSL is vendored on Windows.** `libsqlite3-sys` builds
+  SQLCipher against the system `libcrypto` off Apple, and its build script
+  panics on Windows unless `OPENSSL_DIR` names an install. The alternative was
+  to point `OPENSSL_DIR` at an install, which every developer machine and every
+  CI image would have to provide, at a path the build cannot check, with a
+  `libcrypto` DLL that then has to be on `PATH` at run time.
+  `bundled-sqlcipher-vendored-openssl` builds OpenSSL from source
+  (`openssl-src`, Apache-2.0) and links it statically, so a Windows build needs
+  Perl and nothing else. It is a target-specific dependency of
+  `sunrise-storage`, because a workspace dependency cannot vary by target, and
+  Apple and Linux builds do not change. `openssl-src` and `openssl-sys` are in
+  `Cargo.lock` for every target, and compiled only for Windows.
+- **`sunrise-server` is Linux-only.** The relay ships as a Linux container
+  image, and nothing here builds or tests it on Windows. It is compiled there
+  only as a dev-dependency of `sunrise-cli`'s live-sync test.
+- **Secret files are owner-only on Windows through `windows-sys`.** The Unix
+  writes set mode `0600` at creation. On Windows `sunrise-private-file` creates
+  each file with a protected DACL that allows the current user alone, through
+  `windows-sys` 0.61 (Microsoft's raw Win32 binding, MIT OR Apache-2.0, already
+  in `Cargo.lock` through `tokio` and others). Its calls are `unsafe`, so that
+  crate's `src/windows.rs` is the one exception to the workspace's
+  `unsafe_code = "forbid"`
+  ([ADR-0067](../11-adr/0067-windows-owner-only-files.md)). It is a
+  target-specific dependency, compiled for Windows only.
+  [desktop.md](../07-clients/desktop.md) §Windows says what the DACL does and
+  does not protect.
 
 ## Bun workspace pins
 
@@ -88,14 +125,13 @@ runs on entity-level LWW in SQLite, and both the crate and the `loro` entry in
 graph.** Removing it also dropped the `im` / `bitmaps` / `sized-chunks` /
 `atomic-polyfill` RUSTSEC suppressions from `deny.toml`.
 
-### b. `hpke` — declared, not yet consumed
+### b. `hpke` — declared ahead of its consumer, now consumed
 
 `docs/03-crypto/primitives.md` previously wrote `hpke 0.11.x`. The workspace
-actually declares **`hpke = { version = "0.13", ... }`**. No crate consumes it
-yet — `grep` over `crates/` finds no `use hpke` and no member `Cargo.toml`
-referencing it — so it does **not** appear in `Cargo.lock`. State: *declared,
-pending the sharing key-envelope implementation.* `primitives.md` has been
-aligned to `0.13`.
+declares **`hpke = { version = "0.13", ... }`**, and `primitives.md` has been
+aligned to `0.13`. It was declared before any crate consumed it; today
+`sunrise-crypto` does (`crates/sunrise-crypto/src/hpke_seal.rs`), and it
+resolves to `0.13.0` in `Cargo.lock`.
 
 ### c. `rrule` — hand-written parser, not a crate
 
@@ -197,15 +233,15 @@ entries. `cargo deny check` passes with the advisory ignore list still empty.
 ### g. `toml` — a new dependency that costs nothing
 
 `sunrise-server` reads `sunrise.toml`. The workspace has a standing preference
-for hand-rolling small grammars — `sunrise-client-core::config::parse_pairs`
-exists precisely because pulling a TOML crate in "to read a flat list of string
+for hand-rolling small grammars — the saved-views parser in
+`sunrise-client-core::views` exists precisely because pulling a TOML crate in "to read a flat list of string
 pairs would be the largest dependency in the tree for the smallest grammar in
 it", and that reasoning was right for that case.
 
 It does not apply here, for two reasons.
 
 1. **The grammar is not small.** The server config is nested tables carrying
-   strings, booleans, integers, and string arrays. `parse_pairs` handles quoted
+   strings, booleans, integers, and string arrays. The views parser handles quoted
    string values in a flat namespace and cannot express `allow_signup = false`
    or `allowed_origins = [...]` without coercion. Extending it would mean
    hand-writing a TOML subset parser for the file that decides whether the

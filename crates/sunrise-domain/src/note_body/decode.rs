@@ -11,7 +11,7 @@
 use super::encode::encode;
 use super::grammar::{
     ChecklistItem, Fidelity, HeadingLevel, Inline, ListItem, Mark, NoteBlock, NoteDoc,
-    MAX_NEST_DEPTH, MAX_PLAIN_TEXT_PARAGRAPHS,
+    MAX_BODY_CBOR_DEPTH, MAX_NEST_DEPTH, MAX_PLAIN_TEXT_PARAGRAPHS,
 };
 use crate::common::NoteBody;
 use ciborium::value::Value;
@@ -35,7 +35,8 @@ use ciborium::value::Value;
 ///    The body is [`Fidelity::Lossy`] either way, so the original bytes are
 ///    kept — but a renderer showing a very long plain-text note shows a
 ///    prefix of it, with no marker at the cut.
-/// 4. Anything else → no blocks.
+/// 4. Anything else → no blocks. That includes CBOR nested deeper than
+///    `MAX_BODY_CBOR_DEPTH` (128) levels, which is not read past the bound.
 ///
 /// Steps 3 and 4 are always [`Fidelity::Lossy`], as is any step-2 body this
 /// build cannot re-encode byte-for-byte. See the module docs: lossy means
@@ -49,15 +50,16 @@ pub fn decode(body: &NoteBody) -> NoteDoc {
         };
     }
 
-    let blocks = match ciborium::de::from_reader::<Value, _>(body.0.as_slice()) {
-        Ok(Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| block_from_value(item, 0))
-            .collect(),
-        // Decoded to something that is not a document, or did not decode at
-        // all. Either way the bytes are not this grammar; fall back to text.
-        Ok(_) | Err(_) => plain_text_blocks(&body.0),
-    };
+    let blocks =
+        match sunrise_cbor::decode_bounded::<Value>(&mut body.0.as_slice(), MAX_BODY_CBOR_DEPTH) {
+            Ok(Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| block_from_value(item, 0))
+                .collect(),
+            // Decoded to something that is not a document, or did not decode at
+            // all. Either way the bytes are not this grammar; fall back to text.
+            Ok(_) | Err(_) => plain_text_blocks(&body.0),
+        };
 
     // The one rule: can this build put back exactly what it was given?
     let fidelity = if encode(&blocks).0 == body.0 {
@@ -586,6 +588,90 @@ mod tests {
         );
         // And, crucially, it returned at all.
         assert_eq!(doc.blocks.len(), 1);
+    }
+
+    /// `levels` unordered lists, each the only child of the item above it,
+    /// around one paragraph of marked text.
+    fn nested_lists(levels: usize) -> NoteBlock {
+        let mut block = NoteBlock::Paragraph {
+            inline: vec![marked_text("bottom", &[Mark::Bold])],
+        };
+        for _ in 0..levels {
+            block = NoteBlock::List {
+                ordered: false,
+                items: vec![ListItem {
+                    inline: vec![marked_text("item", &[Mark::Italic])],
+                    children: vec![block],
+                }],
+            };
+        }
+        block
+    }
+
+    fn cbor_depth(v: &Value) -> usize {
+        match v {
+            Value::Array(items) => 1 + items.iter().map(cbor_depth).max().unwrap_or(0),
+            Value::Map(entries) => {
+                1 + entries
+                    .iter()
+                    .map(|(k, v)| cbor_depth(k).max(cbor_depth(v)))
+                    .max()
+                    .unwrap_or(0)
+            }
+            Value::Tag(_, inner) => 1 + cbor_depth(inner),
+            _ => 0,
+        }
+    }
+
+    /// The deepest body the walk reads whole is `4 * MAX_NEST_DEPTH + 3`
+    /// CBOR levels, well inside the CBOR bound, and reads back exact.
+    #[test]
+    fn the_deepest_exact_body_is_inside_the_cbor_bound() {
+        // Items down to depth `MAX_NEST_DEPTH - 1`, each with marked text and
+        // none with children past the floor.
+        let mut block = NoteBlock::List {
+            ordered: false,
+            items: vec![ListItem {
+                inline: vec![marked_text("deepest", &[Mark::Code])],
+                children: Vec::new(),
+            }],
+        };
+        for _ in 1..MAX_NEST_DEPTH {
+            block = NoteBlock::List {
+                ordered: false,
+                items: vec![ListItem {
+                    inline: Vec::new(),
+                    children: vec![block],
+                }],
+            };
+        }
+        let body = encode(&[block]);
+        let tree: Value = ciborium::de::from_reader(body.0.as_slice()).unwrap();
+        assert_eq!(cbor_depth(&tree), 4 * MAX_NEST_DEPTH + 3);
+        assert!(cbor_depth(&tree) < MAX_BODY_CBOR_DEPTH);
+        assert!(decode(&body).is_exact());
+    }
+
+    /// A body nested past the walk's floor but inside the CBOR bound renders
+    /// its top levels, lossy. One past the CBOR bound is not read: no blocks,
+    /// lossy, and the call returns.
+    #[test]
+    fn a_body_past_the_cbor_bound_reads_as_no_blocks_and_lossy() {
+        // Two levels for the document and the paragraph's block map, then
+        // four per list, then the inline list, its map and its marks.
+        let inside = encode(&[nested_lists((MAX_BODY_CBOR_DEPTH - 5) / 4)]);
+        let tree: Value = ciborium::de::from_reader(inside.0.as_slice()).unwrap();
+        assert!(cbor_depth(&tree) <= MAX_BODY_CBOR_DEPTH);
+        let doc = decode(&inside);
+        assert_eq!(doc.fidelity, Fidelity::Lossy);
+        assert_eq!(doc.blocks.len(), 1, "the top levels still render");
+
+        let past = encode(&[nested_lists(MAX_BODY_CBOR_DEPTH / 4)]);
+        let tree: Value = ciborium::de::from_reader(past.0.as_slice()).unwrap();
+        assert!(cbor_depth(&tree) > MAX_BODY_CBOR_DEPTH);
+        let doc = decode(&past);
+        assert_eq!(doc.fidelity, Fidelity::Lossy);
+        assert!(doc.blocks.is_empty());
     }
 
     #[test]

@@ -22,14 +22,41 @@
 //! (a zstd frame re-compresses, and undefined flag bits are dropped on the way
 //! in by design), so the round trip is stated over the decoded values rather
 //! than the bytes.
+//!
+//! The payload inside is different. It is canonical CBOR, so a payload that
+//! decodes must re-encode to exactly the bytes it came from, and that one is
+//! stated over the bytes.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, ErrorPayload, MsgKind,
-    NackPayload, OpBatchPayload, RefreshTokenAckPayload, RefreshTokenPayload, SubscribePayload,
+    decode_frame, encode_frame, AckPayload, BacklogPayload, CaughtUpPayload, ClosePayload,
+    ErrorPayload, MsgKind, NackPayload, OpBatchPayload, RefreshTokenAckPayload,
+    RefreshTokenPayload, SubscribePayload,
 };
+
+/// Whether `$payload` decodes as `$codec`, asserting that if it does it
+/// re-encodes to the same bytes.
+macro_rules! decodes_canonically {
+    ($codec:ty, $payload:ident) => {
+        match <$codec>::decode(&$payload) {
+            Ok(decoded) => {
+                let reencoded = decoded
+                    .encode()
+                    .expect("a payload this build decoded must encode");
+                assert_eq!(
+                    reencoded,
+                    $payload,
+                    "{} did not re-encode to its canonical bytes",
+                    stringify!($codec)
+                );
+                true
+            }
+            Err(_) => false,
+        }
+    };
+}
 
 fuzz_target!(|data: &[u8]| {
     let Ok((header, payload)) = decode_frame(data) else {
@@ -62,18 +89,23 @@ fuzz_target!(|data: &[u8]| {
     // One layer deeper: the payload is canonical CBOR whose shape the msg_kind
     // names. `decode` rejects non-canonical encodings and trailing bytes, which
     // is a second parser over the same attacker-controlled bytes.
-    match header.msg_kind {
-        MsgKind::OpBatch => drop(OpBatchPayload::decode(&payload)),
-        MsgKind::Ack => drop(AckPayload::decode(&payload)),
-        MsgKind::Nack => drop(NackPayload::decode(&payload)),
-        MsgKind::Subscribe => drop(SubscribePayload::decode(&payload)),
-        MsgKind::StreamUpdate => drop(CaughtUpPayload::decode(&payload)),
-        MsgKind::Error => drop(ErrorPayload::decode(&payload)),
-        MsgKind::Close => drop(ClosePayload::decode(&payload)),
-        MsgKind::RefreshToken => drop(RefreshTokenPayload::decode(&payload)),
-        MsgKind::RefreshTokenAck => drop(RefreshTokenAckPayload::decode(&payload)),
+    let _ = match header.msg_kind {
+        MsgKind::OpBatch => decodes_canonically!(OpBatchPayload, payload),
+        MsgKind::Ack => decodes_canonically!(AckPayload, payload),
+        MsgKind::Nack => decodes_canonically!(NackPayload, payload),
+        MsgKind::Subscribe => decodes_canonically!(SubscribePayload, payload),
+        // Two codecs share this kind, in the order the sync driver tries them:
+        // `CaughtUpPayload` only where `BacklogPayload` refused the bytes.
+        MsgKind::StreamUpdate => {
+            decodes_canonically!(BacklogPayload, payload)
+                || decodes_canonically!(CaughtUpPayload, payload)
+        }
+        MsgKind::Error => decodes_canonically!(ErrorPayload, payload),
+        MsgKind::Close => decodes_canonically!(ClosePayload, payload),
+        MsgKind::RefreshToken => decodes_canonically!(RefreshTokenPayload, payload),
+        MsgKind::RefreshTokenAck => decodes_canonically!(RefreshTokenAckPayload, payload),
         // Hello / HelloAck / snapshots / presence / ping / pong carry either no
         // payload or one with no canonical codec of its own in this crate.
-        _ => {}
-    }
+        _ => false,
+    };
 });

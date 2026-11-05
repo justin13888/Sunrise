@@ -1,15 +1,17 @@
 //! Per-field merge (ADR-0044): every field of an entity merges by its own CRDT
 //! type, and the entity row is the read projection of that state.
 //!
-//! [`merge_op`] is the one entry point. It folds one op into the entity's
+//! [`merge_member`] is the one entry point. It folds one op into the entity's
 //! field state (migration 0033's `merge_*` tables) and then writes the merged
-//! entity back to its row through the same row writers the command paths use.
+//! entity back to its row. The row writers are private to this module
+//! (`rows`): a row is only ever the fold's output, for a local command's op
+//! as for a received one (ADR-0065 §5).
 //!
 //! # The four field types
 //!
 //! | Type | State | Value |
 //! |---|---|---|
-//! | register | `(value, stamp, origin)` | the write with the greatest stamp |
+//! | register | the concurrent `(value, stamp, origin)` writes | the one its conflict class ranks highest ([`register`]) |
 //! | map | one register per key | every key whose register is not null |
 //! | OR-set | `(element, tag)` adds and removed `(element, tag)` pairs | every element with an add whose tag is not removed |
 //! | counter | the `inc` deltas, once per op | the sum, plus the legacy base |
@@ -37,43 +39,58 @@
 //!
 //! So a history made only of legacy ops projects exactly as entity-level
 //! last-writer-wins did, whatever order its ops arrive in, and only `L`
-//! matters. That second property is what makes seeding from a row exact: see
-//! below.
+//! matters.
 //!
 //! The OR-set rule removes *every* add below `L`, including an add of an
 //! element `L` itself carries, where ADR-0044 §7 removes only the adds of
 //! elements `L` does not carry. The value is the same either way, because `L`
 //! re-adds its own elements. What differs is what a later `remove` that
 //! observed only `L`'s tag does, and only under this rule is a replica that
-//! seeded from its row (and so never saw the older tags) in agreement with
-//! one that replayed every op. `docs/05-sync/crdt-design.md` records it.
+//! never saw the older tags (one that seeded an entity from its row, before
+//! the rebuild at open replaced that) in agreement with one that replayed
+//! every op. `docs/05-sync/crdt-design.md` records it.
 //!
 //! What the floor makes unreadable is deleted when the floor rises: the adds
 //! below it, the removes that named them, and the counter deltas at or below
 //! it (`state::prune_below_floor`). A set written only by full-state ops so
 //! holds one add per element, not one per element per op.
 //!
-//! # Seeding, and local full-state writes
+//! # Local writes, and rows written another way
 //!
-//! An entity a vault held before migration 0033 has a row and no field state.
-//! The first time an op touches it, [`sync_from_row`] reads the row back as the
-//! legacy op that wrote it, at the row's stamp. By the rule above that is
-//! exactly what replaying every earlier op would have produced, up to what the
-//! row cannot represent, and the row then projects identically.
+//! A command appends its op to the log and folds it here, through the call a
+//! received op takes (`Engine::append_and_fold`), so a writer and its peers
+//! derive the row from one function of the same ops.
 //!
-//! The command paths still write rows directly and log a full-state op. Each
-//! such write leaves the row with a stamp the merge did not write, which
-//! [`sync_from_row`] notices the next time an op touches the entity, and folds
-//! in the same way. The local op always holds the greatest stamp this replica
-//! has seen, so folding the row is folding that op.
+//! Two kinds of row were written another way: an entity a vault held before
+//! migration 0033 has a row and no field state, and a build before ADR-0065
+//! PR 3 wrote a command's row directly and left folding it to the next op.
+//! Neither is read back here. A vault that may hold one is rebuilt from its
+//! op log before anything folds into it (`Engine::rebuild_if_stale`, which
+//! `Core::open` runs whenever the vault was last rebuilt at a [`FOLD_V`]
+//! other than this build's), and the log holds the op behind every such row.
+//!
+//! # Versions
+//!
+//! Every op folded here is first admitted as a version of its entity
+//! ([`versions`], ADR-0065 §1–§2): its parents, its causal frontier, and the
+//! entity's heads. The register fold reads them ([`register`], §3–§4): a
+//! register keeps the writes no other write descends from, picks its winner
+//! by the field's conflict class, and keeps the rest as losers, which
+//! `Query::Conflicts` reports. Two full-state ops are concurrent, but only the
+//! newer survives the legacy floor, so a legacy-only history keeps no loser.
+//!
+//! Compaction prunes the versions no fold can read again ([`prune`],
+//! ADR-0065 D25): those every device that can still write has passed, whose
+//! ops and readers are folded away, and that no head, register or projection
+//! reads.
 //!
 //! # Visibility, delete, and derived fields
 //!
 //! An entity is projected only once a create has been applied: a `Patch` with
 //! `create`, or any legacy op, since every legacy op wrote a whole row.
-//! `deleted` is a register like any other, so an edit that arrives after a
-//! delete is kept inside the tombstoned entity and shows again on a restore
-//! (ADR-0044 §5). `created_at` is the legacy register where one wrote it, and
+//! `deleted` is a register of the tombstone class: a delete beats a
+//! concurrent restore, and an edit concurrent with a delete is kept inside the
+//! tombstoned entity and shows again on a restore (ADR-0044 §5, ADR-0065 §3). `created_at` is the legacy register where one wrote it, and
 //! the least create stamp's physical time otherwise; `updated_at` is the later
 //! of the legacy register and the newest `Patch`'s physical time (§10). A
 //! `Patch` may write neither, nor `id`, nor a field the registry declares
@@ -81,27 +98,99 @@
 
 mod patch;
 mod project;
+mod prune;
+mod register;
+mod rows;
 mod snapshot;
 mod state;
+mod versions;
 
-pub(super) use patch::{check_patch, PatchProblem};
-pub(super) use snapshot::{dump_stream_state, fold_rows, join_stream_state};
+pub(super) use patch::{
+    check_patch, check_register_set, round_trip, set_field, FieldOp, PatchProblem,
+};
+pub(super) use project::field_default;
+#[cfg(test)]
+pub(super) use project::map_over_whole;
+#[cfg(test)]
+pub(super) use prune::passed;
+pub(super) use prune::{prune_versions, Passage};
+#[cfg(test)]
+pub(super) use versions::Node;
+// The search indexes' rows are the row writers'; `engine::search` builds them
+// from the rows when the layout changes.
+pub(super) use register::{class_of, kept_registers, Member};
+#[cfg(test)]
+pub(super) use rows::reindex_tasks_of;
+pub(super) use rows::{create_words_sql, rebuild_from_rows as rebuild_search_from_rows};
+pub(super) use snapshot::{dump_compacted_base, dump_stream_state, join_stream_state};
+pub(super) use state::{dec as decode_value, enc as encode_value, stamp_cols as stamp_of_columns};
+
+/// The heads of entity `id` as this replica has applied them, in the wire
+/// form a `Patch`'s `parents` carries (ADR-0065 §2): what a writer that has
+/// seen every version names.
+pub(super) fn parents_of(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+) -> rusqlite::Result<Vec<crate::inner_op::OpRefWire>> {
+    // A head at seq 0 is no op (the chain's empty position): only a row
+    // folded without an op is one, and no `Patch` may name it.
+    Ok(versions::heads(tx, id)?
+        .into_iter()
+        .filter(|h| h.seq != 0)
+        .map(|h| crate::inner_op::OpRefWire(h.stream, h.device, h.seq))
+        .collect())
+}
+pub(super) use versions::unmerged_heads;
+#[cfg(test)]
+pub(super) use versions::{heads, precedes};
+
+/// The version of the fold: what a projection rebuilt from the log holds.
+///
+/// It moves when a build folds the same ops into different rows or merge
+/// state, and a vault last rebuilt at another version is rebuilt once, at
+/// open (`Engine::rebuild_if_stale`). `1` adds the version DAG (ADR-0065
+/// §1–§2), whose tables a vault before migration 0039 does not have. `2`
+/// folds registers by their conflict classes (§3) and keeps the losers (§4),
+/// which a vault folded at `1` holds none of. `3` writes every
+/// `SunriseTime`'s civil column and the routine and stream time sidecars
+/// (migration 0041, #506), which no row folded before it holds. `4` writes
+/// `Task.sort_order` to its own column (migration 0042, #340), where a build
+/// before it kept a key a newer device wrote in `extra`, as an unknown field.
+/// `5` derives a routine's streak fields from its keys once a `Patch` has
+/// written them (ADR-0065 §5, #331), where a routine folded at `4` holds the
+/// registers. `6` projects a task's, block's and routine template's
+/// effective stream (ADR-0046 §4: a deleted stream reads as where it
+/// re-homed its dependents, and the legacy Inbox sentinel as no stream) and
+/// `Task.triaged_at` and `Stream.rehomed_to` into their columns (migration
+/// 0044, #332), where a build before it kept the last two in `extra`. `7`
+/// projects `Task.target_at` into its columns (migration 0045, #334), where
+/// a build before it kept a newer device's target in `extra`. `8` projects
+/// `Task.cancel_reason` and `Task.late_acknowledged_at` into their columns
+/// (migration 0046, #335), where a build before it kept them in `extra`.
+/// `9` projects
+/// `Routine.split_from` and `Task.hard_constraint_violated` into their
+/// columns (migration 0047, #331), and a later write of `Task.routine_id` or
+/// `routine_occurrence` into theirs, which only the insert wrote before: a
+/// split's continuation adopts an occurrence by writing its `routine_id`.
+pub(crate) const FOLD_V: u32 = 9;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;
 use super::EngineError;
-use crate::inner_op::InnerOp;
+use crate::inner_op::{InnerOp, FULL_STATE_GROUP_KEY};
 use ciborium::value::Value;
-use patch::FieldOp;
-use project::{logged_op, project, read_row_state, row_stamp, write_projection};
+use project::{project, write_projection};
+use register::Registers;
 use rusqlite::Transaction;
 use state::{
     add_delta, add_element, prune_below_floor, read_meta, remove_element, write_map_entry,
-    write_meta, write_register, Meta,
+    write_meta, Meta,
 };
+use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::EntityRef;
+use versions::{admit_version, Admission, Version, VersionKind};
 
 // ---- stamps and op-refs ----
 
@@ -137,7 +226,7 @@ impl Stamp {
         }
     }
 
-    const fn op_ref(&self) -> OpRef {
+    pub(super) const fn op_ref(&self) -> OpRef {
         OpRef {
             stream: self.stream,
             device: self.device,
@@ -156,7 +245,7 @@ pub(super) struct OpRef {
 
 impl OpRef {
     /// `[bstr .size 16, bstr .size 16, uint]`.
-    fn from_value(v: &Value) -> Option<Self> {
+    pub(super) fn from_value(v: &Value) -> Option<Self> {
         let items = v.as_array()?;
         let [stream, device, seq] = items.as_slice() else {
             return None;
@@ -173,7 +262,6 @@ impl OpRef {
     }
 
     /// The CBOR form [`Self::from_value`] reads.
-    #[cfg(test)]
     pub(super) fn to_value(self) -> Value {
         Value::Array(vec![
             Value::Bytes(self.stream.to_vec()),
@@ -186,13 +274,12 @@ impl OpRef {
 // ---- folds ----
 
 const USER: &str = "user";
-const GENERATED: &str = "generated";
+pub(super) const GENERATED: &str = "generated";
 
 /// The origin of a legacy full-state op, from its op-log `inner_kind` and its
 /// payload's CBOR map. ADR-0044 §3: a legacy op is a user write, except the
 /// routine engine's own occurrence creates, a `task.create` that names its
-/// routine. The receive path and [`sync_from_row`] both read it here, so a
-/// replica that folded its own row and one that replayed the op agree.
+/// routine.
 fn legacy_origin(inner_kind: &str, state: &[(Value, Value)]) -> &'static str {
     let names_routine = state
         .iter()
@@ -205,6 +292,7 @@ fn legacy_origin(inner_kind: &str, state: &[(Value, Value)]) -> &'static str {
 }
 
 /// Fold a legacy full-state op, given as its payload's CBOR map (§7).
+#[allow(clippy::too_many_arguments)]
 fn fold_legacy(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
@@ -213,12 +301,13 @@ fn fold_legacy(
     at: Stamp,
     origin: &str,
     meta: &mut Meta,
+    regs: &mut Registers,
 ) -> rusqlite::Result<()> {
     meta.note(at);
     meta.note_create(at);
     if meta.legacy.is_none_or(|l| at > l) {
         meta.legacy = Some(at);
-        prune_below_floor(tx, id, at)?;
+        prune_below_floor(tx, id, at, regs)?;
     }
     let floor = meta.legacy;
     let Some(record) = spec.records.first() else {
@@ -234,7 +323,7 @@ fn fold_legacy(
         let value = get(state, field.name);
         match field.crdt {
             Crdt::Register | Crdt::Derived | Crdt::Counter => {
-                write_register(tx, id, field.name, value.as_ref(), at, origin)?;
+                regs.offer(tx, field.name, value.as_ref(), at, origin)?;
             }
             Crdt::OrSet => {
                 for element in value
@@ -261,36 +350,31 @@ fn fold_legacy(
                 let sub = spec.record(field.value_type);
                 for sub_field in sub.map_or(&[][..], |s| s.fields) {
                     let name = format!("{}.{}", field.name, sub_field.name);
-                    write_register(
-                        tx,
-                        id,
-                        &name,
-                        get(inner, sub_field.name).as_ref(),
-                        at,
-                        origin,
-                    )?;
+                    regs.offer(tx, &name, get(inner, sub_field.name).as_ref(), at, origin)?;
                 }
                 for (k, v) in inner {
                     let Some(k) = k.as_text() else { continue };
                     if sub.is_some_and(|s| s.fields.iter().any(|f| f.name == k)) {
                         continue;
                     }
-                    write_register(tx, id, &format!("{}.{k}", field.name), Some(v), at, origin)?;
+                    regs.offer(tx, &format!("{}.{k}", field.name), Some(v), at, origin)?;
                 }
             }
         }
     }
-    // Every key a newer build wrote, as a register under its own name.
+    // Every key a newer build wrote, as a register under its own name. A
+    // group's mark is the op's, not the entity's (D13), and is not folded.
     for (k, v) in state {
         let Some(k) = k.as_text() else { continue };
-        if record.fields.iter().any(|f| f.name == k) {
+        if k == FULL_STATE_GROUP_KEY || record.fields.iter().any(|f| f.name == k) {
             continue;
         }
-        write_register(tx, id, k, Some(v), at, origin)?;
+        regs.offer(tx, k, Some(v), at, origin)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fold_patch(
     tx: &Transaction<'_>,
     id: &[u8; 16],
@@ -299,6 +383,7 @@ fn fold_patch(
     at: Stamp,
     origin: &str,
     meta: &mut Meta,
+    regs: &mut Registers,
 ) -> rusqlite::Result<()> {
     meta.note(at);
     if create {
@@ -310,7 +395,7 @@ fn fold_patch(
     );
     for (field, op) in ops {
         match op {
-            FieldOp::Set(v) => write_register(tx, id, field, Some(v), at, origin)?,
+            FieldOp::Set(v) => regs.offer(tx, field, Some(v), at, origin)?,
             FieldOp::Edit { add, remove } => {
                 for element in add {
                     add_element(tx, id, field, element, at, meta.legacy)?;
@@ -332,79 +417,107 @@ fn fold_patch(
     Ok(())
 }
 
-/// Fold the row in as a legacy op when it was written by something other
-/// than this merge: by a vault older than migration 0033, or by a local
-/// full-state command. See the module docs.
-fn sync_from_row(
-    tx: &Transaction<'_>,
-    spec: &'static EntitySpec,
-    target: EntityRef,
-) -> Result<Option<Meta>, EngineError> {
-    let id = target.bytes();
-    let mut meta = read_meta(tx, id)?;
-    let Some(row) = row_stamp(tx, spec, id)? else {
-        return Ok(meta);
-    };
-    // A placeholder stream row no op has stamped is not an op.
-    let Some(device) = row.device.as_deref() else {
-        return Ok(meta);
-    };
-    let seen = (row.hlc, blob16(device), row.seq);
-    if meta.as_ref().and_then(|m| m.row) == Some(seen) {
-        return Ok(meta);
-    }
-    let Some(state) = read_row_state(tx, target.kind(), id)? else {
-        return Ok(meta);
-    };
-    let (stream, kind) = logged_op(tx, spec, id, device, row.seq, &state)?;
-    let at = Stamp {
-        hlc: row.hlc,
-        device: blob16(device),
-        seq: row.seq,
-        stream,
-    };
-    let mut m = meta.take().unwrap_or_else(|| Meta::fresh(at));
-    let entries = state.as_map().map_or(&[][..], Vec::as_slice);
-    // The origin of the logged op that wrote the row, by the rule the receive
-    // path reads it with, so this replica and a peer that replayed the op
-    // store the same one.
-    let origin = kind.map_or(USER, |k| legacy_origin(&k, entries));
-    fold_legacy(tx, spec, id, entries, at, origin, &mut m)?;
-    m.row = Some(seen);
-    Ok(Some(m))
-}
-
-/// Fold each task's row into its field state, before a context is purged
-/// from the tasks' membership rows.
-///
-/// A task with no field state yet, or with a local write the merge has not
-/// folded, is seeded from its row (see [`sync_from_row`]). Once a tombstoned
-/// context has been purged from `task_contexts`, the row no longer says the
-/// task's set holds it, and a seed taken then would lose the add a restore
-/// needs. So the row is folded while it still does.
-pub(super) fn seed_tasks_before_purge(
-    tx: &Transaction<'_>,
-    tasks: &[[u8; 16]],
-) -> rusqlite::Result<()> {
-    let spec = sunrise_id::EntityKind::Task.spec();
-    for id in tasks {
-        let task = EntityRef::new(sunrise_id::EntityKind::Task, *id);
-        if let Some(meta) = sync_from_row(tx, spec, task).map_err(to_sql)? {
-            write_meta(tx, id, spec.tag, &meta)?;
-        }
-    }
-    Ok(())
-}
-
 /// Re-project one entity from its state, folding nothing new.
 fn refresh(tx: &Transaction<'_>, target: EntityRef) -> Result<(), EngineError> {
     let spec = target.kind().spec();
-    let Some(mut meta) = sync_from_row(tx, spec, target)? else {
+    let Some(mut meta) = read_meta(tx, target.bytes())? else {
         return Ok(());
     };
     project_and_write(tx, spec, target, &mut meta)?;
     write_meta(tx, target.bytes(), spec.tag, &meta)?;
     Ok(())
+}
+
+/// The entity as the fold projects it, as a CBOR map: its row before the
+/// row writers decode it. `None` for an entity with no merge state, or none
+/// created yet.
+pub(super) fn projected(
+    tx: &Transaction<'_>,
+    target: EntityRef,
+) -> rusqlite::Result<Option<Value>> {
+    let Some(meta) = read_meta(tx, target.bytes())? else {
+        return Ok(None);
+    };
+    project(tx, target.kind().spec(), target, &meta)
+}
+
+/// The legacy floor of entity `id` (the module docs' `L`), if a full-state
+/// op has been applied to it.
+pub(super) fn legacy_floor(tx: &Transaction<'_>, id: &[u8; 16]) -> rusqlite::Result<Option<Stamp>> {
+    Ok(read_meta(tx, id)?.and_then(|m| m.legacy))
+}
+
+/// `(entity, element's canonical CBOR)` to the stamp of its oldest live add.
+pub(super) type OldestAdds = std::collections::BTreeMap<([u8; 16], Vec<u8>), Stamp>;
+
+/// One register's winner: `(entity, value, stamp)`.
+pub(super) type Winner = ([u8; 16], Option<Value>, Stamp);
+
+/// For every element of OR-set `field` on every entity, the stamp of its
+/// oldest surviving add: an add whose tag no remove names. Adds below an
+/// entity's legacy floor are not stored (`state::prune_below_floor`), so
+/// every add read here is one the projection counts.
+///
+/// Read-time rules order an entity's elements by it (ADR-0065 §5): it is a
+/// fact of the merged set, the same on every replica that holds it.
+pub(super) fn oldest_live_adds(
+    conn: &rusqlite::Connection,
+    field: &str,
+) -> rusqlite::Result<OldestAdds> {
+    let mut stmt = conn.prepare(
+        "SELECT a.entity_id, a.element, a.hlc_ms, a.hlc_logical, a.tag_device, a.tag_seq,
+                a.tag_stream
+         FROM merge_orset_adds a
+         WHERE a.field = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM merge_orset_removes r
+               WHERE r.entity_id = a.entity_id AND r.field = a.field
+                 AND r.element = a.element AND r.tag_stream = a.tag_stream
+                 AND r.tag_device = a.tag_device AND r.tag_seq = a.tag_seq)",
+    )?;
+    let rows = stmt.query_map([field], |r| {
+        Ok((
+            blob16(&r.get::<_, Vec<u8>>(0)?),
+            r.get::<_, Vec<u8>>(1)?,
+            state::stamp_cols(r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
+        ))
+    })?;
+    let mut out = OldestAdds::new();
+    for row in rows {
+        let (entity, element, at) = row?;
+        let Some(at) = at else { continue };
+        out.entry((entity, element))
+            .and_modify(|held| *held = (*held).min(at))
+            .or_insert(at);
+    }
+    Ok(out)
+}
+
+/// The stamp of the winning write of register `field` of every entity that
+/// holds one: `(entity, value, stamp)`.
+pub(super) fn register_winners(
+    conn: &rusqlite::Connection,
+    field: &str,
+) -> rusqlite::Result<Vec<Winner>> {
+    let mut stmt = conn.prepare(
+        "SELECT entity_id, value, hlc_ms, hlc_logical, device, seq, stream
+         FROM merge_registers WHERE field = ?1",
+    )?;
+    let rows = stmt.query_map([field], |r| {
+        Ok((
+            blob16(&r.get::<_, Vec<u8>>(0)?),
+            r.get::<_, Option<Vec<u8>>>(1)?,
+            state::stamp_cols(r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (entity, value, at) = row?;
+        if let Some(at) = at {
+            out.push((entity, value.as_deref().map(state::dec), at));
+        }
+    }
+    Ok(out)
 }
 
 fn project_and_write(
@@ -416,10 +529,7 @@ fn project_and_write(
     let Some(value) = project(tx, spec, target, meta)? else {
         return Ok(());
     };
-    let head = meta.head.lww();
-    if write_projection(tx, spec, target, value, &head)? {
-        meta.row = Some((head.hlc, head.device, head.seq));
-    }
+    write_projection(tx, spec, target, value, &meta.head.lww())?;
     Ok(())
 }
 
@@ -449,26 +559,44 @@ fn legacy_state(inner: &InnerOp) -> Option<Result<Value, ciborium::value::Error>
     })
 }
 
-/// Fold one entity op into its entity's field state and project the entity
-/// to its row (ADR-0044).
-///
-/// `inner` is a legacy full-state op of an entity that merges as
-/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
-/// accepted. `lww` is the
-/// sender's stamp and `stream` the stream the op was sealed under, which
-/// together are the op's merge stamp and its OR-set tag.
+/// [`merge_member`] for an op of no group, as the tests fold one.
+#[cfg(test)]
 pub(super) fn merge_op(
     tx: &Transaction<'_>,
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: [u8; 16],
 ) -> rusqlite::Result<()> {
-    merge_op_inner(tx, inner, lww, stream).map_err(to_sql)
+    merge_member(tx, inner, lww, stream, None)
 }
 
-/// Carry an engine error out through a transaction closure, which speaks
-/// `rusqlite::Error`.
-fn to_sql(e: EngineError) -> rusqlite::Error {
+/// Fold one entity op into its entity's field state and project the entity
+/// to its row (ADR-0044).
+///
+/// `inner` is a legacy full-state op of an entity that merges as
+/// [`sunrise_id::registry::Merge::Lww`], or a `Patch` that [`check_patch`]
+/// accepted. `lww` is the sender's stamp and `stream` the stream the op was
+/// sealed under, which together are the op's merge stamp and its OR-set tag.
+///
+/// The op may be one member of a group (ADR-0065 §6), which its version
+/// records: a `Patch` names its group itself, and `group` is the group of a
+/// full-state member, whose mark `engine::groups` read off it
+/// (clarification D13).
+pub(super) fn merge_member(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    lww: &LwwStamp,
+    stream: [u8; 16],
+    group: Option<([u8; 16], u64)>,
+) -> rusqlite::Result<()> {
+    merge_op_inner(tx, inner, lww, stream, group).map_err(to_sql)
+}
+
+/// Carry an engine error out through code that speaks `rusqlite::Error` (a
+/// transaction closure, a search filter): a SQLite error as itself, anything
+/// else boxed as itself so `snapshot::in_tx` can hand the caller the original
+/// variant.
+pub(super) fn to_sql(e: EngineError) -> rusqlite::Error {
     match e {
         EngineError::Sqlite(e) => e,
         other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
@@ -480,12 +608,13 @@ fn merge_op_inner(
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: [u8; 16],
+    legacy_group: Option<([u8; 16], u64)>,
 ) -> Result<(), EngineError> {
     let target = inner.target_ref();
     let spec = target.kind().spec();
     let id = target.bytes();
     let at = Stamp::of(lww, stream);
-    let mut meta = sync_from_row(tx, spec, target)?.unwrap_or_else(|| Meta::fresh(at));
+    let mut meta = read_meta(tx, id)?.unwrap_or_else(|| Meta::fresh(at));
     match inner {
         InnerOp::Patch(p) => {
             // Checked before the transaction opened (`apply_remote_all`), and
@@ -496,7 +625,29 @@ fn merge_op_inner(
                 return Ok(());
             };
             let origin = if p.is_generated() { GENERATED } else { USER };
-            fold_patch(tx, id, p.create, &ops, at, origin, &mut meta)?;
+            let parents = p.parents.as_ref().map(|parents| {
+                parents
+                    .iter()
+                    .map(|w| OpRef {
+                        stream: w.0,
+                        device: w.1,
+                        seq: w.2,
+                    })
+                    .collect()
+            });
+            let version = Version {
+                at,
+                kind: VersionKind::Patch,
+                origin,
+                create: p.create,
+                parents,
+                group: p.group.as_ref().map(|g| (g.id, g.size)),
+                fields: ops.iter().map(|(name, _)| name.clone()).collect(),
+            };
+            let admitted = admit_version(tx, id, &version)?;
+            let mut regs = registers_after(tx, spec, id, &meta, admitted)?;
+            fold_patch(tx, id, p.create, &ops, at, origin, &mut meta, &mut regs)?;
+            regs.flush(tx)?;
         }
         other => {
             let Some(state) = legacy_state(other) else {
@@ -506,10 +657,59 @@ fn merge_op_inner(
             let state = state.map_err(|e| EngineError::Cbor(e.to_string()))?;
             let entries = state.as_map().map_or(&[][..], Vec::as_slice);
             let origin = legacy_origin(other.inner_kind(), entries);
-            fold_legacy(tx, spec, id, entries, at, origin, &mut meta)?;
+            let version = Version {
+                at,
+                kind: VersionKind::Legacy,
+                origin,
+                create: other.inner_kind().ends_with(".create"),
+                parents: None,
+                group: legacy_group,
+                fields: legacy_fields(spec, entries),
+            };
+            let admitted = admit_version(tx, id, &version)?;
+            let mut regs = registers_after(tx, spec, id, &meta, admitted)?;
+            fold_legacy(tx, spec, id, entries, at, origin, &mut meta, &mut regs)?;
+            regs.flush(tx)?;
         }
     }
     project_and_write(tx, spec, target, &mut meta)?;
     write_meta(tx, id, spec.tag, &meta)?;
     Ok(())
+}
+
+/// The entity's registers, loaded after its newest version was admitted.
+/// A version that arrived late recomputed the entity's frontiers, which can
+/// order writes the registers keep as concurrent, so they are filtered again
+/// ([`Registers::refilter`]).
+fn registers_after(
+    tx: &Transaction<'_>,
+    spec: &'static EntitySpec,
+    id: &[u8; 16],
+    meta: &Meta,
+    admitted: Admission,
+) -> rusqlite::Result<Registers> {
+    let mut regs = Registers::load(tx, spec, id, meta.legacy)?;
+    if admitted.refined {
+        regs.refilter(tx)?;
+    }
+    Ok(regs)
+}
+
+/// The fields a legacy full-state op writes: every field this build
+/// registers for the entity, whether the op carried it or left it out, and
+/// every other key it carried (ADR-0044 §7).
+fn legacy_fields(spec: &'static EntitySpec, state: &[(Value, Value)]) -> BTreeSet<String> {
+    let mut fields: BTreeSet<String> = spec
+        .records
+        .first()
+        .map(|r| r.fields.iter().map(|f| f.name.to_owned()).collect())
+        .unwrap_or_default();
+    fields.extend(
+        state
+            .iter()
+            .filter_map(|(k, _)| k.as_text())
+            .filter(|k| *k != FULL_STATE_GROUP_KEY)
+            .map(str::to_owned),
+    );
+    fields
 }

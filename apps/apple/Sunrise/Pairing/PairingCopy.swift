@@ -35,13 +35,8 @@ extension PairingModel {
     func relayCodeHandOff(_ payload: String) -> HandOff {
         HandOff(
             leg: .code,
-            title: "Scan this with the device that has your vault",
-            instruction: """
-                On that device, open Settings › Vaults › Add a device and \
-                choose Scan, or paste the text below there. The code works \
-                for five minutes; this screen moves on by itself once it has \
-                been read.
-                """,
+            title: L10n.Pairing.Legs.relayCodeTitle,
+            instruction: L10n.Pairing.Legs.relayCodeInstruction,
             text: payload,
             drawsCode: true
         )
@@ -49,37 +44,28 @@ extension PairingModel {
 
     var doneSummary: String {
         intent == .addThisMac
-            ? "This \(Platform.deviceName) is paired. Your vault is open here."
-            : "The other device has a certificate from your account and a copy of your vault key."
+            ? L10n.Pairing.doneJoined(device: Platform.deviceName)
+            : L10n.Pairing.doneSponsored
     }
 
     /// What `.working` says while the last messages cross.
     var finishingLabel: String {
         intent == .addThisMac
-            ? "Opening your vault on this \(Platform.deviceName)…"
-            : "Sealing your vault key for the other device…"
+            ? L10n.Pairing.finishingJoining(device: Platform.deviceName)
+            : L10n.Pairing.finishingSponsoring
     }
 
-    static let reachingRelay = "Reaching your relay…"
-    static let connecting = "Connecting to the other device through your relay…"
+    static var reachingRelay: String { L10n.Pairing.reachingRelay }
+    static var connecting: String { L10n.Pairing.connecting }
 
     // MARK: - Why this pairing is copy and paste
 
     static var noRelayConfigured: String {
-        """
-        This \(Platform.deviceName) has no relay set up, so this pairing runs by \
-        copy and paste. The other device should choose “Copy and paste instead” \
-        too. Add your relay under Settings › Sync to pair by scanning a code \
-        instead.
-        """
+        L10n.Pairing.Notice.noRelay(device: Platform.deviceName)
     }
 
     static var notSignedIn: String {
-        """
-        Pairing over your relay needs this \(Platform.deviceName) signed in to \
-        your account, so this pairing runs by copy and paste. The other device \
-        should choose “Copy and paste instead” too.
-        """
+        L10n.Pairing.Notice.notSignedIn(device: Platform.deviceName)
     }
 
     /// Why the device with the vault could not join the pairing a code names,
@@ -90,35 +76,20 @@ extension PairingModel {
     /// the seam's own words for that ("start again from a new code") would
     /// send the user round the same rescan.
     static func relayCodeFailed(_ error: any Error) -> String {
-        """
-        \(error.localizedDescription)
-
-        If the other device says its pairing runs by copy and paste, choose \
-        “Copy and paste instead” here and scan its code again.
-        """
+        // The seam's own message, then the way out as its own paragraph.
+        "\(error.localizedDescription)\n\n\(L10n.Pairing.Notice.relayCodeFailed)"
     }
 
     static func relayDidNotAnswer(_ relayURL: String) -> String {
-        """
-        Your relay at \(relayURL) did not answer, so this pairing runs by copy \
-        and paste. The other device should choose “Copy and paste instead” too.
-        """
+        L10n.Pairing.Notice.relayDidNotAnswer(url: relayURL)
     }
 
     static func relayDidNotAnswerHere(_ relayURL: String) -> String {
-        """
-        Your relay at \(relayURL) did not answer from this \(Platform.deviceName), \
-        so pair by copy and paste: on the device you are adding, choose “Copy and \
-        paste instead”, then scan or paste the new code it shows.
-        """
+        L10n.Pairing.Notice.relayDidNotAnswerHere(url: relayURL, device: Platform.deviceName)
     }
 
     static func relayRefused(_ error: any Error) -> String {
-        """
-        Your relay could not start this pairing (\(error.localizedDescription)), \
-        so it runs by copy and paste. The other device should choose “Copy and \
-        paste instead” too.
-        """
+        L10n.Pairing.Notice.relayRefused(error: error.localizedDescription)
     }
 
     func handOff(for leg: Leg, text: String) -> HandOff {
@@ -126,23 +97,16 @@ extension PairingModel {
         case .code:
             HandOff(
                 leg: leg,
-                title: "Show this to the device that has your vault",
-                instruction: """
-                    Scan the code, or copy the text below and paste it into \
-                    Settings › Vaults › Add a device on your other device — \
-                    the one that already has your vault.
-                    """,
+                title: L10n.Pairing.Legs.codeTitle,
+                instruction: L10n.Pairing.Legs.codeInstruction,
                 text: text,
                 drawsCode: true
             )
         case .first, .second, .third:
             HandOff(
                 leg: leg,
-                title: "Copy this to the other device",
-                instruction: """
-                    Paste it into the field the other device is showing, then \
-                    come back here and continue.
-                    """,
+                title: L10n.Pairing.Legs.messageTitle,
+                instruction: L10n.Pairing.Legs.messageInstruction,
                 text: text,
                 drawsCode: false
             )
@@ -151,38 +115,24 @@ extension PairingModel {
         case .offer:
             HandOff(
                 leg: leg,
-                title: "Copy this to the device you are adding",
-                instruction: """
-                    This says who your account is. It carries no keys — the \
-                    other device replies with keys of its own, and only then \
-                    does anything of yours leave this one.
-                    """,
+                title: L10n.Pairing.Legs.offerTitle,
+                instruction: L10n.Pairing.Legs.offerInstruction,
                 text: text,
                 drawsCode: false
             )
         case .request:
             HandOff(
                 leg: leg,
-                title: "Copy this back to the device with your vault",
-                instruction: """
-                    This \(Platform.deviceName) has just made itself a pair of \
-                    keys. Only the public halves are in this block; the private \
-                    ones stay here and are never sent anywhere.
-                    """,
+                title: L10n.Pairing.Legs.requestTitle,
+                instruction: L10n.Pairing.Legs.requestInstruction(device: Platform.deviceName),
                 text: text,
                 drawsCode: false
             )
         case .grant:
             HandOff(
                 leg: leg,
-                title: "Copy this last block to the other device",
-                instruction: """
-                    This is the certificate admitting that device to your \
-                    account, and your vault key, sealed so that only the device \
-                    whose digits you just confirmed can open it. Anything it \
-                    passes through on the way — a message, a clipboard, a relay \
-                    — sees nothing usable.
-                    """,
+                title: L10n.Pairing.Legs.grantTitle,
+                instruction: L10n.Pairing.Legs.grantInstruction,
                 text: text,
                 drawsCode: false
             )
@@ -194,49 +144,34 @@ extension PairingModel {
         case .code:
             Prompt(
                 leg: leg,
-                title: "Scan the code on the device you are adding",
-                instruction: """
-                    That device is showing a QR code with the same text \
-                    underneath it. Scan it with the camera, or paste the text \
-                    here.
-                    """
+                title: L10n.Pairing.Legs.promptCodeTitle,
+                instruction: L10n.Pairing.Legs.promptCodeInstruction
             )
         case .first, .second, .third:
             Prompt(
                 leg: leg,
-                title: "Paste what the other device is showing",
-                instruction: "Copy the block from the other device's screen and paste it here."
+                title: L10n.Pairing.Legs.promptMessageTitle,
+                instruction: L10n.Pairing.Legs.promptMessageInstruction
             )
         case .compare:
             Prompt(leg: leg, title: "", instruction: "")
         case .offer:
             Prompt(
                 leg: leg,
-                title: "Paste the block that names the account",
-                instruction: """
-                    The other device is showing a block that says which account \
-                    you are joining. Pasting it makes this device a pair of keys \
-                    for that account to certify.
-                    """
+                title: L10n.Pairing.Legs.promptOfferTitle,
+                instruction: L10n.Pairing.Legs.promptOfferInstruction
             )
         case .request:
             Prompt(
                 leg: leg,
-                title: "Paste the keys from the device you are adding",
-                instruction: """
-                    That device replied with the public half of the keys it just \
-                    made. Pasting them here signs a certificate for them.
-                    """
+                title: L10n.Pairing.Legs.promptRequestTitle,
+                instruction: L10n.Pairing.Legs.promptRequestInstruction
             )
         case .grant:
             Prompt(
                 leg: leg,
-                title: "Paste the sealed certificate and key",
-                instruction: """
-                    The other device is showing one last block, now that you have \
-                    both confirmed the digits. It is the only thing in this \
-                    whole exchange that carries your vault key.
-                    """
+                title: L10n.Pairing.Legs.promptGrantTitle,
+                instruction: L10n.Pairing.Legs.promptGrantInstruction
             )
         }
     }
@@ -251,11 +186,11 @@ enum PairingUIError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noSession:
-            "This pairing is over. Start it again from the beginning."
+            L10n.Pairing.noSession
         case .noPayload:
-            "Sunrise could not produce a pairing code for this device."
+            L10n.Pairing.noPayload
         case .noOpenVault:
-            "There is no open vault on this device to share."
+            L10n.Pairing.noOpenVault
         }
     }
 }

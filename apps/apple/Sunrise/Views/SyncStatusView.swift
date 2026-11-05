@@ -9,7 +9,8 @@ struct SyncStatusView: View {
             .foregroundStyle(colour)
             .help(presentation.detail ?? presentation.label)
             .accessibilityLabel(
-                presentation.detail.map { "\(presentation.label). \($0)" } ?? presentation.label
+                presentation.detail.map { L10n.Sync.accessibility(label: presentation.label, detail: $0) }
+                    ?? presentation.label
             )
     }
 

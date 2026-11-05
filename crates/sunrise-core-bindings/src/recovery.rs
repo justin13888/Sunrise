@@ -1,7 +1,7 @@
 //! Restoring an account from its recovery code, across the seam.
 //!
 //! [`crate::SunriseCore::recover_account`] runs
-//! `sunrise_onboarding::recover_account`, the same flow `sunrise recover` runs,
+//! `sunrise_client_core::recovery::recover_account`, the same flow `sunrise recover` runs,
 //! over the same relay adapter. This module holds what the seam adds: the
 //! progress events in a shape Swift can switch on, the listener they are
 //! delivered through, the per-word check a 24-word field runs as the user
@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use sunrise_onboarding::{RecoveryFlowError, RecoveryProgress, RestoreError};
+use sunrise_client_core::recovery::{RecoveryFlowError, RecoveryProgress, RestoreError};
 
 use crate::BindingError;
 
@@ -37,6 +37,12 @@ pub enum RecoveryStep {
     /// The account's history is being replayed into the vault. `applied`
     /// counts the changes so far; the relay does not say how many there are
     /// before it has sent them, so there is no total.
+    ///
+    /// Since #459 each change counted is an op the replay delivered, and a
+    /// relay that states its backlog does give a total. It is not on this
+    /// variant, because a field here would change the generated Swift and the
+    /// seam changes additively only: it reaches a [`ReplayListener`] given to
+    /// [`crate::SunriseCore::recover_account_with_replay`].
     Replaying {
         /// Changes applied so far.
         applied: u64,
@@ -53,7 +59,7 @@ impl From<RecoveryProgress> for RecoveryStep {
             RecoveryProgress::DeviceRegistered { relay_device_id } => {
                 Self::DeviceRegistered { relay_device_id }
             }
-            RecoveryProgress::Replaying { applied } => Self::Replaying { applied },
+            RecoveryProgress::Replaying { applied, .. } => Self::Replaying { applied },
             RecoveryProgress::CaughtUp => Self::CaughtUp,
         }
     }
@@ -69,6 +75,28 @@ pub trait RecoveryListener: Send + Sync + 'static {
     fn on_step(&self, step: RecoveryStep);
 }
 
+/// How far a recovery's replay has got (#459): n of N where the relay states
+/// N, and n alone where it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ReplayProgress {
+    /// Ops delivered so far.
+    pub applied: u64,
+    /// `applied` plus the ops the relay has stated it will still send.
+    /// `None` against a relay that states no backlog. It can grow while the
+    /// replay runs, as the ops it delivers name streams the new vault then
+    /// subscribes to.
+    pub total: Option<u64>,
+}
+
+/// The foreign side of a replay's progress, beside [`RecoveryListener`].
+///
+/// Called from a runtime worker thread, never the foreign main thread.
+#[uniffi::export(with_foreign)]
+pub trait ReplayListener: Send + Sync + 'static {
+    /// The replay moved.
+    fn on_replay(&self, progress: ReplayProgress);
+}
+
 /// Whether `word` is a word a recovery code can contain.
 ///
 /// What a 24-word field checks as each word is typed, so a typo is marked at
@@ -78,7 +106,7 @@ pub trait RecoveryListener: Send + Sync + 'static {
 #[uniffi::export]
 #[must_use]
 pub fn is_recovery_word(word: String) -> bool {
-    sunrise_onboarding::is_recovery_word(&word)
+    sunrise_client_core::recovery::is_recovery_word(&word)
 }
 
 /// Check a whole typed code without spending it: the count, every word, and
@@ -92,13 +120,25 @@ pub fn is_recovery_word(word: String) -> bool {
 /// word and never the word itself.
 #[uniffi::export]
 pub fn check_recovery_code(code: String) -> Result<(), BindingError> {
-    sunrise_onboarding::check_recovery_code(&code)
+    sunrise_client_core::recovery::check_recovery_code(&code)
         .map_err(|e| BindingError::RecoveryCode(e.to_string()))
 }
 
-/// Deliver the flow's progress to the foreign listener.
-pub(crate) fn forward(listener: Arc<dyn RecoveryListener>) -> impl FnMut(RecoveryProgress) + Send {
-    move |p| listener.on_step(RecoveryStep::from(p))
+/// Deliver the flow's progress to the foreign listeners: every step to
+/// `listener`, and each replay step's count and total to `replay` too.
+pub(crate) fn forward(
+    listener: Arc<dyn RecoveryListener>,
+    replay: Option<Arc<dyn ReplayListener>>,
+) -> impl FnMut(RecoveryProgress) + Send {
+    move |p| {
+        if let (Some(replay), RecoveryProgress::Replaying { applied, total }) = (&replay, &p) {
+            replay.on_replay(ReplayProgress {
+                applied: *applied,
+                total: *total,
+            });
+        }
+        listener.on_step(RecoveryStep::from(p));
+    }
 }
 
 /// Map the flow's errors onto the variants a client branches on.
@@ -113,9 +153,8 @@ impl From<RestoreError> for BindingError {
             return Self::RecoveryIncomplete(message);
         }
         match e {
-            RestoreError::Code(RecoveryFlowError::Code(_) | RecoveryFlowError::Crypto(_)) => {
-                Self::RecoveryCode(message)
-            }
+            RestoreError::Code(RecoveryFlowError::Code(_) | RecoveryFlowError::Crypto(_))
+            | RestoreError::CodeRetired { .. } => Self::RecoveryCode(message),
             RestoreError::StepUpRequired(_) => Self::StepUpRequired(message),
             _ => Self::RecoveryRefused(message),
         }
@@ -151,6 +190,15 @@ mod tests {
             sunrise_crypto::bip39::Bip39Error::Checksum,
         )));
         assert!(matches!(code, BindingError::RecoveryCode(_)), "{code:?}");
+
+        // Words that were right once: still the code's problem, not a refusal.
+        for retired_at_ms in [Some(1_793_000_000_000), None] {
+            let retired = BindingError::from(RestoreError::CodeRetired { retired_at_ms });
+            assert!(
+                matches!(&retired, BindingError::RecoveryCode(m) if m.contains("retired")),
+                "{retired:?}"
+            );
+        }
 
         let step_up = BindingError::from(RestoreError::StepUpRequired("403".into()));
         assert!(

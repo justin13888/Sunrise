@@ -4,7 +4,7 @@
 Why this file exists
 --------------------
 
-The gate has three failure modes — a file grew past its threshold
+The gate's measurements have three failure modes — a file grew past its threshold
 (`new_violations`), a baseline entry dropped under its threshold (`stale`),
 and a baseline entry names a file that is gone (`missing`) — and until this
 file existed not one of them was asserted by anything. The gate's own commit
@@ -30,9 +30,8 @@ The distinction the exit codes carry
 fine and `BASELINE` needs a line deleted. Both are red, and they ask for
 opposite things: a reader who sees "file-size failed" and assumes 1 will go
 looking for a file to split when somebody has just finished splitting one.
-Two baseline entries currently sit three lines above their threshold, so
-code 2 is not a theoretical branch — deleting four lines from
-`sunrise-domain/src/constraint.rs` reaches it.
+A baseline entry can sit only a few lines above its threshold, so code 2 is
+not a theoretical branch — deleting those lines reaches it.
 
 Run it with `mise run file-size-gate-test`, or directly.
 """
@@ -187,8 +186,9 @@ class AFileGrew(GateCase):
     def test_a_baseline_entry_is_judged_by_its_own_package_not_a_prefix(self):
         # `crates/sunrise-cli` is a string prefix of `crates/sunrise-client-core`,
         # and `crates/sunrise-core` of `crates/sunrise-core-bindings`. Looking a
-        # file's package up by prefix judged `client-core/src/undo.rs` against
-        # the CLI's threshold and reported it stale while it was over its own.
+        # file's package up by prefix judged `client-core/src/undo.rs`, then on
+        # the baseline, against the CLI's threshold and reported it stale while
+        # it was over its own.
         rust_file(self.tmp / "crates/a/src/lib.rs", 10)
         rust_file(self.tmp / "crates/a-b/src/big.rs", 500)
         result = self.run_gate(
@@ -231,10 +231,9 @@ class TheBaselineDrifted(GateCase):
         self.assert_code(result, BASELINE_STALE, "now 100 lines, under 100")
 
     def test_four_lines_deleted_from_a_three_line_margin(self):
-        # The case the real baseline is three lines away from, twice over
-        # (constraint.rs at 766/763, relay_log.rs at 860/857). Somebody
-        # improves a file and CI goes red; the output has to make it obvious
-        # that this is bookkeeping and not a regression.
+        # A baseline entry a few lines over its threshold. Somebody improves
+        # the file and CI goes red; the output has to make it obvious that
+        # this is bookkeeping and not a regression.
         rust_file(self.tmp / "crates/a/src/narrow.rs", 762)
         result = self.run_gate({"crates/a": 763}, {"crates/a/src/narrow.rs": "debt"})
         self.assert_code(result, BASELINE_STALE, "bookkeeping, not a regression")

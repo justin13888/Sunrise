@@ -8,7 +8,7 @@
 
 use super::{Engine, EngineError, META_STREAM};
 use sunrise_domain::time::SunriseTime;
-use sunrise_domain::TaskState;
+use sunrise_domain::{TaskState, PRIVATE_DOMAIN_BYTES};
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 
 impl Engine {
@@ -149,26 +149,33 @@ pub(super) fn extra_over_opaque(
     }))
 }
 
-/// Split an optional [`SunriseTime`] into its three storage columns:
-/// `(index_ms, kind, tz)`.
+/// An optional [`SunriseTime`] as its four storage columns.
+pub(super) type TimeParts<'a> = (Option<i64>, Option<&'a str>, Option<String>, Option<String>);
+
+/// Split an optional [`SunriseTime`] into its four storage columns:
+/// `(index_ms, kind, tz, civil)`.
 ///
 /// The index key is what every range query and `ORDER BY` in the engine reads,
-/// so adding kinds did not require touching one of them; the two sidecars are
-/// what let the kind survive the round trip. See the `tasks` table comment in
-/// `0013_baseline.sql`.
-pub(super) fn time_to_parts(
-    t: Option<&SunriseTime>,
-) -> (Option<i64>, Option<&str>, Option<String>) {
+/// so adding kinds did not require touching one of them; the sidecars are what
+/// let the kind survive the round trip, and the civil column what lets a civil
+/// kind's wall-clock time survive it without a zone (migration 0041,
+/// ADR-0066 §2). See the `tasks` table comment in `0013_baseline.sql`.
+pub(super) fn time_to_parts(t: Option<&SunriseTime>) -> TimeParts<'_> {
     match t {
-        None => (None, None, None),
+        None => (None, None, None, None),
         Some(v) => {
             let (ms, kind, tz) = v.to_parts();
-            (Some(ms), Some(kind), tz.map(std::borrow::Cow::into_owned))
+            (
+                Some(ms),
+                Some(kind),
+                tz.map(std::borrow::Cow::into_owned),
+                v.civil_part(),
+            )
         }
     }
 }
 
-/// Rebuild an optional [`SunriseTime`] from its three storage columns.
+/// Rebuild an optional [`SunriseTime`] from its four storage columns.
 ///
 /// A row with an index key but no kind is read as an instant: that is what a
 /// column written before the kind existed means, and what a build that does not
@@ -177,9 +184,15 @@ pub(super) fn time_from_parts(
     ms: Option<i64>,
     kind: Option<&str>,
     tz: Option<&str>,
+    civil: Option<&str>,
 ) -> Option<SunriseTime> {
     ms.map(|ms| {
-        SunriseTime::from_parts(ms, kind.unwrap_or(sunrise_domain::time::kind::INSTANT), tz)
+        SunriseTime::from_parts(
+            ms,
+            kind.unwrap_or(sunrise_domain::time::kind::INSTANT),
+            tz,
+            civil,
+        )
     })
 }
 
@@ -187,14 +200,16 @@ pub(super) fn time_from_parts(
 ///
 /// Every command that takes a `stream_id` from outside runs this, and it is
 /// one function rather than a check per command for the same reason
-/// `Engine::meta_slot` is one function: the second hand-written copy of a rule
+/// `Engine::log_slot` is one function: the second hand-written copy of a rule
 /// is where the rule starts drifting. `delete_stream` established the shape —
 /// it refused the vault-meta id before anything else did — and this
 /// generalises it from "you may not delete it" to "you may not name it".
 ///
-/// **The Inbox is not on this list.** It is a real Stream with a real key that
-/// Tasks legitimately live in, and it is reserved against *deletion* only;
-/// `delete_stream` keeps that check of its own.
+/// **The private key domain is on this list too** (ADR-0046 §2). Its id is
+/// the old Inbox sentinel's, and it is not a Stream: no stream command may
+/// rename, re-parent, delete or nest under it. A command that gives a task or
+/// block a home takes it through [`home_of`] instead, which reads it as "no
+/// stream".
 ///
 /// **`Command::RotateStreamKey` deliberately does not call this.** Rotating the
 /// vault-meta key is a real operation — it is half of what a device revocation
@@ -204,13 +219,36 @@ pub(super) fn time_from_parts(
 ///
 /// # Errors
 /// [`EngineError::Invalid`] if `r` is not a Stream at all;
-/// [`EngineError::ReservedStream`] if it is the vault-meta stream.
+/// [`EngineError::ReservedStream`] if it is the vault-meta stream or the
+/// private domain.
 pub(super) fn require_writable_stream(r: EntityRef) -> Result<(), EngineError> {
     require_kind(r, EntityKind::Stream)?;
-    if r.bytes() == &META_STREAM {
+    if r.bytes() == &META_STREAM || r.bytes() == &PRIVATE_DOMAIN_BYTES {
         return Err(EngineError::ReservedStream);
     }
     Ok(())
+}
+
+/// The home a caller-supplied stream names for a task, block or routine
+/// template: `None` for no stream, which the legacy Inbox reference also
+/// spells (ADR-0046 §5), and otherwise a stream [`require_writable_stream`]
+/// accepts.
+///
+/// # Errors
+/// As [`require_writable_stream`], for the vault-meta stream or a reference
+/// that is not a Stream.
+pub(super) fn home_of(r: Option<EntityRef>) -> Result<Option<EntityRef>, EngineError> {
+    match r {
+        Some(r) if r.kind() == EntityKind::Stream && r.bytes() == &PRIVATE_DOMAIN_BYTES => Ok(None),
+        Some(r) => require_writable_stream(r).map(|()| Some(r)),
+        None => Ok(None),
+    }
+}
+
+/// The key domain whose 16-byte id seals a task or block op whose stream is
+/// `home` (ADR-0046 §2): the stream's own, or the private domain's.
+pub(super) fn domain_bytes(home: Option<EntityRef>) -> [u8; 16] {
+    sunrise_domain::KeyDomain::of_home(home).bytes()
 }
 
 pub(super) fn require_kind(r: EntityRef, k: EntityKind) -> Result<(), EngineError> {
@@ -258,44 +296,21 @@ pub(super) fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
-/// The first four bytes of a 16-byte id as lowercase hex — **8 characters**,
-/// not a full encoding.
-///
-/// The canonical producer of the `sender_h` and `subject_h` log fields (see
-/// `sunrise_log::field`), and the short form every `Debug` impl in
-/// [`crate::keychain`] prints.
-///
-/// Named for what it does, deliberately: the unqualified name `hex16`
-/// elsewhere in this workspace (`sunrise_domain::export`,
-/// `sunrise_core_bindings::dto`) takes the same `&[u8; 16]` and emits all
-/// **32** characters. A `hex16` that emitted 8 read like a complete id in a
-/// debug dump, which is why that spelling no longer exists here.
-pub(crate) fn hex_short(b: &[u8; 16]) -> String {
-    let mut s = String::with_capacity(8);
-    for byte in b.iter().take(4) {
-        use core::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
+/// An unsigned count or stamp as the `INTEGER` SQLite stores, clamped to
+/// `i64::MAX` rather than wrapping negative.
+pub(super) fn i64_of(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-/// A whole blob as lowercase hex.
+/// Zero-pad on the right or truncate a stored blob into a 16-byte id: the
+/// blob's bytes go first, and a short one is followed by zeros.
 ///
-/// Distinct from [`hex_short`], which truncates to four bytes because what it
-/// renders is an id and four bytes are enough to correlate one. This renders a
-/// column value that is *not* an id — the wrong-width `stream_id` of a row a
-/// revocation could not rotate — where truncating would throw away the only
-/// thing that distinguishes one such row from another.
-pub(crate) fn hex_bytes(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for byte in b {
-        use core::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
-}
-
-/// Left-pad / truncate a stored blob into a 16-byte id.
+/// The engine reads this from columns its own fold wrote, out of ids that
+/// are 16 bytes by construction, so a blob of any other length is a corrupt
+/// row. Padding one is the silent repair [`crate::bytes::to16`] argues
+/// against, and is tolerated here only because refusing instead would change
+/// what the engine does on such a row; moving these reads to `to16` is a
+/// separate, behaviour-changing step.
 pub(super) fn blob16(raw: &[u8]) -> [u8; 16] {
     let mut a = [0u8; 16];
     let take = raw.len().min(16);
@@ -303,7 +318,8 @@ pub(super) fn blob16(raw: &[u8]) -> [u8; 16] {
     a
 }
 
-/// Left-pad / truncate a stored blob into a 32-byte key or digest.
+/// Zero-pad on the right or truncate a stored blob into a 32-byte key or
+/// digest, for the same reason and with the same caveat as [`blob16`].
 pub(super) fn blob32(raw: &[u8]) -> [u8; 32] {
     let mut a = [0u8; 32];
     let take = raw.len().min(32);

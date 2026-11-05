@@ -122,10 +122,10 @@ a detail:
   nothing the line-existence check did not already certify, while counting as
   a checked citation in the gate's own output. Measured here: `impl Engine`
   spanned 38 through 1628 of `sync.rs`, 97.7% of the file, and `mod tests` in
-  `crates/sunrise-server/src/api/sync/suite.rs` spans 9 through 1720 of 1720 —
-  99.5%, and `mod tests` at the tail of a file is this repository's dominant
-  idiom, not an edge shape. Cite the `struct`, `enum` or `trait`, or the `fn`
-  inside the block.
+  the sync suite (`api/sync/suite.rs`, before it became a directory) spanned 9
+  through 1720 of 1720 — 99.5%, and `mod tests` at the tail of a file is this
+  repository's dominant idiom, not an edge shape. Cite the `struct`, `enum` or
+  `trait`, or the `fn` inside the block.
 
 A single line inside the item's own doc comment
 ----------------------------------------------
@@ -188,11 +188,11 @@ Two rules keep line-bearing citations honest where no check reaches. Neither
 is enforced; both are written here because this docstring is where the
 citation convention lives.
 
-* **`crates/sunrise-core/src/engine/tests.rs` is append-only.** Documents cite
-  its tests by line, and a unit inserted among them moves every citation below
-  it. A new test goes below every existing one, never between two. The same
-  holds for any file a document cites densely by line: add at the end, or add
-  a `#symbol` to the citations the insertion moves.
+* **`crates/sunrise-core/src/engine/tests/revocation_cursor.rs` is append-only.**
+  Documents cite its tests by line, and a unit inserted among them moves every
+  citation below it. A new test goes below every existing one, never between
+  two. The same holds for any file a document cites densely by line: add at the
+  end, or add a `#symbol` to the citations the insertion moves.
 * **Never reflow unrelated prose to hold a line where a citation points.** When
   an edit moves an item a citation names, repoint the citation, or drop its
   line and keep the `#symbol`. Reflowing lines above the item for no editorial
@@ -267,10 +267,6 @@ in the gate's own output rather than implied by its silence.
 
 Also out, each for a reason:
 
-* **`legacy/`**, its markdown and its Rust. It is the pre-rewrite tree kept
-  verbatim, and its READMEs cite `apps/api/src/server.ts` — a path that *does*
-  resolve against this repository's `apps/` and means something else entirely
-  there. Scanning it would produce confident nonsense.
 * **Directory citations with no extension** (`crates/sunrise-core/src/engine`).
   Rule 2 excludes them, so a renamed directory is not caught.
 * **Fenced code blocks and YAML front matter** in markdown, and fenced blocks
@@ -308,6 +304,25 @@ Also out, each for a reason:
   resolves to a directory declares nothing whatever its name ends in, so
   `schemas/bundle.json#thing` fails exactly as `crates/c/src/mod.rs#anything`
   does. Only the permalink fragment is exempt there, because it names no item.
+* **A line-bearing citation into Rust that no item encloses.** Every other
+  `path:LINE` citation into a `.rs` file carries a `#symbol` (#265), and these
+  are the three shapes left with only the line check, each because there is no
+  item for the suffix to name rather than because nobody named one:
+
+  - **Module-level `//!` prose** — `import.rs:7-9`, `api/blobs.rs:29-36`,
+    `sunrise-core-bindings/src/lib.rs:5`. The only container is the module,
+    and a `mod` is not a citation target, for the reason "The `#symbol`
+    suffix" above gives.
+  - **A free `//` comment between items** — `sunrise-log/src/plain.rs:89-93`,
+    which records the traits `Plain<T>` deliberately does *not* implement. What
+    it cites is an absence, and an absence declares nothing.
+  - **A range across several items of one `impl`** — `backoff.rs:31-63`, which
+    is `canonical` and `next_delay` together. No single item contains it, and
+    the `impl` that does is not a target either. Splitting the citation in two
+    would be a change to the sentence, which is the author's to make.
+
+  These are the residue after the sweep rather than a rule, so a new citation
+  that does have an enclosing item is expected to name it.
 
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
@@ -516,8 +531,8 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 # Both were measured against this tree rather than argued:
 #
 # * `impl Engine` spanned lines 38-1628 of `sync.rs`, **97.7%** of the file.
-# * `mod tests` in `crates/sunrise-server/src/api/sync/suite.rs` spans 9-1720
-#   of a 1720-line file, **99.5%** — worse. Over all 379 `mod` declarations
+# * `mod tests` in the sync suite (`api/sync/suite.rs`, before it became a
+#   directory) spanned 9-1720 of a 1720-line file, **99.5%** — worse. Over all 379 `mod` declarations
 #   the tree tracks, 24 cover at least half their file and the top 22 are all
 #   `mod tests`, which is this repository's dominant idiom rather than an edge
 #   shape. `#tests` on that file certified line 20, line 900 and line 1719
@@ -579,10 +594,6 @@ CRATE_PREFIX = re.compile(r"^(crates/[^/]+)/")
 # list unnoticed.
 ALLOWED: dict[tuple[str, str], str] = {
     (
-        "docs/05-sync/transports.md",
-        "crates/sunrise-server/src/ws.rs",
-    ): "the sentence is that this module was deleted with the WebSocket; it names what is gone",
-    (
         "docs/11-adr/0019-swiftui-macos-client.md",
         "docs/07-clients/tui.md",
     ): "ADR-0019 deletes this spec; both of its citations record what it removed",
@@ -598,10 +609,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "docs/11-adr/0022-device-signature-canonical-json.md",
         "crates/sunrise-server/src/auth/device_sig.rs",
     ): "ADR-0022's Context describes the v1 module its own decision removed",
-    (
-        "docs/implementation/overview.md",
-        "tests/ws_cursors.rs",
-    ): "the sentence is 'they were this file until ADR-0023'; the marker survives, the file does not",
 }
 
 
@@ -854,7 +861,7 @@ def symbol_items(path: str, name: str) -> list[Item]:
 
     A `const` or `static` is the one item whose *initialiser* can hide both
     rules from the walk, and it is read through `code` for that reason. Its
-    value can be a string literal spanning lines — `relay_log.rs`'s `SCHEMA`
+    value can be a string literal spanning lines — `relay_log/schema.rs`'s `SCHEMA`
     is a raw string of SQL whose every statement ends in `;` — and a walk that
     reads those semicolons ends the item at its first `CREATE TABLE`, which
     red-lines a citation of the table the ADR is actually about. Its value can
@@ -1245,7 +1252,7 @@ def check(root: str, list_unanchored: bool) -> int:
     files = sorted(
         name
         for name in tracked
-        if (name.endswith(".md") or name.endswith(".rs")) and not name.startswith("legacy/")
+        if name.endswith(".md") or name.endswith(".rs")
     )
     if not files:
         print("::error::citations: git reports no markdown or Rust to scan; the gate could not run.")
@@ -1881,9 +1888,7 @@ def self_test() -> int:
         # `symbol_span`'s `OSError` arm, reached directly because a *scanned*
         # `.rs` file cannot reach it: tracked but absent from the working
         # tree, it stops the gate at exit 2 long before `classify` sees a
-        # citation. A `legacy/` `.rs` target is the exception — resolvable,
-        # because `Tree` holds every tracked file, but never scanned — and
-        # there the arm is reached through the command line.
+        # citation, because every tracked `.rs` file is scanned.
         # `lib.rs` is tracked in this repository and is not written into the
         # scratch tree above, so opening it there raises and the arm returns
         # no spans at all.
@@ -1946,7 +1951,7 @@ def self_test() -> int:
 
         # The `;` inside `SCHEMA`'s raw string does not end it. Read as code,
         # line 42 ends the item and a citation of the second table -- the one
-        # `relay_log.rs`'s `relay_batches` is -- would be red.
+        # `relay_log/schema.rs`'s `relay_batches` is -- would be red.
         for line in (40, 42, 43):
             _, found = symbol_verdict(f"{main}:{line}#SCHEMA")
             wrong(found is not None, f"`{main}:{line}#SCHEMA` reported {found}, expected clean")

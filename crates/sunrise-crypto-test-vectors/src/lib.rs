@@ -278,6 +278,38 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 10 → 11 re-freeze (ADR-0050, issue #337, the `prf_` Preferences
 /// entity) moved the same three regions and nothing else.
 ///
+/// The 11 → 12 re-freeze (issue #439, the canonical schema describing value
+/// types and op payloads) moved the same three regions and nothing else.
+///
+/// The 12 → 13 re-freeze (ADR-0053, issue #346, the `attachment.thumbnail`
+/// fields) moved the same three regions and nothing else.
+///
+/// The 13 → 14 re-freeze (ADR-0065, conflict classes and the `Patch` causal
+/// keys) moved the same three regions and nothing else.
+///
+/// The 14 → 15 re-freeze (ADR-0066, #506, the routine times as `CompatTime`)
+/// moved the same three regions and nothing else.
+///
+/// The 15 → 16 re-freeze (#340, `Task.sort_order`) moved the same three regions and
+/// nothing else.
+///
+/// The 16 → 17 re-freeze (#341, the `svw_` saved views) moved the same three regions and
+/// nothing else.
+///
+/// The 17 → 18 re-freeze (ADR-0065 §7, `core.field_ops`) moved the same three regions
+/// and nothing else.
+///
+/// The 18 → 19 re-freeze (ADR-0046, optional streams) moved the same three regions
+/// and nothing else.
+///
+/// The 19 → 20 re-freeze (ADR-0047, a task's three times) moved the same three regions
+/// and nothing else.
+///
+/// The 20 → 21 re-freeze (ADR-0047, the triage queue's drop reason and Keep) moved the same three regions
+///
+/// The 21 → 22 re-freeze (#331, a routine's series) moved the same three regions
+/// and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -295,10 +327,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840cb",
-        "755eadabbc9a0493ffa9a27d42f5f62616e094c1b8b966a393e8e56322b9",
-        "fd628b09b514ec595c04e6d1b2b18e3634417263032e9efabbef8268806e",
-        "c7fb080c0b0d483c75fc18c3369d04",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840ca",
+        "ea038e96632607e739665ac0d0d8266060f83f7163b2db337c0be69f4f01",
+        "ca41c4c5231f3ec5cc4b835c10bfb457e91c15ecacafeef8488619e139dd",
+        "d0520b0c160d48878b79742cd6b188",
     ));
 }
 
@@ -336,6 +368,38 @@ pub mod signed_only_envelope {
 /// The 10 → 11 re-freeze (ADR-0050, issue #337) moved the same four regions.
 /// The ciphertext at `[94..117]` is again untouched.
 ///
+/// The 11 → 12 re-freeze (issue #439) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 12 → 13 re-freeze (ADR-0053, issue #346) moved the same four regions.
+/// The ciphertext at `[94..117]` is again untouched.
+///
+/// The 13 → 14 re-freeze (ADR-0065) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 14 → 15 re-freeze (ADR-0066, #506) moved the same four regions; the
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 15 → 16 re-freeze (#340, `Task.sort_order`) moved the same four regions; the
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 16 → 17 re-freeze (#341, the `svw_` saved views) moved the same four regions; the
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 17 → 18 re-freeze (ADR-0065 §7, `core.field_ops`) moved the same four regions;
+/// the ciphertext at `[94..117]` is again untouched.
+///
+/// The 18 → 19 re-freeze (ADR-0046, optional streams) moved the same four regions;
+/// the ciphertext at `[94..117]` is again untouched.
+///
+/// The 19 → 20 re-freeze (ADR-0047, a task's three times) moved the same four regions;
+/// the ciphertext at `[94..117]` is again untouched.
+///
+/// The 20 → 21 re-freeze (ADR-0047, the triage queue's drop reason and Keep) moved the same four regions;
+///
+/// The 21 → 22 re-freeze (#331, a routine's series) moved the same four regions;
+/// the ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -355,11 +419,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb88aa685",
-        "abdc3936dfe4d3fb4b1ea45bcf0b5840bdc8b16518a9e23760f410bab381",
-        "729c4e63dd06f4b425b0a213c89b270b1422e077ddc35dbc3ee17c03c443",
-        "e8648e4cc38e24822c120aa1cddbbeb311fc7c040c0b0d483c75fc18c336",
-        "9d04",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8676085",
+        "fb50cc9df4325f838c91b117f30b5840ea974921792f17b26e5a8552cde6",
+        "f42e5ce392ff615e9af748d141d54a026ed5cfae82ab0e53e08ee8b477de",
+        "0409b5796c541b76e921d37000f062b7b6f08f020c160d48878b79742cd6",
+        "b188",
     ));
 }
 

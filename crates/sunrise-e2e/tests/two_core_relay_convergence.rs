@@ -23,9 +23,8 @@ use jiff::civil::time;
 use jiff::Timestamp;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{
-    inbox_stream_ref, ConstraintSeverity, Frequency, RRule, RoutineCatchupPolicy, RoutineDraft,
-    ScheduleConstraint, StreamDraft, TaskDraft, TaskPatch, TaskTemplate, TimeOfDayRange, Weekday,
-    WeekdaySet,
+    ConstraintSeverity, Frequency, RRule, RoutineCatchupPolicy, RoutineDraft, ScheduleConstraint,
+    StreamDraft, TaskDraft, TaskPatch, TaskTemplate, TimeOfDayRange, Weekday, WeekdaySet,
 };
 use sunrise_e2e::{
     canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero,
@@ -80,6 +79,27 @@ async fn set_title(core: &Core, id: EntityRef, title: &str) {
     .expect("update title");
 }
 
+async fn routine_count(core: &Core) -> usize {
+    match core.query(Query::Routines).await.expect("routines") {
+        QueryResult::Routines(r) => r.len(),
+        other => panic!("expected Routines, got {other:?}"),
+    }
+}
+
+/// Wait until `core` holds exactly `expected` routines, or fail loudly.
+async fn wait_routines(core: &Core, expected: usize, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = routine_count(core).await;
+    while last != expected {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the routine never reached this replica: {last} routines, wanted {expected}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        last = routine_count(core).await;
+    }
+}
+
 async fn assert_live_and_drained(core: &Core) {
     match core.query(Query::SyncStatus).await.expect("sync status") {
         QueryResult::SyncStatus(s) => {
@@ -130,8 +150,9 @@ async fn two_core_relay_convergence() {
             .any(|t| t.id == t3.to_str() && t.constraints.len() == 1),
         "the constrained task carried its constraint list across the wire"
     );
-    // Both learn the "Shared" stream (Inbox + Shared = 2 rows).
-    wait_streams_converge(&a, &b, 2, TIMEOUT).await;
+    // Both learn the "Shared" stream, the one stream row: the Inbox is a
+    // view, not a stream (ADR-0046).
+    wait_streams_converge(&a, &b, 1, TIMEOUT).await;
 
     // --- 3. B completes one task and renames another; A converges. ---
     b.submit(Command::CompleteTask(t1))
@@ -221,7 +242,7 @@ async fn routine_materialization_convergence() {
     let draft = RoutineDraft {
         template: TaskTemplate {
             title: "standup".into(),
-            stream_id: inbox_stream_ref(),
+            stream_id: None,
             contexts: vec![],
             energy: None,
             priority: None,
@@ -242,7 +263,9 @@ async fn routine_materialization_convergence() {
             unknown: sunrise_domain::Unknowns::new(),
         },
         timezone: "UTC".into(),
-        starts_at: Timestamp::from_millisecond(i64::try_from(starts_ms).unwrap()).unwrap(),
+        starts_at: Timestamp::from_millisecond(i64::try_from(starts_ms).unwrap())
+            .unwrap()
+            .into(),
         ends_at: None,
         scheduling_constraints: vec![],
         catchup_policy: RoutineCatchupPolicy::Queue,
@@ -253,6 +276,12 @@ async fn routine_materialization_convergence() {
 
     // A materialized 3 occurrences locally; they + the routine meta sync to B.
     wait_tasks_converge(&a, &b, 3, TIMEOUT).await;
+    // The occurrences travel on the Inbox stream and the routine on the
+    // vault-meta stream, and nothing orders one stream's delivery against
+    // another's, so B holding the tasks says nothing about the routine. Waited
+    // for separately: without it B's materialization below can run with no
+    // routine to expand, and the collapse this test is about goes untested.
+    wait_routines(&b, 1, TIMEOUT).await;
 
     // Trigger materialization on BOTH with the same `now`. Deterministic
     // occurrence ids collapse via INSERT-OR-IGNORE, so nothing is duplicated.
@@ -270,11 +299,8 @@ async fn routine_materialization_convergence() {
         "exactly the 3 occurrences — double-materialization collapsed"
     );
 
-    // The routine itself synced to B via the meta stream.
-    match b.query(Query::Routines).await.expect("routines") {
-        QueryResult::Routines(r) => assert_eq!(r.len(), 1, "routine synced to B"),
-        other => panic!("expected Routines, got {other:?}"),
-    }
+    // Materializing on B minted no routine of its own.
+    assert_eq!(routine_count(&b).await, 1, "still exactly one routine on B");
 
     a.shutdown().await;
     b.shutdown().await;

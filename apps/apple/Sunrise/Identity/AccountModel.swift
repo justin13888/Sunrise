@@ -45,11 +45,11 @@ enum AccountError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConfigured:
-            "Set an OIDC issuer and client ID before signing in."
+            L10n.SignIn.notConfigured
         case .badAuthorizeURL:
-            "The identity provider returned an address Sunrise could not open."
+            L10n.SignIn.badAuthorizeUrl
         case .refusedByIssuer:
-            "The identity provider ended this session. Sign in again to keep syncing."
+            L10n.SignIn.refusedByIssuer
         }
     }
 }

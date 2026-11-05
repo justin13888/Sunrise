@@ -54,7 +54,7 @@ issue.
    serde discards the keys it does not know. An unknown `SunriseTime` kind fails
    the enclosing op ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 4. **A container version one step newer is refused outright.**
-   `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope` requires both the
+   `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope` requires both the
    magic-prefix version and field 1 to equal `ENVELOPE_FORMAT_V`.
    `crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header` applies
    the same exact match at the relay. This holds even though the decoder
@@ -182,7 +182,7 @@ OpEnvelope = {
   decodes an unknown envelope field into `OpEnvelope.unknown`, re-emits it in
   its canonical position, and includes it in the AAD and the signature. See the
   `other =>` arm of
-  `crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`. An old build
+  `crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope`. An old build
   therefore reads, verifies, stores and relays an envelope carrying field 13
   without change.
 - **Field 13 is required from the first fingerprinted version.** Call that
@@ -245,7 +245,8 @@ non-canonical encoding, a failed signature, or a failed AEAD tag.
   Clients show it in diagnostics, and next to the read-only banner of §8 when
   the reason is a missing feature.
 - **The digest and snapshots include parked ops.** They are part of the op
-  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed) covers,
+  set that [ADR-0043](./0043-commit-tree.md)'s state digest (proposed when this
+  record was written, since accepted) covers,
   and part of what a compaction snapshot must carry ([#330](https://github.com/justin13888/Sunrise/issues/330)).
 
 ### 5. The envelope container has a floor
@@ -314,10 +315,21 @@ decoder and the relay's header decoder share one function for this rule.
     row holds the marker as two integer columns. A `focus.start` op is
     immutable and never re-encoded from its row, so no write this build makes
     loses the map.
+  - The UniFFI mirrors of the nested values a client hands back whole
+    (`Constraint` and its `TimeWindow` and `DateWindow`, `Recurrence`,
+    `Template`) carry the map as an opaque `extra` blob of canonical CBOR,
+    absent when the map is empty. A client passes it back and never reads it,
+    so a constraint list, rule or template it edits keeps the fields a newer
+    build wrote
+    ([#431](https://github.com/justin13888/Sunrise/issues/431)).
 - **`SunriseTime` gains `Unknown { kind, raw }`.** It orders by its `index_ms`
   when the raw value carries one, round-trips unchanged, and never fails the
   enclosing op. Storage keeps the raw value rather than degrading it to
-  `Instant`.
+  `Instant`. The UniFFI `TimeValue` mirrors it as `Unknown { kind, raw }`,
+  with `raw` as opaque canonical CBOR: `relative_day` reads it as `unknown`
+  rather than as a day, `time_value_ms` places it where the core does, and a
+  client that hands it back unchanged keeps it
+  ([#431](https://github.com/justin13888/Sunrise/issues/431)).
 - **The four known `SunriseTime` kinds are closed shapes, and are the one
   recorded exception to lossless unknowns.** A key added to an `instant`,
   `zoned`, `floating` or `all_day` value decodes as that kind and is not
@@ -468,7 +480,8 @@ first feature that is adds it.
 - **The losses [#320](https://github.com/justin13888/Sunrise/issues/320), [#321](https://github.com/justin13888/Sunrise/issues/321), [#322](https://github.com/justin13888/Sunrise/issues/322) and [#329](https://github.com/justin13888/Sunrise/issues/329) record are closed.**
   Overwrite by full-state ops is [ADR-0044](./0044-per-field-ops.md)'s to
   close, and detecting divergence at all is
-  [ADR-0043](./0043-commit-tree.md)'s (proposed).
+  [ADR-0043](./0043-commit-tree.md)'s (proposed when this record was written,
+  since accepted).
 - **`DOC_SCHEMA_FLOOR` stays at 1 indefinitely.** Old ops stay in logs and on
   relays, and their bytes remain the source of truth for rebuild. Raising the
   floor would strand them, so it needs its own ADR showing no live vault or

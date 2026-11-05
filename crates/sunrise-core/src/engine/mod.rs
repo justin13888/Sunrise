@@ -3,12 +3,14 @@
 //! Translates a [`Command`] into:
 //! 1. a new op-id (ULID; high 48 bits = clock, low 80 bits = RNG),
 //! 2. a CBOR-encoded inner-op blob (the canonical op record),
-//! 3. an op log row (envelope = inner-op for now; the encrypted
-//!    `OpEnvelope` wrapping happens once `sunrise-sync` actually emits
-//!    on the wire — locally we store the plaintext inner-op as the
-//!    envelope blob since SQLCipher already encrypts at rest),
-//! 4. a materialized state mutation (insert/update of `tasks`/`streams`
-//!    rows), and
+//! 3. an op log row whose envelope blob is a sealed, signed
+//!    [`sunrise_crypto::OpEnvelope`]: the inner op encrypted under the
+//!    Stream key for its epoch, stamped with its chain fields (ADR-0043),
+//!    and signed with this device's `D_S` (`Engine::ops_insert_at`), the
+//!    same bytes a peer receives,
+//! 4. the fold of that op into the projection, through the merge a received
+//!    op takes (`write::append_and_fold`, ADR-0065 §5): no command writes a
+//!    row itself, and
 //! 5. a side-effect-free `CommandResult` returned to the caller.
 //!
 //! All five happen inside one `BEGIN IMMEDIATE` transaction.
@@ -25,15 +27,18 @@
 //! This module is a directory because one file of it was six impl blocks and
 //! ninety free functions. The split follows what the code *touches*, not what
 //! calls it: `oplog` is everything that writes the log and the outbox, `lww`
-//! the one merge rule and the dispatcher that applies it, `sync` the receive
-//! half, `park` the ops that half keeps unapplied and replays after an
-//! upgrade, `ids` the shared encode/decode primitives, and one module per entity
-//! family — `task`, `stream`, `context`, `routine`, `focus`, `block`,
-//! `attachment` — plus `review`, `notify` and the cross-entity reads in
-//! `query`.
+//! the one merge rule and the dispatcher that applies it, `merge` the per-field
+//! fold and the only writers of an entity row, `write` the local half that
+//! appends a command's op and folds it, `sync` the receive half, `park` the
+//! ops that half keeps unapplied and replays after an upgrade, `ids` the
+//! shared encode/decode primitives, and one module per entity family —
+//! `task`, `stream`, `context`, `routine`, `focus`, `block`, `attachment`
+//! — each a command path and its reads, plus `review`, `notify`, the
+//! cross-entity reads in `query`, and `zone`, the reader's time zone every
+//! family resolves against. A cap lives beside the one module that reads it.
 //!
-//! What stays here is the seam: the error, the type, the caps several modules
-//! read, the constructors, and the two dispatchers — [`Engine::apply`] and
+//! What stays here is the seam: the error, the type, the meta stream id several
+//! modules read, the constructors, and the two dispatchers — [`Engine::apply`] and
 //! [`Engine::query`] — which are the one place that has to name every other
 //! module.
 
@@ -64,6 +69,7 @@
     clippy::unnecessary_cast
 )]
 
+use crate::bytes::hex_short;
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, HlcClock, Rng};
 use crate::feature::Feature;
@@ -74,7 +80,6 @@ use rusqlite::params;
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::decode_envelope;
-use sunrise_domain::inbox_stream_ref;
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 use thiserror::Error;
@@ -83,11 +88,18 @@ mod attachment;
 mod block;
 mod chain;
 mod compaction;
+mod conflicts;
 mod context;
+mod day_schedule;
+mod export;
 mod features;
 mod focus;
+mod groups;
 mod identity;
+mod identity_chain;
 mod ids;
+mod key_bundle;
+mod lateness;
 mod lww;
 mod merge;
 mod notify;
@@ -95,28 +107,45 @@ mod oplog;
 mod park;
 mod preferences;
 mod query;
+mod rebuild;
 mod review;
 mod revocation;
 mod routine;
+mod saved_view;
+mod search;
 mod snapshot;
 mod stream;
 mod sync;
 mod task;
+mod task_order;
 #[cfg(test)]
 mod tests;
+mod triage;
+mod upcoming;
+mod write;
+mod zone;
 
-// `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
-// `keychain/` and `sync_driver.rs` — so the path they name has to keep
-// resolving across this split. `META_STREAM` stays defined below; `hex_short`
-// moved to `ids` and is re-exported here at its old name.
+// `META_STREAM` is named from outside `engine` — `core/`, `keychain/`,
+// `inner_op.rs` and `key_bundle_sync.rs` — so the path it names has to keep resolving across this
+// split. It stays defined below.
 pub(crate) use self::attachment::read_attachment;
 pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
-pub(crate) use self::ids::hex_short;
+pub use self::identity_chain::ChainSeeded;
+pub use self::key_bundle::KeyBundleApplied;
+pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
 use self::lww::LwwStamp;
+#[cfg(test)]
+pub(crate) use self::merge::FOLD_V;
 pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
+#[cfg(test)]
+pub(crate) use self::rebuild::check::{
+    disable as stop_checking_the_rebuild, enable as check_rebuild_after_every_write,
+};
+pub use self::rebuild::RebuildReport;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
-pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
+pub use self::search::SearchReindex;
+pub use self::snapshot::{SnapshotApplied, StreamRecord, SNAPSHOT_FORMAT_V};
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///
@@ -133,158 +162,9 @@ pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 /// device holds `ID_D_priv`, so a revoked device reads the new meta epoch like
 /// any other. Bounding it is `#76`.
 ///
-/// The Inbox no longer shares this id: see
-/// [`sunrise_domain::INBOX_STREAM_BYTES`].
-pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
-
-/// Upper end of the trend window, applied as a silent clamp at **both** ends.
-///
-/// Enforcement is the single `weeks.clamp(1, MAX_TREND_WEEKS)` in the trend
-/// query, and nothing above it validates: a caller asking for 500 weeks gets
-/// 104 and a caller asking for 0 gets 1, each with no error and no signal that
-/// the request was rewritten. It is a bound on what the fold will *do*, not on
-/// what a caller may *ask*.
-///
-/// Deliberately unlike [`MAX_EPOCH_LEAP`], which refuses what it cannot accept
-/// and documents the residual that refusal leaves behind. A rewritten chart
-/// window still renders a correct chart of a different size, so there is
-/// nothing for a caller to recover from; a rewritten epoch would be a key the
-/// caller silently does not hold.
-///
-/// The trend fold re-reads and decrypts op history, so an unbounded `weeks`
-/// would turn one keypress into a full-log scan. Two years is far past the
-/// point where a weekly chart is still readable.
-const MAX_TREND_WEEKS: u32 = 104;
-
-/// How many actionable tasks the Focus Planner scans before ranking.
-///
-/// The planner's ranking is energy-first, so it cannot be truncated in SQL
-/// without risking dropping the best-matching pick — the scan has to be wide
-/// enough that ranking sees every plausible candidate, and bounded so a huge
-/// vault cannot turn one keypress into a full-table sort.
-const FOCUS_PLAN_SCAN_CAP: u32 = 512;
-
-/// How far above the highest epoch this replica holds an absorbed Stream key
-/// may sit.
-///
-/// `epoch` is a plain field of the signed envelope, so a member chooses it
-/// freely, and `mint_epoch` counts from the highest epoch held
-/// (`Keychain::max_epoch_tx`). Without a bound a single `key_envelope` at
-/// `u32::MAX` does two things at once:
-/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
-/// so rotation can never advance past it again, and, from a sender this
-/// replica has not read-bounded, whose key `current_epoch_tx` adopts as live,
-/// every op this device seals from then on is sealed under a key only the
-/// sender holds — the victim goes
-/// dark to its own account, permanently, from one op.
-///
-/// The window can be this tight because a legitimate epoch is *walked*, never
-/// leapt. Each rotation raises one stream's epoch by exactly one and emits its
-/// `key_envelope` sealed under the meta epoch current at the time; a replica
-/// catching up absorbs the meta key for epoch n, drains the ops that key
-/// releases, and only then sees the envelopes for n+1. So the gap this has to
-/// tolerate is what can arrive out of order within one drain, not the number of
-/// rotations an account has ever performed. Sixty-four is far past that and far
-/// short of anything that would strand `mint_epoch`.
-///
-/// The residual is that a key genuinely more than 64 epochs ahead is refused
-/// and not retried. The refusal is a dropped *payload*, not a dropped op: the
-/// envelope still enters `ops`, and the op counts toward the contiguous prefix
-/// exactly like an applied one. Whether the cursor then moves past it is a
-/// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`. Once it
-/// does, the relay will not re-send the op and nothing re-offers the key. Ops
-/// sealed under that `(stream, epoch)` therefore stay unreadable on this
-/// replica until the device is re-paired, which is what hands it every Stream
-/// key the inviting device holds. That is the recovery, and it is the same one that covers a
-/// device whose `deferred_ops` entry aged out.
-///
-/// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
-/// only ways to reach it are a hostile sender and a bug.
-const MAX_EPOCH_LEAP: u32 = 64;
-
-/// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
-///
-/// A deferred op is one that arrived before the key that opens it, which is a
-/// real and ordinary race — but a *transient* one: the very next absorb of that
-/// key releases the whole bucket. So the honest population of one bucket is
-/// whatever a peer wrote in the gap between minting a key and its
-/// `key_envelope` reaching here, which is a burst, not a backlog. 256 covers a
-/// peer that wrote a full working session into the gap.
-const DEFERRED_PER_EPOCH_CAP: i64 = 256;
-
-/// How many ops may sit in `deferred_ops` across the whole vault.
-///
-/// A revocation rotates *every* stream at once, so several buckets can fill
-/// legitimately at the same moment; the total is sized for that rather than for
-/// one stream. 4096 is sixteen full buckets.
-///
-/// Both caps exist because `epoch` is attacker-chosen (see [`MAX_EPOCH_LEAP`])
-/// and `defer_op` is reached *before* anything about the payload is checked: a
-/// member could otherwise park bytes of its choosing on every peer in the
-/// account, at any `(stream, epoch)` it liked, with no ceiling.
-///
-/// # "Attacker-chosen" is about this `epoch` and not the one the fold sorts by
-///
-/// The `epoch` above is the number in an envelope header, read on the deferral
-/// path — which is reached precisely because no key at that `(stream, epoch)`
-/// is held, so nothing has been opened and nothing has been checked. Any `u32`
-/// at all can appear there.
-///
-/// `identity_transitions.meta_epoch`, which ADR-0037 §4 calls the security
-/// component of the fold's ordering, is a different value with a different
-/// provenance despite coming off the same field. A row is written only by
-/// `apply_control_op`, which is reached only after the envelope **opened**
-/// under a key this replica holds at that exact `(stream, epoch)`. A sender
-/// that writes an epoch it has no key for produces ciphertext that fails the
-/// tag, so the op is refused and no row exists; one that writes an epoch
-/// nobody holds parks here instead and expires.
-///
-/// So the two statements are both true and are not in tension: an *unopened*
-/// op's epoch is a free claim, and an *applied* op's epoch is a key the sender
-/// demonstrably held. The audit that raised this read the two as contradictory
-/// because the word is the same in both places; it is the same field and not
-/// the same fact.
-///
-/// Overflow evicts the **oldest** rows. Both directions lose something, and it
-/// is worth being plain about which:
-///
-/// * *Oldest-first*, what this does: a flood of fresh junk at one
-///   `(stream, epoch)` pushes out the honest ops already waiting there.
-/// * *Newest-first*, the alternative: the flood's own first 256 rows occupy the
-///   bucket and every honest op arriving behind it is turned away instead.
-///
-/// Oldest-first wins on two counts. A row that has waited longest is the one
-/// whose key is least likely to still be in flight, so it is the cheapest to
-/// lose; and the bucket **self-heals** — ordinary traffic pushes the junk out
-/// again — where newest-first leaves it poisoned until the TTL sweeps it.
-///
-/// Either way an evicted op is recoverable, which is what makes this a
-/// tolerable trade at all: a deferred op never reached `ops` and never advanced
-/// the sync cursor, so the relay still counts it as undelivered and re-sends it
-/// on the next reconnect, by which time the key that opens it has almost
-/// certainly arrived.
-const DEFERRED_TOTAL_CAP: i64 = 4096;
-
-/// How long a parked op is kept before a drain sweeps it away.
-///
-/// Nothing re-delivers the key for an op this old: the relay's op ring has long
-/// since evicted the `key_envelope` that would have released it, and no replica
-/// re-emits one on request. Keeping it is keeping ciphertext this device will
-/// never read. Thirty days is generous against every offline window a person
-/// actually has and still bounds a slow drip that never reaches either cap.
-///
-/// # Neither this nor the two caps bound `parked_ops`
-///
-/// An op of a kind this build does not know parks in `parked_ops` instead
-/// (`Engine::park_op`, issue #320), and that table has no TTL and no cap on
-/// purpose. Everything that justifies the three bounds above is false of it:
-/// its op verified and opened, so its epoch is not a free claim and its bytes
-/// are not ciphertext this device may never read; and it advanced the sync
-/// cursor, so the relay will never re-send it, and an evicted row would be an
-/// op lost rather than one fetched again. What bounds it is what bounds `ops`:
-/// only a member can write one.
-const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// The private key domain (once the Inbox) no longer shares this id: see
+/// [`sunrise_domain::PRIVATE_DOMAIN_BYTES`].
+pub(crate) const META_STREAM: [u8; 16] = sunrise_domain::META_DOMAIN_BYTES;
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
@@ -332,7 +212,8 @@ pub enum EngineError {
     /// Keychain failure while resolving or absorbing a Stream key.
     #[error("keychain: {0}")]
     Keychain(String),
-    /// A command named the vault-meta stream where an ordinary Stream belongs.
+    /// A command named the vault-meta stream, or the private key domain
+    /// (ADR-0046 §2), where an ordinary Stream belongs.
     ///
     /// The vault-meta stream is the control log — device certs, key envelopes,
     /// Stream and Context lifecycle. It is addressable as an [`EntityRef`] of
@@ -346,7 +227,7 @@ pub enum EngineError {
     /// Its own variant rather than an [`Self::Invalid`] string, because a
     /// caller that can build this ref can build it again and deserves to
     /// switch on the refusal rather than parse it.
-    #[error("the vault-meta stream is not an ordinary Stream")]
+    #[error("the vault-meta stream and the private domain are not ordinary Streams")]
     ReservedStream,
     /// The vault requires `feature`, this build does not have it, and the
     /// command would write an entity the feature's scope covers
@@ -399,6 +280,12 @@ pub struct Engine {
     /// The features this build supports: [`crate::feature::FEATURES`], or a
     /// test's stand-in for an older or newer build.
     features: &'static [Feature],
+    /// The last reader's zone the clock named that the tzdb resolved, kept so
+    /// a later unresolvable name reads in it rather than in UTC
+    /// ([`Engine::device_zone`]). Process memory only: a client reports its
+    /// zone on every vault open (`docs/10-cross-cutting/time.md` §7). Shared
+    /// by every clone, which reads the same clock.
+    last_zone: Arc<parking_lot::Mutex<Option<jiff::tz::TimeZone>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -425,6 +312,7 @@ impl Engine {
             rng,
             keychain,
             features: crate::feature::FEATURES,
+            last_zone: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -562,13 +450,28 @@ impl Engine {
     /// Apply a command end-to-end inside a single transaction.
     ///
     /// # Errors
-    /// [`EngineError::FeatureMissing`] when the vault requires a feature this
-    /// build lacks and the command would write an entity its scope covers.
-    /// The refusal is made where each op is sealed, so it covers every op a
-    /// command writes, and the transaction it aborts leaves nothing behind.
+    /// - [`EngineError::FeatureMissing`] when the vault requires a feature
+    ///   this build lacks and the command would write an entity its scope
+    ///   covers. The refusal is made where each op is sealed, so it covers
+    ///   every op a command writes, and the transaction it aborts leaves
+    ///   nothing behind.
+    /// - [`EngineError::FeatureUnsupportedByDevices`] when the command
+    ///   would make the vault require a feature another device lacks, and
+    ///   the caller has not confirmed it.
+    /// - [`EngineError::Validation`] for a draft or patch the domain rejects.
+    /// - [`EngineError::NotFound`] for a command naming an entity this
+    ///   replica does not hold.
+    /// - [`EngineError::Invalid`] for a state transition or policy the
+    ///   command breaks, and [`EngineError::ReservedStream`] for one naming
+    ///   the vault-meta stream or the private domain as an ordinary Stream.
+    /// - Storage, op-log and CBOR failures from the transaction.
     pub fn apply(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
-        self.dispatch(db, cmd)
-            .map_err(EngineError::lift_seal_refusal)
+        let result = self
+            .dispatch(db, cmd)
+            .map_err(EngineError::lift_seal_refusal);
+        #[cfg(test)]
+        self.check_rebuild_after_write(db);
+        result
     }
 
     fn dispatch(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
@@ -576,17 +479,33 @@ impl Engine {
             Command::CreateTask(d) => self.create_task(db, d),
             Command::UpdateTask { id, patch } => self.update_task(db, id, patch),
             Command::CompleteTask(id) => self.complete_task(db, id),
-            Command::DeferTask { id, to_ms } => self.defer_task(db, id, to_ms),
+            Command::DeferTask { id, to_ms } => {
+                let to = sunrise_domain::SunriseTime::instant(ids::ms_to_ts(to_ms as i64));
+                self.defer_task(db, id, to)
+            }
+            Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
+            Command::BulkTasks(items) => self.bulk_tasks(db, items),
+            Command::Triage { ids, action } => self.triage(db, ids, action),
+            Command::Restore(id) => self.restore(db, id),
+            Command::ResolveConflict {
+                entity,
+                field,
+                value,
+            } => self.resolve_conflict(db, entity, &field, value),
             Command::PromoteToStream { id, stream } => self.promote_task(db, id, stream),
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
-            Command::DeleteStream(id) => self.delete_stream(db, id),
+            Command::DeleteStream { id, disposition } => self.delete_stream(db, id, disposition),
+            Command::MarkTriaged { ids } => self.set_triaged(db, ids, true),
+            Command::ReturnToInbox { ids } => self.set_triaged(db, ids, false),
             Command::CreateContext(d) => self.create_context(db, d),
             Command::UpdateContext { id, patch } => self.update_context(db, id, patch),
             Command::DeleteContext(id) => self.delete_context(db, id),
             Command::CreateRoutine(d) => self.create_routine(db, d),
-            Command::UpdateRoutine { id, patch } => self.update_routine(db, id, patch),
+            Command::UpdateRoutine { id, scope, patch } => {
+                self.update_routine(db, id, scope, patch)
+            }
             Command::DeleteRoutine(id) => self.delete_routine(db, id),
             Command::SkipRoutineOccurrence { id, occurrence_key } => {
                 self.skip_routine_occurrence(db, id, occurrence_key)
@@ -597,6 +516,7 @@ impl Engine {
             }
             Command::UpdateBlock { id, patch } => self.update_block(db, id, patch),
             Command::DeleteBlock(id) => self.delete_block(db, id),
+            Command::MergeBlocks { a, b } => self.merge_blocks(db, a, b),
             Command::BindTask { block, task } => self.bind_task(db, block, task),
             Command::UnbindTask { block, task } => self.unbind_task(db, block, task),
             Command::AttachFile(d) => self.attach_file(db, d),
@@ -606,7 +526,11 @@ impl Engine {
                 self.revoke_device(db, device_id, reason)
             }
             Command::RotateIdentity { keep_recovery_code } => {
-                let out = self.rotate_identity(db, None, keep_recovery_code)?;
+                let out = if keep_recovery_code {
+                    self.rotate_identity(db, None, true)?
+                } else {
+                    self.rotate_identity_retiring_code(db)?
+                };
                 Ok(CommandResult::new(
                     EntityRef::new(EntityKind::Identity, out.to_identity_id),
                     None,
@@ -631,14 +555,25 @@ impl Engine {
             Command::ClearPreference { key, target } => {
                 self.write_preference(db, &key, None, target)
             }
+            Command::MoveTasks { ids, after, before } => self.move_tasks(db, ids, after, before),
+            Command::CreateSavedView(d) => self.create_saved_view(db, d),
+            Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, patch),
+            Command::DeleteSavedView(id) => self.delete_saved_view(db, id),
         }
     }
 
     /// Run a read query against the materialized tables.
+    ///
+    /// # Errors
+    /// [`EngineError::Invalid`] for [`Query::SyncStatus`], always: `Core`
+    /// serves it from the live sync state, and the engine never does.
+    /// [`EngineError::NotFound`] for a query naming an entity or saved view
+    /// this replica does not hold, and storage and CBOR failures from the
+    /// read.
     pub fn query(&self, db: &Db, q: Query) -> Result<QueryResult, EngineError> {
         match q {
             Query::Today { now_ms, contexts } => self.query_today(db, now_ms, &contexts),
-            Query::Inbox => self.query_stream_tasks(db, &inbox_stream_ref()),
+            Query::Inbox => self.query_inbox(db),
             Query::StreamTasks(s) => self.query_stream_tasks(db, &s),
             Query::ContextTasks(c) => self.query_context_tasks(db, &c),
             Query::EntityById(r) => self.query_entity(db, r),
@@ -685,6 +620,11 @@ impl Engine {
             Query::TaskAttachments(task) => self.query_task_attachments(db, task),
             Query::MorningSummary { now_ms } => self.query_morning_summary(db, now_ms),
             Query::EndOfDayPlan { now_ms } => self.query_end_of_day_plan(db, now_ms),
+            Query::Upcoming {
+                now_ms,
+                span_days,
+                contexts,
+            } => self.query_upcoming(db, now_ms, span_days, &contexts),
             Query::ReminderIntents {
                 now_ms,
                 horizon_ms,
@@ -693,7 +633,25 @@ impl Engine {
             Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
             Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
+            Query::SearchGrouped {
+                text,
+                now_ms,
+                prefix,
+                per_group,
+            } => self.query_search_grouped(db, &text, now_ms, prefix, per_group),
+            Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
+            Query::DaySchedule { at_ms } => self.query_day_schedule(db, at_ms),
+            Query::TodayView { now_ms, contexts } => self.query_today_view(db, now_ms, &contexts),
+            Query::Lateness { ids } => self.query_lateness(db, &ids),
+            Query::Triage => self.query_triage(db),
+            Query::LapsedOccurrences { now_ms } => self.query_lapsed_occurrences(db, now_ms),
+            Query::Conflicts {
+                entity,
+                include_quiet,
+            } => self.query_conflicts(db, entity, include_quiet),
+            Query::SavedViews => self.query_saved_views(db),
+            Query::SavedView(id) => self.evaluate_saved_view(db, id),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

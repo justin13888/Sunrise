@@ -31,35 +31,33 @@ workspace = true
 # requires rustc 1.91 and the workspace pinned 1.88. That is no longer a reason;
 # the one above always was, and it stands on its own.
 uniffi = { version = "0.32.0", default-features = false, features = ["tokio"] }
-# `Transport` is an `async_trait`, and `sync_once` wraps the transport the
-# driver dials so it can end a session that was up before the app was
-# suspended (`src/background.rs`).
-async-trait = { workspace = true }
 base64 = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
 # `time` for the pairing rendezvous, which polls the relay between messages.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 sunrise-auth = { workspace = true }
-sunrise-client-core = { workspace = true }
+# The mirrors carry a nested value's unknown fields, and an unknown time kind's
+# raw fields, to the client as opaque canonical CBOR, so a value the client
+# hands back keeps them (#431).
+sunrise-cbor = { workspace = true }
+sunrise-client-core = { workspace = true, features = ["relay"] }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
-sunrise-onboarding = { workspace = true }
 sunrise-pairing = { workspace = true }
 # The Apple clients had no way to reach `POST /api/v1/accounts`, so a vault
 # created there sealed no recovery blob and uploaded none (#181). This is the
 # same caller `sunrise bootstrap` uses, rather than a second one written in
 # Swift against the same description.
 sunrise-relay-client = { workspace = true }
-# The pairing seam checks a relay URL's scheme and origin before it sends the
-# account bearer there.
-url = { workspace = true }
 zeroize = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 
 [dev-dependencies]
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

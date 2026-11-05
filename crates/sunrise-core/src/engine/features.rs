@@ -59,6 +59,35 @@ fn refuse(r: SealRefusal) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(r))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Set while a fold test seals a `Patch` as the peer that wrote it would
+    /// have (`engine::tests::field_merge::emit_patch`): the test is about how
+    /// the op folds, and its sender's vault, which would require
+    /// `core.field_ops`, is not the one the test holds.
+    static AS_A_PEER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` sealing ops as the peer that wrote them: the seal guard does not
+/// ask that the vault require `core.field_ops`. Test only.
+#[cfg(test)]
+pub(super) fn sealing_as_peer<T>(f: impl FnOnce() -> T) -> T {
+    AS_A_PEER.with(|c| c.set(true));
+    let out = f();
+    AS_A_PEER.with(|c| c.set(false));
+    out
+}
+
+#[cfg(test)]
+fn sealing_as_a_peer() -> bool {
+    AS_A_PEER.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+const fn sealing_as_a_peer() -> bool {
+    false
+}
+
 /// The vault's required feature ids, sorted.
 fn required_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT feature FROM vault_required_features ORDER BY feature")?;
@@ -177,6 +206,7 @@ impl Engine {
         }
         if let Some(id) = feature::features_used(self.features, inner_op)
             .into_iter()
+            .filter(|id| !(*id == feature::FIELD_OPS_FEATURE && sealing_as_a_peer()))
             .find(|id| !required.iter().any(|r| r == id))
         {
             return Err(refuse(SealRefusal::NotRequired(id.to_owned())));
@@ -241,6 +271,47 @@ impl Engine {
         now_ms: u64,
     ) -> rusqlite::Result<()> {
         record_device_features(tx, sender, &p.features, hlc, now_ms)
+    }
+
+    /// Make the vault require feature `id` inside `tx`, when this build
+    /// supports it and no other non-revoked device lacks it, and say whether
+    /// the vault requires it once this returns.
+    ///
+    /// The unconfirmed half of [`Self::require_features`], for a command's
+    /// own transaction: the `VaultRequires` is sealed in the transaction that
+    /// seals the first op using the feature, so the two commit together or
+    /// not at all, and a command that writes nothing emits nothing. A device
+    /// that has never advertised lacks every feature, so a vault with a
+    /// paired device on an older build stays as it is.
+    pub(super) fn require_if_unanimous(
+        &self,
+        tx: &Transaction<'_>,
+        id: &str,
+        now_ms: u64,
+    ) -> rusqlite::Result<bool> {
+        if self.vault_requires(tx, id)? {
+            return Ok(true);
+        }
+        if !self.features.iter().any(|f| f.id == id) || !self.devices_lacking(tx, id)?.is_empty() {
+            return Ok(false);
+        }
+        let ids = vec![id.to_owned()];
+        let inner = InnerOp::VaultRequires(VaultRequiresPayload {
+            features: ids.clone(),
+            unknown: sunrise_domain::Unknowns::new(),
+        });
+        self.emit_control_op(tx, &inner, now_ms, None)?;
+        record_required(tx, &ids, now_ms)?;
+        Ok(true)
+    }
+
+    /// Whether the vault's required set holds feature `id`.
+    pub(super) fn vault_requires(&self, conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM vault_required_features WHERE feature = ?)",
+            params![id],
+            |r| r.get(0),
+        )
     }
 
     /// Make the vault require `ids`, emitting one `VaultRequires` for those it
@@ -350,12 +421,23 @@ impl Engine {
             let hlc = self.hlc.peek();
             record_device_features(tx, &device, &ids, hlc, now_ms)
         })?;
+        // After the commit, like `core.chain.digest_published`: an op kind a
+        // build older than parking (#320) cannot read, and the cross-version
+        // harness reads this event to attribute that build's corruption log.
+        tracing::debug!(
+            ev = "core.feature.advertised",
+            "advertised the features this build supports"
+        );
         Ok(true)
     }
 
     /// Every other non-revoked device whose latest `DeviceFeatures` does not
     /// list `id`, including those that never sent one.
-    fn devices_lacking(&self, conn: &Connection, id: &str) -> rusqlite::Result<Vec<[u8; 16]>> {
+    pub(crate) fn devices_lacking(
+        &self,
+        conn: &Connection,
+        id: &str,
+    ) -> rusqlite::Result<Vec<[u8; 16]>> {
         let me = self.keychain.device_id();
         let mut stmt = conn.prepare(
             "SELECT d.device_id, f.features FROM devices d \

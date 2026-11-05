@@ -740,7 +740,7 @@ def check(root: str) -> int:
     for name in sorted(
         name
         for name in tracked
-        if name.endswith((".rs", ".yml", ".yaml")) and not name.startswith("legacy/")
+        if name.endswith((".rs", ".yml", ".yaml"))
     ):
         try:
             with open(posixpath.join(root, name), encoding="utf-8") as handle:

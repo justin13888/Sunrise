@@ -13,12 +13,13 @@
 //! proving deadlocks under the multi-threaded runtime `UniFFI` actually
 //! supplies.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use sunrise_core::{AttachmentFetchState, CommandResult, DeviceRow};
 use sunrise_core_bindings::dto::{
-    CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn, TaskEdit, TimeValue,
+    AttachPreviewIn, CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn,
+    TaskEdit, TimeValue,
 };
 use sunrise_core_bindings::vocab::{
     constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
@@ -30,37 +31,8 @@ use sunrise_domain::TodaySection::{Due, Overdue};
 use sunrise_domain::{ConstraintSeverity, Energy, TaskState};
 use sunrise_id::{EntityKind, EntityRef};
 
-const ROOT: [u8; 32] = [42u8; 32];
-
-async fn open_core() -> (tempfile::TempDir, Arc<SunriseCore>) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let core = SunriseCore::open(
-        dir.path().to_string_lossy().into_owned(),
-        ROOT.to_vec(),
-        "test".into(),
-        None,
-    )
-    .await
-    .expect("vault opens");
-    (dir, core)
-}
-
-fn draft(title: &str) -> TaskDraftIn {
-    TaskDraftIn {
-        title: title.into(),
-        body: None,
-        stream_id: None,
-        contexts: Vec::new(),
-        priority: None,
-        energy: None,
-        estimated_duration_s: None,
-        scheduled_at: None,
-        due_at: None,
-        scheduling_constraints: Vec::new(),
-        assignee: None,
-        reminder_lead_s: None,
-    }
-}
+mod support;
+use support::{draft, open_core};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
@@ -278,32 +250,49 @@ fn a_bad_id_is_rejected_by_the_custom_type_rather_than_guessed_at() {
     );
 }
 
-/// Records what the pump delivers.
-#[derive(Default)]
-struct Recorder {
-    events: Mutex<Vec<ChangeEvent>>,
-    lagged: AtomicU64,
-    closed: AtomicBool,
+/// One call the pump made on its listener.
+#[derive(Debug)]
+enum Delivery {
+    Change(ChangeEvent),
+    Lagged(u64),
+    Closed,
 }
 
-impl ChangeListener for Recorder {
+/// Sends what the pump delivers down a channel.
+///
+/// The listener holds the only sender, and the pump holds the only reference
+/// to the listener, so the receiver reads `None` exactly when the pump's future
+/// has been dropped. That is what makes a cancel observable: nothing can be
+/// delivered after that `None`, and a pump that ignored the cancel never
+/// produces it.
+struct Forward(tokio::sync::mpsc::UnboundedSender<Delivery>);
+
+// A failed send means the test already gave up on the receiver, and panicking
+// here would panic the pump task instead of the test.
+impl ChangeListener for Forward {
     fn on_change(&self, event: ChangeEvent) {
-        if let Ok(mut g) = self.events.lock() {
-            g.push(event);
-        }
+        let _ = self.0.send(Delivery::Change(event));
     }
     fn on_lagged(&self, skipped: u64) {
-        self.lagged.fetch_add(skipped, Ordering::SeqCst);
+        let _ = self.0.send(Delivery::Lagged(skipped));
     }
     fn on_closed(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        let _ = self.0.send(Delivery::Closed);
     }
 }
 
-impl Recorder {
-    fn count(&self) -> usize {
-        self.events.lock().map(|g| g.len()).unwrap_or(0)
-    }
+/// How long a delivery may take before the test fails. Only a broken pump ever
+/// spends it: a delivery ends the wait the moment it arrives, so this is a
+/// ceiling on a failure rather than a duration a passing run sits through.
+const DELIVERY_CEILING: Duration = Duration::from_secs(60);
+
+/// The pump's next call on its listener, or `None` once the pump is gone.
+async fn next_delivery(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Delivery>,
+) -> Option<Delivery> {
+    tokio::time::timeout(DELIVERY_CEILING, rx.recv())
+        .await
+        .expect("the pump neither delivered nor stopped")
 }
 
 /// A latch the test closes over the pump and opens once, by hand.
@@ -364,43 +353,34 @@ impl Drop for GateGuard {
 }
 
 /// Holds the pump on its first event until the test opens the gate, then
-/// forwards everything to `rec` as fast as it arrives.
+/// forwards everything as fast as it arrives.
 struct Gated {
-    rec: Arc<Recorder>,
+    forward: Forward,
     gate: Arc<Gate>,
 }
 
 impl ChangeListener for Gated {
     fn on_change(&self, event: ChangeEvent) {
         self.gate.wait();
-        self.rec.on_change(event);
+        self.forward.on_change(event);
     }
     fn on_lagged(&self, skipped: u64) {
-        self.rec.on_lagged(skipped);
+        self.forward.on_lagged(skipped);
     }
     fn on_closed(&self) {
-        self.rec.on_closed();
+        self.forward.on_closed();
     }
-}
-
-/// Poll until `f` holds or the budget runs out. The pump is a spawned task, so
-/// delivery is asynchronous by construction; a bare sleep would either be flaky
-/// or slow.
-async fn until(mut f: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if f() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    false
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_change_stream_delivers_and_cancels() {
     let (_dir, core) = open_core().await;
-    let rec = Arc::new(Recorder::default());
-    let sub = core.subscribe_changes(rec.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let sub = core.subscribe_changes(Arc::new(Forward(tx)));
+    // A second subscription nobody cancels: what says the write after the
+    // cancel was published at all, and that the cancel stopped only its own.
+    let (control_tx, mut control) = tokio::sync::mpsc::unbounded_channel();
+    let control_sub = core.subscribe_changes(Arc::new(Forward(control_tx)));
 
     for i in 0..3 {
         core.submit(CoreCommand::CreateTask {
@@ -409,31 +389,45 @@ async fn the_change_stream_delivers_and_cancels() {
         .await
         .expect("create");
     }
-    assert!(
-        until(|| rec.count() >= 3).await,
-        "three writes must reach the listener, saw {}",
-        rec.count()
-    );
-    assert!(matches!(
-        rec.events.lock().expect("lock")[0],
-        ChangeEvent::Created { .. }
-    ));
+    for rx in [&mut rx, &mut control] {
+        for _ in 0..3 {
+            let delivery = next_delivery(rx).await;
+            assert!(
+                matches!(
+                    delivery,
+                    Some(Delivery::Change(ChangeEvent::Created { .. }))
+                ),
+                "each write reaches the listener as a creation, got {delivery:?}"
+            );
+        }
+    }
 
     sub.cancel();
-    let after_cancel = rec.count();
-    core.submit(CoreCommand::CreateTask {
-        draft: draft("after cancel"),
-    })
-    .await
-    .expect("create");
-    // Give the pump every chance to wrongly deliver.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert_eq!(
-        rec.count(),
-        after_cancel,
+    // The barrier: the abort dropped the pump, and the listener and its sender
+    // with it, so from this `None` on nothing can reach this listener. A pump
+    // that ignored the cancel keeps the sender and fails here, however slow.
+    let delivery = next_delivery(&mut rx).await;
+    assert!(
+        delivery.is_none(),
         "cancel stops the pump; a cancelled subscription that keeps firing \
-         would keep a deallocated view model alive"
+         would keep a deallocated view model alive, got {delivery:?}"
     );
+
+    let after = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("after cancel"),
+        })
+        .await
+        .expect("create");
+    let delivery = next_delivery(&mut control).await;
+    assert!(
+        matches!(
+            &delivery,
+            Some(Delivery::Change(ChangeEvent::Created { entity })) if *entity == after.entity
+        ),
+        "the write after the cancel still reaches a live subscription, got {delivery:?}"
+    );
+    control_sub.cancel();
     core.shutdown().await;
 }
 
@@ -449,8 +443,8 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // inside its first `on_change` and holds it there until the whole burst has
     // been published, so 400 events are sent into a 256-slot channel with the
     // only reader stopped: whatever the pump does next, it has already missed
-    // at least 144 and its next `recv` can only be `Lagged`. If it never got a
-    // first event to park on, it missed them the same way. There is no
+    // at least 143 and its next `recv` can only be `Lagged`. If it never got a
+    // first event to park on, it missed 144 the same way. There is no
     // interleaving in which this passes on one machine and fails on another.
     //
     // What it replaced did race: a listener that slept 2 ms per event, hoping
@@ -472,12 +466,12 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // is `GateGuard`, whose `Drop` opens the gate whatever happens.
     let (_dir, core) = open_core().await;
 
-    let rec = Arc::new(Recorder::default());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let gate = Arc::new(Gate::default());
     // Armed before the pump can possibly park, and covering everything below.
     let release = GateGuard(gate.clone());
     let sub = core.subscribe_changes(Arc::new(Gated {
-        rec: rec.clone(),
+        forward: Forward(tx),
         gate,
     }));
 
@@ -493,12 +487,19 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // would otherwise fall out of scope.
     drop(release);
 
-    assert!(
-        until(|| rec.lagged.load(Ordering::SeqCst) > 0).await,
-        "a slow listener must be told it fell behind; seen {}, lagged {}",
-        rec.count(),
-        rec.lagged.load(Ordering::SeqCst)
-    );
+    // At most one event can precede the `Lagged`: the one the pump parked on.
+    let mut seen = 0;
+    loop {
+        match next_delivery(&mut rx).await {
+            Some(Delivery::Lagged(skipped)) => {
+                assert!(skipped > 0, "a lag report must count what was missed");
+                break;
+            }
+            Some(Delivery::Change(_)) => seen += 1,
+            other => panic!("a slow listener must be told it fell behind; {seen} seen, {other:?}"),
+        }
+    }
+    assert!(seen <= 1, "the burst overran the pump, yet {seen} arrived");
     sub.cancel();
     core.shutdown().await;
 }
@@ -577,6 +578,13 @@ async fn the_whole_read_surface_answers() {
             text: "something".into(),
             limit: 10,
         },
+        CoreQuery::SearchGrouped {
+            text: "#nowhere \"unclosed".into(),
+            now_ms: now,
+            prefix: true,
+            per_group: None,
+        },
+        CoreQuery::ParkedOpsSummary,
     ];
     for q in queries {
         let label = format!("{q:?}");
@@ -584,6 +592,22 @@ async fn the_whole_read_surface_answers() {
             .await
             .unwrap_or_else(|e| panic!("{label} failed: {e}"));
     }
+    core.shutdown().await;
+}
+
+/// A vault that has parked nothing answers with no rows, not with a zero row
+/// per known reason: a client renders "nothing waiting" from the empty list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vault_with_nothing_parked_answers_no_parked_counts() {
+    let (_dir, core) = open_core().await;
+    let CoreQueryResult::ParkedOps { counts } = core
+        .query(CoreQuery::ParkedOpsSummary)
+        .await
+        .expect("query")
+    else {
+        panic!("ParkedOpsSummary answered another variant");
+    };
+    assert!(counts.is_empty());
     core.shutdown().await;
 }
 
@@ -778,7 +802,7 @@ fn the_day_and_duration_words_come_from_the_domain() {
     assert_eq!(last_week.text, "-7d");
     assert!(last_week.is_past);
 
-    assert_eq!(short_duration(5400), "1h30");
+    assert_eq!(short_duration(5400), "1h30m");
     assert_eq!(duration_clock(3_661_000), "1:01:01");
 }
 
@@ -798,6 +822,7 @@ fn a_constraint_summary_counts_the_hard_ones() {
         days_of_week: Vec::new(),
         date_range: None,
         severity: ConstraintSeverity::Hard,
+        extra: None,
     };
     let soft = Constraint {
         severity: ConstraintSeverity::Soft,
@@ -917,6 +942,7 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
                     priority: None,
                     estimated_duration_s: None,
                     body: None,
+                    extra: None,
                 },
                 rrule: parse_recurrence("every monday".into()).expect("parses"),
                 timezone: "UTC".into(),
@@ -924,6 +950,8 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
                 ends_at: None,
                 scheduling_constraints: Vec::new(),
                 catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+                anchor: None,
+                ends_at_time: None,
             },
         })
         .await
@@ -964,6 +992,166 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
         recurrence_summary(row.rrule.clone()),
         "every week on Mo, Tu, We, Th, Fr"
     );
+    core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Forward-compat fields through the mirrors (ADR-0045 §6, #431)
+// ---------------------------------------------------------------------------
+
+/// An unknown-field map holding `pairs`, built the way one arrives: decoded
+/// from CBOR.
+fn unknowns(pairs: &[(&str, u64)]) -> sunrise_domain::Unknowns {
+    let map: std::collections::BTreeMap<&str, u64> = pairs.iter().copied().collect();
+    let bytes = sunrise_cbor::encode_canonical(&map).expect("encode");
+    sunrise_cbor::decode_lenient(&bytes).expect("decode")
+}
+
+/// A time kind a newer build added reaches the client as unknown, renders as
+/// unknown rather than as the day it is indexed at, still resolves where the
+/// core places it, and comes back as exactly the stored value.
+#[test]
+fn an_unknown_time_kind_round_trips_through_the_mirror_and_reads_as_unknown() {
+    use sunrise_core_bindings::vocab::time_value_ms;
+    use sunrise_domain::SunriseTime;
+
+    let stored = SunriseTime::Unknown {
+        kind: "recurring_window".into(),
+        raw: unknowns(&[("span_s", 3600), ("weight", 2)]),
+    };
+    let mirrored = TimeValue::from(&stored);
+    let TimeValue::Unknown { kind, .. } = &mirrored else {
+        panic!("an unknown kind must mirror as unknown, not as {mirrored:?}");
+    };
+    assert_eq!(kind, "recurring_window");
+    assert_eq!(
+        SunriseTime::from(mirrored.clone()),
+        stored,
+        "handed back unchanged, it is the stored value"
+    );
+
+    let day = relative_day(mirrored.clone(), 0, "UTC".into());
+    assert_eq!(day.text, "unknown");
+    assert!(!day.is_past);
+    assert_eq!(
+        time_value_ms(mirrored, "UTC".into()),
+        stored
+            .instant_or_last(&jiff::tz::TimeZone::UTC)
+            .as_millisecond(),
+        "placed where the core places it"
+    );
+}
+
+/// A constraint (with its two windows), a rule and a template a client reads
+/// and hands back keep every field a newer build wrote on them.
+#[test]
+fn nested_unknown_fields_survive_a_constraint_rule_and_template_handed_back() {
+    use sunrise_core_bindings::dto::{DateWindow, Recurrence, Template, TimeWindow};
+    use sunrise_core_bindings::vocab::parse_recurrence;
+    use sunrise_domain::{RRule, ScheduleConstraint, TaskTemplate};
+
+    let mut constraint = ScheduleConstraint::from(Constraint {
+        time_of_day: Some(TimeWindow {
+            start: jiff::civil::time(9, 0, 0, 0),
+            end: jiff::civil::time(17, 0, 0, 0),
+            extra: None,
+        }),
+        days_of_week: Vec::new(),
+        date_range: Some(DateWindow {
+            start: jiff::civil::date(2026, 3, 1),
+            end: None,
+            extra: None,
+        }),
+        severity: ConstraintSeverity::Hard,
+        extra: None,
+    });
+    constraint.unknown = unknowns(&[("constraint_new", 1)]);
+    if let Some(w) = constraint.time_of_day.as_mut() {
+        w.unknown = unknowns(&[("window_new", 2)]);
+    }
+    if let Some(r) = constraint.date_range.as_mut() {
+        r.unknown = unknowns(&[("range_new", 3)]);
+    }
+    let mirrored = Constraint::from(&constraint);
+    assert!(mirrored.extra.is_some(), "the client holds the fields");
+    assert_eq!(ScheduleConstraint::from(mirrored), constraint);
+
+    let mut rule = RRule::from(parse_recurrence("every monday".into()).expect("parses"));
+    rule.unknown = unknowns(&[("rule_new", 4)]);
+    assert_eq!(RRule::from(Recurrence::from(&rule)), rule);
+
+    let mut template = TaskTemplate::from(Template {
+        title: "Water the plants".into(),
+        stream_id: sunrise_domain::inbox_stream_ref(),
+        contexts: Vec::new(),
+        energy: None,
+        priority: None,
+        estimated_duration_s: None,
+        body: None,
+        extra: None,
+    });
+    template.unknown = unknowns(&[("template_new", 5)]);
+    assert_eq!(TaskTemplate::from(Template::from(&template)), template);
+
+    // A value with no unknown fields carries no blob, so a client that builds
+    // one from scratch and one that read it back agree.
+    rule.unknown = sunrise_domain::Unknowns::new();
+    assert!(Recurrence::from(&rule).extra.is_none());
+}
+
+/// End to end: the fields a client carries in a rule and a template reach
+/// storage and come back on the next read.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_routine_keeps_the_nested_fields_its_client_handed_back() {
+    use sunrise_core_bindings::dto::{Recurrence, RoutineDraftIn, Template};
+    use sunrise_core_bindings::vocab::parse_recurrence;
+    use sunrise_domain::{RRule, TaskTemplate};
+
+    let mut template = TaskTemplate::from(Template {
+        title: "Water the plants".into(),
+        stream_id: sunrise_domain::inbox_stream_ref(),
+        contexts: Vec::new(),
+        energy: None,
+        priority: None,
+        estimated_duration_s: None,
+        body: None,
+        extra: None,
+    });
+    template.unknown = unknowns(&[("template_new", 5)]);
+    let mut rule = RRule::from(parse_recurrence("every monday".into()).expect("parses"));
+    rule.unknown = unknowns(&[("rule_new", 4)]);
+    let template = Template::from(&template);
+    let rrule = Recurrence::from(&rule);
+
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateRoutine {
+            draft: RoutineDraftIn {
+                template: template.clone(),
+                rrule: rrule.clone(),
+                timezone: "UTC".into(),
+                starts_at: jiff::Timestamp::from_millisecond(1_700_000_000_000).expect("ts"),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+                anchor: None,
+                ends_at_time: None,
+            },
+        })
+        .await
+        .expect("create routine");
+
+    let CoreQueryResult::Routines { routines } =
+        core.query(CoreQuery::Routines).await.expect("routines")
+    else {
+        panic!("Routines must return routines");
+    };
+    let row = routines
+        .iter()
+        .find(|r| r.id == created.entity)
+        .expect("the routine we just made");
+    assert_eq!(row.template.extra, template.extra);
+    assert_eq!(row.rrule.extra, rrule.extra);
     core.shutdown().await;
 }
 
@@ -1078,13 +1266,10 @@ async fn only_inbox_task(core: &SunriseCore) -> sunrise_id::EntityRef {
     }
 }
 
-/// A delete is submitted and reported as un-undoable — not refused, and not
-/// silently accepted onto a stack that would do nothing.
+/// A delete is undoable: its undo is a restore, and the task is back
+/// (ADR-0065 §3). `CoreCommand::Restore` does the same directly.
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_still_happens_and_says_it_cannot_be_undone() {
-    use sunrise_core_bindings::client::undo_refusal_explanation;
-    use sunrise_core_bindings::UndoRefusal;
-
+async fn undoing_a_delete_restores_the_task() {
     let (_dir, core) = open_core().await;
     let created = core
         .submit(CoreCommand::CreateTask {
@@ -1101,16 +1286,19 @@ async fn deleting_still_happens_and_says_it_cannot_be_undone() {
         .await
         .expect("delete");
 
-    assert_eq!(out.not_undoable, Some(UndoRefusal::Deleted));
-    assert!(
-        undo_refusal_explanation(UndoRefusal::Deleted).contains("tombstone"),
-        "the seam words it, not each client"
-    );
-    assert_eq!(inbox_len(&core).await, 0, "the delete still happened");
-    assert!(
-        core.undo_state().undo_label.is_none(),
-        "nothing went on the stack, so nothing is offered"
-    );
+    assert_eq!(out.not_undoable, None, "a delete is undoable");
+    assert_eq!(inbox_len(&core).await, 0, "the delete happened");
+    assert!(core.undo_state().undo_label.is_some());
+    core.undo().await.expect("undo");
+    assert_eq!(inbox_len(&core).await, 1, "its undo restored the task");
+
+    core.submit(CoreCommand::DeleteTask { id: created.entity })
+        .await
+        .expect("delete again");
+    core.submit(CoreCommand::Restore { id: created.entity })
+        .await
+        .expect("restore");
+    assert_eq!(inbox_len(&core).await, 1, "restored through the seam");
     core.shutdown().await;
 }
 
@@ -1418,6 +1606,7 @@ async fn a_file_attaches_and_reads_back_across_the_seam() {
             "return.pdf".into(),
             "application/pdf".into(),
             bytes.clone(),
+            AttachPreviewIn::default(),
         )
         .await
         .expect("attach");
@@ -1460,8 +1649,14 @@ async fn an_empty_attachment_is_a_typed_error() {
         .entity;
 
     assert!(matches!(
-        core.attach_file(task, "empty.txt".into(), "text/plain".into(), Vec::new())
-            .await,
+        core.attach_file(
+            task,
+            "empty.txt".into(),
+            "text/plain".into(),
+            Vec::new(),
+            AttachPreviewIn::default()
+        )
+        .await,
         Err(BindingError::Attachment(_))
     ));
 }
@@ -1480,7 +1675,13 @@ async fn an_attachment_whose_bytes_are_elsewhere_has_its_own_error() {
         .expect("create")
         .entity;
     let att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 
@@ -1514,7 +1715,13 @@ async fn asking_for_an_attachment_this_device_cannot_reach_is_answered_not_await
         .expect("create")
         .entity;
     let att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 
@@ -1566,7 +1773,13 @@ async fn a_malformed_attachment_row_is_refused_at_the_boundary() {
         .expect("create")
         .entity;
     let mut att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 
@@ -1638,7 +1851,7 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
     };
     assert_eq!(blocks.len(), 2);
 
-    let conflicts = block_conflicts(blocks.clone());
+    let conflicts = block_conflicts(blocks.clone(), tz.into());
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].from_ms, time_value_ms(ten, tz.into()));
     assert_eq!(conflicts[0].to_ms, time_value_ms(eleven, tz.into()));
@@ -1677,7 +1890,7 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
         time_value_ms(blocks[0].block.ends_at.clone(), tz.into()),
         time_value_ms(thirteen, tz.into())
     );
-    assert!(block_conflicts(blocks).is_empty());
+    assert!(block_conflicts(blocks, tz.into()).is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -1976,222 +2189,8 @@ fn a_snooze_until_tomorrow_keeps_its_wall_clock_across_a_dst_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// iCalendar interchange
+// Devices and recovery (iCalendar interchange is in `seam_ical.rs`)
 // ---------------------------------------------------------------------------
-
-use sunrise_integrations::ical::NoticeCode;
-use sunrise_integrations::ical_vault::ExportWindow;
-
-/// An `.ics` with one event starting **now**, so it is inside today and inside
-/// this week in every timezone the suite might run in. The seam opens a vault
-/// with the production clock, so the fixture is anchored to that same clock
-/// rather than to a date that would only work in one week of one year.
-fn ics_now(now_ms: u64, uid: &str, summary: &str) -> String {
-    let start = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap())
-        .expect("now")
-        .round(jiff::Unit::Second)
-        .expect("round");
-    let end = start + jiff::SignedDuration::from_hours(1);
-    format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//seam//EN\r\n\
-BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\n\
-DTSTART:{}\r\nDTEND:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
-        start.strftime("%Y%m%dT%H%M%SZ"),
-        end.strftime("%Y%m%dT%H%M%SZ"),
-    )
-}
-
-/// The property the macOS menu item depends on: a user who imports the same
-/// file twice gets one calendar, so the app never has to ask them first.
-#[tokio::test(flavor = "multi_thread")]
-async fn importing_an_ics_is_idempotent_across_the_seam() {
-    let (_dir, core) = open_core().await;
-    let text = ics_now(core.now_ms(), "ev1@example.com", "Quarterly planning");
-
-    let first = core
-        .import_ical(text.clone(), None, None)
-        .await
-        .expect("import");
-    assert_eq!(first.created, 1, "{first:?}");
-    assert_eq!(first.updated, 0);
-    assert_eq!(first.failed, 0);
-    assert_eq!(first.blocks.len(), 1);
-    assert!(first.blocks[0].block.to_str().starts_with("blk_"));
-    assert_eq!(first.blocks[0].title, "Quarterly planning");
-    assert!(first.blocks[0].created);
-
-    let second = core.import_ical(text, None, None).await.expect("re-import");
-    assert_eq!(second.created, 0, "nothing is new the second time");
-    assert_eq!(second.updated, 1);
-    assert!(!second.blocks[0].created);
-    assert_eq!(
-        second.blocks[0].block, first.blocks[0].block,
-        "the same UID must land on the same block"
-    );
-}
-
-/// The counts are the seam's, not the client's, so every client says the same
-/// thing about the same file — and a distinct `source` really is a distinct
-/// calendar.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_second_source_is_a_second_calendar() {
-    let (_dir, core) = open_core().await;
-    let text = ics_now(core.now_ms(), "shared", "Standup");
-    core.import_ical(text.clone(), None, None)
-        .await
-        .expect("import");
-    let other = core
-        .import_ical(text, None, Some("team-calendar".into()))
-        .await
-        .expect("import");
-    assert_eq!(other.created, 1);
-    assert_ne!(
-        other.blocks[0].block,
-        core.import_ical(ics_now(core.now_ms(), "shared", "Standup"), None, None)
-            .await
-            .expect("import")
-            .blocks[0]
-            .block
-    );
-}
-
-/// A blank `source` is not a source. It falls back to the default rather than
-/// silently keying every import under the empty string.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_blank_source_falls_back_to_the_default() {
-    let (_dir, core) = open_core().await;
-    let text = ics_now(core.now_ms(), "ev1", "Standup");
-    let first = core
-        .import_ical(text.clone(), None, None)
-        .await
-        .expect("import");
-    let blank = core
-        .import_ical(text, None, Some("   ".into()))
-        .await
-        .expect("import");
-    assert_eq!(blank.created, 0);
-    assert_eq!(blank.blocks[0].block, first.blocks[0].block);
-}
-
-/// The notices have to reach the client, or the app is silently dropping the
-/// user's data on their behalf.
-#[tokio::test(flavor = "multi_thread")]
-async fn what_a_block_cannot_hold_reaches_the_client() {
-    let (_dir, core) = open_core().await;
-    let text = ics_now(core.now_ms(), "ev1", "Design review").replace(
-        "END:VEVENT",
-        "DESCRIPTION:Bring the roadmap\r\nRRULE:FREQ=WEEKLY\r\n\
-BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT",
-    );
-    let report = core.import_ical(text, None, None).await.expect("import");
-    assert_eq!(report.created, 1, "the event still lands");
-
-    let details: Vec<&str> = report.notices.iter().map(|n| n.detail.as_str()).collect();
-    assert!(
-        details.iter().any(|d| d.starts_with("DESCRIPTION")),
-        "{details:?}"
-    );
-    assert!(
-        details.iter().any(|d| d.starts_with("RRULE")),
-        "{details:?}"
-    );
-    assert!(
-        details.iter().any(|d| d.starts_with("VALARM")),
-        "{details:?}"
-    );
-    assert!(report
-        .notices
-        .iter()
-        .any(|n| n.code == NoticeCode::UnsupportedComponent));
-    assert!(report
-        .notices
-        .iter()
-        .any(|n| n.code == NoticeCode::UnmappedProperty));
-}
-
-/// Export → import is the identity across the seam too, so an app that offers
-/// both cannot double a user's calendar.
-#[tokio::test(flavor = "multi_thread")]
-async fn exporting_and_re_importing_across_the_seam_is_the_identity() {
-    let (_dir, core) = open_core().await;
-    let first = core
-        .import_ical(ics_now(core.now_ms(), "ev1", "Standup"), None, None)
-        .await
-        .expect("import");
-
-    let doc = core
-        .export_ical(ExportWindow::Week, core.now_ms())
-        .await
-        .expect("export");
-    assert!(doc.starts_with("BEGIN:VCALENDAR\r\n"), "got {doc:?}");
-    assert!(doc.contains("SUMMARY:Standup"));
-
-    let back = core.import_ical(doc, None, None).await.expect("re-import");
-    assert_eq!(
-        back.created, 0,
-        "an exported calendar re-imports onto itself"
-    );
-    assert_eq!(back.blocks[0].block, first.blocks[0].block);
-
-    let again = core
-        .export_ical(ExportWindow::Week, core.now_ms())
-        .await
-        .expect("export");
-    assert_eq!(again.matches("BEGIN:VEVENT").count(), 1);
-}
-
-/// A day export is a narrower window over the same vault, not a different
-/// document format.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_day_export_is_a_valid_document_even_when_empty() {
-    let (_dir, core) = open_core().await;
-    let empty = core
-        .export_ical(ExportWindow::Day, core.now_ms())
-        .await
-        .expect("export");
-    assert!(empty.starts_with("BEGIN:VCALENDAR\r\n"));
-    assert_eq!(empty.matches("BEGIN:VEVENT").count(), 0);
-
-    core.import_ical(ics_now(core.now_ms(), "ev1", "Standup"), None, None)
-        .await
-        .expect("import");
-    let one = core
-        .export_ical(ExportWindow::Day, core.now_ms())
-        .await
-        .expect("export");
-    assert_eq!(one.matches("BEGIN:VEVENT").count(), 1);
-}
-
-/// A file that is not a calendar is a typed error, not an import of zero
-/// events that a user would read as success.
-#[tokio::test(flavor = "multi_thread")]
-async fn text_that_is_not_a_calendar_is_a_typed_error() {
-    let (_dir, core) = open_core().await;
-    let err = core
-        .import_ical("this is not a calendar\n".into(), None, None)
-        .await
-        .expect_err("refused");
-    assert!(matches!(err, BindingError::Calendar(_)), "got {err:?}");
-}
-
-/// A calendar imports into a stream. Handing it a task id has to fail at the
-/// seam, where the message can still name what was passed.
-#[tokio::test(flavor = "multi_thread")]
-async fn importing_into_something_that_is_not_a_stream_is_refused() {
-    let (_dir, core) = open_core().await;
-    let task = core
-        .submit(CoreCommand::CreateTask {
-            draft: draft("Renew passport"),
-        })
-        .await
-        .expect("create")
-        .entity;
-    let err = core
-        .import_ical(ics_now(core.now_ms(), "ev1", "Standup"), Some(task), None)
-        .await
-        .expect_err("refused");
-    assert!(matches!(err, BindingError::BadId { .. }), "got {err:?}");
-}
 
 /// The second of #144's signals reaches a client: every device row carries
 /// whether that device turned up **after** this vault had recorded a

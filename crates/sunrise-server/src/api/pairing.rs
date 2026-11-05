@@ -358,14 +358,11 @@ impl FromRequestParts<ServerState> for ClientAddress {
 
     async fn from_request_parts(
         parts: &mut Parts,
-        _context: &ServerState,
+        context: &ServerState,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            parts
-                .extensions
-                .get::<Forwarded>()
-                .and_then(Forwarded::client),
-        ))
+        // kynos's own extractor for what the router resolved, infallible.
+        let forwarded = Forwarded::from_request_parts(parts, context).await?;
+        Ok(Self(forwarded.client()))
     }
 }
 

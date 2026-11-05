@@ -100,8 +100,8 @@ async fn a_recovery_code_restores_a_vault_that_reads_what_was_written_before_it(
 
     // ---- 3. Nothing but the words and the relay. -------------------------
     let served = fetch_blob(&base_url, FRESH).await;
-    let restored = sunrise_onboarding::recover_identity_from_code(
-        &sunrise_onboarding::decode_recovery_blob(&served).expect("base64url"),
+    let restored = sunrise_client_core::recovery::recover_identity_from_code(
+        &sunrise_relay_client::decode_recovery_blob(&served).expect("base64url"),
         &typed,
         &identity_id,
     )
@@ -130,7 +130,7 @@ async fn a_recovery_code_restores_a_vault_that_reads_what_was_written_before_it(
         sunrise_relay_client::bootstrap(
             &base_url,
             FRESH,
-            sunrise_onboarding::AccountCreateRequest {
+            sunrise_relay_client::AccountCreateRequest {
                 email: "alice@example.com".into(),
                 identity_signing_pub: recovered.identity_signing_pub(),
                 identity_dh_pub: recovered.identity_dh_pub(),
@@ -221,7 +221,7 @@ async fn found_and_lose_an_account(
         sunrise_relay_client::bootstrap(
             base_url,
             FRESH,
-            sunrise_onboarding::AccountCreateRequest {
+            sunrise_relay_client::AccountCreateRequest {
                 email: "alice@example.com".into(),
                 identity_signing_pub: founder.identity_signing_pub(),
                 identity_dh_pub: founder.identity_dh_pub(),

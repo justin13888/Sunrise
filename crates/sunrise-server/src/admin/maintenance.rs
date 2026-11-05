@@ -1,5 +1,5 @@
-//! The maintenance pass: account erasure, blob garbage collection, and the
-//! pending-upload sweep.
+//! The maintenance pass: account erasure, blob garbage collection, the
+//! committed-blob ledger's backfill, and the pending-upload sweep.
 //!
 //! One function, [`run`], called on a timer by the serving binary and on
 //! demand by `sunrise-server admin gc`. Every deadline it enforces is measured
@@ -10,10 +10,11 @@
 //!
 //! Accounts first: erasing an account removes its tombstones and its whole
 //! blob tree, so collecting its blobs one by one first would be wasted work.
-//! Then tombstoned blobs, then abandoned uploads, then — only where the blob
-//! root is one the operator configured — per-account directories whose account
-//! no longer exists, which is what a crash between an erasure's commit and its
-//! file deletion leaves behind.
+//! Then tombstoned blobs; then the committed-blob ledger's backfill, after the
+//! collection so it never re-adds a blob this pass removed; then abandoned
+//! uploads; then, only where the blob root is one the operator configured,
+//! per-account directories whose account no longer exists, which is what a
+//! crash between an erasure's commit and its file deletion leaves behind.
 //!
 //! # Failure
 //!
@@ -21,13 +22,11 @@
 //! `srv.maintenance.failed` and counted, and the rest go ahead: one unreadable
 //! directory must not keep every other account's erasure waiting.
 
-use std::path::Path;
-
 use serde::Serialize;
 
-use crate::api::blobs::{account_dir, delete_committed, COMMITTED, PENDING};
+use crate::account_ns::account_key;
 use crate::state::ServerState;
-use crate::store::StoreError;
+use crate::store::MetadataError;
 
 /// What a pass did, or with `dry_run` would have done.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -51,7 +50,7 @@ pub struct Report {
 /// # Errors
 /// A store query that fails before any item is reached. Per-item failures are
 /// counted in [`Report::failures`] instead.
-pub fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Report, StoreError> {
+pub async fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Report, MetadataError> {
     let retention = state.config.retention();
     let mut report = Report {
         dry_run,
@@ -60,34 +59,48 @@ pub fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Report, St
 
     let due = state
         .store
-        .accounts_due_for_erasure(now_ms.saturating_sub(retention.account_delete_grace_ms))?;
+        .accounts_due_for_erasure(now_ms.saturating_sub(retention.account_delete_grace_ms))
+        .await?;
     for account_id in due {
         report.accounts_erased += 1;
         if !dry_run {
-            if let Err(e) = erase_account(state, &account_id) {
+            if let Err(e) = erase_account(state, &account_id).await {
                 report.accounts_erased -= 1;
                 failed(&mut report, "account_erase", &e);
             }
         }
     }
 
-    let collectable = state.store.collectable_blobs(
-        now_ms.saturating_sub(retention.gc_grace_ms),
-        now_ms.saturating_sub(retention.device_active_window_ms),
-    )?;
+    let collectable = state
+        .store
+        .collectable_blobs(
+            now_ms.saturating_sub(retention.gc_grace_ms),
+            now_ms.saturating_sub(retention.device_active_window_ms),
+        )
+        .await?;
     for (account_id, blob) in collectable {
         report.blobs_collected += 1;
         if dry_run {
             continue;
         }
-        let collected = delete_committed(&state.blob_root, &account_id, &blob)
-            .map_err(|e| e.to_string())
-            .and_then(|()| {
-                state
+        // Unreadable first, then out of the bytes at rest, then the tombstone:
+        // a failure part-way leaves the tombstone, so the next pass retries
+        // the whole collection.
+        let collected = match state
+            .blobs
+            .delete_committed(account_key(&account_id), blob)
+            .await
+        {
+            Ok(()) => match state.store.forget_blob(&account_id, &blob).await {
+                Ok(()) => state
                     .store
                     .clear_tombstone(&account_id, &blob)
-                    .map_err(|e| e.to_string())
-            });
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e.to_string()),
+        };
         match collected {
             Ok(()) => {
                 state.metrics.incr("sunrise_blob_gc_deleted_total");
@@ -105,13 +118,27 @@ pub fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Report, St
         }
     }
 
+    if !dry_run {
+        if let Err(e) = backfill_ledger(state).await {
+            failed(&mut report, "blob_ledger", &e);
+        }
+    }
+
     let ttl = retention.pending_upload_ttl_ms;
-    for upload in stale_children(&state.blob_root.join(PENDING), now_ms, ttl, 2) {
+    for upload in state
+        .blobs
+        .stale_uploads(now_ms, ttl)
+        .await
+        .unwrap_or_else(|e| {
+            failed(&mut report, "upload_sweep", &e.to_string());
+            Vec::new()
+        })
+    {
         report.uploads_swept += 1;
         if dry_run {
             continue;
         }
-        match std::fs::remove_dir_all(&upload) {
+        match state.blobs.remove_upload(&upload).await {
             Ok(()) => tracing::info!(
                 ev = "srv.blob.upload_swept",
                 "abandoned upload swept: untouched past [storage] pending_upload_ttl_hours"
@@ -123,33 +150,35 @@ pub fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Report, St
         }
     }
 
-    // Only under a root the operator named: the default is a shared temp
-    // directory, where another process's tree is not this store's orphan.
+    // Only under a root the operator named. A tree the server chose for
+    // itself, beside the database or in a private temp directory, is never
+    // swept as orphans.
     if state.config.blob_root.is_some() {
-        sweep_orphans(state, now_ms, ttl, dry_run, &mut report)?;
+        sweep_orphans(state, now_ms, ttl, dry_run, &mut report).await?;
     }
     Ok(report)
 }
 
 /// Erase one account now: its rows and relay log in one transaction, then its
-/// blob trees, then its channels in the in-memory ring.
+/// blobs, then its channels in the in-memory ring.
 ///
 /// # Errors
-/// The store's failure, or the first directory that could not be removed. A
-/// failure after the commit leaves files whose account is gone, which
-/// [`run`]'s orphan sweep removes.
-pub fn erase_account(state: &ServerState, account_id: &str) -> Result<(), String> {
+/// The store's failure, or the blob backend's. A failure after the commit
+/// leaves blobs whose account is gone, which [`run`]'s orphan sweep removes.
+pub async fn erase_account(state: &ServerState, account_id: &str) -> Result<(), String> {
     state
         .store
         .erase_account(account_id)
+        .await
         .map_err(|e| e.to_string())?;
+    state.relay.forget_account(account_key(account_id));
+    // Each area manifests first, so an online backup never copies a manifest
+    // naming chunks it did not copy.
     state
-        .relay
-        .forget_account(crate::relay_log::account_key(account_id));
-    for area in [PENDING, COMMITTED] {
-        remove_account_tree(&account_dir(&state.blob_root, area, account_id))
-            .map_err(|e| e.to_string())?;
-    }
+        .blobs
+        .erase_account(account_key(account_id))
+        .await
+        .map_err(|e| e.to_string())?;
     state.metrics.incr("sunrise_account_delete_total");
     tracing::info!(
         ev = "srv.account.delete_completed",
@@ -159,22 +188,46 @@ pub fn erase_account(state: &ServerState, account_id: &str) -> Result<(), String
     Ok(())
 }
 
-/// Remove one account's blob tree, its `manifests/` directory first.
+/// Record in the committed-blob ledger every readable blob it does not hold:
+/// the blobs committed before the ledger existed, and any whose `finalize`
+/// stopped between its manifest and its row.
 ///
-/// `remove_dir_all` alone removes entries in whatever order the directory
-/// lists them, so chunks could go while their manifests remain. Removing the
-/// manifests first keeps the order blob collection keeps, which an online
-/// backup relies on: a manifest it copies names chunks it copied too. An
-/// absent tree is not an error, so an interrupted removal finishes later.
-fn remove_account_tree(dir: &Path) -> std::io::Result<()> {
-    for target in [dir.join("manifests"), dir.to_path_buf()] {
-        match std::fs::remove_dir_all(&target) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
+/// The backend lists blobs by account hash and the ledger is keyed by account
+/// id, so each hash is matched against the live accounts; a tree whose
+/// account is gone is the orphan sweep's, not the ledger's.
+async fn backfill_ledger(state: &ServerState) -> Result<(), String> {
+    let manifests = state
+        .blobs
+        .committed_manifests()
+        .await
+        .map_err(|e| e.to_string())?;
+    if manifests.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let ids: std::collections::HashMap<_, _> = state
+        .store
+        .account_summaries()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|a| (account_key(&a.account_id), a.account_id))
+        .collect();
+    let blobs: Vec<_> = manifests
+        .into_iter()
+        .filter_map(|m| {
+            ids.get(&m.account).map(|id| crate::store::CommittedBlob {
+                account_id: id.clone(),
+                blob_key: m.blob,
+                size_bytes: m.manifest.size_bytes,
+            })
+        })
+        .collect();
+    state
+        .store
+        .backfill_blobs(&blobs)
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 fn failed(report: &mut Report, what: &'static str, cause: &str) {
@@ -187,85 +240,43 @@ fn failed(report: &mut Report, what: &'static str, cause: &str) {
     );
 }
 
-/// Per-account directories under `pending/` and `committed/` whose account no
-/// longer exists and which nothing has touched for `ttl_ms`.
+/// Account trees in either area whose account no longer exists and which
+/// nothing has touched for `ttl_ms`.
 ///
 /// The age check is what makes this safe against an account created after the
-/// account list below was read: its directory is new.
-fn sweep_orphans(
+/// account list below was read: its tree is new.
+async fn sweep_orphans(
     state: &ServerState,
     now_ms: u64,
     ttl_ms: u64,
     dry_run: bool,
     report: &mut Report,
-) -> Result<(), StoreError> {
-    let live: std::collections::HashSet<String> = state
+) -> Result<(), MetadataError> {
+    let live: std::collections::HashSet<[u8; 16]> = state
         .store
-        .account_summaries()?
+        .account_summaries()
+        .await?
         .iter()
-        .map(|a| hex::encode(crate::relay_log::account_key(&a.account_id)))
+        .map(|a| account_key(&a.account_id))
         .collect();
-    for area in [PENDING, COMMITTED] {
-        for dir in stale_children(&state.blob_root.join(area), now_ms, ttl_ms, 1) {
-            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-            if name.len() != 32 || !name.bytes().all(|b| b.is_ascii_hexdigit()) {
-                continue;
-            }
-            if live.contains(name) {
-                continue;
-            }
-            report.orphans_swept += 1;
-            if !dry_run {
-                if let Err(e) = remove_account_tree(&dir) {
-                    report.orphans_swept -= 1;
-                    failed(report, "orphan_sweep", &e.to_string());
-                }
+    let trees = match state.blobs.stale_account_trees(now_ms, ttl_ms).await {
+        Ok(trees) => trees,
+        Err(e) => {
+            failed(report, "orphan_sweep", &e.to_string());
+            return Ok(());
+        }
+    };
+    for tree in trees {
+        if live.contains(&tree.account) {
+            continue;
+        }
+        report.orphans_swept += 1;
+        if !dry_run {
+            if let Err(e) = state.blobs.remove_account_tree(tree).await {
+                report.orphans_swept -= 1;
+                failed(report, "orphan_sweep", &e.to_string());
             }
         }
     }
     Ok(())
-}
-
-/// Directories `depth` levels below `root` whose newest modification anywhere
-/// inside is older than `ttl_ms` before `now_ms`.
-///
-/// The newest time anywhere in the tree, not the directory's own: writing a
-/// chunk into an existing directory does not always move the directory's
-/// mtime, and an upload with a chunk written a minute ago is not abandoned.
-fn stale_children(root: &Path, now_ms: u64, ttl_ms: u64, depth: u32) -> Vec<std::path::PathBuf> {
-    let mut level = vec![root.to_path_buf()];
-    for _ in 0..depth {
-        level = level
-            .iter()
-            .filter_map(|d| std::fs::read_dir(d).ok())
-            .flat_map(|rd| rd.filter_map(Result::ok).map(|e| e.path()))
-            .filter(|p| p.is_dir())
-            .collect();
-    }
-    level
-        .into_iter()
-        .filter(|d| newest_mtime_ms(d).is_some_and(|t| now_ms.saturating_sub(t) > ttl_ms))
-        .collect()
-}
-
-/// The newest modification time of `path` and everything under it, in ms
-/// since the epoch.
-fn newest_mtime_ms(path: &Path) -> Option<u64> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    let own = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))?;
-    if !meta.is_dir() {
-        return Some(own);
-    }
-    let children = std::fs::read_dir(path).ok()?;
-    Some(
-        children
-            .filter_map(Result::ok)
-            .filter_map(|e| newest_mtime_ms(&e.path()))
-            .fold(own, u64::max),
-    )
 }

@@ -234,13 +234,20 @@ async fn a_410_from_apns_deletes_the_token_row() {
     f.state
         .store
         .upsert_push_token(&f.laptop, "apns", TOKEN_HEX, T0_MS)
+        .await
         .unwrap();
     let provider = Arc::new(apns(&mock, f.clock.clone()));
     delivery(&f, provider)
         .deliver(&intent(&f.laptop, TOKEN_HEX))
         .await;
     assert_eq!(mock.seen().len(), 1, "an unregistered token is not retried");
-    assert!(f.state.store.push_tokens(&f.laptop).unwrap().is_empty());
+    assert!(f
+        .state
+        .store
+        .push_tokens(&f.laptop)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(count(&f, "rejected"), 1);
 }
 

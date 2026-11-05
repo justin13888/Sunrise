@@ -5,8 +5,8 @@ Why this file exists
 --------------------
 
 The gate carries its own `--self-test`, and that self-test runs `scan_text`
-over seven string literals. It is a good check of the six rules and no check
-at all of everything around them: the `git ls-files` listing, the 50-file
+over string literals. It is a good check of the rules and no check at all of
+everything around them: the `git ls-files` listing, the 50-file
 floor that says "this scan is broken" rather than "this tree is clean", the
 exit codes those two produce, and the annotation format a reader follows
 back to a line. Those are what `ci.yml` and a person reading a red check

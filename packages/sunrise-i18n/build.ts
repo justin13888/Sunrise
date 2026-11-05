@@ -51,7 +51,7 @@ if (argv[1] !== undefined && fileURLToPath(import.meta.url) === argv[1]) {
         // Written only when the bytes change. `strings.rs` is `include!`d by
         // the CLI, so a rewrite bumps its mtime past the dep-info rustc left,
         // which is a rebuild for cargo and a hard failure for the log-field
-        // gate (`crates/sunrise-log/tests/event_catalog.rs`) until one happens.
+        // gate (`crates/sunrise-log/tests/event_catalog/`) until one happens.
         const file = new URL(name, GENERATED_DIR);
         const text = emit(catalog);
         const current = await readFile(file, "utf8").catch(() => undefined);

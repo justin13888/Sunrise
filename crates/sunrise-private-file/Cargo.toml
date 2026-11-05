@@ -1,0 +1,62 @@
+[package]
+name = "sunrise-private-file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "The one owner-only file write every secret Sunrise puts on disk goes through"
+
+# The workspace's `[workspace.lints]`, copied rather than inherited, with one
+# change: `unsafe_code` is `deny` here instead of `forbid`. A member crate
+# cannot inherit the table and relax one entry of it, and `forbid` cannot be
+# lifted by an `#[allow]`. So this is the only crate that does not say
+# `lints.workspace = true`, and `src/windows.rs` is the only module under an
+# `#[allow(unsafe_code)]` (ADR-0067). Off Windows that module is not compiled
+# and `src/lib.rs` forbids `unsafe_code` again, so on macOS and Linux this
+# crate is held to exactly what every other crate is.
+#
+# Keep the rest of this table equal to the workspace's. The tables differ in
+# `unsafe_code` and in `undocumented_unsafe_blocks`, which is denied here
+# because this is where the unsafe blocks are.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"
+undocumented_unsafe_blocks = "deny"
+
+# The Win32 security API: the token's user SID, a security descriptor from
+# SDDL, `CreateFileW` with it, and the calls that read a file's DACL back.
+# `windows-sys` is Microsoft's own raw binding, MIT OR Apache-2.0, and 0.61 was
+# already in `Cargo.lock` through `tokio` and others. It links through
+# `windows-link`, so it needs no import library.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"

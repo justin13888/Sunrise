@@ -57,6 +57,13 @@ A lightweight 60-second flow:
 
 Off by default.
 
+The glance's window opens at the start of the previous civil day in the
+reader's zone, the same boundary the morning summary draws, and not at
+`now − 24 h`: read at 08:00, a 24-hour window misses everything captured
+yesterday before 08:00, and on a DST day it starts at the wrong midnight
+(`crates/sunrise-client-core/src/review.rs#daily_review_since`). An export's
+file name is dated by the reader's civil day too.
+
 ## Stats
 
 Per Stream:

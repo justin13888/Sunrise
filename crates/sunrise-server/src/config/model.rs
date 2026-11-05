@@ -105,7 +105,10 @@ pub struct ServerConfig {
     /// the data dir. `[storage] key_file`.
     #[serde(default)]
     pub sqlite_key_file: Option<PathBuf>,
-    /// Self-host blob root (None = `<sqlite_dir>/blobs`).
+    /// Self-host blob root. `None` with a database file means `blobs` beside
+    /// it, `<sqlite_dir>/blobs`; `None` with an in-memory store means a
+    /// private temporary directory the state creates and removes when its
+    /// last clone drops. [`ServerConfig::resolved_blob_root`] holds the rule.
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
     /// origin is permitted, which is the correct default for a relay whose
@@ -121,8 +124,8 @@ pub struct ServerConfig {
     /// every stop would report work cut and exit 1.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
-    /// The reverse proxies whose `Forwarded` / `X-Forwarded-For` may be
-    /// believed, as addresses or CIDR networks.
+    /// The reverse proxies whose `X-Forwarded-For` may be believed, as
+    /// addresses or CIDR networks. RFC 7239 `Forwarded` is never read.
     ///
     /// Empty — the default — believes nobody: the socket peer is the client,
     /// and every forwarding header is ignored, because a client can write
@@ -138,7 +141,7 @@ pub struct ServerConfig {
     /// The `[push]` table: the wake-up providers. Empty — the default — sends
     /// no push at all; see `docs/06-server/push-notifications.md`.
     #[serde(default)]
-    pub push: PushConfig,
+    pub push: super::push::PushConfig,
     /// The `[observability]` table: OpenTelemetry trace export. Absent — the
     /// default — exports nothing and starts no exporter; see
     /// `docs/06-server/observability.md` §Tracing.
@@ -161,63 +164,6 @@ pub struct ServerConfig {
     /// pending-upload sweep. `[storage] maintenance_interval_secs`.
     #[serde(default = "default_maintenance_interval_secs")]
     pub maintenance_interval_secs: u64,
-}
-
-/// The `[push]` table.
-///
-/// One sub-table per provider. Only APNs exists; FCM and Web Push are designed
-/// behind the same [`crate::push::PushProvider`] trait and not built.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PushConfig {
-    /// `[push.apns]`. `None` leaves iOS devices to wake on their own schedule.
-    pub apns: Option<ApnsConfig>,
-}
-
-/// `[push.apns]`: token-based (`.p8`) authentication against APNs.
-///
-/// Every key is required. A partly written table is a refusal rather than a
-/// provider that fails on its first send, which an operator would only notice
-/// as phones that stopped syncing in the background.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ApnsConfig {
-    /// The `.p8` signing key Apple issued. Must not be readable by group or
-    /// others; the server refuses to start otherwise.
-    pub key_path: PathBuf,
-    /// The key's 10-character Key ID, the JWT `kid`.
-    pub key_id: String,
-    /// The 10-character Apple Developer Team ID, the JWT `iss`.
-    pub team_id: String,
-    /// The app's bundle id, sent as `apns-topic`.
-    pub topic: String,
-    /// Which APNs gateway the tokens were issued against.
-    pub environment: ApnsEnvironment,
-}
-
-/// The APNs gateway a device token belongs to.
-///
-/// A development build's token is valid only on the sandbox gateway and a
-/// release build's only on production, so this is a property of the app build
-/// the relay serves rather than a preference.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ApnsEnvironment {
-    /// `api.sandbox.push.apple.com`.
-    Sandbox,
-    /// `api.push.apple.com`.
-    Production,
-}
-
-impl ApnsEnvironment {
-    /// The gateway's origin.
-    #[must_use]
-    pub const fn endpoint(self) -> &'static str {
-        match self {
-            Self::Sandbox => "https://api.sandbox.push.apple.com",
-            Self::Production => "https://api.push.apple.com",
-        }
-    }
 }
 
 /// Whether `s` is an Apple 10-character identifier (Key ID, Team ID).
@@ -464,7 +410,7 @@ impl ServerConfig {
     /// refuses them before a server starts, so only a config that skipped
     /// validation — a test — can reach this with one.
     #[must_use]
-    pub fn trusted_proxy_networks(&self) -> Vec<(std::net::IpAddr, u8)> {
+    pub fn trusted_proxy_networks(&self) -> Vec<kynos::http::forwarded::Network> {
         self.trusted_proxies
             .iter()
             .filter_map(|entry| super::limits::parse_cidr(entry))
@@ -579,7 +525,7 @@ impl Default for ServerConfig {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             trusted_proxies: Vec::new(),
             limits: super::limits::LimitsConfig::default(),
-            push: PushConfig::default(),
+            push: super::push::PushConfig::default(),
             observability: None,
         }
     }
@@ -612,10 +558,25 @@ impl ServerConfig {
             self.sqlite_path.as_deref().and_then(Path::parent),
         )
     }
+
+    /// The blob root this config names: [`ServerConfig::blob_root`], else
+    /// `blobs` beside the database file. `None` for an in-memory store with no
+    /// root set, which has no directory of its own to put blobs beside; the
+    /// state then keeps a private temporary one.
+    #[must_use]
+    pub fn resolved_blob_root(&self) -> Option<PathBuf> {
+        self.blob_root.clone().or_else(|| {
+            self.sqlite_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|dir| dir.join("blobs"))
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::push::{ApnsConfig, ApnsEnvironment, PushConfig};
     use super::*;
 
     fn cfg(bind: &str) -> ServerConfig {
@@ -842,15 +803,30 @@ mod tests {
         assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
     }
 
+    /// A named root wins; with none, blobs go beside the database file; an
+    /// in-memory store with none resolves to no path at all, never to a
+    /// fixed one every server on the machine would share.
     #[test]
-    fn each_apns_environment_names_its_own_gateway() {
+    fn the_blob_root_is_the_named_one_else_beside_the_database() {
+        let named = ServerConfig {
+            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
+            blob_root: Some("/srv/blobs".into()),
+            ..Default::default()
+        };
         assert_eq!(
-            ApnsEnvironment::Sandbox.endpoint(),
-            "https://api.sandbox.push.apple.com"
+            named.resolved_blob_root(),
+            Some(PathBuf::from("/srv/blobs"))
         );
+
+        let beside = ServerConfig {
+            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
+            ..Default::default()
+        };
         assert_eq!(
-            ApnsEnvironment::Production.endpoint(),
-            "https://api.push.apple.com"
+            beside.resolved_blob_root(),
+            Some(PathBuf::from("/var/lib/sunrise/blobs"))
         );
+
+        assert_eq!(ServerConfig::default().resolved_blob_root(), None);
     }
 }

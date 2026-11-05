@@ -1,6 +1,7 @@
 //! The web client's seam over `sunrise-core` (ADR-0055).
 //!
-//! Four calls, JSON in and JSON out, the shape ADR-0012 named for this crate:
+//! Four vault calls, JSON in and JSON out, the shape ADR-0012 named for this
+//! crate, and the client layer's pure rules beside them:
 //!
 //! | JS (`wasm-bindgen`)                  | Rust                        |
 //! |--------------------------------------|-----------------------------|
@@ -8,12 +9,23 @@
 //! | `core.submitJson(commandJson)`       | [`WebCore::submit_json`]    |
 //! | `core.queryJson(queryJson)`          | [`WebCore::query_json`]     |
 //! | `core.closeVault()`                  | [`WebCore::close`]          |
+//! | `checkRelayUrl(input)`               | [`relay::check_relay_url_json`] |
 //!
 //! A command is [`sunrise_core::Command`] and a query [`sunrise_core::Query`]
 //! in `serde_json`'s externally tagged form — `{"CreateTask":{…}}`, `"Inbox"` —
 //! so this crate adds no second vocabulary for the web to drift against. What
 //! comes back is the serialized [`sunrise_core::CommandResult`] or
 //! [`sunrise_core::QueryResult`].
+//!
+//! The web client's own calls are typed ([`calls`]), so it spells none of
+//! that JSON itself:
+//!
+//! | JS (`wasm-bindgen`)                  | Rust                        |
+//! |--------------------------------------|-----------------------------|
+//! | `core.createTask(title)`             | [`WebCore::create_task`]    |
+//! | `core.completeTask(id)`              | [`WebCore::complete_task`]  |
+//! | `core.today(nowMs)`                  | [`WebCore::today`]          |
+//! | `core.inbox()`                       | [`WebCore::inbox`]          |
 //!
 //! # Two builds, one dispatch layer
 //!
@@ -34,9 +46,12 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use sunrise_core::{Clock, Command, Core, CoreConfig, CoreError, Query, SystemRng, Unlock};
+use sunrise_core::{Command, Core, CoreConfig, CoreError, Query, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
+
+pub mod calls;
+pub mod relay;
 
 /// The browser build: OPFS, `Date.now()`, and the `wasm-bindgen` exports.
 ///
@@ -55,19 +70,10 @@ pub mod web {
     const POOL_DIRECTORY: &str = ".sunrise-sahpool";
 
     fn js_now() -> u64 {
-        // `Date.now()` is integral milliseconds since the epoch; a negative or
-        // non-finite reading (a host clock set before 1970) clamps to 0.
-        let now = js_sys::Date::now();
-        if now.is_finite() && now > 0.0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let ms = now as u64;
-            ms
-        } else {
-            0
-        }
+        super::clamp_ms(js_sys::Date::now())
     }
 
-    fn js_err(e: impl std::fmt::Display) -> JsError {
+    pub(crate) fn js_err(e: impl std::fmt::Display) -> JsError {
         JsError::new(&e.to_string())
     }
 
@@ -75,7 +81,7 @@ pub mod web {
     #[wasm_bindgen]
     #[derive(Debug)]
     pub struct WasmCore {
-        inner: Arc<WebCore>,
+        pub(crate) inner: Arc<WebCore>,
     }
 
     /// Register the OPFS pool VFS as `SQLite`'s default, then open (or create)
@@ -153,6 +159,21 @@ pub mod web {
     }
 }
 
+/// A JS clock reading as integral milliseconds since the epoch.
+///
+/// A negative or non-finite reading (a host clock set before 1970) clamps to
+/// 0, and a fraction truncates. A finite reading past `u64::MAX` saturates.
+#[must_use]
+pub fn clamp_ms(ms: f64) -> u64 {
+    if ms.is_finite() && ms > 0.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = ms as u64;
+        ms
+    } else {
+        0
+    }
+}
+
 /// Why a web-core call failed. Crosses to JS as the message of a thrown
 /// `Error`, so each arm's text is what a console shows.
 #[derive(Debug, Error)]
@@ -179,41 +200,19 @@ pub enum WebCoreError {
     /// `close` was called while another call still held the vault.
     #[error("vault is busy; close it once in-flight calls have returned")]
     Busy,
+    /// An id that is not an entity id.
+    #[error("not an entity id: {0}")]
+    BadId(String),
+    /// The core answered a call with a result of another shape. Not reachable
+    /// for the calls this crate makes; kept typed rather than unwrapped.
+    #[error("unexpected result: expected {0}")]
+    Unexpected(&'static str),
 }
 
-/// A wall clock read from the host, with the host's zone fixed at open.
-///
-/// The core never reads an ambient clock (`clippy.toml`'s determinism rules);
-/// this is the seam it is handed instead. `now` is a plain function so the
-/// browser build can pass `Date.now()` and a test can pass a constant.
-#[derive(Debug, Clone)]
-pub struct HostClock {
-    now: fn() -> u64,
-    timezone: String,
-}
-
-impl HostClock {
-    /// A clock reading `now` and reporting `timezone`, an IANA name. A name the
-    /// core's bundled tzdb does not know evaluates as UTC there, the fallback
-    /// every native clock gets too.
-    #[must_use]
-    pub fn new(now: fn() -> u64, timezone: impl Into<String>) -> Self {
-        Self {
-            now,
-            timezone: timezone.into(),
-        }
-    }
-}
-
-impl Clock for HostClock {
-    fn now_ms(&self) -> u64 {
-        (self.now)()
-    }
-
-    fn timezone(&self) -> String {
-        self.timezone.clone()
-    }
-}
+/// A wall clock read from the host, with the host's zone fixed at open: the
+/// browser build passes `Date.now()` and the IANA zone `Intl` reports. It is
+/// the client layer's, shared with every other host.
+pub use sunrise_client_core::host::HostClock;
 
 /// One open vault.
 ///
@@ -239,9 +238,8 @@ impl WebCore {
         app: &str,
         clock: HostClock,
     ) -> Result<Self, WebCoreError> {
-        let bytes: [u8; 32] = root
-            .try_into()
-            .map_err(|_| WebCoreError::BadVaultRoot { len: root.len() })?;
+        let bytes = sunrise_client_core::host::vault_root(root)
+            .map_err(|e| WebCoreError::BadVaultRoot { len: e.len })?;
         let cfg = CoreConfig::with_clock(vault_dir, app, Arc::new(clock), Arc::new(SystemRng));
         let core = Core::open(
             cfg,
@@ -305,11 +303,12 @@ impl WebCore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use sunrise_core::Clock as _;
 
     /// 2026-01-01T00:00:00Z. Fixed so no outcome depends on the host clock.
-    fn fixed_now() -> u64 {
+    pub(crate) fn fixed_now() -> u64 {
         1_767_225_600_000
     }
 
@@ -317,10 +316,23 @@ mod tests {
         HostClock::new(fixed_now, "America/Toronto")
     }
 
-    async fn open(dir: &std::path::Path) -> WebCore {
+    pub(crate) async fn open(dir: &std::path::Path) -> WebCore {
         WebCore::open(dir.to_path_buf(), &[7; 32], "0.1.0+test", clock())
             .await
             .expect("open")
+    }
+
+    #[test]
+    fn a_clock_reading_clamps_to_whole_non_negative_milliseconds() {
+        assert_eq!(clamp_ms(f64::NAN), 0);
+        assert_eq!(clamp_ms(f64::INFINITY), 0);
+        assert_eq!(clamp_ms(f64::NEG_INFINITY), 0);
+        assert_eq!(clamp_ms(-1.0), 0);
+        assert_eq!(clamp_ms(0.0), 0);
+        assert_eq!(clamp_ms(0.5), 0);
+        assert_eq!(clamp_ms(1.5), 1);
+        assert_eq!(clamp_ms(1.7e12), 1_700_000_000_000);
+        assert_eq!(clamp_ms(1e300), u64::MAX);
     }
 
     #[test]
@@ -368,6 +380,19 @@ mod tests {
         assert_eq!(tasks[0]["title"], "Renew passport");
         assert_eq!(tasks[0]["state"], "todo");
 
+        // A task planned at `fixed_now()` is in Today; the unplanned capture
+        // above stays out.
+        let planned: serde_json::Value = serde_json::from_str(
+            &core
+                .submit_json(
+                    r#"{"CreateTask":{"title":"Book flights","contexts":[],"scheduled_at":"2026-01-01T00:00:00Z"}}"#,
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let planned_id = planned["entity"].as_str().expect("entity id is a string");
+
         // Today answers `Tasks`, not `StreamTasks`; `apps/web/src/wasm.ts`
         // reads both.
         let today: serde_json::Value = serde_json::from_str(
@@ -380,7 +405,11 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(today["Tasks"].is_array(), "{today}");
+        let rows = today["Tasks"].as_array().expect("Today is Tasks");
+        assert_eq!(rows.len(), 1, "{today}");
+        assert_eq!(rows[0]["id"], planned_id);
+        assert_eq!(rows[0]["title"], "Book flights");
+        assert_eq!(rows[0]["state"], "todo");
 
         core.submit_json(&format!(r#"{{"CompleteTask":"{id}"}}"#))
             .await

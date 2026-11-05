@@ -1,0 +1,323 @@
+//! A stream's snapshot record, carried to the devices that need it (issue
+//! #462, [ADR-0068](../../../docs/11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md)).
+//!
+//! The record is written and applied by the engine (ADR-0059 §4). This module
+//! is the two legs of its journey, both driven by the sync driver over the one
+//! transport it holds:
+//!
+//! - **Publish.** The stream's compactor uploads its latest record through the
+//!   blob routes, chunked at the relay's chunk ceiling, and pins it as the
+//!   stream's latest. A record is a blob and not a frame because it outgrows
+//!   the 4 MiB frame cap past a few thousand tasks.
+//! - **Recover.** A device the relay answers with `SYNC_CURSOR_GAP` — one
+//!   offline past the relay's op retention, or a new device joining an old
+//!   account, whose empty cursors are below everything retained — fetches the
+//!   stream's pinned record, checks it is the blob the pin names, and applies
+//!   it. Applying it raises the stream's floors and cursors to its frontier,
+//!   so the re-subscribe that follows asks the relay only for what it still
+//!   holds. [`recover_gaps`] runs that for every gap a session is told of.
+//!
+//! What the record proves is the engine's to check: its signature, its
+//! writer, its frontier against this replica's own chain. This module checks
+//! only that the bytes are the ones the relay pinned.
+
+use std::collections::HashSet;
+
+use sunrise_error::ErrorCode;
+use sunrise_sync::{SyncState, Transport, TransportError};
+
+use crate::bytes::hex_short;
+use crate::core::{Core, CoreError};
+use crate::engine::{EngineError, SnapshotApplied};
+use crate::sync_driver::{encode_subscribe_all, Outgoing, SyncShared};
+
+/// The largest chunk a record is uploaded in: the relay's per-chunk ceiling
+/// (`crates/sunrise-server/src/api/blobs/mod.rs#MAX_CHUNK_BYTES`).
+const CHUNK_BYTES: usize = 1024 * 1024;
+
+/// A record this replica should publish.
+#[derive(Debug, Clone)]
+pub(crate) struct Publishable {
+    /// The stream it is a snapshot of.
+    pub(crate) stream: [u8; 16],
+    /// Its content address on the relay, [`blob_id_of`] the record.
+    pub(crate) blob_id: [u8; 16],
+    /// The record, verbatim.
+    pub(crate) record: Vec<u8>,
+}
+
+/// A record's address on the relay: the first sixteen bytes of BLAKE3 over
+/// it, which is what the relay content-addresses a committed blob by.
+pub(crate) fn blob_id_of(record: &[u8]) -> [u8; 16] {
+    let hash = sunrise_crypto::ciphertext_hash(std::iter::once(record));
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&hash[..16]);
+    id
+}
+
+/// Publish every snapshot record this replica should (see
+/// [`Core::snapshots_to_publish`]).
+///
+/// Failures are logged and left for the next tick, which asks again: nothing
+/// is queued, because the record itself is the durable state and the relay's
+/// pin is what says whether it arrived.
+pub(crate) async fn publish<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    let Ok(due) = core.snapshots_to_publish() else {
+        return;
+    };
+    for Publishable {
+        stream,
+        blob_id,
+        record,
+    } in due
+    {
+        match publish_one(transport, &stream, &blob_id, &record).await {
+            Ok(uploaded) => {
+                core.note_snapshot_published(stream, blob_id);
+                if uploaded {
+                    tracing::info!(
+                        ev = "sync.snapshot.published",
+                        stream_h = hex_short(&stream),
+                        blob_h = hex_short(&blob_id),
+                        n_bytes = record.len() as u64,
+                        "this stream's snapshot record is pinned on the relay for devices that need it"
+                    );
+                }
+            }
+            Err(TransportError::Unsupported) => return,
+            Err(e) => tracing::warn!(
+                ev = "sync.snapshot.publish_failed",
+                err_code = "SYNC_NETWORK_UNAVAILABLE",
+                err_kind = "transient",
+                retryable = true,
+                stream_h = hex_short(&stream),
+                cause = %e,
+                "a snapshot record did not reach the relay; the next tick tries again"
+            ),
+        }
+    }
+}
+
+/// Upload and pin one record. `Ok(false)` when the relay already pinned it.
+async fn publish_one<T: Transport + ?Sized>(
+    transport: &mut T,
+    stream: &[u8; 16],
+    blob_id: &[u8; 16],
+    record: &[u8],
+) -> Result<bool, TransportError> {
+    if transport
+        .snapshot_latest(stream)
+        .await?
+        .is_some_and(|pin| pin.blob_id == *blob_id)
+    {
+        return Ok(false);
+    }
+    let committed = upload(transport, stream, record).await?;
+    transport.snapshot_pin(stream, &committed).await?;
+    Ok(true)
+}
+
+/// Upload `bytes` through the blob routes in chunks of at most the relay's
+/// ceiling, filed under `stream`, and return the committed blob id.
+///
+/// Shared with the key bundle's publish (ADR-0069), which travels the same
+/// way.
+pub(crate) async fn upload<T: Transport + ?Sized>(
+    transport: &mut T,
+    stream: &[u8; 16],
+    bytes: &[u8],
+) -> Result<[u8; 16], TransportError> {
+    let chunks: Vec<&[u8]> = bytes.chunks(CHUNK_BYTES).collect();
+    let count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
+    let upload = transport
+        .blob_init(stream, count, bytes.len() as u64)
+        .await?;
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        transport.blob_put_chunk(&upload, idx, chunk).await?;
+    }
+    let hashes: Vec<[u8; 32]> = chunks
+        .iter()
+        .map(|c| sunrise_crypto::ciphertext_hash(std::iter::once(*c)))
+        .collect();
+    let whole = sunrise_crypto::ciphertext_hash(std::iter::once(bytes));
+    let commit = transport.blob_finalize(&upload, &whole, &hashes).await?;
+    Ok(commit.blob_id)
+}
+
+/// What catching one gapped stream up from its snapshot came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// The record was applied: re-subscribe from the cursors it set.
+    Applied,
+    /// Not now, but it may work later: the record needs a key or a cert that
+    /// another stream's catch-up brings, or the relay could not be reached.
+    Deferred(&'static str),
+    /// Nothing this session can do: the relay pins no record, the one it
+    /// pins adds nothing, or it was refused.
+    Failed(&'static str),
+}
+
+/// Fetch, check and apply `stream`'s pinned snapshot record.
+pub(crate) async fn recover<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+    stream: [u8; 16],
+) -> Recovery {
+    let pin = match transport.snapshot_latest(&stream).await {
+        Ok(Some(pin)) => pin,
+        Ok(None) => return Recovery::Failed("no_snapshot"),
+        Err(TransportError::Unsupported) => return Recovery::Failed("unsupported"),
+        Err(_) => return Recovery::Deferred("transport"),
+    };
+    let record = match transport.blob_fetch(&pin.blob_id).await {
+        Ok(Some(bytes)) => bytes,
+        // Replaced by a newer pin between the two reads; the next gap asks
+        // again and finds that one.
+        Ok(None) => return Recovery::Deferred("not_on_relay"),
+        Err(TransportError::Unsupported) => return Recovery::Failed("unsupported"),
+        Err(_) => return Recovery::Deferred("transport"),
+    };
+    if blob_id_of(&record) != pin.blob_id {
+        return Recovery::Failed("rejected");
+    }
+    let outcome = match core.apply_stream_snapshot(&record) {
+        Ok(SnapshotApplied::Applied { .. }) => Recovery::Applied,
+        Ok(SnapshotApplied::Covered) => Recovery::Failed("covered"),
+        Ok(SnapshotApplied::NoKey) => Recovery::Deferred("no_key"),
+        Ok(SnapshotApplied::Pending { .. }) => Recovery::Deferred("pending"),
+        Err(CoreError::Engine(EngineError::UnknownDevice)) => Recovery::Deferred("unknown_device"),
+        Err(_) => Recovery::Failed("rejected"),
+    };
+    match outcome {
+        Recovery::Applied => tracing::info!(
+            ev = "sync.snapshot.recovered",
+            stream_h = hex_short(&stream),
+            blob_h = hex_short(&pin.blob_id),
+            n_bytes = record.len() as u64,
+            "a stream the relay could no longer replay was caught up from its snapshot record"
+        ),
+        Recovery::Deferred(reason) => tracing::warn!(
+            ev = "sync.snapshot.deferred",
+            stream_h = hex_short(&stream),
+            reason,
+            "a stream's snapshot record cannot be applied yet; the next gap report tries again"
+        ),
+        Recovery::Failed(_) => {}
+    }
+    outcome
+}
+
+/// What catching gapped streams up from their snapshot records came to in
+/// one session (ADR-0068).
+#[derive(Debug, Default)]
+pub(crate) struct GapRecovery {
+    /// Streams a record was applied for this session. A second gap on one of
+    /// them means the record's frontier is below what the relay still holds.
+    applied: HashSet<[u8; 16]>,
+    /// Streams whose record could not be applied yet; retried after any
+    /// other record applies, and on the next gap the relay reports.
+    deferred: HashSet<[u8; 16]>,
+    /// Streams nothing in this session can catch up.
+    failed: HashSet<[u8; 16]>,
+    /// Whether this session already fetched the account's key bundle
+    /// (ADR-0069). Once per session: the relay pins one, and asking again
+    /// inside the session cannot produce another.
+    pub(crate) key_bundle_tried: bool,
+}
+
+/// Catch each stream in `gaps` up from its snapshot record, and re-subscribe
+/// from the cursors the records set.
+///
+/// A stream that cannot be caught up latches [`SyncState::Degraded`], exactly
+/// as a gap did before snapshots travelled: the device is missing ops and
+/// must not claim otherwise. A deferred one latches it too, and the state
+/// goes back to catching up once every gapped stream of the session has been
+/// recovered.
+pub(crate) async fn recover_gaps<T: Transport + ?Sized>(
+    core: &Core,
+    shared: &SyncShared,
+    transport: &mut T,
+    gaps: &mut Vec<[u8; 16]>,
+    recovery: &mut GapRecovery,
+    pending_sends: &mut Vec<Outgoing>,
+    subscribed: &mut HashSet<[u8; 16]>,
+) {
+    let mut resubscribe = false;
+    while let Some(stream) = gaps.pop() {
+        let outcome = if recovery.applied.contains(&stream) {
+            Recovery::Failed("below_snapshot")
+        } else if recovery.failed.contains(&stream) {
+            // Already reported and latched; asking the relay again cannot
+            // change the answer inside this session.
+            shared.mark_degraded();
+            continue;
+        } else {
+            recover(core, transport, stream).await
+        };
+        match outcome {
+            Recovery::Applied => {
+                recovery.applied.insert(stream);
+                recovery.deferred.remove(&stream);
+                resubscribe = true;
+                // What the record carried — keys, certs, streams — may be
+                // what a deferred stream was waiting for.
+                gaps.extend(recovery.deferred.drain());
+            }
+            Recovery::Deferred(reason) => {
+                recovery.deferred.insert(stream);
+                shared.mark_degraded();
+                // A record sealed under a key this vault does not hold, on a
+                // vault that holds the identity's unwrapping key: a device
+                // restored from the recovery code, whose identity-addressed
+                // envelopes the relay has trimmed. The account's key bundle
+                // carries those keys (ADR-0069).
+                if matches!(reason, "no_key" | "pending")
+                    && !recovery.key_bundle_tried
+                    && core.holds_identity_key()
+                {
+                    recovery.key_bundle_tried = true;
+                    if let crate::key_bundle_sync::Recovery::Absorbed(n) =
+                        crate::key_bundle_sync::recover(core, transport).await
+                    {
+                        if n > 0 {
+                            gaps.extend(recovery.deferred.drain());
+                        }
+                    }
+                }
+            }
+            Recovery::Failed(reason) => {
+                recovery.failed.insert(stream);
+                tracing::warn!(
+                    ev = "sync.gap",
+                    err_code = %ErrorCode::SyncCursorGap,
+                    err_kind = "permanent",
+                    retryable = false,
+                    result = "degraded",
+                    stream_h = hex_short(&stream),
+                    reason,
+                    "relay cannot supply ops this device never received, and no snapshot covers them"
+                );
+                shared.mark_degraded();
+            }
+        }
+    }
+    if !resubscribe {
+        return;
+    }
+    if recovery.failed.is_empty()
+        && recovery.deferred.is_empty()
+        && shared.current_state() == SyncState::Degraded
+    {
+        shared.set_state(SyncState::CatchingUp);
+    }
+    // Every stream, with the cursors the records raised. A record of the
+    // vault-meta stream can name streams this device never subscribed to.
+    if let Ok(entries) = core.sync_subscribe_entries() {
+        subscribed.extend(entries.iter().map(|e| e.stream_id));
+    }
+    match encode_subscribe_all(core) {
+        Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
+        Err(()) => shared.mark_degraded(),
+    }
+}

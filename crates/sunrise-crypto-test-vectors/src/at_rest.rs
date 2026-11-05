@@ -1,6 +1,8 @@
 //! What a vault holds on disk, frozen: the wrapped-secret AADs, the wrapped
 //! stream key, the recovery blob, the vault-meta genesis key, the pre-ADR-0024
-//! derived stream key, and the op-log's derived primary key.
+//! derived stream key, the op-log's derived primary key, and the account's key
+//! bundle (which a relay pins rather than a vault holds, and which is read by
+//! a vault that holds nothing else).
 //!
 //! These are the constants a *second build of Sunrise* has to reproduce before
 //! it can open a vault this one wrote. None of them travels: an AAD is not
@@ -243,3 +245,50 @@ pub const REMOTE_OP_ID_VECTORS: [RemoteOpIdVector; 3] = [
         op_id: crate::hex("d6098eda8e9a2dd39541c360ed337ba9"),
     },
 ];
+
+/// The account's key bundle (ADR-0069), sealed once by this implementation and
+/// pinned: the frozen identity, the frozen device cert as publisher, three
+/// keys, and a ChaCha20 RNG seeded with 580 for the HPKE ephemeral.
+///
+/// Pins the three domains the format names (`sunrise.key_bundle.hpke.v1`,
+/// `sunrise.key_bundle.sig.v1` and `sunrise.key_bundle.manifest.v1`) and the
+/// field layout, because a bundle written by one build is read by another,
+/// usually years later, by a device that holds nothing but the recovery code.
+pub mod key_bundle {
+    /// When the bundle says it was sealed.
+    pub const GENERATED_AT_MS: u64 = 1_700_000_000_000;
+    /// The RNG seed the HPKE ephemeral was drawn from.
+    pub const RNG_SEED: u64 = 580;
+    /// The keys it carries, as `(stream_id, epoch, key)`.
+    pub const KEYS: [([u8; 16], u32, [u8; 32]); 3] = [
+        ([0x00; 16], 1, [0x31; 32]),
+        ([0x00; 16], 2, [0x32; 32]),
+        ([0x73; 16], 2, [0x33; 32]),
+    ];
+    /// The digest of their manifest.
+    pub const MANIFEST_DIGEST: [u8; 32] =
+        crate::hex("93d2ccc52ace23fa099bab1777d563a1de7fb831b20b1dc99a1beb23e6749aee");
+    /// The sealed bundle, as the relay would pin it.
+    pub const BUNDLE: [u8; 599] = crate::hex(concat!(
+        "5352080001a6015045a0390256fa6254564d065f602997810258dea20158",
+        "97a801010250bd7a2df3f45482e111edeee969e0168e035820d04ab23274",
+        "2bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737045820",
+        "219e4d800da968d2a5fcb009c784f4746c7138edb9ee4844b739e830b05c",
+        "f424055045a0390256fa6254564d065f60299781061b0000018bcfe56800",
+        "076d66726f7a656e2d646576696365086f66726f7a656e2d706c6174666f",
+        "726d02584019cbc90635270a6217dfd949ca175a27007bff507bc2e43483",
+        "c0f7be7e054dedce0f2010bbb9c1f9d6251ddec4979d540e8ec51f38ebc0",
+        "88ecc890c4c89fa50b031b0000018bcfe568000483835000000000000000",
+        "000000000000000000010183500000000000000000000000000000000002",
+        "0183507373737373737373737373737373737302010558d05d2cb61e5c84",
+        "4a0619087b29a17db683cdfdc4b06a9b9dd1556c502a28494d595e8add7c",
+        "fd220d11ff9fbd2496576cf5231161e0ca025a3852b7422acb889e357be7",
+        "ee487af53788a9591bf47187c0c8c304ee8322f972a73d35be67a67ff435",
+        "e76550a266b71d65c360d966cc7f2616b20543432866b40d00a0fd346b4d",
+        "e7bce69baca5222f4d5a451e4ce3aa9c409e230ac79055c1e8ed1be606b5",
+        "e6f5e723d4bcd433da8203e2942bbbf3598b1d5fb5dbd8db560aa6a0ee34",
+        "6c6fb62d38ee00293e60d13a47343f0d1f68ccdade11065840e2e840274c",
+        "53f3c44e9f4baa09caf9bd9b7a5a774cfda91073cff89f9be95f00b71882",
+        "90a5c242c88a57b0f1fc5e14d99e1a75c0d93db8ad9dfe037e80df2907",
+    ));
+}

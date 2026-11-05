@@ -38,6 +38,12 @@ pub enum MagicKind {
     DiagBundle = 6,
     /// Pairing payload, base64url JSON inside (versioned by pairing v).
     PairingPayload = 7,
+    /// An account's identity-sealed key bundle (versioned by key bundle
+    /// format version, currently 1; ADR-0069).
+    KeyBundle = 8,
+    /// An account's identity chain, pinned beside its recovery blob
+    /// (versioned by identity chain format version, currently 1; ADR-0070).
+    IdentityChain = 9,
 }
 
 impl MagicKind {
@@ -58,6 +64,8 @@ impl MagicKind {
             5 => Some(Self::VaultMeta),
             6 => Some(Self::DiagBundle),
             7 => Some(Self::PairingPayload),
+            8 => Some(Self::KeyBundle),
+            9 => Some(Self::IdentityChain),
             _ => None,
         }
     }
@@ -84,14 +92,6 @@ pub enum MagicError {
     /// Kind byte not in the known set.
     #[error("magic prefix kind byte {0:#x} is unknown")]
     UnknownKind(u8),
-    /// Version mismatch — caller wanted a specific version but found another.
-    #[error("magic prefix version mismatch: wanted {wanted}, got {got}")]
-    VersionMismatch {
-        /// Expected version.
-        wanted: u16,
-        /// Decoded version.
-        got: u16,
-    },
 }
 
 impl MagicError {
@@ -127,26 +127,6 @@ pub fn decode_prefix(buf: &[u8]) -> Result<MagicPrefix, MagicError> {
     Ok(MagicPrefix { kind, version })
 }
 
-/// Convenience: decode and assert a specific kind + version.
-///
-/// # Errors
-/// Returns the decode error or a [`MagicError::VersionMismatch`] /
-/// [`MagicError::UnknownKind`] if the prefix doesn't match the expected
-/// `(kind, version)` pair.
-pub fn expect_prefix(buf: &[u8], kind: MagicKind, version: u16) -> Result<(), MagicError> {
-    let p = decode_prefix(buf)?;
-    if p.kind != kind {
-        return Err(MagicError::UnknownKind(p.kind.as_byte()));
-    }
-    if p.version != version {
-        return Err(MagicError::VersionMismatch {
-            wanted: version,
-            got: p.version,
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +142,8 @@ mod tests {
             MagicKind::VaultMeta,
             MagicKind::DiagBundle,
             MagicKind::PairingPayload,
+            MagicKind::KeyBundle,
+            MagicKind::IdentityChain,
         ];
         for k in kinds {
             for v in [0u16, 1, 0xff, 0x1234, 0xffff] {
@@ -216,16 +198,5 @@ mod tests {
         let mut buf = [0u8; MAGIC_LEN];
         write_prefix(&mut buf, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
         assert_eq!(buf, *b"SR\x02\x00\x03");
-    }
-
-    #[test]
-    fn expect_prefix_validates_pair() {
-        let mut buf = [0u8; MAGIC_LEN];
-        write_prefix(&mut buf, MagicKind::Frame, 1);
-        expect_prefix(&buf, MagicKind::Frame, 1).unwrap();
-        assert!(matches!(
-            expect_prefix(&buf, MagicKind::Frame, 2),
-            Err(MagicError::VersionMismatch { wanted: 2, got: 1 })
-        ));
     }
 }

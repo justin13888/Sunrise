@@ -5,7 +5,7 @@ Why this file exists
 --------------------
 
 The gate's answer is an exit code: 0 means "the core reaches the filesystem
-only through `CoreConfig::storage`", 1 means it does not. Nothing but this
+only through `CoreConfig::vault_dir`", 1 means it does not. Nothing but this
 file has ever asserted that it can still say 1.
 
 That mattered immediately. The gate's first `production_lines` stopped

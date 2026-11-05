@@ -1,13 +1,13 @@
-//! Pairing rate limits + email-hash helper.
+//! Pairing rate limits.
 //!
 //! Per `docs/03-crypto/pairing-and-onboarding.md`.
 
-const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
-
-/// Pair attempts per rolling hour per `account_email_hash`.
+/// Pair attempts per rolling hour per account; the relay buckets them by
+/// `account_id`.
 pub const RATE_LIMIT_HOURLY: u32 = 10;
 
-/// Pair attempts per rolling day per `account_email_hash`.
+/// Pair attempts per rolling day per account; the relay buckets them by
+/// `account_id`.
 pub const RATE_LIMIT_DAILY: u32 = 30;
 
 /// Pair attempts per rolling hour per relay client address.
@@ -121,30 +121,9 @@ impl AttemptWindow {
     }
 }
 
-/// Compute the 4-byte (8 hex chars) `account_email_hash`. Email is normalized
-/// (lowercase + trim) before hashing. The hash is non-reversible and used
-/// only as the rate-limit bucket key — never to identify a user across
-/// accounts.
-#[must_use]
-pub fn account_email_hash(email: &str) -> [u8; 4] {
-    let normalized = email.trim().to_ascii_lowercase();
-    let mut hasher = blake3::Hasher::new_derive_key(EMAIL_HASH_DOMAIN);
-    hasher.update(normalized.as_bytes());
-    let mut out = [0u8; 4];
-    hasher.finalize_xof().fill(&mut out);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn deterministic_normalized() {
-        let a = account_email_hash("Justin@Example.com");
-        let b = account_email_hash(" justin@example.com  ");
-        assert_eq!(a, b);
-    }
 
     const T0: u64 = 1_800_000_000_000;
 
@@ -185,6 +164,39 @@ mod tests {
         assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, T0 + DAY_MS), Ok(()));
     }
 
+    /// Characterization, not endorsement: this pins what the window does today
+    /// when `now_ms` steps back, so a later change to it is a visible one.
+    ///
+    /// An attempt admitted after a step-back is appended behind later ones,
+    /// so the log is no longer sorted. `full_until` still reads the front of
+    /// the in-window attempts as the oldest, so the `Retry-After` it promises
+    /// is the expiry of the first attempt by position (`T0`), not of the one
+    /// that is oldest by time (`T0 - 5_000`) — and a retry is in fact admitted
+    /// five seconds before the promised moment.
+    #[test]
+    fn a_clock_step_back_promises_the_expiry_of_the_first_logged_attempt() {
+        let mut w = AttemptWindow::default();
+        for i in 0..9 {
+            assert_eq!(
+                w.try_admit(AttemptLimit::PER_ACCOUNT, T0 + i * 1000),
+                Ok(())
+            );
+        }
+        let stepped_back = T0 - 5_000;
+        assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back), Ok(()));
+        let now = T0 + 10_000;
+        assert_eq!(
+            w.try_admit(AttemptLimit::PER_ACCOUNT, now),
+            Err(T0 + HOUR_MS - now)
+        );
+        // The stepped-back attempt leaves the hour first, and its slot opens
+        // before the wait above has run out.
+        assert_eq!(
+            w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back + HOUR_MS),
+            Ok(())
+        );
+    }
+
     #[test]
     fn the_address_limit_has_no_daily_bound() {
         let mut w = AttemptWindow::default();
@@ -208,10 +220,107 @@ mod tests {
         assert!(w.is_idle(T0 + DAY_MS));
     }
 
-    #[test]
-    fn different_emails_diverge() {
-        let a = account_email_hash("a@example.com");
-        let b = account_email_hash("b@example.com");
-        assert_ne!(a, b);
+    /// Gaps between consecutive attempts: mostly bursts, so the hourly cap
+    /// fills, with hour- and day-scale pauses so windows also drain.
+    fn gap_ms() -> impl proptest::strategy::Strategy<Value = u64> {
+        use proptest::prelude::*;
+        prop_oneof![
+            6 => 0..60_000u64,
+            3 => 0..HOUR_MS,
+            1 => 0..=DAY_MS,
+        ]
+    }
+
+    /// The two shipped limits, and small arbitrary ones so a short run
+    /// reaches every cap, with or without a daily bound.
+    fn limit() -> impl proptest::strategy::Strategy<Value = AttemptLimit> {
+        use proptest::prelude::*;
+        prop_oneof![
+            Just(AttemptLimit::PER_ACCOUNT),
+            Just(AttemptLimit::PER_ADDRESS),
+            (1..6u32, proptest::option::of(1..16u32))
+                .prop_map(|(per_hour, per_day)| AttemptLimit { per_hour, per_day }),
+        ]
+    }
+
+    /// Admitted attempts in the half-open window `(now - span, now]`.
+    fn count_inside(admitted: &[u64], span_ms: u64, now_ms: u64) -> usize {
+        let horizon = now_ms.saturating_sub(span_ms);
+        admitted.iter().filter(|&&t| t > horizon).count()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: sunrise_test_seed::proptest_cases(512),
+            rng_seed: sunrise_test_seed::proptest_rng_seed(),
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Over any non-decreasing arrival sequence: an attempt is admitted
+        /// exactly when both rolling windows ending at it are under their
+        /// caps, so no rolling hour or day ever holds more than its cap; a
+        /// refusal's wait is the earliest moment a retry is admitted; and the
+        /// log never holds more than one day's admissible attempts.
+        #[test]
+        fn the_window_holds_its_caps_over_any_arrival_sequence(
+            limit in limit(),
+            gaps in proptest::collection::vec(gap_ms(), 1..200),
+        ) {
+            let day_bound = usize::try_from(
+                limit.per_day.map_or(24 * limit.per_hour, |d| d.min(24 * limit.per_hour)),
+            ).unwrap();
+            let per_hour = usize::try_from(limit.per_hour).unwrap();
+            let per_day = limit.per_day.map(|d| usize::try_from(d).unwrap());
+            let mut w = AttemptWindow::default();
+            let mut admitted: Vec<u64> = Vec::new();
+            let mut now = T0;
+            for gap in gaps {
+                now += gap;
+                // Checking every window that ends at an attempt covers every
+                // rolling window: the count only rises at an attempt.
+                let hour_has_room = count_inside(&admitted, HOUR_MS, now) < per_hour;
+                let day_has_room =
+                    per_day.is_none_or(|cap| count_inside(&admitted, DAY_MS, now) < cap);
+                let before = w.clone();
+                match w.try_admit(limit, now) {
+                    Ok(()) => {
+                        proptest::prop_assert!(
+                            hour_has_room && day_has_room,
+                            "admitted at {now} past a full window"
+                        );
+                        admitted.push(now);
+                    }
+                    Err(wait) => {
+                        proptest::prop_assert!(
+                            !(hour_has_room && day_has_room),
+                            "refused at {now} with room in both windows"
+                        );
+                        proptest::prop_assert!(wait >= 1);
+                        // A refusal records nothing: what is left is what was
+                        // there, less what aged out of the day.
+                        let kept = w.admitted_ms.len();
+                        proptest::prop_assert!(kept <= before.admitted_ms.len());
+                        proptest::prop_assert!(before
+                            .admitted_ms
+                            .iter()
+                            .skip(before.admitted_ms.len() - kept)
+                            .eq(w.admitted_ms.iter()));
+                        let mut retry = w.clone();
+                        proptest::prop_assert_eq!(retry.try_admit(limit, now + wait), Ok(()));
+                        let mut early = w.clone();
+                        proptest::prop_assert!(
+                            early.try_admit(limit, now + wait - 1).is_err(),
+                            "a retry before the promised wait of {wait} was admitted"
+                        );
+                    }
+                }
+                proptest::prop_assert!(
+                    w.admitted_ms.len() <= day_bound,
+                    "log holds {} attempts, over a day's {day_bound}",
+                    w.admitted_ms.len()
+                );
+                proptest::prop_assert!(w.admitted_ms.iter().all(|&t| t > now.saturating_sub(DAY_MS)));
+            }
+        }
     }
 }

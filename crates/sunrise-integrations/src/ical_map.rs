@@ -54,7 +54,8 @@ pub struct MappedEvent {
     pub notices: Vec<ICalNotice>,
 }
 
-/// Lower one `VEVENT` onto a [`BlockDraft`] in `stream_id`.
+/// Lower one `VEVENT` onto a [`BlockDraft`] in `stream_id`, or in no stream
+/// for `None` (ADR-0046).
 ///
 /// # Errors
 ///
@@ -62,7 +63,10 @@ pub struct MappedEvent {
 /// `DTSTART`, a zero-length event, or an end that is not after its start. The
 /// caller reports it and moves on to the next event: one unusable event must
 /// not fail the whole import.
-pub fn event_to_block(ev: &ICalEvent, stream_id: EntityRef) -> Result<MappedEvent, ICalNotice> {
+pub fn event_to_block(
+    ev: &ICalEvent,
+    stream_id: Option<EntityRef>,
+) -> Result<MappedEvent, ICalNotice> {
     let uid = || Some(ev.uid.clone());
     let skip = |detail: String| ICalNotice {
         code: NoticeCode::Skipped,
@@ -80,11 +84,39 @@ pub fn event_to_block(ev: &ICalEvent, stream_id: EntityRef) -> Result<MappedEven
 
     let starts_at = to_sunrise(start);
     let ends_at = to_sunrise(&end);
-    if ends_at.index_ms() <= starts_at.index_ms() {
+    // A pair whose order is the same for every reader is judged here, with no
+    // reader at all, in UTC:
+    //
+    // * two bounds that each resolve without a reader (an instant, or a time
+    //   in a zone the tzdb knows) resolve to the same instants in every zone,
+    //   whatever their kinds or zones;
+    // * two bounds of one kind (and one zone) order the same everywhere,
+    //   because in UTC, which has no transitions, a civil order and its
+    //   resolved order agree.
+    //
+    // Any other pair (a floating or all-day bound beside one of another kind)
+    // orders differently in different zones (`docs/10-cross-cutting/time.md`
+    // §2); it is left to the core, which validates the draft in the reader's
+    // zone when it is written, and `import` reports a refusal there per event.
+    let anchored = |t: &SunriseTime| match t {
+        SunriseTime::Instant { .. } => true,
+        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).is_ok(),
+        _ => false,
+    };
+    let same_kind = match (&starts_at, &ends_at) {
+        (SunriseTime::Zoned { tz: a, .. }, SunriseTime::Zoned { tz: b, .. }) => a == b,
+        (a, b) => a.kind_str() == b.kind_str(),
+    };
+    let reader_free = same_kind || (anchored(&starts_at) && anchored(&ends_at));
+    // On resolved instants, as the core's range check compares them, so an
+    // end at the start's instant under another kind is refused here too.
+    let inverted = matches!(
+        (ends_at.resolve_in(&TimeZone::UTC), starts_at.resolve_in(&TimeZone::UTC)),
+        (Some(e), Some(s)) if e <= s
+    );
+    if reader_free && inverted {
         return Err(skip(format!(
-            "DTEND is not after DTSTART ({} .. {})",
-            starts_at.index_ms(),
-            ends_at.index_ms()
+            "DTEND is not after DTSTART ({starts_at} .. {ends_at})"
         )));
     }
 
@@ -247,10 +279,12 @@ fn to_sunrise(t: &ICalTime) -> SunriseTime {
 
 /// Domain time → iCalendar time. The exact inverse of [`to_sunrise`] for the
 /// four kinds iCalendar can express. A kind this build does not know exports
-/// as the instant it resolves to: iCalendar has no way to carry it.
+/// at the instant it sorts at ([`SunriseTime::instant_or_last`]): its `at`
+/// anchor, or the far end of the calendar when it has none, never the epoch.
+/// iCalendar has no way to carry the kind itself.
 fn from_sunrise(t: &SunriseTime) -> ICalTime {
     match t {
-        SunriseTime::Unknown { .. } => ICalTime::Utc(t.to_instant(&jiff::tz::TimeZone::UTC)),
+        SunriseTime::Unknown { .. } => ICalTime::Utc(t.instant_or_last(&jiff::tz::TimeZone::UTC)),
         SunriseTime::Instant { at } => ICalTime::Utc(*at),
         SunriseTime::Zoned { civil, tz } => ICalTime::Zoned {
             civil: *civil,
@@ -294,13 +328,15 @@ mod tests {
 
     #[test]
     fn a_timed_event_becomes_a_block_over_the_same_range() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         assert_eq!(m.uid, "ev1@example.com");
         assert_eq!(m.draft.title.as_deref(), Some("Coffee with Alice"));
-        assert_eq!(m.draft.stream_id, stream());
+        assert_eq!(m.draft.stream_id, Some(stream()));
         assert!(m.draft.tasks.is_empty());
         assert!(!m.draft.title_track_task);
-        m.draft.validate().expect("a mapped draft is valid");
+        m.draft
+            .validate(&TimeZone::UTC)
+            .expect("a mapped draft is valid");
         assert!(m.notices.is_empty(), "{:?}", m.notices);
     }
 
@@ -336,7 +372,7 @@ mod tests {
             dtstart: Some(ICalTime::Date(civil::date(2026, 3, 1))),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.starts_at,
             SunriseTime::all_day(civil::date(2026, 3, 1))
@@ -356,7 +392,7 @@ mod tests {
             dtstart: Some(utc(2026, 3, 1, 9)),
             ..ICalEvent::new("ev1")
         };
-        let err = event_to_block(&ev, stream()).expect_err("no end");
+        let err = event_to_block(&ev, Some(stream())).expect_err("no end");
         assert_eq!(err.code, NoticeCode::Skipped);
         assert!(err.detail.contains("zero length"), "{}", err.detail);
     }
@@ -368,7 +404,7 @@ mod tests {
             duration: Some("PT90M".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.ends_at,
             SunriseTime::instant(
@@ -390,7 +426,7 @@ mod tests {
             duration: Some("P1D".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 2, 9)));
     }
 
@@ -400,7 +436,7 @@ mod tests {
             duration: Some("PT9H".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 1, 15)));
         assert!(m
             .notices
@@ -414,7 +450,7 @@ mod tests {
             dtstart: None,
             ..event()
         };
-        assert!(event_to_block(&ev, stream()).is_err());
+        assert!(event_to_block(&ev, Some(stream())).is_err());
     }
 
     #[test]
@@ -423,8 +459,50 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 13)),
             ..event()
         };
-        let err = event_to_block(&ev, stream()).expect_err("inverted");
+        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
         assert!(err.detail.contains("not after"), "{}", err.detail);
+    }
+
+    /// A start in a named zone and an end in UTC are two kinds, but both
+    /// resolve without a reader, so their order is every reader's: 09:00 New
+    /// York is 14:00Z, after a 12:00Z end, and the mapper refuses it.
+    #[test]
+    fn an_inverted_range_across_a_tzid_and_utc_is_refused() {
+        let ev = ICalEvent {
+            dtstart: Some(ICalTime::Zoned {
+                civil: civil::date(2026, 3, 1).at(9, 0, 0, 0),
+                tz: "America/New_York".into(),
+            }),
+            dtend: Some(utc(2026, 3, 1, 12)),
+            ..event()
+        };
+        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
+        assert_eq!(err.code, NoticeCode::Skipped);
+        assert!(err.detail.contains("not after"), "{}", err.detail);
+
+        // Two TZIDs, likewise: 09:00 New York (14:00Z) to 15:00 Berlin
+        // (14:00Z) is zero length.
+        let ev = ICalEvent {
+            dtend: Some(ICalTime::Zoned {
+                civil: civil::date(2026, 3, 1).at(15, 0, 0, 0),
+                tz: "Europe/Berlin".into(),
+            }),
+            ..ev
+        };
+        assert!(event_to_block(&ev, Some(stream())).is_err());
+    }
+
+    /// A floating start beside a UTC end orders differently in different
+    /// zones, so the mapper leaves it to the core, which judges it in the
+    /// reader's zone.
+    #[test]
+    fn a_floating_start_beside_a_utc_end_is_left_to_the_core() {
+        let ev = ICalEvent {
+            dtstart: Some(ICalTime::Floating(civil::date(2026, 3, 1).at(13, 0, 0, 0))),
+            dtend: Some(utc(2026, 3, 1, 12)),
+            ..event()
+        };
+        assert!(event_to_block(&ev, Some(stream())).is_ok());
     }
 
     #[test]
@@ -435,7 +513,7 @@ mod tests {
             rrule: Some("FREQ=WEEKLY".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         let details: Vec<&str> = m.notices.iter().map(|n| n.detail.as_str()).collect();
         assert_eq!(details.len(), 3, "{details:?}");
         assert!(details.iter().any(|d| d.starts_with("DESCRIPTION")));
@@ -449,9 +527,9 @@ mod tests {
             summary: Some("   ".into()),
             ..event()
         };
-        let m = event_to_block(&ev, stream()).expect("mapped");
+        let m = event_to_block(&ev, Some(stream())).expect("mapped");
         assert_eq!(m.draft.title.as_deref(), Some("(untitled event)"));
-        m.draft.validate().expect("valid");
+        m.draft.validate(&TimeZone::UTC).expect("valid");
     }
 
     fn block_from(m: &MappedEvent, id: EntityRef) -> Block {
@@ -474,7 +552,7 @@ mod tests {
     /// user's own `.ics` from doubling their calendar when they read it back.
     #[test]
     fn a_block_exported_and_re_imported_maps_to_the_same_block() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         let id = imported_block_id("ics", &m.uid);
         let block = block_from(&m, id);
 
@@ -483,7 +561,7 @@ mod tests {
         // Under a different source too: the id is in the UID, not the hash.
         assert_eq!(imported_block_id("other", &exported.uid), id);
 
-        let back = event_to_block(&exported, stream()).expect("mapped");
+        let back = event_to_block(&exported, Some(stream())).expect("mapped");
         assert_eq!(back.draft.starts_at, m.draft.starts_at);
         assert_eq!(back.draft.ends_at, m.draft.ends_at);
         assert_eq!(back.draft.title, m.draft.title);
@@ -491,7 +569,7 @@ mod tests {
 
     #[test]
     fn export_uses_the_resolved_title_not_the_stored_one() {
-        let m = event_to_block(&event(), stream()).expect("mapped");
+        let m = event_to_block(&event(), Some(stream())).expect("mapped");
         let block = block_from(&m, imported_block_id("ics", &m.uid));
         let ev = block_to_event(&block, Some("What the grid shows"));
         assert_eq!(ev.summary.as_deref(), Some("What the grid shows"));

@@ -1,6 +1,8 @@
 //! The device-signature binding through the real router.
 
-use crate::api::error::codes::{AUTH_DEVICE_SIG_INVALID, AUTH_TOKEN_INVALID};
+use crate::api::error::codes::{
+    AUTH_DEVICE_SIG_INVALID, AUTH_TOKEN_INVALID, RELAY_STORAGE_UNAVAILABLE,
+};
 use crate::api::testing::{code_of, now_rfc2822, send_signed, Client, BEARER};
 use crate::state::ServerState;
 use crate::{ServerConfig, StaticVerifier, Subject};
@@ -298,4 +300,114 @@ async fn a_bootstrap_route_still_checks_a_binding_that_is_offered() {
     )
     .await
     .assert_status(StatusCode::UNAUTHORIZED);
+}
+
+/// A metadata store that does not answer while a bearer is resolved is a
+/// storage failure, not a bad credential: the caller is told to retry with
+/// `503 RELAY_STORAGE_UNAVAILABLE` rather than to refresh a bearer that was
+/// never the problem, and the outage is logged as the transient
+/// `srv.store.failed` it is. The bearer is resolved before the binding is
+/// read, so the signature never comes into it.
+///
+/// A plain `#[test]` with its own runtime, because the dispatcher has to wrap
+/// the whole request.
+#[test]
+fn an_unreachable_store_during_bearer_resolution_is_a_retryable_503() {
+    use sunrise_log::{build_subscriber, Capture, LogConfig, LogFormat, LogTarget};
+
+    let cap = Capture::new();
+    let dispatch = build_subscriber(LogConfig {
+        target: LogTarget::Capture(cap.clone()),
+        filter: "info".to_owned(),
+        format: LogFormat::Ndjson,
+    })
+    .expect("subscriber builds");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tracing::dispatcher::with_default(&dispatch, || {
+        rt.block_on(async {
+            let state = ServerState::new(ServerConfig::default())
+                .with_metadata_store(Arc::new(crate::store::conformance::Unreachable::default()));
+            let client = Client::from_state(state);
+            let sk = SigningKey::from_bytes(&[31u8; 32]);
+            let res = send_signed(
+                &client,
+                "GET",
+                "/api/v1/accounts/me",
+                "01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+                &sk,
+                None::<&serde_json::Value>,
+            )
+            .await;
+            res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(code_of(&res), RELAY_STORAGE_UNAVAILABLE);
+        });
+    });
+
+    let out = cap.contents();
+    assert!(!out.is_empty(), "the capture received no records at all");
+    let failed: Vec<serde_json::Value> = out
+        .lines()
+        .filter(|l| l.contains(r#""ev":"srv.store.failed""#))
+        .map(|l| serde_json::from_str(l).expect("record is JSON"))
+        .collect();
+    assert!(!failed.is_empty(), "no storage failure was logged: {out}");
+    for record in &failed {
+        assert_eq!(record["err_kind"], serde_json::json!("transient"), "{out}");
+        assert_eq!(record["retryable"], serde_json::json!(true), "{out}");
+    }
+}
+
+/// A state whose store resolves the bearer and then stops answering.
+fn store_lost_after_the_bearer() -> Client {
+    let account = crate::store::Account {
+        account_id: "01J8ZQ7X9K3M5N7P9R1T3V5W7Y".to_owned(),
+        oidc_iss: "self-host".to_owned(),
+        oidc_sub: "self-host".to_owned(),
+        email: None,
+        identity_pub_s: None,
+        identity_pub_d: None,
+        tier: "free".to_owned(),
+        terms_at_ms: None,
+        created_at_ms: 0,
+    };
+    let store = crate::store::conformance::Unreachable {
+        resolves: Some(account),
+    };
+    Client::from_state(
+        ServerState::new(ServerConfig::default()).with_metadata_store(Arc::new(store)),
+    )
+}
+
+/// A handler whose store call fails answers the retryable `503`, not the
+/// `500` a server bug would be.
+#[tokio::test]
+async fn a_handler_whose_store_does_not_answer_is_a_retryable_503() {
+    let client = store_lost_after_the_bearer();
+    // No binding: self-host demands none, so the request reaches the handler,
+    // whose device count is the store call that fails.
+    let res = client.send(Method::GET, "/api/v1/accounts/me", None).await;
+    res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code_of(&res), RELAY_STORAGE_UNAVAILABLE);
+}
+
+/// A device lookup the store does not answer is the retryable `503`, not the
+/// `401` an unknown device gets: nothing is known about the device either way.
+#[tokio::test]
+async fn a_device_lookup_the_store_does_not_answer_is_a_retryable_503() {
+    let client = store_lost_after_the_bearer();
+    let sk = SigningKey::from_bytes(&[32u8; 32]);
+    let res = send_signed(
+        &client,
+        "GET",
+        "/api/v1/accounts/me",
+        "01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+        &sk,
+        None::<&serde_json::Value>,
+    )
+    .await;
+    res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code_of(&res), RELAY_STORAGE_UNAVAILABLE);
 }

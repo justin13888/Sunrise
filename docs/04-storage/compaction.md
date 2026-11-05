@@ -74,13 +74,20 @@ ops. It never deletes:
 - an op still waiting in the outbox;
 - an op that a missing op's expectation was named by (`chain_expected`).
 
-Before it deletes, it folds any entity row a local command wrote and the merge
-had not folded yet, because that fold reads the op's stream and kind back from
-the log (by the `ops_by_target` index migration 0035 adds).
+Before it deletes, it folds any entity row the merge had not folded yet,
+because that fold reads the op's stream and kind back from the log (by the
+`ops_by_target` index migration 0035 adds). This build folds every local op
+as it writes it, so such a row comes only from a vault older than migration
+0033 or from a build before ADR-0065's third pull request, which wrote a
+command's row directly.
 
-The pages the deleted rows held go on SQLite's free list and are reused by
-later writes. The file does not shrink, because the vault's `auto_vacuum`
-pragma does not take effect ([#461](https://github.com/justin13888/Sunrise/issues/461)).
+A defer is compacted like any other task edit. It is logged as the
+`task.update` it is, and a `task.defer` row an older build logged for its own
+defers is a compactable kind too.
+
+A run that deleted any row ends with an incremental vacuum, which returns the
+pages the deleted rows held to the filesystem, so the file shrinks
+([`local-database.md`](./local-database.md) §Vacuum / maintenance).
 
 ### Acknowledgement and known devices
 
@@ -106,6 +113,57 @@ revoked device never holds it back.
 
 `Core::set_compaction_policy` replaces it. The sync driver's anti-entropy tick
 runs compaction at most once a day; `Core::compact_op_log` runs it now.
+
+## Pruning version rows
+
+A fold deletes ops, not the version DAG they left
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §1–§2): one
+`entity_versions` row per version and one `entity_frontier` row per device it
+reaches. Once every stream is folded, `Engine::compact_op_log` prunes the rows
+no version can still read (clarification D25,
+`crates/sunrise-core/src/engine/merge/prune.rs`). A version is **passed**, and
+its rows go, when all of:
+
+1. **compacted:** its op is at or below its prefix's floor and gone from the
+   log, so it is never delivered again or refolded by a rebuild;
+2. **not read:** it is not a head, not its device's newest version of the
+   entity (the next version's previous one, D2), not a register's winner or
+   loser, and not the newest `Patch` that wrote `streak_keys` or
+   `skipped_keys` (what a routine's derived streak reads, D17);
+3. **its readers went with it:** every version that names it as a parent,
+   and its device's next version, is in its stream and compacted, so no
+   rebuild and no replica joining the stream's snapshot folds one again;
+4. **the entity is closed:** every parent a version of the entity names is a
+   version here or is at or below its floor, so no ancestor is still to come;
+5. **every device that can still write has passed it:** each device in
+   `devices` other than this one that is not revoked, or was revoked less
+   than `retention_ms` ago, has acknowledged a version that descends from it.
+   It wrote that version, or published a frontier in its stream that reaches
+   it, and this replica holds that device's own prefix in the stream as far
+   as that acknowledgement states. A device with an op held here unapplied
+   (waiting for its key, parked, or held in a group) passes nothing.
+
+So a version applied afterwards names no pruned version, has no pruned
+previous version and descends from no pruned ancestor: every frontier it
+reads is still stored, and is the one a replica that pruned nothing reads.
+The rows, registers, losers, heads and conflicts are the same, and so is a
+rebuild.
+
+Unlike the op-log floor, a device silent for any time holds pruning back,
+because its unsent versions may name anything it held. Revoking it releases
+it once the relay no longer holds what it uploaded. The rule cannot see a
+device paired elsewhere whose cert has not arrived, an op sealed in another
+stream before the acknowledgement it read and never received here, or a
+writer naming a parent that was not its head. A version of those that names
+a pruned parent folds it as a parent never applied: the parent adds nothing
+to its frontier, so its writes stay in the unresolved set beside the ones it
+had seen there, until the next write naming the heads. No write is lost.
+
+After a fold an entity keeps its heads, each device's newest version, its
+registers' winners and losers, and the versions not yet folded:
+`crates/sunrise-core/src/engine/tests/prune.rs` holds an entity to that bound
+however many edits it took. `CompactionReport::versions_pruned` counts the
+rows, and `core.compaction.done` logs it as `n_versions`.
 
 ## Who writes the snapshot (compactor election)
 
@@ -154,29 +212,51 @@ counter delta whose stamp (an add's and a remove's tag) names the stream. Each
 entity lists its distinct stamps once and its rows name them by index.
 
 ```cddl
-doc-state = { "v": 1, "entities": [* entity] }       ; sorted by id
+doc-state = { "v": 2, "entities": [* entity],        ; sorted by id
+              ? "members": [* member] }              ; in stamp order
+member = [group: bstr .size 16, size: uint, stamp]
 entity = {
   "id": bstr .size 16, "kind": tstr,                  ; registry tag
   "stamps": [* stamp],                                ; distinct, ascending
   "created": bool, "create": s / null, "legacy": s / null,
   "patch_ms": uint / null, "head": s,
-  "registers": [* [field, bstr / null, origin, s]],
+  "registers": [* [field, bstr / null, origin, s]],   ; each register's winner
+  "losers":    [* [field, bstr / null, origin, s]],   ; the rest of its antichain
   "maps":      [* [field, key, bstr, origin, s]],
   "adds":      [* [field, bstr, s]],
   "removes":   [* [field, bstr, bstr .size 16, bstr .size 16, uint]],
   "deltas":    [* [field, int, s]],
+  "versions":  [* version],                           ; in stamp order
+  "frontier":  [* [v, s]],                            ; F(versions[v]) reaches s
 }
+version = [s, kind: "legacy" / "patch", origin, create: bool,
+           parents: bstr / null, group: [bstr .size 16, uint] / null,
+           fields: bstr, head: bool]
 s = uint                                              ; index into "stamps"
+v = uint                                              ; index into "versions"
 stamp = [hlc_ms, hlc_logical, device: bstr .size 16, seq, stream: bstr .size 16]
 ```
 
-Values are the canonical CBOR bytes the merge tables hold.
+Values are the canonical CBOR bytes the merge tables hold. Version 2 adds the
+register losers, the versions (ADR-0065 §1) and their causal frontiers (§2),
+so a version above the snapshot whose parents it compacted away still orders
+against them, and a conflict outlives the ops that caused it (§8). A version-1
+document is still joined: its registers join as writes that reach only
+themselves.
+
+`versions` carries the versions the writer still holds; one it pruned is read
+by no version a joiner can still fold. A pruned version can still have been a
+group member (ADR-0065 §6), and a joiner holding the rest of its group needs
+it present, so `members` names every group member of the stream whose version
+the writer pruned (D14, D25). The key is absent when there is none, and a
+build that does not read it ignores it.
 
 ### Retained envelopes
 
 Every op of the stream at or below the frontier whose effect is not in
 `doc_state`, verbatim and in stamp order: control ops, focus and review
-records, and parked ops. A writer refuses to write a snapshot while it holds an
+records, parked ops, and the members of a group still waiting for the rest of
+it (ADR-0065 §6), which compaction never deletes either. A writer refuses to write a snapshot while it holds an
 op above its device's contiguous prefix, since no frontier could state it.
 
 ## Applying a snapshot
@@ -204,7 +284,12 @@ the local merge state, every entity it names is re-projected, and each frontier
 device's floor rises to its entry.
 
 The join folds each row in through the write an op carrying it would have
-used. Every such write is idempotent and order-independent, so a replica that
+used. Versions join first, keyed by op-ref; each frontier entry keeps the
+greater of the held and the joined stamp, and the entity's frontiers and heads
+are recomputed with the joined ones as their floor. Registers and losers then
+join through the register fold, which reads the order through them. A version
+of a group, and an entry of `members`, records its member as present, so a
+member this replica holds back completes once the snapshot brings the rest. Every such write is idempotent and order-independent, so a replica that
 joins a snapshot and then applies the ops above its frontier holds what a
 replica that replayed every op holds, whatever it held before. Applying a
 record twice, or one older than the replica, changes nothing.
@@ -221,25 +306,63 @@ frontier, which the relay replays from the cursor the snapshot set. A device's
 own old ops can be folded too: its floor covers them, it never reuses their
 seqs, and no receiver treats the hole as a gap.
 
-**Not built yet: transport.** Nothing carries a snapshot record between devices.
-`Core::stream_snapshot` hands out the stored record and
-`Core::apply_stream_snapshot` takes one in, but neither the relay, the blob
-store nor pairing moves it. That is
-[#462](https://github.com/justin13888/Sunrise/issues/462).
+### Transport
+
+[ADR-0068](../11-adr/0068-a-streams-snapshot-travels-as-a-pinned-blob.md) is
+the decision record; the code is `crates/sunrise-core/src/snapshot_sync.rs`
+(both legs), `crates/sunrise-server/src/api/snapshots.rs` (the pin) and
+`crates/sunrise-server/src/store/snapshots.rs` (relay migration 0006).
+
+**Publish.** A record is a blob, not a frame: past about five thousand tasks it
+outgrows the 4 MiB frame cap. The stream's compactor uploads its latest record
+through the blob routes, in chunks of at most 1 MiB, then pins it with
+`PUT /api/v1/snapshots/{stream_id}` ([`../06-server/api.md`](../06-server/api.md)
+§Stream snapshots). A replica publishes only a record it wrote, and only while
+it is the stream's compactor, so a device the election has moved past never
+pins its older record over its successor's. The driver publishes before a
+session reports `Live` and on every resync tick, after compaction; what it
+published is remembered per process, and the first publish after a restart asks
+the relay what it pins before uploading.
+
+**What the relay keeps.** One record per stream, the last one pinned: a new pin
+deletes the blob the old one named. Pins are not op retention's, so a record
+outlives every op it covers, and they go only with the account. The relay
+reads one thing from the record, its cleartext magic prefix, and refuses to
+pin a blob of any other kind.
+
+**Recover.** The relay's gap event names its stream. The driver asks for the
+stream's pin, fetches the blob, checks it hashes to the pinned id, and applies
+it (§Applying a snapshot), which raises the stream's floors and cursors to the
+record's frontier. It then re-subscribes every stream from its cursors, before
+reading another frame. A record that cannot be applied yet (`NoKey`,
+`Pending`, a writer whose cert has not arrived) is retried after any other
+record applies and on the next gap; one that is missing, adds nothing or is
+refused leaves the session `Degraded`, as does a second gap on a stream whose
+record was applied. A new device needs nothing extra: its empty cursors draw a
+gap on every stream whose early ops were trimmed.
+
+**What it does not cover.** A record is as fresh as the compactor's cadence,
+one day. Under the relay's age bound that is always enough; under its size
+bound a stream busy enough to evict 256 MiB in a day can outrun its record. A
+returning device that is itself the compactor finds only its own last record.
+Both leave the device `Degraded`, as before.
 
 ## What stays forever
 
 Nothing that is not an entity write: device certs, key envelopes,
 revocations, identity transitions, focus and review records, and parked ops.
-Each device's tip. The latest snapshot per stream, on its compactor and on any
-replica that applied it.
+The version rows a device that can still write has not passed (§Pruning
+version rows).
+Each device's tip. The latest snapshot per stream, on its compactor, on any
+replica that applied it, and pinned on the relay.
 
 ## Server side
 
-The relay does not compact and cannot: it never reads an op. Its retention is
+The relay does not compact and cannot: it never reads an op. It pins each
+stream's latest snapshot record (§Transport). Its op retention is
 unchanged, 30 days or 256 MiB per channel
-(`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
-`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`). Compaction makes
+(`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`,
+`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_BYTES`). Compaction makes
 that bound survivable: a device beyond it catches up from a snapshot rather
 than from ops nobody holds.
 
@@ -260,6 +383,16 @@ the op log, so they reach back as far as the retention window and no further.
   after a fold; parked ops carried by a snapshot; a covered snapshot; a
   forged, foreign or divergent one is refused; the clock primed from the
   floors.
+- `crates/sunrise-core/src/engine/tests/prune.rs`: each condition of the
+  pruning rule on hand-built versions; a property that devices editing,
+  syncing, acknowledging and compacting in any order hold what a replica that
+  never pruned holds; the bound on an entity's rows; a silent device holding
+  pruning back; the documented fold of a late version naming a pruned parent;
+  a rebuild after pruning; a joiner of a pruned replica's snapshot; and the
+  group members a snapshot names present.
 - `crates/sunrise-bench/benches/compaction.rs`: the op log at 10k and 100k
   tasks before and after a fold, the snapshot record that replaces it, and
-  what both cost.
+  what both cost; and a report of the version rows an entity keeps against
+  the versions it took and the devices that acknowledge them, held by a
+  silent device and pruned once every device has passed them, with what the
+  fold and a rebuild cost either way.

@@ -4,7 +4,7 @@ status: accepted
 
 # Time Blocks
 
-A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are the time the user schedules in Sunrise and carry its time-blocking workflows. Events fetched from an external calendar are **not** Blocks: they are read-only `ExternalEvent`s ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)), and see §Calendar integration.
+A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are the time the user schedules in Sunrise and carry its time-blocking workflows. Events fetched from an external calendar are **not** Blocks: they are `ExternalEvent`s ([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md)), and see §Calendar integration.
 
 > **Amended** by [ADR-0046](../11-adr/0046-optional-stream.md) (`stream_id` is
 > optional), [ADR-0048](../11-adr/0048-interactive-planner.md) (the planner
@@ -100,15 +100,14 @@ dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
 `split_from` are additive in the same way.
 
 **Status in the tree.** None of the eight exists yet: `Block` has the base
-fields only (`crates/sunrise-domain/src/block.rs#Block`), and `stream_id` is
-still required. [#342](https://github.com/justin13888/Sunrise/issues/342) and [#332](https://github.com/justin13888/Sunrise/issues/332) track them.
+fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
+optional ([#332](https://github.com/justin13888/Sunrise/issues/332)). [#342](https://github.com/justin13888/Sunrise/issues/342) tracks them.
 
-Two notes against earlier revisions of this spec:
+Two notes on the shape:
 
 - **`stream_id` is optional** ([ADR-0046](../11-adr/0046-optional-stream.md)).
   A stream-less Block is sealed under the private key domain and drawn in the
-  neutral palette colour. An earlier revision made it required; that was the
-  Inbox-sentinel model, which ADR-0046 removes.
+  neutral palette colour.
 - **There is no `timezone` field.** `SunriseTime` subsumes it — a `zoned`
   bound carries its own IANA zone, and a `floating` or `all_day` bound
   deliberately carries none. A second, Block-level zone would be a third
@@ -230,35 +229,37 @@ Decision: keep them distinct. A Block can *bind* one-or-more Tasks; completing a
 
 ## Calendar integration
 
-Calendar integrations are **read-only**
-([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), specified
-in [`../09-integrations/overview.md`](../09-integrations/overview.md)), and they
-never produce Blocks:
+Calendar integrations read and write
+([ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md),
+specified in [`../09-integrations/overview.md`](../09-integrations/overview.md)),
+and they never produce Blocks:
 
 - An event fetched from Google Calendar, Microsoft Graph or CalDAV becomes an
-  **`ExternalEvent`**, a separate read-only entity. Recurring events are stored
-  as the occurrences the provider expanded inside the fetch window, each with a
-  deterministic id, so two devices fetching the same occurrence converge on one
+  **`ExternalEvent`**, a separate entity. A recurring event is one series with its
+  overrides, under a deterministic id, so two devices fetching it converge on one
   entity.
 - The planner treats every `ExternalEvent` as fixed
   ([ADR-0048](../11-adr/0048-interactive-planner.md)), and the calendar view
-  draws it beside the user's Blocks. No client edits it.
-- Nothing is pushed to an external calendar. A Block never becomes a provider
-  event, and there is no `import:gcal` source.
+  draws it beside the user's Blocks. A user edit reaches the provider as a synced
+  intent.
+- A Block reaches a provider only when the user publishes it. Publishing creates
+  a separate `BlockPublication`, not an `external_id`, is busy-only by default, and
+  leaves the Block as the source of truth. There is no `import:gcal` source.
 
 The only calendar path that writes Blocks is the one-shot `.ics` file import
 ([`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)), which is
 what `source` and `external_id` serve. Not built; ranked on the roadmap
-([`../roadmap.md`](../roadmap.md)) as
-[#4](https://github.com/justin13888/Sunrise/issues/4).
+([`../roadmap.md`](../roadmap.md)).
 
 ## Merge mapping
 
 Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
 per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
-OR-set; `exceptions` is a map of registers, one per occurrence key. The tree
-still merges the whole Block as one full-state unit until [#319](https://github.com/justin13888/Sunrise/issues/319) lands, so a
-concurrent bind on one device and unbind on another resolves by timestamp.
+OR-set; `exceptions` is a map of registers, one per occurrence key. A
+`core.field_ops` vault merges the scalar fields that exist and `tasks` this way;
+`exceptions` does not exist yet (§Fields, Status in the tree). A legacy vault
+merges the whole Block as one full-state unit, so a concurrent bind on one
+device and unbind on another resolves by timestamp there.
 
 The `block_tasks` projection is the sole writer of the binding relation and
 `Task.blocks` is derived from it, so the two never disagree — see §Symmetry
@@ -271,8 +272,8 @@ When two devices schedule overlapping Blocks for the same task, both Blocks coex
 Overlap is decided by resolving both blocks' bounds in the reader's zone
 ([`time.md` §2](../10-cross-cutting/time.md#2-comparisons-resolve-through-the-readers-zone-never-through-index_ms)),
 never on the storage index key, and recurring blocks overlap per occurrence.
-Today `overlaps` compares index keys
-(`crates/sunrise-domain/src/block/conflict.rs#overlaps`), tracked in [#336](https://github.com/justin13888/Sunrise/issues/336).
+`overlaps` resolves both bounds in the reader's zone
+(`crates/sunrise-domain/src/block/conflict.rs#overlaps`).
 A block with a bound this build cannot place (an unknown time kind with no
 `at` instant, or the 9999-01-01 instant a client mirror shows it as) conflicts
 with nothing, and loses a merge's union to the other block's bound.
@@ -280,5 +281,5 @@ with nothing, and loses a merge's union to the other block's bound.
 The Calendar view shades the overlap region and shows a "Resolve" overflow menu with three actions:
 
 - **Keep both** — no-op; closes the menu.
-- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. Mechanically: tombstone the two original Blocks and create a new one in a single submit batch.
+- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. Mechanically: create the union and tombstone the two original Blocks, as one command, `Command::MergeBlocks` (`crates/sunrise-core/src/engine/block.rs#merge_blocks`). The three writes are one group ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §6, D13): the writer folds them in one transaction, and a peer holds each until it has all three, so no device shows the union beside an original, or the originals gone with no union.
 - **Adjust times** — opens a side-by-side editor for both Blocks.

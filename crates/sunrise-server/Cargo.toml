@@ -29,6 +29,14 @@ ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+# Reads response bodies in the JWKS fetcher and the APNs provider, and collects
+# a `kynos::http::Body` in the tests that drive `Service::call` directly.
+#
+# kynos ships a richer `TestClient` behind its `test-util` feature and the tests
+# deliberately do not use it: `test-util` pulls `jsonschema`, which needs a newer
+# `regex-automata` than criterion pins and brings `MIT-0` into a licence
+# allowlist `deny.toml` curates by hand. `Service::call` is documented as the
+# embedding seam, so `src/api/testing.rs` costs less than the policy change.
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 # `http2` for APNs, which speaks nothing else. `h2` is already in the lock
@@ -70,21 +78,23 @@ sunrise-storage = { workspace = true }
 # Redacted trace export, off unless `[observability]` is written.
 sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
+# The private blob root a state with neither `blob_root` nor a database file
+# keeps for its lifetime (`state.rs`), so no two of them share a tree.
+tempfile = "3"
 # The relay database key is wiped when its holder drops (ADR-0060).
 zeroize = { workspace = true }
 
+# `statvfs` for the readiness probe's free-space check (`blob/fs.rs`). Unix
+# only: elsewhere the backend reports no reading and the check passes.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 ciborium = { workspace = true }
-futures-util = { workspace = true }
-# Collects a `kynos::http::Body` in tests that drive `Service::call` directly.
-#
-# kynos ships a richer `TestClient` behind its `test-util` feature and this is
-# deliberately not that: `test-util` pulls `jsonschema`, which needs a newer
-# `regex-automata` than criterion pins and brings `MIT-0` into a licence
-# allowlist `deny.toml` curates by hand. `Service::call` is documented as the
-# embedding seam, so the thirty lines below cost less than the policy change.
-http-body-util = { workspace = true }
-tempfile = "3"
+# The GCRA property tests in `src/api/ratelimit/bucket.rs`, seeded and sized
+# through `sunrise-test-seed` like every other property test here.
+proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 # Reads exported spans back in `tests/span-redaction.rs` and the span-tree
 # tests.
 sunrise-telemetry = { workspace = true, features = ["testing"] }

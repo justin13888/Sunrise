@@ -19,6 +19,26 @@ use thiserror::Error;
 
 const PAIRING_VERSION: u16 = 1;
 
+const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
+
+/// Compute the 4-byte (8 hex chars) `account_email_hash`. Email is normalized
+/// (lowercase + trim) before hashing. The hash is non-reversible and is the
+/// account tag a pairing QR carries, so a screen can say which account it is
+/// pairing without holding the address. It is not a rate-limit key: the
+/// relay buckets attempts by `account_id`. Never use it to identify a user
+/// across accounts.
+#[must_use]
+pub fn account_email_hash(email: &str) -> [u8; 4] {
+    let normalized = email.trim().to_ascii_lowercase();
+    let mut out = [0u8; 4];
+    out.copy_from_slice(&sunrise_crypto::derive_key(
+        EMAIL_HASH_DOMAIN,
+        normalized.as_bytes(),
+        4,
+    ));
+    out
+}
+
 /// 10 lowercase hex chars representing the 5-byte magic prefix at v1.
 ///
 /// `"SR"` is `5352`, kind `07` (`MagicKind::PairingPayload`), version `0001`
@@ -43,7 +63,7 @@ pub struct QrPayload {
     pub n_static_pub: String,
     /// 8 hex chars of the 4-byte email hash.
     pub account_email_hash: String,
-    /// HTTPS or WSS URL, ≤ 256 bytes.
+    /// The relay origin (HTTPS), ≤ 256 bytes; the scheme is not checked here.
     pub relay_url: String,
 }
 
@@ -176,9 +196,76 @@ mod tests {
     }
 
     #[test]
+    fn rejects_n_static_pub_that_is_not_base64url() {
+        let mut p = fixture();
+        // `+` and `/` are standard base64, not base64url.
+        p.n_static_pub = "+/".repeat(21) + "+";
+        let s = encode_qr_payload(&p).unwrap();
+        assert_eq!(
+            decode_qr_payload(&s),
+            Err(QrPayloadError::BadField("n_static_pub"))
+        );
+    }
+
+    #[test]
+    fn rejects_n_static_pub_of_the_wrong_length() {
+        for len in [31usize, 33] {
+            let mut p = fixture();
+            p.n_static_pub = URL_SAFE_NO_PAD.encode(vec![3u8; len]);
+            let s = encode_qr_payload(&p).unwrap();
+            assert_eq!(
+                decode_qr_payload(&s),
+                Err(QrPayloadError::BadField("n_static_pub")),
+                "{len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_account_email_hash_of_the_wrong_length() {
+        // The odd lengths are also refused by `hex::decode`; the even ones
+        // are valid hex and reach only the 8-char length check.
+        for hash in ["abcdef0", "abcdef012", "abcdef", "abcdef0123"] {
+            let mut p = fixture();
+            p.account_email_hash = hash.to_string();
+            let s = encode_qr_payload(&p).unwrap();
+            assert_eq!(
+                decode_qr_payload(&s),
+                Err(QrPayloadError::BadField("account_email_hash")),
+                "{hash}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_account_email_hash_that_is_not_hex() {
+        let mut p = fixture();
+        p.account_email_hash = "abcdef0g".to_string();
+        let s = encode_qr_payload(&p).unwrap();
+        assert_eq!(
+            decode_qr_payload(&s),
+            Err(QrPayloadError::BadField("account_email_hash"))
+        );
+    }
+
+    #[test]
     fn rejects_long_relay_url() {
         let mut p = fixture();
         p.relay_url = "x".repeat(257);
         assert_eq!(encode_qr_payload(&p), Err(QrPayloadError::RelayUrlTooLong));
+    }
+
+    #[test]
+    fn account_email_hash_is_deterministic_after_normalizing() {
+        let a = account_email_hash("Justin@Example.com");
+        let b = account_email_hash(" justin@example.com  ");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn account_email_hashes_of_different_emails_diverge() {
+        let a = account_email_hash("a@example.com");
+        let b = account_email_hash("b@example.com");
+        assert_ne!(a, b);
     }
 }

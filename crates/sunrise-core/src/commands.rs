@@ -3,9 +3,10 @@
 use crate::control_op::RevokeReason;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
-    InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, EditScope,
+    Energy, InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft,
+    RoutinePatch, SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft,
+    StreamPatch, SunriseTime, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -13,7 +14,8 @@ use sunrise_id::EntityRef;
 /// expand the surface in follow-up phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
-    /// Create a Task in a Stream (Inbox if `stream_id` is `None`).
+    /// Create a Task in a Stream, or in no stream when `stream_id` is `None`
+    /// (ADR-0046 §1).
     CreateTask(TaskDraft),
     /// Mutate an existing Task.
     UpdateTask {
@@ -24,22 +26,130 @@ pub enum Command {
     },
     /// Set Task state to `Done`.
     CompleteTask(EntityRef),
-    /// Defer a Task by setting a new `scheduled_at` and bumping
-    /// `deferred_count`.
+    /// Defer a Task to an instant: [`Command::DeferTaskTo`] with
+    /// `to = instant(to_ms)`. Moves `planned_at` only.
+    ///
+    /// Kept so the callers that speak epoch milliseconds (the UniFFI
+    /// `CoreCommand::DeferTask`, the CLI) keep working unchanged. An instant
+    /// does not follow the user, so a client deferring "tomorrow" sends
+    /// [`Command::DeferTaskTo`] with the kind it means
+    /// (`docs/11-adr/0066-times-survive-travel.md` §4).
     DeferTask {
         /// Target task.
         id: EntityRef,
-        /// New `scheduled_at`.
+        /// New `planned_at`.
         to_ms: u64,
+    },
+    /// Defer a Task: set `planned_at` to `to`, keeping the kind it was
+    /// given, and add one to `deferred_count` (ADR-0047 §1). It never writes
+    /// either deadline.
+    ///
+    /// Validated as any edit of `planned_at` is: the structural invariants,
+    /// then the `hard` scheduling constraints in the reader's zone, which
+    /// reject; the orderings against the deadlines ride back on the result
+    /// as warnings ([`CommandResult::ordering_warnings`]).
+    /// [`sunrise_domain::shift_civil_days`] computes a "+N days" target that
+    /// keeps the kind of the time it moves.
+    DeferTaskTo {
+        /// Target task.
+        id: EntityRef,
+        /// New `planned_at`.
+        to: SunriseTime,
     },
     /// Soft-delete a Task.
     DeleteTask(EntityRef),
-    /// Move a Task between Streams.
+    /// Bring back a deleted Task, Stream, Context, Routine or Block: a later
+    /// write of `deleted = false` (ADR-0065 §3, "restore is an ordinary later
+    /// write"). It also resolves the entity's tombstone conflict, and is what
+    /// undo of a delete submits.
+    ///
+    /// In a vault that requires `core.field_ops` it is one `Patch` of
+    /// `deleted` naming every head of the entity, so it descends from every
+    /// branch edited while deleted (ADR-0065 §4). Until then it writes a
+    /// full-state op of the entity as it projects, so like every edit in that
+    /// mode it supersedes the concurrent writes this device has applied
+    /// (ADR-0065 D4, D9, D11). Refused with `NotFound` for an entity this
+    /// replica does not hold, and `Invalid` for one that is not deleted or of
+    /// another kind.
+    Restore(EntityRef),
+    /// Settle one field's conflict (ADR-0065 §4): write `value` to `field`
+    /// as a version that descends from every version this device has applied,
+    /// which clears the field's unresolved set wherever it is applied.
+    /// `value` may be the winner's, a loser's or a new one; `field` is the
+    /// wire name (`template.title` for a nested field), and `value` its
+    /// canonical CBOR. Resolving `deleted` to `true` acknowledges a delete,
+    /// and to `false` is a [`Self::Restore`].
+    ///
+    /// In a vault that requires `core.field_ops` it is one `Patch` of
+    /// `field` naming every head of the entity, written even when `value` is
+    /// the winner's, since the write is what settles the set. Until then it
+    /// is written as [`Self::Restore`] is, as a full-state op, which also
+    /// settles every other field of the entity on the values it projects
+    /// (clarification D11). Refused with
+    /// `Invalid` for a field that is not a register (a set, counter, map,
+    /// identity or derived field) or a value it cannot hold.
+    ResolveConflict {
+        /// The entity.
+        entity: EntityRef,
+        /// The field, by wire name.
+        field: String,
+        /// The value to settle on.
+        value: sunrise_cbor::CborValue,
+    },
+    /// Apply one action to each of several Tasks, all or nothing: the
+    /// "bulk is atomic" rule of ADR-0047 §Triage
+    /// (`docs/11-adr/0047-deadlines-and-lateness.md`, #335), over the actions
+    /// this build has; [`Self::Triage`] is ADR-0047's own four actions.
+    ///
+    /// Every item is validated against the vault as it stands before any is
+    /// written, exactly as the single command it names would be, and one
+    /// refusal refuses the whole batch with nothing written. The writes are
+    /// then one commit (ADR-0065 §6): each task still gets its own op, and
+    /// every replica shows all of them or none. A routine's streak advances
+    /// once per occurrence completed, in the same commit. A task may appear
+    /// once; an empty batch is refused.
+    BulkTasks(Vec<BulkTaskItem>),
+    /// Apply one triage action to each of several tasks, all or nothing
+    /// (ADR-0047 §4, issue #335): Defer (`planned_at` and one more
+    /// `deferred_count`, to a time or to the next free slot), Already done
+    /// (`done` with a backdated `completed_at`, not after now and not before
+    /// the task was created), Drop (`cancelled`, with an optional reason) or
+    /// Keep (`late_acknowledged_at` set to now, so the task leaves the queue
+    /// until its next lateness transition).
+    ///
+    /// Any selection, not only the queue's. Every id is checked and every
+    /// write planned before any is logged: an empty batch, a repeated,
+    /// unknown or deleted id, or one task the action cannot apply to refuses
+    /// the whole command with nothing written. The writes are one commit
+    /// (ADR-0065 §6), each task with its own per-field ops, and the routine
+    /// streaks a completion advances are in it.
+    Triage {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+        /// What to do to each.
+        action: sunrise_domain::TriageAction,
+    },
+    /// Move a Task between Streams. The legacy Inbox reference
+    /// ([`sunrise_domain::inbox_stream_ref`]) moves it to no stream.
     PromoteToStream {
         /// Task to move.
         id: EntityRef,
         /// New owning stream.
         stream: EntityRef,
+    },
+    /// Acknowledge tasks that have no stream and no date, so they leave the
+    /// Inbox (ADR-0046 §3): `triaged_at` is set to now on each. One commit;
+    /// a task already triaged is left as it is, and the batch is refused
+    /// whole on an unknown or repeated id.
+    MarkTriaged {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// Undo [`Self::MarkTriaged`]: clear `triaged_at` on each task. A task
+    /// re-enters the Inbox only if it also has no stream and no date.
+    ReturnToInbox {
+        /// The tasks.
+        ids: Vec<EntityRef>,
     },
     /// Create a Stream.
     CreateStream(StreamDraft),
@@ -50,8 +160,18 @@ pub enum Command {
         /// Patch.
         patch: StreamPatch,
     },
-    /// Soft-delete a Stream.
-    DeleteStream(EntityRef),
+    /// Soft-delete a Stream, and re-home everything it held, in one commit
+    /// (ADR-0046 §4): every live Task, Block and routine template that names
+    /// it goes to `disposition`'s target, every child Stream becomes
+    /// top-level, and the tombstone records the target as `rehomed_to`. The
+    /// dependents are re-homed, never deleted, and a dependent written on
+    /// another device after the delete reads as re-homed too.
+    DeleteStream {
+        /// The Stream.
+        id: EntityRef,
+        /// Where its dependents go.
+        disposition: Disposition,
+    },
     /// Create a Context (cross-cutting tag). Rejected if a live Context
     /// already carries the same name, compared case-insensitively.
     CreateContext(ContextDraft),
@@ -73,11 +193,28 @@ pub enum Command {
     DeleteContext(EntityRef),
     /// Create a Routine and materialize its near-horizon occurrences.
     CreateRoutine(RoutineDraft),
-    /// Mutate a Routine. An rrule/timezone/anchor change regenerates future
-    /// not-yet-started routine tasks.
+    /// Mutate a Routine, as far as `scope` reaches
+    /// (`docs/02-domain/routines-and-recurrence.md` §Edit scope).
+    ///
+    /// - [`EditScope::All`] edits the routine. An rrule or anchor change
+    ///   tombstones the untouched future occurrences the new rule no longer
+    ///   has, and a template or constraint change propagates to every
+    ///   untouched open occurrence.
+    /// - [`EditScope::ThisAndFuture`] splits the series at the key: the
+    ///   routine ends before it and a new routine, `split_from` the series
+    ///   root, continues it with the edit applied, in one group with the
+    ///   untouched occurrences it adopts or tombstones. The result names the
+    ///   new routine.
+    /// - [`EditScope::This`] writes the edit onto that occurrence's task
+    ///   only, generating it first if it is not yet. Only the template, the
+    ///   anchor's time and the constraint list may be set; the result names
+    ///   the task.
     UpdateRoutine {
         /// Target routine.
         id: EntityRef,
+        /// How far the edit reaches. `All` when absent.
+        #[serde(default)]
+        scope: EditScope,
         /// Patch.
         patch: RoutinePatch,
     },
@@ -148,6 +285,21 @@ pub enum Command {
     /// Soft-delete a Block. Bound Tasks are untouched — a Block is a plan for
     /// when to do the work, never the work itself.
     DeleteBlock(EntityRef),
+    /// Merge two Blocks into one (`docs/02-domain/time-blocks.md`
+    /// §Conflicts): create their union ([`sunrise_domain::merge_blocks`],
+    /// read in the reader's zone) and tombstone both, as one commit
+    /// (ADR-0065 §6). No replica ever shows the union beside an original, or
+    /// the originals gone with no union.
+    ///
+    /// Refused with `NotFound` for a block this replica does not hold, and
+    /// `Invalid` for a deleted one, for `a == b`, and for a union that does
+    /// not validate. Returns the union.
+    MergeBlocks {
+        /// One block.
+        a: EntityRef,
+        /// The other.
+        b: EntityRef,
+    },
     /// Bind a Task to a Block.
     ///
     /// Maintains the spec's symmetry ("Bound Task's `blocks` field updates
@@ -246,17 +398,25 @@ pub enum Command {
     /// Every current, unrevoked device is in the new roster and receives a
     /// share, so nobody is excluded and nothing needs re-pairing.
     ///
-    /// Stream keys are **not** rotated by this. An attacker holding the
-    /// identity key can forge ops going forward; they cannot read content
-    /// unless they also hold a Stream key. A user who wants both runs this and
-    /// then rotates the streams.
+    /// What it does to the recovery code is the one choice, and ADR-0070
+    /// records it:
     ///
-    /// `keep_recovery_code` asks for the successor to be sealed to the outgoing
-    /// `ID_D_pub`, so the user's existing BIP-39 code keeps working. Pass
-    /// `false` when the reason for rotating is that the *recovery code* is the
-    /// thing suspected — carrying the successor forward under a compromised key
-    /// would hand the attacker the new identity, which is the one way this
-    /// command can be worse than doing nothing.
+    /// - **`keep_recovery_code: true`** seals the successor to the outgoing
+    ///   `ID_D_pub` as well (the carry share), so the user's existing BIP-39
+    ///   code keeps working: a vault restored from it walks each rotation's
+    ///   carry share to the identity in force and certifies itself there.
+    ///   Stream keys are **not** rotated. The carry reaches **every** holder
+    ///   of the outgoing `ID_D_priv` — the creator, every device restored from
+    ///   the code, whoever else holds the code — so it is never what to use
+    ///   when one of them is the reason for rotating.
+    /// - **`keep_recovery_code: false`** retires the code. No carry share; the
+    ///   vault-meta epoch the transition is sealed under is minted first and
+    ///   sealed to the devices alone, so no holder of the old code can seal a
+    ///   competing transition above it; then every Stream rotates, so the
+    ///   epochs written from now on are not ones the old identity holds. The
+    ///   rotating device keeps the successor's `ID_D_priv` and is expected to
+    ///   seal a new recovery blob (`Core::seal_recovery_blob`) and replace the
+    ///   relay's, which is what `sunrise identity rotate` does.
     RotateIdentity {
         /// Seal the successor to the outgoing `ID_D_pub` so the existing
         /// recovery code still opens the account.
@@ -352,6 +512,126 @@ pub enum Command {
         /// Which store to clear it from.
         target: PrefTarget,
     },
+    /// Place `ids`, in the order given, between `after` and `before` in
+    /// manual order (`Task.sort_order`, `docs/02-domain/tasks.md`, #340).
+    ///
+    /// The core computes every key, strictly between the two anchors' keys,
+    /// so a multi-row drag keeps its rows' relative order, and nothing but the
+    /// moved tasks is written: a move of one task rewrites one key. `after:
+    /// None` is the top of the list and `before: None` the bottom; with both
+    /// `None` the keys spread over the whole key space, which is what a move
+    /// into a list with no placed task wants.
+    ///
+    /// A list in manual order puts its placed tasks first, so an anchor must
+    /// be placed itself: a client dropping a run below an unplaced row moves
+    /// the unplaced rows above it too, in the order it shows them
+    /// (`sunrise_client_core::task_order::plan_move` does this). Refused with
+    /// `Invalid` for an empty or repeated `ids`, an anchor among `ids`, an
+    /// anchor that is not placed, and anchors whose keys are not strictly
+    /// increasing (two equal keys, which concurrent moves can leave, have no
+    /// key between them: move the later anchor too). Refused with `NotFound`
+    /// for a task this replica does not hold.
+    ///
+    /// More than one task is one commit (ADR-0065 §6), as
+    /// [`Self::BulkTasks`] is: each task gets its own op, and every replica
+    /// shows the whole move or none of it.
+    MoveTasks {
+        /// The tasks to place, in the order they will be in.
+        ids: Vec<EntityRef>,
+        /// The task they land below, or `None` for the top of the list.
+        after: Option<EntityRef>,
+        /// The task they land above, or `None` for the bottom of the list.
+        before: Option<EntityRef>,
+    },
+    /// Save a view (`docs/08-features/planning-views.md` §Saved views,
+    /// #341): a new `svw_` entity, last in the saved-views list.
+    ///
+    /// Written as one `Patch` on the vault-meta stream, which needs the vault
+    /// to require `saved_view.entity`: refused with
+    /// `FeatureUnsupportedByDevices` while a paired device lacks it.
+    CreateSavedView(SavedViewDraft),
+    /// Edit a saved view: one `Patch` writing exactly the fields the patch
+    /// names, so an edit of one field never overwrites a concurrent edit of
+    /// another. Refused with `NotFound` for a view this replica does not hold
+    /// or holds deleted, and `Invalid` for an edit that changes nothing.
+    UpdateSavedView {
+        /// The view.
+        id: EntityRef,
+        /// The fields to write.
+        patch: SavedViewPatch,
+    },
+    /// Delete a saved view. [`Self::Restore`] brings it back.
+    DeleteSavedView(EntityRef),
+}
+
+/// One item of [`Command::BulkTasks`]: a task, and what to do to it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkTaskItem {
+    /// The task.
+    pub id: EntityRef,
+    /// The action.
+    pub action: BulkTaskAction,
+}
+
+/// What [`Command::BulkTasks`] does to one task. Each is the single command
+/// of the same name, checked and written as that command is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BulkTaskAction {
+    /// [`Command::CompleteTask`].
+    Complete,
+    /// [`Command::DeferTaskTo`].
+    DeferTo(SunriseTime),
+    /// [`Command::UpdateTask`]: a stream move, a drop (`state: Cancelled`)
+    /// or any other patch.
+    Update(Box<TaskPatch>),
+    /// [`Command::DeleteTask`].
+    Delete,
+    /// [`Command::Restore`].
+    Restore,
+}
+
+impl BulkTaskItem {
+    /// The single command this item is.
+    #[must_use]
+    pub fn as_command(&self) -> Command {
+        let id = self.id;
+        match &self.action {
+            BulkTaskAction::Complete => Command::CompleteTask(id),
+            BulkTaskAction::DeferTo(to) => Command::DeferTaskTo { id, to: to.clone() },
+            BulkTaskAction::Update(patch) => Command::UpdateTask {
+                id,
+                patch: (**patch).clone(),
+            },
+            BulkTaskAction::Delete => Command::DeleteTask(id),
+            BulkTaskAction::Restore => Command::Restore(id),
+        }
+    }
+
+    /// The item a single task command is, or `None` for a command that is
+    /// not one: what lets an undo of a bulk command be one bulk command.
+    #[must_use]
+    pub fn of_command(cmd: &Command) -> Option<Self> {
+        let (id, action) = match cmd {
+            Command::CompleteTask(id) => (*id, BulkTaskAction::Complete),
+            Command::DeferTaskTo { id, to } => (*id, BulkTaskAction::DeferTo(to.clone())),
+            Command::UpdateTask { id, patch } => {
+                (*id, BulkTaskAction::Update(Box::new(patch.clone())))
+            }
+            Command::PromoteToStream { id, stream } => (
+                *id,
+                BulkTaskAction::Update(Box::new(TaskPatch {
+                    stream_id: Some(sunrise_domain::home_stream(Some(*stream))),
+                    ..TaskPatch::default()
+                })),
+            ),
+            Command::DeleteTask(id) => (*id, BulkTaskAction::Delete),
+            Command::Restore(id) if id.kind() == sunrise_id::EntityKind::Task => {
+                (*id, BulkTaskAction::Restore)
+            }
+            _ => return None,
+        };
+        Some(Self { id, action })
+    }
 }
 
 /// Draft for [`Command::StartFocus`]. The core fills the session id, the
@@ -371,6 +651,43 @@ pub struct FocusStartDraft {
     pub energy: Option<Energy>,
 }
 
+/// What [`crate::Core::on_time_zone_changed`] did: the one core entry point a
+/// client calls when the OS reports a new zone
+/// (`docs/10-cross-cutting/time.md` §7).
+///
+/// It is not a [`Command`]: a zone change is not an edit, writes no op and
+/// rewrites nothing stored. Everything derived from the reader's zone — Today,
+/// lateness and the triage queue, the calendar windows, the reminder schedule
+/// — is computed on read, so it is re-evaluated by being read again, and the
+/// core says so on [`crate::Core::changes`] with
+/// [`crate::DomainEvent::TimeZoneChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeZoneChange {
+    /// The reader's zone before the call.
+    pub previous: String,
+    /// The reader's zone now.
+    pub zone: String,
+    /// Whether the zone resolves times differently from `previous`; a name
+    /// that differs only in spelling (an alias) is no change. A client that reports
+    /// the zone on every foreground gets `false` most of the time, and
+    /// nothing else happens.
+    pub changed: bool,
+    /// Open tasks whose resolved time or lateness the change moved: a
+    /// floating or all-day `scheduled_at` or `due_at` now resolves elsewhere,
+    /// or a deadline is overdue in one zone and not the other. A `zoned` or
+    /// `instant` value never counts; it does not move.
+    pub affected_tasks: u32,
+    /// Whether the client should post the one local notification naming the
+    /// new zone and `affected_tasks`: the zone changed and the
+    /// `notifications.timezone_changed.enabled` preference, off by default,
+    /// is on.
+    pub notify: bool,
+    /// Open planned tasks whose plan violates a `hard` scheduling constraint
+    /// in the new zone, by id (#333, time.md §7): re-evaluated on every
+    /// change, flagged, and never moved. Empty when nothing changed.
+    pub hard_violations: Vec<sunrise_id::EntityRef>,
+}
+
 /// Result of a command, returned synchronously to the caller after the
 /// in-process apply step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,7 +700,7 @@ pub struct CommandResult {
     pub op_id: [u8; 16],
     /// Sequence number assigned by the core.
     pub seq: u64,
-    /// `soft` scheduling constraints the accepted `scheduled_at` violates.
+    /// `soft` scheduling constraints the accepted `planned_at` violates.
     ///
     /// A `soft` violation never blocks the write (a `hard` one is rejected
     /// outright with [`sunrise_domain::ValidationError::HardScheduleConstraint`]),
@@ -393,6 +710,17 @@ pub struct CommandResult {
     /// every command that does not schedule.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub soft_violations: Vec<ScheduleConstraint>,
+    /// The orderings of the task's three times that ADR-0047 §1 expects and
+    /// the accepted write leaves broken (`target_at ≤ hard_due_at`,
+    /// `planned_at ≤ hard_due_at`), read in the reader's zone.
+    ///
+    /// An ordering is a warning and never a rejection: concurrent per-field
+    /// edits on two devices can produce any combination, and "I plan to do
+    /// it after the deadline, knowingly" is a real decision. Same rule as
+    /// `soft_violations`: it does not block the write and it must not
+    /// vanish. Empty for every command that writes no task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ordering_warnings: Vec<sunrise_domain::OrderingWarning>,
     /// Streams a `RevokeDevice` could **not** rotate, as lowercase hex.
     ///
     /// Empty for every command but `RevokeDevice`, and for almost every one of
@@ -478,6 +806,7 @@ impl CommandResult {
             op_id,
             seq,
             soft_violations: Vec::new(),
+            ordering_warnings: Vec::new(),
             unrotated_streams: Vec::new(),
             revocation_gated: false,
             revocation_unwound: Vec::new(),
@@ -510,6 +839,13 @@ impl CommandResult {
     #[must_use]
     pub fn with_soft_violations(mut self, v: Vec<ScheduleConstraint>) -> Self {
         self.soft_violations = v;
+        self
+    }
+
+    /// Attach the time orderings the written task breaks (ADR-0047 §1).
+    #[must_use]
+    pub fn with_ordering_warnings(mut self, v: Vec<sunrise_domain::OrderingWarning>) -> Self {
+        self.ordering_warnings = v;
         self
     }
 }

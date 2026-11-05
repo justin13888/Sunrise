@@ -32,7 +32,7 @@ Every algorithm above is frozen in crypto suite v1, and most are live. Two rows 
 
 * **HPKE has one consumer of four roles.** `sunrise-crypto` depends on `hpke` and `hpke_seal.rs` implements the single-shot Base construction; **key envelopes** use it. Share grants, recovery upload and pairing transport still do not — sharing is unbuilt, the recovery blob uses its own AEAD-under-Argon2id seal, and pairing's transport is Noise XX, not HPKE.
 * **Argon2id runs on one path, not two.** It is used only to stretch the recovery code in `crates/sunrise-crypto/src/recovery.rs`. There is no passphrase unlock: the vault root is 32 random bytes from a keystore, never derived (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)).
-* **Noise XX is implemented** in `crates/sunrise-pairing`, with the exact pattern string in `handshake.rs::NOISE_PARAMS`. Its relay transport is not; see [`pairing-and-onboarding.md`](./pairing-and-onboarding.md).
+* **Noise XX is implemented** in `crates/sunrise-pairing`, with the exact pattern string in `handshake.rs::NOISE_PARAMS`, and so is its relay transport: three typed `POST`s to the relay's pairing rendezvous, exercised end to end by `crates/sunrise-e2e/tests/pairing_over_the_relay.rs`; see [`pairing-and-onboarding.md`](./pairing-and-onboarding.md).
 
 ## Usage rules
 
@@ -87,7 +87,7 @@ All signature-verify, AEAD-tag-verify, and HPKE-decrypt code paths MUST be const
 | `subtle` | tag/MAC/hash equality | `ConstantTimeEq` |
 | `argon2` | passphrase / recovery KDF | does not require CT (it's a deliberate-cost KDF over a passphrase, not a comparison primitive) |
 
-Crypto-typed equality MUST go through `subtle::ConstantTimeEq`. An earlier revision of this spec claimed a clippy lint **`sunrise::ct_compare`** enforced that mechanically; **no such lint exists** — `grep` finds `ct_compare` nowhere in the tree, and the workspace `[workspace.lints.clippy]` block in the root `Cargo.toml` carries no custom lint. The rule is real and currently rests on review, not on the compiler.
+Crypto-typed equality MUST go through `subtle::ConstantTimeEq`. An earlier revision of this spec claimed a clippy lint **`sunrise::ct_compare`** enforced that mechanically; **no such lint exists** — `grep` finds `ct_compare` nowhere in the tree, and the workspace `[workspace.lints.clippy]` block in the root `Cargo.toml` carries no custom lint. The rule is enforced instead by `.github/scripts/constant-time-gate.sh` ([ADR-0061](../11-adr/0061-crypto-audit-scope.md)), which CI runs: it rejects a variable-time `==`, `!=`, `.eq(` or `.ne(` over a value named like a MAC, tag, digest, signature, secret, key or nonce, unless the line is rewritten to `ct_eq` or justified in the allowlist beside the script. It is a name heuristic, not a type analysis; its blind spots are stated in the script and in [`audit-scope.md`](./audit-scope.md) §Constant-time gate, and the external audit is their backstop.
 
 ## Reproducible builds
 

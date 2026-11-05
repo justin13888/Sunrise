@@ -6,7 +6,7 @@ Why this file exists
 
 The gate's whole value is a *discrimination*: it has to fire on
 `crates/sunrise-core/src/nonexistent.rs:1` and stay silent on `Vec<u8>`,
-`cargo test --workspace`, `task.update` and the 600 bare filenames in this
+`cargo test --workspace`, `task.update` and the many bare filenames in this
 repository that are shorthand rather than citations. Either half failing
 makes it worthless, and the two fail in opposite directions from the same
 edit — a rule loosened to catch one more real citation catches a hundred
@@ -583,19 +583,6 @@ class Anchors(GateCase):
         self.write("docs/a.md", "See `src/main.rs`.\n")
         self.assert_code(self.run_gate(), CLEAN, "path-like span(s) were NOT checked")
 
-    def test_legacy_is_not_scanned(self):
-        # The pre-rewrite tree cites paths that resolve against this
-        # repository and mean something else there.
-        self.write("legacy/README.md", "See `docs/never-existed.md`.\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
-
-    def test_a_path_into_legacy_is_still_checked_from_a_scanned_file(self):
-        # Not scanning `legacy/` is about what it *says*, not about whether
-        # the rest of the tree may point into it.
-        self.write("legacy/README.md", "The pre-rewrite tree.\n")
-        self.write("docs/a.md", "See `legacy/gone.md`.\n")
-        self.assert_code(self.run_gate(), DANGLING, "`legacy/gone.md` names no file git tracks.")
-
 
 class TheCitingFilesOwnDirectory(GateCase):
     """Anchor 2, which is how most of this repository actually cites.
@@ -1105,13 +1092,10 @@ class Symbols(GateCase):
         # from the working tree is still a file this gate believes exists.
         # `symbol_span` has an `OSError` arm for exactly that, returning no
         # spans -- but through the command line that arm cannot be reached for
-        # a SCANNED `.rs` target, because the scan reads every tracked `.rs`
-        # file outside `legacy/` looking for code spans and raises on this one
-        # first. (A `legacy/**.rs` target is the one `.rs` shape the scan does
-        # not cover, and there the arm is reached; that gap is recorded on the
-        # pull request rather than repaired here.)
+        # a `.rs` target, because the scan reads every tracked `.rs` file
+        # looking for code spans and raises on this one first.
         #
-        # So for a scanned target the outcome is exit 2, "the gate could not
+        # So for such a target the outcome is exit 2, "the gate could not
         # run", and NOT a citation verdict. That is the right answer and the
         # one worth pinning: a missing file must never be reported as a
         # document naming a symbol that does not exist. `symbol_span`'s arm is
@@ -1271,9 +1255,9 @@ class Symbols(GateCase):
 
     def test_a_mod_is_not_a_citation_target(self):
         # `mod` left the alternation for the reason `impl` did, and the
-        # measurement is worse rather than better: `mod tests` in
-        # `crates/sunrise-server/src/api/sync/suite.rs` spans lines 9 to 1720
-        # of a 1720-line file -- 99.5%, against `impl Engine`'s 97.7% -- and
+        # measurement is worse rather than better: `mod tests` in the sync
+        # suite (`api/sync/suite.rs`, before it became a directory) spanned
+        # lines 9 to 1720 of a 1720-line file -- 99.5%, against `impl Engine`'s 97.7% -- and
         # `mod tests` at the tail of a file is this repository's dominant
         # idiom, not an edge shape. Containment against a span that size
         # certifies nothing the line-existence check did not already certify,

@@ -4,10 +4,13 @@ status: accepted
 
 # CalDAV (iCloud, Fastmail, Nextcloud, any RFC 4791 server)
 
-Read-only, per-device credentials, per
+Per-device credentials, per
 [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md). The
 entities, fetch rules and reconnect flow shared by every calendar provider are
-in [`overview.md`](./overview.md); this page is what is specific to CalDAV.
+in [`overview.md`](./overview.md); this page is what is specific to reading over
+CalDAV. Writing is added by
+[ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md) and
+designed in [`calendar-architecture.md`](./calendar-architecture.md).
 
 CalDAV is how Sunrise reaches iCloud calendars at all: Apple offers no OAuth
 calendar API to third parties. It also covers every self-hosted calendar server,
@@ -15,7 +18,7 @@ which is why it left the non-goals.
 
 > **Status: not built.** `IntegrationKind` has no CalDAV variant
 > (`crates/sunrise-integrations/src/lib.rs#IntegrationKind`). The iCalendar
-> parser the fetch reuses is live (`crates/sunrise-integrations/src/ical.rs`).
+> parser the fetch reuses is live (`crates/sunrise-integrations/src/ical/mod.rs`).
 > [#4](https://github.com/justin13888/Sunrise/issues/4) tracks the build.
 
 ## Credentials
@@ -47,6 +50,13 @@ which is why it left the non-goals.
    `displayname`, `calendar-color` (Apple extension) and `sync-token`.
 
 ## Fetch
+
+> **Superseded in part by
+> [ADR-0071](../11-adr/0071-calendar-read-write-through-synced-intents.md).** The sync
+> flow and error handling below stand. Asking the server to expand occurrences, and
+> mapping each to its own flat `ExternalEvent`, do not: events are stored as a series
+> with override registers, and a pushing device reads the original object again. This
+> section is rewritten when the conformance spike ends.
 
 1. **Changes:** `REPORT sync-collection` (RFC 6578) with the stored
    `sync-token`, device-local per calendar. A `403`/`409` with

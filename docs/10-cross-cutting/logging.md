@@ -69,7 +69,7 @@ next to the envelope:
 | `level` | yes | `TRACE`\|`DEBUG`\|`INFO`\|`WARN`\|`ERROR` | `tracing::Level`, uppercase — the formatter's spelling, not ours. |
 | `message` | yes | string | Human-readable summary, ≤ 200 bytes. NEVER interpolate plaintext user data. |
 | `target` | yes | string | The emitting module path. Replaces the old `pkg` + `mod` pair, which were the same information split in two. |
-| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name; first segment is the package short id (`sync`, `db`, `ui`, `srv`, …). New values require an entry in [`log-events.md`](./log-events.md), enforced by `crates/sunrise-log/tests/event_catalog.rs`. |
+| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name; first segment is the package short id (`sync`, `db`, `ui`, `srv`, …). New values require an entry in [`log-events.md`](./log-events.md), enforced by `crates/sunrise-log/tests/event_catalog/`. |
 | `span` | no | object | The innermost active span: its `name` plus its fields. Absent outside a span. The ancestor list is not emitted. |
 | *context* | — | scalar | Any other top-level key. MUST come from the §6 allowlist; `sunrise_log::RedactionLayer` refuses the event otherwise. |
 | `err_code`, `err_kind`, `retryable`, `cause` | no | see §5 | The error envelope, flattened rather than nested. |
@@ -161,7 +161,7 @@ never be user-authored content. Broad shapes:
 | `stream_h`, `task_h`, `block_h`, `routine_h`, `note_h`, `attachment_h`, `person_h`, `account_h`, `device_h` | first 4 bytes of `BLAKE3(id)`, 8 lowercase hex | Truncated hash of a **high-entropy, machine-minted** id. See §6.1 for why the spec'd salt is omitted. |
 | `epoch`, `seq`, `attempt` | small integer | key-rotation epoch, op sequence, retry count |
 | `op_kind`, `kind`, `result`, `mode`, `tier`, `provider`, `action_kind`, `view`, `aead_alg`, `sig_alg` | enum string | structural, not content |
-| `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped` | counters | |
+| `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_docs`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped`, `n_total`, `n_versions` | counters | |
 | `lat_ms`, `delay_ms` | durations | |
 | `status`, `method`, `endpoint` | HTTP | `endpoint` is the **matched route's own template**, spelled `:id` by the private `templated` in `crates/sunrise-server/src/api/observe.rs`. The request's concrete URI is never consulted, so there is no query string to drop and no segment to guess at. `sunrise_log::templatize_path` sanitises a *raw* path and nothing on this route calls it — see `docs/06-server/observability.md`. |
 | `wire_v`, `doc_v`, `crypto_v`, `storage_v`, `from_v`, `to_v`, `app_v` | versions | |
@@ -197,10 +197,15 @@ Neither defence covers `message`. A format string is arbitrary text by
 construction; keeping plaintext out of it is what the `.expose()` CI grep is
 for.
 
-Spans are not gated: `on_new_span` has no veto and a span cannot be rewritten
-once created. Sunrise spans are built only by this workspace's own
-`#[instrument]` / `info_span!` sites with allowlisted field names, and defence 1
-still applies to their values.
+`RedactionLayer` does not gate spans: `on_new_span` has no veto and a span
+cannot be rewritten once created. Span field names are gated at the source
+instead. `crates/sunrise-log/tests/event_catalog/` reads every
+`tracing::*_span!` and `tracing::span!` call in the files compiled into a
+shipped target and fails, naming the file, the span and the field, on a span
+field name outside the allowlist above. It refuses a span it cannot read, and
+refuses `#[instrument]` outright, since that attribute records the function's
+arguments as span fields without naming them. `mise run log-fields` runs it.
+Defence 1 still applies to span field values.
 
 ### 6.1 Email addresses
 
@@ -252,7 +257,7 @@ Alongside it:
 
 - `crates/sunrise-log/tests/redaction.rs` — property tests over both defences
   above, asserting on the bytes a sink received.
-- `crates/sunrise-log/tests/event_catalog.rs` — every event name emitted from
+- `crates/sunrise-log/tests/event_catalog/` — every event name emitted from
   shipped source is grammatical and catalogued in
   [`log-events.md`](./log-events.md), and every **field name** those events
   carry is on the §6 allowlist, so the record the catalogue promises can reach
@@ -283,13 +288,13 @@ ADR-0010's Bun server does not exist).
 
 The catalogue lives in [`log-events.md`](./log-events.md), split into what is
 **implemented** and what is **reserved**. It is the contract, and it is checked:
-`crates/sunrise-log/tests/event_catalog.rs` fails if any event emitted from
+`crates/sunrise-log/tests/event_catalog/` fails if any event emitted from
 shipped source is missing from it. Which files count is taken from
 `cargo metadata` and the compiler's own dep-info rather than from a directory
 walk.
 
 Implemented today: `sunrise-server` (startup, request lifecycle, auth outcome,
-WebSocket session, relay fan-out), `sunrise-storage` (migrations),
+sync session and SSE stream lifecycle, relay fan-out), `sunrise-storage` (migrations),
 `sunrise-core::sync_driver` + `sunrise-cli::livesync` (session lifecycle,
 backoff), and `sunrise-cli` (startup, dev pairing).
 
@@ -310,9 +315,10 @@ events, quota and push (no such features), and integrations (no provider).
 | file | NDJSON | `sunrise-cli`. `$XDG_STATE_HOME/sunrise/log/sunrise-cli.ndjson`, defaulting to `~/.local/state/sunrise/log/`; override with `SUNRISE_LOG_FILE`. **A command-line client cannot log to either standard stream**: stdout is its contract (`sunrise export … \| jq` has to work) and stderr is where it talks to the human running it. If the file cannot be opened the CLI runs with no logging at all — falling back to stderr would trade a missing log for corrupted output. |
 | capture | NDJSON | Tests (`sunrise_log::Capture`), so assertions are on the exact bytes a sink would receive. |
 
-**Rotation** is a size roll at 16 MiB keeping one previous generation
-(`<name>.ndjson.1`), so a runaway loop costs at most 32 MiB rather than a
-partition. Not gzipped, not time-based, no 14-day retention sweep — see the
+**Rotation** is a size roll at 16 MiB (`max_bytes`) keeping one previous generation
+(`<name>.ndjson.1`), so a runaway loop costs at most `2 × max_bytes` plus one
+record per generation on disk (the record that crosses the cap is written whole before the
+roll) rather than a partition. Not gzipped, not time-based, no 14-day retention sweep — see the
 throttling note in §9 for why the size cap is the part that had to exist.
 
 **Removed: the `ring` and `remote` sinks.** `remote` was never implemented and
@@ -383,7 +389,7 @@ one global dispatcher.
 | Test | What it holds |
 |---|---|
 | `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
-| `crates/sunrise-log/tests/event_catalog.rs` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. Because the file set is dep-info, it sees only what has been compiled: run it as `mise run log-fields`, which builds every target first, or as part of `mise run rust-test`. |
+| `crates/sunrise-log/tests/event_catalog/` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. Because the file set is dep-info, it sees only what has been compiled: run it as `mise run log-fields`, which builds every target first, or as part of `mise run rust-test`. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
 | `crates/sunrise-server/src/api/observe.rs` (in-module) | Real requests through the real router, reached through the `pub(crate)` `api::testing::Client`: no `?access_token=`, no full entity ids, every field allowlisted. `the_query_string_never_reaches_the_log`, `an_opaque_path_segment_is_templated`, `request_records_carry_status_and_latency`, `every_server_field_survives_the_redaction_allowlist`. |
 | `crates/sunrise-server/tests/logging.rs` | The §6.3 MUST, over the *public* surface (`ServerState::new` + `sunrise_server::build_service`): `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`, `a_signed_request_that_is_refused_logs_no_signature_bytes`, `the_request_records_carry_the_catalogued_shape`, `healthy_traffic_is_silent_at_info`, `the_refusal_records_survive_redaction_and_carry_their_cause`. |

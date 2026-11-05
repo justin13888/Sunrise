@@ -15,9 +15,8 @@
 //! recoverable by running it again — which is the property that lets a caller
 //! do this on every start rather than tracking whether it has run.
 
+use crate::account::{encode_public_key, encode_recovery_blob, AccountCreateRequest};
 use crate::api;
-use crate::api::SecretString;
-use sunrise_onboarding::account::AccountCreateRequest;
 
 /// What a device needs to introduce itself.
 #[derive(Debug, Clone)]
@@ -70,12 +69,13 @@ pub struct BootstrapOutcome {
 
 /// Why a bootstrap did not complete.
 ///
-/// Deliberately three arms rather than one: a caller retries a transport
-/// failure, fixes a request the server refused, and reports a server fault. The
-/// generated client's own taxonomy is richer — it distinguishes construction,
-/// timeout, decode and protocol failures — and `Error::is_transient` is what
-/// classifies them, so the detail is preserved in the message rather than
-/// discarded.
+/// Two arms, split by which of the two calls failed: [`Self::Account`] for the
+/// first half (building the client for it, an acceptance timestamp the
+/// description cannot carry, or `POST /api/v1/accounts` itself), and
+/// [`Self::Device`] for the second ([`register_device`], which is also all a
+/// recovery calls). The generated client's own taxonomy is richer — it
+/// distinguishes construction, timeout, decode and protocol failures — and that
+/// detail is preserved in the arm's message rather than discarded.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     /// The account could not be created or read.
@@ -114,16 +114,7 @@ pub async fn bootstrap(
     account: AccountCreateRequest,
     device: DeviceIdentity,
 ) -> Result<BootstrapOutcome, BootstrapError> {
-    // `AccountToken` is the scheme's name in `components.securitySchemes`,
-    // which the generated client matches each operation's `security`
-    // requirement against. A missing required credential is a
-    // request-construction error rather than a silent 401.
-    let client = api::Client::new(base_url)
-        .map_err(|e| BootstrapError::Account(e.to_string()))?
-        .with_credential(
-            "AccountToken",
-            api::Credential::Bearer(SecretString::from(bearer.to_owned())),
-        );
+    let client = crate::client(base_url, bearer).map_err(BootstrapError::Account)?;
 
     // `None` for the per-operation parameters: this is the bootstrap
     // exemption, so the three device-binding headers are deliberately absent.
@@ -132,10 +123,8 @@ pub async fn bootstrap(
             None,
             &api::types::AccountCreateRequest {
                 email: account.email,
-                identity_signing_pub: sunrise_onboarding::encode_public_key(
-                    &account.identity_signing_pub,
-                ),
-                identity_dh_pub: sunrise_onboarding::encode_public_key(&account.identity_dh_pub),
+                identity_signing_pub: encode_public_key(&account.identity_signing_pub),
+                identity_dh_pub: encode_public_key(&account.identity_dh_pub),
                 // The empty string is how the description says "no blob": the
                 // handler filters it out before the store sees it, so a device
                 // that cannot seal one leaves the column exactly as the
@@ -143,7 +132,7 @@ pub async fn bootstrap(
                 recovery_blob: account
                     .recovery_blob
                     .as_deref()
-                    .map(sunrise_onboarding::encode_recovery_blob)
+                    .map(encode_recovery_blob)
                     .unwrap_or_default(),
                 terms_at_ms: terms_at_ms(account.terms_at_ms)?,
             },
@@ -183,12 +172,7 @@ pub async fn register_device(
     bearer: &str,
     device: DeviceIdentity,
 ) -> Result<String, BootstrapError> {
-    let client = api::Client::new(base_url)
-        .map_err(|e| BootstrapError::Device(e.to_string()))?
-        .with_credential(
-            "AccountToken",
-            api::Credential::Bearer(SecretString::from(bearer.to_owned())),
-        );
+    let client = crate::client(base_url, bearer).map_err(BootstrapError::Device)?;
 
     let registered = client
         .register_device(

@@ -13,9 +13,9 @@ status: accepted
 > - `vault_requires` feature gating, and a floor for the envelope container
 >
 > **Amended by [ADR-0044](../11-adr/0044-per-field-ops.md)**, which changes how
-> entity ops merge. This document **reserves envelope fields 14 and 15** for
-> the commit tree (§7.1), whose design, [ADR-0043](../11-adr/0043-commit-tree.md),
-> is proposed.
+> entity ops merge. **Envelope fields 14 and 15** carry the commit tree
+> (§7.1), whose design, [ADR-0043](../11-adr/0043-commit-tree.md), is accepted
+> and built.
 >
 > **Items marked *Today* describe the tree before those ADRs are built.**
 
@@ -85,11 +85,13 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 11
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
 ```
+
+`DOC_SCHEMA_V` moves with every schema change, so it is not copied here. Read it
+at `crates/sunrise-cbor/src/version.rs#DOC_SCHEMA_V`.
 
 `ENVELOPE_FORMAT_FLOOR` is `3`, equal to `ENVELOPE_FORMAT_V` (ADR-0045 §5,
 [#329](https://github.com/justin13888/Sunrise/issues/329)). The two stay equal
@@ -105,7 +107,7 @@ respective version constants.
 | Constant | Accept when | Otherwise | Why |
 |---|---|---|---|
 | `WIRE_PROTO_V`, `CRYPTO_SUITE_V` | The peers' supported lists intersect | Hard refusal at session start | The reader does not know the layout or the primitives, so there is nothing to salvage. |
-| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is within the reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `reader.ENVELOPE_FORMAT_FLOOR ≤ prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | A prefix outside the window: `PROTOCOL_BAD_MAGIC`. A field 1 below the prefix: `SYNC_OP_INVALID`. | The reader can locate the payload whenever it implements the writer's floor. One function states the rule, `crates/sunrise-cbor/src/envelope_header.rs#envelope_format_readable`, and both the client decoder (`crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`) and the relay's header decoder (`crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`) call it. |
+| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is within the reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `reader.ENVELOPE_FORMAT_FLOOR ≤ prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | A prefix outside the window: `PROTOCOL_BAD_MAGIC`. A field 1 below the prefix: `SYNC_OP_INVALID`. | The reader can locate the payload whenever it implements the writer's floor. One function states the rule, `crates/sunrise-cbor/src/envelope_header.rs#envelope_format_readable`, and both the client decoder (`crates/sunrise-crypto/src/op_envelope/mod.rs#decode_envelope`) and the relay's header decoder (`crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`) call it. |
 | `DOC_SCHEMA_V` | Whenever it is `>= DOC_SCHEMA_FLOOR` | Refuse the envelope (`DOC_SCHEMA_TOO_OLD`) | The reader can authenticate and decrypt the payload. Whatever it cannot understand inside is preserved, or the whole op is **parked** (§7). It is never dropped. |
 
 `ENVELOPE_FORMAT_V` versions the op-envelope container and is carried in
@@ -118,7 +120,7 @@ already-signed envelope undecodable.
 
 A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
 `ENVELOPE_FORMAT_FLOOR` in the magic prefix
-(`crates/sunrise-crypto/src/op_envelope.rs#seal_envelope`).
+(`crates/sunrise-crypto/src/op_envelope/mod.rs#seal_envelope`).
 
 - **An additive container change bumps `ENVELOPE_FORMAT_V` alone.** Additive
   means a new field whose absence has a defined meaning. The AAD and the
@@ -128,9 +130,10 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   still passes.
 - **A change to the meaning of fields 1–12, to the AAD construction or to the
   signature input MUST raise `ENVELOPE_FORMAT_FLOOR`.** The AAD construction is
-  the `Omit` set in `crates/sunrise-crypto/src/op_envelope.rs`, and the
-  signature input is `SIG_DOMAIN` over the map without field 11.
-  `the_container_meaning_is_pinned_to_its_floor` in the same file pins all
+  the `Omit` set in `crates/sunrise-crypto/src/op_envelope/codec.rs#Omit`, and
+  the signature input is `SIG_DOMAIN` over the map without field 11.
+  `the_container_meaning_is_pinned_to_its_floor` in
+  `crates/sunrise-crypto/src/op_envelope/tests/versions.rs` pins all
   three to the floor they were frozen at: fields 1–12 by their exact encoding
   and decoding, the `Omit` sets field by field, and `SIG_DOMAIN` by value.
   Changing any of them without moving the floor fails that test. Moving the
@@ -139,8 +142,33 @@ A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
   signature. Anyone on the path can lower it, and only a signature input that
   differs between the two containers makes a reader below the new floor refuse
   such an envelope instead of misreading it.
+- **A new field nests at most `MAX_VALUE_DEPTH` (8) levels deep, the envelope
+  map included.** Every decoder of the container, the client's and the
+  relay's, reads it through `sunrise_cbor::decode_value`
+  (`crates/sunrise-cbor/src/bounded.rs`), which refuses a deeper item whole.
+  So a field nested deeper is not kept as unknown by an older build: the
+  envelope carrying it is refused. The deepest field today is field 15, at
+  three levels. The device cert and its body are held to the same bound, and
+  so is every other decoder of bytes a stranger or a peer frames: the wire
+  payloads (`Subscribe` is the deepest, at five), the relay's `HelloAck`, the
+  pairing messages (the payload's Stream-key map is the deepest, at three), the
+  recovery payload and the snapshot record. A new field in any of them nests no
+  deeper than eight levels, its container included.
+- **The payload inside the envelope gets more room: `MAX_DOC_DEPTH` (32).**
+  An inner op, and the entity blobs and field values the engine stores from
+  one, are read under `sunrise_cbor::MAX_DOC_DEPTH`, which
+  `decode_canonical` and `decode_lenient` also apply by default. The deepest
+  inner op the format defines is eight levels (an OR-set remove in a `Patch`),
+  and the deepest this build writes is seven (a preference `Patch`), so a newer
+  build's fields have twenty-four levels beyond either. An inner op past the
+  bound is **parked**, reason `too_deep`, not refused (§7.2): a build with a
+  larger bound reads it. Parked ops are retried only when a build with another
+  `DOC_SCHEMA_V` opens the vault, so **raising `MAX_DOC_DEPTH` ships with a
+  `DOC_SCHEMA_V` bump**, or the ops it would now admit stay parked. A note body is a byte string inside the op and has its
+  own bound (128) under the note grammar, past which it renders as nothing and
+  is kept read-only rather than refused.
 - **Fields 13–15 need no container bump.** Field 13 is the schema fingerprint
-  (ADR-0045 §3), and 14–15 are reserved for the commit tree (§7.1). Every
+  (ADR-0045 §3), and 14–15 carry the commit tree (§7.1). Every
   build in the field already preserves and signs unknown envelope fields.
 
 **Transition.** Builds before the floor compare the prefix and field 1 with
@@ -148,13 +176,13 @@ their own container for equality. So writers MUST keep emitting `v = 3` and
 prefix `3` until `core.envelope_floor` is in `vault_requires` (§7.6) and the
 relay has agreed server capability bit 9, `SRV_ENVELOPE_FLOOR` (§5).
 `writers_still_emit_the_container_every_build_reads` in
-`crates/sunrise-crypto/src/op_envelope.rs` asserts that
+`crates/sunrise-crypto/src/op_envelope/tests/versions.rs` asserts that
 `ENVELOPE_FORMAT_V == ENVELOPE_FORMAT_FLOOR`, so a bump fails until the
 transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `11`, because a schema-1 payload
+exists. It is `1`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -177,8 +205,10 @@ From now on:
 - **A new op kind or field-op kind** carries a feature id. Older builds park it
   (§7). `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
   ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. Its
-  feature id, `core.field_ops`, is not yet in this build's feature registry,
-  and until it is no build emits a `Patch`. `DOC_SCHEMA_V` 9 added
+  feature id, `core.field_ops`, entered the feature registry at
+  `DOC_SCHEMA_V` 18 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
+  §7), and a build writes an entity `Patch` only into a vault that requires
+  it. `DOC_SCHEMA_V` 9 added
   `StreamDigest` ([ADR-0043](../11-adr/0043-commit-tree.md)), which a v8 build
   parks. It is emitted without a feature gate, because a build that parks one
   loses no data: a digest changes no entity, and the parked op only delays
@@ -190,7 +220,67 @@ From now on:
   ([#337](https://github.com/justin13888/Sunrise/issues/337), ADR-0050). A v10
   build cannot decode a `Patch` naming a prefix it does not know and refuses
   it, so no such op is written until every device has advertised
-  `preferences.entity`.
+  `preferences.entity`. `DOC_SCHEMA_V` 12 added no op kind and changed no
+  shape: the canonical schema began describing every value type and op
+  payload field by field
+  ([#439](https://github.com/justin13888/Sunrise/issues/439)), which moved its
+  fingerprint. `DOC_SCHEMA_V` 13 added eight optional Attachment
+  fields, the original's dimensions and a thumbnail blob, under the feature
+  `attachment.thumbnail` ([#346](https://github.com/justin13888/Sunrise/issues/346),
+  ADR-0053). An attachment without them encodes as before; a v12 build keeps
+  them as unknown fields, and stops writing attachments once the vault
+  requires the feature. `DOC_SCHEMA_V` 14 gave every field a conflict class
+  and the schema the rules the classes follow, and added the optional
+  `parents` and `group` keys to `Patch`
+  ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §3, §1, §6).
+  No build writes either key yet; a `Patch` without them encodes as before,
+  and a v13 build keeps them as unknown keys. `DOC_SCHEMA_V` 15 retyped six
+  bare-instant fields to `SunriseTime` (`Routine.starts_at`, `ends_at`,
+  `paused_until`, `last_completed_at`, `RRule.until`, `Stream.paused_until`;
+  [#506](https://github.com/justin13888/Sunrise/issues/506),
+  [ADR-0066](../11-adr/0066-times-survive-travel.md) §1). It changes no
+  variant's shape for a value an older build can hold: an instant is still
+  written bare, so a routine whose times are all instants, or zoned in its
+  own zone, is written as a v14 build reads it. A time a v14 build cannot
+  read is written only into a vault that requires the feature
+  `routine.civil_times`, declared on the feature as the `(variant, field)`
+  pairs it retypes, which a v14 build lacks and so stops writing routines.
+  A v14 payload's bare instants read as zoned in the routine's zone
+  ([`time.md`](./time.md) §1). `DOC_SCHEMA_V` 16 added one optional Task
+  field, `sort_order`, a task's manual-order key
+  ([#340](https://github.com/justin13888/Sunrise/issues/340)). A task nobody
+  placed omits it and encodes as before. It needs no feature: a v15 build
+  keeps the key as an unknown field and writes it back unchanged in its own
+  full-state ops, so it keeps writing tasks and only lists them in its own
+  order. `DOC_SCHEMA_V` 17 added the `svw_` saved-view entity, written only by
+  `Patch` ([#341](https://github.com/justin13888/Sunrise/issues/341)), with
+  its value types and three lossless enums. A v16 build cannot decode a
+  `Patch` naming a prefix it does not know, so no such op is written until
+  every device has advertised `saved_view.entity`. `DOC_SCHEMA_V` 19 made a
+  task's, block's and routine template's stream optional
+  ([#332](https://github.com/justin13888/Sunrise/issues/332),
+  [ADR-0046](../11-adr/0046-optional-stream.md)) and added `Task.triaged_at`,
+  `Stream.rehomed_to` and `ViewFilter.no_stream`, each absent when unset. No
+  stream is still written as the legacy Inbox reference, which every older
+  build reads as its Inbox, so the stream fields keep their wire shape; the
+  three new fields are unknown fields to a v18 build, which writes them back
+  unchanged. None needs a feature. `DOC_SCHEMA_V` 20 gave a task a plan and
+  two deadlines ([#334](https://github.com/justin13888/Sunrise/issues/334),
+  [ADR-0047](../11-adr/0047-deadlines-and-lateness.md)): `planned_at` and
+  `hard_due_at` keep the wire keys `scheduled_at` and `due_at`, whose meaning
+  they are, and `target_at`, `ViewFilter.lateness` and the `WindowField`
+  spelling `target` are new and absent when unset. A v19 build keeps them as
+  unknown and writes them back unchanged, so none needs a feature. `DOC_SCHEMA_V` 21 added
+  `Task.cancel_reason` and `Task.late_acknowledged_at`, what the triage
+  queue's Drop and Keep write ([#335](https://github.com/justin13888/Sunrise/issues/335)),
+  each absent when unset and kept by a v20 build as unknown.
+  `DOC_SCHEMA_V` 22 gave a routine a series
+  ([#331](https://github.com/justin13888/Sunrise/issues/331)):
+  `Routine.split_from`, the series root a split routine continues, and its
+  feature `routine.series`, which an op carrying it uses, because a build that
+  did not read it would key the continuation's occurrences on the wrong id;
+  and `Task.hard_constraint_violated`, absent when false, which an older build
+  keeps as unknown and needs no feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
@@ -240,6 +330,8 @@ magic prefix (`crates/sunrise-cbor/src/magic.rs#MagicKind`):
 | 5 | `0x05` | Vault meta record | vault meta version | 1 |
 | 6 | `0x06` | Diagnostic bundle | bundle version | 1 |
 | 7 | `0x07` | Pairing payload (QR contents, base64url JSON inside) | pairing version | 1 |
+| 8 | `0x08` | Key bundle ([ADR-0069](../11-adr/0069-the-accounts-keys-travel-as-an-identity-sealed-bundle.md); see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md) §Key bundle) | key bundle format version (`KEY_BUNDLE_FORMAT_V`) | 1 |
+| 9 | `0x09` | Identity chain record ([ADR-0070](../11-adr/0070-a-recovery-code-survives-a-rotation-that-carries-it.md); see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md) §Identity chain record) | identity chain format version (`IDENTITY_CHAIN_FORMAT_V`) | 1 |
 
 All version fields are written big-endian.
 
@@ -322,7 +414,7 @@ than a decode failure. A misspelt *required* field still fails, as a missing
 one; a misspelt optional field is ignored like any unknown one, which is why an
 optional field may only ever widen what a peer does, never guard it. The
 server's side is pinned by the `a_newer_client*` tests in
-`crates/sunrise-server/src/api/sync/suite.rs`; the client's by
+`crates/sunrise-server/src/api/sync/suite/extension.rs`; the client's by
 `crates/sunrise-relay-client/tests/unknown_response_fields.rs` and by
 `sunrise-sync`'s transport, which reads the reply as an untyped JSON value and
 looks up only the fields it uses (§12).
@@ -496,7 +588,7 @@ It is append-only and frozen entry by entry in `sunrise-crypto-test-vectors`.
 §Schema identity says where each piece lives and which test fails when a shape
 changes without a bump.
 
-`crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13
+`crates/sunrise-crypto/src/op_envelope/mod.rs#encode_envelope` stamps field 13
 from the registry. `decode_envelope` reads it as written into
 `OpEnvelope::schema_fp` and refuses one that is not an 8-byte byte string. It
 does not compare the value with the registry. That is the receiver's job, and
@@ -523,11 +615,16 @@ Field 13 is additive: every build in the field already preserves an unknown
 envelope field and includes it in the AAD and the signature. So it needs no
 `ENVELOPE_FORMAT_V` bump.
 
-**Fields 14 and 15 are reserved** for the commit tree. No build writes them,
-and no other use may claim them. A reader that meets either preserves it like
-any unknown field. Their meaning is assigned only when
-[ADR-0043](../11-adr/0043-commit-tree.md), now proposed, is accepted; being
-additive, they will need no `ENVELOPE_FORMAT_V` bump either.
+**Fields 14 and 15 carry the commit tree** of
+[ADR-0043](../11-adr/0043-commit-tree.md), and no other use may claim them.
+Field 14, `prev_hash`, is the `op_hash` of the same device's op at `seq - 1`.
+Field 15, `heads`, names the tip of each other device's contiguous prefix in
+the stream that advanced since the writer's previous op there. Both are
+optional. `crates/sunrise-crypto/src/op_envelope/mod.rs#encode_chained_envelope`
+stamps them and
+`decode_envelope` reads them into `OpEnvelope::prev_hash` and
+`OpEnvelope::heads`. Being additive, they needed no `ENVELOPE_FORMAT_V` bump
+either: a build that predates them preserves them like any unknown field.
 
 ### 7.2 Parking
 
@@ -554,7 +651,8 @@ marks the op, `Engine::replay_parked_ops` retries it from `Core::open`, and
 `crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. A
 fingerprint mismatch parks too
 ([#438](https://github.com/justin13888/Sunrise/issues/438)), under reason
-`schema_fp_mismatch`. The others do not exist yet. A field-op kind arrives
+`schema_fp_mismatch`, and so does an inner op nested deeper than
+`MAX_DOC_DEPTH` (§2.1), under reason `too_deep`. The others do not exist yet. A field-op kind arrives
 with ADR-0044, and until then every other inner decode failure is still
 `RemoteOpInvalid` and dropped as corruption.
 
@@ -779,7 +877,7 @@ The crypto spec describes byte-exact test vectors. This spec adds:
 - `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1`, with a field 13 this build has no registry entry to check, carrying two envelope fields this build does not know (ids 23 and 40: 23 is the largest single-byte CBOR key, and 40 needs two bytes). The round trip preserves them byte-for-byte. The small id was 13 until [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigned field 13 and reserved 14–15. `crates/sunrise-crypto/tests/forward_compat.rs` also seals an envelope at `ENVELOPE_FORMAT_V + 1` with a field this build does not know, and asserts that it decodes, verifies, opens, re-encodes byte-identically and is routed by the relay's header decoder (ADR-0045 §5).
 
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
-- The JSON sync bodies' openness (§4, §6), in both directions. `crates/sunrise-server/src/api/sync/suite.rs` sends each request body (`/sync/session`, `/sync/session/refresh`, `/sync/subscribe` at all three nesting levels, `/sync/ops`) with fields a newer client might add and asserts the request still did its job. `crates/sunrise-relay-client/tests/unknown_response_fields.rs` decodes each response body (`SessionResponse`, `RefreshResponse`, `OpsResponse`) with fields a newer relay might add into the generated client's types, and asserts every known field survives. These fixtures are inline JSON rather than committed files: the shape under test is "a field this build has never seen", which no committed byte string can pin better than a literal can.
+- The JSON sync bodies' openness (§4, §6), in both directions. `crates/sunrise-server/src/api/sync/suite/extension.rs` sends each request body (`/sync/session`, `/sync/session/refresh`, `/sync/subscribe` at all three nesting levels, `/sync/ops`) with fields a newer client might add and asserts the request still did its job. `crates/sunrise-relay-client/tests/unknown_response_fields.rs` decodes each response body (`SessionResponse`, `RefreshResponse`, `OpsResponse`) with fields a newer relay might add into the generated client's types, and asserts every known field survives. These fixtures are inline JSON rather than committed files: the shape under test is "a field this build has never seen", which no committed byte string can pin better than a literal can.
 
 These fixtures are checked into the repo. Any change to them must be a deliberate version bump — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
 

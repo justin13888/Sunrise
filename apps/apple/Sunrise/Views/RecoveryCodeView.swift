@@ -46,7 +46,7 @@ struct RecoveryCodeView: View {
     private var content: some View {
         switch model.phase {
         case .idle, .working:
-            ProgressView("Setting up recovery…")
+            ProgressView(L10n.Recovery.settingUp)
                 .frame(maxWidth: .infinity, alignment: .center)
         case .show:
             VStack(alignment: .leading, spacing: 14) {
@@ -55,13 +55,13 @@ struct RecoveryCodeView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 wordGrid
-                Text("Shown once. Not written to any file, and not in any log.")
+                Text(L10n.Recovery.shownOnce)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         case .verify, .mismatch:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Type the code back, to prove it is written down somewhere you can read.")
+                Text(L10n.Recovery.verifyInstruction)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -75,54 +75,32 @@ struct RecoveryCodeView: View {
                         .autocorrectionDisabled()
                     #endif
                 if model.phase == .mismatch {
-                    Label(
-                        """
-                        That is not the code that was shown. Nothing is wrong \
-                        with your account — check what you wrote down, or see \
-                        the code again.
-                        """,
-                        systemImage: "exclamationmark.triangle"
-                    )
+                    Label(L10n.Recovery.mismatch, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
             }
         case .done:
-            Label(
-                "Recovery is set up. Keep that code where you will find it years from now.",
-                systemImage: "checkmark.seal"
-            )
-            .font(.callout)
+            Label(L10n.Recovery.done, systemImage: "checkmark.seal")
+                .font(.callout)
         case .notThisDevice:
-            Text(
-                """
-                This \(Platform.deviceName) joined an existing account by pairing, so it \
-                does not hold the key a recovery code is made from — and does not need to. \
-                The device that created the account is the one that showed the code.
-                """
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(L10n.Recovery.notThisDevice(device: Platform.deviceName))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         case let .failed(message):
             VStack(alignment: .leading, spacing: 8) {
-                Text("Recovery could not be set up.")
+                Text(L10n.Recovery.failed)
                     .font(.callout.weight(.medium))
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(
-                    """
-                    Your vault is fine and your tasks are safe on this device. Until this \
-                    succeeds, though, this device holds the only copy of your account key: \
-                    if you lose it, the data cannot be recovered by anyone, including us.
-                    """
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(L10n.Recovery.failedCaption)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -157,34 +135,34 @@ struct RecoveryCodeView: View {
             case .idle, .working:
                 EmptyView()
             case .show:
-                Button("I have written it down") { model.beginVerification() }
+                Button(L10n.Recovery.written) { model.beginVerification() }
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("recovery.written")
             case .verify:
-                Button("Show the code again") { model.showAgain() }
+                Button(L10n.Recovery.showAgain) { model.showAgain() }
                     .accessibilityIdentifier("recovery.again")
-                Button("Confirm") { model.confirm(typed) }
+                Button(L10n.Recovery.confirm) { model.confirm(typed) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(typed.trimmed.isEmpty)
                     .accessibilityIdentifier("recovery.confirm")
             case .mismatch:
-                Button("Show the code again") {
+                Button(L10n.Recovery.showAgain) {
                     typed = ""
                     model.showAgain()
                 }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("recovery.again")
-                Button("Try again") { model.beginVerification() }
+                Button(L10n.Action.tryAgain) { model.beginVerification() }
                     .accessibilityIdentifier("recovery.retry")
             case .done, .notThisDevice:
-                Button("Done", action: dismiss)
+                Button(L10n.Action.done, action: dismiss)
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("recovery.done")
             case .failed:
-                Button("Try again") { Task { await model.start() } }
+                Button(L10n.Action.tryAgain) { Task { await model.start() } }
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("recovery.retry")
-                Button("Not now", action: dismiss)
+                Button(L10n.Recovery.notNow, action: dismiss)
                     .accessibilityIdentifier("recovery.later")
             }
         }
@@ -192,12 +170,12 @@ struct RecoveryCodeView: View {
 
     private var title: String {
         switch model.phase {
-        case .idle, .working: "Setting up recovery"
-        case .show: "Your recovery code"
-        case .verify, .mismatch: "Type it back"
-        case .done: "Recovery is set up"
-        case .notThisDevice: "Recovery lives on another device"
-        case .failed: "Recovery is not set up"
+        case .idle, .working: L10n.Recovery.titleSettingUp
+        case .show: L10n.Recovery.titleShow
+        case .verify, .mismatch: L10n.Recovery.titleVerify
+        case .done: L10n.Recovery.titleDone
+        case .notThisDevice: L10n.Recovery.titleNotThisDevice
+        case .failed: L10n.Recovery.titleFailed
         }
     }
 

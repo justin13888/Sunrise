@@ -8,7 +8,7 @@ back out of it.
 
 | File | Pins | Why it exists |
 |---|---|---|
-| `keychain_vault_suite_v5.db` | `CRYPTO_SUITE_V = 5` | The wrapping side of the key hierarchy had no test that was not self-consistent. Both "legacy vault" tests in `keychain/mod.rs` wrap their secrets in-process with the same AAD they then unwrap with, and `sunrise-storage`'s fixtures assert rows without ever unwrapping one. |
+| `keychain_vault_suite_v5.db` | `CRYPTO_SUITE_V = 5` | The wrapping side of the key hierarchy had no test that was not self-consistent. Both "legacy vault" tests in `keychain/tests/legacy.rs` wrap their secrets in-process with the same AAD they then unwrap with, and `sunrise-storage`'s fixtures assert rows without ever unwrapping one. |
 
 Named for `CRYPTO_SUITE_V` and not for `STORAGE_V`: what it pins is the key
 hierarchy. The migration chain has its own fixtures next door in
@@ -58,3 +58,20 @@ The bytes are not reproducible: SQLCipher writes a random salt into the file
 header and every wrap draws a fresh nonce, so every regeneration produces a
 different file with identical contents. Expect a whole-file diff, and review
 the module rather than the binary.
+
+# The vaults rebuild equivalence is checked over
+
+`projection_vault_storage_v<N>.db` is a vault the engine wrote when
+`STORAGE_V` was `N`, through every command family, so each row of its
+projection is the fold of an op in its log.
+[`../src/engine/tests/rebuild/fixture.rs`](../src/engine/tests/rebuild/fixture.rs)
+opens a copy with the ordinary `Db::open`, which migrates it, rebuilds the
+projection from the log, and requires every projection table to read as the
+migration left it ([`migrations.md`](../../../docs/04-storage/migrations.md)
+§Migration rigor rule 1). `sunrise-storage`'s fixtures cannot be checked that
+way: their envelopes are invented, and nothing refolds them.
+
+`mise run storage-fixtures` writes the one for this build's `STORAGE_V` when it
+is missing, and never rewrites one. Its keys are derived from the engine tests'
+vault root (thirty-two `0x5a` bytes) by their test keychain, and are as public
+as the root above.

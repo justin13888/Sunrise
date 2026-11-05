@@ -73,19 +73,19 @@ extension CaptureIssue {
     var explanation: String {
         switch self {
         case let .unknownStream(name):
-            "No stream called “\(name)” — kept in the title."
+            L10n.Capture.unknownStream(name: name)
         case let .ambiguousStream(typed, candidates):
-            "“\(typed)” matches \(candidates.joined(separator: ", "))."
+            L10n.Capture.ambiguous(typed: typed, candidates: candidates.joined(separator: ", "))
         case let .unknownContext(name):
-            "No context called “\(name)” — kept in the title."
+            L10n.Capture.unknownContext(name: name)
         case let .ambiguousContext(typed, candidates):
-            "“\(typed)” matches \(candidates.joined(separator: ", "))."
+            L10n.Capture.ambiguous(typed: typed, candidates: candidates.joined(separator: ", "))
         case let .unparseableDate(text):
-            "“\(text)” is not a date Sunrise understands."
+            L10n.Capture.badDate(text: text)
         case let .priorityOutOfRange(text):
-            "Priority “\(text)” is outside 1–5."
+            L10n.Capture.badPriority(text: text)
         case let .unparseableDuration(text):
-            "“\(text)” is not a duration."
+            L10n.Capture.badDuration(text: text)
         }
     }
 }

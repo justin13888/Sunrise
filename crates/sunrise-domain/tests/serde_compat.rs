@@ -68,14 +68,15 @@ fn expected_task() -> Task {
         updated_at: ts(T_UPDATED),
         title: "Ship the jiff migration".to_string(),
         body: Some(NoteBody(vec![1, 2, 3, 4])),
-        stream_id: eref(EntityKind::Stream, 0x22),
+        stream_id: Some(eref(EntityKind::Stream, 0x22)),
         contexts,
         state: TaskState::InProgress,
         priority: Some(3),
         energy: Some(Energy::High),
         estimated_duration_s: Some(5400),
-        scheduled_at: Some(ts(T_SCHEDULED).into()),
-        due_at: Some(ts(T_DUE).into()),
+        planned_at: Some(ts(T_SCHEDULED).into()),
+        target_at: None,
+        hard_due_at: Some(ts(T_DUE).into()),
         // New field defaults to empty and is skipped on the wire, so the
         // chrono-era fixtures still decode and re-encode byte-identically.
         scheduling_constraints: Vec::new(),
@@ -86,6 +87,11 @@ fn expected_task() -> Task {
         assignee: Some(eref(EntityKind::Person, 0x66)),
         routine_id: Some(eref(EntityKind::Routine, 0x77)),
         routine_occurrence: Some(ts(T_ROUTINE_OCC)),
+        hard_constraint_violated: false,
+        sort_order: None,
+        triaged_at: None,
+        cancel_reason: None,
+        late_acknowledged_at: None,
         archived: true,
         deleted: false,
         unknown: Unknowns::new(),
@@ -99,7 +105,7 @@ fn expected_routine() -> Routine {
         updated_at: ts(R_UPDATED),
         template: TaskTemplate {
             title: "Water the plants".to_string(),
-            stream_id: eref(EntityKind::Stream, 0xA2),
+            stream_id: Some(eref(EntityKind::Stream, 0xA2)),
             contexts: vec![eref(EntityKind::Context, 0xA3)],
             energy: Some(Energy::Low),
             priority: Some(2),
@@ -115,13 +121,13 @@ fn expected_routine() -> Routine {
             by_month: vec![1, 6, 12],
             by_set_pos: vec![1, -1],
             count: Some(10),
-            until: Some(ts(R_UNTIL)),
+            until: Some(ts(R_UNTIL).into()),
             wkst: Some(Weekday::Su),
             unknown: Unknowns::new(),
         },
         timezone: "America/Los_Angeles".to_string(),
-        starts_at: ts(R_STARTS),
-        ends_at: Some(ts(R_ENDS)),
+        starts_at: ts(R_STARTS).into(),
+        ends_at: Some(ts(R_ENDS).into()),
         scheduling_constraints: Vec::new(),
         skip_dates: vec![ts(R_SKIP1), ts(R_SKIP2)],
         // New field: defaults to empty and is skipped on the wire, so the
@@ -129,7 +135,7 @@ fn expected_routine() -> Routine {
         skipped_keys: Vec::new(),
         catchup_policy: RoutineCatchupPolicy::Merge,
         streak_counter: 7,
-        last_completed_at: Some(ts(R_LAST_COMPLETED)),
+        last_completed_at: Some(ts(R_LAST_COMPLETED).into()),
         // Streak-mechanics fields: every one defaults to its "unset" value and
         // is skipped on the wire in that state, so the chrono-era fixture still
         // decodes and re-encodes byte-identically.
@@ -137,9 +143,10 @@ fn expected_routine() -> Routine {
         forgiveness_enabled: true,
         streak_started_at: None,
         forgivenesses_in_window: 0,
+        split_from: None,
         streak_keys: Vec::new(),
         paused: true,
-        paused_until: Some(ts(R_PAUSED_UNTIL)),
+        paused_until: Some(ts(R_PAUSED_UNTIL).into()),
         archived: false,
         deleted: false,
         unknown: Unknowns::new(),
@@ -186,14 +193,14 @@ fn chrono_task_fixture_decodes_under_jiff() {
         Timestamp::from_millisecond(T_UPDATED).unwrap()
     );
     assert_eq!(
-        task.scheduled_at,
+        task.planned_at,
         Some(SunriseTime::instant(
             Timestamp::from_millisecond(T_SCHEDULED).unwrap()
         )),
         "a v1 bare instant reads back as an Instant, not a floating time"
     );
     assert_eq!(
-        task.due_at,
+        task.hard_due_at,
         Some(Timestamp::from_millisecond(T_DUE).unwrap().into())
     );
     assert_eq!(
@@ -232,18 +239,10 @@ fn chrono_routine_fixture_decodes_under_jiff() {
     let expected = expected_routine();
     assert_eq!(routine, expected, "full-value identity for Routine");
 
-    assert_eq!(
-        routine.starts_at,
-        Timestamp::from_millisecond(R_STARTS).unwrap()
-    );
-    assert_eq!(
-        routine.ends_at,
-        Some(Timestamp::from_millisecond(R_ENDS).unwrap())
-    );
-    assert_eq!(
-        routine.rrule.until,
-        Some(Timestamp::from_millisecond(R_UNTIL).unwrap())
-    );
+    // The wire value is kept as it arrived: a bare instant.
+    assert_eq!(routine.starts_at, SunriseTime::instant(ts(R_STARTS)));
+    assert_eq!(routine.ends_at, Some(SunriseTime::instant(ts(R_ENDS))));
+    assert_eq!(routine.rrule.until, Some(SunriseTime::instant(ts(R_UNTIL))));
     assert_eq!(
         routine.skip_dates,
         vec![
@@ -253,11 +252,11 @@ fn chrono_routine_fixture_decodes_under_jiff() {
     );
     assert_eq!(
         routine.last_completed_at,
-        Some(Timestamp::from_millisecond(R_LAST_COMPLETED).unwrap())
+        Some(SunriseTime::instant(ts(R_LAST_COMPLETED)))
     );
     assert_eq!(
         routine.paused_until,
-        Some(Timestamp::from_millisecond(R_PAUSED_UNTIL).unwrap())
+        Some(SunriseTime::instant(ts(R_PAUSED_UNTIL)))
     );
 
     // Re-encoding produces the canonical (key-sorted) form, which then
@@ -265,4 +264,74 @@ fn chrono_routine_fixture_decodes_under_jiff() {
     let re = encode_canonical(&routine).unwrap();
     let back: Routine = decode_canonical(&re).unwrap();
     assert_eq!(back, expected);
+}
+
+/// What a v1 routine's bare instants MEAN (#506, `docs/10-cross-cutting/time.md`
+/// §1): the anchor, the end and `UNTIL` are wall-clock times `zoned` in the
+/// routine's own zone, at the wall clock each instant had there, so the
+/// routine keeps firing when it always did. `paused_until` and
+/// `last_completed_at` allow the instant kind and stay instants.
+#[test]
+fn a_v1_routines_bare_instants_read_as_zoned_in_its_zone() {
+    let routine: Routine = decode_lenient(&fixture("routine_chrono_v1.cbor")).unwrap();
+    let la = jiff::tz::TimeZone::get("America/Los_Angeles").unwrap();
+    let zoned = |ms: i64| {
+        SunriseTime::zoned(
+            ts(ms).to_zoned(la.clone()).datetime(),
+            "America/Los_Angeles",
+        )
+    };
+    let r = routine.normalized();
+    assert_eq!(r.starts_at, zoned(R_STARTS));
+    assert_eq!(r.ends_at, Some(zoned(R_ENDS)));
+    assert_eq!(r.rrule.until, Some(zoned(R_UNTIL)));
+    assert_eq!(
+        r.paused_until,
+        Some(SunriseTime::instant(ts(R_PAUSED_UNTIL)))
+    );
+    // Each reads back as the instant it was.
+    assert_eq!(r.starts_at.resolve_in(&la), Some(ts(R_STARTS)));
+
+    // A routine whose zone this build does not know has nowhere to pin its
+    // instants, and reads them as floating at their wall clock in UTC.
+    let mut unknown_zone = expected_routine();
+    unknown_zone.timezone = "Mars/Olympus_Mons".into();
+    let r = unknown_zone.normalized();
+    assert_eq!(
+        r.starts_at,
+        SunriseTime::floating(ts(R_STARTS).to_zoned(jiff::tz::TimeZone::UTC).datetime())
+    );
+}
+
+/// The wire form of every field #506 retyped: an instant is still the bare
+/// RFC 3339 string a v1 build reads, and a civil kind is the tagged map.
+#[test]
+fn an_instant_in_a_retyped_field_is_written_bare() {
+    let r = expected_routine();
+    let v: ciborium::Value = ciborium::Value::serialized(&r).unwrap();
+    let field = |name: &str| {
+        v.as_map()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k.as_text() == Some(name))
+            .map(|(_, v)| v.clone())
+            .unwrap()
+    };
+    assert!(field("starts_at").is_text(), "bare instant");
+    assert!(field("paused_until").is_text(), "bare instant");
+
+    let mut floating = r.clone();
+    floating.starts_at =
+        SunriseTime::floating(ts(R_STARTS).to_zoned(jiff::tz::TimeZone::UTC).datetime());
+    let v: ciborium::Value = ciborium::Value::serialized(&floating).unwrap();
+    let starts = v
+        .as_map()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k.as_text() == Some("starts_at"))
+        .map(|(_, v)| v.clone())
+        .unwrap();
+    assert!(starts.is_map(), "a civil kind is tagged");
+    let back: Routine = decode_canonical(&encode_canonical(&floating).unwrap()).unwrap();
+    assert_eq!(back, floating);
 }

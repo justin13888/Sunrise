@@ -161,11 +161,9 @@ wrong:
   matching export is a submenu (Today | This Week) with no chord, since a
   shortcut that silently picks a window would be guessing.
 
-**Remapping is not implemented.** An earlier revision of this file said the
-defaults were "user remappable in Settings". They are not: `Keymap.bindings` is
-a compile-time constant and Settings → Keyboard offers only the vim toggle
-below. When remapping lands it edits the one keymap source, so every hint
-follows the user's binding.
+**Remapping is not implemented.** `Keymap.bindings` is a compile-time constant
+and Settings → Keyboard offers only the vim toggle below. When remapping lands
+it edits the one keymap source, so every hint follows the user's binding.
 
 ### Note editor
 

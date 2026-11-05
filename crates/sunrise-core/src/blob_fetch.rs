@@ -77,9 +77,10 @@ use parking_lot::Mutex;
 use tokio::sync::{broadcast, Notify};
 
 use crate::attach::AttachError;
-use crate::blob_sync::MAX_FETCHES_PER_DRAIN;
+use crate::blob_sync::{MAX_FETCHES_PER_DRAIN, MAX_FETCH_SCAN};
+use crate::bytes::hex_short;
 use crate::core::{Core, CoreError};
-use crate::engine::{hex_short, read_attachment};
+use crate::engine::read_attachment;
 use crate::events::{AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState};
 use sunrise_domain::Attachment;
 use sunrise_id::EntityRef;
@@ -94,10 +95,53 @@ use sunrise_sync::{Transport, TransportError};
 /// commonest reason a first attempt answers `404` is that the *uploading*
 /// device has not finished yet, and that resolves on its own within seconds —
 /// so a request that gave up on the first refusal would show a failure to the
-/// user for a download that was about to work. Ten attempts across drains is
-/// long enough to cover that and short enough that a blob the relay does not
-/// have stops being asked for.
+/// user for a download that was about to work. Ten attempts is long enough to
+/// cover that and short enough that a blob the relay does not have stops being
+/// asked for — but only because the attempts are spaced by
+/// [`fetch_retry_delay_ms`]. A drain runs on every inbound batch, every local
+/// submit and every resync tick, so counted per drain the ten could be spent
+/// in half a second, well inside the upload they were meant to wait out.
 pub(crate) const MAX_FETCH_ATTEMPTS: u32 = 10;
+
+/// The wait after a requested fetch's first failed attempt before the next.
+///
+/// Doubles with each further failure up to [`FETCH_RETRY_MAX_DELAY_MS`], so
+/// [`MAX_FETCH_ATTEMPTS`] spans about two minutes from the first refusal to the
+/// request being parked: seconds of retrying for the ordinary case of an upload
+/// still in flight, and minutes for a large one from a slow link.
+const FETCH_RETRY_BASE_DELAY_MS: u64 = 500;
+
+/// The longest wait between two attempts at a requested fetch.
+///
+/// Equal to the production resync interval, the backstop that drains when
+/// nothing else does, so the cap never asks for a drain that would not happen.
+const FETCH_RETRY_MAX_DELAY_MS: u64 = 30_000;
+
+/// How long after its `attempts`-th failure a requested fetch waits before the
+/// next attempt. Zero for a request that has not failed yet.
+fn fetch_retry_delay_ms(attempts: u32) -> u64 {
+    match attempts {
+        0 => 0,
+        // Past sixteen doublings the cap has long since won; stopping the
+        // shift there keeps it from carrying bits off the top.
+        n => (FETCH_RETRY_BASE_DELAY_MS << (n - 1).min(16)).min(FETCH_RETRY_MAX_DELAY_MS),
+    }
+}
+
+/// Whether a request that has failed `attempts` times, the last at
+/// `last_attempt_ms`, is due another attempt at `now_ms`.
+///
+/// A clock that went backwards reads as due: a request stuck behind a stamp in
+/// the future would wait out the skew, with a person watching it.
+fn fetch_retry_due(attempts: u32, last_attempt_ms: Option<i64>, now_ms: i64) -> bool {
+    let Some(last) = last_attempt_ms else {
+        return true;
+    };
+    match u64::try_from(now_ms.saturating_sub(last)) {
+        Ok(elapsed) => elapsed >= fetch_retry_delay_ms(attempts),
+        Err(_) => true,
+    }
+}
 
 /// How many broadcast outcomes a slow subscriber may fall behind before it is
 /// lagged.
@@ -205,6 +249,7 @@ impl Core {
     /// [`AttachError::FetchUnavailable`] for the two ways a started transfer
     /// ends without bytes.
     pub async fn fetch_attachment(&self, id: EntityRef) -> Result<(), AttachError> {
+        self.ensure_open()?;
         let att = self.attachment_row(id).await?;
         if self.attachment_is_local(&att)? {
             // Nothing to ask for. Clearing any stale row here rather than
@@ -304,6 +349,7 @@ impl Core {
     ///
     /// Storage failures.
     pub fn cancel_attachment_fetch(&self, id: EntityRef) -> Result<(), AttachError> {
+        self.ensure_open()?;
         // The flag first. A transfer already running in the driver is watching
         // it, and must be able to see it set the instant the wake arrives.
         self.blob_fetch_signals().request_cancel(id);
@@ -329,6 +375,7 @@ impl Core {
         &self,
         id: EntityRef,
     ) -> Result<AttachmentFetchState, AttachError> {
+        self.ensure_open()?;
         let db = self.db();
         let state: Option<String> = db
             .conn()
@@ -410,13 +457,18 @@ impl Core {
     /// the automatic queue is: the fetches run one after another, so this caps
     /// the work one drain does rather than any concurrency.
     ///
+    /// A request that has failed is left out until its retry is due
+    /// ([`fetch_retry_due`]), and the bound is applied after that filter, so
+    /// requests waiting out a delay do not crowd a due one out of the drain.
+    ///
     /// # Errors
     /// Storage or blob store failures.
     pub(crate) fn requested_blob_fetches(&self) -> Result<Vec<Attachment>, CoreError> {
+        let now_ms = i64::try_from(self.now_ms()).unwrap_or(i64::MAX);
         let candidates: Vec<Attachment> = {
             let db = self.db();
             let mut stmt = db.conn().prepare(
-                "SELECT attachment_id FROM blob_fetches
+                "SELECT attachment_id, attempts, last_attempt_ms FROM blob_fetches
                  WHERE state = ?
                  ORDER BY requested_at_ms ASC, attachment_id ASC
                  LIMIT ?",
@@ -425,13 +477,23 @@ impl Core {
                 .query_map(
                     rusqlite::params![
                         STATE_REQUESTED,
-                        i64::try_from(MAX_FETCHES_PER_DRAIN).unwrap_or(i64::MAX)
+                        i64::try_from(MAX_FETCH_SCAN).unwrap_or(i64::MAX)
                     ],
-                    |r| r.get::<_, Vec<u8>>(0),
+                    |r| {
+                        Ok((
+                            r.get::<_, Vec<u8>>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, Option<i64>>(2)?,
+                        ))
+                    },
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
+            let due = ids.into_iter().filter_map(|(raw, attempts, last)| {
+                let attempts = u32::try_from(attempts).unwrap_or(u32::MAX);
+                fetch_retry_due(attempts, last, now_ms).then_some(raw)
+            });
             let mut rows = Vec::new();
-            for raw in ids {
+            for raw in due.take(MAX_FETCHES_PER_DRAIN) {
                 let mut id = [0u8; 16];
                 let take = raw.len().min(16);
                 id[..take].copy_from_slice(&raw[..take]);
@@ -545,12 +607,12 @@ impl Core {
 /// Pull the ciphertext for attachments a client has asked for, ignoring the
 /// auto-fetch threshold.
 ///
-/// Run by the sync driver before [`crate::sync_driver`]'s automatic fetch
-/// drain, because somebody is watching this one and nobody is watching that
-/// one. `Err(())` means this transport has no blob API, which is the caller's
-/// signal to stop rather than try the automatic half against it too.
+/// Run by [`crate::blob_sync::drain`] before its automatic fetch drain, because
+/// somebody is watching this one and nobody is watching that one. `Err(())`
+/// means this transport has no blob API, which is the caller's signal to stop
+/// rather than try the automatic half against it too.
 ///
-/// It lives here rather than beside its sibling in `sync_driver` because
+/// It lives here rather than beside its sibling in `blob_sync` because
 /// [`fetch_or_cancel`] is the subject of this module and the two are one
 /// mechanism read in one place.
 pub(crate) async fn drain_requested<T: Transport + ?Sized>(
@@ -746,37 +808,11 @@ fn park(core: &Core, att: &Attachment, reason: &'static str) {
 mod tests {
     use super::*;
     use crate::blob_sync::AUTO_FETCH_MAX_BYTES;
-    use crate::commands::Command;
     use crate::config::CoreConfig;
+    use crate::test_support::{a_task, open_vault};
     use crate::unlock::Unlock;
     use std::sync::Arc;
     use sunrise_crypto::keys::VaultRootKey;
-    use sunrise_domain::TaskDraft;
-
-    async fn open_vault(dir: &std::path::Path) -> Arc<Core> {
-        let cfg = CoreConfig::production(dir.to_path_buf(), "0.1.0+test");
-        Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes([7u8; 32]),
-                    paired: None,
-                },
-            )
-            .await
-            .expect("open"),
-        )
-    }
-
-    async fn a_task(core: &Core) -> EntityRef {
-        core.submit(Command::CreateTask(TaskDraft {
-            title: "Countersign the lease".into(),
-            ..Default::default()
-        }))
-        .await
-        .expect("create task")
-        .entity
-    }
 
     /// Attach `bytes` and then take the chunks away, which is exactly the state
     /// a replica that received the metadata op and not the ciphertext is in.
@@ -1019,6 +1055,137 @@ mod tests {
         );
     }
 
+    /// A clock a test moves by hand.
+    #[derive(Debug)]
+    struct HandClock(parking_lot::Mutex<u64>);
+    impl crate::config::Clock for HandClock {
+        fn now_ms(&self) -> u64 {
+            *self.0.lock()
+        }
+    }
+
+    /// A relay that holds no blob yet: every fetch answers `404`, which is
+    /// what an attachment whose uploader has not finished looks like.
+    struct NotYetUploaded {
+        asked: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for NotYetUploaded {
+        async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
+            Ok(())
+        }
+        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+            Ok(None)
+        }
+        async fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        async fn blob_fetch(
+            &mut self,
+            _blob_id: &[u8; 16],
+        ) -> Result<Option<Vec<u8>>, TransportError> {
+            self.asked += 1;
+            Ok(None)
+        }
+    }
+
+    fn attempts_of(core: &Core, id: EntityRef) -> i64 {
+        core.db()
+            .conn()
+            .query_row(
+                "SELECT attempts FROM blob_fetches WHERE attachment_id = ?",
+                rusqlite::params![&id.bytes()[..]],
+                |r| r.get(0),
+            )
+            .expect("read the row")
+    }
+
+    /// A burst of drains cannot spend a request's attempts.
+    ///
+    /// The driver drains on every inbound batch, every submit and every resync
+    /// tick, and a busy session runs several inside one second. Counted per
+    /// drain, a Download pressed while the other device was still uploading
+    /// ran out of attempts — `Unavailable`, shown to the person who pressed it
+    /// — before the upload it was waiting for could finish. The e2e
+    /// `an_attachment_over_the_auto_fetch_threshold_arrives_when_it_is_asked_for`
+    /// failed exactly so, ten `404`s inside 550 ms. Here the burst happens at
+    /// one instant of a hand-moved clock, so the schedule is the only variable.
+    #[tokio::test]
+    async fn a_burst_of_drains_spends_one_attempt_not_all_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(HandClock(parking_lot::Mutex::new(1_700_000_000_000)));
+        let cfg = CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            clock.clone(),
+            Arc::new(crate::config::SystemRng),
+        );
+        let core = Core::open(
+            cfg,
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes([7u8; 32]),
+                paired: None,
+            },
+        )
+        .await
+        .expect("open");
+        let att = a_remote_attachment(&core, dir.path(), b"%PDF-1.7 a lease").await;
+        core.enqueue_blob_fetch(&att).expect("request");
+
+        let mut relay = NotYetUploaded { asked: 0 };
+        for _ in 0..MAX_FETCH_ATTEMPTS * 2 {
+            drain_requested(&core, &mut relay).await.expect("drain");
+        }
+        assert_eq!(relay.asked, 1, "one attempt, then the request waits");
+        assert_eq!(attempts_of(&core, att.id), 1);
+        assert_eq!(
+            core.attachment_fetch_state(att.id).expect("state"),
+            AttachmentFetchState::Requested,
+            "the request still stands"
+        );
+
+        // Each later attempt waits out its own delay, and only then.
+        for n in 1..MAX_FETCH_ATTEMPTS {
+            let wait = fetch_retry_delay_ms(n);
+            *clock.0.lock() += wait - 1;
+            drain_requested(&core, &mut relay).await.expect("drain");
+            assert_eq!(relay.asked, n, "not due one millisecond early");
+            *clock.0.lock() += 1;
+            drain_requested(&core, &mut relay).await.expect("drain");
+            assert_eq!(relay.asked, n + 1, "due once the delay is out");
+        }
+        assert_eq!(
+            core.attachment_fetch_state(att.id).expect("state"),
+            AttachmentFetchState::Partial,
+            "a blob the relay never gets is still given up on"
+        );
+    }
+
+    /// The schedule the bound is made of: nothing before the first failure,
+    /// doubling after, capped, and long enough in total to wait out an upload.
+    #[test]
+    fn the_retry_delay_doubles_to_its_cap() {
+        assert_eq!(fetch_retry_delay_ms(0), 0);
+        assert_eq!(fetch_retry_delay_ms(1), FETCH_RETRY_BASE_DELAY_MS);
+        assert_eq!(fetch_retry_delay_ms(2), FETCH_RETRY_BASE_DELAY_MS * 2);
+        assert_eq!(fetch_retry_delay_ms(7), FETCH_RETRY_MAX_DELAY_MS);
+        assert_eq!(fetch_retry_delay_ms(u32::MAX), FETCH_RETRY_MAX_DELAY_MS);
+        let span: u64 = (1..MAX_FETCH_ATTEMPTS).map(fetch_retry_delay_ms).sum();
+        assert_eq!(
+            span, 121_500,
+            "about two minutes from first refusal to parked"
+        );
+
+        assert!(fetch_retry_due(0, None, 0), "never tried");
+        assert!(!fetch_retry_due(1, Some(1_000), 1_499));
+        assert!(fetch_retry_due(1, Some(1_000), 1_500));
+        assert!(
+            fetch_retry_due(3, Some(10_000), 9_000),
+            "a clock that went backwards does not strand the request"
+        );
+    }
+
     /// An attachment written before `ciphertext_hash` existed cannot be named
     /// on the relay, so Download is a button that would never work and says so.
     #[tokio::test]
@@ -1038,5 +1205,122 @@ mod tests {
             core.fetch_attachment(att.id).await,
             Err(AttachError::NotOnRelay { .. })
         ));
+    }
+
+    // ---- how a started fetch ends (issue #604) ----------------------------
+
+    /// Mark sync active with a driver that never connects, so
+    /// [`Core::fetch_attachment`] gets past `SyncOffline` and every outcome it
+    /// sees is one this test publishes.
+    fn start_a_driver_that_never_connects(core: &Arc<Core>) {
+        let factory: crate::sync_driver::TransportFactory =
+            Arc::new(|_| Box::pin(std::future::pending()));
+        core.start_sync(factory).expect("start");
+    }
+
+    /// Spawn `fetch_attachment(id)` and return once it has subscribed and
+    /// written its request row, which it does in that order.
+    async fn a_waiting_fetch(
+        core: &Arc<Core>,
+        id: EntityRef,
+    ) -> tokio::task::JoinHandle<Result<(), AttachError>> {
+        let waiting = Arc::clone(core);
+        let handle = tokio::spawn(async move { waiting.fetch_attachment(id).await });
+        for _ in 0..10_000 {
+            if core.attachment_fetch_state(id).expect("state") == AttachmentFetchState::Requested {
+                return handle;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the fetch never wrote its request row");
+    }
+
+    /// Publish more outcomes than [`OUTCOME_BUFFER`] holds, all for another
+    /// attachment, so the waiting subscriber's next receive is `Lagged`.
+    fn overrun_the_outcome_channel(core: &Core) {
+        let stranger = EntityRef::new(sunrise_id::EntityKind::Task, [0xab; 16]);
+        for _ in 0..=OUTCOME_BUFFER {
+            core.blob_fetch_signals()
+                .publish(stranger, AttachmentFetchOutcome::Fetched);
+        }
+    }
+
+    /// A request the driver gives up on ends the waiting call with
+    /// `FetchUnavailable`, which is what tells the client to show the
+    /// interrupted state rather than keep a spinner running.
+    #[tokio::test]
+    async fn a_request_the_driver_parks_ends_the_wait_as_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let att = a_remote_attachment(&core, dir.path(), b"%PDF-1.7 a lease").await;
+        start_a_driver_that_never_connects(&core);
+
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        park(&core, &att, "test");
+
+        let answer = fetch.await.expect("join");
+        assert!(
+            matches!(answer, Err(AttachError::FetchUnavailable { id }) if id == att.id),
+            "got {answer:?}"
+        );
+        assert_eq!(
+            core.attachment_fetch_state(att.id).expect("state"),
+            AttachmentFetchState::Partial
+        );
+    }
+
+    /// A subscriber the channel overran falls back to the durable row: a
+    /// request parked while it lagged ends as `FetchUnavailable`, though the
+    /// `Unavailable` outcome itself was never published to it.
+    #[tokio::test]
+    async fn a_lagged_wait_reads_a_parked_request_as_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let att = a_remote_attachment(&core, dir.path(), b"%PDF-1.7 a lease").await;
+        start_a_driver_that_never_connects(&core);
+
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        overrun_the_outcome_channel(&core);
+        assert!(core.mark_blob_fetch_partial(att.id).expect("mark"));
+
+        let answer = fetch.await.expect("join");
+        assert!(
+            matches!(answer, Err(AttachError::FetchUnavailable { id }) if id == att.id),
+            "got {answer:?}"
+        );
+    }
+
+    /// The other half of the fallback: bytes that arrived while the
+    /// subscriber lagged end the wait with success, and a lag with the request
+    /// still outstanding keeps waiting until an outcome for it arrives.
+    #[tokio::test]
+    async fn a_lagged_wait_reads_arrived_bytes_as_fetched_and_otherwise_keeps_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_vault(dir.path()).await;
+        let task = a_task(&core).await;
+        let att = core
+            .attach_file(task, "lease.pdf".into(), "application/pdf".into(), b"here")
+            .await
+            .expect("attach");
+        let blobs = dir.path().join("blobs");
+        let kept = dir.path().join("blobs.kept");
+        std::fs::rename(&blobs, &kept).expect("take the chunks away");
+        start_a_driver_that_never_connects(&core);
+
+        // Lagged, with the request still outstanding: the call keeps waiting.
+        let fetch = a_waiting_fetch(&core, att.id).await;
+        overrun_the_outcome_channel(&core);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!fetch.is_finished(), "a lag alone is not an answer");
+
+        // Lagged again, and the bytes are here by then.
+        std::fs::rename(&kept, &blobs).expect("the chunks arrive");
+        overrun_the_outcome_channel(&core);
+        fetch
+            .await
+            .expect("join")
+            .expect("bytes found on the fallback read are a fetch");
     }
 }

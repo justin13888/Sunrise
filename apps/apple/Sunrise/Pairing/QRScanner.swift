@@ -107,13 +107,13 @@ struct QRScannerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Scan the pairing code")
+            Text(L10n.Pairing.Scan.title)
                 .font(.title3.weight(.semibold))
             viewfinder
                 .frame(maxWidth: .infinity, minHeight: 240)
             HStack {
                 Spacer()
-                Button("Paste the code instead", systemImage: "doc.on.clipboard") {
+                Button(L10n.Pairing.Scan.pasteInstead, systemImage: "doc.on.clipboard") {
                     pasteInstead()
                 }
                 .accessibilityIdentifier("pairing.scan.pasteInstead")
@@ -137,19 +137,15 @@ struct QRScannerView: View {
         case .refused:
             explanation(
                 symbol: "video.slash",
-                title: "Sunrise cannot use the camera",
-                detail: """
-                    Camera access is off for Sunrise. Paste the text shown under \
-                    the code instead, or allow the camera in System Settings › \
-                    Privacy & Security › Camera and choose Scan again.
-                    """
+                title: L10n.Pairing.Scan.refusedTitle,
+                detail: L10n.Pairing.Scan.refusedDetail
             )
             .accessibilityIdentifier("pairing.scan.refused")
         case .noCamera:
             explanation(
                 symbol: "camera.metering.unknown",
-                title: "There is no camera here that can scan",
-                detail: "Paste the text shown under the code instead."
+                title: L10n.Pairing.Scan.noCameraTitle,
+                detail: L10n.Pairing.Scan.noCameraDetail
             )
             .accessibilityIdentifier("pairing.scan.noCamera")
         }

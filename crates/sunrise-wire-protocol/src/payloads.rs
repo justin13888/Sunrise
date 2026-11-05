@@ -10,6 +10,7 @@
 //! - [`NackPayload`]     — `MsgKind::Nack`     (`0x05`)
 //! - [`SubscribePayload`]— `MsgKind::Subscribe`(`0x06`)
 //! - [`CaughtUpPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
+//! - [`BacklogPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
 //! - [`ErrorPayload`]    — `MsgKind::Error`    (`0x0E`)
 //! - [`RefreshTokenPayload`] — `MsgKind::RefreshToken` (`0x12`)
 //! - [`RefreshTokenAckPayload`] — `MsgKind::RefreshTokenAck` (`0x13`)
@@ -32,11 +33,16 @@
 //! independent canonical encoder reproduces the same bytes. 16-byte ids are
 //! encoded as compact CBOR byte strings via `serde_bytes`, matching the
 //! `sunrise-domain` convention. Opaque op-envelope blobs likewise encode as
-//! byte strings. `decode_*` uses [`sunrise_cbor::decode_canonical`], which
-//! rejects non-canonical input and trailing garbage.
+//! byte strings. `decode_*` uses [`sunrise_cbor::decode_canonical_within`],
+//! which rejects non-canonical input and trailing garbage, and refuses a
+//! payload nesting deeper than [`sunrise_cbor::MAX_VALUE_DEPTH`] (8) arrays,
+//! maps and tags. The deepest payload is `Subscribe`, at five: its map, the
+//! stream list, one stream's map, its cursor list and one cursor's map. A new
+//! payload shape is held to the same eight, the payload map included
+//! (`docs/10-cross-cutting/protocol-versioning.md` §2.1).
 
 use serde::{Deserialize, Serialize};
-use sunrise_cbor::{decode_canonical, encode_canonical, CanonicalError};
+use sunrise_cbor::{decode_canonical_within, encode_canonical, CanonicalError, MAX_VALUE_DEPTH};
 use sunrise_error::ErrorCode;
 
 /// Serialize `Vec<Vec<u8>>` as a CBOR array of byte strings (not arrays of
@@ -166,15 +172,47 @@ pub struct CaughtUpPayload {
     pub stream_id: [u8; 16],
 }
 
+/// Backlog marker payload, sent over `MsgKind::StreamUpdate` right after the
+/// first retained frame the server replays for a subscribed stream: how many
+/// ops the rest of that replay will deliver.
+///
+/// What lets a restore say "n of N" rather than only "n so far" (#459). It
+/// shares `StreamUpdate` with [`CaughtUpPayload`] for the reason the module
+/// comment gives, and a reader tells the two apart by shape: this one has an
+/// `ops` key and a `CaughtUpPayload` has none, so a reader decodes this one
+/// first. A `CaughtUpPayload` reader that ignores unknown keys would read this
+/// as a `CaughtUp`, which is why nothing sends it to a peer that has not
+/// asked for it: the SSE transport makes it from the relay's `backlog` event,
+/// which a client too old to know it drops.
+///
+/// Fields are ordered for canonical CBOR: `ops` (3), `stream_id` (9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacklogPayload {
+    /// Ops in the replayed frames still to come, summed.
+    pub ops: u64,
+    /// The stream being replayed.
+    #[serde(with = "serde_bytes")]
+    pub stream_id: [u8; 16],
+}
+
 /// `MsgKind::Error` payload: a coded, recoverable-or-terminal error.
 ///
-/// Fields are ordered for canonical CBOR: `code` (4), `reason` (6).
+/// Fields are ordered for canonical CBOR: `code` (4), `reason` (6),
+/// `stream_id` (9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     /// Canonical error code.
     pub code: ErrorCode,
     /// Human-readable reason (diagnostic).
     pub reason: String,
+    /// The stream the error is about, when it is about one.
+    ///
+    /// A `SYNC_CURSOR_GAP` names the stream whose retained ops no longer
+    /// reach the subscriber's cursor, so the client can catch that stream up
+    /// from its snapshot record (ADR-0068). Absent from the map when `None`,
+    /// and read as `None` when absent, so a payload without it is unchanged.
+    #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<[u8; 16]>,
 }
 
 /// `MsgKind::Close` payload: `{ reason: tstr, code: tstr }` per
@@ -290,9 +328,10 @@ macro_rules! canonical_codec {
             /// input and trailing garbage.
             ///
             /// # Errors
-            /// Returns [`CanonicalError`] on malformed or non-canonical input.
+            /// Returns [`CanonicalError`] on malformed or non-canonical input,
+            /// and [`CanonicalError::TooDeep`] past [`MAX_VALUE_DEPTH`].
             pub fn decode(bytes: &[u8]) -> Result<Self, CanonicalError> {
-                decode_canonical(bytes)
+                decode_canonical_within(bytes, MAX_VALUE_DEPTH)
             }
         }
     };
@@ -303,6 +342,7 @@ canonical_codec!(AckPayload);
 canonical_codec!(NackPayload);
 canonical_codec!(SubscribePayload);
 canonical_codec!(CaughtUpPayload);
+canonical_codec!(BacklogPayload);
 canonical_codec!(ErrorPayload);
 canonical_codec!(ClosePayload);
 canonical_codec!(RefreshTokenPayload);
@@ -374,6 +414,13 @@ mod tests {
             },
         );
         assert_canonical(
+            "BacklogPayload",
+            &BacklogPayload {
+                ops: 300,
+                stream_id: [4u8; 16],
+            },
+        );
+        assert_canonical(
             "NackPayload",
             &NackPayload {
                 code: ErrorCode::SyncOpInvalid,
@@ -387,6 +434,15 @@ mod tests {
             &ErrorPayload {
                 code: ErrorCode::SyncOpInvalid,
                 reason: "nope".into(),
+                stream_id: None,
+            },
+        );
+        assert_canonical(
+            "ErrorPayload with a stream",
+            &ErrorPayload {
+                code: ErrorCode::SyncCursorGap,
+                reason: "gap".into(),
+                stream_id: Some([3u8; 16]),
             },
         );
         assert_canonical(
@@ -506,13 +562,60 @@ mod tests {
     }
 
     #[test]
+    fn backlog_round_trip_and_is_not_read_as_a_caught_up() {
+        let v = BacklogPayload {
+            ops: 12,
+            stream_id: [5u8; 16],
+        };
+        let bytes = v.encode().unwrap();
+        assert_eq!(BacklogPayload::decode(&bytes).unwrap(), v);
+        // The order a reader tries them in is what tells them apart.
+        let caught_up = CaughtUpPayload {
+            stream_id: [5u8; 16],
+        }
+        .encode()
+        .unwrap();
+        assert!(BacklogPayload::decode(&caught_up).is_err());
+    }
+
+    #[test]
     fn error_round_trip() {
         let v = ErrorPayload {
             code: ErrorCode::ProtocolBadMagic,
             reason: "nope".to_string(),
+            stream_id: None,
         };
         let bytes = v.encode().unwrap();
         assert_eq!(ErrorPayload::decode(&bytes).unwrap(), v);
+        let gap = ErrorPayload {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".to_string(),
+            stream_id: Some([7u8; 16]),
+        };
+        assert_eq!(ErrorPayload::decode(&gap.encode().unwrap()).unwrap(), gap);
+    }
+
+    /// The stream is optional in both directions: a payload written before it
+    /// existed reads as naming none, and one naming none writes no key.
+    #[test]
+    fn an_error_without_a_stream_is_the_payload_it_always_was() {
+        #[derive(Serialize)]
+        struct Before {
+            code: ErrorCode,
+            reason: String,
+        }
+        let before = encode_canonical(&Before {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".into(),
+        })
+        .unwrap();
+        let now = ErrorPayload {
+            code: ErrorCode::SyncCursorGap,
+            reason: "gap".into(),
+            stream_id: None,
+        };
+        assert_eq!(now.encode().unwrap(), before);
+        assert_eq!(ErrorPayload::decode(&before).unwrap(), now);
     }
 
     #[test]
@@ -570,5 +673,48 @@ mod tests {
     #[test]
     fn decode_rejects_malformed() {
         assert!(OpBatchPayload::decode(&[0xff, 0xff, 0xff]).is_err());
+    }
+
+    /// `Subscribe` is the deepest payload, at five levels, and decodes. A
+    /// field this build does not know is read only as far as the bound: one
+    /// nested to [`MAX_VALUE_DEPTH`] with the payload map is read and refused
+    /// as non-canonical, and one level more is refused as too deep before it
+    /// is read.
+    #[test]
+    fn decode_is_bounded_at_the_framing_depth() {
+        use ciborium::value::Value;
+        let subscribe = SubscribePayload {
+            streams: vec![SubscribeEntry {
+                cursors: vec![CursorEntry {
+                    device_id: [1; 16],
+                    last_applied_seq: 7,
+                }],
+                stream_id: [2; 16],
+            }],
+        };
+        let bytes = subscribe.encode().unwrap();
+        assert_eq!(SubscribePayload::decode(&bytes).unwrap(), subscribe);
+
+        let with_unknown = |levels: usize| {
+            let Value::Map(mut map) = Value::serialized(&subscribe).unwrap() else {
+                panic!("a payload is a map");
+            };
+            let mut nest = Value::Integer(1.into());
+            for _ in 0..levels {
+                nest = Value::Array(vec![nest]);
+            }
+            map.push((Value::Text("zz_newer".into()), nest));
+            encode_canonical(&Value::Map(map)).unwrap()
+        };
+        // At the bound the item is read, and refused only because the unknown
+        // key does not survive the round trip.
+        assert!(matches!(
+            SubscribePayload::decode(&with_unknown(MAX_VALUE_DEPTH - 1)),
+            Err(CanonicalError::NonCanonical { .. })
+        ));
+        assert!(matches!(
+            SubscribePayload::decode(&with_unknown(MAX_VALUE_DEPTH)),
+            Err(CanonicalError::TooDeep)
+        ));
     }
 }

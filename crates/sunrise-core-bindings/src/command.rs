@@ -13,7 +13,7 @@ use sunrise_id::EntityRef;
 use crate::dto::{
     AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, PreferenceTarget,
     PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit,
-    TaskDraftIn, TaskEdit,
+    TaskDraftIn, TaskEdit, TimeValue,
 };
 
 /// A mutating command.
@@ -43,12 +43,23 @@ pub enum CoreCommand {
         /// New scheduled time (epoch ms).
         to_ms: u64,
     },
+    /// Push a task's scheduled time out to a time of any kind, keeping that
+    /// kind, and bump its deferral count. See
+    /// [`sunrise_core::Command::DeferTaskTo`]: a floating "tomorrow 09:00"
+    /// stays floating. `DeferTask` is this with an instant.
+    DeferTaskTo {
+        /// Target.
+        id: EntityRef,
+        /// New scheduled time.
+        to: TimeValue,
+    },
     /// Tombstone a task.
     DeleteTask {
         /// Target.
         id: EntityRef,
     },
-    /// Move a task to another stream.
+    /// Move a task to another stream, or to no stream given the legacy Inbox
+    /// id ([`crate::vocab::inbox_stream_id`]).
     ///
     /// Equivalent to `UpdateTask` with `TaskEdit::stream_id` set — the core
     /// routes `PromoteToStream` straight into `update_task` with a
@@ -72,7 +83,10 @@ pub enum CoreCommand {
         /// The edit.
         edit: StreamEdit,
     },
-    /// Tombstone a stream.
+    /// Tombstone a stream, and move everything it held to no stream: its
+    /// tasks, blocks and routine templates, and its child streams to the top
+    /// level, in one commit. `DeleteStreamInto` moves them to another stream
+    /// instead. See [`sunrise_core::Command::DeleteStream`].
     DeleteStream {
         /// Target.
         id: EntityRef,
@@ -247,14 +261,155 @@ pub enum CoreCommand {
         /// The vault, or this device.
         target: PreferenceTarget,
     },
+    /// Bring back a deleted task, stream, context, routine or block. See
+    /// [`sunrise_core::Command::Restore`]; undo of a delete submits it.
+    Restore {
+        /// Target.
+        id: EntityRef,
+    },
+    /// Settle one field's conflict on `value`. See
+    /// [`sunrise_core::Command::ResolveConflict`].
+    ResolveConflict {
+        /// The entity.
+        entity: EntityRef,
+        /// The field's wire name, as `ConflictItem::field` names it.
+        field: String,
+        /// The value as canonical CBOR: a `ConflictWriteItem::value` handed
+        /// back, or one the client encoded.
+        value: Vec<u8>,
+    },
+    /// Merge two blocks into one, as one commit: the union is created and
+    /// both are tombstoned together. See
+    /// [`sunrise_core::Command::MergeBlocks`]; the result names the union.
+    MergeBlocks {
+        /// One block.
+        a: EntityRef,
+        /// The other.
+        b: EntityRef,
+    },
+    /// Apply one action to each of several tasks, all or nothing, as one
+    /// commit. See [`sunrise_core::Command::BulkTasks`].
+    BulkTasks {
+        /// The tasks and their actions; a task may appear once.
+        items: Vec<BulkTaskItemIn>,
+    },
+    /// Place tasks, in the order given, between two neighbours in manual
+    /// order; the core computes the keys. See
+    /// [`sunrise_core::Command::MoveTasks`]. A drag's three fields come from
+    /// [`crate::task_order::plan_task_move`].
+    MoveTasks {
+        /// The tasks to place, in the order they will be in.
+        ids: Vec<EntityRef>,
+        /// The task they land below, or none for the top.
+        after: Option<EntityRef>,
+        /// The task they land above, or none for the bottom.
+        before: Option<EntityRef>,
+    },
+    /// Save a view, synced to every device. See
+    /// [`sunrise_core::Command::CreateSavedView`].
+    CreateSavedView {
+        /// The view.
+        draft: crate::saved_views::SavedViewDraftIn,
+    },
+    /// Edit a saved view: only the fields set are written. See
+    /// [`sunrise_core::Command::UpdateSavedView`].
+    UpdateSavedView {
+        /// The view.
+        id: EntityRef,
+        /// The fields to write.
+        edit: crate::saved_views::SavedViewEdit,
+    },
+    /// Delete a saved view; `Restore` brings it back.
+    DeleteSavedView {
+        /// The view.
+        id: EntityRef,
+    },
+    /// Tombstone a stream, and move everything it held into the live stream
+    /// `into`, in one commit (ADR-0046 §4): `DeleteStream` with a re-home
+    /// target. See [`sunrise_core::Command::DeleteStream`].
+    DeleteStreamInto {
+        /// Target.
+        id: EntityRef,
+        /// The live stream its tasks, blocks and routine templates go to.
+        into: EntityRef,
+    },
+    /// Triage tasks out of the Inbox without giving them a stream or a date
+    /// (ADR-0046 §3). See [`sunrise_core::Command::MarkTriaged`].
+    MarkTriaged {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// Undo `MarkTriaged`. See [`sunrise_core::Command::ReturnToInbox`].
+    ReturnToInbox {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+    },
+    /// One triage action over a selection, all or nothing, as one commit
+    /// (ADR-0047 §4). See [`sunrise_core::Command::Triage`].
+    Triage {
+        /// The tasks.
+        ids: Vec<EntityRef>,
+        /// What to do to each.
+        action: crate::lateness::TriageActionIn,
+    },
+}
+
+/// One item of [`CoreCommand::BulkTasks`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BulkTaskItemIn {
+    /// The task.
+    pub id: EntityRef,
+    /// What to do to it.
+    pub action: BulkTaskActionIn,
+}
+
+/// What [`CoreCommand::BulkTasks`] does to one task: each is the single
+/// command of the same name.
+// UniFFI lifts an enum by value; a box would not cross the seam.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum BulkTaskActionIn {
+    /// `CompleteTask`.
+    Complete,
+    /// `DeferTaskTo`.
+    DeferTo {
+        /// New scheduled time.
+        to: TimeValue,
+    },
+    /// `UpdateTask`: a move, a drop to `cancelled`, or any other edit.
+    Update {
+        /// The edit.
+        edit: TaskEdit,
+    },
+    /// `DeleteTask`.
+    Delete,
+    /// `Restore`.
+    Restore,
+}
+
+impl From<BulkTaskItemIn> for sunrise_core::BulkTaskItem {
+    fn from(item: BulkTaskItemIn) -> Self {
+        use sunrise_core::BulkTaskAction;
+        Self {
+            id: item.id,
+            action: match item.action {
+                BulkTaskActionIn::Complete => BulkTaskAction::Complete,
+                BulkTaskActionIn::DeferTo { to } => BulkTaskAction::DeferTo(to.into()),
+                BulkTaskActionIn::Update { edit } => BulkTaskAction::Update(Box::new(edit.into())),
+                BulkTaskActionIn::Delete => BulkTaskAction::Delete,
+                BulkTaskActionIn::Restore => BulkTaskAction::Restore,
+            },
+        }
+    }
 }
 
 impl CoreCommand {
     /// Lower into the core's own command type.
     ///
-    /// Fallible in exactly one place: `AttachFile` carries fixed-width byte
-    /// arrays that UniFFI can only express as a `Vec<u8>` and a hex string, so
-    /// their length is checked here. Every id arrived as an already-lifted
+    /// Fallible in two places: `AttachFile` carries fixed-width byte arrays
+    /// that UniFFI can only express as a `Vec<u8>` and a hex string, so their
+    /// length is checked here, and `ResolveConflict`'s value must be canonical
+    /// CBOR. Every id arrived as an already-lifted
     /// `EntityRef`, and that parsing happened at the boundary in
     /// [`crate::types`]'s `custom_type!`.
     pub(crate) fn into_core(self) -> Result<Command, crate::BindingError> {
@@ -266,6 +421,7 @@ impl CoreCommand {
             },
             Self::CompleteTask { id } => Command::CompleteTask(id),
             Self::DeferTask { id, to_ms } => Command::DeferTask { id, to_ms },
+            Self::DeferTaskTo { id, to } => Command::DeferTaskTo { id, to: to.into() },
             Self::DeleteTask { id } => Command::DeleteTask(id),
             Self::PromoteToStream { id, stream } => Command::PromoteToStream { id, stream },
             Self::CreateStream { draft } => Command::CreateStream(draft.into()),
@@ -273,7 +429,10 @@ impl CoreCommand {
                 id,
                 patch: edit.into(),
             },
-            Self::DeleteStream { id } => Command::DeleteStream(id),
+            Self::DeleteStream { id } => Command::DeleteStream {
+                id,
+                disposition: sunrise_domain::Disposition::Detach,
+            },
             Self::CreateContext { draft } => Command::CreateContext(draft.into()),
             Self::UpdateContext { id, edit } => Command::UpdateContext {
                 id,
@@ -283,6 +442,7 @@ impl CoreCommand {
             Self::CreateRoutine { draft } => Command::CreateRoutine(draft.into()),
             Self::UpdateRoutine { id, edit } => Command::UpdateRoutine {
                 id,
+                scope: edit.scope.clone().map(Into::into).unwrap_or_default(),
                 patch: edit.into(),
             },
             Self::DeleteRoutine { id } => Command::DeleteRoutine(id),
@@ -337,6 +497,37 @@ impl CoreCommand {
             Self::ClearPreference { key, target } => Command::ClearPreference {
                 key,
                 target: target.into(),
+            },
+            Self::Restore { id } => Command::Restore(id),
+            Self::ResolveConflict {
+                entity,
+                field,
+                value,
+            } => Command::ResolveConflict {
+                entity,
+                field,
+                value: crate::conflicts::value_in(&value)?,
+            },
+            Self::MergeBlocks { a, b } => Command::MergeBlocks { a, b },
+            Self::BulkTasks { items } => {
+                Command::BulkTasks(items.into_iter().map(Into::into).collect())
+            }
+            Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
+            Self::CreateSavedView { draft } => Command::CreateSavedView(draft.into()),
+            Self::UpdateSavedView { id, edit } => Command::UpdateSavedView {
+                id,
+                patch: edit.into(),
+            },
+            Self::DeleteSavedView { id } => Command::DeleteSavedView(id),
+            Self::DeleteStreamInto { id, into } => Command::DeleteStream {
+                id,
+                disposition: sunrise_domain::Disposition::MoveTo(into),
+            },
+            Self::MarkTriaged { ids } => Command::MarkTriaged { ids },
+            Self::ReturnToInbox { ids } => Command::ReturnToInbox { ids },
+            Self::Triage { ids, action } => Command::Triage {
+                ids,
+                action: action.into(),
             },
         })
     }

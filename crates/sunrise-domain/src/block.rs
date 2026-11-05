@@ -19,6 +19,7 @@ pub use conflict::{merge_blocks, overlaps, BlockOverlap};
 use crate::time::SunriseTime;
 use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError, MAX_BLOCK_TITLE_LEN};
+use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -33,8 +34,13 @@ pub struct Block {
     pub created_at: Timestamp,
     /// Last update.
     pub updated_at: Timestamp,
-    /// Owning Stream.
-    pub stream_id: EntityRef,
+    /// Owning Stream, or `None` for a block that belongs to no stream
+    /// (ADR-0046 §1), sealed under the private key domain and drawn in the
+    /// neutral palette colour. A projected block carries its effective stream
+    /// ([`crate::effective_stream`]); on the wire `None` is the legacy Inbox
+    /// reference ([`crate::inbox::wire`]).
+    #[serde(default, with = "crate::inbox::wire")]
+    pub stream_id: Option<EntityRef>,
     /// Start time. See [`SunriseTime`]: a block at "09:00" is a different
     /// commitment from a block at a fixed instant, and a device that changes
     /// zone must move one and not the other.
@@ -68,12 +74,10 @@ pub struct Block {
 impl Block {
     /// Re-check the Block's cross-field invariants.
     ///
-    /// `ends_at` must resolve strictly after `starts_at`. The comparison is on
-    /// [`SunriseTime::index_ms`] — the same key storage indexes and orders on —
-    /// so "the block ends before it starts" means the same thing here as it
-    /// does to `ORDER BY starts_at_ms`, whatever kinds the two values are.
-    pub fn validate_invariants(&self) -> Result<(), ValidationError> {
-        validate_range(&self.starts_at, &self.ends_at)?;
+    /// `ends_at` must resolve strictly after `starts_at` for a reader in `tz`
+    /// (`docs/10-cross-cutting/time.md` §2 rule 1).
+    pub fn validate_invariants(&self, tz: &TimeZone) -> Result<(), ValidationError> {
+        validate_range(&self.starts_at, &self.ends_at, tz)?;
         if let Some(t) = &self.title {
             let _ = validate_title(t, "block.title", MAX_BLOCK_TITLE_LEN)?;
         }
@@ -103,8 +107,9 @@ impl Block {
 /// Draft for creating a Block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockDraft {
-    /// Owning Stream.
-    pub stream_id: EntityRef,
+    /// Owning Stream; `None` (or the legacy Inbox reference) for none.
+    #[serde(default)]
+    pub stream_id: Option<EntityRef>,
     /// Start.
     pub starts_at: SunriseTime,
     /// End.
@@ -120,9 +125,10 @@ pub struct BlockDraft {
 }
 
 impl BlockDraft {
-    /// Validate the draft against domain rules.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_range(&self.starts_at, &self.ends_at)?;
+    /// Validate the draft against domain rules, resolving its bounds in the
+    /// reader's zone `tz`.
+    pub fn validate(&self, tz: &TimeZone) -> Result<(), ValidationError> {
+        validate_range(&self.starts_at, &self.ends_at, tz)?;
         if let Some(t) = &self.title {
             let _ = validate_title(t, "block.title", MAX_BLOCK_TITLE_LEN)?;
         }
@@ -150,8 +156,8 @@ pub struct BlockPatch {
     pub title: Option<Option<String>>,
     /// Turn live title tracking on or off.
     pub title_track_task: Option<bool>,
-    /// Move the Block to another Stream.
-    pub stream_id: Option<EntityRef>,
+    /// Move the Block to another Stream, or (`Some(None)`) to no stream.
+    pub stream_id: Option<Option<EntityRef>>,
 }
 
 impl BlockPatch {
@@ -165,12 +171,19 @@ impl BlockPatch {
     }
 }
 
-/// `ends_at` must resolve strictly after `starts_at`.
+/// `ends_at` must resolve strictly after `starts_at`, both resolved in `tz`.
 ///
 /// A kind this build cannot place on the timeline is compared with nothing:
 /// its stand-in key would invent a violation.
-fn validate_range(starts_at: &SunriseTime, ends_at: &SunriseTime) -> Result<(), ValidationError> {
-    if matches!((ends_at.index_key(), starts_at.index_key()), (Some(e), Some(s)) if e <= s) {
+fn validate_range(
+    starts_at: &SunriseTime,
+    ends_at: &SunriseTime,
+    tz: &TimeZone,
+) -> Result<(), ValidationError> {
+    if matches!(
+        (ends_at.resolve_in(tz), starts_at.resolve_in(tz)),
+        (Some(e), Some(s)) if e <= s
+    ) {
         return Err(ValidationError::Field {
             field: "block.ends_at",
             constraint: "after_starts_at",
@@ -199,7 +212,7 @@ mod tests {
 
     fn draft() -> BlockDraft {
         BlockDraft {
-            stream_id: stream(),
+            stream_id: Some(stream()),
             starts_at: at(9),
             ends_at: at(10),
             title: Some("Deep work".into()),
@@ -213,7 +226,7 @@ mod tests {
             id: EntityRef::new(EntityKind::Block, [1u8; 16]),
             created_at: Timestamp::UNIX_EPOCH,
             updated_at: Timestamp::UNIX_EPOCH,
-            stream_id: stream(),
+            stream_id: Some(stream()),
             starts_at: at(9),
             ends_at: at(10),
             title: Some("Deep work".into()),
@@ -226,7 +239,7 @@ mod tests {
 
     #[test]
     fn draft_accepts_a_forward_range() {
-        draft().validate().unwrap();
+        draft().validate(&TimeZone::UTC).unwrap();
     }
 
     #[test]
@@ -237,7 +250,7 @@ mod tests {
             ..draft()
         };
         assert_eq!(
-            d.validate(),
+            d.validate(&TimeZone::UTC),
             Err(ValidationError::Field {
                 field: "block.ends_at",
                 constraint: "after_starts_at"
@@ -252,7 +265,13 @@ mod tests {
             ends_at: at(9),
             ..draft()
         };
-        assert!(d.validate().is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     /// A range is compared on the storage index key, so mixed kinds order the
@@ -266,7 +285,13 @@ mod tests {
             ends_at: SunriseTime::floating(civil::date(2000, 1, 1).at(0, 0, 0, 0)),
             ..draft()
         };
-        assert!(d.validate().is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     #[test]
@@ -277,7 +302,7 @@ mod tests {
             ..draft()
         };
         assert_eq!(
-            d.validate(),
+            d.validate(&TimeZone::UTC),
             Err(ValidationError::Field {
                 field: "block.title",
                 constraint: "required_for_multi_task"
@@ -289,7 +314,7 @@ mod tests {
             tasks: vec![task(1)],
             ..draft()
         };
-        one.validate().unwrap();
+        one.validate(&TimeZone::UTC).unwrap();
     }
 
     #[test]
@@ -298,7 +323,13 @@ mod tests {
             title: Some("x".repeat(MAX_BLOCK_TITLE_LEN + 1)),
             ..draft()
         };
-        assert!(d.validate().is_err());
+        assert_eq!(
+            d.validate(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.title",
+                constraint: "max_length"
+            })
+        );
     }
 
     #[test]
@@ -348,7 +379,13 @@ mod tests {
             ends_at: at(10),
             ..block()
         };
-        assert!(b.validate_invariants().is_err());
+        assert_eq!(
+            b.validate_invariants(&TimeZone::UTC),
+            Err(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at"
+            })
+        );
     }
 
     /// A time kind this build cannot place is compared with nothing.
@@ -362,12 +399,12 @@ mod tests {
             starts_at: unknown.clone(),
             ..block()
         };
-        b.validate_invariants().unwrap();
+        b.validate_invariants(&TimeZone::UTC).unwrap();
         let b = Block {
             ends_at: unknown,
             ..block()
         };
-        b.validate_invariants().unwrap();
+        b.validate_invariants(&TimeZone::UTC).unwrap();
     }
 
     #[test]

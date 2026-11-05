@@ -235,12 +235,7 @@ fn reproduction(gap: &KnownGap) -> Vec<Step> {
 }
 
 fn assert_gaps_reproduce(mode: &Mode, baseline: Option<&str>) {
-    let gaps = expected_gaps(baseline);
-    assert!(
-        !gaps.is_empty() || baseline.is_some(),
-        "the control run expects #319"
-    );
-    for gap in gaps {
+    for gap in expected_gaps(baseline) {
         let report = execute(mode, &reproduction(&gap));
         assert!(
             report.issues().contains(&gap.issue),
@@ -264,6 +259,24 @@ fn assert_gaps_reproduce(mode: &Mode, baseline: Option<&str>) {
 #[test]
 fn head_known_gaps_still_reproduce() {
     assert_gaps_reproduce(&Mode::HeadOnly, None);
+}
+
+/// `HEAD` has no gap of its own: every reproduction runs clean between two
+/// `HEAD` devices. #319's is the one that was `HEAD`'s, until commands wrote
+/// `Patch`es of the fields they change (ADR-0065 §7): two `HEAD` devices now
+/// keep both sides' fields.
+#[test]
+fn every_reproduction_runs_clean_between_head_devices() {
+    assert!(expected_gaps(None).is_empty(), "HEAD expects no gap");
+    for gap in sunrise_e2e::cross_version::gaps::KNOWN_GAPS {
+        let report = execute(&Mode::HeadOnly, &reproduction(gap));
+        assert!(
+            report.violations.is_empty(),
+            "the reproduction of #{} broke the invariant between HEAD devices:\n{}",
+            gap.issue,
+            describe(&report)
+        );
+    }
 }
 
 /// Every gap expected of the baseline still happens against it.

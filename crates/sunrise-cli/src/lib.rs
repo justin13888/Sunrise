@@ -4,14 +4,22 @@
 //! What is here is the part an integration test has to drive without a process
 //! boundary: [`livesync`], the env→plan→running-sync-session sequence the
 //! binary performs at startup, [`vault`], which decides what key a vault
-//! directory is opened with, [`private_file`], the one owner-only write all of
-//! them put their secrets on disk with, and the two families that run *before*
+//! directory is opened with, and the two families that run *before*
 //! a vault is open — [`recover`], whose whole job happens before a vault
 //! exists, and [`pair`], which runs before the vault is opened because the
 //! usual path would create one the joiner could never replace, and whose
 //! four-step exchange across two machines is worth driving end to end in one
-//! process. [`i18n`] is here because both halves print prose: it is the
+//! process, and [`pair_relay`], the same pairing with the relay carrying the
+//! messages and the six digits compared on both devices. [`i18n`] is here because both halves print prose: it is the
 //! generated binding of the string catalog `i18n/en.toml`.
+//!
+//! The rest is the decisions a subcommand makes that are worth a unit test
+//! without a vault: [`when`], which of the client layer's two shapes a typed
+//! date is; [`prefs_text`], a preference value as typed and as printed; and
+//! [`undo_file`], where `sunrise undo` finds the history an earlier process
+//! wrote, sealed under the vault's own key; [`args`], the flags every
+//! subcommand takes; [`zone`], which zone the reader is in and who said so;
+//! [`json`], the `--json` shapes; and [`watch`], the `sync --watch` loop.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -21,25 +29,38 @@
     clippy::single_match_else
 )]
 
+pub mod args;
 pub mod i18n;
+pub mod json;
 pub mod livesync;
 pub mod login;
+pub mod open_failure;
 pub mod pair;
-pub mod private_file;
+pub mod pair_relay;
+pub mod prefs_text;
 pub mod recover;
+pub mod undo_file;
 pub mod vault;
+pub mod watch;
+pub mod when;
+pub mod zone;
 
-/// Lowercase hex of a 16-byte id, for the device and identity listings.
+/// How this CLI introduces itself to `POST /api/v1/devices`, on every
+/// registration path: `sunrise bootstrap` and `sunrise recover` alike.
 ///
-/// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
-/// of `D_S_pub` and an identity id one of `ID_S_pub`, neither of them a ULID —
-/// so hex is the only form they have ever had on screen or in a log.
+/// The nickname, the platform tag and the build. The keys and the vault id
+/// come from the vault, in [`sunrise_client_core::account::device_identity`].
 #[must_use]
-pub fn hex16_public(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(32);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
+pub fn device_label(app_version: &str) -> sunrise_client_core::account::DeviceLabel {
+    sunrise_client_core::account::DeviceLabel {
+        nickname: "sunrise-cli".to_owned(),
+        platform: if cfg!(target_os = "macos") {
+            "macos".to_owned()
+        } else if cfg!(target_os = "windows") {
+            "windows".to_owned()
+        } else {
+            "linux".to_owned()
+        },
+        app_version: Some(app_version.to_owned()),
     }
-    out
 }

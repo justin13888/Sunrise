@@ -9,13 +9,13 @@
 //! op variant is a build failure here until it is routed.
 
 use super::focus::materialize_focus_remote;
-use super::merge::merge_op;
+use super::merge::merge_member;
 use super::review::insert_review_snapshot_row;
 use super::META_STREAM;
 use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
-use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_domain::PRIVATE_DOMAIN_BYTES;
 use sunrise_id::registry::Merge;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -118,7 +118,7 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 }
 
 /// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
-/// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
+/// shared with the vault-meta stream — at [`PRIVATE_DOMAIN_BYTES`].
 ///
 /// Migration 0017 does exactly this to the local tables of a vault that
 /// upgrades. It cannot do it to the already-signed envelopes in `ops`, which
@@ -141,24 +141,16 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// stream at `[0u8; 16]` is naming it correctly and is left alone.
 ///
 /// Delete at 1.0, with the rest of the 0017 legacy path.
+///
+/// A task, block or routine template's `stream_id` needs nothing here: the
+/// zero id is a spelling of "no stream" its decoder already reads as `None`
+/// ([`sunrise_domain::inbox::wire`], ADR-0046 §5). A focus session's stream is
+/// a routing record, not a home, and is re-pointed at the private domain.
 pub(super) fn remap_legacy_inbox(inner: &mut InnerOp) {
-    fn fix(r: &mut EntityRef) {
-        if r.bytes() == &META_STREAM {
-            *r = EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES);
+    if let InnerOp::FocusStart(f) = inner {
+        if f.stream_id.bytes() == &META_STREAM {
+            f.stream_id = EntityRef::new(EntityKind::Stream, PRIVATE_DOMAIN_BYTES);
         }
-    }
-    match inner {
-        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) | InnerOp::TaskDelete(t) => {
-            fix(&mut t.stream_id);
-        }
-        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) | InnerOp::RoutineDelete(r) => {
-            fix(&mut r.template.stream_id);
-        }
-        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
-            fix(&mut b.stream_id);
-        }
-        InnerOp::FocusStart(f) => fix(&mut f.stream_id),
-        _ => {}
     }
 }
 
@@ -167,7 +159,7 @@ pub(super) fn remap_legacy_inbox(inner: &mut InnerOp) {
 /// `lww` is the sender's stamp and `stream` the stream the envelope was sealed
 /// under. An op on an entity that merges as [`Merge::Lww`], full-state or
 /// `Patch`, is folded into that entity's field state and the entity is
-/// re-projected ([`merge_op`]); a losing write is kept in the state and
+/// re-projected ([`merge_member`]); a losing write is kept in the state and
 /// changes nothing it shows. An append-only record is written once.
 //
 // The control arm below has an empty body and is spelled out rather than
@@ -179,6 +171,20 @@ pub(super) fn materialize_remote(
     inner: &InnerOp,
     lww: &LwwStamp,
     stream: &[u8; 16],
+) -> rusqlite::Result<()> {
+    materialize_member(tx, inner, lww, stream, None)
+}
+
+/// [`materialize_remote`] for one member of a group (ADR-0065 §6), whose
+/// `group` the entity's version records. A `Patch` names its own group; a
+/// full-state member's mark was read off it before this
+/// (`engine::groups`, clarification D13), and is passed here.
+pub(super) fn materialize_member(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    lww: &LwwStamp,
+    stream: &[u8; 16],
+    group: Option<([u8; 16], u64)>,
 ) -> rusqlite::Result<()> {
     // A control op has no entity and must never reach the registry lookup
     // below: its `entity_kind` names what it is *about* — a KeyEnvelope says
@@ -227,7 +233,7 @@ pub(super) fn materialize_remote(
         | InnerOp::AttachmentCreate(_)
         | InnerOp::AttachmentDelete(_)
         | InnerOp::Patch(_) => {
-            return merge_op(tx, inner, lww, *stream);
+            return merge_member(tx, inner, lww, *stream, group);
         }
         // Focus ops never enter the LWW contest. Each writes one immutable record
         // keyed by the session's own id (start, end, and interruption in three

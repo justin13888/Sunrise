@@ -4,7 +4,7 @@
 
 Sunrise is an open-source daily routine app that helps you focus on what matters. It aims to be accessible, available on all major desktop and mobile platforms, open source, and built with performant technologies.
 
-> **Status (Sept 8, 2026):** Sunrise is near ready for first alpha release since rewrite. Focused on Apple devices and UX refinement.
+> **Status:** Sunrise is near ready for first alpha release since rewrite. Focused on Apple devices and UX refinement.
 
 <!-- TODO: Add screenshot and demo link -->
 
@@ -17,16 +17,16 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
 - **Self-hostable sync relay**: Run your own server (REST + SSE sync, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
-- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every pull request that touches anything they are built from. Android and Web are deferred.
+- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every push to `master` and nightly. Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
-- **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into any client** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
+- **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into any client** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#930](https://github.com/justin13888/Sunrise/issues/930)).
 
 ## Architecture
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace of 24 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
-- **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a PWA stub; its WASM core is not built and is ranked as [#52](https://github.com/justin13888/Sunrise/issues/52). `packages/sunrise-ui-tokens` compiles the design tokens from TOML into CSS, TypeScript, Swift and Rust — both Apple targets compile the Swift one, so a stream's colour is now decided in one place for every client ([ADR-0029](docs/11-adr/0029-design-token-pipeline.md)).
+- **Rust core** (`crates/`): a Cargo workspace of crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
+- **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a PWA that runs the core, compiled to wasm (`crates/sunrise-core-wasm`, built by `mise run web-wasm`), in a worker over OPFS, with no sync yet, and falls back to a `localStorage` stub where the browser cannot host it ([ADR-0055](docs/11-adr/0055-web-wasm-core.md)). `packages/sunrise-ui-tokens` compiles the design tokens from TOML into CSS, TypeScript, Swift and Rust — both Apple targets compile the Swift one, so a stream's colour is now decided in one place for every client ([ADR-0029](docs/11-adr/0029-design-token-pipeline.md)).
 
 ### Project structure
 
@@ -40,15 +40,30 @@ crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-server          Self-host sync relay (REST + SSE sync, OIDC)
   sunrise-domain          Entities, validation, RRULE, routine generation, the
                           capture/annotate grammars, and the shared phrasing
-  sunrise-client-core     Client-side but UI-free: undo/redo, saved views
+  sunrise-client-core     The client layer every client links: undo/redo, saved
+                          views, the edit gate, account bootstrap, recovery,
+                          background sync
+  sunrise-relay-client    The generated REST client for the relay
   sunrise-cli             The `sunrise` command-line client
   sunrise-core-bindings   UniFFI seam — Swift today, Kotlin later
   sunrise-auth            Client-side OIDC relying party (PKCE, token storage)
   sunrise-pairing         Noise XX device pairing + SAS confirmation
-  sunrise-integrations    iCalendar (live) + Google Calendar (not wired; read-only calendar sync is #4)
-  …and supporting crates (cbor, id, error, log, onboarding, bench, e2e)
+  sunrise-integrations    iCalendar (live) + Google Calendar (not wired; calendar read and write is #924)
+  sunrise-core-wasm       The web client's wasm seam over sunrise-core, SQLite in OPFS (ADR-0055)
+  sunrise-private-file    The one owner-only file write every secret on disk goes through
+  sunrise-telemetry       Redacted OpenTelemetry tracing for the relay
+  sunrise-http-sig        Per-request device signatures over canonical JSON
+  sunrise-test-seed       The one SUNRISE_FUZZ_SEED every randomised harness resolves
+  sunrise-crypto-test-vectors  Frozen byte-exact vectors for the v1 crypto suite
+  …and supporting crates (cbor, id, error, log, bench, e2e)
 tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
+  kotlin-smoke/    JVM smoke test of the generated Kotlin bindings
+bench/         Performance baselines per platform (baseline.json)
+deploy/        Shipped reverse-proxy configs (Caddy, nginx) and the test that boots them
+fuzz/          Fuzz targets and seeds, outside the workspace
+mutants/       Per-crate mutation-coverage floors (baseline.json)
+tests/         Chaos harness notes and wire-protocol fixtures
 apps/
   apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — local WASM core, no sync yet; Cloudflare Pages deploy wired, not enabled (#11)
@@ -85,7 +100,9 @@ and never committed, so it has no drift gate to protect and no formatter reaches
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
 
 Building the Apple clients additionally needs Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen),
-and the Rust target for every slice the xcframework carries:
+SwiftLint at the version `mise.toml`'s `[tools]` pins (`mise install` fetches
+it on macOS, and `apple-preflight` refuses any other version), and the Rust
+target for every slice the xcframework carries:
 
 ```bash
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -98,8 +115,14 @@ with no manifest change.
 ### Getting started
 
 ```bash
+mise install      # the Node (and, on macOS, the SwiftLint) that mise.toml pins
 mise run setup    # install JS dependencies (bun install) and git hooks (lefthook install)
 ```
+
+`mise install` comes first. The hooks run vitest under the pinned Node, the
+same one CI's Bun jobs install. With no Node on `PATH`, vitest falls back to Bun,
+where `navigator.languages` is undefined, and the pre-push hook fails a test
+that CI passes.
 
 Then confirm the toolchain is wired up by running the full automated gate (see [End-to-end QA](#end-to-end-qa) for the complete walkthrough):
 
@@ -141,7 +164,7 @@ cargo run -q -p sunrise-cli -- ical export week out.ics   # or omit the path for
 exists, with one deliberate difference: a bare word is refused rather than read
 as a new title, and **one bad token rejects the whole line** — a script that
 mistyped one token is better served by a non-zero exit than by four of its five
-changes landing. Re-titling a task is a macOS-only operation for now.
+changes landing. A new title goes through `sunrise retitle <id> <text>` instead.
 
 `ical import` is idempotent: a Block's id is derived from `(source, uid)`, so
 re-importing the same file updates the blocks it already made instead of
@@ -163,7 +186,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note:** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job on every push to `master`, and locally through `mise run apple-app` before a change that reaches the app merges. It carries the phone/tablet column of the matrix at MUST level ([ADR-0042](docs/11-adr/0042-v0-forever.md)); all 24 graded rows are met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every parity requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#status-audit), where every graded MUST is met on the CLI and iOS, 23 of 24 are met on macOS (the widget is built but nobody has yet watched a signed Mac offer it, [#376](https://github.com/justin13888/Sunrise/issues/376)), and the unbuilt ones (sharing, calendar integration, the capture widget and Stream tile) are ranked on the [roadmap](docs/roadmap.md) — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is not built yet and is ranked on the [roadmap](docs/roadmap.md) ([#52](https://github.com/justin13888/Sunrise/issues/52)); see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note:** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job on every push to `master`, and locally through `mise run apple-app` before a change that reaches the app merges. It carries the phone/tablet column of the matrix at MUST level ([ADR-0042](docs/11-adr/0042-v0-forever.md)); all 24 graded rows are met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every parity requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#status-audit), where every graded MUST is met on the CLI and iOS, 23 of 24 are met on macOS (the widget is built but nobody has yet watched a signed Mac offer it, [#376](https://github.com/justin13888/Sunrise/issues/376)), and the unbuilt ones (sharing, calendar integration, the capture widget and Stream tile) are ranked on the [roadmap](docs/roadmap.md) — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client runs the real `sunrise-core`, compiled to wasm, in a worker over OPFS, with no sync yet, and falls back to a `localStorage` stub where the browser cannot host it ([ADR-0055](docs/11-adr/0055-web-wasm-core.md)). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -189,7 +212,7 @@ cargo fmt --check                         # formatting clean
 cargo deny check                          # advisories, bans, licences, sources
 ```
 
-`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks (what `mise run pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
+`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks. `mise run pre-push` runs both suites whole too; the git hook runs only the tests a push can affect (see [Git hooks](#git-hooks)). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
 
 #### 3. Headless, no client at all
 
@@ -241,6 +264,20 @@ SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
   cargo run -p sunrise-cli -- sync --once
 SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- today
 ```
+
+With a relay running, the same pairing goes through the relay instead, with the six-digit SAS printed on both devices and confirmed on each — the path the Apple apps take, through the same client-layer code. The device being added shows the code:
+
+```bash
+# Terminal 2 — B prints a pairing code and waits:
+SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair join
+
+# Terminal 1 — A takes it; both then ask for the digits the other one shows:
+SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 SUNRISE_SYNC_TOKEN=self-host \
+  cargo run -p sunrise-cli -- pair add '<the code B printed>'
+```
+
+`--yes` or `--confirm-sas <digits>` answers the digits without a prompt, and `--json` prints the code, the digits and the outcome as one JSON object per line; [`docs/07-clients/overview.md`](docs/07-clients/overview.md) §Pairing has the rest. `cargo test -p sunrise-e2e --test cli_pair_relay` runs it end to end through the real binary.
 
 > Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
 
@@ -346,7 +383,7 @@ you can name.
 
 #### 6. Benchmarks (manual)
 
-Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (submit / query_today@10k / fts@10k / ws-handshake) and merges the results back for your platform.
+Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (the benches in `crates/sunrise-bench/benches`) and merges the results back for your platform.
 
 ```bash
 mise run bench            # run the criterion suite only
@@ -364,12 +401,13 @@ cargo test -p sunrise-e2e --test chaos -- --nocapture
 #### 8. Web PWA (manual E2E)
 
 ```bash
+mise run web-wasm                     # build the core into apps/web/public/wasm/
 bun run --filter @sunrise/web dev     # dev server at http://localhost:5174
 bun run --filter @sunrise/web build   # production build
 bun run --filter @sunrise/web preview # serve the production build
 ```
 
-> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is not built ([#52](https://github.com/justin13888/Sunrise/issues/52)), but no longer blocked on MSRV — [ADR-0026](docs/11-adr/0026-msrv-bump.md) moved the pin to 1.91.1 and fired ADR-0012's revisit trigger; what remains is the `rusqlite` 0.31 → 0.40 swap ([#52](https://github.com/justin13888/Sunrise/issues/52)). Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+> **Web core ([ADR-0055](docs/11-adr/0055-web-wasm-core.md)):** `loadCore()` in `apps/web/src/wasm.ts` runs the real `sunrise-core`, compiled to wasm by `mise run web-wasm`, in a dedicated worker with its vault in OPFS. There is no sync yet. Where the browser cannot host it (no workers, OPFS or `navigator.locks`), or no wasm bundle was built, it falls back to a `localStorage` stub with the same surface, which exercises the UI only. Data lives in browser storage; clear it via DevTools to reset.
 
 ### Common tasks
 
@@ -388,8 +426,11 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run rust-check`        | Type-check the Rust workspace                          |
 | `mise run rust-test`         | Run the Rust test suite                                |
 | `mise run log-fields`        | Run the log-event/field gate, building first what it reads from |
+| `mise run rust-test-changed` | Run the Rust tests the pushed changes can affect (the pre-push hook's) |
+| `mise run test-changed`      | Run the JS/TS test suite when the pushed changes can affect it |
 | `mise run rust-doc`          | Build the rustdoc for the workspace and `fuzz/`, every rustdoc warning denied |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
+| `mise run swift-logic`       | Fail on non-view logic in Swift under `apps/apple` that is not on the shrinking allowlist |
 | `mise run docs-links`        | Fail on a markdown link or heading anchor that resolves to nothing |
 | `mise run doc-comments`      | Fail on a doc comment mangled into a shape rustdoc misreads |
 | `mise run observability-catalog` | Fail if observability.md's extracted event or metric block has drifted |
@@ -408,8 +449,8 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 
 Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and defined in `lefthook.yaml`, which simply calls mise tasks so there is a single source of truth:
 
-- **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy`. Run the lot with `mise run pre-commit`.
-- **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test`, and `mise run rust-test`. Run the lot with `mise run pre-push`.
+- **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy-workspace`. The `fuzz/` clippy (`mise run rust-clippy-fuzz-staged`) runs only when the staged files reach it, as `.github/scripts/fuzz-closure-touched.py` decides: anything under `fuzz/`, a file in a workspace crate the fuzz package compiles, or `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*` or `clippy.toml`. Run the lot, both clippy halves always, with `mise run pre-commit`.
+- **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test-changed`, and `mise run rust-test-changed`. The last two run only what the push can affect, as `.github/scripts/prepush-scope.py` decides from the changed files: the changed crates, every crate depending on one, and the crates whose sources name a changed file, with the `event_catalog` gate always run in full (`mise run log-fields`); the Vitest suite whenever a file it reads changed. A change to `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain*` or `clippy.toml` runs the whole Rust suite. `SUNRISE_FULL_PREPUSH=1 git push` runs both suites whole, and so does `mise run pre-push`; CI always does.
 
 ### Documentation site
 
@@ -420,6 +461,10 @@ Markdown GitHub shows is the Markdown the site builds:
 bun run --filter @sunrise/docs dev     # http://localhost:5173
 bun run --filter @sunrise/docs build   # static site in apps/docs/dist
 ```
+
+### Releasing
+
+A release is cut by pushing a tag on one of two version trains; [`docs/07-clients/releasing.md`](docs/07-clients/releasing.md#two-version-trains) says which tag and what the pipeline does with it ([ADR-0064](docs/11-adr/0064-two-version-trains.md)).
 
 ## Translating Sunrise
 

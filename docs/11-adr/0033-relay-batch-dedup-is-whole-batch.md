@@ -19,15 +19,15 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:352#batch_ops_hash`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:370#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
-`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:207#relay_append`) looks that
+`Store::relay_append` (`crates/sunrise-server/src/relay_log/append.rs:92#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
 (`crates/sunrise-server/src/api/sync/publish.rs:210-223#ops`).
 
-`relay_batches` (`crates/sunrise-server/src/relay_log.rs:110-118#SCHEMA`) is keyed
+`relay_batches` (`crates/sunrise-server/src/relay_log/schema.rs:62-69#SCHEMA`) is keyed
 `(account_h, stream_id, ops_h)` and holds `frame_id` as a
 `REFERENCES relay_frames(id) ON DELETE CASCADE`. That is the property worth
 naming: the dedup window and the replay window are the same window by
@@ -35,10 +35,10 @@ construction, with no second sweep and nothing to keep in step by hand.
 
 ### The case it cannot catch
 
-`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs:1053#sync_outbox_grouped`) groups
+`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs#sync_outbox_grouped`) groups
 **every** unacked op for a stream into one batch. There is no size cap, so the
 partition is "everything unacked at this instant", and the fresh-session drain
-(`crates/sunrise-core/src/sync_driver.rs:1161-1185#session`) re-runs it with an empty
+(`crates/sunrise-core/src/sync_driver.rs:812-826#session`) re-runs it with an empty
 `inflight_ops` skip set. So:
 
 1. Session 1 sends `[O1]`; the relay appends and acks; the ack dies with the
@@ -53,7 +53,7 @@ partition, and any op authored between attempts changes the partition. The
 length-prefixing is not the problem and is doing its own job: it is what stops a
 *differently* partitioned batch colliding with another one, which the test
 `a_batch_with_different_ops_is_never_deduped`
-(`crates/sunrise-server/src/api/sync/suite.rs`) guards.
+(`crates/sunrise-server/src/api/sync/suite/dedup.rs`) guards.
 
 ### What the cost of not fixing it actually is
 
@@ -69,8 +69,8 @@ per lost ack. It is bounded twice over: by how many ops are unacked at the momen
 an ack is lost (which is bounded by how long a session survives), and by
 retention — 30 days and 256 MiB per channel
 (`DEFAULT_MAX_AGE_MS`,
-`crates/sunrise-server/src/relay_log.rs:123#DEFAULT_MAX_AGE_MS`, and
-`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log.rs:130#DEFAULT_MAX_BYTES`), after which the frame and its
+`crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_AGE_MS`, and
+`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log/append.rs#DEFAULT_MAX_BYTES`), after which the frame and its
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
@@ -114,8 +114,8 @@ rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:1
   and every caller of `relay_append` has to decide what it means.
 - `frame_heads` has to be recomputed after filtering, or the heads claim seqs the
   stored frame no longer carries — and the head is exactly what
-  `relay_replay`'s skip test reads. Over-claiming a head is data loss
-  (`crates/sunrise-server/src/relay_log.rs:294-298#relay_replay`).
+  `relay_replay_after`'s skip test reads. Over-claiming a head is data loss
+  (`crates/sunrise-server/src/relay_log/replay.rs:50-54#relay_replay_after`).
 - A per-op table needs the `ON DELETE CASCADE` tie to `relay_frames` that
   `relay_batches` has, or the dedup window and the replay window drift apart —
   and forgetting an op id is precisely what lets a legitimate replay through.

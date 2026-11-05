@@ -44,11 +44,19 @@ undated line `planned_at = today` so the row appears where it was typed
 ([`inbox-and-capture.md`](./inbox-and-capture.md) §Capture UX patterns, *Today
 default*).
 
-> **Today's build** composes Scheduled Blocks, tasks scheduled today, tasks due
-> today and an Overdue section from `scheduled_at` and `due_at` over a rolling
-> now + 24 h window (`crates/sunrise-core/src/engine/query.rs#query_today`),
-> with overdue meaning `due_at` before the start of today. [#334](https://github.com/justin13888/Sunrise/issues/334) and [#336](https://github.com/justin13888/Sunrise/issues/336)
-> move it to the composition above.
+> **Today's build** has the composition above as `Query::TodayView { now_ms,
+> contexts }` (`crates/sunrise-core/src/engine/lateness.rs#query_today_view`,
+> #334): each open task planned, or with a deadline of either kind, on or
+> before the reader's planner day, with its group
+> (`sunrise_domain::today_group`: Planned, Carried over, Due today with which
+> deadline, Late) and its lateness, in that order; Late rows lead with the
+> hard ones, oldest first. The day is bounded by the day schedule
+> ([`../02-domain/day-schedule.md`](../02-domain/day-schedule.md), #338), and
+> is the civil day without one. `sunrise today` prints it. `Query::Today`
+> returns the same set as a flat list, and `sunrise_domain::today_section_in`
+> still classifies it on the plan and the hard deadline into the Scheduled,
+> Due and Overdue sections the shipped Apple client draws, until its Mac pass
+> reads `CoreQuery.todayView`. Blocks in Today are the calendar's.
 
 ## Upcoming
 
@@ -80,12 +88,30 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 - **Surfaces:** a sidebar entry on desktop, an entry in Browse on phone and
   tablet, and `sunrise upcoming [7|14|30]` on the CLI.
 
+> **Today's build** has the query and the CLI. `Query::Upcoming { now_ms,
+> span_days, contexts }` (`crates/sunrise-core/src/engine/upcoming.rs`) folds
+> through the pure `crates/sunrise-domain/src/upcoming.rs#build_upcoming`: days
+> are planner days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
+> than a `zone` argument), each carrying its own `[start, end)` so a DST day
+> is 23 or 25 hours, and civil days with no day schedule; a task is on the day
+> `sunrise_domain::planner_day_of` puts it, keeping its kind. A day's hard
+> deadlines are its `due` list and its soft ones its `targets` list, a task
+> whose two deadlines fall on one day listed once, under `due` (#334); the
+> no-date lane orders by target, then hard deadline, then priority, then id.
+> "No stream" is listed last. `span_days: None` reads `views.upcoming.span_days`; any
+> span but 7, 14 or 30 is refused. Blocks overlap a day as on the calendar
+> grid. The seam carries it as `CoreQuery.upcoming` / `UpcomingReport`, and
+> `sunrise upcoming` prints it. Drag rescheduling (`plan_preview`, #343/#344)
+> and the Apple surfaces are not built.
+
 ## Needs decision (triage)
 
 The triage tray from [ADR-0047](../11-adr/0047-deadlines-and-lateness.md): every
 open task that is late (soft or hard) or stale and not yet acknowledged, in the
 core's order (`LateHard`, then `LateSoft`, then `Stale`; oldest first; then id).
-[#335](https://github.com/justin13888/Sunrise/issues/335) builds it.
+[#335](https://github.com/justin13888/Sunrise/issues/335) builds it: the
+core's `Query::Triage` and `Command::Triage`, and `sunrise triage
+[list|defer|done|drop|keep]` on the CLI; the macOS tray is a Mac pass.
 
 - **Where it appears:** a sidebar entry with a count badge (hidden at zero), ⌘4;
   the folded Late section of Today links to it; the morning brief's **Open
@@ -114,10 +140,13 @@ Per Stream:
 - Header: name, color, paused/archived state, share status.
 - Default sort: soonest first — the earliest of `planned_at`, `target_at` and
   `hard_due_at`, then id as a deterministic tiebreak so two replicas render one
-  order. A manual order, where the user has arranged the list, is a synced
-  fractional index computed in Rust ([#340](https://github.com/justin13888/Sunrise/issues/340)), replacing today's per-device
-  order ([`../07-clients/interaction-patterns.md` §Reorder](../07-clients/interaction-patterns.md#reorder)).
-  `sort_order` on Streams orders the sidebar, not this list.
+  order. A manual order, where the user has arranged the list, is
+  `Task.sort_order`, a synced fractional index computed in Rust by
+  `Command::MoveTasks` ([#340](https://github.com/justin13888/Sunrise/issues/340)): the placed tasks lead, by key and then by
+  id, and the rest follow in the default sort. `Query::StreamTasks`,
+  `Query::Inbox` and `Query::ContextTasks` return their lists in that order
+  (`crates/sunrise-core/src/engine/query.rs#sort_listing`).
+  `Stream.sort_order` orders the sidebar, not this list.
 - **Sub-tabs (mutually exclusive)**: Open / Done / All / Routines. Rendered as
   full-width tabs at the top of the pane, not filter chips, since chips imply
   combinable filters and these states are mutually exclusive.
@@ -128,62 +157,88 @@ Per Stream:
 A user creates a saved view by filtering the current view to taste and choosing
 "Save this view as…", or by saving a search with ⌘S ([`search.md`](./search.md)).
 
-A saved view is a **synced `SavedView` entity** in the vault ([#341](https://github.com/justin13888/Sunrise/issues/341)), merged
-per field ([ADR-0044](../11-adr/0044-per-field-ops.md)), so a view saved on one
-device exists on every device:
+A saved view is a **synced `SavedView` entity** (`svw_`) in the vault ([#341](https://github.com/justin13888/Sunrise/issues/341)),
+written only by `Patch`, one register per field
+([ADR-0044](../11-adr/0044-per-field-ops.md)), so a view saved on one device
+exists on every device, and an edit of one field on one device and of
+another on a second both survive. The shipped shape
+(`crates/sunrise-domain/src/saved_view.rs`):
 
 ```rust
 pub struct SavedView {
     pub id: EntityRef,
-    pub name: String,
-    pub spec: ViewSpec,
-    pub sort_order: FractionalIndex,   // position in the saved-views list
-    pub deleted: bool,
+    pub name: String,                  // tracked; not unique
+    pub view: ViewKind,                // tracked; lossless (today, inbox, stream, search, calendar, …)
+    pub filter: ViewFilter,            // tracked; one register for the whole filter
+    pub sort: ViewSort,                // quiet; default, manual (#340), created, updated, title, priority, due, scheduled
+    pub sort_order: Option<String>,    // quiet; position in the saved-views list
+    pub deleted: bool,                 // tombstone; Restore brings it back
 }
 
-pub enum ViewSpec {
-    /// A primary view with a typed filter.
-    Filtered { view: ViewKind, filter: ViewFilter, sort: ViewSort },
-    /// A saved search: canonical query text and the grammar it was written in.
-    Search { query: String, grammar_v: u16 },
-}
-
-pub struct ViewFilter {
-    pub streams: Option<StreamSelector>,       // ids (with descendants), or "no stream"
-    pub contexts: Vec<EntityRef>,              // by id, so a rename keeps working
-    pub priority: Option<RangeInclusive<u8>>,
+pub struct ViewFilter {                // every part optional, ANDed; values inside a part ORed
+    pub streams: Vec<EntityRef>,
+    pub no_stream: bool,               // the tasks of no stream, ORed with `streams` (ADR-0046)
+    pub contexts: Vec<EntityRef>,      // by id, so a rename keeps working
+    pub context_names: Vec<String>,    // names an import could not resolve: reported, matched by nothing
+    pub priority: Option<PriorityRange>,
     pub energy: Vec<Energy>,
-    pub lateness: Vec<Lateness>,
-    pub place: Option<EntityRef>,
-    pub window: Option<DateWindow>,            // over planned_at / target_at / hard_due_at, in reader-civil terms
-    pub text: Option<String>,                  // search grammar
+    pub window: Option<DateWindow>,    // over planned_at ("scheduled"), hard_due_at ("due") or target_at ("target"), in planner days from the reader's today
+    pub lateness: Vec<LatenessPart>,   // late_hard / late_soft / stale / on_track for the reader now
+    pub text: String,                  // a Search view's query; a title match otherwise
+    // + any part a newer build added, kept verbatim
 }
 ```
 
-The **result** is recomputed on each device by the core; it is never stored.
+The **result** is recomputed on each device by the core
+(`Query::SavedView`, `crates/sunrise-core/src/engine/saved_view.rs#evaluate_saved_view`);
+it is never stored. The view's base list is Today, the Inbox view, the named
+Streams and, with `no_stream`, the tasks of no stream (every task when none),
+or the search for a Search view; the filter
+then narrows it in the reader's zone, and the sort orders it. A view of a
+screen with no list (calendar, focus, routines, review, the briefs) returns no
+tasks, and the client opens that screen. The result names any context the
+filter holds that no longer exists, and says when a filter part or view kind
+from a newer build could not be applied (`complete: false`): it then shows
+more than that build would, never silently less. A filter part this build
+does not know is written back unchanged by every edit
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6).
 Per-device scroll position and collapsed sections stay in the device-local
-overlay. An unknown filter kind written by a newer build is preserved on
-round-trip ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md)).
+overlay.
+
+The entity is the feature `saved_view.entity`: no view is written into a
+vault until every paired device has advertised it, because a build without
+it cannot decode a `Patch` naming `svw_`. Views are found by search under
+`kind:view`, by name.
 
 Examples:
 
-- "Errands today" — context `@errands`, planned on or before today, all open
-  streams.
-- "Waiting on" — context `waiting-on`, sorted by `created_at` descending.
-- "This week's deep work" — `@deep-work`, planned within the current week.
+- "Errands today" — context `@errands`, Today.
+- "Waiting on" — context `waiting-on`, sorted by `created`.
+- "This week's deep work" — `@deep-work`, `scheduled` within 0 to 6 days.
 
-> **Today's build** keeps saved views as a per-device TOML file,
-> `~/.config/sunrise/views.toml`, holding a view, a free-text query and context
-> *names* (`crates/sunrise-client-core/src/views.rs#SavedView`). A view saved on
-> the Mac does not exist on the iPhone, and renaming a context breaks every view
-> naming it. [#341](https://github.com/justin13888/Sunrise/issues/341) imports the file once, resolving names to ids and
-> reporting the ones it cannot.
+The per-device `~/.config/sunrise/views.toml` of earlier builds is imported
+once into each vault (`sunrise_client_core::views::plan_import`): context
+names resolve to ids, a name that resolves to nothing is reported and kept in
+`context_names`, a view the vault already has by name is left alone, and a
+marker beside the vault records the import. The CLI runs it the first time
+`sunrise views` meets a vault and no longer writes the file.
+
+> **Not built yet.** A place predicate for Place
+> ([#339](https://github.com/justin13888/Sunrise/issues/339)), which arrives
+> as a new part of `ViewFilter`, which older builds keep. The lateness part
+> and the window over all three times are built (#334): a build before
+> `DOC_SCHEMA_V` 20 keeps `lateness` and the `target` field as unknown and
+> reports the view incomplete. The full
+> search grammar as a filter over every view is [#345](https://github.com/justin13888/Sunrise/issues/345).
+> The Apple client still reads and writes `views.toml`; its import
+> (`plan_saved_views_import` across the seam) and its switch to the entity
+> are its remaining part of #341.
 
 ## Calendar (week view)
 
 Vertical day columns × hour rows, spanning each planner day. Blocks render as
 coloured rectangles tinted by Stream; external events in their calendar's
-colour, visibly read-only. Tasks with no time live in a drawer; dragging one onto
+colour, visibly fixed to the planner. Tasks with no time live in a drawer; dragging one onto
 the grid places it, and every drag previews its ripple before the drop
 ([`planner.md`](./planner.md)).
 

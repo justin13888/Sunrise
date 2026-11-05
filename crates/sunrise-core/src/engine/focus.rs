@@ -10,26 +10,35 @@
 //! unit: a read here folds rows into a session rather than loading one.
 
 use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, require_kind,
+    decode_unknowns, domain_bytes, encode_unknowns, energy_str, ms_to_ts, parse_energy,
+    require_kind,
 };
 use super::lww::LwwStamp;
-use super::routine::update_routine_row;
 use super::stream::ensure_stream_row;
-use super::task::{actionable_scan, ftsr_upsert_task, read_task, ref_of, update_task_row};
-use super::{Engine, EngineError, FOCUS_PLAN_SCAN_CAP, META_STREAM};
+use super::task::{actionable_scan, read_task, ref_of};
+use super::write::Appended;
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::{CommandResult, FocusStartDraft};
-use crate::inner_op::{encode_inner_op, InnerOp};
+use crate::inner_op::InnerOp;
 use crate::queries::{FocusPlanRow, FocusSessionRow, QueryResult};
 use rusqlite::{params, Transaction};
 use std::collections::BTreeMap;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     break_after, fold_focus_stats, plan_session, rank_focus_plan, Chunk, Energy, FocusEnd,
-    FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, PlanCandidate, Routine,
+    FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, PlanCandidate,
     SessionLength, SessionRecord, Task, TaskState, POMODORO_MS,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
+
+/// How many actionable tasks the Focus Planner scans before ranking.
+///
+/// The planner's ranking is energy-first, so it cannot be truncated in SQL
+/// without risking dropping the best-matching pick — the scan has to be wide
+/// enough that ranking sees every plausible candidate, and bounded so a huge
+/// vault cannot turn one keypress into a full-table sort.
+const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
 impl Engine {
     /// Open a focus session: ADR-0013's `start` op.
@@ -71,7 +80,7 @@ impl Engine {
         let start = FocusStart {
             id: session_id,
             task_id: d.task_id,
-            stream_id: task.stream_id,
+            stream_id: sunrise_domain::stream_key(task.stream_id),
             started_at: sunrise_domain::epoch_ms::from_u64(now_ms),
             planned_ms,
             // The declared budget wins; the Task's own facet is the fallback.
@@ -80,31 +89,10 @@ impl Engine {
             chunk,
             unknown: Unknowns::new(),
         };
-        let inner = encode_inner_op(&InnerOp::FocusStart(Box::new(start.clone())))?;
-        let op_id = self.fresh_op_id(now_ms);
-        let stream_bytes = *start.stream_id.bytes();
-        let seq = self.next_seq(db, &stream_bytes)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &start.stream_id, now_ms)?;
-            insert_focus_start_row(tx, &start, &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner,
-                "focus.start",
-                "focus_session",
-                Some(session_id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let stream = *start.stream_id.bytes();
+        let op = InnerOp::FocusStart(Box::new(start));
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(session_id, None, op_id, seq))
     }
 
@@ -151,79 +139,30 @@ impl Engine {
         } else {
             None
         };
-        let inner = encode_inner_op(&InnerOp::FocusEnd(Box::new(end.clone())))?;
-        let op_id = self.fresh_op_id(now_ms);
-        let stream_bytes = *view.start.stream_id.bytes();
-        let seq = self.next_seq(db, &stream_bytes)?;
-        let lww = self.lww_stamp(seq);
+        let stream = *view.start.stream_id.bytes();
         let state = completion.as_ref().map(|c| c.task.state.clone());
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_focus_end_row(tx, &end, &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner,
-                "focus.end",
-                "focus_session",
-                Some(session.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            if let Some(c) = &completion {
-                let task_seq = self.next_seq_tx(tx, c.task.stream_id.bytes())?;
-                let task_lww = self.lww_stamp(task_seq);
-                let task_op_id = self.fresh_op_id(now_ms);
-                update_task_row(tx, &c.task, &task_lww)?;
-                ftsr_upsert_task(tx, &c.task)?;
-                self.ops_insert(
-                    tx,
-                    &task_op_id,
-                    c.task.stream_id.bytes(),
-                    task_seq,
-                    task_lww.hlc,
-                    &c.inner,
-                    "task.update",
-                    "task",
-                    Some(c.task.id.bytes()),
-                    Some(now_ms),
-                    None,
-                    now_ms,
-                    &[],
-                )?;
+        let op = InnerOp::FocusEnd(Box::new(end));
+        let done = db.with_tx(|tx| -> rusqlite::Result<Appended> {
+            let done = self.append_and_fold(tx, &op, &stream, now_ms)?;
+            if let Some(c) = completion {
+                let mode = self.write_mode(tx, now_ms)?;
+                let task_stream = domain_bytes(c.task.stream_id);
+                let mut members = vec![(InnerOp::TaskUpdate(c.task), task_stream)];
                 // Same rule as a hand-completed occurrence: the streak advance
                 // rides in the same transaction as the completion that caused
                 // it (`docs/08-features/focus-mode.md`: "a focus session that
                 // completes a routine occurrence increments the routine
-                // streak").
-                if let Some((routine, routine_inner)) = &c.streak {
-                    let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
-                    let routine_lww = self.lww_stamp(routine_seq);
-                    let routine_op_id = self.fresh_op_id(now_ms);
-                    update_routine_row(tx, routine, &routine_lww)?;
-                    self.ops_insert(
-                        tx,
-                        &routine_op_id,
-                        &META_STREAM,
-                        routine_seq,
-                        routine_lww.hlc,
-                        routine_inner,
-                        "routine.update",
-                        "routine",
-                        Some(routine.id.bytes()),
-                        Some(now_ms),
-                        None,
-                        now_ms,
-                        &[],
-                    )?;
+                // streak"), and in a field-ops vault in the same group.
+                if let Some(streak) = &c.streak {
+                    if let Some(routine) = streak.op_in(tx, mode)? {
+                        members.push((routine, META_STREAM));
+                    }
                 }
+                self.append_and_fold_together(tx, members, now_ms)?;
             }
-            Ok(())
+            Ok(done)
         })?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(session, state, op_id, seq))
     }
 
@@ -271,7 +210,7 @@ impl Engine {
     /// cancelled must not silently overrule them.
     fn autocomplete_focused_task(
         &self,
-        db: &Db,
+        db: &mut Db,
         task_id: EntityRef,
         now_ms: u64,
     ) -> Result<Option<FocusCompletion>, EngineError> {
@@ -290,12 +229,7 @@ impl Engine {
         task.completed_at = Some(ms_to_ts(now_ms as i64).into());
         task.updated_at = ms_to_ts(now_ms as i64);
         let streak = self.streak_advance(db, &task, now_ms)?;
-        let inner = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
-        Ok(Some(FocusCompletion {
-            task,
-            inner,
-            streak,
-        }))
+        Ok(Some(FocusCompletion { task, streak }))
     }
 
     /// Log one interruption against a session — a grow-only set member, keyed
@@ -319,30 +253,10 @@ impl Engine {
             at: sunrise_domain::epoch_ms::from_u64(now_ms),
             reason,
         };
-        let inner = encode_inner_op(&InnerOp::FocusInterrupt(interruption.clone()))?;
-        let op_id = self.fresh_op_id(now_ms);
-        let stream_bytes = *start.stream_id.bytes();
-        let seq = self.next_seq(db, &stream_bytes)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_interruption_row(tx, &interruption)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner,
-                "focus.interrupt",
-                "focus_session",
-                Some(session.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let stream = *start.stream_id.bytes();
+        let op = InnerOp::FocusInterrupt(interruption);
+        let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
+        let (op_id, seq) = (done.op_id, done.seq);
         Ok(CommandResult::new(session, None, op_id, seq))
     }
 
@@ -368,6 +282,12 @@ impl Engine {
         let priors = work_session_counts(db.conn())?;
         let mut tasks: BTreeMap<EntityRef, Task> = BTreeMap::new();
         let mut candidates = Vec::with_capacity(scan.len());
+        // Both times resolve in the reader's zone; the deadline as a deadline,
+        // missed at the end of an all-day date (`docs/10-cross-cutting/time.md`
+        // §2 rule 1, ADR-0047 §Due instant).
+        let tz = self.device_zone();
+        let ms =
+            |t: Option<jiff::Timestamp>| t.and_then(|t| u64::try_from(t.as_millisecond()).ok());
         for (bytes, open_blockers, unblocks) in scan {
             let Some(task) = read_task(db.conn(), &bytes)? else {
                 continue;
@@ -378,14 +298,8 @@ impl Engine {
                 unblocks,
                 open_blockers,
                 priority: task.priority,
-                due_at_ms: task
-                    .due_at
-                    .as_ref()
-                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
-                scheduled_at_ms: task
-                    .scheduled_at
-                    .as_ref()
-                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
+                due_at_ms: ms(task.hard_due_at.as_ref().and_then(|t| t.due_in(&tz))),
+                scheduled_at_ms: ms(task.planned_at.as_ref().and_then(|t| t.resolve_in(&tz))),
                 estimated_duration_s: task.estimated_duration_s,
             });
             tasks.insert(task.id, task);
@@ -527,8 +441,9 @@ impl Engine {
 // ---- table operations ----
 
 /// What `EndFocus` derives when the session says the task was finished: the
-/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
-/// completion triggers when the task is a routine occurrence.
+/// completed Task, which `EndFocus` writes as a `TaskUpdate`, and the
+/// `RoutineUpdate` of the streak advance the completion triggers when the
+/// task is a routine occurrence.
 ///
 /// Built and consumed entirely on the local command path, by
 /// [`Engine::autocomplete_focused_task`] and its one caller; a replica applying
@@ -537,8 +452,7 @@ impl Engine {
 /// is as close to them as a method's return type can live.
 struct FocusCompletion {
     task: Task,
-    inner: Vec<u8>,
-    streak: Option<(Routine, Vec<u8>)>,
+    streak: Option<super::routine::StreakWrite>,
 }
 
 /// Materialize one focus op. Every write is an insert that ignores a conflict
@@ -553,8 +467,11 @@ pub(super) fn materialize_focus_remote(
     match inner {
         InnerOp::FocusStart(f) => {
             // The owning stream row must exist (the session's stream is also
-            // its op-log routing stream).
-            ensure_stream_row(tx, &f.stream_id, ts_ms)?;
+            // its op-log routing stream), unless it is no stream: the
+            // private domain has no row (ADR-0046 §2).
+            if !sunrise_domain::names_no_stream(&f.stream_id) {
+                ensure_stream_row(tx, &f.stream_id, ts_ms)?;
+            }
             insert_focus_start_row(tx, f, lww)
         }
         InnerOp::FocusEnd(f) => {
