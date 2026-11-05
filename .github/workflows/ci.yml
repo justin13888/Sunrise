@@ -1066,9 +1066,11 @@ jobs:
     # the crate passes about 3,950. Re-count when it grows, and raise the
     # shard count before then rather than this bound — a larger bound only
     # lets a slow shard cost more. A shard that does time out is not harmless:
-    # the upload step below still publishes its partial outcomes, and the gate
-    # counts it as an arrived shard. Nightly 38044938836 passed
-    # `sunrise-core` on 766 of its 2502 mutants that way (#517).
+    # the upload step below still publishes its partial outcomes, and before
+    # #546 the gate counted it as an arrived shard — nightly 38044938836
+    # passed `sunrise-core` on 766 of its 2502 mutants that way (#517). The
+    # gate now reads the missing `end_time` and leaves the crate unscored, so
+    # one timed-out shard costs its whole crate that night's comparison.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The six scoped crates
     # generate 4,911 mutants — the sum of the six populations recorded on
