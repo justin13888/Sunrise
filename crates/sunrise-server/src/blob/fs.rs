@@ -48,12 +48,23 @@ pub struct FsBlobs {
 }
 
 impl FsBlobs {
+    /// The environment variable a debug build reads in [`FsBlobs::new`]: set
+    /// to `1`, every free-space reading is 100 of 100 blocks available instead
+    /// of the host filesystem's, so a test that drives the built binary passes however
+    /// full the development disk is. A release build never reads it.
+    pub const DEBUG_AMPLE_DISK_ENV: &'static str = "SUNRISE_DEBUG_AMPLE_DISK";
+
     /// The tree under `root`, which is created on first write.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        #[cfg(debug_assertions)]
+        let read_disk_space =
+            debug_read_disk_space(std::env::var_os(Self::DEBUG_AMPLE_DISK_ENV).as_deref());
+        #[cfg(not(debug_assertions))]
+        let read_disk_space: ReadDiskSpace = statvfs_of;
         Self {
             root: root.into(),
-            read_disk_space: statvfs_of,
+            read_disk_space,
         }
     }
 
@@ -485,6 +496,30 @@ fn statvfs_of(_: &Path) -> std::io::Result<Option<DiskSpace>> {
     Ok(None)
 }
 
+/// How a debug build reads free space, given the value of
+/// [`FsBlobs::DEBUG_AMPLE_DISK_ENV`]: [`ample_disk`] for exactly `1`, and
+/// [`statvfs_of`] for anything else or nothing.
+#[cfg(debug_assertions)]
+fn debug_read_disk_space(flag: Option<&std::ffi::OsStr>) -> ReadDiskSpace {
+    if flag.is_some_and(|v| v == "1") {
+        ample_disk
+    } else {
+        statvfs_of
+    }
+}
+
+/// A filesystem with every block available: what a debug build reports under
+/// [`FsBlobs::DEBUG_AMPLE_DISK_ENV`]. Still a reading, so `doctor` and the
+/// readiness probe run their free-space check on it rather than skipping it.
+#[cfg(debug_assertions)]
+#[allow(clippy::unnecessary_wraps)] // The shape of `ReadDiskSpace`.
+fn ample_disk(_: &Path) -> std::io::Result<Option<DiskSpace>> {
+    Ok(Some(DiskSpace {
+        available: 100,
+        total: 100,
+    }))
+}
+
 /// The 16 bytes a 32-character lowercase-hex name spells, or `None` for any
 /// other name.
 fn hex16(name: &std::ffi::OsStr) -> Option<[u8; 16]> {
@@ -643,6 +678,38 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::{Area, FsBlobs};
+
+    /// Only `1` swaps the host's reading for an ample one; unset, empty, or
+    /// any other value leaves `statvfs` in place, so a stray setting cannot
+    /// hide a full disk.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn only_a_debug_flag_of_1_reports_ample_disk() {
+        use super::{debug_read_disk_space, DiskSpace};
+        use std::ffi::OsStr;
+        use std::path::Path;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ample = Some(DiskSpace {
+            available: 100,
+            total: 100,
+        });
+        assert_eq!(
+            debug_read_disk_space(Some(OsStr::new("1")))(root).unwrap(),
+            ample
+        );
+        // Compared on `total`: the host's free blocks move between two
+        // reads, its size does not.
+        let host_total = super::statvfs_of(root).unwrap().map(|d| d.total);
+        for flag in [None, Some(""), Some("0"), Some("true"), Some("yes")] {
+            let read = debug_read_disk_space(flag.map(OsStr::new));
+            assert_eq!(
+                read(root).unwrap().map(|d| d.total),
+                host_total,
+                "{flag:?} must read the host"
+            );
+        }
+    }
 
     /// An upload's directory is decided by its bytes, never by how they were
     /// spelled.
