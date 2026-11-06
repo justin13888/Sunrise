@@ -189,10 +189,13 @@ struct TaskRows: View {
         // urgency and the second ranked by relevance, so a row dropped there
         // would snap back on the next refresh. Returning `false` is what makes
         // the cursor say "no" rather than promising a move that never happens.
+        // The answer is known before the write, which goes to the core as
+        // `MoveTasks` and so syncs.
         .dropDestination(for: String.self) { items, _ in
             let moved = DropPayload.taskIDs(items).filter { $0 != task.id }
-            guard !moved.isEmpty else { return false }
-            return model.reorder(moved, before: task.id)
+            guard model.reorderCommand(moved, before: task.id) != nil else { return false }
+            Task { await model.reorder(moved, before: task.id) }
+            return true
         } isTargeted: { targeted = $0 ? task.id : (targeted == task.id ? nil : targeted) }
         .dropHighlight(isActive: model.acceptsReordering && targeted == task.id)
         .contextMenu { rowMenu(task) }

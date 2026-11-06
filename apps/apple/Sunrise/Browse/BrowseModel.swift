@@ -153,9 +153,8 @@ final class BrowseModel {
     ///
     /// The order lives on the Stream as `sort_order`, so this is an ordinary
     /// stream edit: it goes out as an op, it syncs, and it is undoable like a
-    /// rename. It is not a device preference, and it is the one place the
-    /// sidebar's two lists differ from the task lists below them — see
-    /// ``ListOrderStore`` for why *task* order is still per-device.
+    /// rename. It is not a device preference, and neither is a task list's
+    /// order: ``ListOrder`` is the same path for tasks, through `MoveTasks`.
     ///
     /// Two devices that reorder the same list while apart do not merge:
     /// `sort_order` is one field on an entity-level LWW row (ADR-0014), so one
