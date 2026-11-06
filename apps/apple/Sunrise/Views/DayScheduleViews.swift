@@ -14,6 +14,14 @@ struct DayScheduleSections: View {
             ForEach(DayScheduleModel.weekdays, id: \.self) { day in
                 weekdayRow(day)
             }
+            // A write the core refuses (wake == sleep) snaps the picker back,
+            // so say why here: the window's banner sits behind this sheet.
+            if let error = model.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("day-schedule.error")
+            }
             Text(L10n.DaySchedule.caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
