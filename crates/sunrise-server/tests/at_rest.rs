@@ -122,6 +122,24 @@ impl Install {
         );
         serde_json::from_slice(&out.stdout).unwrap()
     }
+
+    /// Require `doctor` to pass. Its `free_space` reads the host's real
+    /// filesystem, which the test does not own, so on a disk with 5% or less
+    /// free that check alone may fail: every other check must pass, and the
+    /// verdict and exit status must follow `free_space`.
+    fn assert_doctor_passes(&self) {
+        let out = self.admin(&["doctor"]);
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let checks = report["checks"].as_array().unwrap();
+        let host_full = checks
+            .iter()
+            .any(|c| c["check"] == "free_space" && c["status"] == "fail");
+        for c in checks.iter().filter(|c| c["check"] != "free_space") {
+            assert_ne!(c["status"], "fail", "{report}");
+        }
+        assert_eq!(report["ok"], !host_full, "{report}");
+        assert_eq!(out.status.success(), !host_full, "{report}");
+    }
 }
 
 fn hex(byte: u8) -> String {
@@ -193,8 +211,7 @@ fn turning_encryption_on_migrates_the_install_and_doctor_flags_the_plaintext_cop
     let kept = pre_encryption_copy(&install.db());
     assert!(kept.exists());
     std::fs::remove_file(&kept).unwrap();
-    let report = install.admin_json(&["doctor"]);
-    assert_eq!(report["ok"], true, "{report}");
+    install.assert_doctor_passes();
 
     let store =
         Store::open_keyed(Some(&install.db()), DEFAULT_BUSY_TIMEOUT, Some(&key(5))).unwrap();
@@ -230,8 +247,7 @@ fn an_encrypted_backup_restores_into_a_working_install() {
         .data()
         .join("blobs/committed/aa/manifests/bb")
         .exists());
-    let report = install.admin_json(&["doctor"]);
-    assert_eq!(report["ok"], true, "{report}");
+    install.assert_doctor_passes();
 }
 
 /// `admin rekey`, then the config pointed at the new key: the old key stops
