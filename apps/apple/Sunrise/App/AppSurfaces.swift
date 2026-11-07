@@ -39,8 +39,7 @@ final class AppSurfaces {
     let widgets: WidgetFeed?
     init(widgets: WidgetFeed? = nil) {
         self.widgets = widgets
-        // How the capture widget's `OpenCaptureIntent` reaches the field.
-        QuickCaptureRequest.presenter = { [weak self] in self?.presentRequestedCapture() ?? false }
+        installCaptureRequestPresenter()
     }
 
     #if os(macOS)
@@ -216,16 +215,7 @@ final class AppSurfaces {
             }
         }
         #endif
-        // A capture widget tapped before a vault was open (a cold launch).
-        if QuickCaptureRequest.takePending() { openQuickCapture() }
-    }
-
-    /// Open quick capture for ``QuickCaptureRequest``, or return `false` with
-    /// no refusal feedback: the request is kept, and `attach` answers it.
-    func presentRequestedCapture() -> Bool {
-        guard capture != nil else { return false }
-        openQuickCapture()
-        return true
+        answerPendingCaptureRequest()
     }
 
     /// Start the core's periodic routine materialization against the vault
