@@ -87,8 +87,21 @@ impl Install {
 #[test]
 fn doctor_checks_the_install_and_passes_on_a_sound_one() {
     let (install, _, _) = Install::new();
-    let report = install.json(&["doctor"]);
-    assert_eq!(report["ok"], true, "{report}");
+    // `free_space` reads the host's real filesystem, which the test does not
+    // own: on a disk with 5% or less free it fails however sound the install
+    // is. Every other check must pass, and the verdict and exit status must
+    // follow `free_space` alone.
+    let out = install.run(&["--json", "doctor"]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let checks = report["checks"].as_array().unwrap();
+    let host_full = checks
+        .iter()
+        .any(|c| c["check"] == "free_space" && c["status"] == "fail");
+    for c in checks.iter().filter(|c| c["check"] != "free_space") {
+        assert_ne!(c["status"], "fail", "{report}");
+    }
+    assert_eq!(report["ok"], !host_full, "{report}");
+    assert_eq!(out.status.success(), !host_full, "{report}");
     let names: Vec<&str> = report["checks"]
         .as_array()
         .unwrap()
@@ -114,7 +127,7 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
 
     // Without --json the same report is lines a person reads.
     let text = install.run(&["doctor"]);
-    assert!(text.status.success());
+    assert_eq!(text.status.success(), !host_full);
     assert!(String::from_utf8_lossy(&text.stdout).contains("check: storage"));
 }
 

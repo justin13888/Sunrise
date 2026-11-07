@@ -21,7 +21,9 @@ acyclic across devices (§Dependencies).
 > **Amended** by [ADR-0051](../11-adr/0051-places.md) (the `at_place`
 > dimension) and [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md)
 > (evaluation zone, wrapping windows, re-evaluation on a zone change).
-> Implementation is tracked in [#333](https://github.com/justin13888/Sunrise/issues/333) and [#339](https://github.com/justin13888/Sunrise/issues/339).
+> [#333](https://github.com/justin13888/Sunrise/issues/333) delivered the
+> dependency cycle rule, wrapping windows and re-evaluation on a zone change.
+> The `at_place` dimension is tracked in [#339](https://github.com/justin13888/Sunrise/issues/339).
 
 ## Fields
 
@@ -181,8 +183,10 @@ resolve_cycles(edges) -> (dag, suppressed):
   written. If a later edit removes an edge that was part of the cycle, the
   suppressed edge revives on every replica, because the function is re-run over
   the new state.
-- **Visible.** Each suppressed edge is reported to views as a dependency
-  conflict on both tasks, with an action to remove it (a normal OR-set remove):
+- **Visible.** Each suppressed edge is reported to views as one dependency
+  conflict on the task whose `blocked_by` holds it, listing the loop it would
+  close, and asking for the conflicts of any task on that loop returns it.
+  Removing any edge of the loop (a normal OR-set remove) ends it:
   `Query::Conflicts` class `dependency_cycle`
   ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) D18).
 
@@ -230,15 +234,27 @@ SQL; evaluation happens in Rust. See
 
 ## Status in the tree
 
-- `TimeOfDayRange` rejects `start ≥ end`, so no window wraps
+- A window wraps when `end` is before `start`, and `start == end` is refused
   (`crates/sunrise-domain/src/constraint/mod.rs#TimeOfDayRange`).
-- Constraints are checked once at write time in the device zone and never
-  re-evaluated (`crates/sunrise-core/src/engine/task.rs#check_schedule_constraints`).
+- Every write path checks `hard` constraints in the reader's zone
+  (`crates/sunrise-core/src/engine/task.rs#check_schedule_constraints`). A
+  reported zone change re-evaluates the open planned tasks in the new zone and
+  lists those that now break one in `TimeZoneChange::hard_violations`
+  (`crates/sunrise-core/src/engine/task.rs#hard_constraint_violations`). A
+  routine occurrence generated against one carries
+  `hard_constraint_violated`.
+- No read flags a violation that arose without a write: no query recomputes
+  it, and neither the triage queue nor the Apple app shows the zone change's
+  list (§Re-evaluation,
+  [#1084](https://github.com/justin13888/Sunrise/issues/1084)).
 - There is no `at_place` dimension
-  (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`).
-- A suppressed edge is reported as one `dependency_cycle` conflict on the task
-  that holds it, listing the loop; asking for either task's conflicts returns
-  it. Search's `is:blocked` still reads the raw sets.
+  (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`,
+  [#339](https://github.com/justin13888/Sunrise/issues/339)).
+- The cycle rule is `sunrise_domain::resolve_cycles`
+  (`crates/sunrise-domain/src/deps.rs#resolve_cycles`), applied at read time
+  over the dependency index
+  (`crates/sunrise-core/src/engine/task.rs#resolved_dependencies`) by every
+  dependency read, search's `is:blocked` and `has:dependency` included.
 
 ## See also
 
