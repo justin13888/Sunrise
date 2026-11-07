@@ -224,6 +224,7 @@ ALLOWED: dict[str, str] = {
     "apps/apple/iOS/PrintController.swift": PLATFORM,
     "apps/apple/iOS/ShareInbox.swift": PLATFORM,
     "apps/apple/iOS/TabRoute.swift": PLATFORM,
+    "apps/apple/macOS/ExportEverything.swift": SEAM,
     "apps/apple/macOS/HotkeyCenter.swift": PLATFORM,
     "apps/apple/macOS/IcalPanels.swift": PLATFORM,
     "apps/apple/macOS/PrintJob.swift": PLATFORM,
