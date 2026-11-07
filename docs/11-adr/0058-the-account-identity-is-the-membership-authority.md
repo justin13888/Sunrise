@@ -260,7 +260,10 @@ different register for good. That is the split ADR-0042 forbids.
   introduces. A client applies and emits `VaultRequires` naming it before its
   first authority revocation, as ADR-0045 §7's emission order requires.
 - **The holder emits authority revocations only while every device that is
-  not revoked advertises the feature.** Until then `Command::RevokeDevice` on
+  not revoked advertises the feature.** The device being revoked is not
+  counted: the op makes it revoked, and a stolen device that never advertises
+  the feature would otherwise keep the account from ever revoking it by
+  authority. Until then `Command::RevokeDevice` on
   the holder emits an ordinary `device_revoke`, as it does at HEAD, and its
   result says the revocation carries no authority and names the devices to
   update. Revoking is never refused for want of the feature. The device being
@@ -271,8 +274,12 @@ different register for good. That is the split ADR-0042 forbids.
   the head's `ID_S_priv` and the feature is required. A paired device cannot
   sign and emits an ordinary revocation.
 - **The device list says which kind revoked a device.** `DeviceRow` gains
-  whether the register's row for the device is an authority row, so a user
-  can tell a revocation nothing can unwind from one a later op can.
+  whether an authority row names the device at the register's fold, so a user
+  can tell a revocation nothing can unwind from one a later op can. It is
+  whether any ungated authority row names the device, not whether the row
+  that won the register is one: a later ordinary revocation can win the row,
+  since the cut and `revoked_by` still follow the LWW rule (§4), and the
+  device stays revoked by authority all the same.
 
 The same change adds the two ledger columns in a new migration and bumps
 `STORAGE_V`, and bumps `DOC_SCHEMA_V` for the op kind
