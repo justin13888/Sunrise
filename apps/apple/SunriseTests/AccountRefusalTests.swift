@@ -49,8 +49,10 @@ struct AccountRefusalTests {
     /// is the difference the whole cross-domain read exists to keep. Reading a
     /// refusal as "signed out" offers Sign in, and signing in writes a second
     /// token beside the one that may still be sitting in the unreadable
-    /// keychain — two secrets under one `(service, account)`, which is
-    /// `migrationUnverified` on every later launch.
+    /// keychain — two secrets under one `(service, account)`. Since #258 the
+    /// migration orders two credentials by expiry rather than refusing them,
+    /// so the pair no longer refuses later launches; but a refusal rendered as
+    /// Sign in still costs a sign-in the stored session never needed.
     @Test
     func aRefusedReadIsReportedInsteadOfLookingLikeASignedOutSession() {
         let store = StubCredentialStore(loadError: Self.refusal)

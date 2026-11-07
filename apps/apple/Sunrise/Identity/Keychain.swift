@@ -170,8 +170,8 @@ struct KeychainItem: Sendable {
     /// true. On an entitled Mac with a locked login keychain the swallowed
     /// delete leaves the one copy ``readAcrossDomains()`` is then guaranteed to
     /// find: a sign-out that reports success while a live refresh token waits
-    /// where the next launch looks, and a token renewal that leaves the two
-    /// copies behind ``KeychainError/migrationUnverified``.
+    /// where the next launch looks, and a renewal that leaves two copies under
+    /// one name — what ``writeAcrossDomains(_:)`` says the next load does then.
     private func deleteInOtherDomain() throws {
         do {
             try inOtherDomain.delete()
@@ -277,18 +277,17 @@ struct KeychainItem: Sendable {
     /// secret in the other domain, a `save` that only writes this one leaves
     /// two copies under one `(service, account)` and no rule about which is
     /// current — and the next launch whose ``KeychainDomain/probe()`` answers
-    /// correctly walks into ``KeychainMigration``'s one refusal:
-    /// ``KeychainError/migrationUnverified``, two different secrets claiming one
-    /// name, whose one way out is the sign-in that runs this method.
+    /// correctly finds two different secrets claiming one name: for a vault
+    /// root or relay device id, ``KeychainError/migrationUnverified``; for a
+    /// credential, ordered by `expiresAtMs`, the fresher kept (#258).
     ///
     /// The steady state that motivates it needs no user action. An entitled Mac
     /// holds its token in `.dataProtection`; one launch's probe fails open to
     /// `.login` — the premise the whole fallback is built on — the cross-domain
     /// read finds the token and the session restores; then a background renewal
     /// writes the *fresh* token to `.login` while the stale one sits in
-    /// `.dataProtection`. Every later launch with a correct probe compares the
-    /// two, disagrees, and refuses the load — which is reported rather than
-    /// silent, and which the next sign-in collapses by running this method.
+    /// `.dataProtection`. Every later launch with a correct probe reads the two,
+    /// which refused the load until #258 and now keeps the later-expiring one.
     ///
     /// Write first, then delete, for ``KeychainMigration``'s invariant: a
     /// readable copy exists at every instant. This domain's write keeps
@@ -318,16 +317,17 @@ struct KeychainItem: Sendable {
     ///
     /// **What the case does not buy, said rather than left to be found.** The stale
     /// copy survives, so the next load's ``KeychainMigration/migrate(before:)`` finds
-    /// destination and source unequal and raises ``KeychainError/migrationUnverified``,
-    /// which ``KeychainMigration/loadMigratingIfNeeded()`` keeps outside its `do` and
-    /// lets through — a refused load one launch later, reported rather than silent. The
-    /// refused delete creates that whether this throws or not, and the two outcomes
-    /// above are strictly worse, losing the session *now* and the good copy with it.
-    /// Closing it means teaching the migration that a just-written destination is
-    /// authoritative: its verify step, not this method. Writing the fresh bytes into
-    /// the other domain so the copies agree was rejected — every status reaching this
-    /// line, a locked keychain, a denied prompt, an I/O failure, refuses a *write*
-    /// there too.
+    /// destination and source unequal. For a **credential** (#258) the client core's
+    /// `planSecretCopies` orders them by `expiresAtMs`, keeps the fresh copy written
+    /// here, and retries the delete; refused again, the next launch answers the same.
+    /// A vault root or relay device id still raises ``KeychainError/migrationUnverified``,
+    /// which ``KeychainMigration/loadMigratingIfNeeded()`` lets through — a refused
+    /// load one launch later, reported rather than silent. The refused delete makes
+    /// the pair whether this throws or not, and the two outcomes above are strictly
+    /// worse, losing the session *now* and the good copy with it. Writing the fresh
+    /// bytes into the other domain so the copies agree was rejected — every status
+    /// reaching this line, a locked keychain, a denied prompt, an I/O failure,
+    /// refuses a *write* there too.
     ///
     /// **This half is untested by construction, and saying so is the point.**
     /// Two of the seven are here: the raise below, and the cross-domain delete's
