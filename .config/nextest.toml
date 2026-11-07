@@ -1,7 +1,7 @@
 # cargo-nextest's configuration, read by `mise run rust-test-nextest` and by any
 # `cargo nextest run` in this workspace. It is opt-in: `mise run rust-test`,
-# the pre-push hook and CI all run plain `cargo test`, and none of them read
-# this file. `docs/10-cross-cutting/testing.md` §Running the suite under
+# `mise run pre-push` and CI all run plain `cargo test`, and none of them read
+# this file (the pre-push hook runs no tests). `docs/10-cross-cutting/testing.md` §Running the suite under
 # nextest says what each setting is for.
 
 [profile.default]

@@ -6,7 +6,7 @@
  * design tokens' are (ADR-0029 §2): Xcode compiles `Strings.swift` and
  * `Localizable.xcstrings` with neither Bun nor mise on `PATH`, and the CLI's
  * `cargo build` should not need Bun either. `mise run i18n-check` — and
- * `test/emit.test.ts`, which fires from `pre-push` — keeps them honest. See
+ * `test/emit.test.ts`, which `mise run test` runs — keeps them honest. See
  * `docs/11-adr/0054-string-catalog-pipeline.md`.
  */
 

@@ -5,7 +5,7 @@
  * `mise run tokens` is this script. The outputs are committed rather than built
  * on demand because the consumers that need them most cannot run it: Xcode's
  * build environment has neither Bun nor mise on `PATH`. `mise run tokens-check`
- * — and `test/drift.test.ts`, which fires from `pre-push` — is what keeps the
+ * — and `test/drift.test.ts`, which `mise run test` runs — is what keeps the
  * committed files honest. See `docs/11-adr/0029-design-token-pipeline.md`.
  *
  * Nothing here is Bun-specific, deliberately: `test/drift.test.ts` imports
