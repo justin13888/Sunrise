@@ -74,6 +74,9 @@ fn parent_of(path: &Path) -> &Path {
 /// Make the directory entries under `path`'s directory durable: a rename is
 /// durable only once its directory is. A no-op off Unix, where a directory
 /// cannot be opened to be synced.
+// Off Unix the body has nothing fallible left, but the Unix build needs the
+// `Result`.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     fs::File::open(parent_of(path))?.sync_all()?;
