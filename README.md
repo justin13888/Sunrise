@@ -426,7 +426,7 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run rust-check`        | Type-check the Rust workspace                          |
 | `mise run rust-test`         | Run the Rust test suite                                |
 | `mise run log-fields`        | Run the log-event/field gate, building first what it reads from |
-| `mise run rust-test-changed` | Run the Rust tests the pushed changes can affect (the pre-push hook's) |
+| `mise run rust-test-changed` | Run the Rust tests the pushed changes can affect, by hand (the pre-push hook runs no tests) |
 | `mise run test-changed`      | Run the JS/TS test suite when the pushed changes can affect it |
 | `mise run rust-doc`          | Build the rustdoc for the workspace and `fuzz/`, every rustdoc warning denied |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |

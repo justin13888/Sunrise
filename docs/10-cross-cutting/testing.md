@@ -227,7 +227,7 @@ stays at production strength.
 
 The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross_version_convergence.rs`, designed in [ADR-0057](../11-adr/0057-cross-version-merge-harness.md). What it asserts is [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) §Compatibility testing.
 
-- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every pull request.
+- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every push to `master`, nightly and on dispatch (not on a pull request), and in `mise run rust-test`.
 - **The baseline run** (`baseline_and_head_merge_without_loss_or_break`, `baseline_known_gaps_still_reproduce`) is `#[ignore]`d, because it needs the baseline driver, which is built from another tree:
 
     ```sh
@@ -288,7 +288,8 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
   ([`performance-budgets.md`](./performance-budgets.md#sync-propagation-commit-on-one-device--applied-on-another)).
   An absolute budget the measured tail sits far below is the kind of check a
   shared runner can hold. A 40-op run of the same harness is an ordinary test
-  in every pull request's suite; it asserts that every op is measured, not a
+  in the workspace suite, which CI runs on every push to `master`, nightly and
+  on dispatch; it asserts that every op is measured, not a
   latency bound.
 - Tracked in [#33](https://github.com/justin13888/Sunrise/issues/33).
 
