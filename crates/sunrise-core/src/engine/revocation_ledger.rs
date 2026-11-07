@@ -61,29 +61,56 @@ impl Engine {
     /// next `device_revoke`, and one pass costs the same order as the fold's
     /// own sorted read.
     ///
-    /// # The pair includes the identity an authority row names
+    /// # The pair includes whether the row names an identity
     ///
-    /// `(sender, revoked_device_id, authority_identity_id)`, since migration
-    /// 0048. An ordinary row and an authority row from one sender to one
-    /// target are folded differently (ADR-0058 §4), so neither can stand in
-    /// for the other, and without the third column this would keep only the
-    /// greater-stamped and could delete the authority row. Rows naming two
-    /// identities differ the same way: at most one of them names the head.
-    /// Within the widened pair everything above holds, with one exception
-    /// the sender alone can reach. Its rows name one identity, so a moved head
-    /// demotes them together; but each carries its own signature, and a pair
-    /// whose greatest row does not verify would lose a lesser row that does.
-    /// Only the pair's own sender can write either row, because the envelope
-    /// authenticates it, so this costs a sender nothing but its own claims,
-    /// which [`Self::cap_device_revoke_targets`] already lets it drop.
-    /// `NULL`s fall in one partition, as SQL window partitions group them.
+    /// `(sender, revoked_device_id, authority_identity_id IS NULL)`, since
+    /// migration 0048. An ordinary row and an authority row from one sender to
+    /// one target are folded differently (ADR-0058 §4), so neither can stand
+    /// in for the other, and without the third column this would keep only
+    /// the greater-stamped and could delete the authority row.
+    ///
+    /// Rows that name an identity share one pair whichever identity they
+    /// name, so the pair keeps the greatest-stamped of them. That is what
+    /// bounds the carry-forward: every rotation re-signs each authority
+    /// revocation under the successor (ADR-0058 §5) with a fresh stamp, and
+    /// were the identity in the pair the holder would keep one row per target
+    /// per identity it ever signed under, about `n(n+1)/2` pairs after `n`
+    /// authority revocations, and would pass [`REVOKE_TARGETS_PER_SENDER`]
+    /// after about 22, evicting its own oldest revocations from the register.
+    /// Here it keeps one per target.
+    ///
+    /// Deleting a lesser identity-naming row changes no fold at any head but
+    /// the identity it names. At any other head that row is ordinary, the
+    /// row kept is from the same sender to the same target with a greater
+    /// stamp, so the lesser row never wins the register, and its pair in the
+    /// gate is either the kept row's pair or one the kept row's `IDENTITY`
+    /// revoker already outweighs: a target with `IDENTITY` in its set is gated
+    /// whatever else is in it, and `IDENTITY` is no device's id, so the
+    /// discount's "a revoker other than `v`" holds of it for every `v`.
+    ///
+    /// The exceptions, at the head the deleted row names, are all the
+    /// sender's own. Its greater row names an identity that is not the head:
+    /// one this replica has not folded yet, when a carry-forward arrives
+    /// before its transition, which the next fold that sees the transition
+    /// makes moot, because from then on the deleted row is ordinary and the
+    /// kept one is the authority; or one it signed under after the newer,
+    /// which no honest holder does, because [`Self::revocation_authority`]
+    /// signs only under the head. And a pair whose greatest row does not
+    /// verify loses a lesser row that does. Only the pair's own sender can
+    /// write either row, because the envelope authenticates it, so this costs
+    /// a sender nothing but its own claims, which
+    /// [`Self::cap_device_revoke_targets`] already lets it drop. A tie on the
+    /// stamp is broken on the identity, so which row is kept is a function of
+    /// the rows.
     pub(super) fn compact_device_revoke_ops(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
         tx.execute(
             "DELETE FROM device_revoke_ops WHERE rowid IN (
                  SELECT rowid FROM (
                      SELECT rowid, ROW_NUMBER() OVER (
-                         PARTITION BY sender, revoked_device_id, authority_identity_id
-                         ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
+                         PARTITION BY sender, revoked_device_id,
+                                      authority_identity_id IS NULL
+                         ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
+                                  authority_identity_id DESC
                      ) AS pos
                      FROM device_revoke_ops
                  ) WHERE pos > 1
@@ -137,12 +164,15 @@ impl Engine {
     /// target with no row in `devices`, so an honest device reaches the cap
     /// only by revoking that many devices that really paired.
     ///
-    /// # A pair includes the identity an authority row names
+    /// # A pair includes whether the row names an identity
     ///
-    /// Since migration 0048 the pair is `(sender, target, identity)`, as in
-    /// [`Self::compact_device_revoke_ops`], and an authority row counts toward
-    /// its sender's cap like any row (ADR-0058 §3). The rank breaks a tie on
-    /// the identity last, so it stays total within one sender.
+    /// Since migration 0048 the pair is `(sender, target, names an identity)`,
+    /// as in [`Self::compact_device_revoke_ops`], and an authority row counts
+    /// toward its sender's cap like any row (ADR-0058 §3). The rows naming an
+    /// identity are one pair whichever identity each names, so a holder's
+    /// carry-forward rows count once per target and not once per rotation,
+    /// and the cap evicts all of a pair's rows together. The rank breaks a
+    /// tie on the kind last, so it stays total within one sender.
     pub(super) fn cap_device_revoke_targets(
         tx: &Transaction<'_>,
         sender: &[u8; 16],
@@ -151,26 +181,25 @@ impl Engine {
     ) -> rusqlite::Result<bool> {
         tx.execute(
             "WITH heads AS (
-                 SELECT sender, revoked_device_id, authority_identity_id,
-                        op_hlc_ms, op_hlc_logical
+                 SELECT sender, revoked_device_id, named, op_hlc_ms, op_hlc_logical
                  FROM (
-                     SELECT sender, revoked_device_id, authority_identity_id,
+                     SELECT sender, revoked_device_id,
+                            authority_identity_id IS NOT NULL AS named,
                             op_hlc_ms, op_hlc_logical,
                             ROW_NUMBER() OVER (
                                 PARTITION BY sender, revoked_device_id,
-                                             authority_identity_id
+                                             authority_identity_id IS NOT NULL
                                 ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
                             ) AS pos
                      FROM device_revoke_ops
                  ) WHERE pos = 1
              ),
              ranked AS (
-                 SELECT sender, revoked_device_id, authority_identity_id,
+                 SELECT sender, revoked_device_id, named,
                         ROW_NUMBER() OVER (
                             PARTITION BY sender
                             ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
-                                     revoked_device_id DESC,
-                                     authority_identity_id DESC
+                                     revoked_device_id DESC, named DESC
                         ) AS pos
                  FROM heads
              )
@@ -180,7 +209,7 @@ impl Engine {
                  WHERE r.pos > ?1
                    AND r.sender = device_revoke_ops.sender
                    AND r.revoked_device_id = device_revoke_ops.revoked_device_id
-                   AND r.authority_identity_id IS device_revoke_ops.authority_identity_id
+                   AND r.named = (device_revoke_ops.authority_identity_id IS NOT NULL)
              )",
             params![REVOKE_TARGETS_PER_SENDER],
         )?;

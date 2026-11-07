@@ -391,6 +391,61 @@ fn the_holder_signs_and_the_rotation_carries_the_authority_forward() {
         // X1 signed, carried; X2 signed, then both carried.
         5
     );
+    // The ledger keeps one row naming an identity per target, not one per
+    // identity: the rows under the retired identities are compacted away, so
+    // a holder's carry-forward never approaches the per-sender cap.
+    let holder_rows: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM device_revoke_ops
+             WHERE sender = ? AND authority_identity_id IS NOT NULL",
+            params![&eh.keychain.device_id()[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(holder_rows, 2, "one per revoked device");
+}
+
+/// **A holder's authority revocations stay under the per-sender cap however
+/// often it rotates.** Each rotation re-signs every authority revocation
+/// under the successor; without the compaction folding a target's rows
+/// across identities, the holder's pairs grew about `n(n+1)/2` and the cap
+/// evicted its oldest revocations, ordinary ones included.
+#[test]
+fn the_carry_forward_keeps_one_pair_per_target() {
+    let n = 24;
+    let e = engines(n + 2);
+    let (eh, rest) = e.split_first().unwrap();
+    let mut db = db_root(ROOT);
+    for other in rest {
+        trust(eh, &mut db, other);
+        advertise(eh, &mut db, other);
+    }
+    // One ordinary revocation from before the feature, then n by authority.
+    let early = rest[0].keychain.device_id();
+    revoke(eh, &mut db, eh, early, T0);
+    for x in &rest[1..=usize::from(n)] {
+        revoke_cmd(eh, &mut db, x.keychain.device_id());
+    }
+    let pairs: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM (
+                 SELECT DISTINCT revoked_device_id, authority_identity_id IS NULL
+                 FROM device_revoke_ops WHERE sender = ?
+             )",
+            params![&eh.keychain.device_id()[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pairs, i64::from(n) + 1);
+    assert!(
+        eh.is_revoked(db.conn(), &early).unwrap(),
+        "the early ordinary revocation is still in the register"
+    );
+    for x in &rest[1..=usize::from(n)] {
+        assert!(by_authority(&db, &x.keychain.device_id()));
+    }
 }
 
 /// A device admitted by pairing holds no `ID_S_priv`, so it never signs and

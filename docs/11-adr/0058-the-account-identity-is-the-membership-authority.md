@@ -119,11 +119,14 @@ would then converge on different registers.
 ### 3. The ledger keeps the signature, and the fold verifies it
 
 `device_revoke_ops` gains `authority_identity_id` and `authority_sig`, both
-`NULL` on an ordinary row. **`authority_identity_id` joins the row's identity
-and the pair key.** Without it, the pair compaction (#250) would keep only the
-greater-stamped of an ordinary row and an authority row from one sender to one
-target, and could delete the authority row. The per-sender cap (#315) counts
-an authority row toward its sender's cap, like any row.
+`NULL` on an ordinary row. **`authority_identity_id` joins the row's identity,
+and whether it is set joins the pair key.** Without the second, the pair
+compaction (#250) would keep only the greater-stamped of an ordinary row and
+an authority row from one sender to one target, and could delete the
+authority row. The pair key holds whether a row names an identity, not which
+one, so the rows a rotation's carry-forward (§5) re-signs under each successor
+compact to one per target. The per-sender cap (#315) counts an authority row
+toward its sender's cap, like any row, once per target.
 
 **The fold verifies the signature, not the apply.** A replica can hold an
 authority revocation signed under an identity whose transition has not
