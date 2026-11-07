@@ -7,7 +7,7 @@
 
 use super::{PairRole, MESSAGES_PER_ROLE, SESSION_TTL_MS};
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use sunrise_pairing::{AttemptLimit, AttemptWindow};
 
@@ -352,14 +352,21 @@ impl Inner {
     /// `pair_id`, then stepped past every code a live session of the same
     /// account holds. The table holds far fewer than [`CODE_SPACE`] sessions,
     /// so the step ends.
+    ///
+    /// The taken codes are collected once rather than rescanned per step: the
+    /// `pair_id` is the client's to choose, so a client can make every one of
+    /// its sessions draw the same code, and a rescan per step would make each
+    /// open cost the square of the table.
     fn free_code(&self, account_id: &str, pair_id: [u8; 16]) -> u32 {
-        let [a, b, c, d, ..] = pair_id;
-        let mut code = u32::from_be_bytes([a, b, c, d]) % CODE_SPACE;
-        while self
+        let taken: HashSet<u32> = self
             .sessions
             .values()
-            .any(|s| s.account_id == account_id && s.code == Some(code))
-        {
+            .filter(|s| s.account_id == account_id)
+            .filter_map(|s| s.code)
+            .collect();
+        let [a, b, c, d, ..] = pair_id;
+        let mut code = u32::from_be_bytes([a, b, c, d]) % CODE_SPACE;
+        while taken.contains(&code) {
             code = (code + 1) % CODE_SPACE;
         }
         code
