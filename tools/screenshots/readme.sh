@@ -56,7 +56,8 @@ xcrun simctl status_bar "$sim" override \
   --batteryState charged --batteryLevel 100
 xcrun simctl ui "$sim" appearance light
 
-mise run apple-shots
+# See the note in readme.xcconfig: without it the macOS walk never starts.
+XCODE_XCCONFIG_FILE="$root/tools/screenshots/readme.xcconfig" mise run apple-shots
 
 mkdir -p docs/assets/screenshots
 for platform in ios macos; do
