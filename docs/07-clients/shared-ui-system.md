@@ -33,7 +33,8 @@ Run `mise run tokens` after editing any TOML file. **The generated files are
 committed**, because the two builds that need them most cannot produce them:
 Xcode has neither Bun nor mise on `PATH`. Three gates keep the committed files
 honest — `packages/sunrise-ui-tokens/test/drift.test.ts` (which `mise run test`
-runs, and `lefthook.yaml` runs on pre-push), `mise run tokens-check` (which
+and the opt-in `mise run pre-push` run; the pre-push hook runs no tests),
+`mise run tokens-check` (which
 additionally compiles and rustfmt-checks `tokens.rs`), and a `tokens-current`
 CI job. [ADR-0029](../11-adr/0029-design-token-pipeline.md) records why the
 outputs are committed rather than generated at build time, why `tokens.rs` is

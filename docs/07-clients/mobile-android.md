@@ -52,7 +52,8 @@ Compose UI ──▶ ViewModels ──▶ CoreClient (Kotlin wrapper)
 
 ### The Kotlin smoke build
 
-The seam's Kotlin half is checked on every pull request, without an emulator,
+The seam's Kotlin half is checked on every push to `master`, nightly and on
+dispatch (not on a pull request, #1117), without an emulator,
 by CI's `kotlin-smoke` job, which is `mise run kotlin-smoke`
 (issue #369). It builds `sunrise-core-bindings` as a Linux `cdylib`, generates
 Kotlin from it with `tools/uniffi-bindgen`, compiles that and
