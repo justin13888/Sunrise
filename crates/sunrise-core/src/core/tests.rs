@@ -1578,6 +1578,79 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     core.close().await.unwrap();
 }
 
+/// #333: a zone change re-evaluates the hard scheduling constraints of the
+/// open planned tasks in the new zone and flags the ones that now break one,
+/// without moving or rewriting anything. A floating plan inside a window
+/// that wraps midnight holds in every zone; an instant plan that held in UTC
+/// falls outside it in Kolkata, and holds again once the reader is back.
+#[tokio::test]
+async fn a_zone_change_flags_open_plans_that_now_break_a_hard_window() {
+    use sunrise_domain::{
+        ConstraintSeverity, ScheduleConstraint, SunriseTime, TaskDraft, TaskPatch, TaskState,
+        TimeOfDayRange, WeekdaySet,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    // 22:00–02:00, wrapping midnight.
+    let night = ScheduleConstraint {
+        time_of_day: Some(TimeOfDayRange::new(
+            jiff::civil::time(22, 0, 0, 0),
+            jiff::civil::time(2, 0, 0, 0),
+        )),
+        days_of_week: WeekdaySet::new(),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+        unknown: sunrise_domain::Unknowns::new(),
+    };
+    let late = jiff::civil::date(2023, 11, 15).at(23, 0, 0, 0);
+    let instant = SunriseTime::instant(jiff::tz::TimeZone::UTC.to_zoned(late).unwrap().timestamp());
+    let mut ids = Vec::new();
+    for (title, at) in [
+        ("floats", SunriseTime::floating(late)),
+        ("pinned", instant.clone()),
+        ("finished", instant),
+    ] {
+        let id = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: title.into(),
+                planned_at: Some(at),
+                scheduling_constraints: vec![night.clone()],
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        ids.push(id);
+    }
+    core.submit(Command::UpdateTask {
+        id: ids[2],
+        patch: TaskPatch {
+            state: Some(TaskState::Done),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let before = vault_footprint(&core);
+
+    // 23:00 UTC is 04:30 the next morning in Kolkata.
+    let abroad = core.on_time_zone_changed("Asia/Kolkata").unwrap();
+    assert!(abroad.changed);
+    assert_eq!(
+        abroad.hard_violations,
+        vec![ids[1]],
+        "only the open instant plan breaks the window; a done task is not flagged"
+    );
+    assert_eq!(vault_footprint(&core), before, "flagged, never moved");
+
+    let home = core.on_time_zone_changed("UTC").unwrap();
+    assert!(home.changed);
+    assert!(home.hard_violations.is_empty(), "{home:?}");
+
+    core.close().await.unwrap();
+}
+
 /// The first report of the zone the injected clock already names, under
 /// another spelling, is no change: a vault open must not count as a zone
 /// change, nor ask for a notification, on every launch.

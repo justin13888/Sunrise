@@ -103,12 +103,15 @@ impl Install {
         panic!("the server started instead of refusing");
     }
 
+    /// Run one admin command, reporting an ample disk rather than the host's
+    /// so `doctor`'s `free_space` check passes on a full development disk.
     fn admin(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_sunrise-server"))
             .args(["admin", "--json", "-c"])
             .arg(&self.config)
             .args(args)
             .env_remove("SUNRISE_CONFIG")
+            .env(sunrise_server::blob::FsBlobs::DEBUG_AMPLE_DISK_ENV, "1")
             .output()
             .unwrap()
     }
