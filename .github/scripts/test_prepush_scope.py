@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""What `prepush-scope.py` decides the pre-push hook runs, as assertions.
+"""What `prepush-scope.py` decides a scoped local test run covers, as assertions.
 
-The script's failure mode is silent: a rule that reaches too little makes the
-hook skip a test the push broke, and the push still goes through green. So
+The script's failure mode is silent: a rule that reaches too little makes
+`mise run rust-test-changed` or `mise run test-changed` skip a test the push
+broke, and the run still goes green. So
 every rule that adds something to a scope is asserted to add it, and the
 routes that widen to the whole suite are asserted to widen.
 
