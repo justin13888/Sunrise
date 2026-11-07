@@ -4247,6 +4247,28 @@
         }
       }
     },
+    "apple.intents.open_capture.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens Sunrise with the capture sheet ready for a new task."
+          }
+        }
+      }
+    },
+    "apple.intents.open_capture.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Quick Capture"
+          }
+        }
+      }
+    },
     "apple.intents.shortcuts.capture": {
       "extractionState": "manual",
       "localizations": {
@@ -11052,6 +11074,39 @@
         }
       }
     },
+    "apple.widget.capture.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture a task"
+          }
+        }
+      }
+    },
+    "apple.widget.capture.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens Sunrise with the capture sheet ready for a new task."
+          }
+        }
+      }
+    },
+    "apple.widget.capture.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quick Capture"
+          }
+        }
+      }
+    },
     "apple.widget.circular_accessibility": {
       "extractionState": "manual",
       "localizations": {
@@ -11389,6 +11444,160 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scheduled"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.choose": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit the widget to choose a stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The first open tasks in a stream you choose."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing open in this stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.intent_description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the stream this widget shows."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.intent_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This stream is not available. Edit the widget to choose another."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.open_app": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Sunrise to show this stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.open_count": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg open"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg open"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.sample_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Work"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.stream_parameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.stream_type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
           }
         }
       }

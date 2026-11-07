@@ -2024,6 +2024,44 @@ enum L10n {
         static var sampleFlights: String { L10n.tr("apple.widget.sample_flights") }
         /// Water the plants
         static var samplePlants: String { L10n.tr("apple.widget.sample_plants") }
+
+        enum Capture {
+            /// Quick Capture
+            static var displayName: String { L10n.tr("apple.widget.capture.display_name") }
+            /// Opens Sunrise with the capture sheet ready for a new task.
+            static var description: String { L10n.tr("apple.widget.capture.description") }
+            /// Capture a task
+            static var accessibility: String { L10n.tr("apple.widget.capture.accessibility") }
+        }
+
+        enum StreamTile {
+            /// Stream
+            static var displayName: String { L10n.tr("apple.widget.stream_tile.display_name") }
+            /// The first open tasks in a stream you choose.
+            static var description: String { L10n.tr("apple.widget.stream_tile.description") }
+            /// Choose Stream
+            static var intentTitle: String { L10n.tr("apple.widget.stream_tile.intent_title") }
+            /// Pick the stream this widget shows.
+            static var intentDescription: String { L10n.tr("apple.widget.stream_tile.intent_description") }
+            /// Stream
+            static var streamParameter: String { L10n.tr("apple.widget.stream_tile.stream_parameter") }
+            /// Stream
+            static var streamType: String { L10n.tr("apple.widget.stream_tile.stream_type") }
+            /// {count, plural, one {# open} other {# open}}
+            static func openCount(count: Int) -> String {
+                L10n.tr("apple.widget.stream_tile.open_count", count)
+            }
+            /// Nothing open in this stream
+            static var empty: String { L10n.tr("apple.widget.stream_tile.empty") }
+            /// Edit the widget to choose a stream
+            static var choose: String { L10n.tr("apple.widget.stream_tile.choose") }
+            /// This stream is not available. Edit the widget to choose another.
+            static var missing: String { L10n.tr("apple.widget.stream_tile.missing") }
+            /// Open Sunrise to show this stream
+            static var openApp: String { L10n.tr("apple.widget.stream_tile.open_app") }
+            /// Work
+            static var sampleName: String { L10n.tr("apple.widget.stream_tile.sample_name") }
+        }
     }
 
     enum Intents {
@@ -2059,6 +2097,13 @@ enum L10n {
             static func capturedWithIssues(rest: Int, title: String, issue: String) -> String {
                 L10n.tr("apple.intents.capture_task.captured_with_issues", rest, title, issue)
             }
+        }
+
+        enum OpenCapture {
+            /// Open Quick Capture
+            static var title: String { L10n.tr("apple.intents.open_capture.title") }
+            /// Opens Sunrise with the capture sheet ready for a new task.
+            static var description: String { L10n.tr("apple.intents.open_capture.description") }
         }
 
         enum CompleteTask {

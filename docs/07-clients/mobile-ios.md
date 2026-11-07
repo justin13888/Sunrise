@@ -109,16 +109,15 @@ SwiftUI scenes ──▶ ViewModels (ObservableObject) ──▶ CoreClient (Swi
 
 ## Platform surfaces
 
-> **Built:** the Next Up widget, the focus Live Activity, Focus Filters, the
-> share extension, printing, and the Shortcuts and App Intents surface, each in
-> its own section below, as are [Background sync](#background-sync) and
-> [Push handling](#push-handling)
+> **Built:** the Next Up, Quick Capture and Stream widgets, the focus Live
+> Activity, Focus Filters, the share extension, printing, and the Shortcuts
+> and App Intents surface, each in its own section below, as are
+> [Background sync](#background-sync) and [Push handling](#push-handling)
 > ([#368](https://github.com/justin13888/Sunrise/issues/368)).
 >
 > **Not built:** the Apple Watch app (`apps/apple` has no
-> `WatchConnectivity` and `project.yml` no watch target), the Secure Enclave
-> binding ([OS keystore](#os-keystore)), and the capture widget and the Stream
-> tile ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+> `WatchConnectivity` and `project.yml` no watch target) and the Secure
+> Enclave binding ([OS keystore](#os-keystore)).
 >
 > Every extension Sunrise ships — the widgets, which also draw the Live
 > Activity, and the share extension — runs **without the vault**. None links the
@@ -148,6 +147,29 @@ Lock Screen sizes have no room for it and print none.
 The same sources build the macOS widget, which offers the three Home Screen
 sizes; see [`desktop.md`](./desktop.md#platform-integration).
 
+**Built: Quick Capture** (#376), Lock Screen circular, iOS only. One tap opens
+Sunrise with the capture sheet up and empty. A locked phone asks for Face ID
+first, as for any widget that opens its app. The button runs
+`OpenCaptureIntent` (`apps/apple/Widgets/Shared/`), a foreground App Intent
+compiled into both the app and the widget extension, so the system performs
+it in the app. It is not a link: `sunrise://capture` with no text stays
+refused (see [URL scheme](./interaction-patterns.md#url-scheme)). The app may
+not have a capture field yet. On a cold launch, the vault is still opening.
+In that case the request is held (`QuickCaptureRequest`), and the sheet opens
+when the vault is attached. The widget reads no snapshot, because an empty
+field needs nothing from the vault.
+
+**Built: Stream** (#376), the "Stream tile". It is a large widget, on iOS and
+macOS, that shows the first open tasks of one stream the user picks when
+editing the widget. It draws the stream's name, its open count, and up to 8
+rows, each linking to `sunrise://task/<id>?action=open`, then "+N more". The
+picker (`StreamTileIntent`, a `WidgetConfigurationIntent`) offers the streams
+the snapshot carries, because the extension cannot read the vault. A widget
+whose stream is no longer in the snapshot (archived, deleted, or past the
+cap below) says so and asks to be edited. With no snapshot it says
+**Open Sunrise**, like Next Up. It keeps the stream it was set to, so it
+draws that stream again once the vault reopens.
+
 #### The snapshot is the whole contract
 
 These rules are normative for any client that adds a widget.
@@ -161,15 +183,20 @@ These rules are normative for any client that adds a widget.
 - **What is on the widget is the core's decision.** The rows are the open tasks
   of `Query::Today`, in the order it returns them. Each row's section
   (overdue / due / scheduled) comes from `today_section` and is carried as
-  data, so the widget never re-derives the start-of-day boundary. The app only
-  chooses which fields to project and how many rows.
-- **What leaves the vault is bounded.** The file holds, for at most 8 tasks,
-  the task's id, its title, its section and its link. It also holds two
-  counts (open and overdue) and a timestamp. It holds no notes,
-  streams, contexts or dates. This is a deliberate plaintext copy outside
-  SQLCipher, the same trade a reminder notification's title makes. On iOS the
-  file is written with `completeUntilFirstUserAuthentication`, because a Lock
-  Screen widget has to draw while the phone is locked.
+  data, so the widget never re-derives the start-of-day boundary. A stream's
+  rows are its open tasks from `Query::StreamTasks`, in the order it returns
+  them, and the streams are the stream list's, Inbox first and none archived
+  (the list the Shortcuts stream picker offers). The app only chooses which
+  fields to project and how many rows.
+- **What leaves the vault is bounded.** For Today, the file holds at most 8
+  tasks: each one's id, title, section and link. It also holds two counts
+  (open and overdue) and a timestamp. For the Stream tile, it holds at most
+  12 streams, each with its id, its name, its open count, and at most 8 of its
+  open tasks (id, title and link). It holds no notes, contexts or dates. This
+  is a deliberate plaintext copy outside SQLCipher, the same trade a reminder
+  notification's title makes. On iOS the file is written with
+  `completeUntilFirstUserAuthentication`, because a Lock Screen widget has to
+  draw while the phone is locked.
 - **The snapshot exists only while a vault is open, or until the next launch
   where the app ended without notice.** Every time the session leaves
   `.unlocked`, the app erases the file and reloads the widgets: on a lock, a
@@ -205,16 +232,17 @@ run ([Background sync](#background-sync)): every refresh task and silent push
 ends by republishing it from the vault it just synced. Between runs, the age
 stamp on the Home Screen sizes shows how old it is.
 
-#### Not built
+Publishing the Stream tile's streams costs one stream-list query and one
+query per stream (at most 12) on each of those writes.
 
-These are tracked in [#376](https://github.com/justin13888/Sunrise/issues/376):
+#### Not observed
 
-- **Single-tap capture** (Lock Screen). A tap opens the app to the capture
-  sheet with the field focused. It is blocked on a route: `sunrise://capture`
-  with no text is refused by the link parser today, and the capture intent
-  runs in the background.
-- **Stream tile.** A large widget showing the top items in a chosen Stream.
-  It needs a configuration intent, and the app has to publish per-stream rows.
+Quick Capture and the Stream tile are built and covered by unit tests of
+what the app publishes and how a capture request reaches the sheet. Nobody
+has yet watched them on a device: placed on a Lock Screen, tapped from a
+locked phone, or configured from the widget editor. Whether a Developer ID
+Mac offers the widgets at all is
+[#1116](https://github.com/justin13888/Sunrise/issues/1116).
 
 ### Focus Filters
 

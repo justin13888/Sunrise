@@ -1438,6 +1438,39 @@ sample_draft = "Review Maya's draft"
 sample_flights = "Book flights"
 sample_plants = "Water the plants"
 
+[apple.widget.capture]
+# The Lock Screen capture widget in the widget gallery: its name and its
+# one-line description.
+display_name = "Quick Capture"
+description = "Opens Sunrise with the capture sheet ready for a new task."
+# VoiceOver label of the widget's single button.
+accessibility = "Capture a task"
+
+[apple.widget.stream_tile]
+# The Stream tile in the widget gallery: its name and its one-line description.
+display_name = "Stream"
+description = "The first open tasks in a stream you choose."
+# The widget's settings when it is edited. The title and description of the
+# settings, and the title of the stream picker. They take no arguments.
+intent_title = "Choose Stream"
+intent_description = "Pick the stream this widget shows."
+stream_parameter = "Stream"
+# The name the system gives one stream in that picker.
+stream_type = "Stream"
+# Beside the stream's name: how many of its tasks are open.
+open_count = "{count, plural, one {# open} other {# open}}"
+# Shown instead of rows when the chosen stream has nothing open.
+empty = "Nothing open in this stream"
+# The widget was added and no stream has been picked for it yet.
+choose = "Edit the widget to choose a stream"
+# The picked stream is not in the snapshot: it was archived or deleted, or is
+# past the number of streams Sunrise shares with widgets.
+missing = "This stream is not available. Edit the widget to choose another."
+# No vault open: the widget says what to do rather than showing an empty list.
+open_app = "Open Sunrise to show this stream"
+# A made-up stream name for the widget gallery's preview. Never a user's data.
+sample_name = "Work"
+
 [apple.intents]
 # Shortcuts categories that group the intents. Keep them short.
 category_capture = "Capture"
@@ -1462,6 +1495,12 @@ captured = "Captured “{title}”."
 captured_with_issue = "Captured “{title}”. {issue}"
 # {rest} is how many further unresolved tags there are.
 captured_with_issues = "{rest, plural, one {Captured “{title}”. {issue} And # more.} other {Captured “{title}”. {issue} And # more.}}"
+
+[apple.intents.open_capture]
+# The action behind the Lock Screen capture widget: it brings Sunrise forward
+# with the capture sheet open. Its title and description; no arguments.
+title = "Open Quick Capture"
+description = "Opens Sunrise with the capture sheet ready for a new task."
 
 [apple.intents.complete_task]
 # The Complete Task action in Shortcuts: its title and description.
