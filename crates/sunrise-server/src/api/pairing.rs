@@ -15,6 +15,8 @@
 //! - `POST /api/v1/pairing/receive` returns what the *other* role has sent
 //!   since a cursor the caller holds.
 //! - `POST /api/v1/pairing/abort` drops the session.
+//! - `POST /api/v1/pairing/resolve` turns the six-digit code a session was
+//!   given into its `pair_id`, for an existing device with no camera.
 //!
 //! Polling rather than a stream: a pairing is six messages over a few seconds
 //! of human attention, and an SSE channel per pairing would be a second event
@@ -57,6 +59,32 @@
 //!   `sunrise_pairing::AttemptLimit`: 10 an hour and 30 a day per account, and
 //!   60 an hour per client address. A refusal is `429 RATE_LIMITED` with
 //!   `Retry-After`, and no session is opened.
+//! - **Code lookups** are charged to ledgers of their own under the same two
+//!   limits, hit or miss, so guessing at codes costs what opening sessions
+//!   does.
+//!
+//! # The typed code
+//!
+//! A device with no camera cannot read a QR, and a 22-character `pair_id`
+//! is too much to type. So the session gets a six-digit code when it opens,
+//! returned to the new device in the opening send's answer, and the existing
+//! device trades it for the `pair_id` at `resolve` (the spec's §Flow step 1,
+//! "a QR (and fallback 6-digit code)").
+//!
+//! - **Within one account.** A code resolves only for the account that opened
+//!   the session, and a code unknown there gets the same `404` as one from
+//!   another account. Six digits need to tell apart only the few sessions one
+//!   account can hold under its ten attempts an hour, not every live session
+//!   on the relay.
+//! - **No collision inside an account.** The code is drawn from the `pair_id`
+//!   (random), then stepped past any code a live session of the same account
+//!   already holds.
+//! - **Spent when the existing device joins.** Once it has sent its first
+//!   message the code stops resolving, so a second lookup cannot race the
+//!   device that already joined.
+//! - **Nothing is authenticated by it.** It is a routing label like the
+//!   `pair_id`; a pairing by code carries no `n_static_pub`, and the SAS is its
+//!   whole authentication (§Out-of-band channel security).
 
 use crate::api::error::{codes, ApiError};
 use crate::api::ratelimit::policy::address_key;
@@ -98,6 +126,12 @@ const MAX_LEDGER_KEYS: usize = 65_536;
 
 /// A pair id as it travels: 16 bytes, base64url without padding.
 const PAIR_ID_PATTERN: &str = "^[A-Za-z0-9_-]{22}$";
+
+/// How many six-digit codes there are.
+const CODE_SPACE: u32 = 1_000_000;
+
+/// A typed code as it travels: six ASCII digits.
+const CODE_PATTERN: &str = "^[0-9]{6}$";
 
 /// Which side of a pairing sent a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, kynos::Schema)]
@@ -152,6 +186,32 @@ pub struct PairSendResponse {
     /// How many messages this role has now sent in the session, this one
     /// included.
     pub sent: u32,
+    /// When the session is dropped whatever happens, ms since the epoch.
+    pub expires_at_ms: u64,
+    /// The six digits the existing device may type instead of scanning, on
+    /// the new device's sends until the existing device has joined. Absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(pattern = "^[0-9]{6}$")]
+    pub code: Option<String>,
+}
+
+/// `POST /api/v1/pairing/resolve` request body.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct PairResolveRequest {
+    /// The six digits the new device shows beside its QR.
+    #[schema(pattern = "^[0-9]{6}$")]
+    pub code: String,
+}
+
+/// `POST /api/v1/pairing/resolve` response body.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct PairResolveResponse {
+    /// The session the code names, as the QR would have carried it.
+    #[schema(pattern = "^[A-Za-z0-9_-]{22}$")]
+    pub pair_id: String,
     /// When the session is dropped whatever happens, ms since the epoch.
     pub expires_at_ms: u64,
 }
@@ -229,6 +289,7 @@ pub async fn send(
         Ok(sent) => Ok(Json(PairSendResponse {
             sent: sent.count,
             expires_at_ms: sent.expires_at_ms,
+            code: sent.code.map(code_text),
         })),
         Err(refusal) => Err(refused(refusal)),
     }
@@ -292,6 +353,55 @@ pub async fn abort(
             .incr_with("sunrise_pairing_total", &[("result", "aborted")]);
     }
     Ok(NoContent)
+}
+
+/// Trade the six digits a new device shows for the session they name, within
+/// the caller's account.
+///
+/// Every lookup is charged to the code-lookup ledgers, hit or miss. A code no
+/// live session of this account holds — never given, expired, spent, or
+/// another account's — is `404` with the same body in every case.
+#[kynos::post("/api/v1/pairing/resolve", operation_id = "resolvePairingCode")]
+pub async fn resolve(
+    Inject(state): Inject<ServerState>,
+    ClientAddress(client): ClientAddress,
+    SignedBootstrap {
+        caller,
+        value: body,
+    }: SignedBootstrap<PairResolveRequest>,
+) -> Result<Json<PairResolveResponse>, Throttled> {
+    let code = code_of(&body.code)?;
+    let limits = state.config.limits.enabled.then(|| address_key(client));
+    let outcome = state.pairing.resolve(
+        &caller.principal.account.account_id,
+        limits.as_deref(),
+        code,
+        state.clock.now_ms(),
+    );
+    record_expiries(&state, outcome.expired);
+    match outcome.result {
+        Ok((pair_id, expires_at_ms)) => Ok(Json(PairResolveResponse {
+            pair_id: URL_SAFE_NO_PAD.encode(pair_id),
+            expires_at_ms,
+        })),
+        Err(Refusal::Gone) => Err(ApiError::not_found(
+            codes::RELAY_PAIR_SESSION_GONE,
+            "no pairing is waiting under that code; check the digits, or start again from a new code",
+        )
+        .into()),
+        Err(refusal) => Err(refused(refusal)),
+    }
+}
+
+fn code_of(text: &str) -> Result<u32, ApiError> {
+    Some(text)
+        .filter(|t| t.len() == 6 && t.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|t| t.parse().ok())
+        .ok_or_else(|| ApiError::validation(format!("code must match {CODE_PATTERN}")))
+}
+
+fn code_text(code: u32) -> String {
+    format!("{code:06}")
 }
 
 fn pair_id_of(text: &str) -> Result<[u8; 16], ApiError> {
@@ -409,6 +519,18 @@ pub struct Sent {
     pub expires_at_ms: u64,
     /// Sessions the call found expired and dropped.
     pub expired: usize,
+    /// The session's typed code, to the new device until the existing device
+    /// has joined.
+    pub code: Option<u32>,
+}
+
+/// What a code lookup found, and what it swept on the way.
+#[derive(Debug)]
+pub struct Resolved {
+    /// The session's pair id and expiry, or the refusal.
+    pub result: Result<([u8; 16], u64), Refusal>,
+    /// Sessions the call found expired and dropped.
+    pub expired: usize,
 }
 
 /// What a receive found, and what it swept on the way.
@@ -440,12 +562,16 @@ struct Inner {
     sessions: HashMap<[u8; 16], Session>,
     by_account: HashMap<String, AttemptWindow>,
     by_address: HashMap<String, AttemptWindow>,
+    lookups_by_account: HashMap<String, AttemptWindow>,
+    lookups_by_address: HashMap<String, AttemptWindow>,
 }
 
 #[derive(Debug)]
 struct Session {
     account_id: String,
     expires_at_ms: u64,
+    /// The typed code, until the existing device sends its first message.
+    code: Option<u32>,
     /// Indexed by [`PairRole::index`]: what each side has sent.
     sent: [Vec<Vec<u8>>; 2],
 }
@@ -501,11 +627,13 @@ impl Rendezvous {
             if let Some(address) = address {
                 inner.admit(account_id, address, now_ms)?;
             }
+            let code = inner.free_code(account_id, pair_id);
             inner.sessions.insert(
                 pair_id,
                 Session {
                     account_id: account_id.to_owned(),
                     expires_at_ms: now_ms + SESSION_TTL_MS,
+                    code: Some(code),
                     sent: [Vec::new(), Vec::new()],
                 },
             );
@@ -538,13 +666,53 @@ impl Rendezvous {
             }
             None => mine.push(message),
         }
+        let count = u32::try_from(mine.len()).unwrap_or(u32::MAX);
+        if role == PairRole::ExistingDevice {
+            // The existing device has joined: the code has done its work, and
+            // a second lookup must not hand the session to anyone else.
+            session.code = None;
+        }
         Ok(Sent {
-            count: u32::try_from(mine.len()).unwrap_or(u32::MAX),
+            count,
             opened,
             replayed: replayed == Some(true),
             expires_at_ms: session.expires_at_ms,
             expired,
+            code: session.code.filter(|_| role == PairRole::NewDevice),
         })
+    }
+
+    /// The session `account_id` holds under `code`, charging one lookup to
+    /// `address` and the account where `address` is given.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Limited`] when the lookup is over either limit, and
+    /// [`Refusal::Gone`] when no live session of this account holds `code`.
+    pub fn resolve(
+        &self,
+        account_id: &str,
+        address: Option<&str>,
+        code: u32,
+        now_ms: u64,
+    ) -> Resolved {
+        let mut inner = self.inner.lock();
+        let expired = inner.reap(now_ms);
+        if let Some(address) = address {
+            if let Err(refusal) = inner.admit_lookup(account_id, address, now_ms) {
+                return Resolved {
+                    result: Err(refusal),
+                    expired,
+                };
+            }
+        }
+        let result = inner
+            .sessions
+            .iter()
+            .find(|(_, s)| s.account_id == account_id && s.code == Some(code))
+            .map(|(id, s)| (*id, s.expires_at_ms))
+            .ok_or(Refusal::Gone);
+        Resolved { result, expired }
     }
 
     /// What `role`'s peer has sent, from index `after` on.
@@ -614,21 +782,74 @@ impl Inner {
     /// Charge one pair attempt to both ledgers, or refuse it with the longer
     /// of the two waits. Neither is charged on a refusal.
     fn admit(&mut self, account_id: &str, address: &str, now_ms: u64) -> Result<(), Refusal> {
-        sweep(&mut self.by_account, now_ms);
-        sweep(&mut self.by_address, now_ms);
-        let mut account = self.by_account.get(account_id).cloned().unwrap_or_default();
-        let mut client = self.by_address.get(address).cloned().unwrap_or_default();
-        let waits = [
-            account.try_admit(AttemptLimit::PER_ACCOUNT, now_ms).err(),
-            client.try_admit(AttemptLimit::PER_ADDRESS, now_ms).err(),
-        ];
-        if let Some(retry_after_ms) = waits.into_iter().flatten().max() {
-            return Err(Refusal::Limited { retry_after_ms });
-        }
-        self.by_account.insert(account_id.to_owned(), account);
-        self.by_address.insert(address.to_owned(), client);
-        Ok(())
+        admit(
+            &mut self.by_account,
+            &mut self.by_address,
+            account_id,
+            address,
+            now_ms,
+        )
     }
+
+    /// [`Self::admit`], for a code lookup: the same limits, in ledgers of
+    /// their own, so looking codes up and opening sessions do not share one
+    /// budget.
+    fn admit_lookup(
+        &mut self,
+        account_id: &str,
+        address: &str,
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        admit(
+            &mut self.lookups_by_account,
+            &mut self.lookups_by_address,
+            account_id,
+            address,
+            now_ms,
+        )
+    }
+
+    /// A code for a new session of `account_id`: drawn from the random
+    /// `pair_id`, then stepped past every code a live session of the same
+    /// account holds. The table holds far fewer than [`CODE_SPACE`] sessions,
+    /// so the step ends.
+    fn free_code(&self, account_id: &str, pair_id: [u8; 16]) -> u32 {
+        let [a, b, c, d, ..] = pair_id;
+        let mut code = u32::from_be_bytes([a, b, c, d]) % CODE_SPACE;
+        while self
+            .sessions
+            .values()
+            .any(|s| s.account_id == account_id && s.code == Some(code))
+        {
+            code = (code + 1) % CODE_SPACE;
+        }
+        code
+    }
+}
+
+/// Charge one attempt to both ledgers, or refuse it with the longer of the
+/// two waits. Neither is charged on a refusal.
+fn admit(
+    by_account: &mut HashMap<String, AttemptWindow>,
+    by_address: &mut HashMap<String, AttemptWindow>,
+    account_id: &str,
+    address: &str,
+    now_ms: u64,
+) -> Result<(), Refusal> {
+    sweep(by_account, now_ms);
+    sweep(by_address, now_ms);
+    let mut account = by_account.get(account_id).cloned().unwrap_or_default();
+    let mut client = by_address.get(address).cloned().unwrap_or_default();
+    let waits = [
+        account.try_admit(AttemptLimit::PER_ACCOUNT, now_ms).err(),
+        client.try_admit(AttemptLimit::PER_ADDRESS, now_ms).err(),
+    ];
+    if let Some(retry_after_ms) = waits.into_iter().flatten().max() {
+        return Err(Refusal::Limited { retry_after_ms });
+    }
+    by_account.insert(account_id.to_owned(), account);
+    by_address.insert(address.to_owned(), client);
+    Ok(())
 }
 
 /// Forget the ledgers of keys that have made no attempt for a day, once the

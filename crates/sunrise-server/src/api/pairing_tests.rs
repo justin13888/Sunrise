@@ -476,3 +476,186 @@ fn a_full_session_table_refuses_until_a_session_expires() {
     assert_eq!(admitted.expired, super::MAX_SESSIONS);
     assert_eq!(r.len(), 1);
 }
+
+// --- The typed code --------------------------------------------------------
+
+async fn resolve_as(client: &Client, bearer: &str, code: &str) -> Res {
+    client
+        .send_as(
+            Method::POST,
+            "/api/v1/pairing/resolve",
+            Some(bearer),
+            Some(&serde_json::json!({ "code": code })),
+        )
+        .await
+}
+
+/// Open a session under `pair` as [`BEARER`] and return the code it was given.
+async fn open_with_code(client: &Client, pair: &str) -> String {
+    let opened = send(client, pair, NEW, 0, b"noise-1").await;
+    opened.assert_status(StatusCode::OK);
+    let code = opened.json()["code"]
+        .as_str()
+        .expect("the opening answer carries a code")
+        .to_owned();
+    assert!(
+        code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()),
+        "six digits: {code}"
+    );
+    code
+}
+
+/// A pair id whose first four bytes are `head`, so two of them draw the same
+/// code.
+fn pair_id_led_by(head: [u8; 4], tail: u8) -> String {
+    let mut id = [tail; 16];
+    id[..4].copy_from_slice(&head);
+    URL_SAFE_NO_PAD.encode(id)
+}
+
+/// The code the new device shows resolves to its session for the same
+/// account, and stops resolving once the existing device has joined.
+#[tokio::test]
+async fn a_typed_code_resolves_to_its_session_until_the_existing_device_joins() {
+    let (client, _) = rendezvous();
+    let pair = pair_id(40);
+    let code = open_with_code(&client, &pair).await;
+
+    let found = resolve_as(&client, BEARER, &code).await;
+    found.assert_status(StatusCode::OK);
+    assert_eq!(found.json()["pair_id"], pair);
+    assert_eq!(found.json()["expires_at_ms"], T0_MS + SESSION_TTL_MS);
+    // A retry after a lost answer finds the same session.
+    assert_eq!(
+        resolve_as(&client, BEARER, &code).await.json()["pair_id"],
+        pair
+    );
+
+    let joined = send(&client, &pair, EXISTING, 0, b"noise-2").await;
+    joined.assert_status(StatusCode::OK);
+    assert!(
+        joined.json().get("code").is_none(),
+        "the existing device is never handed the code"
+    );
+    let spent = resolve_as(&client, BEARER, &code).await;
+    spent.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(code_of(&spent), codes::RELAY_PAIR_SESSION_GONE);
+    let third = send(&client, &pair, NEW, 1, b"noise-3").await;
+    third.assert_status(StatusCode::OK);
+    assert!(
+        third.json().get("code").is_none(),
+        "the new device stops showing a spent code"
+    );
+}
+
+/// Another account's code is the same `404` as one nobody was given.
+#[tokio::test]
+async fn a_code_from_another_account_is_gone() {
+    let (client, _) = rendezvous();
+    let code = open_with_code(&client, &pair_id(41)).await;
+
+    let theirs = resolve_as(&client, SECOND_BEARER, &code).await;
+    theirs.assert_status(StatusCode::NOT_FOUND);
+    let unused = if code == "000000" { "000001" } else { "000000" };
+    let never = resolve_as(&client, BEARER, unused).await;
+    assert_eq!(theirs.status, never.status);
+    assert_eq!(code_of(&theirs), code_of(&never));
+    assert_eq!(theirs.json(), never.json());
+
+    resolve_as(&client, BEARER, &code)
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+/// A code dies with its session, three hundred seconds after it opened.
+#[tokio::test]
+async fn an_expired_sessions_code_is_gone() {
+    let (client, clock) = rendezvous();
+    let code = open_with_code(&client, &pair_id(42)).await;
+    clock.advance(SESSION_TTL_MS - 1);
+    resolve_as(&client, BEARER, &code)
+        .await
+        .assert_status(StatusCode::OK);
+    clock.advance(1);
+    resolve_as(&client, BEARER, &code)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(outcomes(&client, "expired"), 1);
+}
+
+/// Two live sessions of one account that draw the same code are told apart:
+/// the second steps to another. Another account drawing it keeps it, since a
+/// code resolves only within its own account.
+#[tokio::test]
+async fn a_collision_inside_one_account_gets_another_code() {
+    let (client, _) = rendezvous();
+    let head = 12_345u32.to_be_bytes();
+    let first = pair_id_led_by(head, 1);
+    let second = pair_id_led_by(head, 2);
+    assert_eq!(open_with_code(&client, &first).await, "012345");
+    assert_eq!(open_with_code(&client, &second).await, "012346");
+
+    let elsewhere = send_as(
+        &client,
+        SECOND_BEARER,
+        &pair_id_led_by(head, 3),
+        NEW,
+        0,
+        b"n",
+    )
+    .await;
+    assert_eq!(elsewhere.json()["code"], "012345");
+
+    for (code, pair) in [("012345", &first), ("012346", &second)] {
+        assert_eq!(
+            resolve_as(&client, BEARER, code).await.json()["pair_id"],
+            **pair
+        );
+    }
+}
+
+/// Lookups have the attempt limit's own budget: ten an hour per account, hit
+/// or miss, and the eleventh is a `429` that resolves nothing.
+#[tokio::test]
+async fn the_eleventh_code_lookup_in_an_hour_is_refused() {
+    let (client, clock) = rendezvous();
+    let code = open_with_code(&client, &pair_id(43)).await;
+    let miss = if code == "999999" { "999998" } else { "999999" };
+    for _ in 0..9 {
+        resolve_as(&client, BEARER, miss)
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        clock.advance(1000);
+    }
+    resolve_as(&client, BEARER, &code)
+        .await
+        .assert_status(StatusCode::OK);
+    let refused = resolve_as(&client, BEARER, &code).await;
+    refused.assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(code_of(&refused), codes::RATE_LIMITED);
+    assert_eq!(
+        refused.headers["retry-after"].to_str().unwrap(),
+        (3600 - 9).to_string()
+    );
+
+    // Another account has its own budget, and opening a session is not a
+    // lookup.
+    resolve_as(&client, SECOND_BEARER, miss)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    send(&client, &pair_id(44), NEW, 0, b"noise-1")
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+/// A code that is not six ASCII digits is refused before anything is looked
+/// up.
+#[tokio::test]
+async fn a_malformed_code_is_refused() {
+    let (client, _) = rendezvous();
+    for bad in ["", "12345", "1234567", "12 345", "abcdef", "\u{661}23456"] {
+        resolve_as(&client, BEARER, bad)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+}
