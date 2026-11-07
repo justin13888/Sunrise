@@ -6150,6 +6150,17 @@
         }
       }
     },
+    "apple.pairing.code_field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Six-digit code"
+          }
+        }
+      }
+    },
     "apple.pairing.connecting": {
       "extractionState": "manual",
       "localizations": {
@@ -6223,6 +6234,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Email"
+          }
+        }
+      }
+    },
+    "apple.pairing.enter_code": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter code"
           }
         }
       }
@@ -6354,7 +6376,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here."
+            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here."
           }
         }
       }
@@ -6464,7 +6486,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read."
+            "value": "On that device, open Settings › Vaults › Add a device and choose Scan, or Enter code to type the six digits below. The code works for five minutes; this screen moves on by itself once it has been read."
           }
         }
       }
@@ -6794,7 +6816,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Paste the text shown under the code instead."
+            "value": "Type the six-digit code shown beside it, or paste the text shown under it, instead."
           }
         }
       }
@@ -6816,7 +6838,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Paste the code instead"
+            "value": "Type or paste the code instead"
           }
         }
       }
@@ -6827,7 +6849,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
+            "value": "Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
           }
         }
       }
@@ -6938,6 +6960,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pair this %1$@"
+          }
+        }
+      }
+    },
+    "apple.pairing.typed_code_accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pairing code %1$@"
+          }
+        }
+      }
+    },
+    "apple.pairing.typed_code_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No camera? Type this code instead"
           }
         }
       }

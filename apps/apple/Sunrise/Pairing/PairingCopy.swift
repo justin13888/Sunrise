@@ -19,6 +19,9 @@ extension PairingModel {
         /// Only the QR payload is drawn as a code. Every other message is
         /// bigger than a screen-readable symbol and is copied, not scanned.
         let drawsCode: Bool
+        /// The six digits the relay gave the session, shown beside the QR for
+        /// a device that cannot scan. Only the relay's code leg has them.
+        var typedCode: String?
     }
 
     /// Text the other device is showing that this one needs.
@@ -30,15 +33,17 @@ extension PairingModel {
 
     /// The code, on the device being added, when the relay carries the rest.
     ///
-    /// The text under it is still there: pasting it is the fallback for a Mac
-    /// with no camera, or a user who would rather not grant one.
-    func relayCodeHandOff(_ payload: String) -> HandOff {
+    /// The six digits beside it are for a device with no camera, or a user
+    /// who would rather not grant one: typed there, the relay finds this
+    /// session by them. The text under it is still there to paste.
+    func relayCodeHandOff(_ payload: String, typedCode: String?) -> HandOff {
         HandOff(
             leg: .code,
             title: L10n.Pairing.Legs.relayCodeTitle,
             instruction: L10n.Pairing.Legs.relayCodeInstruction,
             text: payload,
-            drawsCode: true
+            drawsCode: true,
+            typedCode: typedCode
         )
     }
 
