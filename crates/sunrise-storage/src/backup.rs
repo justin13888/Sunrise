@@ -108,13 +108,22 @@ fn is_backup_file(vault_name: &str, name: &str) -> bool {
     kind_of(vault_name, name).is_some()
 }
 
+/// Flush the file at `path` to disk.
+///
+/// Opened for writing, not with [`fs::File::open`]: on Windows `sync_all` is
+/// `FlushFileBuffers`, which refuses a read-only handle with "Access is
+/// denied" (os error 5).
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()
+}
+
 /// Copy `from` to `to` durably: under a temporary name, fsynced, then
 /// renamed into place.
 fn copy_durably(from: &Path, to: &Path) -> std::io::Result<()> {
     let tmp = sibling(to, ".tmp");
     let copy = || -> std::io::Result<()> {
         fs::copy(from, &tmp)?;
-        fs::File::open(&tmp)?.sync_all()?;
+        sync_file(&tmp)?;
         fs::rename(&tmp, to)
     };
     copy().inspect_err(|_| {
@@ -205,7 +214,7 @@ impl Db {
             })?;
             conn.execute("VACUUM INTO ?1", [to])
                 .map_err(std::io::Error::other)?;
-            fs::File::open(&tmp)?.sync_all()?;
+            sync_file(&tmp)?;
             fs::rename(&tmp, target)?;
             sync_parent(target)
         };

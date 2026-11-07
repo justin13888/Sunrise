@@ -349,7 +349,11 @@ pub(super) fn encrypt_in_place(
         conn.execute_batch(&format!("PRAGMA encrypted.user_version = {version};"))?;
         conn.execute_batch("DETACH DATABASE encrypted;")?;
     }
-    std::fs::File::open(&staging)
+    // Opened for writing: on Windows `sync_all` is `FlushFileBuffers`, which
+    // refuses a read-only handle with "Access is denied" (os error 5).
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&staging)
         .and_then(|f| f.sync_all())
         .map_err(|e| io(&staging, &e))?;
 
