@@ -11,7 +11,11 @@ places, moves or refuses work by Place (§4 below;
 [`../08-features/planner.md`](../08-features/planner.md) §Places).
 
 **Specified in** [`../02-domain/places.md`](../02-domain/places.md). **Tracked
-by** [#339](https://github.com/justin13888/Sunrise/issues/339).
+by** [#339](https://github.com/justin13888/Sunrise/issues/339) (§3's
+presence and evaluation, §5's selection), then
+[#1128](https://github.com/justin13888/Sunrise/issues/1128) (the entity and
+`at_place`) and [#1129](https://github.com/justin13888/Sunrise/issues/1129)
+(the Apple clients).
 
 ## Context
 

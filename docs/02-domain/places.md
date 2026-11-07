@@ -8,6 +8,27 @@ A named location the user entered, which a task can require. The decision, the
 privacy argument and the alternatives are
 [ADR-0051](../11-adr/0051-places.md). Implementation is tracked in [#339](https://github.com/justin13888/Sunrise/issues/339).
 
+> **Implemented so far** ([#339](https://github.com/justin13888/Sunrise/issues/339)):
+> the pure layer and the in-memory presence, nothing in the vault.
+>
+> - `crates/sunrise-domain/src/place.rs` holds `PlaceId`, `Place` with
+>   §Validation (`crates/sunrise-domain/src/place.rs#validate_coordinates`,
+>   `crates/sunrise-domain/src/place.rs#validate_radius`), `Presence`,
+>   `crates/sunrise-domain/src/place.rs#evaluate_place` and
+>   `crates/sunrise-domain/src/place.rs#select_regions`. `Presence` has no
+>   `Serialize`, and its `Debug` prints a count and never a place or a state.
+> - `Core::on_place_presence`, `forget_place_presence`,
+>   `clear_place_presence` and `evaluate_place`
+>   (`crates/sunrise-core/src/core/place.rs`) keep presence on the `Core`
+>   handle: empty at open, emptied at shutdown, and a report after close is
+>   dropped. The bindings expose them with the same names
+>   (`crates/sunrise-core-bindings/src/places.rs`).
+> - Not yet: the `plc_` entity, its commands and its feature id, the
+>   `at_place` dimension and the "here now" query
+>   ([#1128](https://github.com/justin13888/Sunrise/issues/1128)); the Apple
+>   opt-in flow, region manager and view
+>   ([#1129](https://github.com/justin13888/Sunrise/issues/1129)).
+
 ## Fields
 
 Shared types are defined in
