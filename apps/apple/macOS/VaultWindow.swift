@@ -15,6 +15,9 @@ struct VaultWindow: View {
     /// shells cannot drift: adding a model means adding it in one place, and
     /// both get it.
     @State private var models: VaultModels
+    /// The day schedule: Settings' weekday and day-of-month defaults, and
+    /// the calendar's per-date override. The Mac's alone until iOS draws it.
+    @State private var daySchedule: DayScheduleModel
 
     private var settings: AppSettings { models.settings }
     private var account: AccountModel { models.account }
@@ -57,6 +60,7 @@ struct VaultWindow: View {
         self.session = session
         self.surfaces = surfaces
         _models = State(initialValue: VaultModels(bridge: bridge, account: session.account))
+        _daySchedule = State(initialValue: DayScheduleModel(bridge: bridge))
     }
 
     var body: some View {
@@ -80,6 +84,9 @@ struct VaultWindow: View {
                 }
                 if let action = undo.lastAction {
                     NoteBanner(text: action) { undo.dismissLastAction() }
+                }
+                if let error = daySchedule.errorMessage {
+                    NoteBanner(text: error) { daySchedule.dismissError() }
                 }
                 detail
             }
@@ -131,7 +138,8 @@ struct VaultWindow: View {
                     keyboard: keys,
                     session: session,
                     devices: models.devices,
-                    storage: models.storage
+                    storage: models.storage,
+                    daySchedule: daySchedule
                 )
                 Button(L10n.Action.done) { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
@@ -240,6 +248,7 @@ struct VaultWindow: View {
         .task { await surfaces.reminders?.follow() }
         .task { await undo.follow() }
         .task { await savedViews.load() }
+        .task { await daySchedule.follow() }
         .onChange(of: settings.relayURL) { Task { await startSync() } }
         .onChange(of: account.accessToken) { _, token in
             Task { await bridge.setSyncCredential(token) }
@@ -269,7 +278,7 @@ struct VaultWindow: View {
                 focus: $pane
             )
         case .calendar:
-            CalendarView(model: calendar)
+            calendarDetail
         case .focus:
             FocusView(model: focus)
         case .routines:
@@ -414,6 +423,22 @@ struct VaultWindow: View {
     private var currentContextNames: [String] {
         selection?.contextNames(in: list.names) ?? []
     }
+}
+
+// The account's sign-in and sync start, and the calendar with its day-schedule
+// menu, in an extension so the window's own body stays inside the length this
+// project lints for. The sign-in's renewal is the session's — see
+// ``SessionModel/renewSessionWhileOpen(every:sleep:)``.
+extension VaultWindow {
+    /// The calendar, with the menu that gives one of its dates its own hours.
+    /// Here rather than in `CalendarView`, which iOS shares and which does not
+    /// offer the menu yet.
+    private var calendarDetail: some View {
+        CalendarView(model: calendar)
+            .toolbar {
+                ToolbarItem { DateOverrideMenu(schedule: daySchedule, calendar: calendar) }
+            }
+    }
 
     /// Start (or re-point) the sync driver. Safe to call again: the driver
     /// picks a new credential up on its next connect, and a repeated start
@@ -429,12 +454,7 @@ struct VaultWindow: View {
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }
-}
 
-// The account's sign-in, in an extension so the window's own body stays inside
-// the length this project lints for. Its renewal is the session's — see
-// ``SessionModel/renewSessionWhileOpen(every:sleep:)``.
-extension VaultWindow {
     private func signIn() async {
         await account.signIn(
             issuer: settings.oidcIssuer,

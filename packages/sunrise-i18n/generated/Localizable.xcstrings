@@ -2498,6 +2498,193 @@
         }
       }
     },
+    "apple.day_schedule.add_month_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a day"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When you usually wake and sleep. Today, the briefs and the wind-down reminder follow it; a day with no schedule runs midnight to midnight. It syncs to every device on this vault."
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the usual schedule"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_hours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set hours for this date…"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_no_schedule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No schedule"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No schedule on this date"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_sheet_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hours for %1$@"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_usual": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usual schedule"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.date_window": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wake %1$@, sleep %2$@"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.last_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last day of the month"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.month_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Day %1$@"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.month_days": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Days of the month"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.month_days_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A day of the month wins over its weekday. Day 31 never matches a shorter month."
+          }
+        }
+      }
+    },
+    "apple.day_schedule.sleep": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sleep"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.sleep_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A sleep time at or before the wake time is the next morning."
+          }
+        }
+      }
+    },
+    "apple.day_schedule.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Day schedule"
+          }
+        }
+      }
+    },
+    "apple.day_schedule.wake": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wake"
+          }
+        }
+      }
+    },
     "apple.devices.cancel": {
       "extractionState": "manual",
       "localizations": {

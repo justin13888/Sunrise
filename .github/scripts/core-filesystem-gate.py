@@ -78,6 +78,8 @@ So the attribute is resolved against the item it is attached to:
   in its entirety and carries no marker of its own, so `scan` resolves the
   declaration to a path and skips the file. After the engine split this is how
   `engine/tests/mod.rs` and the themed files it declares reach the scanner.
+  The themed files are declared with a plain `mod x;` inside that test-only
+  file, so every module a test-only file declares is skipped too, at any depth.
 
 Nothing here is a heuristic about where tests "usually" live. Every rule above
 is the meaning of the attribute.
@@ -268,8 +270,11 @@ def production_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def cfg_test_module_files(path: Path) -> set[Path]:
+def cfg_test_module_files(path: Path, *, every: bool = False) -> set[Path]:
     """Files declared by `#[cfg(test)] mod <name>;` in `path`.
+
+    With `every`, files declared by any `mod <name>;` in `path`: the children
+    of a file that is itself test-only, which need no attribute of their own.
 
     Resolved the way rustc resolves them: `<name>.rs` beside a `mod.rs`, or in
     the directory named after a non-`mod.rs` parent.
@@ -284,7 +289,7 @@ def cfg_test_module_files(path: Path) -> set[Path]:
         if CFG_TEST.match(line):
             pending = True
             continue
-        if not pending or not line or line.startswith(("//", "#[")):
+        if not (pending or every) or not line or line.startswith(("//", "#[")):
             continue
         pending = False
         if m := CFG_TEST_MOD_FILE.match(line):
@@ -301,6 +306,15 @@ def scan(root: Path) -> list[tuple[Path, int, str]]:
     test_only: set[Path] = set()
     for path in files:
         test_only |= cfg_test_module_files(path)
+    # So is every module such a file declares, at any depth:
+    # `sync_driver/tests/mod.rs` declares its suites with a plain `mod
+    # blob_uploads;`, and they compile only when their parent does.
+    frontier = list(test_only)
+    while frontier:
+        for child in cfg_test_module_files(frontier.pop(), every=True):
+            if child not in test_only:
+                test_only.add(child)
+                frontier.append(child)
 
     hits: list[tuple[Path, int, str]] = []
     for path in files:
