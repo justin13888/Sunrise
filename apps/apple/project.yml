@@ -216,7 +216,9 @@ targets:
       - path: Sunrise
       - path: macOS
       # The widgets' snapshot format, which the app writes and the widget
-      # extension reads — so both compile the one file.
+      # extension reads — so both compile the one file — and
+      # `OpenCaptureIntent`, which the capture widget's button runs and the
+      # app performs.
       - path: Widgets/Shared
       # The share extension's pending-capture record. Only the iOS app has a
       # share extension; the Mac compiles the record so the filing logic in
