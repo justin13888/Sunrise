@@ -103,12 +103,15 @@ impl Install {
         panic!("the server started instead of refusing");
     }
 
+    /// Run one admin command, reporting an ample disk rather than the host's
+    /// so `doctor`'s `free_space` check passes on a full development disk.
     fn admin(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_sunrise-server"))
             .args(["admin", "--json", "-c"])
             .arg(&self.config)
             .args(args)
             .env_remove("SUNRISE_CONFIG")
+            .env(sunrise_server::blob::FsBlobs::DEBUG_AMPLE_DISK_ENV, "1")
             .output()
             .unwrap()
     }
@@ -121,24 +124,6 @@ impl Install {
             String::from_utf8_lossy(&out.stderr)
         );
         serde_json::from_slice(&out.stdout).unwrap()
-    }
-
-    /// Require `doctor` to pass. Its `free_space` reads the host's real
-    /// filesystem, which the test does not own, so on a disk with 5% or less
-    /// free that check alone may fail: every other check must pass, and the
-    /// verdict and exit status must follow `free_space`.
-    fn assert_doctor_passes(&self) {
-        let out = self.admin(&["doctor"]);
-        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let checks = report["checks"].as_array().unwrap();
-        let host_full = checks
-            .iter()
-            .any(|c| c["check"] == "free_space" && c["status"] == "fail");
-        for c in checks.iter().filter(|c| c["check"] != "free_space") {
-            assert_ne!(c["status"], "fail", "{report}");
-        }
-        assert_eq!(report["ok"], !host_full, "{report}");
-        assert_eq!(out.status.success(), !host_full, "{report}");
     }
 }
 
@@ -211,7 +196,8 @@ fn turning_encryption_on_migrates_the_install_and_doctor_flags_the_plaintext_cop
     let kept = pre_encryption_copy(&install.db());
     assert!(kept.exists());
     std::fs::remove_file(&kept).unwrap();
-    install.assert_doctor_passes();
+    let report = install.admin_json(&["doctor"]);
+    assert_eq!(report["ok"], true, "{report}");
 
     let store =
         Store::open_keyed(Some(&install.db()), DEFAULT_BUSY_TIMEOUT, Some(&key(5))).unwrap();
@@ -247,7 +233,8 @@ fn an_encrypted_backup_restores_into_a_working_install() {
         .data()
         .join("blobs/committed/aa/manifests/bb")
         .exists());
-    install.assert_doctor_passes();
+    let report = install.admin_json(&["doctor"]);
+    assert_eq!(report["ok"], true, "{report}");
 }
 
 /// `admin rekey`, then the config pointed at the new key: the old key stops

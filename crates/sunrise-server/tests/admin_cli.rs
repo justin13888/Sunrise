@@ -59,6 +59,9 @@ impl Install {
         self.dir.path().join("data")
     }
 
+    /// Run one admin command. The binary is a debug build, so it reports an
+    /// ample disk rather than the host's: `doctor`'s `free_space` check would
+    /// otherwise fail on a development disk 95% full (#1100).
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_sunrise-server"))
             .arg("admin")
@@ -66,6 +69,7 @@ impl Install {
             .arg(&self.config)
             .args(args)
             .env_remove("SUNRISE_CONFIG")
+            .env(sunrise_server::blob::FsBlobs::DEBUG_AMPLE_DISK_ENV, "1")
             .output()
             .unwrap()
     }
@@ -87,21 +91,8 @@ impl Install {
 #[test]
 fn doctor_checks_the_install_and_passes_on_a_sound_one() {
     let (install, _, _) = Install::new();
-    // `free_space` reads the host's real filesystem, which the test does not
-    // own: on a disk with 5% or less free it fails however sound the install
-    // is. Every other check must pass, and the verdict and exit status must
-    // follow `free_space` alone.
-    let out = install.run(&["--json", "doctor"]);
-    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let checks = report["checks"].as_array().unwrap();
-    let host_full = checks
-        .iter()
-        .any(|c| c["check"] == "free_space" && c["status"] == "fail");
-    for c in checks.iter().filter(|c| c["check"] != "free_space") {
-        assert_ne!(c["status"], "fail", "{report}");
-    }
-    assert_eq!(report["ok"], !host_full, "{report}");
-    assert_eq!(out.status.success(), !host_full, "{report}");
+    let report = install.json(&["doctor"]);
+    assert_eq!(report["ok"], true, "{report}");
     let names: Vec<&str> = report["checks"]
         .as_array()
         .unwrap()
@@ -120,6 +111,24 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
     ] {
         assert!(names.contains(&want), "{want} missing from {names:?}");
     }
+    // The reading came from the debug seam `run` sets, not the host's disk.
+    // A release build has no seam and reads the host.
+    if cfg!(debug_assertions) {
+        let free_space = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["check"] == "free_space")
+            .unwrap();
+        assert_eq!(free_space["status"], "ok", "{free_space}");
+        assert!(
+            free_space["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("100 of 100 blocks"),
+            "{free_space}"
+        );
+    }
     assert!(
         !install.data().join(".sunrise-doctor.tmp").exists(),
         "the probe file is removed"
@@ -127,7 +136,7 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
 
     // Without --json the same report is lines a person reads.
     let text = install.run(&["doctor"]);
-    assert_eq!(text.status.success(), !host_full);
+    assert!(text.status.success());
     assert!(String::from_utf8_lossy(&text.stdout).contains("check: storage"));
 }
 

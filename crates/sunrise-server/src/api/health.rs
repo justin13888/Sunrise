@@ -310,8 +310,8 @@ mod tests {
         let file = dir.path().join("not-a-dir");
         std::fs::write(&file, b"").unwrap();
         let root = file.join("blobs");
-        // The disk reads half free, so `failed` names the blob root alone
-        // however full the disk the test runs on is.
+        // Half free, as in `ready_state`, so only the blob root fails however
+        // full the disk running the test is.
         let blobs = crate::blob::FsBlobs::new(&root).with_disk_space(|_| {
             Ok(Some(crate::blob::DiskSpace {
                 available: 50,
