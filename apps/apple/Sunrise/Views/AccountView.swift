@@ -43,6 +43,9 @@ struct AccountView: View {
     /// for the reason `devices` is optional: a screen with no open vault has
     /// no cache to describe.
     var storage: AttachmentCacheModel?
+    /// The day schedule, for Settings → Day schedule. Defaulted for the same
+    /// reason; the Mac passes it and iOS does not yet.
+    var daySchedule: DayScheduleModel?
 
     @State private var pairing: PairingModel?
     @State private var newVaultName = ""
@@ -125,6 +128,10 @@ struct AccountView: View {
             keyboardSection
 
             notificationSections
+
+            if let daySchedule {
+                DayScheduleSections(model: daySchedule)
+            }
 
             if let bridge = session?.bridge {
                 ParkedOpsSection(bridge: bridge)

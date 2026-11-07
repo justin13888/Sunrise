@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Decide which tests a push can affect, for the pre-push hook.
+"""Decide which tests a push can affect, for a scoped local test run.
+
+The pre-push hook used to call this; since #1117 it runs no test suite, and
+this script serves `mise run rust-test-changed` and `mise run test-changed`,
+which a developer runs by hand before pushing.
 
 Usage: prepush-scope.py rust|bun [FILE...]
 
@@ -9,9 +13,9 @@ Naming files answers for those paths instead of for the push. Prints one line on
   to test, sorted. `mise run rust-test-changed` reads it.
 - `bun`: `none` or `all`. `mise run test-changed` reads it.
 
-`SUNRISE_FULL_PREPUSH=1` makes both print `all`, which is what the hook ran
-before it was scoped. `mise run pre-push`, `mise run rust-test` and CI never
-read this script: they always run everything.
+`SUNRISE_FULL_PREPUSH=1` makes both print `all`. `mise run pre-push`,
+`mise run rust-test` and CI never read this script: they always run
+everything.
 
 What a push changes
 -------------------

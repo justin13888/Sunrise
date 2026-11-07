@@ -176,6 +176,19 @@ trigger #301 asks for.
   identifier `sunrise.wind_down`, re-planned in the reader's zone on every
   call, so a zone change replaces it. The seam exports it as
   `SunriseCore::wind_down_plan`. No Apple client schedules it yet.
+- **The Mac** edits it in two places, both through
+  `apps/apple/Sunrise/Calendar/DayScheduleModel.swift`, which reads
+  `Query::DaySchedule`, writes each entry with `SetPreference` /
+  `ClearPreference` under the key `day_schedule_key` names, and re-reads on
+  every change batch. Settings → Day schedule switches each weekday on or off
+  and sets its wake and sleep, and adds or removes day-of-month entries,
+  `-1` included (`DayScheduleSections`). The calendar's Day schedule menu sets
+  a column's civil date to its own hours, to no schedule, or back to the
+  usual schedule (`DateOverrideMenu`); both are in
+  `apps/apple/Sunrise/Views/DayScheduleViews.swift`. Which entry wins for a
+  date is never decided in Swift, and a window the core refuses
+  (`wake == sleep`) comes back as an error banner. iOS does not draw either
+  yet.
 - **The CLI** reads and writes it with `sunrise day-schedule`, and
   `sunrise prefs get day_schedule.…` reads one entry
   (`crates/sunrise-e2e/tests/cli_day_schedule.rs` drives both against a
