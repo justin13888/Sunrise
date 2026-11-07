@@ -41,6 +41,12 @@ final class ExportEverythingModel {
     /// down.
     private(set) var phase: Phase?
 
+    /// The app starts with nothing to show. A test starts mid-export, which a
+    /// headless run cannot otherwise reach: getting there takes the save panel.
+    init(phase: Phase? = nil) {
+        self.phase = phase
+    }
+
     var isRunning: Bool {
         if case .running = phase { return true }
         return false
