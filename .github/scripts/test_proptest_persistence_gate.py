@@ -308,6 +308,17 @@ class Accepts(GateCase):
         self.write(f"{CRATE}/src/lib.rs", NO_CONFIG)
         self.assert_code(self.run_gate(), CLEAN, "OK: proptest-persistence clean")
 
+    def test_a_tests_module_under_src_is_out_of_scope(self):
+        # `src/<module>/tests/*.rs` is a unit-test child module, not a cargo
+        # integration-test target, and the default finds `lib.rs` above it.
+        self.integration_test("#[test]\nfn t() {}\n")
+        self.write(f"{CRATE}/src/sse/tests/buffer.rs", NO_CONFIG)
+        self.assert_code(
+            self.run_gate(),
+            CLEAN,
+            "OK: proptest-persistence clean (0 proptest file(s) of 1 integration tests).",
+        )
+
     def test_a_nested_tests_directory_is_not_an_integration_test_target(self):
         # Cargo only builds `<crate>/tests/*.rs` as targets; a helper module
         # a directory deeper is not one.

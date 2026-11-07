@@ -276,6 +276,27 @@ def git_lines(root: str, *args: str) -> list[str]:
     return [line for line in out.split("\0") if line]
 
 
+def integration_test_files(tracked: list[str]) -> list[str]:
+    """The tracked `<crate>/tests/<name>.rs` files, sorted.
+
+    Crate directories come from the tree rather than a hardcoded list: any
+    tracked `<dir>/tests/<name>.rs` makes `<dir>` a crate with integration
+    tests. A `tests/` directory anywhere under a `src/` is a unit-test child
+    module, such as `crates/sunrise-sync/src/sse/tests/`. It is not a cargo
+    integration-test target, and the `SourceParallel` default finds `lib.rs`
+    above it. So it is out of scope, the same as every other proptest under
+    `src/`.
+    """
+    return sorted(
+        f
+        for f in tracked
+        if f.endswith(".rs")
+        and len(f.split("/")) >= 3
+        and f.split("/")[-2] == "tests"
+        and "src" not in f.split("/")[:-2]
+    )
+
+
 def check(root: str) -> int:
     try:
         tracked = git_lines(root, "ls-files", "-z")
@@ -284,11 +305,7 @@ def check(root: str) -> int:
         return 2
 
     tracked_set = set(tracked)
-    # Crate directories, from the tree rather than a hardcoded list: any tracked
-    # `<dir>/tests/<name>.rs` makes `<dir>` a crate with integration tests.
-    test_files = sorted(
-        f for f in tracked if f.endswith(".rs") and len(f.split("/")) >= 3 and f.split("/")[-2] == "tests"
-    )
+    test_files = integration_test_files(tracked)
     if not test_files:
         print("::error::proptest-persistence: no `<crate>/tests/*.rs` found; the scan is broken.")
         return 2
@@ -488,9 +505,17 @@ def self_test() -> int:
         print(f"::error::proptest-persistence self-test: an unclosed block read as {unclosed}")
         failures += 1
 
+    # A unit-test child module under `src/` is not an integration test.
+    listed = integration_test_files(
+        ["crates/c/tests/a.rs", "crates/c/src/sse/tests/buffer.rs", "crates/c/tests/helpers/mod.rs"]
+    )
+    if listed != ["crates/c/tests/a.rs"]:
+        print(f"::error::proptest-persistence self-test: the integration-test listing read {listed}")
+        failures += 1
+
     if failures:
         return 1
-    print("OK: proptest-persistence self-test clean (11 cases).")
+    print("OK: proptest-persistence self-test clean (12 cases).")
     return 0
 
 
