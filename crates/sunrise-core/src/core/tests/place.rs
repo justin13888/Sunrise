@@ -60,6 +60,11 @@ async fn presence_is_never_written_to_the_vault() {
         "a presence report is not a change to the vault"
     );
     assert_eq!(core.evaluate_place(&[place(1)]), PlaceEval::Satisfied);
+    assert_eq!(
+        core.evaluate_place(&[place(2)]),
+        PlaceEval::Unknown,
+        "a forgotten place is unknown again"
+    );
     core.close().await.unwrap();
 }
 
