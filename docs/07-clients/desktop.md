@@ -282,8 +282,8 @@ document's intent, not yet implemented).
   (reordering). An existing block drags to move and its bottom edge to resize,
   both snapping to the grid's chosen step; the Adjust sheet is still there for
   exact times. The sidebar's Streams reorder by `.onMove`, which writes
-  `Stream.sort_order` through the core and therefore **syncs** — task order does
-  not, because a Task has no ordering facet to write. Files drop onto a task's
+  `Stream.sort_order` through the core and therefore **syncs**, and so does task
+  order: a row drop is `MoveTasks`, which writes `Task.sort_order`. Files drop onto a task's
   Attachments pane. Today and Search decline a reorder drop rather than
   accepting one that would snap back, because the core ranks those two lists.
   The one gesture not built is **Calendar block → Task**, and what is missing is

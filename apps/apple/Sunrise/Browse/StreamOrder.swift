@@ -4,10 +4,10 @@ import Foundation
 ///
 /// **This is the vault's order, not this device's.** A Stream carries a
 /// `sort_order` — a fractional index, `docs/02-domain/streams.md` §Sort order —
-/// so a stream dragged here moves on every device the vault reaches. That is
-/// the difference between this type and ``ListOrder``, which arranges *tasks*
-/// and cannot sync because a Task has no ordering field to sync; the two are
-/// side by side deliberately and the split is explained there.
+/// so a stream dragged here moves on every device the vault reaches. A task
+/// list's order is the same kind of vault fact; ``ListOrder`` is its adapter,
+/// and there the core plans the whole move (`plan_task_move`), not just the
+/// keys.
 ///
 /// Pure, and separate from the model, because the interesting part is
 /// arithmetic on neighbours rather than anything to do with SwiftUI: a row

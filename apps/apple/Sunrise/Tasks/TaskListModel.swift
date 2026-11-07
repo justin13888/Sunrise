@@ -36,9 +36,9 @@ final class TaskListModel {
     /// display.
     let bridge: CoreBridge
 
-    /// The hand-arranged row order for this list, on this device. See
-    /// ``ListOrderStore`` for why it is a device fact and not a vault one.
-    private let order: ListOrderStore
+    /// The order an earlier build kept for this list on this device, written
+    /// once into the vault and then forgotten. See ``ListOrderImport``.
+    private let orderImport: ListOrderImport
 
     /// The Focus filter in force, which narrows Today and nothing else. See
     /// ``FocusFilter``.
@@ -47,12 +47,12 @@ final class TaskListModel {
     init(
         bridge: CoreBridge,
         kind: TaskListKind = .todayAll,
-        order: ListOrderStore = ListOrderStore(),
+        orderImport: ListOrderImport = ListOrderImport(),
         focusFilter: FocusFilterStore = .shared
     ) {
         self.bridge = bridge
         self.kind = kind
-        self.order = order
+        self.orderImport = orderImport
         self.focusFilter = focusFilter
     }
 
@@ -80,15 +80,19 @@ final class TaskListModel {
             return
         }
         do {
-            guard case let .tasks(queried) = try await bridge.query(kind.query(nowMs: nowMs)) else {
+            var result = try await bridge.query(kind.query(nowMs: nowMs))
+            if case let .tasks(queried) = result, await importStoredOrder(into: queried) {
+                result = try await bridge.query(kind.query(nowMs: nowMs))
+            }
+            guard case let .tasks(queried) = result else {
                 tasks = []
                 groups = []
                 return
             }
+            // In the order the core returned them, which for the lists that
+            // can be arranged by hand is the vault's manual order.
             let rows = FocusFilter.scoping(queried, to: focusScope)
-            // The remembered arrangement, laid over the query. A list nobody
-            // has dragged in is returned exactly as the core ordered it.
-            tasks = order.apply(rows, for: kind)
+            tasks = rows
             groups = kind.isToday
                 ? TaskGrouping.today(tasks: rows, nowMs: nowMs, timeZone: timeZone)
                 : []
@@ -96,6 +100,34 @@ final class TaskListModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Write the order an earlier build kept for this list on this device
+    /// into the vault, once; `true` when it wrote, so the caller re-reads.
+    ///
+    /// A stored order with nothing left to write — its rows are gone or
+    /// already placed, or another device has arranged the list since — is
+    /// forgotten without a write. Rows this device's own import of another
+    /// list placed are not another device's arrangement; see
+    /// ``ListOrderImport``. One the core refuses is kept and tried again on
+    /// the next refresh, against the list as it is then: the import is the
+    /// only copy of that arrangement, and deleting it on a failed write would
+    /// lose it.
+    private func importStoredOrder(into list: [TaskItem]) async -> Bool {
+        let kind = kind
+        guard orderImport.stored(for: kind) != nil else { return false }
+        guard let command = orderImport.command(for: kind, in: list) else {
+            orderImport.forget(kind)
+            return false
+        }
+        do {
+            _ = try await bridge.submit(command)
+        } catch {
+            return false
+        }
+        orderImport.recordPlaced(command)
+        orderImport.forget(kind)
+        return true
     }
 
     /// Follow the change stream for as long as the view is on screen.
@@ -194,21 +226,29 @@ final class TaskListModel {
         await run(.bindTask(block: block, task: task))
     }
 
+    /// The command a drop of `moved` onto `target` would submit, or `nil`
+    /// when it would change nothing.
+    ///
+    /// `nil` too when this list cannot be arranged by hand — Today is
+    /// sectioned by urgency and Search is ranked by relevance, and in both a
+    /// dropped row would snap back on the next refresh. Answering before the
+    /// drop is what lets the row decline it, so the cursor shows "no" instead
+    /// of promising a move that will not happen.
+    func reorderCommand(_ moved: [EntityRef], before target: EntityRef) -> CoreCommand? {
+        guard kind.acceptsReordering else { return nil }
+        return ListOrder.move(moved, before: target, in: tasks)
+    }
+
     /// **Drag-to-reorder**: put `moved` immediately before `target`.
     ///
-    /// `false` when this list cannot be arranged by hand — Today is sectioned
-    /// by urgency and Search is ranked by relevance, and in both a dropped row
-    /// would snap back on the next refresh. Returning the refusal rather than
-    /// silently doing nothing is what lets the row decline the drop, so the
-    /// cursor shows "no" instead of promising a move that will not happen.
+    /// A vault write, `MoveTasks`, so the arrangement syncs to every device.
+    /// The list is re-read rather than patched here, so the one answer to
+    /// "what order is this list in" stays the core's. `false` when nothing
+    /// was submitted; see ``reorderCommand(_:before:)``.
     @discardableResult
-    func reorder(_ moved: [EntityRef], before target: EntityRef) -> Bool {
-        guard kind.acceptsReordering else { return false }
-        let changed = order.move(moved, before: target, in: kind, visible: tasks.map(\.id))
-        guard changed else { return false }
-        // Re-read from the store rather than patching `tasks` here, so the one
-        // answer to "what order is this list in" stays `ListOrderStore`'s.
-        tasks = order.apply(tasks, for: kind)
+    func reorder(_ moved: [EntityRef], before target: EntityRef) async -> Bool {
+        guard let command = reorderCommand(moved, before: target) else { return false }
+        await run(command)
         return true
     }
 

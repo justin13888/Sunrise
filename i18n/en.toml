@@ -238,6 +238,43 @@ drop = "Drop them"
 # Caption under the quiet-hours settings. Must keep the four-hour limit.
 caption = "A held reminder fires when the window ends, and no more than four hours after it was due — past that it is dropped rather than delivered late."
 
+[apple.day_schedule]
+# Settings: the heading of the day-schedule sections, and the calendar's menu
+# that sets one date's hours.
+title = "Day schedule"
+# Caption under the weekday defaults. Must keep that an unset schedule means
+# midnight to midnight, and that it syncs.
+caption = "When you usually wake and sleep. Today, the briefs and the wind-down reminder follow it; a day with no schedule runs midnight to midnight. It syncs to every device on this vault."
+# Picker labels: the wake and the sleep time of one day.
+wake = "Wake"
+sleep = "Sleep"
+# Caption under the pickers. Must keep that a sleep at or before wake is the
+# next morning.
+sleep_caption = "A sleep time at or before the wake time is the next morning."
+# Settings: the heading of the day-of-month defaults.
+month_days = "Days of the month"
+# Caption under the day-of-month defaults: they win over the weekday.
+month_days_caption = "A day of the month wins over its weekday. Day 31 never matches a shorter month."
+# A day-of-month row; {day} is 1 to 31.
+month_day = "Day {day}"
+# The day-of-month row for the last day of every month.
+last_day = "Last day of the month"
+# Menu that adds a day-of-month default, and its placeholder when every day has one.
+add_month_day = "Add a day"
+# Calendar menu, one entry per day shown: give the date its own hours (the
+# ellipsis says a sheet follows), give it none, or drop its override.
+date_hours = "Set hours for this date…"
+date_none = "No schedule on this date"
+date_clear = "Use the usual schedule"
+# Calendar menu: what a date's override currently says. {wake} and {sleep} are
+# clock times.
+date_window = "Wake {wake}, sleep {sleep}"
+date_no_schedule = "No schedule"
+# Calendar menu: a date with no override of its own.
+date_usual = "Usual schedule"
+# The sheet that sets one date's hours; {date} is the date, written out.
+date_sheet_title = "Hours for {date}"
+
 [apple.sign_in]
 # Settings, Account: starts sign-in in the browser; the ellipsis says more follows.
 sign_in = "Sign in…"

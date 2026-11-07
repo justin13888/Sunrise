@@ -54,7 +54,7 @@ enum FocusFilter {
 ///
 /// **Device-local, and never synced.** A Focus is a fact about one phone at
 /// one moment — the Mac on the desk is not in the phone's Work Focus — so the
-/// filter lives in `UserDefaults` beside ``ListOrderStore`` and
+/// filter lives in `UserDefaults` beside `AppSettings` and
 /// `NotificationPreferences`, and nothing about it reaches the vault.
 ///
 /// Persisted rather than held in memory because iOS runs the Focus filter's

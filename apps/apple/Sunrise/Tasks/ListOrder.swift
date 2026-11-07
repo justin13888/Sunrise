@@ -19,90 +19,71 @@ enum DropPayload {
     }
 }
 
-/// Moving rows around in a list, as arithmetic on ids.
+/// A drag within a task list, as the one `MoveTasks` command it is.
 ///
-/// Pure and separate from the store, because the interesting question — where
-/// a row lands when you drop it on another one, and what happens to rows the
-/// order has never seen — is exactly the part that is invisible on screen
-/// until it is wrong.
+/// **A task's place in a list is a vault fact, and it syncs.** A Task carries
+/// `sort_order`, a fractional index (`docs/02-domain/tasks.md` §Fields), and
+/// `CoreCommand.moveTasks` is the only thing that writes it. The
+/// core owns all of the arithmetic: the keys, and which neighbouring rows have
+/// to move with the dragged ones so the drop can land where it was aimed
+/// (`plan_task_move`). The Inbox, Stream and Context queries come back in
+/// that order already, so there is nothing to lay over them here.
+///
+/// What is left is reading a SwiftUI drop: which rows, and which row they fell
+/// on. ``StreamOrder`` is the same adapter for the sidebar's streams.
 enum ListOrder {
-    /// Move `moved` so that it sits immediately before `target`.
+    /// The command that puts `moved` immediately above `target` in `list`,
+    /// the rows as the core returned them, or `nil` when the drop changes
+    /// nothing.
     ///
-    /// A multi-row drag keeps the rows in the order they were in, which is
-    /// what makes dragging a ⇧-selected run of five feel like moving one
-    /// thing. Ids not in `ids` are ignored; dropping onto a row that is itself
-    /// being moved is a no-op rather than a rearrangement of the selection.
-    static func moving(
+    /// A multi-row drag keeps its rows in the order they are in `list`, which
+    /// is what makes dragging a ⇧-selected run feel like moving one thing.
+    /// Dropping onto a row that is itself being dragged, or naming rows the
+    /// list does not hold, is a no-op rather than a guess.
+    static func move(
         _ moved: [EntityRef],
-        before target: EntityRef?,
-        in ids: [EntityRef]
-    ) -> [EntityRef] {
-        let moving = ids.filter { moved.contains($0) }
-        guard !moving.isEmpty else { return ids }
-        guard let target, !moving.contains(target) else { return ids }
-        var result = ids.filter { !moving.contains($0) }
-        guard let index = result.firstIndex(of: target) else { return ids }
-        result.insert(contentsOf: moving, at: index)
-        return result
-    }
-
-    /// Lay a remembered order over a fresh query result.
-    ///
-    /// Rows the order knows about come first, in the order it remembers.
-    /// Rows it has never seen — captured since, arrived by sync, or simply
-    /// never dragged — follow in the order the core returned them.
-    ///
-    /// That is a deliberate choice and it is the one that keeps the list
-    /// honest: a new task appearing in the middle of a hand-arranged run
-    /// would look like the arrangement had been rewritten by somebody else.
-    /// Rows the order remembers but the query no longer returns are dropped
-    /// here rather than pruned from storage — the query is the truth about
-    /// what exists, and a task that comes back from an undo should come back
-    /// where it was.
-    static func applying(_ stored: [EntityRef], to ids: [EntityRef]) -> [EntityRef] {
-        guard !stored.isEmpty else { return ids }
-        let present = Set(ids)
-        let known = stored.filter { present.contains($0) }
-        guard !known.isEmpty else { return ids }
-        let placed = Set(known)
-        return known + ids.filter { !placed.contains($0) }
+        before target: EntityRef,
+        in list: [TaskItem]
+    ) -> CoreCommand? {
+        guard let move = planTaskMove(list: list, moved: moved, to: .before(id: target)) else {
+            return nil
+        }
+        return .moveTasks(ids: move.ids, after: move.after, before: move.before)
     }
 }
 
-/// A hand-arranged **task** order, per list, on this device.
+/// The one-time import of the order this device kept for itself before a
+/// Task had one.
 ///
-/// **Per device, and not by choice — but only for tasks.**
-/// `docs/07-clients/interaction-patterns.md` §Reorder asks for
-/// drag-within-a-list on every client, and the two halves of that request now
-/// land in two different places. The split is deliberate, and it is a
-/// difference in the *domain*, not a difference of opinion between two
-/// screens:
+/// Before `Task.sort_order` existed, a hand-arranged task order was a list of
+/// ids per list in `UserDefaults`, under `list.order.*`, and it never left the
+/// device. This reads what an earlier build left there, writes it once into
+/// the vault through the core's `import_task_list_order` (which declines when
+/// the list already has a synced order, because that one is newer), and then
+/// deletes the key. Nothing writes these keys any more, so a device that has
+/// opened each list it ever arranged holds none of them.
 ///
-/// * **Streams reorder through the core and sync.** A Stream carries
-///   `sort_order`, a fractional index (`docs/02-domain/streams.md` §Sort
-///   order); `StreamEdit.sortOrder` writes it. ``StreamOrder`` and
-///   ``BrowseModel/moveStreams(from:to:)`` are that path.
-/// * **Tasks cannot.** There is no ordering facet on a Task at all: neither
-///   `Task` nor `TaskEdit` has one, and no CDDL in `docs/02-domain/tasks.md`
-///   describes one. There is nothing to write, so nothing can sync, and an
-///   order kept here is the only order there is.
+/// Per list, on the first refresh of that list, rather than all at once at
+/// launch: the import needs the list as the core shows it now, and the refresh
+/// has just read exactly that.
 ///
-/// `UserDefaults`, then, beside `AppSettings` and `NotificationPreferences`
-/// and for the same reason those are there: it is a fact about this machine,
-/// it does not sync, and a device that loses it loses an arrangement rather
-/// than any of the user's data. If a Task ever grows an ordering field, this
-/// type is what gets pointed at it — `ListOrder` is already the whole of the
-/// logic, and ``StreamOrder`` is the shape the rest of it takes.
+/// **One task, one place.** `sort_order` is a field of the task, not of the
+/// list, so a task in the Inbox and a Context, or in a Stream and a Context,
+/// has one place in both. The first list this device imports therefore places
+/// rows that other lists hold too, and the core's import declines any list
+/// with a placed row, on the premise that another device arranged it. For
+/// rows this device's own import placed that premise is false, so the import
+/// remembers them, and a list whose only placed rows are its own gets the rest
+/// of its stored order placed after them instead of being declined.
 @MainActor
-@Observable
-final class ListOrderStore {
-    /// How many ids are kept per list.
-    ///
-    /// A bound, because this is written on every drag and never garbage
-    /// collected against the vault. Two hundred is far past the length of a
-    /// list anybody hand-arranges, and the rows past it simply fall back to
-    /// query order.
-    static let limit = 200
+struct ListOrderImport {
+    /// Where the ids this device's imports placed are kept, until the last
+    /// stored order is gone.
+    static let placedHereKey = "taskOrderImport.placedHere"
+
+    /// The prefix every stored order's key has; see
+    /// ``TaskListKind/legacyOrderKey``.
+    private static let legacyPrefix = "list.order."
 
     private let defaults: UserDefaults
 
@@ -110,61 +91,86 @@ final class ListOrderStore {
         self.defaults = defaults
     }
 
-    /// The remembered order for a list, or empty when it has never been
-    /// arranged.
-    func order(for kind: TaskListKind) -> [EntityRef] {
-        guard let key = kind.orderStorageKey else { return [] }
-        return defaults.stringArray(forKey: key) ?? []
+    /// The ids an earlier build stored for this list, or `nil` when there is
+    /// nothing left to import.
+    func stored(for kind: TaskListKind) -> [EntityRef]? {
+        guard let key = kind.legacyOrderKey else { return nil }
+        return defaults.stringArray(forKey: key)
     }
 
-    /// Apply what is remembered to a fresh query result.
-    func apply(_ tasks: [TaskItem], for kind: TaskListKind) -> [TaskItem] {
-        let stored = order(for: kind)
-        guard !stored.isEmpty else { return tasks }
-        let ranked = ListOrder.applying(stored, to: tasks.map(\.id))
-        let byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return ranked.compactMap { byID[$0] }
+    /// The tasks an import on this device has placed.
+    var placedHere: Set<EntityRef> {
+        Set(defaults.stringArray(forKey: Self.placedHereKey) ?? [])
     }
 
-    /// Record that `moved` was dropped onto `target` in a list currently
-    /// showing `visible`.
+    /// The command that writes the stored order into `list`, or `nil` when
+    /// there is nothing to write: no stored order, none of its rows still
+    /// unplaced in the list, or a list another device has already arranged.
     ///
-    /// Returns `false` when nothing changed — a drop on a row already in that
-    /// place, or on a list that cannot be arranged — so a caller can skip the
-    /// re-read.
-    @discardableResult
-    func move(
-        _ moved: [EntityRef],
-        before target: EntityRef,
-        in kind: TaskListKind,
-        visible: [EntityRef]
-    ) -> Bool {
-        guard let key = kind.orderStorageKey else { return false }
-        let next = ListOrder.moving(moved, before: target, in: visible)
-        guard next != visible else { return false }
-        defaults.set(Array(next.prefix(Self.limit)), forKey: key)
-        return true
+    /// A list whose placed rows were all placed by this device's own import
+    /// of another list keeps them where they are, and its stored rows that
+    /// nobody has placed go after them, in the stored order: the rows shared
+    /// with the list imported first follow that list's order, and nothing is
+    /// lost from either.
+    func command(for kind: TaskListKind, in list: [TaskItem]) -> CoreCommand? {
+        guard let stored = stored(for: kind) else { return nil }
+        if let move = importTaskListOrder(stored: stored, list: list) {
+            return .moveTasks(ids: move.ids, after: move.after, before: move.before)
+        }
+        let placed = list.filter { $0.sortOrder != nil }
+        let here = placedHere
+        guard let last = placed.last, placed.allSatisfy({ here.contains($0.id) }) else { return nil }
+        let unplaced = Set(list.filter { $0.sortOrder == nil }.map(\.id))
+        var ids: [EntityRef] = []
+        for id in stored where unplaced.contains(id) && !ids.contains(id) {
+            ids.append(id)
+        }
+        guard !ids.isEmpty else { return nil }
+        // A list shows its placed rows first, by key, so the last of them is
+        // the highest, and nothing placed comes after it.
+        return .moveTasks(ids: ids, after: last.id, before: nil)
     }
 
-    /// Forget a list's arrangement, back to whatever order the core returns.
-    func reset(_ kind: TaskListKind) {
-        guard let key = kind.orderStorageKey else { return }
+    /// Remember the rows an import's `command` placed, once the core has
+    /// accepted it.
+    func recordPlaced(_ command: CoreCommand) {
+        guard case let .moveTasks(ids, _, _) = command else { return }
+        defaults.set(Array(placedHere.union(ids)).sorted(), forKey: Self.placedHereKey)
+    }
+
+    /// Delete the stored order, once it has been written or found to have
+    /// nothing to write, and the record of what the imports placed once no
+    /// stored order is left to read it.
+    func forget(_ kind: TaskListKind) {
+        guard let key = kind.legacyOrderKey else { return }
         defaults.removeObject(forKey: key)
+        let anyLeft = defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(Self.legacyPrefix) }
+        if !anyLeft {
+            defaults.removeObject(forKey: Self.placedHereKey)
+        }
     }
 }
 
 extension TaskListKind {
-    /// Where this list's hand-arranged order is kept, or `nil` when the list
-    /// cannot be arranged by hand.
+    /// Whether rows in this list can be dragged into a hand-made order.
     ///
-    /// Today and Search are `nil`, and both refusals are the point rather than
+    /// Today and Search cannot, and both refusals are the point rather than
     /// an omission. Today is sectioned by *urgency* — the core decides which
     /// rows are overdue and which are later — so a row dragged across a
     /// section heading would either snap back on the next refresh or claim
     /// that a deadline had moved. Search is ranked by relevance to a query
     /// that changes on every keystroke, and an arrangement keyed to one query
     /// is an arrangement nobody would ever see twice.
-    var orderStorageKey: String? {
+    var acceptsReordering: Bool {
+        switch self {
+        case .today, .search: false
+        case .inbox, .stream, .context: true
+        }
+    }
+
+    /// Where an earlier build kept this list's order in `UserDefaults`, read
+    /// only by ``ListOrderImport``; `nil` for a list that never had one.
+    var legacyOrderKey: String? {
         switch self {
         case .today, .search: nil
         case .inbox: "list.order.inbox"
@@ -172,7 +178,4 @@ extension TaskListKind {
         case let .context(id, _): "list.order.context.\(id)"
         }
     }
-
-    /// Whether rows in this list can be dragged into a hand-made order.
-    var acceptsReordering: Bool { orderStorageKey != nil }
 }
