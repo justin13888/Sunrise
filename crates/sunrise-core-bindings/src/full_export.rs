@@ -11,9 +11,9 @@
 //!
 //! An export is a directory of many files, possibly gigabytes of attachments,
 //! so it cannot cross as one buffer the way an `.ics` does. The app passes the
-//! folder its panel returned, holding that folder's security scope
-//! (`startAccessingSecurityScopedResource`) for the length of the call: the
-//! scope is the process's, so the writes made here are inside it.
+//! path of the folder its save panel returned and holds no security scope
+//! around the call: it is not sandboxed (ADR-0031), so the writes made here
+//! need none.
 
 use sunrise_core::export::{Manifest, MissingReason};
 
