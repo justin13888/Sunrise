@@ -4,7 +4,7 @@ import WidgetKit
 
 /// "Stream": the first open tasks in a stream the user picks.
 ///
-/// `docs/07-clients/mobile-ios.md` §Lock Screen widgets is the specification:
+/// `docs/07-clients/mobile-ios.md` §Widgets is the specification:
 /// a large widget, configured with one stream. Like ``NextUpWidget`` it draws
 /// the snapshot and computes nothing, so the stream list the picker offers
 /// comes from the snapshot too — the extension never opens the vault.

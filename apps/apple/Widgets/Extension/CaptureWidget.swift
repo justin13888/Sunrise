@@ -6,7 +6,7 @@ import WidgetKit
 /// "Quick Capture": one tap on the Lock Screen, and Sunrise opens with the
 /// capture sheet ready.
 ///
-/// `docs/07-clients/mobile-ios.md` §Lock Screen widgets is the specification.
+/// `docs/07-clients/mobile-ios.md` §Widgets is the specification.
 /// The button runs ``OpenCaptureIntent``, which opens the app; nothing here
 /// reads the snapshot, because a capture field needs nothing from the vault to
 /// appear. A locked phone asks for Face ID first, as it does for any widget

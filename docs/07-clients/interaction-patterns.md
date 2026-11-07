@@ -279,7 +279,7 @@ vault — a Task opens its editor, a Block moves the grid onto the day it is on
 |---|---|---|
 | `sunrise://morning` | **live** | The morning summary. Also ⌘⌥M. |
 | `sunrise://evening` | **live** | End-of-day planning. Also ⌘⌥E. |
-| `sunrise://capture?text=…` | **live** | Opens quick capture pre-filled. |
+| `sunrise://capture?text=…` | **live** | Opens quick capture pre-filled. A link with no text, or only whitespace, is refused by both parsers (`DeepLink.swift` and `sunrise-client-core`'s `links.rs`). An empty capture sheet is not a link: the iOS Lock Screen capture widget opens one through `OpenCaptureIntent`, a foreground App Intent the app performs ([`mobile-ios.md`](./mobile-ios.md#widgets)). |
 | `sunrise://entity/<EntityRef>` | **live** | Opens the screen the entity lives on **and the entity on it** — a Block routes to the calendar, moved onto the block's own day; a Task routes to Today and opens its editor, which shows the task whether or not Today happens to hold it. This is the link a block reminder carries and the one "Copy permalink" writes ([`../02-domain/identifiers.md`](../02-domain/identifiers.md)). An id this vault does not hold opens the screen and reveals nothing. |
 | `sunrise://task/<id>?action=…` | **live** | `complete`, `open`, or a snooze span. This is what a notification action button fires. |
 | `sunrise://focus/<TaskId>` | **live** | Starts a one-pomodoro session on that task and opens Focus — the same write `F` on a row makes. It declines while another session is running rather than opening a second one the screen cannot show; you land on Focus either way, so what is running is the first thing you see. Also reachable by `F` on a row and from the sidebar. |
