@@ -56,7 +56,10 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
         // stored rules back (ADR-0045 §6). A rule someone typed is a request,
         // and a request for a schedule this build cannot run is an error.
         if let Some((part, raw)) = rule.first_unknown() {
-            if let Some(hint) = (part == "BYDAY").then(|| ordinal_byday_hint(raw)).flatten() {
+            // The rewrite is exact only for a lone token: beside other days or
+            // an existing `BYSETPOS` it would drop or change what was asked.
+            let lone = part == "BYDAY" && rule.by_day.len() == 1 && rule.by_set_pos.is_empty();
+            if let Some(hint) = lone.then(|| ordinal_byday_hint(raw)).flatten() {
                 return Err(format!(
                     "RRULE bad value for BYDAY: {raw} (an ordinal weekday is not supported; \
                      write {hint})"
@@ -161,7 +164,8 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
 ///
 /// `BYDAY` holds plain weekdays only; the stored [`Weekday`] has no ordinal,
 /// so a rule written with one cannot run. The `BYSETPOS` form picks the same
-/// day when the token stands alone, which is the case the hint is for.
+/// day only when the token is the rule's sole `BYDAY` value and no `BYSETPOS`
+/// is present, so the caller asks for a hint only then.
 fn ordinal_byday_hint(raw: &str) -> Option<String> {
     let split = raw.find(|c: char| c.is_ascii_alphabetic())?;
     let (n, day) = raw.split_at(split);
@@ -360,6 +364,18 @@ mod tests {
         for body in ["FREQ=WEEKLY;BYDAY=0MO", "FREQ=WEEKLY;BYDAY=1XX"] {
             let err = parse_recurrence(body).unwrap_err();
             assert!(!err.contains("BYSETPOS"), "{body}: {err}");
+        }
+        // Beside other days or an existing `BYSETPOS`, no single rewrite
+        // keeps the request (`1MO,3MO` would lose the third Monday, `MO,1FR`
+        // would lose Monday), so the ordinal is refused without a spelling.
+        for (body, raw) in [
+            ("FREQ=MONTHLY;BYDAY=1MO,3MO", "1MO"),
+            ("FREQ=MONTHLY;BYDAY=MO,1FR", "1FR"),
+            ("FREQ=MONTHLY;BYDAY=1MO;BYSETPOS=2", "1MO"),
+        ] {
+            let err = parse_recurrence(body).unwrap_err();
+            assert!(err.contains(&format!("BYDAY: {raw}")), "{body}: {err}");
+            assert!(!err.contains("BYSETPOS="), "{body}: {err}");
         }
     }
 
