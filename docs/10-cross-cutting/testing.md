@@ -304,7 +304,7 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
 [cargo-nextest](https://nexte.st/), and then the doc tests through
 `mise run rust-doctest`, because nextest cannot run doc tests. mise fetches the
 cargo-nextest version the task pins on its first run. It is opt-in:
-`mise run rust-test`, the pre-push hook and CI still run plain `cargo test`, and
+`mise run rust-test` and CI still run plain `cargo test`, and
 nothing they check reads `.config/nextest.toml`.
 
 What the profile in `.config/nextest.toml` changes:
@@ -906,10 +906,12 @@ directory from an earlier crate is scored with them, which is what the gate's
 "undeclared crate" failure means when it names one you did not ask for.
 
 It is deliberately **not** in `lefthook.yaml`: adding hours to a push is how a
-hook gets bypassed. For the same reason the pre-push hook runs only the tests a
-push can affect (`mise run rust-test-changed` and `mise run test-changed`, which
-`.github/scripts/prepush-scope.py` scopes), and leaves the whole suite to CI and
-to `SUNRISE_FULL_PREPUSH=1`.
+hook gets bypassed. For the same reason the pre-push hook runs no test suite at
+all (#1117): format, lint and typecheck only. The whole suite runs in CI on
+every push to `master`, nightly and on dispatch, and locally through
+`mise run pre-push`; `mise run rust-test-changed` and `mise run test-changed`
+(which `.github/scripts/prepush-scope.py` scopes) run only what a push can
+affect.
 
 ## Release gates
 
