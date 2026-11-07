@@ -22,6 +22,7 @@ not in it.
 |---|---|
 | CLI | `sunrise export all <dir> [--no-fetch]` |
 | UniFFI | `SunriseCore.export_all(dir, fetch)`, returning a `FullExportSummary` |
+| macOS | File → Export Everything…: a save panel names the new folder, then a sheet shows the export running and, after it, what was written and what was left out (`apps/apple/macOS/ExportEverything.swift`). It always fetches. |
 
 Both call `crates/sunrise-client-core/src/export.rs#export_all`, so they write
 the same bytes. What goes in each file is decided in
@@ -199,5 +200,8 @@ by path and id, and the only time in the output is the injected clock's
   records are already in the shape an import would replay.
 - **Progress and cancel across the seam.** The fetch goes one attachment at a
   time, and each one can already be cancelled with `cancel_attachment_fetch`.
-  A progress stream for the whole export is the macOS "Export Everything…"
-  sheet's to add.
+  `export_all` returns once, at the end, so the macOS "Export Everything…"
+  sheet shows an indeterminate spinner and offers no Cancel until the seam
+  carries a progress stream and a cancel for the whole export.
+- **Export Everything on iOS.** The seam is the same; the screen that would
+  host the folder picker and the sheet is not built.

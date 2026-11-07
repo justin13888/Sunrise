@@ -130,6 +130,26 @@ struct IcalMenuItems: View {
     }
 }
 
+/// File → Export Everything…, under the calendar's two.
+///
+/// The window is opened first because the export's progress and its outcome
+/// are a sheet on it — the same reason Import Calendar… opens one. Disabled
+/// with no vault open, and while an export is already running.
+struct ExportEverythingMenuItem: View {
+    let surfaces: AppSurfaces
+    let exporter: ExportEverythingModel
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button(L10n.Commands.exportEverything) {
+            openWindow(id: SunriseWindow.main.rawValue)
+            Task { await exporter.start(from: surfaces.vault) }
+        }
+        .disabled(surfaces.vault == nil || exporter.isRunning)
+    }
+}
+
 /// File → Print… / Export as PDF….
 ///
 /// Both hand the request to the window, which is the only thing that knows
