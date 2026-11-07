@@ -61,11 +61,13 @@
 //! compiled only where the feature and `debug_assertions` are both on, so a
 //! release build has the spec's parameters whatever features it was given.
 //! This crate's own unit tests keep the spec's parameters even with the
-//! feature on, and [`test_cheap_kdf::at_production_strength`] gives an
+//! feature on, and `test_cheap_kdf::at_production_strength` gives an
 //! integration test the same. The blob names no parameters, so a blob sealed
 //! under one set opens only under that set; a build with the feature reports
-//! a blob from the other set as [`RecoveryError::KdfParamsMismatch`] rather
-//! than as a wrong code. See `docs/10-cross-cutting/testing.md`.
+//! a blob from the other set as `RecoveryError::KdfParamsMismatch` rather
+//! than as a wrong code. See `docs/10-cross-cutting/testing.md`. Both items
+//! exist only in a build with the feature, so these docs name them without
+//! linking: a link would not resolve in the default `cargo doc` build.
 
 use crate::aead::{aead_open_xchacha, aead_seal_xchacha, AEAD_NONCE_LEN};
 use crate::keys::RecoveryKey;
@@ -555,7 +557,7 @@ const fn known_plaintext_prefixes() -> [[u8; RETIRED_CT_PREFIX_LEN]; 3] {
 /// # Errors
 /// [`RecoveryError::Truncated`] or [`RecoveryError::BadMagic`] for a check
 /// that is not one, and Argon2id failures. A build with `test-cheap-kdf`
-/// returns [`RecoveryError::KdfParamsMismatch`] for a check the code matches
+/// returns `RecoveryError::KdfParamsMismatch` for a check the code matches
 /// only under the other parameter set.
 pub fn retired_check_matches(check: &[u8], seed: &[u8; 32]) -> Result<bool, RecoveryError> {
     let active = active_kdf();
