@@ -15,9 +15,10 @@
 //! the links' jitter seed, as it does for every chaos scenario; `RUST_LOG`
 //! turns on the logs.
 //!
-//! [`the_harness_measures_every_op`] runs on every pull request with a few
-//! dozen ops, and asserts only that the harness itself works: a latency bound
-//! on a shared runner, inside a parallel test binary, would fail on noise.
+//! [`the_harness_measures_every_op`] runs in the workspace suite (CI on every
+//! push to `master`, nightly and on dispatch) with a few dozen ops, and
+//! asserts only that the harness itself works: a latency bound on a shared
+//! runner, inside a parallel test binary, would fail on noise.
 
 // The percentile line is this test's report, read off the CI log.
 #![allow(clippy::doc_markdown, clippy::print_stdout)]

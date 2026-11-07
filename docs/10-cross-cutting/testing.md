@@ -227,7 +227,7 @@ stays at production strength.
 
 The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross_version_convergence.rs`, designed in [ADR-0057](../11-adr/0057-cross-version-merge-harness.md). What it asserts is [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) §Compatibility testing.
 
-- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every pull request.
+- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every push to `master`, nightly and on dispatch (not on a pull request), and in `mise run rust-test`.
 - **The baseline run** (`baseline_and_head_merge_without_loss_or_break`, `baseline_known_gaps_still_reproduce`) is `#[ignore]`d, because it needs the baseline driver, which is built from another tree:
 
     ```sh
@@ -288,7 +288,8 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
   ([`performance-budgets.md`](./performance-budgets.md#sync-propagation-commit-on-one-device--applied-on-another)).
   An absolute budget the measured tail sits far below is the kind of check a
   shared runner can hold. A 40-op run of the same harness is an ordinary test
-  in every pull request's suite; it asserts that every op is measured, not a
+  in the workspace suite, which CI runs on every push to `master`, nightly and
+  on dispatch; it asserts that every op is measured, not a
   latency bound.
 - Tracked in [#33](https://github.com/justin13888/Sunrise/issues/33).
 
@@ -304,7 +305,7 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
 [cargo-nextest](https://nexte.st/), and then the doc tests through
 `mise run rust-doctest`, because nextest cannot run doc tests. mise fetches the
 cargo-nextest version the task pins on its first run. It is opt-in:
-`mise run rust-test`, the pre-push hook and CI still run plain `cargo test`, and
+`mise run rust-test` and CI still run plain `cargo test`, and
 nothing they check reads `.config/nextest.toml`.
 
 What the profile in `.config/nextest.toml` changes:
@@ -906,10 +907,12 @@ directory from an earlier crate is scored with them, which is what the gate's
 "undeclared crate" failure means when it names one you did not ask for.
 
 It is deliberately **not** in `lefthook.yaml`: adding hours to a push is how a
-hook gets bypassed. For the same reason the pre-push hook runs only the tests a
-push can affect (`mise run rust-test-changed` and `mise run test-changed`, which
-`.github/scripts/prepush-scope.py` scopes), and leaves the whole suite to CI and
-to `SUNRISE_FULL_PREPUSH=1`.
+hook gets bypassed. For the same reason the pre-push hook runs no test suite at
+all (#1117): format, lint and typecheck only. The whole suite runs in CI on
+every push to `master`, nightly and on dispatch, and locally through
+`mise run pre-push`; `mise run rust-test-changed` and `mise run test-changed`
+(which `.github/scripts/prepush-scope.py` scopes) run only what a push can
+affect.
 
 ## Release gates
 

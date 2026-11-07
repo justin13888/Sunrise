@@ -74,8 +74,8 @@ jobs:
   # slower-but-cheaper one — and two jobs can simply say so.
   #
   # `cargo test --workspace --all-targets` compiles `sunrise-core-bindings`,
-  # the UniFFI seam, and runs its tests on both legs; Linux is the leg every
-  # pull request gets. The seam's `cdylib` and the Kotlin generated from it
+  # the UniFFI seam, and runs its tests on both legs, after the merge; a pull
+  # request gets the Linux leg's fmt and clippy only. The seam's `cdylib` and the Kotlin generated from it
   # are the `kotlin-smoke` job's, and Windows is `rust-windows`'s.
   rust:
     name: Rust (ubuntu-latest)
@@ -84,10 +84,19 @@ jobs:
     # `fuzz/` clippy and rustdoc steps added (#167): a second cargo workspace
     # with a target directory of its own, which on a cold cache rebuilds the
     # shared dependency graph once more. Warm, this job runs in about 5m20s.
+    # That is the full run; on a pull request it stops after clippy.
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      # One job, one check name, split by cost rather than into two jobs
+      # (#1117): on a pull request it runs the toolchain assertion, fmt and
+      # both clippy halves; on a push to `master`, nightly and on dispatch it
+      # adds the tests, doc tests and rustdoc. `master` is the development
+      # branch and a release is what stabilises it, so the slow half runs
+      # after the merge, as `rust-macos` below already does.
       - uses: ./.github/actions/rust-checks
+        with:
+          full: ${{ github.event_name != 'pull_request' }}
 
   rust-macos:
     name: Rust (macos-latest)
@@ -123,6 +132,15 @@ jobs:
     # pull request. Before merge, the evidence is the local run: each Apple
     # job is one `mise run` task, so `mise run apple-app` on a Mac runs exactly
     # the same commands.
+    #
+    # Since #1117 this condition is no longer macOS-only: every slow job in
+    # this file carries it (`rust-windows`, `kotlin-smoke`, `wasm-core`,
+    # `storage-fixtures`, `bun-test`, `web-build`, `openapi-current`,
+    # `deploy-test`, `tokens-current`, `fuzz-pr-plan`), and the `rust` job runs
+    # its tests only outside a pull request. `master` is the development branch
+    # and a release stabilises it, so a pull request gets the fast checks and
+    # the slow suites run after the merge. `mise run pre-push` runs both test
+    # suites locally for a change that wants them before merge.
     if: >-
       github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
@@ -143,8 +161,8 @@ jobs:
   # *compiled*, as a dev-dependency of `sunrise-cli`'s live-sync test.
   #
   # Advisory, not a required check, and the difference is a ruleset edit rather
-  # than anything in this file. It runs on every pull request and goes red like
-  # any other job; it is not yet in the `master` ruleset's required list
+  # than anything in this file. It runs after every merge to `master` and goes
+  # red like any other job; it is not yet in the `master` ruleset's required list
   # because it has no record of passing, and a required check that has never
   # run green blocks every pull request behind it. Add `Rust (windows-latest)`
   # to that list once it has a record.
@@ -161,6 +179,11 @@ jobs:
     # the graph the `rust` job builds; sized from that job's cold time with the
     # same margin, plus the OpenSSL build.
     timeout-minutes: 60
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     env:
       OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
     steps:
@@ -215,6 +238,11 @@ jobs:
     # No observation yet. Locally, warm: two minutes. Cold here: a debug build
     # of the seam's graph and a release build of `tools/uniffi-bindgen`.
     timeout-minutes: 30
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     env:
       # Clears the workflow-level `-D warnings`, as `apple-xcframework` does
       # and for the same reason: this builds `tools/uniffi-bindgen`, whose
@@ -672,6 +700,11 @@ jobs:
     # observation yet; sized from the local cold build (~3 minutes) with the
     # margin the other Rust jobs carry.
     timeout-minutes: 20
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -708,6 +741,11 @@ jobs:
     # No observation yet; a cold build of `sunrise-storage`'s graph (SQLCipher
     # compiled from source) is about two minutes locally.
     timeout-minutes: 15
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -840,6 +878,11 @@ jobs:
     runs-on: ubuntu-latest
     # Measured max 17s across those twelve runs, `bun install` included.
     timeout-minutes: 10
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
@@ -871,6 +914,11 @@ jobs:
     # A Vite build of a few hundred lines, `bun install` included; under a
     # minute locally. No observation yet; the other Bun jobs' floor.
     timeout-minutes: 10
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
@@ -1569,6 +1617,11 @@ jobs:
     # Measured 36-53s on a warm `rust-cache` and 4m17s on a cold one across
     # those twelve runs; the spread is one `cargo build` of `sunrise-server`.
     timeout-minutes: 30
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1613,6 +1666,11 @@ jobs:
     # image pulls, then two passes of the checks at about 40 s each — the
     # event-stream check holds a stream open for 20 s on purpose.
     timeout-minutes: 30
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
@@ -1645,6 +1703,11 @@ jobs:
     # one `rustc --emit=metadata` over a single generated file. That is
     # `bun-typecheck` (21s measured) plus a toolchain install.
     timeout-minutes: 15
+    # Off the pull-request path (#1117), with `rust-macos`'s condition.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
@@ -2243,9 +2306,9 @@ jobs:
     timeout-minutes: 60
     # Nightly and on demand — the same gate the `mutants` job carries. Half an
     # hour a target, across every target, is hours of runner time, which is a
-    # nightly's shape, not a pull request's. A pull request that
+    # nightly's shape, not a pull request's. A merge to `master` that
     # touches a decoder gets the short, path-filtered `fuzz-pr` job below
-    # instead (ADR-0061).
+    # instead (ADR-0061, moved off the pull request by #1117).
     #
     # This job keeps the floating `nightly` while `fuzz-pr` pins one. That is
     # deliberate: a nightly rustc regression reds this job, where nobody's
@@ -2265,8 +2328,9 @@ jobs:
       # not own turns an upstream lint change into a red gate here, so the
       # inherited value is cleared for this job only. Warnings in `fuzz/`'s own
       # sources are not this job's concern either way: the `rust` job lints that
-      # manifest with clippy and builds its rustdoc on the pinned stable, on every
-      # trigger, which is where a warning there goes red (#167).
+      # manifest with clippy on every trigger and builds its rustdoc on every
+      # trigger but a pull request, on the pinned stable, which is where a
+      # warning there goes red (#167).
       RUSTFLAGS: ""
       # `rust-toolchain.toml` overrides the toolchain for the whole checkout,
       # and it names 1.91.1. `RUSTUP_TOOLCHAIN` takes precedence over a
@@ -2326,8 +2390,9 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
 
-  # The pull-request half of fuzzing (ADR-0061): two minutes a target, only
-  # for the targets a pull request's changed paths reach. Two jobs, because a
+  # The per-change half of fuzzing (ADR-0061): two minutes a target, only
+  # for the targets a change's paths reach. Named for the pull request it
+  # ran on until #1117; it now runs on the commit a merge lands on `master`. Two jobs, because a
   # matrix cannot be computed inside the job it expands: `fuzz-pr-plan` reads
   # the diff and names the targets, and `fuzz-pr` runs one leg per name, or no
   # legs at all.
@@ -2336,16 +2401,23 @@ jobs:
     runs-on: ubuntu-latest
     # A depth-2 checkout and one `git diff`. Seconds.
     timeout-minutes: 5
-    if: github.event_name == 'pull_request'
+    # Off the pull-request path (#1117), with `rust-macos`'s condition; the
+    # job keeps its name. It now reads the commit a push to `master` landed,
+    # and a skip here skips `fuzz-pr` with it.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     outputs:
       targets: ${{ steps.plan.outputs.targets }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
-          # A pull_request run checks out GitHub's merge commit, whose first
-          # parent is the base it would merge into. Depth 2 reaches that parent,
-          # so `HEAD^1..HEAD` is exactly what merging the pull request changes,
-          # whatever the base has done since the branch was cut.
+          # Depth 2 reaches HEAD's first parent, so `HEAD^1..HEAD` is what the
+          # head commit changed: the whole pull request for the squash or
+          # merge commit a merge lands on `master`, and the last commit on a
+          # dispatched branch. A multi-commit direct push to `master` is read
+          # only for its head commit; the nightly `fuzz` job runs every target.
           fetch-depth: 2
       - name: Name the targets the changed paths reach
         id: plan
@@ -2399,8 +2471,9 @@ jobs:
     # minutes), a cold Address Sanitizer build of `fuzz/` and its dependency
     # graph (about four on an M-series laptop, so allow ten here), and the
     # 120-second budget. Thirty is more than double that; replace it with a
-    # real figure once one run has completed. No rust-cache: this job runs
-    # only on pull requests, and this file writes caches only from `master`.
+    # real figure once one run has completed. No rust-cache: it ran only on
+    # pull requests until #1117, which moved it to `master`; adding one is a
+    # separate change.
     timeout-minutes: 30
     strategy:
       # Not fail-fast, for the nightly job's reason: one target's finding must
@@ -2412,7 +2485,7 @@ jobs:
       # As in the nightly job: `cargo-fuzz` composes its own flags.
       RUSTFLAGS: ""
       # The pinned nightly. A floating `nightly` would let a rustc regression
-      # red a pull request that changed nothing about it. Moving the pin is a
+      # red a merge that changed nothing about it. Moving the pin is a
       # one-line edit here; the nightly `fuzz` job, on the floating toolchain,
       # is what shows whether the next date builds. `RUSTUP_TOOLCHAIN`
       # overrides `rust-toolchain.toml`'s 1.91.1 for every step.

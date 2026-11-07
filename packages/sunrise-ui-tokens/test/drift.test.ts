@@ -8,9 +8,9 @@
  * while being wrong.
  *
  * This is the TypeScript analogue of `the_committed_description_is_current` in
- * `crates/sunrise-server/src/api/mod.rs`, and — unlike the CI job, which is
- * dormant while Actions billing is blocked — it runs from `pre-push` through
- * `lefthook.yaml`.
+ * `crates/sunrise-server/src/api/mod.rs`. It runs in `mise run test`, in the
+ * opt-in `mise run pre-push`, and in CI's `bun-test` job on `master`; the
+ * pre-push hook runs no tests.
  *
  * A drift check alone is structurally blind, though: it compares the emitter
  * to itself. The second half of this file is the part that says what the

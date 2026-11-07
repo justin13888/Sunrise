@@ -5,7 +5,7 @@ pre-commit:
   commands:
     # The Biome fix and the typecheck run only when the commit stages a file
     # each tool reads, so a commit staging only Rust, Swift or Markdown skips
-    # them; pre-push and CI still run both on every change. Biome's glob
+    # them; pre-push and pull-request CI still run both on every change. Biome's glob
     # follows what `biome.jsonc` handles (its defaults, which include GraphQL
     # and leave HTML off): a language enabled there joins it in the same
     # change.
@@ -27,9 +27,12 @@ pre-commit:
     rust-clippy-fuzz:
       run: mise run rust-clippy-fuzz-staged
 
-# The two test commands run only what the pushed changes can affect;
-# `SUNRISE_FULL_PREPUSH=1 git push` runs both suites whole, and
-# `mise run pre-push` always does.
+# As light as pre-commit, over the whole tree rather than the staged files:
+# format, lint and typecheck, and no test suite (#1117). A push that took
+# 15-22 minutes timed out over SSH. The test suites run in CI on every push to
+# `master`, nightly and on dispatch; `mise run pre-push` runs them locally as
+# an explicit opt-in, and `mise run rust-test-changed` / `mise run
+# test-changed` run only what a push can affect.
 pre-push:
   parallel: true
   commands:
@@ -37,7 +40,7 @@ pre-push:
       run: mise run ci
     bun-typecheck:
       run: mise run typecheck
-    bun-test:
-      run: mise run test-changed
-    rust-test:
-      run: mise run rust-test-changed
+    rust-fmt:
+      run: mise run rust-fmt-check
+    rust-clippy:
+      run: mise run rust-clippy-workspace
