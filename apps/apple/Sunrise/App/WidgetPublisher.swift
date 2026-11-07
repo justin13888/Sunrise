@@ -90,7 +90,9 @@ final class WidgetPublisher {
                     link: DeepLink.task(task.id, .open).url
                 )
             },
-            streams: streams.prefix(WidgetSnapshot.streamLimit).map { tile(stream: $0.stream, tasks: $0.tasks) }
+            streams: streams.prefix(WidgetSnapshot.streamLimit).map {
+                tile(stream: $0.stream, tasks: $0.tasks)
+            }
         )
     }
 

@@ -41,7 +41,9 @@ struct StreamTileIntent: WidgetConfigurationIntent {
         LocalizedStringResource("apple.widget.stream_tile.intent_description", table: "Localizable")
     )
 
-    @Parameter(title: LocalizedStringResource("apple.widget.stream_tile.stream_parameter", table: "Localizable"))
+    @Parameter(
+        title: LocalizedStringResource("apple.widget.stream_tile.stream_parameter", table: "Localizable")
+    )
     var stream: StreamTileEntity?
 
     init() {}
@@ -118,7 +120,10 @@ struct StreamTileProvider: AppIntentTimelineProvider {
         context.isPreview ? placeholder(in: context) : entry(for: configuration)
     }
 
-    func timeline(for configuration: StreamTileIntent, in context: Context) async -> Timeline<StreamTileEntry> {
+    func timeline(
+        for configuration: StreamTileIntent,
+        in context: Context
+    ) async -> Timeline<StreamTileEntry> {
         Timeline(entries: [entry(for: configuration)], policy: .never)
     }
 

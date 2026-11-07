@@ -38,8 +38,6 @@ struct OpenCaptureIntent: AppIntent {
     /// **Capture Task**, which captures without opening anything.
     static let isDiscoverable = false
 
-    init() {}
-
     @MainActor
     func perform() async throws -> some IntentResult {
         QuickCaptureRequest.post()

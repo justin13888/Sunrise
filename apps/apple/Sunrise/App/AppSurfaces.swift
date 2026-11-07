@@ -39,12 +39,8 @@ final class AppSurfaces {
     let widgets: WidgetFeed?
     init(widgets: WidgetFeed? = nil) {
         self.widgets = widgets
-        // The Lock Screen capture widget's intent reaches the app through this
-        // (`Widgets/Shared/OpenCaptureIntent.swift`). The app builds one of
-        // these; the newest instance is the one listening.
-        QuickCaptureRequest.presenter = { [weak self] in
-            self?.presentRequestedCapture() ?? false
-        }
+        // How the capture widget's `OpenCaptureIntent` reaches the field.
+        QuickCaptureRequest.presenter = { [weak self] in self?.presentRequestedCapture() ?? false }
     }
 
     #if os(macOS)
@@ -220,22 +216,14 @@ final class AppSurfaces {
             }
         }
         #endif
-        // A capture widget tapped before this vault was open — a cold launch
-        // from the Lock Screen — is answered now that there is a field.
+        // A capture widget tapped before a vault was open (a cold launch).
         if QuickCaptureRequest.takePending() { openQuickCapture() }
     }
 
-    /// Open quick capture for ``QuickCaptureRequest``, or say it cannot yet.
-    ///
-    /// Unlike ``openQuickCapture(prefill:)`` this gives no refusal feedback
-    /// when there is no field: the request is kept, and ``attach(bridge:)``
-    /// answers it.
+    /// Open quick capture for ``QuickCaptureRequest``, or return `false` with
+    /// no refusal feedback: the request is kept, and `attach` answers it.
     func presentRequestedCapture() -> Bool {
-        #if os(macOS)
-        guard panel != nil else { return false }
-        #else
         guard capture != nil else { return false }
-        #endif
         openQuickCapture()
         return true
     }
