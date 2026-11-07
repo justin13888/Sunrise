@@ -223,6 +223,18 @@ class CfgTestBoundaries(GateCase):
         self.write("engine/oplog.rs", 'fn save() { std::fs::write(p, b"x"); }\n')
         self.assert_flags("engine/oplog.rs:1")
 
+    def test_the_suites_a_test_only_file_declares_are_skipped_too(self):
+        # What `sync_driver/tests/mod.rs` does: its suites carry no
+        # `#[cfg(test)]` because their parent already compiles only in tests.
+        self.write("driver.rs", "#[cfg(test)]\nmod tests;\n")
+        self.write("driver/tests/mod.rs", "mod uploads;\n")
+        self.write("driver/tests/uploads/mod.rs", "mod chunks;\n")
+        self.write(
+            "driver/tests/uploads/chunks.rs",
+            'fn t() { std::fs::remove_dir_all(p); }\n',
+        )
+        self.assert_clean()
+
     def test_the_declaring_file_keeps_being_scanned_after_the_mod_line(self):
         self.write(
             "engine/mod.rs",
