@@ -22,7 +22,7 @@ not in it.
 |---|---|
 | CLI | `sunrise export all <dir> [--no-fetch]` |
 | UniFFI | `SunriseCore.export_all(dir, fetch)`, returning a `FullExportSummary` |
-| macOS | File → Export Everything…: a save panel names the new folder, then a sheet shows the export running and, after it, what was written and what was left out (`apps/apple/macOS/ExportEverything.swift`). It always fetches. |
+| macOS | File → Export Everything…: a save panel names the new folder, then a sheet shows the export running and, after it, what was written and what was left out (`apps/apple/macOS/ExportEverything.swift`). It always fetches, and it carries no chord, like the app's other exports ([`keyboard.md`](../08-features/keyboard.md)). |
 
 Both call `crates/sunrise-client-core/src/export.rs#export_all`, so they write
 the same bytes. What goes in each file is decided in
