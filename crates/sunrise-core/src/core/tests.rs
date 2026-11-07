@@ -1673,3 +1673,7 @@ async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
 /// Every public storage method after `Core::close`.
 #[cfg(test)]
 mod closed;
+
+/// Presence at a Place, which reaches no storage at all.
+#[cfg(test)]
+mod place;
