@@ -17,19 +17,13 @@ name: Docker image
 # below) and a list of them would go stale the day it gains an eleventh, with
 # the image then unchecked against exactly the change that broke it.
 #
-# The two lists below are the same list; change them together.
+# Not on a pull request (#1117): a cold release build of the server is up to
+# an hour, and `master` is the development branch that a release stabilises,
+# so the image is checked after the merge, as `ci.yml`'s slow jobs are.
+# `gh workflow run docker-image.yml --ref <branch>` checks a branch before it.
 on:
   push:
     branches: [master]
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - "crates/**"
-      - .github/workflows/docker-image.yml
-  pull_request:
     paths:
       - Dockerfile
       - .dockerignore
