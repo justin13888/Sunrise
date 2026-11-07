@@ -14,8 +14,22 @@
 #
 # The caller supplies `actions/checkout@v4` before this action, because an
 # action stored in the repository cannot check out the repository it lives in.
+#
+# `full` splits the gate by cost (#1117). Every caller runs the toolchain
+# assertion, fmt and both clippy halves; only a full run adds the workspace
+# tests, the doc tests and rustdoc, which are what make a cold run take
+# ~18 minutes. ci.yml passes `false` on a pull request, so one job, under one
+# check name, is the fast gate there and the whole gate on `master`.
 name: Rust checks
 description: Format, lint, test and document both cargo workspaces on the pinned toolchain.
+
+inputs:
+  full:
+    description: >-
+      "true" runs the tests, doc tests and rustdoc after fmt and clippy;
+      "false" stops after clippy.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -144,7 +158,11 @@ runs:
     # target before running a test, so the records exist by the time the gate
     # reads them; narrowing it would turn that gate red here (#153).
     # `mise run log-fields` is the same ordering for one gate, run locally.
+    #
+    # `inputs.full` is read by the step's own `if:`, in the main phase, so
+    # the post-step input restoration `save-if` avoids above does not apply.
     - name: cargo test
+      if: inputs.full == 'true'
       shell: bash
       run: cargo test --workspace --all-targets
     # One run again. This was two, with `--exclude sunrise-server` and a
@@ -153,6 +171,7 @@ runs:
     # the upstream fix, so there is nothing left to contain and no crate is
     # excluded from doctest coverage.
     - name: cargo doc-test
+      if: inputs.full == 'true'
       shell: bash
       run: cargo test --workspace --doc
     # A step in this job rather than a gate job of its own, because rustdoc
@@ -171,6 +190,7 @@ runs:
     # keeps the verdict about this workspace. `mise run rust-doc` is this
     # command verbatim -- keep them in step.
     - name: cargo doc
+      if: inputs.full == 'true'
       env:
         RUSTDOCFLAGS: "-D warnings"
       shell: bash
@@ -182,6 +202,7 @@ runs:
     # false` until #167, which would have made this step document nothing and
     # pass — the manifest now turns `doc` on and says why.
     - name: cargo doc (fuzz)
+      if: inputs.full == 'true'
       env:
         RUSTDOCFLAGS: "-D warnings"
       shell: bash
