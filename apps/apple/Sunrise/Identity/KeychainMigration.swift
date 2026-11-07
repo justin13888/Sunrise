@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// Moves one secret from the keychain an older build wrote it to, into the one
 /// this build addresses — without ever leaving zero readable copies.

@@ -265,20 +265,29 @@ struct KeychainMigrationTests {
     func credentialCopiesThatCannotBeOrderedAreNeverRefused() throws {
         let undecodable = Data(repeating: 4, count: 32)
         let decodable = try token(expiringAt: 1_000)
-        let cases: [(destination: Data, source: Data, kept: Data)] = [
-            (undecodable, decodable, decodable),
-            (decodable, undecodable, decodable),
-            (undecodable, secret, undecodable),
-            (decodable, try token(expiringAt: 1_000, access: "other"), decodable)
+        struct Case {
+            let destination: Data
+            let source: Data
+            let kept: Data
+        }
+        let cases = [
+            Case(destination: undecodable, source: decodable, kept: decodable),
+            Case(destination: decodable, source: undecodable, kept: decodable),
+            Case(destination: undecodable, source: secret, kept: undecodable),
+            Case(
+                destination: decodable,
+                source: try token(expiringAt: 1_000, access: "other"),
+                kept: decodable
+            )
         ]
-        for (destination, source, kept) in cases {
+        for each in cases {
             let pair = scratchPair()
             defer { pair.removeBoth() }
-            try pair.destination.write(destination)
-            try pair.source.write(source)
+            try pair.destination.write(each.destination)
+            try pair.source.write(each.source)
 
-            #expect(try pair.migration(.credential).run() == kept)
-            #expect(try pair.destination.read() == kept)
+            #expect(try pair.migration(.credential).run() == each.kept)
+            #expect(try pair.destination.read() == each.kept)
             #expect(try pair.source.read() == nil)
         }
     }
