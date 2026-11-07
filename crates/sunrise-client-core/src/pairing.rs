@@ -25,6 +25,13 @@
 //! and its `Retry-After` is minutes, so [`Rendezvous::send`] returns it at
 //! once as [`RendezvousError::Refused`].
 //!
+//! # A typed code
+//!
+//! The relay gives each session six digits when the new device opens it
+//! ([`Rendezvous::code`]). An existing device with no camera trades them for
+//! the session at `POST /api/v1/pairing/resolve` ([`resolve_code`]), which
+//! answers only within the caller's account.
+//!
 //! # Where the bearer goes
 //!
 //! Only to the relay this device is configured for, and only if that is a
@@ -155,6 +162,14 @@ pub enum RendezvousError {
         /// The relay's `Retry-After`, in seconds as it sent them.
         retry_after: Option<String>,
     },
+    /// No pairing of this account is waiting under the typed code: mistyped,
+    /// expired, already used, or shown by a device signed in to another
+    /// account.
+    #[error(
+        "no pairing is waiting under that code. Check the six digits against \
+         the other device, and that both are signed in to the same account"
+    )]
+    UnknownCode,
     /// The session is gone: the other side cancelled it, or it expired.
     #[error(
         "the pairing ended: the other device cancelled it or it expired. \
@@ -180,9 +195,81 @@ impl RendezvousError {
     pub const fn is_pairing(&self) -> bool {
         matches!(
             self,
-            Self::BadCode(_) | Self::Gone | Self::Cancelled | Self::TimedOut
+            Self::BadCode(_) | Self::UnknownCode | Self::Gone | Self::Cancelled | Self::TimedOut
         )
     }
+}
+
+/// The six digits a person typed, as the relay takes them, or `None` for text
+/// that is not a typed code.
+///
+/// Spaces and dashes are dropped, because a screen may group the digits and a
+/// person copying them may type either; anything else must be six ASCII
+/// digits. A QR payload is never one, so a field that takes both can tell
+/// them apart with this.
+#[must_use]
+pub fn typed_code(text: &str) -> Option<String> {
+    let digits: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
+    (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
+}
+
+/// How long [`resolve_code`] keeps asking a relay that fails transiently: a
+/// person is looking at a spinner, and the relay already answered the probe.
+pub const RESOLVE_CAP: Duration = Duration::from_secs(20);
+
+/// The session a typed code names on this device's relay, for this account.
+///
+/// # Errors
+///
+/// [`RendezvousError::BadCode`] for text that is not six digits,
+/// [`RendezvousError::BadRelayUrl`] for a relay that is not a relay origin,
+/// [`RendezvousError::UnknownCode`] when no pairing of this account waits
+/// under it, [`RendezvousError::Refused`] for a lookup over the relay's limit,
+/// and [`RendezvousError::Relay`] for a relay that kept failing for
+/// [`RESOLVE_CAP`] or failed for good.
+pub async fn resolve_code(
+    relay_url: &str,
+    bearer: &str,
+    code: &str,
+) -> Result<String, RendezvousError> {
+    let code = typed_code(code)
+        .ok_or_else(|| RendezvousError::BadCode("a pairing code is six digits".into()))?;
+    let client = bearer_client(relay_url, bearer)?;
+    let body = api::types::PairResolveRequest { code };
+    let deadline = tokio::time::Instant::now() + RESOLVE_CAP;
+    loop {
+        match client.resolve_pairing_code(None, &body).await {
+            Ok(res) => return Ok(res.into_inner().pair_id),
+            Err(e) => {
+                if let Some(refusal) = refusal_429(&e) {
+                    return Err(refusal);
+                }
+                match classify(&e) {
+                    Fault::Gone => return Err(RendezvousError::UnknownCode),
+                    Fault::Fatal(why) => return Err(RendezvousError::Relay(why)),
+                    Fault::Transient(why) if tokio::time::Instant::now() >= deadline => {
+                        return Err(RendezvousError::Relay(why));
+                    }
+                    Fault::Transient(_) => tokio::time::sleep(POLL_INTERVAL).await,
+                }
+            }
+        }
+    }
+}
+
+/// A relay client for `relay_url` that presents `bearer`, once the URL is
+/// checked to be a relay origin.
+fn bearer_client(relay_url: &str, bearer: &str) -> Result<api::Client, RendezvousError> {
+    let origin = checked(relay_url)?;
+    Ok(api::Client::new(origin.as_str())
+        .map_err(|e| RendezvousError::Relay(e.to_string()))?
+        .with_credential(
+            "AccountToken",
+            api::Credential::Bearer(api::SecretString::from(bearer.to_owned())),
+        ))
 }
 
 /// The session a scanned code names, once its relay is checked against this
@@ -223,6 +310,9 @@ pub struct Rendezvous {
     client: api::Client,
     pair_id: String,
     role: api::types::PairRole,
+    /// The six digits the relay gave the session when it opened, on the new
+    /// device.
+    code: std::sync::OnceLock<String>,
     /// How many of the other side's messages this side has consumed.
     read: AtomicU32,
     /// How many messages this side has had accepted.
@@ -262,16 +352,11 @@ impl Rendezvous {
         pair_id: String,
         role: RendezvousRole,
     ) -> Result<Self, RendezvousError> {
-        let origin = checked(relay_url)?;
-        let client = api::Client::new(origin.as_str())
-            .map_err(|e| RendezvousError::Relay(e.to_string()))?
-            .with_credential(
-                "AccountToken",
-                api::Credential::Bearer(api::SecretString::from(bearer.to_owned())),
-            );
+        let client = bearer_client(relay_url, bearer)?;
         Ok(Self {
             client,
             pair_id,
+            code: std::sync::OnceLock::new(),
             role: match role {
                 RendezvousRole::NewDevice => api::types::PairRole::NewDevice,
                 RendezvousRole::ExistingDevice => api::types::PairRole::ExistingDevice,
@@ -306,13 +391,16 @@ impl Rendezvous {
         loop {
             self.check_cancelled()?;
             match self.client.send_pairing_message(None, &body).await {
-                Ok(_) => {
+                Ok(res) => {
+                    if let Some(code) = res.into_inner().code {
+                        let _ = self.code.set(code);
+                    }
                     self.written.fetch_add(1, Ordering::SeqCst);
                     return Ok(());
                 }
                 Err(e) => {
                     if opening {
-                        if let Some(refusal) = opening_refusal(&e) {
+                        if let Some(refusal) = refusal_429(&e) {
                             return Err(refusal);
                         }
                     }
@@ -368,6 +456,13 @@ impl Rendezvous {
         .await;
     }
 
+    /// The six digits the relay gave this session when the new device opened
+    /// it; `None` on the existing device, or from a relay that gives none.
+    #[must_use]
+    pub fn code(&self) -> Option<String> {
+        self.code.get().cloned()
+    }
+
     /// End any wait in progress at its next poll, and every later one.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -401,9 +496,10 @@ impl Rendezvous {
     }
 }
 
-/// The relay refusing to open a session: a `429` to the opening message,
-/// carrying how long the relay asked the device to wait.
-fn opening_refusal<E>(e: &api::Error<E>) -> Option<RendezvousError> {
+/// The relay refusing to open a session or look a code up: a `429` to the
+/// opening message or to the lookup, carrying how long the relay asked the
+/// device to wait.
+fn refusal_429<E>(e: &api::Error<E>) -> Option<RendezvousError> {
     let (status, headers) = match e {
         api::Error::Api(value) => (value.status(), value.headers()),
         api::Error::UnexpectedStatus {
@@ -496,6 +592,24 @@ mod tests {
             scanned_pair_id("not a code", own),
             Err(RendezvousError::BadCode(_))
         ));
+    }
+
+    #[test]
+    fn a_typed_code_is_six_digits_however_it_was_grouped() {
+        for typed in ["123456", "123 456", " 123-456\n", "1 2 3 4 5 6"] {
+            assert_eq!(typed_code(typed).as_deref(), Some("123456"), "{typed:?}");
+        }
+        for not in [
+            "",
+            "12345",
+            "1234567",
+            "12345a",
+            "\u{661}23456",
+            "{\"pair_id\":1}",
+        ] {
+            assert_eq!(typed_code(not), None, "{not:?}");
+        }
+        assert!(RendezvousError::UnknownCode.is_pairing());
     }
 
     #[test]
