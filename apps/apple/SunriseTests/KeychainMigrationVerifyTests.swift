@@ -40,7 +40,11 @@ struct KeychainMigrationVerifyTests {
         defer { try? pair.source.delete(); try? pair.destination.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         let answered = try migration.run { step in
             if step == .verify { try? pair.destination.delete() }
         }
@@ -48,9 +52,9 @@ struct KeychainMigrationVerifyTests {
         #expect(try pair.source.read() == secret, "and step 4 must not have run")
     }
 
-    /// The second of the two guards the split produced, asserted beside the
-    /// first so the pair reads together: bytes that disagree are still the one
-    /// refusal. Not the only pin on this condition —
+    /// Asserted beside the vanished destination so the pair reads together:
+    /// two vault roots that disagree are still refused before anything is
+    /// written. Not the only pin on this condition —
     /// `aDestinationHoldingDifferentBytesIsRefusedAndNothingIsDeleted` in
     /// `KeychainMigrationTests` asserts the same throw and adds that neither
     /// copy is deleted, which this case does not. Deleting that one as
@@ -62,8 +66,38 @@ struct KeychainMigrationVerifyTests {
         try pair.source.write(secret)
         try pair.destination.write(Data(repeating: 4, count: 32))
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         #expect(throws: KeychainError.migrationUnverified) { try migration.run() }
+    }
+
+    /// The read-back's own refusal, which is the one a **credential** can
+    /// still reach: the plan orders two differing tokens by expiry instead of
+    /// refusing them (#258), but bytes other than the ones just written turning
+    /// up between the write and the read-back are a second writer, and that is
+    /// not something an expiry settles. Neither copy may be deleted.
+    @Test
+    func aReadBackFindingOtherBytesIsRefusedEvenForACredential() throws {
+        let pair = scratchPair()
+        defer { try? pair.source.delete(); try? pair.destination.delete() }
+        try pair.source.write(secret)
+        let intruder = Data(repeating: 4, count: 32)
+
+        let migration = KeychainMigration(
+            kind: .credential,
+            source: pair.source,
+            destination: pair.destination
+        )
+        #expect(throws: KeychainError.migrationUnverified) {
+            try migration.run { step in
+                if step == .verify { try pair.destination.write(intruder) }
+            }
+        }
+        #expect(try pair.source.read() == secret, "a refusal must not cost the source")
+        #expect(try pair.destination.read() == intruder)
     }
 
     /// The same route as the case above, walked at the boundary the stores
@@ -81,7 +115,11 @@ struct KeychainMigrationVerifyTests {
         defer { try? pair.source.delete(); try? pair.destination.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         let answered = try migration.loadMigratingIfNeeded { step in
             if step == .verify { try? pair.destination.delete() }
         }

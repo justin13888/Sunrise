@@ -29,8 +29,16 @@ struct KeychainMigrationTests {
         let source: KeychainItem
         let destination: KeychainItem
 
-        var migration: KeychainMigration {
-            KeychainMigration(source: source, destination: destination)
+        /// A vault root's migration, the kind that refuses every disagreement.
+        var migration: KeychainMigration { migration(.vaultRoot) }
+
+        func migration(_ kind: SecretKind) -> KeychainMigration {
+            KeychainMigration(
+                kind: kind,
+                source: source,
+                destination: destination,
+                expiresAtMs: KeychainCredentialStore.expiresAtMs
+            )
         }
 
         func removeBoth() {
@@ -187,21 +195,92 @@ struct KeychainMigrationTests {
         #expect(try pair.source.read() == nil)
     }
 
-    /// The one failure that refuses rather than falls back. Two different
-    /// secrets claiming one `(service, account)` cannot be told apart from
-    /// here, and deleting either would be a guess about which one sealed the
-    /// vault.
+    /// The failure that refuses rather than falls back. Two different vault
+    /// roots, or two relay device ids, claiming one `(service, account)` cannot
+    /// be told apart from here, and deleting either would be a guess about
+    /// which one sealed the vault or which binding is current.
     @Test
     func aDestinationHoldingDifferentBytesIsRefusedAndNothingIsDeleted() throws {
+        for kind in [SecretKind.vaultRoot, .relayDeviceId] {
+            let pair = scratchPair()
+            defer { pair.removeBoth() }
+            try pair.source.write(secret)
+            let stranger = Data(repeating: 4, count: 32)
+            try pair.destination.write(stranger)
+
+            #expect(throws: KeychainError.migrationUnverified) { try pair.migration(kind).run() }
+            #expect(try pair.source.read() == secret, "a refusal must not cost the user either copy")
+            #expect(try pair.destination.read() == stranger)
+        }
+    }
+
+    private func token(expiringAt expiresAtMs: UInt64, access: String = "access") throws -> Data {
+        try JSONEncoder().encode(StoredCredentials(
+            accessToken: "\(access)-\(expiresAtMs)",
+            refreshToken: nil,
+            expiresAtMs: expiresAtMs,
+            renewAtMs: expiresAtMs / 2
+        ))
+    }
+
+    /// #258: a `save` wrote the fresh token to the destination and its delete
+    /// of the stale copy was refused. Every launch used to refuse that pair as
+    /// `migrationUnverified` and read as signed out. Now each one answers the
+    /// fresh token. The stale copy is planted again before every launch, which
+    /// is what a delete refused every time leaves behind.
+    @Test
+    func aFreshDestinationBesideAStaleSourceLoadsTheFreshTokenOnEveryLaunch() throws {
         let pair = scratchPair()
         defer { pair.removeBoth() }
-        try pair.source.write(secret)
-        let stranger = Data(repeating: 4, count: 32)
-        try pair.destination.write(stranger)
+        let fresh = try token(expiringAt: 2_000)
+        try pair.destination.write(fresh)
 
-        #expect(throws: KeychainError.migrationUnverified) { try pair.migration.run() }
-        #expect(try pair.source.read() == secret, "a refusal must not cost the user either copy")
-        #expect(try pair.destination.read() == stranger)
+        for _ in 0..<3 {
+            try pair.source.write(try token(expiringAt: 1_000))
+            #expect(try pair.migration(.credential).loadMigratingIfNeeded() == fresh)
+            #expect(try pair.destination.read() == fresh, "the fresher copy must survive")
+            #expect(try pair.source.read() == nil, "and the stale one is removed when it can be")
+        }
+    }
+
+    /// The mirror: a source that expires later is moved over the destination,
+    /// which a plain `write` replaces, and then removed.
+    @Test
+    func aFresherSourceCredentialIsMovedOverAStaleDestination() throws {
+        let pair = scratchPair()
+        defer { pair.removeBoth() }
+        let fresh = try token(expiringAt: 2_000)
+        try pair.source.write(fresh)
+        try pair.destination.write(try token(expiringAt: 1_000))
+
+        #expect(try pair.migration(.credential).run() == fresh)
+        #expect(try pair.destination.read() == fresh)
+        #expect(try pair.source.read() == nil)
+    }
+
+    /// A copy that does not decode loses to one that does, because `load`
+    /// reads an undecodable token as no token; and two that cannot be ordered
+    /// keep the destination rather than being refused.
+    @Test
+    func credentialCopiesThatCannotBeOrderedAreNeverRefused() throws {
+        let undecodable = Data(repeating: 4, count: 32)
+        let decodable = try token(expiringAt: 1_000)
+        let cases: [(destination: Data, source: Data, kept: Data)] = [
+            (undecodable, decodable, decodable),
+            (decodable, undecodable, decodable),
+            (undecodable, secret, undecodable),
+            (decodable, try token(expiringAt: 1_000, access: "other"), decodable)
+        ]
+        for (destination, source, kept) in cases {
+            let pair = scratchPair()
+            defer { pair.removeBoth() }
+            try pair.destination.write(destination)
+            try pair.source.write(source)
+
+            #expect(try pair.migration(.credential).run() == kept)
+            #expect(try pair.destination.read() == kept)
+            #expect(try pair.source.read() == nil)
+        }
     }
 
     /// Step 0's "done" answer: a completed migration, read on every subsequent
@@ -234,7 +313,7 @@ struct KeychainMigrationTests {
         defer { try? item.delete() }
         try item.write(secret)
 
-        let migration = KeychainMigration(source: item, destination: item)
+        let migration = KeychainMigration(kind: .vaultRoot, source: item, destination: item)
         #expect(migration.sourceAndDestinationAreOneItem)
         #expect(try migration.run() == secret)
         #expect(try item.read() == secret, "the migration must not delete the item it was given twice")
@@ -259,7 +338,11 @@ struct KeychainMigrationTests {
                 domain: domain
             )
         }
-        let migration = KeychainMigration(source: item(.login), destination: item(.dataProtection))
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: item(.login),
+            destination: item(.dataProtection)
+        )
         #if os(macOS) || targetEnvironment(macCatalyst)
         #expect(!migration.sourceAndDestinationAreOneItem, "two keychains, so this is real work")
         #else

@@ -67,7 +67,11 @@ struct KeychainMigrationFallbackTests {
         defer { try? pair.source.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         #expect(!migration.sourceAndDestinationAreOneItem, "the Mac has two keychains")
         #expect(try migration.run() == secret, "the fallback arm answers with the source's bytes")
         #expect(try pair.source.read() == secret, "and a refusal must not cost the user the copy")
@@ -85,7 +89,11 @@ struct KeychainMigrationFallbackTests {
         defer { try? pair.source.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         #expect(try migration.loadMigratingIfNeeded() == secret)
     }
 
@@ -124,7 +132,11 @@ struct KeychainMigrationFallbackTests {
         defer { try? pair.source.delete(); try? pair.destination.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         #expect(!migration.sourceAndDestinationAreOneItem, "or there is nothing to move")
 
         #expect(throws: (any Error).self) {
@@ -247,7 +259,11 @@ struct KeychainMigrationFallbackTests {
         defer { try? pair.source.delete() }
         try pair.source.write(secret)
 
-        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let migration = KeychainMigration(
+            kind: .vaultRoot,
+            source: pair.source,
+            destination: pair.destination
+        )
         #expect(
             try pair.destination.readAcrossDomains() == nil,
             "neither domain may hold the destination, or this case proves nothing"
