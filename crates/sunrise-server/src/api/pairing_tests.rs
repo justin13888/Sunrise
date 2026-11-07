@@ -460,12 +460,12 @@ fn a_full_session_table_refuses_until_a_session_expires() {
             now_ms,
         )
     };
-    for i in 0..super::MAX_SESSIONS {
+    for i in 0..super::rendezvous::MAX_SESSIONS {
         let mut id = [0u8; 16];
         id[..8].copy_from_slice(&u64::try_from(i).unwrap().to_be_bytes());
         open(id, T0_MS).unwrap();
     }
-    assert_eq!(r.len(), super::MAX_SESSIONS);
+    assert_eq!(r.len(), super::rendezvous::MAX_SESSIONS);
     assert_eq!(
         open([0xff; 16], T0_MS + 1000),
         Err(super::Refusal::Limited {
@@ -473,7 +473,7 @@ fn a_full_session_table_refuses_until_a_session_expires() {
         })
     );
     let admitted = open([0xff; 16], T0_MS + SESSION_TTL_MS).unwrap();
-    assert_eq!(admitted.expired, super::MAX_SESSIONS);
+    assert_eq!(admitted.expired, super::rendezvous::MAX_SESSIONS);
     assert_eq!(r.len(), 1);
 }
 
