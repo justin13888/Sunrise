@@ -3,7 +3,8 @@ import Foundation
 import Security
 #endif
 
-/// What the widgets draw: the head of Today, as the app last read it.
+/// What the widgets draw: the head of Today, and of each stream, as the app
+/// last read them.
 ///
 /// **A projection, not a cache of the vault.** The widget extension never
 /// opens the vault. It could not: the core holds the vault lock for as long as
@@ -25,12 +26,22 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
     /// Bumped whenever a field changes meaning. A widget that reads a snapshot
     /// written by a different version treats it as absent, which draws "open
     /// Sunrise" rather than a misread.
-    static let currentVersion = 1
+    ///
+    /// 2 added ``streams``, for the Stream tile.
+    static let currentVersion = 2
 
-    /// How many rows the snapshot carries. The large family draws the most,
-    /// and the rest are cut from here — which is also the ceiling on how many
-    /// titles ever leave the vault.
+    /// How many rows the snapshot carries, for Today and for each stream. The
+    /// large family draws the most, and the rest are cut from here — which is
+    /// also the ceiling on how many titles of one list ever leave the vault.
     static let rowLimit = 8
+
+    /// How many streams the snapshot carries, in the core's stream order.
+    ///
+    /// The ceiling on what the Stream tile's picker can offer, and with
+    /// ``rowLimit`` the ceiling on how many titles leave the vault for it:
+    /// every stream is one more query on each publish and up to eight more
+    /// plaintext titles, so the set is bounded rather than the whole vault.
+    static let streamLimit = 12
 
     /// The head of Today, in the order the core returned it.
     struct Row: Codable, Equatable, Sendable, Identifiable {
@@ -62,6 +73,36 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
     var overdue: Int
     /// At most ``rowLimit``.
     var rows: [Row]
+    /// The streams the Stream tile can show: at most ``streamLimit``, none
+    /// archived, in the order the core lists them.
+    var streams: [StreamTile] = []
+
+    /// One stream, as the Stream tile draws it: its open tasks, in the order
+    /// `Query::StreamTasks` returns them.
+    struct StreamTile: Codable, Equatable, Sendable, Identifiable {
+        /// The stream's `EntityRef`. What the widget's configuration stores.
+        let id: String
+        let name: String
+        /// Every open task in the stream, not just the rows carried.
+        let outstanding: Int
+        /// At most ``WidgetSnapshot/rowLimit``.
+        let rows: [Item]
+
+        /// One open task. No section: a stream is not split the way Today is.
+        struct Item: Codable, Equatable, Sendable, Identifiable {
+            /// The task's `EntityRef`.
+            let id: String
+            let title: String
+            /// `sunrise://task/<id>?action=open`, built by the app.
+            let link: URL?
+        }
+    }
+
+    /// The stream a Stream tile was configured with, or `nil` when the
+    /// snapshot does not carry it: archived, deleted, or past ``streamLimit``.
+    func stream(_ id: String) -> StreamTile? {
+        streams.first { $0.id == id }
+    }
 
     /// Whether two snapshots draw the same widget.
     ///

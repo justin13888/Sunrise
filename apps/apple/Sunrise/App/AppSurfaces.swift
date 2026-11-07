@@ -37,7 +37,15 @@ final class AppSurfaces {
 
     private(set) var menuBar: MenuBarModel?
     let widgets: WidgetFeed?
-    init(widgets: WidgetFeed? = nil) { self.widgets = widgets }
+    init(widgets: WidgetFeed? = nil) {
+        self.widgets = widgets
+        // The Lock Screen capture widget's intent reaches the app through this
+        // (`Widgets/Shared/OpenCaptureIntent.swift`). The app builds one of
+        // these; the newest instance is the one listening.
+        QuickCaptureRequest.presenter = { [weak self] in
+            self?.presentRequestedCapture() ?? false
+        }
+    }
 
     #if os(macOS)
     /// Whether ⌘⇧N is registered with the window server. iOS has no global
@@ -212,6 +220,24 @@ final class AppSurfaces {
             }
         }
         #endif
+        // A capture widget tapped before this vault was open — a cold launch
+        // from the Lock Screen — is answered now that there is a field.
+        if QuickCaptureRequest.takePending() { openQuickCapture() }
+    }
+
+    /// Open quick capture for ``QuickCaptureRequest``, or say it cannot yet.
+    ///
+    /// Unlike ``openQuickCapture(prefill:)`` this gives no refusal feedback
+    /// when there is no field: the request is kept, and ``attach(bridge:)``
+    /// answers it.
+    func presentRequestedCapture() -> Bool {
+        #if os(macOS)
+        guard panel != nil else { return false }
+        #else
+        guard capture != nil else { return false }
+        #endif
+        openQuickCapture()
+        return true
     }
 
     /// Start the core's periodic routine materialization against the vault
