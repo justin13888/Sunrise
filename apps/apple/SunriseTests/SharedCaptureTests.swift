@@ -399,8 +399,11 @@ struct ShareInboxTests {
         try store.commit(shared, from: try store.begin(shared.id))
 
         let inbox = ShareInbox(store: store)
-        async let opened: Void = inbox.file(into: vault.bridge)
-        async let active: Void = inbox.file(into: vault.bridge)
+        // The two passes run as child tasks, so each is handed the bridge (an
+        // actor, so Sendable) rather than the non-Sendable vault that holds it.
+        let bridge = vault.bridge
+        async let opened: Void = inbox.file(into: bridge)
+        async let active: Void = inbox.file(into: bridge)
         _ = await (opened, active)
 
         #expect(try await Surface.inbox(vault.bridge).map(\.title) == ["Shared once"])
