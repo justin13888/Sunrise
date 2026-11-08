@@ -502,13 +502,14 @@ struct ReminderTriggerTests {
                 .compactMap(TimeZone.init(identifier:))
                 .first { $0.secondsFromGMT(for: fire) != here }
         )
+        // `date(from:)` rather than `nextDate(after:matching:)`: the latter
+        // ignores the components' own zone, the former honours it, as the
+        // trigger does.
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = elsewhere
-        let resolved = calendar.nextDate(
-            after: Date(),
-            matching: trigger.dateComponents,
-            matchingPolicy: .strict
+        #expect(
+            calendar.date(from: trigger.dateComponents) == fire,
+            "the trigger moved with the zone to \(elsewhere.identifier)"
         )
-        #expect(resolved == fire, "the trigger moved with the zone to \(elsewhere.identifier)")
     }
 }
