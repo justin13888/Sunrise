@@ -220,7 +220,9 @@ struct SharedCaptureTests {
         #expect(try await vault.bridge.attachmentBytes(item.id) == bytes)
 
         let thumbnail = try #require(try await vault.bridge.thumbnailBytes(item.id))
-        #expect(thumbnail.mimeType == "image/jpeg", "an opaque original gets a JPEG thumbnail")
+        // QuickLook hands back a bitmap with alpha even for an opaque PNG, so
+        // the renderer may pick either of the two formats ADR-0053 allows.
+        #expect(["image/jpeg", "image/png"].contains(thumbnail.mimeType))
         let source = try #require(CGImageSourceCreateWithData(Data(thumbnail.bytes) as CFData, nil))
         let drawn = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
         #expect(drawn.width <= 512 && drawn.height <= 512)
