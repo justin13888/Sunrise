@@ -40,12 +40,12 @@ struct PairingView: View {
         .sheet(isPresented: $scanning) {
             QRScannerView(
                 source: .current,
-                offersTypedCode: model.transport == .relay,
                 found: { payload in
                     scanning = false
                     model.pasted = payload
                     Task { await model.submit() }
                 },
+                offersTypedCode: model.transport == .relay,
                 // One tap from a refused or missing camera to the six-digit
                 // field: the scanner's way out lands on it, focused.
                 pasteInstead: {
