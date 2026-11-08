@@ -113,7 +113,11 @@ struct TaskEditorView: View {
 
             Toggle(L10n.TaskEditor.hasDeadline, isOn: $fields.hasDue)
             if fields.hasDue {
-                DatePicker(L10n.TaskEditor.due, selection: $fields.due, displayedComponents: [.date, .hourAndMinute])
+                DatePicker(
+                    L10n.TaskEditor.due,
+                    selection: $fields.due,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
             }
 
             Section {
@@ -212,8 +216,8 @@ struct TaskEditorFields {
         form.title = title
         form.priority = priority == 0 ? nil : UInt8(priority)
         form.energy = energy
-        // An estimate kept below a minute is the seed's own seconds, so an
-        // untouched 90 s estimate is not rewritten as 60.
+        // Minutes left where they were seeded post back the seed's own
+        // seconds, so an untouched 90 s estimate is not rewritten as 60.
         let seededMinutes = Int((seed.estimatedDurationS ?? 0) / 60)
         form.estimatedDurationS = estimateMinutes == seededMinutes
             ? seed.estimatedDurationS
