@@ -143,11 +143,17 @@ its rows go, when all of:
    as that acknowledgement states. A device with an op held here unapplied
    (waiting for its key, parked, or held in a group) passes nothing.
 
-So a version applied afterwards names no pruned version, has no pruned
-previous version and descends from no pruned ancestor: every frontier it
-reads is still stored, and is the one a replica that pruned nothing reads.
-The rows, registers, losers, heads and conflicts are the same, and so is a
-rebuild.
+So a version applied afterwards names no pruned version: its writer had
+applied a descendant of every pruned one (5), or wrote it before that and it
+is applied here already. It has no pruned previous version: (2) keeps each
+device's newest, and an older version whose previous one was pruned would sit
+below that one's next version, compacted in its stream (3), and so applied
+already. It descends from no pruned ancestor, by (4) and because a covered op
+is never delivered again. Every frontier it reads is still stored, and is the
+one a replica that pruned nothing reads. The rows, registers, losers, heads
+and conflicts are the same, and so is a rebuild: the versions whose stored
+frontiers were computed from a pruned one are never folded again (3), since a
+rebuild's base carries their frontiers and a joiner's floor rises past them.
 
 Unlike the op-log floor, a device silent for any time holds pruning back,
 because its unsent versions may name anything it held. Revoking it releases
@@ -157,7 +163,8 @@ stream before the acknowledgement it read and never received here, or a
 writer naming a parent that was not its head. A version of those that names
 a pruned parent folds it as a parent never applied: the parent adds nothing
 to its frontier, so its writes stay in the unresolved set beside the ones it
-had seen there, until the next write naming the heads. No write is lost.
+had seen there, where a replica that kept the parent lets them replace those,
+until the next write naming the heads settles both alike. No write is lost.
 
 After a fold an entity keeps its heads, each device's newest version, its
 registers' winners and losers, and the versions not yet folded:
