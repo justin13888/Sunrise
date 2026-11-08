@@ -144,7 +144,10 @@ class SunriseUITestCase: XCTestCase {
     ///
     /// `listedHere: false` is for a line the list it was typed into does not
     /// show — `^tomorrow` typed into Today, which holds today's and overdue
-    /// tasks only. Its proof that the capture landed is the field clearing.
+    /// tasks only. It waits only for the field to clear and Add to disable,
+    /// which proves the line was submitted, not that it was written:
+    /// `CaptureModel.takeDraft` clears the field when Add is tapped, before
+    /// the commit runs, so a failed write passes this wait too.
     func capture(
         _ text: String,
         landingAs title: String? = nil,
@@ -169,7 +172,7 @@ class SunriseUITestCase: XCTestCase {
         guard listedHere else {
             XCTAssertTrue(
                 waitUntil(timeout: 10) { !add.isEnabled },
-                "the capture was written, so the field cleared and Add disabled again",
+                "Add took the line, so the field cleared and Add disabled again",
                 file: file,
                 line: line
             )
