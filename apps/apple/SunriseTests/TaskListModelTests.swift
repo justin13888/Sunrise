@@ -30,14 +30,15 @@ struct TaskListModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// The Inbox is a stream, and `Query::Inbox` returns everything in it that
-    /// is not tombstoned — completed tasks included. The row strikes them
-    /// through rather than the client inventing a filter the core does not
-    /// have; Open/Done/All belongs to the Stream view.
+    /// A stream's list returns everything in it that is not tombstoned —
+    /// completed tasks included. The row strikes them through rather than the
+    /// client inventing a filter the core does not have; Open/Done/All belongs
+    /// to the Stream view. (The Inbox is not such a list: it holds only open,
+    /// untriaged tasks, so a completed one leaves it.)
     @Test
     func completingATaskMarksItDoneAndLeavesItInTheStream() async throws {
         let vault = try await TestVault()
-        let model = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let model = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await model.create(draft("Book the ferry"))
         let task = try #require(model.tasks.first)
 
@@ -54,7 +55,7 @@ struct TaskListModelTests {
     @Test
     func aCompletedTaskCanBeReopened() async throws {
         let vault = try await TestVault()
-        let model = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let model = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await model.create(draft("Book the ferry"))
         await model.complete(try #require(model.tasks.first))
 
@@ -81,7 +82,7 @@ struct TaskListModelTests {
     @Test
     func deferringPushesTheScheduledTimeOutAndCountsIt() async throws {
         let vault = try await TestVault()
-        let model = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let model = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await model.create(draft("Water the plants"))
         let task = try #require(model.tasks.first)
 
@@ -243,15 +244,17 @@ struct TaskListModelTests {
         // date was left alone rather than replaced with now.
         #expect(model.tasks.isEmpty)
 
-        let inbox = TaskListModel(bridge: vault.bridge, kind: .inbox)
-        await inbox.refresh()
-        #expect(inbox.tasks.map(\.title) == ["Book the ferry"])
+        // Not in the Inbox either, which holds only undated tasks: the
+        // no-stream list is where a dated task with no stream is read back.
+        let unfiled = TaskListModel(bridge: vault.bridge, kind: .noStream)
+        await unfiled.refresh()
+        #expect(unfiled.tasks.map(\.title) == ["Book the ferry"])
         await vault.bridge.shutdown()
     }
 
-    /// Only Today does this. An Inbox capture stays undated, because the Inbox
-    /// shows a task whether or not it carries a date and inventing one would
-    /// put a thought on a day the user never chose.
+    /// Only Today does this. An Inbox capture stays undated, because inventing
+    /// a date would put a thought on a day the user never chose, and would take
+    /// it out of the Inbox it was typed into.
     @Test
     func capturingIntoTheInboxLeavesTheLineUndated() async throws {
         let vault = try await TestVault()

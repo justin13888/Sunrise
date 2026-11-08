@@ -63,12 +63,12 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
-    private func row(_ label: String, _ count: Int, emphasised: Bool = false) -> some View {
-        if count > 0 {
+    private func row(_ label: String, _ tally: Int, emphasised: Bool = false) -> some View {
+        if tally > 0 {
             HStack {
                 Text(label).font(.callout)
                 Spacer()
-                Text("\(count)")
+                Text("\(tally)")
                     .font(.callout.monospacedDigit().weight(emphasised ? .bold : .regular))
                     .foregroundStyle(emphasised ? .orange : .primary)
             }
