@@ -39,12 +39,7 @@ struct TaskEditorView: View {
     @State private var attachments: AttachmentsModel
     @State private var activity: ActivityModel
     @State private var note: NoteEditorModel
-    @State private var title: String
-    @State private var priority: Int
-    @State private var energy: Energy?
-    @State private var estimateMinutes: Int
-    @State private var hasDue: Bool
-    @State private var due: Date
+    @State private var fields: TaskEditorFields
 
     init(
         task: TaskItem,
@@ -60,35 +55,7 @@ struct TaskEditorView: View {
         // whether that body is one it may write back — see `NoteEditorModel`.
         _note = State(initialValue: NoteEditorModel(body: task.body))
         _activity = State(initialValue: ActivityModel(bridge: bridge, entity: task.id))
-        _title = State(initialValue: task.title)
-        _priority = State(initialValue: Int(task.priority ?? 0))
-        _energy = State(initialValue: task.energy)
-        _estimateMinutes = State(initialValue: Int((task.estimatedDurationS ?? 0) / 60))
-        _hasDue = State(initialValue: task.dueAt != nil)
-        // Seeded from the task's own deadline, resolved by the seam. Starting
-        // the picker at "now" and then submitting it — which is what this did
-        // — silently moved every deadline to today the moment anyone opened
-        // the sheet to change something else.
-        let seeded = task.dueAt.map {
-            Date(
-                timeIntervalSince1970: Double(
-                    timeValueMs(value: $0, tz: TimeZone.current.identifier)
-                ) / 1000
-            )
-        } ?? Date()
-        seededDue = seeded
-        _due = State(initialValue: seeded)
-    }
-
-    /// The picker's starting point, so a save can tell whether the user moved it.
-    private let seededDue: Date
-
-    /// Whether the deadline is of a kind this build does not know and the user
-    /// left it where it was. Sending it back as an instant would replace the
-    /// stored kind with the one moment it happens to resolve to (ADR-0045 §6).
-    private var keepsUnknownDue: Bool {
-        guard case .unknown? = task.dueAt else { return false }
-        return hasDue && due == seededDue
+        _fields = State(initialValue: TaskEditorFields(task: task))
     }
 
     var body: some View {
@@ -113,14 +80,14 @@ struct TaskEditorView: View {
 
     private var details: some View {
         Form {
-            TextField(L10n.TaskEditor.titleField, text: $title)
+            TextField(L10n.TaskEditor.titleField, text: $fields.title)
 
-            Picker(L10n.TaskEditor.priority, selection: $priority) {
+            Picker(L10n.TaskEditor.priority, selection: $fields.priority) {
                 Text(L10n.TaskEditor.priorityNone).tag(0)
                 ForEach(1...5, id: \.self) { Text("!\($0)").tag($0) }
             }
 
-            Picker(L10n.TaskEditor.energy, selection: $energy) {
+            Picker(L10n.TaskEditor.energy, selection: $fields.energy) {
                 Text(energyLabel(energy: nil)).tag(nil as Energy?)
                 Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                 Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
@@ -134,19 +101,19 @@ struct TaskEditorView: View {
 
             LabeledContent(L10n.TaskEditor.estimate) {
                 HStack {
-                    TextField("", value: $estimateMinutes, format: .number)
+                    TextField("", value: $fields.estimateMinutes, format: .number)
                         .textInput(.number)
                         .frame(width: 60)
-                    Text(estimateMinutes > 0
-                        ? shortDuration(secs: UInt64(estimateMinutes * 60))
+                    Text(fields.estimateMinutes > 0
+                        ? shortDuration(secs: UInt64(fields.estimateMinutes * 60))
                         : L10n.TaskEditor.estimateNone)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Toggle(L10n.TaskEditor.hasDeadline, isOn: $hasDue)
-            if hasDue {
-                DatePicker(L10n.TaskEditor.due, selection: $due, displayedComponents: [.date, .hourAndMinute])
+            Toggle(L10n.TaskEditor.hasDeadline, isOn: $fields.hasDue)
+            if fields.hasDue {
+                DatePicker(L10n.TaskEditor.due, selection: $fields.due, displayedComponents: [.date, .hourAndMinute])
             }
 
             Section {
@@ -163,55 +130,100 @@ struct TaskEditorView: View {
                     Spacer()
                     Button(L10n.Action.cancel) { dismiss() }
                     Button(L10n.Action.save) {
+                        // A form the seam cannot write (a zone it does not
+                        // know, a moment no timestamp holds) writes nothing:
+                        // the sheet stays open on what the user entered.
+                        guard var edit = try? fields.edit(of: task) else { return }
+                        // Sets neither body field unless the note was
+                        // actually changed; a body it could not fully read
+                        // is one it must leave exactly as it found it.
+                        note.apply(to: &edit)
                         Task {
                             await apply(edit)
                             dismiss()
                         }
                     }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(title.trimmed.isEmpty)
+                    .disabled(fields.title.trimmed.isEmpty)
                     .disabledUnlessEditable(.task)
                 }
             }
         }
         .formStyle(.grouped)
     }
+}
 
-    /// The split-optional shape the seam uses: `set` carries a new value,
-    /// `clear` empties the field, and setting both means clear.
-    private var edit: TaskEdit {
-        var edit = TaskEdit()
-        edit.title = title.trimmed
-        if priority == 0 {
-            edit.clearPriority = true
-        } else {
-            edit.setPriority = UInt8(priority)
-        }
-        if let energy {
-            edit.setEnergy = energy
-        } else {
-            edit.clearEnergy = true
-        }
-        if estimateMinutes > 0 {
-            edit.setEstimatedDurationS = UInt64(estimateMinutes * 60)
-        } else {
-            edit.clearEstimatedDuration = true
-        }
-        if keepsUnknownDue {
-            // Neither set nor clear: the stored value stays exactly as it arrived.
-        } else if hasDue {
-            // An instant, not a civil time: a deadline the user picked on a
-            // wall clock in this zone is a fixed point, and the seam is what
-            // decides how it is stored.
-            edit.setDueAt = .instant(at: Timestamp(due.timeIntervalSince1970 * 1000))
-        } else {
-            edit.clearDueAt = true
-        }
-        // Sets neither body field unless the note was actually changed. The
-        // other facets above always say what they mean, because this form
-        // owns all of them; a body it could not fully read is one it must
-        // leave exactly as it found it.
-        note.apply(to: &edit)
-        return edit
+/// What the task editor's details pane holds, and the edit a save makes.
+///
+/// The seam seeds it (`taskEditorForm`) and turns it back into an edit
+/// (`taskEditorEdit`) that carries only what the user changed, with a moved
+/// deadline kept in the kind it was stored as. A title edit therefore sends
+/// neither `setDueAt` nor `clearDueAt`, and an all-day, zoned, floating or
+/// unknown deadline survives it (#515, ADR-0045 §6, ADR-0066 §4). Split from
+/// the view so a save is testable without a window.
+struct TaskEditorFields {
+    var title: String
+    /// 1...5, or 0 for none.
+    var priority: Int
+    var energy: Energy?
+    /// Whole minutes; 0 is no estimate.
+    var estimateMinutes: Int
+    var hasDue: Bool
+    /// The deadline picker. Seeded from the task's own deadline — starting it
+    /// at "now" moved every deadline to today the moment anyone opened the
+    /// sheet to change something else — and from now only when there is none.
+    var due: Date
+
+    /// The form the seam seeded. A save posts it back with the fields above
+    /// laid over it, so what this sheet does not show (the soft deadline) is
+    /// handed back exactly as it came.
+    private let seed: TaskEditorForm
+    /// The IANA zone the seam reads and writes the deadline in.
+    private let zone: String
+
+    init(task: TaskItem, zone: String = TimeZone.current.identifier) {
+        self.zone = zone
+        // A zone the seam refuses still opens the sheet on the task's values;
+        // the save then fails in `edit(of:)` rather than writing in the wrong
+        // zone.
+        let seed = (try? taskEditorForm(task: task, tz: zone)) ?? TaskEditorForm(
+            title: task.title,
+            priority: task.priority,
+            energy: task.energy,
+            estimatedDurationS: task.estimatedDurationS,
+            dueAt: task.dueAt.map { PickedTime(ms: timeValueMs(value: $0, tz: zone), kind: nil) }
+        )
+        self.seed = seed
+        title = seed.title
+        priority = Int(seed.priority ?? 0)
+        energy = seed.energy
+        estimateMinutes = Int((seed.estimatedDurationS ?? 0) / 60)
+        hasDue = seed.dueAt != nil
+        due = seed.dueAt.map { Date(timeIntervalSince1970: Double($0.ms) / 1000) } ?? Date()
+    }
+
+    /// The edit these fields make to `task`: only what changed. The body is
+    /// not this form's; the caller adds the note editor's fields.
+    ///
+    /// Throws when the seam cannot write the form: a zone it does not know,
+    /// or a moment no timestamp holds.
+    func edit(of task: TaskItem) throws -> TaskEdit {
+        var form = seed
+        form.title = title
+        form.priority = priority == 0 ? nil : UInt8(priority)
+        form.energy = energy
+        // An estimate kept below a minute is the seed's own seconds, so an
+        // untouched 90 s estimate is not rewritten as 60.
+        let seededMinutes = Int((seed.estimatedDurationS ?? 0) / 60)
+        form.estimatedDurationS = estimateMinutes == seededMinutes
+            ? seed.estimatedDurationS
+            : (estimateMinutes > 0 ? UInt64(estimateMinutes * 60) : nil)
+        // Rounded, not truncated: the seed's milliseconds survive the trip
+        // through `Date`'s floating seconds, so an untouched picker compares
+        // equal to its seed and the seam sends no deadline at all.
+        form.dueAt = hasDue
+            ? PickedTime(ms: Int64((due.timeIntervalSince1970 * 1000).rounded()), kind: nil)
+            : nil
+        return try taskEditorEdit(task: task, form: form, tz: zone)
     }
 }

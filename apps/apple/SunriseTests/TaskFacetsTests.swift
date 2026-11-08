@@ -237,10 +237,11 @@ struct TaskGroupingTests {
     }
 }
 
-/// The task editor's starting values.
+/// The task editor's starting values, and the edit a save makes from them.
 ///
-/// Split from the editor itself so the one decision that can lose data — what
-/// a date picker starts at — is testable without a window.
+/// Split from the editor itself (`TaskEditorFields`) so the decisions that
+/// can lose data — what a date picker starts at, and what a save writes back —
+/// are testable without a window.
 @MainActor
 struct TaskEditorSeedTests {
     /// Opening the editor on a task with a deadline and saving without
@@ -277,5 +278,81 @@ struct TaskEditorSeedTests {
         let seeded = timeValueMs(value: due, tz: "UTC")
         #expect(seeded == deadline, "the seam resolves it; Swift does not read the enum apart")
         await vault.bridge.shutdown()
+    }
+
+    /// Renaming a task with an all-day deadline must leave the deadline a
+    /// date. Every save used to send it back as an instant at local
+    /// midnight (#515).
+    @Test
+    func aTitleEditKeepsAnAllDayDeadline() async throws {
+        let vault = try await TestVault()
+        let created = try await vault.bridge.submit(.createTask(draft: TaskDraftIn(
+            title: "Renew passport",
+            body: nil,
+            streamId: nil,
+            contexts: [],
+            priority: nil,
+            energy: nil,
+            estimatedDurationS: nil,
+            scheduledAt: nil,
+            dueAt: .allDay(date: "2026-03-13"),
+            schedulingConstraints: [],
+            assignee: nil,
+            reminderLeadS: nil
+        )))
+        guard case let .task(task) = try await vault.bridge.query(.entityById(id: created.entity)) else {
+            Issue.record("expected a task")
+            return
+        }
+
+        var fields = TaskEditorFields(task: task, zone: Fixture.zone)
+        fields.title = "Renew passport now"
+        let edit = try fields.edit(of: task)
+        #expect(edit.title == "Renew passport now")
+        #expect(edit.setDueAt == nil)
+        #expect(!edit.clearDueAt)
+
+        _ = try await vault.bridge.submit(.updateTask(id: task.id, edit: edit))
+        guard case let .task(saved) = try await vault.bridge.query(.entityById(id: task.id)) else {
+            Issue.record("expected a task")
+            return
+        }
+        #expect(saved.title == "Renew passport now")
+        #expect(saved.dueAt == .allDay(date: "2026-03-13"))
+        await vault.bridge.shutdown()
+    }
+
+    /// A deadline of a kind this build does not know is handed back
+    /// untouched by a title edit, not replaced by the instant it resolves to
+    /// (ADR-0045 §6).
+    @Test
+    func aTitleEditKeepsAnUnknownDeadline() throws {
+        let unknown = TimeValue.unknown(kind: "lunar", raw: Data())
+        let task = Fixture.task(dueAt: unknown)
+
+        var fields = TaskEditorFields(task: task, zone: Fixture.zone)
+        #expect(fields.hasDue)
+        fields.title = "Renew passport now"
+        let edit = try fields.edit(of: task)
+        #expect(edit.title == "Renew passport now")
+        #expect(edit.setDueAt == nil)
+        #expect(!edit.clearDueAt)
+    }
+
+    /// The sheet left alone saves nothing but what the note editor adds.
+    @Test
+    func anUntouchedFormIsAnEmptyEdit() throws {
+        let task = Fixture.task(
+            priority: 2,
+            energy: .med,
+            estimateS: 90,
+            dueAt: .zoned(civil: "2026-03-10T09:00:00", tz: "Europe/Berlin")
+        )
+        let edit = try TaskEditorFields(task: task, zone: Fixture.zone).edit(of: task)
+        #expect(edit.title == nil)
+        #expect(edit.setPriority == nil && !edit.clearPriority)
+        #expect(edit.setEnergy == nil && !edit.clearEnergy)
+        #expect(edit.setEstimatedDurationS == nil && !edit.clearEstimatedDuration)
+        #expect(edit.setDueAt == nil && !edit.clearDueAt)
     }
 }
