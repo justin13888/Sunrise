@@ -449,9 +449,9 @@ impl Engine {
     }
 
     /// What [`prune_versions`] reads of the log and of the other devices
-    /// (ADR-0065 D25, rule (a), (d) and (e)): every floor, cursor and
-    /// published frontier, the devices that can still write, and those
-    /// with an op this replica holds unapplied.
+    /// (`merge::prune`'s rule (a), (d) and (e), ADR-0065 D25): every
+    /// floor, cursor and published frontier, the devices that can still
+    /// write, and those with an op this replica holds unapplied.
     ///
     /// A device can still write when it is not revoked, or was revoked
     /// less than `policy.retention_ms` ago: the relay refuses a revoked
