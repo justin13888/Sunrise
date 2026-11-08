@@ -120,6 +120,15 @@ struct SystemNotificationCenter: NotificationCenterClient {
     /// trigger counts down from when it was armed, a calendar trigger names an
     /// instant, and a reminder for 09:00 that arrives at 09:00 is the entire
     /// feature.
+    ///
+    /// The components carry the zone they were computed in, which pins the
+    /// trigger to `fireAtMs` itself. Without it the system reads them as
+    /// floating wall-clock time in whatever zone the device is in when the
+    /// trigger fires, so a 09:00 Toronto reminder armed in Toronto fires at
+    /// 09:00 London time after a move to London. Floating and all-day times
+    /// lose nothing: a zone change makes the core re-plan in the new zone
+    /// (``TimeZoneWatch``), their `fireAtMs` moves, and so does the
+    /// identifier, so they are re-armed at the new instant.
     static func request(for notification: PlannedNotification) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         content.title = notification.title
@@ -133,10 +142,11 @@ struct SystemNotificationCenter: NotificationCenterClient {
         let fire = Date(timeIntervalSince1970: Double(notification.fireAtMs) / 1000)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        let components = calendar.dateComponents(
+        var components = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
             from: fire
         )
+        components.timeZone = calendar.timeZone
         return UNNotificationRequest(
             identifier: notification.identifier,
             content: content,
