@@ -208,11 +208,17 @@ From now on:
   ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. The
   one exception is a kind whose parked op loses no data, such as `StreamDigest`
   ([ADR-0043](../11-adr/0043-commit-tree.md)): it changes no entity, so it may
-  ship without a feature gate. The same test decides a new field. A field that
-  is optional and absent when unset needs no feature, because an older build
-  keeps it as an unknown field and writes it back unchanged. A new entity
-  prefix, or a value an older build would misread, is not written until every
-  device has advertised its feature.
+  ship without a feature gate. A new field follows a weaker form of the same
+  test. A field that is optional and absent when unset is safe to carry
+  without a feature, because an older build keeps it as an unknown field and
+  writes it back unchanged. Such a field may still take a feature when the entity's
+  writes should wait until every device can represent it. `DOC_SCHEMA_V` 13's
+  eight optional Attachment fields are round-tripped by older builds and are
+  still gated by `attachment.thumbnail`
+  ([ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md)),
+  so an older build stops writing attachments once the vault requires it. A
+  new entity prefix, or a value an older build would misread, always takes a
+  feature and is not written until every device has advertised it.
 
   What each `DOC_SCHEMA_V` changed, and which feature gates it, is recorded
   once, in the doc comment on
