@@ -28,11 +28,12 @@ pub(in crate::engine::merge) use preferences::upsert_preferences_row;
 pub(in crate::engine::merge) use routine::{insert_routine_row, update_routine_row};
 pub(in crate::engine::merge) use saved_view::upsert_saved_view_row;
 pub(in crate::engine::merge) use stream::{insert_stream_row, update_stream_row};
-// The full-text rows are written by the row writers above, and rebuilt from
-// the rows by `engine::search`, which is the one reader of the rest.
+// The full-text rows are written by the row writers above. `engine::search`,
+// which owns the indexes' layout, re-creates them and has every row written
+// again through `index_all_rows`.
+pub(in crate::engine) use search::index_all_rows;
 #[cfg(test)]
 pub(in crate::engine) use search::reindex_tasks_of;
-pub(in crate::engine) use search::{create_words_sql, rebuild_from_rows};
 pub(in crate::engine::merge) use task::{
     ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row,
     replace_task_blockers, replace_task_contexts, update_task_row,

@@ -10,8 +10,9 @@
 //! row from both.
 //!
 //! What each kind contributes is [`doc_of_task`] and its siblings, which the
-//! rebuild from rows ([`rebuild_from_rows`]) uses too, so the two ways of
-//! writing the index cannot write different text.
+//! rebuild from rows ([`index_all_rows`], which `engine::search` calls once
+//! it has re-created the indexes) uses too, so the two ways of writing the
+//! index cannot write different text.
 //!
 //! While a background re-index for a new content language runs
 //! (`engine::search`), every write to a doc it has already copied is also
@@ -35,24 +36,6 @@ use sunrise_domain::{
 /// How much of a body the trigram index holds, in bytes of folded text
 /// (ADR-0052 §2). Past it a body is found by whole words only.
 pub(in crate::engine) const TRIGRAM_BODY_BYTES: usize = 4096;
-
-/// The tokenizer of `search_words`: `unicode61` folding diacritics, with
-/// Porter stemming in front when the content language is English.
-pub(in crate::engine) fn words_tokenizer(stemmed: bool) -> &'static str {
-    if stemmed {
-        "porter unicode61 remove_diacritics 2"
-    } else {
-        "unicode61 remove_diacritics 2"
-    }
-}
-
-/// The SQL that creates a word index named `table`.
-pub(in crate::engine) fn create_words_sql(table: &str, stemmed: bool) -> String {
-    format!(
-        "CREATE VIRTUAL TABLE {table} USING fts5 (title, aux, body, tokenize = '{}')",
-        words_tokenizer(stemmed)
-    )
-}
 
 /// One entity's text, as both indexes hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,24 +315,12 @@ fn ids(tx: &Transaction<'_>, sql: &str) -> rusqlite::Result<Vec<[u8; 16]>> {
     rows.map(|r| r.map(|raw| blob16(&raw))).collect()
 }
 
-/// Drop both indexes and write them again from the entity rows, with a word
-/// index that stems when `stemmed` is set. What the fold would write for
-/// the same rows: every live entity of an indexed kind, and no placeholder
-/// stream, which no op wrote and so no fold indexed.
-///
-/// Any background re-index is abandoned: what it was building is replaced.
-pub(in crate::engine) fn rebuild_from_rows(
-    tx: &Transaction<'_>,
-    stemmed: bool,
-) -> Result<u64, EngineError> {
-    tx.execute_batch(
-        "DROP TABLE IF EXISTS search_words_next;
-         UPDATE search_meta SET reindex_stemmed = NULL, reindex_cursor = 0;
-         DELETE FROM search_docs;
-         DELETE FROM search_tri;
-         DROP TABLE search_words;",
-    )?;
-    tx.execute_batch(&create_words_sql("search_words", stemmed))?;
+/// Index every entity row into the emptied indexes, and return how many
+/// docs it wrote. What the fold would write for the same rows: every live
+/// entity of an indexed kind, and no placeholder stream, which no op wrote
+/// and so no fold indexed. `engine::search` empties and re-creates the
+/// indexes first; it owns their layout.
+pub(in crate::engine) fn index_all_rows(tx: &Transaction<'_>) -> Result<u64, EngineError> {
     let mut n = 0u64;
     for id in ids(tx, "SELECT id FROM tasks WHERE deleted = 0 ORDER BY id")? {
         if let Some(t) = read_task(tx, &id)? {
