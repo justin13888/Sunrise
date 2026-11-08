@@ -141,9 +141,14 @@ class SunriseUITestCase: XCTestCase {
     /// `file` and `line` are forwarded so a failure points at the test that
     /// asked for the capture rather than at this file, which four call sites
     /// across two products now share.
+    ///
+    /// `listedHere: false` is for a line the list it was typed into does not
+    /// show — `^tomorrow` typed into Today, which holds today's and overdue
+    /// tasks only. Its proof that the capture landed is the field clearing.
     func capture(
         _ text: String,
         landingAs title: String? = nil,
+        listedHere: Bool = true,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -161,6 +166,15 @@ class SunriseUITestCase: XCTestCase {
         )
         activate(add, named: "the capture bar's Add button", file: file, line: line)
 
+        guard listedHere else {
+            XCTAssertTrue(
+                waitUntil(timeout: 10) { !add.isEnabled },
+                "the capture was written, so the field cleared and Add disabled again",
+                file: file,
+                line: line
+            )
+            return
+        }
         let expected = title ?? text
         XCTAssertTrue(
             app.staticTexts[expected].appears(within: 10),
