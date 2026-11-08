@@ -1,5 +1,8 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 
 @testable import Sunrise
 
@@ -160,6 +163,71 @@ struct SharedCaptureTests {
         #expect(items.map(\.filename) == ["Receipt.png"])
         #expect(items.map(\.mimeType) == ["image/png"])
         #expect(try await vault.bridge.attachmentBytes(items[0].id) == bytes)
+        await vault.bridge.shutdown()
+    }
+
+    /// A real PNG, opaque, `width` by `height`.
+    private func png(width: Int, height: Int) throws -> Data {
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: space,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(red: 0.9, green: 0.4, blue: 0.1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(
+            data as CFMutableData,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    /// A shared image carries what an attachment picked in the app carries
+    /// (ADR-0053 §1): the original's pixel size, and a thumbnail drawn from
+    /// the file the extension saved.
+    @Test
+    func aSharedImageIsFiledWithItsSizeAndAThumbnail() async throws {
+        let vault = try await TestVault()
+        let directory = Surface.scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingCaptureStore(directory: directory)
+
+        let image = PendingCapture.Image(file: "image-0.png", name: "Photo.png")
+        let bytes = try png(width: 640, height: 480)
+        try share(capture(images: [image]), images: ["image-0.png": bytes], into: store)
+
+        let report = await SharedCapture.fileAll(from: store, into: vault.bridge)
+        #expect(report.failures.isEmpty)
+        let task = try #require(report.filed.first)
+        guard case let .attachments(items) = try await vault.bridge.query(.taskAttachments(task: task)) else {
+            Issue.record("expected the task's attachments")
+            return
+        }
+        let item = try #require(items.first)
+        #expect(item.width == 640)
+        #expect(item.height == 480)
+        #expect(try await vault.bridge.attachmentBytes(item.id) == bytes)
+
+        let thumbnail = try #require(try await vault.bridge.thumbnailBytes(item.id))
+        #expect(thumbnail.mimeType == "image/jpeg", "an opaque original gets a JPEG thumbnail")
+        let source = try #require(CGImageSourceCreateWithData(Data(thumbnail.bytes) as CFData, nil))
+        let drawn = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(drawn.width <= 512 && drawn.height <= 512)
+        #expect(
+            abs(Double(drawn.width) / Double(drawn.height) - 4.0 / 3.0) < 0.02,
+            "the thumbnail keeps the original's aspect"
+        )
         await vault.bridge.shutdown()
     }
 
