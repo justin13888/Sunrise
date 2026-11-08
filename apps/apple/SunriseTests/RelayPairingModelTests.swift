@@ -281,6 +281,32 @@ struct RelayPairingModelTests {
             return
         }
         #expect(prompt.leg == .code)
+        #expect(
+            prompt.instruction == L10n.Pairing.Legs.promptCodeInstruction,
+            "copy and paste shows no six digits, so its words do not offer to type them"
+        )
+    }
+
+    /// The code leg offers the six digits only over the relay, where the other
+    /// device shows them and this screen has a field for them.
+    @Test
+    func onlyTheRelaysCodeLegMentionsTheTypedCode() {
+        let relay = Relay()
+        let session = FakeSession(role: .existingDevice)
+        let relayModel = existingDevice(relay, transport: transport(relay, session: session))
+        guard case let .awaiting(relayPrompt) = relayModel.phase else {
+            Issue.record("expected the code leg, got \(relayModel.phase)")
+            return
+        }
+        #expect(relayPrompt.instruction == L10n.Pairing.Legs.promptRelayCodeInstruction)
+
+        let manual = PairingModel(intent: .addAnotherDevice, relayURL: "")
+        guard case let .awaiting(manualPrompt) = manual.phase else {
+            Issue.record("expected the code leg, got \(manual.phase)")
+            return
+        }
+        #expect(manualPrompt.instruction == L10n.Pairing.Legs.promptCodeInstruction)
+        #expect(manualPrompt.instruction != relayPrompt.instruction)
     }
 
     /// No relay, or no account to present to one: copy and paste from the

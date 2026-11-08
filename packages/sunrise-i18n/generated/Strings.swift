@@ -656,8 +656,10 @@ enum L10n {
             static var grantInstruction: String { L10n.tr("apple.pairing.legs.grant_instruction") }
             /// Scan the code on the device you are adding
             static var promptCodeTitle: String { L10n.tr("apple.pairing.legs.prompt_code_title") }
-            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here.
+            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here.
             static var promptCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_code_instruction") }
+            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here.
+            static var promptRelayCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_relay_code_instruction") }
             /// Paste what the other device is showing
             static var promptMessageTitle: String { L10n.tr("apple.pairing.legs.prompt_message_title") }
             /// Copy the block from the other device's screen and paste it here.
@@ -679,16 +681,22 @@ enum L10n {
         enum Scan {
             /// Scan the pairing code
             static var title: String { L10n.tr("apple.pairing.scan.title") }
-            /// Type or paste the code instead
+            /// Paste the code instead
             static var pasteInstead: String { L10n.tr("apple.pairing.scan.paste_instead") }
+            /// Type or paste the code instead
+            static var typeInstead: String { L10n.tr("apple.pairing.scan.type_instead") }
             /// Sunrise cannot use the camera
             static var refusedTitle: String { L10n.tr("apple.pairing.scan.refused_title") }
-            /// Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
+            /// Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
             static var refusedDetail: String { L10n.tr("apple.pairing.scan.refused_detail") }
+            /// Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
+            static var refusedDetailTyped: String { L10n.tr("apple.pairing.scan.refused_detail_typed") }
             /// There is no camera here that can scan
             static var noCameraTitle: String { L10n.tr("apple.pairing.scan.no_camera_title") }
-            /// Type the six-digit code shown beside it, or paste the text shown under it, instead.
+            /// Paste the text shown under the code instead.
             static var noCameraDetail: String { L10n.tr("apple.pairing.scan.no_camera_detail") }
+            /// Type the six-digit code shown beside it, or paste the text shown under it, instead.
+            static var noCameraDetailTyped: String { L10n.tr("apple.pairing.scan.no_camera_detail_typed") }
         }
     }
 

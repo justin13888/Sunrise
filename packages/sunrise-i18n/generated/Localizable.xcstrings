@@ -6376,7 +6376,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here."
+            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here."
           }
         }
       }
@@ -6454,6 +6454,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Paste the block that names the account"
+          }
+        }
+      }
+    },
+    "apple.pairing.legs.prompt_relay_code_instruction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here."
           }
         }
       }
@@ -6816,6 +6827,17 @@
         "en": {
           "stringUnit": {
             "state": "translated",
+            "value": "Paste the text shown under the code instead."
+          }
+        }
+      }
+    },
+    "apple.pairing.scan.no_camera_detail_typed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
             "value": "Type the six-digit code shown beside it, or paste the text shown under it, instead."
           }
         }
@@ -6838,12 +6860,23 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Type or paste the code instead"
+            "value": "Paste the code instead"
           }
         }
       }
     },
     "apple.pairing.scan.refused_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
+          }
+        }
+      }
+    },
+    "apple.pairing.scan.refused_detail_typed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -6872,6 +6905,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scan the pairing code"
+          }
+        }
+      }
+    },
+    "apple.pairing.scan.type_instead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type or paste the code instead"
           }
         }
       }

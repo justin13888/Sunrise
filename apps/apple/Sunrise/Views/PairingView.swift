@@ -40,6 +40,7 @@ struct PairingView: View {
         .sheet(isPresented: $scanning) {
             QRScannerView(
                 source: .current,
+                offersTypedCode: model.transport == .relay,
                 found: { payload in
                     scanning = false
                     model.pasted = payload

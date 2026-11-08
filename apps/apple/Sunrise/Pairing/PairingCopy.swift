@@ -144,13 +144,19 @@ extension PairingModel {
         }
     }
 
-    static func prompt(for leg: Leg) -> Prompt {
+    /// The words for an awaited leg over the current ``transport``. Only the
+    /// relay's code leg mentions the six digits: the copy-and-paste script,
+    /// including a relay pairing that fell back to it, shows no typed code on
+    /// the other device and no code field on this one.
+    func prompt(for leg: Leg) -> Prompt {
         switch leg {
         case .code:
             Prompt(
                 leg: leg,
                 title: L10n.Pairing.Legs.promptCodeTitle,
-                instruction: L10n.Pairing.Legs.promptCodeInstruction
+                instruction: transport == .relay
+                    ? L10n.Pairing.Legs.promptRelayCodeInstruction
+                    : L10n.Pairing.Legs.promptCodeInstruction
             )
         case .first, .second, .third:
             Prompt(

@@ -93,6 +93,10 @@ struct QRScannerView: View {
     let source: QRScanSource
     /// A payload was read. The caller closes the sheet and submits it.
     let found: (String) -> Void
+    /// Whether the other device shows six digits to type: true over the relay
+    /// only. The copy-and-paste script has no typed code, so its words offer
+    /// the paste field alone.
+    let offersTypedCode: Bool
     /// The user wants the paste field instead. Closes the sheet.
     let pasteInstead: () -> Void
 
@@ -113,7 +117,10 @@ struct QRScannerView: View {
                 .frame(maxWidth: .infinity, minHeight: 240)
             HStack {
                 Spacer()
-                Button(L10n.Pairing.Scan.pasteInstead, systemImage: "doc.on.clipboard") {
+                Button(
+                    offersTypedCode ? L10n.Pairing.Scan.typeInstead : L10n.Pairing.Scan.pasteInstead,
+                    systemImage: "doc.on.clipboard"
+                ) {
                     pasteInstead()
                 }
                 .accessibilityIdentifier("pairing.scan.pasteInstead")
@@ -138,14 +145,18 @@ struct QRScannerView: View {
             explanation(
                 symbol: "video.slash",
                 title: L10n.Pairing.Scan.refusedTitle,
-                detail: L10n.Pairing.Scan.refusedDetail
+                detail: offersTypedCode
+                    ? L10n.Pairing.Scan.refusedDetailTyped
+                    : L10n.Pairing.Scan.refusedDetail
             )
             .accessibilityIdentifier("pairing.scan.refused")
         case .noCamera:
             explanation(
                 symbol: "camera.metering.unknown",
                 title: L10n.Pairing.Scan.noCameraTitle,
-                detail: L10n.Pairing.Scan.noCameraDetail
+                detail: offersTypedCode
+                    ? L10n.Pairing.Scan.noCameraDetailTyped
+                    : L10n.Pairing.Scan.noCameraDetail
             )
             .accessibilityIdentifier("pairing.scan.noCamera")
         }

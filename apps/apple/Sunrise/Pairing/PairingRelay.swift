@@ -220,7 +220,7 @@ extension PairingModel {
             // it is waiting on the relay, not on a pasted Noise message. Both
             // have to start again by copy and paste, and the screen says so.
             fallBackToManual(because: PairingModel.relayDidNotAnswerHere(relay.relayURL))
-            phase = .awaiting(Self.prompt(for: .code))
+            phase = .awaiting(prompt(for: .code))
             return
         }
         guard mine == attempt else { return }

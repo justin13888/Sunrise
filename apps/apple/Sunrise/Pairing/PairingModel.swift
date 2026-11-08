@@ -215,7 +215,7 @@ final class PairingModel {
                 : (signedIn ? nil : Self.notSignedIn)
         }
         if intent == .addAnotherDevice {
-            phase = .awaiting(Self.prompt(for: .code))
+            phase = .awaiting(prompt(for: .code))
         }
     }
 
@@ -411,7 +411,7 @@ final class PairingModel {
         pairing = nil
         pasted = ""
         pendingHandOff = nil
-        phase = intent == .addAnotherDevice ? .awaiting(Self.prompt(for: .code)) : .idle
+        phase = intent == .addAnotherDevice ? .awaiting(prompt(for: .code)) : .idle
         syncSeamState()
     }
 }
@@ -454,13 +454,13 @@ extension PairingModel {
             case .first, .second, .third:
                 phase = shows(next)
                     ? .handOff(handOff(for: next, text: try require().nextMessage()))
-                    : .awaiting(Self.prompt(for: next))
+                    : .awaiting(prompt(for: next))
             case .compare:
                 phase = .comparing(sas: try require().sas())
             case .offer:
                 // The device that seals passes through `.working` while it
                 // does; the one being added waits to be handed the ciphertext.
-                phase = shows(.offer) ? .working(finishingLabel) : .awaiting(Self.prompt(for: .offer))
+                phase = shows(.offer) ? .working(finishingLabel) : .awaiting(prompt(for: .offer))
             case .request, .grant:
                 // Both were computed by the submit that just ran — a request is
                 // built from the offer, a grant is signed over the request — so
@@ -470,7 +470,7 @@ extension PairingModel {
                     pendingHandOff = nil
                     phase = .handOff(handOff(for: next, text: text))
                 } else {
-                    phase = .awaiting(Self.prompt(for: next))
+                    phase = .awaiting(prompt(for: next))
                 }
             }
         } catch {
