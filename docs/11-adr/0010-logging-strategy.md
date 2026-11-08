@@ -141,9 +141,21 @@ decorative:
   and `trace` frame field are still unimplemented — as they were before — so a
   server-side span is rooted at the server. `tracing` makes this *easier* to add
   later (`Span::follows_from`, a propagator layer) but does not add it.
-- **The `ring` and `remote` sinks.** `remote` never existed; `ring` existed but
-  fed a diagnostic-bundle exporter that does not. Deleted rather than kept as an
-  interface nothing satisfies.
+- **The `ring` and `remote` sinks.** `remote` was never implemented and had no
+  endpoint behind it; `ring` was implemented but existed only to feed a
+  diagnostic-bundle exporter that does not exist either. Both were deleted rather
+  than kept as an interface nothing satisfies. Reintroducing `remote` is a
+  privacy decision (opt-in only, per the original logging.md), not a plumbing
+  one. The `SUNRISE_LOG_RING_BYTES` and `SUNRISE_LOG_DIAGNOSTIC` variables went
+  with the sinks and the diagnostic mode they configured.
+- **The per-package conformance triple** (point 9). Every package was to carry
+  an `ev`-catalogue snapshot, a redaction property test, and a throttling test,
+  aggregated by a `log-conformance` target. The throttling test went with the
+  token bucket. The snapshot is replaced by the workspace-wide catalogue scan,
+  which tests source against documentation rather than a constant against
+  itself. The redaction property test is centralised in
+  `crates/sunrise-log/tests/redaction.rs`, because the guarantee it checks is a
+  property of `Plain<T>` and `RedactionLayer`, not of each caller.
 - **The custom `sunrise::log_plaintext` clippy lint** (point 4's second CI
   check). A type-aware lint needs a `dylint` driver, and it is largely redundant:
   `Plain<T>` having no `Value` impl means the compiler already rejects
