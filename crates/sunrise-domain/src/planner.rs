@@ -582,7 +582,13 @@ pub fn plan_base(inputs: &PlanInputs) -> PlanBase {
         }
         f.u64(t.constraints.len() as u64);
         for c in &t.constraints {
-            f.str(&format!("{c:?}"));
+            // Its wire encoding, which every build writes the same way.
+            let mut bytes = Vec::new();
+            if ciborium::into_writer(c, &mut bytes).is_err() {
+                bytes.clear();
+            }
+            f.u64(bytes.len() as u64);
+            f.0.update(&bytes);
         }
         f.u8(u8::from(t.in_progress) | (u8::from(t.bound) << 1));
     }
@@ -942,6 +948,8 @@ impl<'a> World<'a> {
         let unscheduled: Vec<PlanUnscheduled> = unscheduled
             .iter()
             .filter_map(|(&i, &reason)| match after[i] {
+                // Already date-only on that day: nothing changes.
+                Pos::Day(_) if after[i] == self.items[i].before => None,
                 Pos::Day(day) => Some(PlanUnscheduled {
                     item: self.items[i].id,
                     before: self.before_out(i),
