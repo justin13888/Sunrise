@@ -323,7 +323,7 @@ struct ReminderSchedulerTests {
         ) { _ in }
 
         let now = await vault.bridge.nowMs()
-        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let list = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await list.create(scheduledTask("File the tax return", at: Int64(now) + 600_000))
         await scheduler.start()
         let task = try #require(list.tasks.first)
@@ -356,7 +356,7 @@ struct ReminderSchedulerTests {
         ) { _ in }
 
         let now = await vault.bridge.nowMs()
-        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let list = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await list.create(scheduledTask("Ring the bank", at: Int64(now) + 600_000))
         await scheduler.start()
         let armed = try #require(scheduler.scheduled.first)

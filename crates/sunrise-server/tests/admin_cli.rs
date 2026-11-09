@@ -59,6 +59,9 @@ impl Install {
         self.dir.path().join("data")
     }
 
+    /// Run one admin command. The binary is a debug build, so it reports an
+    /// ample disk rather than the host's: `doctor`'s `free_space` check would
+    /// otherwise fail on a development disk 95% full (#1100).
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_sunrise-server"))
             .arg("admin")
@@ -66,6 +69,7 @@ impl Install {
             .arg(&self.config)
             .args(args)
             .env_remove("SUNRISE_CONFIG")
+            .env(sunrise_server::blob::FsBlobs::DEBUG_AMPLE_DISK_ENV, "1")
             .output()
             .unwrap()
     }
@@ -106,6 +110,24 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
         "protocol",
     ] {
         assert!(names.contains(&want), "{want} missing from {names:?}");
+    }
+    // The reading came from the debug seam `run` sets, not the host's disk.
+    // A release build has no seam and reads the host.
+    if cfg!(debug_assertions) {
+        let free_space = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["check"] == "free_space")
+            .unwrap();
+        assert_eq!(free_space["status"], "ok", "{free_space}");
+        assert!(
+            free_space["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("100 of 100 blocks"),
+            "{free_space}"
+        );
     }
     assert!(
         !install.data().join(".sunrise-doctor.tmp").exists(),

@@ -92,11 +92,10 @@ struct UndoModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// A delete never reaches the stack, so the menu offers nothing for it.
-    /// The alternative — an Undo item that silently does nothing — is the one
-    /// thing this whole path exists not to do.
+    /// A delete is undone by a restore (ADR-0065 §3), so it reaches the stack
+    /// under its own name, and undoing it brings the entity back.
     @Test
-    func aDeleteLeavesNothingToUndo() async throws {
+    func aDeleteIsUndoneByARestore() async throws {
         let vault = try await TestVault()
         let browse = BrowseModel(bridge: vault.bridge)
         let undo = UndoModel(bridge: vault.bridge)
@@ -106,10 +105,15 @@ struct UndoModelTests {
         await browse.deleteContext(row)
         await undo.refresh()
 
-        // The create before it is still the top of the stack, which is how
-        // this reads that the delete pushed nothing of its own.
-        #expect(undo.undoTitle == "Undo new context @errands")
-        #expect(browse.undoNote?.lowercased().contains("tombstone") == true)
+        #expect(browse.visibleContexts.isEmpty)
+        #expect(undo.undoTitle == L10n.Undo.undoNamed(action: L10n.Undo.deleteContext(name: row.name)))
+        #expect(browse.undoNote == nil)
+
+        await undo.undo()
+        await browse.refresh()
+
+        #expect(undo.errorMessage == nil)
+        #expect(browse.visibleContexts.map(\.id) == [row.id])
         await vault.bridge.shutdown()
     }
 }
