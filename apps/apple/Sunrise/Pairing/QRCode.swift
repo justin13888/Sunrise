@@ -1,5 +1,4 @@
 import CoreGraphics
-import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
 

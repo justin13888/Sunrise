@@ -114,22 +114,27 @@ struct BrowseModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// The core reports a delete as un-undoable, and the model surfaces that
-    /// rather than leaving an Undo item that would silently do nothing.
+    /// A delete is undoable — the core restores the tombstone (ADR-0065 §3) —
+    /// so the model raises no note saying otherwise, and Undo brings the
+    /// stream back.
     @Test
-    func deletingSaysOutLoudThatItCannotBeUndone() async throws {
+    func deletingAStreamCanBeUndone() async throws {
         let vault = try await TestVault()
         let model = BrowseModel(bridge: vault.bridge)
+        let undo = UndoModel(bridge: vault.bridge)
         await model.createStream(name: "Travel", color: nil)
         let row = try #require(model.visibleStreams.first { $0.name == "Travel" })
 
         await model.deleteStream(row)
 
         #expect(!model.visibleStreams.contains { $0.name == "Travel" })
-        let note = try #require(model.undoNote)
-        #expect(note.lowercased().contains("tombstone"), "\(note)")
-        model.dismissUndoNote()
         #expect(model.undoNote == nil)
+
+        await undo.undo()
+        await model.refresh()
+
+        #expect(undo.errorMessage == nil)
+        #expect(model.visibleStreams.contains { $0.id == row.id })
         await vault.bridge.shutdown()
     }
 

@@ -125,6 +125,6 @@ private struct EditableGate: ViewModifier {
     @Environment(\.editGate) private var gate
 
     func body(content: Content) -> some View {
-        content.disabled(gate.map { g in !entities.allSatisfy { g.allows($0) } } ?? false)
+        content.disabled(gate.map { current in !entities.allSatisfy { current.allows($0) } } ?? false)
     }
 }
