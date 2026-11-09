@@ -144,8 +144,12 @@ struct SystemIntentTests {
     @Test
     func aFocusFilterResolvesFromItsRecordWhenTheVaultIsShut() async throws {
         let (defaults, name) = Surface.scratchDefaults()
-        defer { Surface.discard(name) }
-        let store = FocusFilterStore(defaults: defaults)
+        let directory = Surface.scratchDirectory()
+        defer {
+            Surface.discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = FocusFilterStore(directory: directory, defaults: defaults)
         store.apply([(id: "str_work", name: "Work")])
 
         let found = try await StreamEntityQuery.resolve(["str_work", "str_gone"], remembering: store) {

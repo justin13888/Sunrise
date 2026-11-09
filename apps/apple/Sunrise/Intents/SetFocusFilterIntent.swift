@@ -44,13 +44,11 @@ struct SunriseFocusFilter: SetFocusFilterIntent {
         )
     }
 
-    /// The subtitle, as a sentence.
+    /// The subtitle, as a sentence: the client layer's
+    /// `sunrise_client_core::focus::summary`, so every client describes a
+    /// filter the same way.
     static func summary(of names: [String]) -> String {
-        switch names.count {
-        case 0: "All streams"
-        case 1, 2, 3: names.joined(separator: ", ")
-        default: "\(names.prefix(2).joined(separator: ", ")) and \(names.count - 2) more"
-        }
+        focusFilterSummary(names: names)
     }
 
     func perform() async throws -> some IntentResult {

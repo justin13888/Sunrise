@@ -46,24 +46,70 @@ struct FocusFilterTests {
 
     // MARK: - The store
 
-    /// Device-local and persisted: iOS runs the filter's intent when the
-    /// Focus changes, possibly long before anybody opens Sunrise.
+    /// A stream id the core's settings file accepts.
+    private static let work: EntityRef = "str_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+    /// Device-local and persisted, in the core's client settings file: iOS
+    /// runs the filter's intent when the Focus changes, possibly long before
+    /// anybody opens Sunrise.
     @Test
     func theStoreRemembersAndLiftsTheFilter() {
         let (defaults, name) = Surface.scratchDefaults()
-        defer { Surface.discard(name) }
+        let directory = Surface.scratchDirectory()
+        defer {
+            Surface.discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
 
-        let store = FocusFilterStore(defaults: defaults)
+        let store = FocusFilterStore(directory: directory, defaults: defaults)
         #expect(store.streams == nil)
-        store.apply([(id: "str_work", name: "Work")])
-        #expect(store.streams == ["str_work"])
-        #expect(FocusFilterStore(defaults: defaults).streams == ["str_work"], "survives a relaunch")
-        #expect(FocusFilterStore(defaults: defaults).names == ["str_work": "Work"])
+        store.apply([(id: Self.work, name: "Work")])
+        #expect(store.streams == [Self.work])
+        let relaunched = FocusFilterStore(directory: directory, defaults: defaults)
+        #expect(relaunched.streams == [Self.work], "survives a relaunch")
+        #expect(relaunched.names == [Self.work: "Work"])
+        let written = try? clientSettings(dir: directory.path(percentEncoded: false))
+        let expected = [FocusFilterStream(stream: Self.work, name: "Work")]
+        #expect(written?.focusFilter == expected, "through the core")
 
         store.apply(nil)
         #expect(store.streams == nil)
-        #expect(FocusFilterStore(defaults: defaults).streams == nil, "a Focus ending lifts it for good")
+        #expect(
+            FocusFilterStore(directory: directory, defaults: defaults).streams == nil,
+            "a Focus ending lifts it for good"
+        )
     }
+
+    /// A filter an earlier build kept in `UserDefaults` moves into the client
+    /// settings the first time the store is built, and its key is deleted, so
+    /// the second build reads it from the file alone.
+    @Test
+    func aFilterKeptInUserDefaultsMovesOnceAndItsKeyIsDeleted() {
+        let (defaults, name) = Surface.scratchDefaults()
+        let directory = Surface.scratchDirectory()
+        defer {
+            Surface.discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        defaults.set([Self.work: "Work"], forKey: FocusFilterStore.legacyKey)
+
+        let first = FocusFilterStore(directory: directory, defaults: defaults)
+        #expect(first.streams == [Self.work])
+        #expect(first.names == [Self.work: "Work"])
+        #expect(defaults.object(forKey: FocusFilterStore.legacyKey) == nil, "deleted once written")
+
+        let second = FocusFilterStore(directory: directory, defaults: defaults)
+        #expect(second.streams == [Self.work], "read back from the file")
+    }
+
+    #if os(iOS)
+    /// The Settings subtitle is the client layer's sentence.
+    @Test
+    func theFilterIsDescribedAsTheCoreDescribesIt() {
+        #expect(SunriseFocusFilter.summary(of: []) == "All streams")
+        #expect(SunriseFocusFilter.summary(of: ["A", "B", "C", "D"]) == "A, B and 2 more")
+    }
+    #endif
 
     // MARK: - Today
 
@@ -73,8 +119,12 @@ struct FocusFilterTests {
     func todayShowsOnlyTheScopedStreams() async throws {
         let vault = try await TestVault()
         let (defaults, name) = Surface.scratchDefaults()
-        defer { Surface.discard(name) }
-        let store = FocusFilterStore(defaults: defaults)
+        let directory = Surface.scratchDirectory()
+        defer {
+            Surface.discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = FocusFilterStore(directory: directory, defaults: defaults)
 
         let work = try await Surface.stream("Work", in: vault.bridge)
         let home = try await Surface.stream("Home", in: vault.bridge)
@@ -110,8 +160,12 @@ struct FocusFilterTests {
     func theSchedulerMutesOtherStreamsAndRestoresThem() async throws {
         let vault = try await TestVault()
         let (defaults, name) = Surface.scratchDefaults()
-        defer { Surface.discard(name) }
-        let store = FocusFilterStore(defaults: defaults)
+        let directory = Surface.scratchDirectory()
+        defer {
+            Surface.discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = FocusFilterStore(directory: directory, defaults: defaults)
         let center = FakeNotificationCenter()
         let scheduler = ReminderScheduler(
             bridge: vault.bridge,
