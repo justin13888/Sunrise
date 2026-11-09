@@ -96,26 +96,103 @@ struct NotificationPreferencesTests {
         #expect(NotificationPreferences.civilTime(minutesPastMidnight: 1439) == "23:59:00")
     }
 
-    /// Settings are per device and never synced, so they must survive a
-    /// restart of the app on their own.
+    /// Settings live in the core's preferences, on this device's overlay, so
+    /// they survive a restart of the app: a second object bound to the same
+    /// vault reads back what the first wrote.
     @Test
-    func settingsPersistAcrossARestart() {
-        let name = "sunrise-tests-\(UUID().uuidString)"
+    func settingsPersistAcrossARestartThroughTheCore() async throws {
+        let vault = try await TestVault()
+        let (first, name) = preferences()
         defer { discard(name) }
-        guard let defaults = UserDefaults(suiteName: name) else {
-            Issue.record("scratch defaults")
-            return
-        }
 
-        let first = NotificationPreferences(defaults: defaults)
-        first.isPrimaryDevice = false
+        await first.bind(to: vault.bridge)
+        #expect(first.isPrimaryDevice)
+        let claimed = try await preferenceItems(in: vault.bridge)["notifications.primary_device"]
+        #expect(claimed != nil, "an unset register is claimed")
+        first.isEnabled = false
         first.leadMinutes = 30
         first.quietHoursEnabled = true
+        first.quietPolicyIsDrop = true
+        await first.saved()
+        #expect(first.errorMessage == nil)
 
-        let second = NotificationPreferences(defaults: defaults)
-        #expect(!second.isPrimaryDevice)
+        let (second, other) = preferences()
+        defer { discard(other) }
+        await second.bind(to: vault.bridge)
+        #expect(!second.isEnabled)
         #expect(second.leadMinutes == 30)
         #expect(second.quietHoursEnabled)
+        #expect(second.quietStartMinutes == 22 * 60)
+        #expect(second.quietEndMinutes == 7 * 60)
+        #expect(second.quietPolicyIsDrop)
+        #expect(second.isPrimaryDevice)
+
+        let items = try await preferenceItems(in: vault.bridge)
+        #expect(items["notifications.task_reminder.lead_s"] == .uint(value: 1800))
+        #expect(items["notifications.enabled"] == .bool(value: false))
+
+        second.quietHoursEnabled = false
+        await second.saved()
+        let (third, last) = preferences()
+        defer { discard(last) }
+        await third.bind(to: vault.bridge)
+        #expect(!third.quietHoursEnabled, "turning quiet hours off clears this device's window")
+        await vault.bridge.shutdown()
+    }
+
+    /// Every key an earlier build kept in `UserDefaults` moves into the core
+    /// once, and is deleted: a second bind finds nothing left to move, and
+    /// reads the values back from the core alone.
+    @Test
+    func eachOldKeyMigratesOnceAndIsDeleted() async throws {
+        let vault = try await TestVault()
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        defer { discard(name) }
+        let defaults = try #require(UserDefaults(suiteName: name))
+        let old: [String: Any] = [
+            "notify.enabled": false,
+            "notify.isPrimaryDevice": true,
+            "notify.leadMinutes": 15,
+            "notify.quietHours.enabled": true,
+            "notify.quietHours.startMinutes": 23 * 60,
+            "notify.quietHours.endMinutes": 6 * 60 + 30,
+            "notify.quietHours.drop": true
+        ]
+        for (key, value) in old { defaults.set(value, forKey: key) }
+        defaults.set("{}", forKey: "notify.ledger.dev")
+
+        let first = NotificationPreferences(defaults: defaults)
+        #expect(Set(first.legacyValues().map(\.key)) == Set(old.keys))
+        await first.bind(to: vault.bridge)
+        #expect(first.errorMessage == nil)
+        for key in old.keys {
+            #expect(defaults.object(forKey: key) == nil, "\(key) is deleted once moved")
+        }
+        #expect(first.ledger(for: "dev") == "{}", "the ledger is device state and stays")
+        #expect(!first.isEnabled)
+        #expect(first.leadMinutes == 15)
+        #expect(first.quietHoursEnabled)
+        #expect(first.quietStartMinutes == 23 * 60)
+        #expect(first.quietEndMinutes == 6 * 60 + 30)
+        #expect(first.quietPolicyIsDrop)
+
+        let second = NotificationPreferences(defaults: defaults)
+        #expect(second.legacyValues().isEmpty, "nothing left to move")
+        await second.bind(to: vault.bridge)
+        #expect(!second.isEnabled)
+        #expect(second.leadMinutes == 15)
+        #expect(second.quietPolicyIsDrop)
+        await vault.bridge.shutdown()
+    }
+
+    /// The core's preferences, by key, as `Query::Preferences` reads them.
+    private func preferenceItems(in bridge: CoreBridge) async throws -> [String: PreferenceValue] {
+        guard case let .preferences(items) = try await bridge.query(.preferences) else { return [:] }
+        var values: [String: PreferenceValue] = [:]
+        for item in items {
+            values[item.key] = item.value
+        }
+        return values
     }
 
     /// The one value a screen watches. Two reads of an unchanged object have

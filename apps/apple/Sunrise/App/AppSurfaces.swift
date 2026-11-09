@@ -135,9 +135,9 @@ final class AppSurfaces {
     /// ``pendingDestination``, by the shell that presents the sheet.
     private(set) var pendingSettings = false
 
-    /// Notification settings are per device and never sync, so they live
-    /// beside the vault rather than in it — and they are read before the vault
-    /// is open, which is why this is not created in `attach`.
+    /// Notification settings: the core's preferences, read through whichever
+    /// vault is open. One for the life of the app, which the screens watch;
+    /// `attach` binds it to each vault in turn.
     let notifications = NotificationPreferences()
 
     /// The capture field's model, shared by whichever surface is presenting
@@ -208,6 +208,10 @@ final class AppSurfaces {
             // one route that may have no window to land in.
             self?.open(link, raisingAWindow: true)
         }
+        // Not awaited: `attach` cannot, and the windows reschedule whenever
+        // `notifications.policy` changes, which the read does.
+        let notifications = notifications
+        _Concurrency.Task { await notifications.bind(to: bridge) }
         #if os(macOS)
         hotkey.register()
         hotkeyStatus = hotkey.status
@@ -486,6 +490,7 @@ final class AppSurfaces {
         menuBar = nil
         reminders?.stopObservingTimeChanges()
         reminders = nil
+        notifications.unbind()
         ical = nil
         timeZone?.stop()
         timeZone = nil
