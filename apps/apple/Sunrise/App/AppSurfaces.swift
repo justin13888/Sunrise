@@ -37,7 +37,10 @@ final class AppSurfaces {
 
     private(set) var menuBar: MenuBarModel?
     let widgets: WidgetFeed?
-    init(widgets: WidgetFeed? = nil) { self.widgets = widgets }
+    init(widgets: WidgetFeed? = nil) {
+        self.widgets = widgets
+        installCaptureRequestPresenter()
+    }
 
     #if os(macOS)
     /// Whether ⌘⇧N is registered with the window server. iOS has no global
@@ -212,6 +215,7 @@ final class AppSurfaces {
             }
         }
         #endif
+        answerPendingCaptureRequest()
     }
 
     /// Start the core's periodic routine materialization against the vault

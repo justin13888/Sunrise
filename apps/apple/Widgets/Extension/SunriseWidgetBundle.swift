@@ -8,13 +8,16 @@ import WidgetKit
 /// app for the Home and Lock Screens — and the families each widget offers are
 /// the only thing that differ, which ``NextUpWidget`` decides.
 ///
-/// The focus Live Activity is the iOS build's alone: ActivityKit draws the
-/// Dynamic Island and the Lock Screen, and a Mac has neither.
+/// The focus Live Activity and the Lock Screen capture widget are the iOS
+/// build's alone: ActivityKit draws the Dynamic Island and the Lock Screen, and
+/// a Mac has neither.
 @main
 struct SunriseWidgetBundle: WidgetBundle {
     var body: some Widget {
         NextUpWidget()
+        StreamTileWidget()
         #if os(iOS)
+        CaptureWidget()
         FocusActivityWidget()
         #endif
     }

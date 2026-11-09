@@ -46,6 +46,10 @@ struct CaptureTaskIntent: AppIntent {
     /// Runs without pulling Sunrise forward. Every one of these verbs is
     /// something you do *instead of* opening the app; a capture that stole
     /// focus would interrupt exactly the thought it exists to catch.
+    ///
+    /// The Lock Screen capture widget has no line to pass, so it runs
+    /// `OpenCaptureIntent` (`Widgets/Shared/`), the foreground counterpart
+    /// that opens the capture sheet instead.
     static let supportedModes: IntentModes = .background
 
     static var parameterSummary: some ParameterSummary {

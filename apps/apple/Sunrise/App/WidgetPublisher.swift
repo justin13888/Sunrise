@@ -71,6 +71,7 @@ final class WidgetPublisher {
     /// methods), not a copy of it, so the two surfaces cannot disagree.
     static func snapshot(
         today: [TaskItem],
+        streams: [(stream: StreamListRow, tasks: [TaskItem])] = [],
         nowMs: UInt64,
         timeZone: String
     ) -> WidgetSnapshot {
@@ -88,6 +89,30 @@ final class WidgetPublisher {
                     section: WidgetSnapshot.Section(section),
                     link: DeepLink.task(task.id, .open).url
                 )
+            },
+            streams: streams.prefix(WidgetSnapshot.streamLimit).map {
+                tile(stream: $0.stream, tasks: $0.tasks)
+            }
+        )
+    }
+
+    /// One stream's tile: its open tasks, in the order the core listed them.
+    ///
+    /// "Open" is ``TaskListReader/open(from:)``'s rule, the one the Stream
+    /// Summary intent reports by, so the widget and Siri cannot disagree about
+    /// what a stream holds.
+    static func tile(stream: StreamListRow, tasks: [TaskItem]) -> WidgetSnapshot.StreamTile {
+        let open = TaskListReader.open(from: tasks.filter { !$0.deleted })
+        return WidgetSnapshot.StreamTile(
+            id: stream.id,
+            name: stream.name,
+            outstanding: open.count,
+            rows: open.prefix(WidgetSnapshot.rowLimit).map { task in
+                WidgetSnapshot.StreamTile.Item(
+                    id: task.id,
+                    title: task.title,
+                    link: DeepLink.task(task.id, .open).url
+                )
             }
         )
     }
@@ -96,12 +121,14 @@ final class WidgetPublisher {
     func publish() async {
         let now = await bridge.nowMs()
         do {
-            guard case let .tasks(today) = try await bridge.query(.today(nowMs: now, contexts: [])) else {
+            guard case let .tasks(today) = try await bridge.query(.today(nowMs: now, contexts: [])),
+                  let streams = try await streamTasks() else {
                 errorMessage = L10n.App.widgetQueryMismatch
                 return
             }
             let next = Self.snapshot(
                 today: today,
+                streams: streams,
                 nowMs: now,
                 timeZone: TimeZone.current.identifier
             )
@@ -120,6 +147,26 @@ final class WidgetPublisher {
             // be the louder mistake; the stamp says how old it is.
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// The streams the Stream tile may show, each with its tasks.
+    ///
+    /// The picker's list is ``StreamLookup/all(in:)`` — the one the Shortcuts
+    /// stream picker offers, Inbox first and nothing archived — cut to
+    /// ``WidgetSnapshot/streamLimit`` before anything is read, so a vault with
+    /// many streams costs no more queries than one with twelve.
+    ///
+    /// `nil` when the core answers a stream's query with something other than
+    /// tasks, which ``publish()`` treats as it treats the same from Today.
+    private func streamTasks() async throws -> [(stream: StreamListRow, tasks: [TaskItem])]? {
+        var read: [(stream: StreamListRow, tasks: [TaskItem])] = []
+        for stream in try await StreamLookup.all(in: bridge).prefix(WidgetSnapshot.streamLimit) {
+            guard case let .tasks(tasks) = try await bridge.query(.streamTasks(stream: stream.id)) else {
+                return nil
+            }
+            read.append((stream, tasks))
+        }
+        return read
     }
 
     /// Publish now, then on every change and every ``tickInterval`` until

@@ -124,7 +124,7 @@ the metric catalogue.
 
 ## P5 — Phone parity
 
-1. [#376](https://github.com/justin13888/Sunrise/issues/376) The rest of the widgets: Lock Screen capture, the Stream tile, and macOS reach measured on a signed build. Next Up has shipped.
+1. [#1116](https://github.com/justin13888/Sunrise/issues/1116) macOS widget reach, measured on a Developer ID build. Next Up, Quick Capture and the Stream tile are built.
 2. [#377](https://github.com/justin13888/Sunrise/issues/377) The iOS widget extension signed with its own provisioning profile and App Group.
 3. [#507](https://github.com/justin13888/Sunrise/issues/507) `mise run apple-app` on the merged iOS system surfaces.
 4. [#941](https://github.com/justin13888/Sunrise/issues/941) The calendar on the menu bar, widgets, Lock Screen and watch.

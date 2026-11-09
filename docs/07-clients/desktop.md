@@ -59,7 +59,7 @@ through `IcalModel`. The status audit in
 and names the ones not met. One of them is the widget row: the widget is
 built, but no build this repository makes has the team the Mac's grant is keyed
 to, so nobody has watched a Mac offer it
-([#376](https://github.com/justin13888/Sunrise/issues/376)).
+([#1116](https://github.com/justin13888/Sunrise/issues/1116)).
 
 ## Architecture
 
@@ -197,7 +197,7 @@ document's intent, not yet implemented).
   as the one `mise run macos-app` makes, writes nothing. No build this
   repository makes today has a team, so whether
   the Mac offers the widget and grants its container has **not been
-  observed** ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+  observed** ([#1116](https://github.com/justin13888/Sunrise/issues/1116)).
 - **built — Quick capture** — a borderless window on a global hotkey (⌘⇧N).
   It does **not** need the Accessibility permission. The hotkey is registered
   with Carbon's `RegisterEventHotKey`, which *reserves* one combination with

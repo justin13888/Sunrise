@@ -80,7 +80,7 @@ more than the row itself.
 | macOS global hotkey | Capture window | **live** — `RegisterEventHotKey` ⌘⇧N, plus the menu bar item |
 | Apple URL scheme (`sunrise://capture?text=`) | Capture sheet, pre-filled | **live** on both Apple apps; each registers the scheme in its own `info:` block |
 | iOS Siri / Shortcuts | Voice → parser → task | **live** — `CaptureTaskIntent` behind the **Capture Task** App Shortcut, shared with macOS |
-| iOS Lock Screen widget | Capture sheet | **not built**. The widget extension exists and carries **Next Up** ([#14](https://github.com/justin13888/Sunrise/issues/14)), but no route opens an empty capture sheet: the link parser refuses `sunrise://capture` with no text, and `CaptureTaskIntent` runs in the background ([#376](https://github.com/justin13888/Sunrise/issues/376)) |
+| iOS Lock Screen widget | Capture sheet | **built, not observed on a device**. The **Quick Capture** widget's button runs `OpenCaptureIntent`, which opens the app with the capture sheet empty. A request that arrives before a vault is open is held until one is ([mobile-ios.md](../07-clients/mobile-ios.md#widgets), [#376](https://github.com/justin13888/Sunrise/issues/376)) |
 | iOS Share Sheet | Task with attached link/file/text | **live** for text, a web link and images — the `SunriseShare` extension queues them in the App Group and the app files them into the Inbox on its next open, the link in the note and each image as an attachment ([mobile-ios.md](../07-clients/mobile-ios.md#sharing-extension)). Other files are not offered |
 | Android Quick Settings tile | Capture sheet | **not built**; ranked ([`../roadmap.md`](../roadmap.md)) |
 | Android share intent | Task with attached link/file/text | **not built**; ranked |
