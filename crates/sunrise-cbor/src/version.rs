@@ -55,6 +55,10 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// it is a **forward-compatible** act: older readers keep decoding, and see
 /// fields they do not know as preserved unknowns.
 ///
+/// The entries below are the only record of what each version changed;
+/// `docs/10-cross-cutting/protocol-versioning.md` §2 states the rule they
+/// follow and links here. A bump adds its entry in the same change.
+///
 /// `2` re-typed `Task.scheduled_at` / `due_at` / `completed_at` and
 /// `Block.starts_at` / `ends_at` from a bare instant to a tagged
 /// `SunriseTime` (issue #6, ADR-0017). A v1 payload still decodes: the bare
@@ -119,8 +123,11 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// replica's frontier in one stream and its digest, which a receiver compares
 /// with its own chain roots. Every v8 shape is unchanged, so the floor does
 /// not move. A v8 build parks a `StreamDigest` and replays it after an
-/// upgrade. Envelope fields 14 and 15 land with it, but they are container
-/// fields, not document schema, and move nothing here.
+/// upgrade. It is emitted without a feature gate, because a build that parks
+/// one loses no data: a digest changes no entity, and the parked op only
+/// delays that replica's comparison until it upgrades. Envelope fields 14 and
+/// 15 land with it, but they are container fields, not document schema, and
+/// move nothing here.
 ///
 /// `10` adds the two feature control families, `VaultRequires` and
 /// `DeviceFeatures`, and the feature registry to the canonical schema

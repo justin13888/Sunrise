@@ -73,7 +73,7 @@ Focus mode suppresses **reminder** notifications only. Background sync wakeups c
 
 ## Capture-aside
 
-While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in **Inbox** — always, regardless of any current-stream context. The core half is `Core::capture_aside`, which runs the normal capture parser and then drops any resolved `#stream`, so the destination cannot depend on what the user was focused on; the overlay itself is the client's. Rationale: focus mode is for *not switching context*. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
+While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in **Inbox** — always, regardless of any current-stream context. The core half is `Core::capture_aside`, which runs the normal capture parser and then drops any resolved `#stream`, so the destination cannot depend on what the user was focused on; the overlay itself is the client's. No client binds it yet: no client has a focus-mode capture overlay, and `sunrise-core-bindings` exports only the plain `capture`, so a client that adds the overlay binds `capture_aside` with it rather than calling `capture` and clearing the stream itself. Until then only the core's own tests call it. Rationale: focus mode is for *not switching context*. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
 
 ## Pomodoro and timer policy
 

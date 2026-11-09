@@ -9,20 +9,13 @@ status: accepted
 > amends it.** Where this page and those records disagree, they win. The
 > comparison key and the HLC rules below are unchanged.
 >
-> **What a device writes.** Once a vault requires the structural feature
-> `core.field_ops` (ADR-0065 §7), every command writes a `Patch` of the fields
-> it changed, naming the entity's heads it had applied as its `parents`, and a
-> command that writes several entities writes them as one group. A device
-> makes the vault require the feature itself, at its first entity write, once
-> every paired device has advertised it; `Core::enable_field_ops(true)`
-> requires it over a device that has not, which then reads and syncs but
-> refuses to edit (ADR-0045 §8). Until then, while a paired device lacks the
-> feature, every command writes a full-state op (clarification D9), and of two
-> concurrent full-state edits the later one's whole state wins, as entity-level
-> LWW did ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded).
-> Either way a command folds its own op through the merge a received op takes
-> (ADR-0065 §5). [`crdt-design.md`](./crdt-design.md) §What a command writes
-> has the detail.
+> **What a device writes.** Once the vault requires `core.field_ops`
+> (ADR-0065 §7), a command writes a `Patch` of the fields it changed, naming
+> the heads it had applied as its `parents`; until then it writes a full-state
+> op (clarification D9), and of two concurrent full-state edits the later
+> one's whole state wins. When and how a vault comes to require the feature,
+> and what each mode writes, is in
+> [`crdt-design.md` §What a command writes](./crdt-design.md#what-a-command-writes).
 >
 > **Conflicts** (ADR-0065 §3–§4) are folded, kept, listed and settled: every
 > register keeps the concurrent writes that lost, the field's class picks the
