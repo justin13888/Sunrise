@@ -673,6 +673,107 @@ fn a_resize_that_inverts_the_block_is_blocking() {
 }
 
 #[test]
+fn a_resize_keeps_the_other_edge_and_ripples_the_task_it_now_covers() {
+    let mut i = base_day();
+    i.blocks.push(pblock(1, at(D, 9, 0), at(D, 10, 0), false));
+    i.tasks.push(ptask(1, Some(at(D, 10, 0)), 30));
+    let diff = solve(
+        &i,
+        &PlanIntent::ResizeBlock {
+            block: bid(1),
+            edge: Edge::End,
+            to: at(D, 10, 30),
+        },
+    )
+    .unwrap();
+    assert!(diff.committable, "{diff:#?}");
+    let block = mv(&diff, bid(1)).unwrap();
+    assert_eq!(block.role, MoveRole::Subject);
+    // The start is the block's own, kind and all; the end is the drop.
+    assert_eq!(
+        block.after,
+        PlanPosition::Slot {
+            start: at(D, 9, 0),
+            end: at(D, 10, 30)
+        }
+    );
+    let rippled = mv(&diff, tid(1)).unwrap();
+    assert_eq!(rippled.role, MoveRole::Rippled);
+    // 10:30 is half an hour away; 08:30, the nearest free slot before, is
+    // an hour and a half.
+    assert_eq!(slot_of(&rippled.after), (ts(D, 10, 30), ts(D, 11, 0)));
+    let after = apply(&i, &diff);
+    assert!(solve(
+        &after,
+        &PlanIntent::ResizeBlock {
+            block: bid(1),
+            edge: Edge::End,
+            to: at(D, 10, 30),
+        },
+    )
+    .unwrap()
+    .is_empty());
+
+    // The start edge keeps the end, and a drop that covers nothing moves
+    // only the block.
+    let diff = solve(
+        &i,
+        &PlanIntent::ResizeBlock {
+            block: bid(1),
+            edge: Edge::Start,
+            to: at(D, 8, 0),
+        },
+    )
+    .unwrap();
+    assert_eq!(diff.moves.len(), 1, "{diff:#?}");
+    assert_eq!(
+        diff.moves[0].after,
+        PlanPosition::Slot {
+            start: at(D, 8, 0),
+            end: at(D, 10, 0)
+        }
+    );
+    assert!(diff.committable);
+}
+
+#[test]
+fn a_hard_window_already_broken_elsewhere_does_not_refuse_an_unrelated_drop() {
+    let mut i = base_day();
+    // Task 1 may only start 09:00–12:00 and already sits at 14:00.
+    let mut flagged = ptask(1, Some(at(D, 14, 0)), 30);
+    flagged.constraints.push(hard_window(9, 12));
+    i.tasks.push(flagged);
+    i.tasks.push(ptask(2, Some(at(D, 9, 0)), 30));
+    let diff = solve(
+        &i,
+        &PlanIntent::MoveTask {
+            task: tid(2),
+            to: SlotTarget::At(at(D, 16, 0)),
+        },
+    )
+    .unwrap();
+    let standing = diff
+        .violations
+        .iter()
+        .find(|v| v.item == tid(1) && v.severity == PlanSeverity::Blocking)
+        .expect("the broken window is still reported");
+    assert!(!standing.introduced);
+    assert!(diff.committable, "{diff:#?}");
+
+    // Moving the flagged task itself to another slot outside its window
+    // writes it, so the commit is answerable for it and refuses.
+    let diff = solve(
+        &i,
+        &PlanIntent::MoveTask {
+            task: tid(1),
+            to: SlotTarget::At(at(D, 15, 0)),
+        },
+    )
+    .unwrap();
+    assert!(!diff.committable, "{diff:#?}");
+}
+
+#[test]
 fn intents_naming_the_wrong_thing_are_refused() {
     let i = base_day();
     assert_eq!(

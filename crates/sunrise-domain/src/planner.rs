@@ -328,7 +328,9 @@ pub struct PlanDiff {
     pub unscheduled: Vec<PlanUnscheduled>,
     /// Every violation after the diff, by (severity desc, item, rule, with).
     pub violations: Vec<PlanViolation>,
-    /// False when any violation is Blocking.
+    /// False when a Blocking violation is introduced by the diff or stands on
+    /// an item it moves or unschedules. One already present on an item the
+    /// diff leaves alone is reported, and does not refuse the commit.
     pub committable: bool,
     /// True when the search budget ran out; the diff may not be minimal.
     pub truncated: bool,
@@ -959,9 +961,18 @@ impl<'a> World<'a> {
                 _ => None,
             })
             .collect();
-        let committable = !violations
+        // Only a Blocking violation the commit is answerable for refuses it:
+        // one it introduces, or one standing on an item it writes. A hard
+        // constraint already broken on an item the gesture leaves alone is
+        // flagged, never a reason to refuse every gesture on its day.
+        let written: BTreeSet<EntityRef> = moves
             .iter()
-            .any(|v| v.severity == PlanSeverity::Blocking);
+            .map(|m| m.item)
+            .chain(unscheduled.iter().map(|u| u.item))
+            .collect();
+        let committable = !violations.iter().any(|v| {
+            v.severity == PlanSeverity::Blocking && (v.introduced || written.contains(&v.item))
+        });
         let base = plan_base(self.inputs);
         let mut diff = PlanDiff {
             id: PlanDiffId([0; 16]),
