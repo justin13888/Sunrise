@@ -13,8 +13,13 @@
 //! Tasks ignores the flag: there is no single task title to shadow.
 
 mod conflict;
+mod series;
 
 pub use conflict::{merge_blocks, overlaps, BlockOverlap};
+pub use series::{
+    expand_block, split_block_id, BlockException, BlockOccurrence, BlockSeries, BlockSeriesError,
+    BlockSeriesSplit,
+};
 
 use crate::time::SunriseTime;
 use crate::unknown::Unknowns;

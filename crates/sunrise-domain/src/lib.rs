@@ -73,7 +73,10 @@ pub use annotate::{parse as parse_annotate, EditError, TaskEdit};
 pub use attachment::{
     Attachment, AttachmentDraft, Thumbnail, MAX_THUMBNAIL_BYTES, THUMBNAIL_MIME_TYPES,
 };
-pub use block::{merge_blocks, overlaps, Block, BlockDraft, BlockOverlap, BlockPatch};
+pub use block::{
+    expand_block, merge_blocks, overlaps, split_block_id, Block, BlockDraft, BlockException,
+    BlockOccurrence, BlockOverlap, BlockPatch, BlockSeries, BlockSeriesError, BlockSeriesSplit,
+};
 pub use capture::{resolve_named, NameKind, NamedRef};
 pub use common::{Energy, NoteBody};
 pub use constraint::{
