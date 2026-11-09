@@ -109,6 +109,26 @@ fn golden_d_monthly_last_friday_via_setpos() {
 }
 
 #[test]
+fn an_ordinal_byday_expands_to_nothing() {
+    // `BYDAY` holds plain weekdays only (#928). A stored `1MO` or `-1FR` is
+    // an unknown weekday, and a rule this build cannot read runs on no
+    // guessed schedule; `BYDAY=MO;BYSETPOS=1` is the spelling that runs.
+    let tz = TimeZone::get("UTC").unwrap();
+    let anchor = at(&tz, 2025, 1, 1, 9, 0);
+    let window = (at(&tz, 2025, 1, 1, 0, 0), at(&tz, 2025, 4, 1, 0, 0));
+    for body in ["FREQ=MONTHLY;BYDAY=1MO", "FREQ=MONTHLY;BYDAY=-1FR"] {
+        let occ = expand(&rule(body), local(&tz, anchor), &tz, window).unwrap();
+        assert!(occ.is_empty(), "{body}: {:?}", keys(&occ));
+    }
+    let first_monday = rule("FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1");
+    let occ = expand(&first_monday, local(&tz, anchor), &tz, window).unwrap();
+    assert_eq!(
+        keys(&occ),
+        vec!["2025-01-06T09:00", "2025-02-03T09:00", "2025-03-03T09:00"]
+    );
+}
+
+#[test]
 fn golden_e_weekly_interval2_wkst_sensitivity() {
     let tz = TimeZone::get("UTC").unwrap();
     // Anchor on a Sunday; BYDAY spans the Sun/Mon week boundary so WKST
