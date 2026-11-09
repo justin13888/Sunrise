@@ -222,6 +222,38 @@ lead_caption = "The fallback. A lead time set on a task wins over one set on its
 # Label beside the number of reminders the system is holding right now.
 scheduled_now = "Scheduled now"
 
+[apple.account.notification_kinds]
+# Settings: the heading of the section that turns each kind of notification on
+# or off, one row per kind (docs/08-features/notifications.md §Catalog).
+title = "What to notify"
+# Caption under that section. Must keep that security alerts cannot be turned
+# off and that the switches sync to this vault's other devices.
+caption = "Each switch syncs to your other devices. Security alerts cannot be turned off."
+# The value shown beside a security alert's row instead of a switch.
+always_on = "Always on"
+# One row per kind, in catalog order.
+task_reminder = "Task reminders"
+deadline = "Deadlines"
+routine_due = "Routines due"
+block_start = "Time block starting"
+morning_brief = "Morning brief"
+triage_nudge = "Late tasks to triage"
+evening_plan = "Evening plan"
+wind_down = "Wind down"
+focus_end = "Focus session ending"
+timezone_changed = "Time zone changed"
+weekly_review = "Weekly review"
+sync_stalled = "Sync stalled"
+device_paired = "New device paired"
+device_revoked = "Device removed"
+recovery_code = "Recovery code changed"
+calendar_reconnect = "Calendar needs reconnecting"
+shared_change = "Shared changes"
+place_arrival = "Arriving at a place"
+# Caption under the wind-down row. Must keep that a Sleep Focus holds it until
+# Sunrise is allowed in that Focus, and that it needs a sleep time.
+wind_down_caption = "Fires before your sleep time from the day schedule. A Sleep Focus holds it unless Sunrise is allowed in that Focus."
+
 [apple.account.quiet_hours]
 # Settings: the heading of the quiet-hours section.
 title = "Quiet hours"
@@ -1656,6 +1688,29 @@ mark_done = "Mark Done"
 snooze_hour = "Defer 1 Hour"
 snooze_tomorrow = "Snooze Until Tomorrow"
 snooze_next_week = "Snooze Until Next Week"
+# Buttons on the other notifications of the catalog
+# (docs/08-features/notifications.md §Catalog). Title case, as the system
+# draws notification buttons; an ellipsis means a window follows.
+action_defer = "Defer…"
+action_skip = "Skip"
+action_snooze_five_minutes = "Snooze 5 Minutes"
+action_snooze_fifteen_minutes = "Snooze 15 Minutes"
+action_start_focus = "Start Focus"
+action_plan_my_day = "Plan My Day"
+action_open_triage = "Open Triage"
+action_move_open_to_tomorrow = "Move Open Tasks to Tomorrow"
+action_open = "Open"
+action_see_tomorrow = "See Tomorrow"
+action_add_five_minutes = "+5 Minutes"
+action_start_break = "Start Break"
+action_review_times = "Review Times"
+action_keep = "Keep"
+action_start_review = "Start Review"
+action_open_sync_status = "Open Sync Status"
+action_review_devices = "Review Devices"
+action_review_security = "Review Security"
+action_reconnect = "Reconnect"
+action_open_here_now = "Open Here Now"
 
 [apple.brief_notification.morning]
 # The morning brief's sections: a heading, and what it says when empty.

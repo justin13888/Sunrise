@@ -67,6 +67,248 @@
         }
       }
     },
+    "apple.account.notification_kinds.always_on": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Always on"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.block_start": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Time block starting"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.calendar_reconnect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calendar needs reconnecting"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each switch syncs to your other devices. Security alerts cannot be turned off."
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.deadline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deadlines"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.device_paired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New device paired"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.device_revoked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device removed"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.evening_plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evening plan"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.focus_end": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus session ending"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.morning_brief": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Morning brief"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.place_arrival": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arriving at a place"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.recovery_code": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery code changed"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.routine_due": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Routines due"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.shared_change": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared changes"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.sync_stalled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync stalled"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.task_reminder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task reminders"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.timezone_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Time zone changed"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What to notify"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.triage_nudge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Late tasks to triage"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.weekly_review": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weekly review"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.wind_down": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wind down"
+          }
+        }
+      }
+    },
+    "apple.account.notification_kinds.wind_down_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fires before your sleep time from the day schedule. A Sleep Focus holds it unless Sunrise is allowed in that Focus."
+          }
+        }
+      }
+    },
     "apple.account.notifications.allow": {
       "extractionState": "manual",
       "localizations": {
@@ -6064,6 +6306,226 @@
           "stringUnit": {
             "state": "translated",
             "value": "This note uses formatting this editor cannot change yet — a reference, a mention, or nested content. You can read it here, and edit it in a later version."
+          }
+        }
+      }
+    },
+    "apple.notifications.action_add_five_minutes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+5 Minutes"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_defer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Defer…"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_keep": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_move_open_to_tomorrow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move Open Tasks to Tomorrow"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_open_here_now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Here Now"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_open_sync_status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Sync Status"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_open_triage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Triage"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_plan_my_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plan My Day"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_reconnect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnect"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_review_devices": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Devices"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_review_security": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Security"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_review_times": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Times"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_see_tomorrow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "See Tomorrow"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_skip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_snooze_fifteen_minutes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Snooze 15 Minutes"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_snooze_five_minutes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Snooze 5 Minutes"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_start_break": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Break"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_start_focus": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Focus"
+          }
+        }
+      }
+    },
+    "apple.notifications.action_start_review": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Review"
           }
         }
       }
