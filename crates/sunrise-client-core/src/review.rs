@@ -12,10 +12,9 @@ use jiff::civil;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use sunrise_domain::{
-    ExportDataset, ExportFormat, ReviewSnapshotDraft, ReviewSnapshotStream, ReviewTotals,
-    ReviewWindow, StreakRow, Unknowns, WeeklyReview,
+    ExportDataset, ExportFormat, ReviewSnapshotDraft, ReviewTotals, ReviewWindow, StreakRow,
+    StreamTally, WeeklyReview,
 };
-use sunrise_id::EntityRef;
 
 /// How many weeks the trends cover until the reader picks another span.
 pub const DEFAULT_TREND_WEEKS: u32 = 8;
@@ -58,31 +57,9 @@ pub fn snapshot_note(note: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// One stream's counts as a review screen shows them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamTally {
-    /// The stream.
-    pub stream: EntityRef,
-    /// Its name on screen.
-    pub name: String,
-    /// Completed in the window.
-    pub completed: usize,
-    /// Deferred in the window.
-    pub deferred: usize,
-    /// Created in the window and untouched since.
-    pub created: usize,
-}
-
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
-/// The snapshot of the review a screen showed, from what it showed.
-///
-/// A snapshot is the one fact about a review the op log cannot re-derive —
-/// that someone did it, and what they saw — so it carries the screen's
-/// counts rather than being recomputed when read. A count past `u32` is held
-/// at the maximum rather than trapping.
+/// The snapshot of the review a screen showed, from what it showed: the
+/// domain's [`ReviewSnapshotDraft::from_counts`], with the note through
+/// [`snapshot_note`].
 #[must_use]
 pub fn snapshot_draft(
     window: &ReviewWindow,
@@ -91,24 +68,7 @@ pub fn snapshot_draft(
     streaks: Vec<StreakRow>,
     note: Option<&str>,
 ) -> ReviewSnapshotDraft {
-    ReviewSnapshotDraft {
-        window_start_ms: window.start_ms,
-        window_end_ms: window.end_ms,
-        totals,
-        streams: streams
-            .into_iter()
-            .map(|s| ReviewSnapshotStream {
-                stream: s.stream,
-                name: s.name,
-                completed: count(s.completed),
-                deferred: count(s.deferred),
-                created: count(s.created),
-                unknown: Unknowns::new(),
-            })
-            .collect(),
-        streaks,
-        note: snapshot_note(note),
-    }
+    ReviewSnapshotDraft::from_counts(window, totals, streams, streaks, snapshot_note(note))
 }
 
 /// [`snapshot_draft`] of an assembled weekly review.
