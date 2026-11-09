@@ -106,7 +106,7 @@ jobs:
       # publishes anything reads this rather than re-deriving the event, so
       # there is one place to look for what a dry run does not do.
       dry_run: ${{ steps.check.outputs.dry_run }}
-      # Whether the six App Store Connect secrets `ios-release` needs exist.
+      # Whether the eight App Store Connect secrets `ios-release` needs exist.
       # Computed here because a job-level `if:` cannot read the `secrets`
       # context at all, and because `verify` is already the place this workflow
       # asks "do the credentials for X exist?". Unlike the macOS six, a missing
@@ -276,16 +276,22 @@ jobs:
           IOS_DISTRIBUTION_CERTIFICATE_P12: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12 != '' }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD != '' }}
           IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE != '' }}
+          # One profile per signed bundle: an App Store profile names one App
+          # ID, and the app embeds two extensions with App IDs of their own
+          # (#377). See `ios-release`'s `Install the provisioning profiles`.
+          IOS_WIDGETS_PROVISIONING_PROFILE: ${{ secrets.IOS_WIDGETS_PROVISIONING_PROFILE != '' }}
+          IOS_SHARE_PROVISIONING_PROFILE: ${{ secrets.IOS_SHARE_PROVISIONING_PROFILE != '' }}
         run: |
           set -euo pipefail
           missing=""
           for s in IOS_APPSTORE_API_KEY_P8 IOS_APPSTORE_API_KEY_ID \
                    IOS_APPSTORE_API_ISSUER_ID IOS_DISTRIBUTION_CERTIFICATE_P12 \
-                   IOS_DISTRIBUTION_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE; do
+                   IOS_DISTRIBUTION_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE \
+                   IOS_WIDGETS_PROVISIONING_PROFILE IOS_SHARE_PROVISIONING_PROFILE; do
             eval "have=\${$s}"
             [ "$have" = "true" ] || missing="$missing $s"
           done
-          # All six or none: a half-configured iOS upload fails twenty minutes
+          # All eight or none: a half-configured iOS upload fails twenty minutes
           # into a macOS runner with an Apple error that names none of them.
           if [ -n "$missing" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -1529,7 +1535,7 @@ jobs:
   #     publishing. So the tag does the part it can do deterministically
   #     (upload a build), and nothing here submits anything for review.
   #   * **It no-ops, visibly, until the account records exist.** None of the
-  #     six secrets below exists and only the owner can create them — the App
+  #     eight secrets below exists and only the owner can create them — the App
   #     Store Connect app record they depend on does not exist either. The job
   #     therefore runs with its *name* changed, on a cheap runner, and writes
   #     a summary saying nothing was uploaded. A skipped job is a grey tick
@@ -1581,7 +1587,7 @@ jobs:
             echo "This release built no iOS app and uploaded nothing to App Store"
             echo "Connect. That is the expected state today: the App Store Connect"
             echo "app record, the distribution certificate and the provisioning"
-            echo "profile can only be created by the account holder, and have not"
+            echo "profiles can only be created by the account holder, and have not"
             echo "been."
             echo
             echo "Missing repository secrets:"
@@ -1662,33 +1668,90 @@ jobs:
             echo "::error title=No Apple Distribution identity for this team::IOS_DISTRIBUTION_CERTIFICATE_P12 decoded and imported, but the keychain holds no valid 'Apple Distribution' identity belonging to MACOS_TEAM_ID. An App Store build cannot be signed with a Developer ID or an Apple Development certificate. Nothing is built or uploaded."
             exit 1
           fi
-      # Manual signing, so the profile has to be on the machine. It is a
-      # secret rather than something `-allowProvisioningUpdates` fetches: that
+      # Manual signing, so the profiles have to be on the machine. They are
+      # secrets rather than something `-allowProvisioningUpdates` fetches: that
       # flag makes a release build mutate the team's signing assets on Apple's
       # side as a side effect, which is a surprising thing for a tag push to
       # do and is not reversible from here.
-      - name: Install the provisioning profile
+      #
+      # Three, because the app embeds two extensions and an App Store profile
+      # names exactly one App ID (#377): the app `dev.sunrise.SunriseiOS`, the
+      # widgets `dev.sunrise.SunriseiOS.Widgets`, and the share extension
+      # `dev.sunrise.SunriseiOS.Share` (apps/apple/project.yml). All three
+      # carry the App Group `group.dev.sunrise`, which on iOS only a profile
+      # can grant.
+      #
+      # Asserted here, as `macos-app` asserts its profile, rather than
+      # discovered after the archive: a profile for the wrong App ID, one
+      # without the group, a development or ad-hoc profile, or an expired one
+      # all decode fine and then fail `xcodebuild` with an error that names
+      # none of these secrets. Every profile is checked before any is
+      # reported, so one run names every wrong secret.
+      - name: Install the provisioning profiles
         if: env.CONFIGURED == 'true'
         env:
           IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          IOS_WIDGETS_PROVISIONING_PROFILE: ${{ secrets.IOS_WIDGETS_PROVISIONING_PROFILE }}
+          IOS_SHARE_PROVISIONING_PROFILE: ${{ secrets.IOS_SHARE_PROVISIONING_PROFILE }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
         run: |
           set -euo pipefail
           profiles="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
           mkdir -p "$profiles"
-          printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
-          # A `.mobileprovision` is a CMS envelope around a plist; `security
-          # cms -D` unwraps it. The UUID is the file name Xcode looks for and
-          # the Name is what the export options plist refers to, so both are
-          # read out of the profile itself rather than carried as two more
-          # secrets that could disagree with it.
-          plist="$RUNNER_TEMP/profile.plist"
-          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$plist"
-          uuid=$(plutil -extract UUID raw -o - "$plist")
-          name=$(plutil -extract Name raw -o - "$plist")
-          expires=$(plutil -extract ExpirationDate raw -o - "$plist")
-          echo "profile: $name ($uuid), expires $expires"
-          cp "$RUNNER_TEMP/profile.mobileprovision" "$profiles/$uuid.mobileprovision"
-          echo "IOS_PROFILE_NAME=$name" >> "$GITHUB_ENV"
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          fail=0
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null || true; }
+          # SECRET BUNDLE_ID ENV_NAME: decode the profile, check it, install it
+          # under its UUID and export its Name as ENV_NAME.
+          install_profile() {
+            secret=$1 bundle=$2 var=$3
+            file="$RUNNER_TEMP/$bundle.mobileprovision"
+            plist="$RUNNER_TEMP/$bundle.plist"
+            printf '%s' "${!secret}" | base64 --decode > "$file"
+            # A `.mobileprovision` is a CMS envelope around a plist; `security
+            # cms -D` unwraps it. The UUID is the file name Xcode looks for and
+            # the Name is what the archive and the export options plist refer
+            # to, so both are read out of the profile itself rather than
+            # carried as further secrets that could disagree with it.
+            # PlistBuddy because `com.apple.application-identifier` has dots
+            # in it, which `plutil`'s key paths cannot escape.
+            security cms -D -i "$file" > "$plist"
+            uuid=$(pb UUID)
+            name=$(pb Name)
+            expires=$(plutil -extract ExpirationDate raw -o - "$plist")
+            echo "$secret: $name ($uuid), expires $expires"
+            ok=1
+            if [ "$(pb Entitlements:com.apple.application-identifier)" != "${MACOS_TEAM_ID}.${bundle}" ]; then
+              echo "::error title=The provisioning profile is for a different app or team::$secret is not a profile for the App ID $bundle on team MACOS_TEAM_ID. ADR-0039 Decision 5 says how to create the right one. Nothing is built or uploaded."
+              ok=0
+            fi
+            # Development and ad-hoc profiles list the devices they run on;
+            # an App Store profile lists none.
+            if [ -n "$(pb ProvisionedDevices)" ]; then
+              echo "::error title=The provisioning profile is not an App Store profile::$secret names provisioned devices, so it is a development or ad-hoc profile rather than an App Store distribution profile. Nothing is built or uploaded."
+              ok=0
+            fi
+            if ! pb Entitlements:com.apple.security.application-groups | grep -qE '^ *group\.dev\.sunrise$'; then
+              echo "::error title=The provisioning profile does not grant the App Group::$secret does not grant group.dev.sunrise, which $bundle needs to share the app's container. Enable the group on the App ID, regenerate the profile and replace the secret, as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
+              ok=0
+            fi
+            # ISO 8601 in UTC on both sides, so a string comparison is a date
+            # comparison.
+            if [[ "$expires" < "$now" ]]; then
+              echo "::error title=The provisioning profile has expired::$secret expired at $expires. Regenerate it as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
+              ok=0
+            fi
+            if [ "$ok" -eq 1 ]; then
+              cp "$file" "$profiles/$uuid.mobileprovision"
+              echo "$var=$name" >> "$GITHUB_ENV"
+            else
+              fail=1
+            fi
+          }
+          install_profile IOS_PROVISIONING_PROFILE dev.sunrise.SunriseiOS IOS_PROFILE_NAME
+          install_profile IOS_WIDGETS_PROVISIONING_PROFILE dev.sunrise.SunriseiOS.Widgets IOS_WIDGETS_PROFILE_NAME
+          install_profile IOS_SHARE_PROVISIONING_PROFILE dev.sunrise.SunriseiOS.Share IOS_SHARE_PROFILE_NAME
+          [ "$fail" -eq 0 ] || exit 1
       - name: mise run apple-xcframework
         if: env.CONFIGURED == 'true'
         run: mise run apple-xcframework
@@ -1711,6 +1774,18 @@ jobs:
           # resolves ARCHS_STANDARD to arm64 alone, which is the one slice
           # `mise.toml`'s `ios_slices` builds. There is no second architecture
           # for it to pick up and fail to link.
+          #
+          # Each signed target gets its own profile, as `macos-app` does it
+          # (#377). A plain `PROVISIONING_PROFILE_SPECIFIER=` on the command
+          # line reaches every target the scheme builds, so the two embedded
+          # extensions would be signed against the app's profile, whose App ID
+          # is not theirs. The specifier is instead a reference resolved in
+          # each target's own context: `$(SUNRISE_PROFILE_$(TARGET_NAME))` is
+          # the matching profile's Name for the three targets that sign, and
+          # empty for `SunriseFFI`, an aggregate target that signs nothing.
+          # Single-quoted so the shell passes the reference to xcodebuild
+          # unexpanded.
+          # shellcheck disable=SC2016
           xcodebuild archive \
             -project Sunrise.xcodeproj \
             -scheme SunriseiOS \
@@ -1723,7 +1798,10 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="$MACOS_TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"
+            PROVISIONING_PROFILE_SPECIFIER='$(SUNRISE_PROFILE_$(TARGET_NAME))' \
+            SUNRISE_PROFILE_SunriseiOS="$IOS_PROFILE_NAME" \
+            SUNRISE_PROFILE_SunriseWidgetsiOS="$IOS_WIDGETS_PROFILE_NAME" \
+            SUNRISE_PROFILE_SunriseShare="$IOS_SHARE_PROFILE_NAME"
       # `destination: upload` is the whole upload mechanism. `xcrun altool` is
       # retired, and `xcodebuild -exportArchive` with an App Store Connect API
       # key is its supported replacement: it exports, signs and transfers in
@@ -1763,6 +1841,8 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>dev.sunrise.SunriseiOS</key><string>${IOS_PROFILE_NAME}</string>
+              <key>dev.sunrise.SunriseiOS.Widgets</key><string>${IOS_WIDGETS_PROFILE_NAME}</string>
+              <key>dev.sunrise.SunriseiOS.Share</key><string>${IOS_SHARE_PROFILE_NAME}</string>
             </dict>
             <key>stripSwiftSymbols</key><true/>
             <key>uploadSymbols</key><true/>
@@ -1795,8 +1875,10 @@ jobs:
         if: always() && env.CONFIGURED == 'true'
         run: |
           security delete-keychain "$RUNNER_TEMP/sunrise-ios.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/ios.p12" "$RUNNER_TEMP/AuthKey_ios.p8" \
-                "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist"
+          rm -f "$RUNNER_TEMP/ios.p12" "$RUNNER_TEMP/AuthKey_ios.p8"
+          for bundle in dev.sunrise.SunriseiOS dev.sunrise.SunriseiOS.Widgets dev.sunrise.SunriseiOS.Share; do
+            rm -f "$RUNNER_TEMP/$bundle.mobileprovision" "$RUNNER_TEMP/$bundle.plist"
+          done
 
   # ---------------------------------------------------------------------
   # Web client → Cloudflare Pages (#11).
