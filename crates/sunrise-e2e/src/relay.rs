@@ -3,11 +3,16 @@
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::chaos::{FaultHandle, Toxic, ToxicConfig};
+use async_trait::async_trait;
 use sunrise_core::{BoxTransport, CredentialRead, TransportFactory};
 use sunrise_server::{ServerConfig, ServerState};
+use sunrise_sync::transport::{
+    BlobCommit, IdentityChainPinned, KeyBundlePin, KeyBundlePinned, RevokeOutcome, SnapshotPin,
+    Transport, TransportError,
+};
 use sunrise_sync::{DeviceSigner, SseTransport};
 use tokio::task::JoinHandle;
 
@@ -152,6 +157,212 @@ pub fn toxic_ws_factory(
         }) as sunrise_core::ConnectFuture
     });
     (factory, handle)
+}
+
+/// Build a [`TransportFactory`] like [`ws_factory`]'s, except that the first
+/// upload id the relay reserves for an upload of `chunk_count` chunks reaches
+/// the core spoiled, so the relay refuses that upload's chunks.
+///
+/// The relay answers a `PUT` of a chunk under an id that is not `up_` plus 32
+/// lowercase hex characters with `400 VALIDATION_INVALID`. That code is not
+/// in the wire registry, so the client reads the refusal as
+/// `SYNC_OP_INVALID`: the one refusal the core treats as being about the
+/// upload id itself, dropping the id and reserving a fresh one on its next
+/// attempt (`sunrise_core::blob_sync`). Spoiling the id is the seam because
+/// the relay hands out only ids it accepts, and accepts a chunk under any
+/// well-formed one; the refusal and its reading are the real relay's and the
+/// real client's.
+///
+/// The chunk count picks the upload out from the core's own uploads, a
+/// one-chunk snapshot record among them. Every transport the factory opens
+/// shares the returned [`UploadRefusal`], so the one spoiled id is the first
+/// across reconnects.
+#[must_use]
+pub fn refusing_upload_ws_factory(
+    addr: SocketAddr,
+    chunk_count: u32,
+) -> (TransportFactory, UploadRefusal) {
+    let url = format!("http://{addr}");
+    let log = UploadRefusal {
+        inner: Arc::new(RefusalLog {
+            chunk_count,
+            ..RefusalLog::default()
+        }),
+    };
+    let shared = log.clone();
+    let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
+        let url = url.clone();
+        let log = shared.clone();
+        Box::pin(async move {
+            let inner = SseTransport::connect_with_bearer(&url, read.bearer());
+            Ok(Box::new(RefusesFirstUpload { inner, log }) as BoxTransport)
+        }) as sunrise_core::ConnectFuture
+    });
+    (factory, log)
+}
+
+/// What [`refusing_upload_ws_factory`]'s transports did.
+#[derive(Debug, Clone)]
+pub struct UploadRefusal {
+    inner: Arc<RefusalLog>,
+}
+
+#[derive(Debug, Default)]
+struct RefusalLog {
+    /// The chunk count of the uploads this log is about.
+    chunk_count: u32,
+    /// Upload ids reserved for such an upload.
+    inits: AtomicU64,
+    /// The spoiled id, once there is one.
+    spoiled: Mutex<Option<String>>,
+    /// The code of each refused `PUT` under the spoiled id.
+    refusals: Mutex<Vec<String>>,
+}
+
+impl UploadRefusal {
+    /// How many upload ids the relay has reserved for an upload of the
+    /// factory's chunk count, the spoiled one included.
+    #[must_use]
+    pub fn inits(&self) -> u64 {
+        self.inner.inits.load(Ordering::Relaxed)
+    }
+
+    /// The wire code of each refusal of a chunk under the spoiled id.
+    #[must_use]
+    pub fn refusals(&self) -> Vec<String> {
+        lock(&self.inner.refusals).clone()
+    }
+}
+
+/// A poisoned lock still holds what was recorded before the panic.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// An [`SseTransport`] that spoils the first upload id it is handed for an
+/// upload of its log's chunk count.
+struct RefusesFirstUpload {
+    inner: SseTransport,
+    log: UploadRefusal,
+}
+
+#[async_trait]
+impl Transport for RefusesFirstUpload {
+    async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
+        self.inner.send_frame(frame).await
+    }
+
+    async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.recv_frame().await
+    }
+
+    async fn close(&mut self) -> Result<(), TransportError> {
+        self.inner.close().await
+    }
+
+    async fn revoke_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<RevokeOutcome, TransportError> {
+        self.inner.revoke_device(device_id).await
+    }
+
+    async fn blob_init(
+        &mut self,
+        stream_id: &[u8; 16],
+        chunk_count: u32,
+        size_bytes: u64,
+    ) -> Result<String, TransportError> {
+        let id = self
+            .inner
+            .blob_init(stream_id, chunk_count, size_bytes)
+            .await?;
+        let log = &self.log.inner;
+        if chunk_count != log.chunk_count || log.inits.fetch_add(1, Ordering::Relaxed) > 0 {
+            return Ok(id);
+        }
+        // One character too many: no longer 32 hex characters after `up_`.
+        let spoiled = format!("{id}0");
+        *lock(&log.spoiled) = Some(spoiled.clone());
+        Ok(spoiled)
+    }
+
+    async fn blob_put_chunk(
+        &mut self,
+        upload_id: &str,
+        chunk_idx: u32,
+        bytes: &[u8],
+    ) -> Result<(), TransportError> {
+        let put = self.inner.blob_put_chunk(upload_id, chunk_idx, bytes).await;
+        let log = &self.log.inner;
+        if let Err(TransportError::Server { code, .. }) = &put {
+            if lock(&log.spoiled).as_deref() == Some(upload_id) {
+                lock(&log.refusals).push((*code).to_owned());
+            }
+        }
+        put
+    }
+
+    async fn blob_finalize(
+        &mut self,
+        upload_id: &str,
+        ciphertext_hash: &[u8; 32],
+        chunk_hashes: &[[u8; 32]],
+    ) -> Result<BlobCommit, TransportError> {
+        self.inner
+            .blob_finalize(upload_id, ciphertext_hash, chunk_hashes)
+            .await
+    }
+
+    async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.blob_fetch(blob_id).await
+    }
+
+    async fn snapshot_latest(
+        &mut self,
+        stream_id: &[u8; 16],
+    ) -> Result<Option<SnapshotPin>, TransportError> {
+        self.inner.snapshot_latest(stream_id).await
+    }
+
+    async fn snapshot_pin(
+        &mut self,
+        stream_id: &[u8; 16],
+        blob_id: &[u8; 16],
+    ) -> Result<SnapshotPin, TransportError> {
+        self.inner.snapshot_pin(stream_id, blob_id).await
+    }
+
+    async fn key_bundle_latest(&mut self) -> Result<Option<KeyBundlePin>, TransportError> {
+        self.inner.key_bundle_latest().await
+    }
+
+    async fn key_bundle_pin(
+        &mut self,
+        blob_id: &[u8; 16],
+        manifest_digest: &[u8; 32],
+        replaces: Option<&[u8; 16]>,
+    ) -> Result<KeyBundlePinned, TransportError> {
+        self.inner
+            .key_bundle_pin(blob_id, manifest_digest, replaces)
+            .await
+    }
+
+    async fn identity_chain_latest(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.identity_chain_latest().await
+    }
+
+    async fn identity_chain_pin(
+        &mut self,
+        chain: &[u8],
+        replaces: Option<&[u8; 32]>,
+    ) -> Result<IdentityChainPinned, TransportError> {
+        self.inner.identity_chain_pin(chain, replaces).await
+    }
+
+    async fn recovery_blob_replace(&mut self, blob: &[u8]) -> Result<(), TransportError> {
+        self.inner.recovery_blob_replace(blob).await
+    }
 }
 
 #[cfg(test)]
