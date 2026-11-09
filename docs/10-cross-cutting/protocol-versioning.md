@@ -203,84 +203,27 @@ older build existed.
 From now on:
 
 - **A new op kind or field-op kind** carries a feature id. Older builds park it
-  (§7). `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
-  ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. Its
-  feature id, `core.field_ops`, entered the feature registry at
-  `DOC_SCHEMA_V` 18 ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md)
-  §7), and a build writes an entity `Patch` only into a vault that requires
-  it. `DOC_SCHEMA_V` 9 added
-  `StreamDigest` ([ADR-0043](../11-adr/0043-commit-tree.md)), which a v8 build
-  parks. It is emitted without a feature gate, because a build that parks one
-  loses no data: a digest changes no entity, and the parked op only delays
-  that replica's comparison until it upgrades. `DOC_SCHEMA_V` 10 added
-  `VaultRequires` and `DeviceFeatures`
-  ([#324](https://github.com/justin13888/Sunrise/issues/324), ADR-0045 §7),
-  which a v9 build parks and replays once it upgrades. `DOC_SCHEMA_V` 11
-  added the `prf_` Preferences entity, written only by `Patch`
-  ([#337](https://github.com/justin13888/Sunrise/issues/337), ADR-0050). A v10
-  build cannot decode a `Patch` naming a prefix it does not know and refuses
-  it, so no such op is written until every device has advertised
-  `preferences.entity`. `DOC_SCHEMA_V` 12 added no op kind and changed no
-  shape: the canonical schema began describing every value type and op
-  payload field by field
-  ([#439](https://github.com/justin13888/Sunrise/issues/439)), which moved its
-  fingerprint. `DOC_SCHEMA_V` 13 added eight optional Attachment
-  fields, the original's dimensions and a thumbnail blob, under the feature
-  `attachment.thumbnail` ([#346](https://github.com/justin13888/Sunrise/issues/346),
-  ADR-0053). An attachment without them encodes as before; a v12 build keeps
-  them as unknown fields, and stops writing attachments once the vault
-  requires the feature. `DOC_SCHEMA_V` 14 gave every field a conflict class
-  and the schema the rules the classes follow, and added the optional
-  `parents` and `group` keys to `Patch`
-  ([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §3, §1, §6).
-  No build writes either key yet; a `Patch` without them encodes as before,
-  and a v13 build keeps them as unknown keys. `DOC_SCHEMA_V` 15 retyped six
-  bare-instant fields to `SunriseTime` (`Routine.starts_at`, `ends_at`,
-  `paused_until`, `last_completed_at`, `RRule.until`, `Stream.paused_until`;
-  [#506](https://github.com/justin13888/Sunrise/issues/506),
-  [ADR-0066](../11-adr/0066-times-survive-travel.md) §1). It changes no
-  variant's shape for a value an older build can hold: an instant is still
-  written bare, so a routine whose times are all instants, or zoned in its
-  own zone, is written as a v14 build reads it. A time a v14 build cannot
-  read is written only into a vault that requires the feature
-  `routine.civil_times`, declared on the feature as the `(variant, field)`
-  pairs it retypes, which a v14 build lacks and so stops writing routines.
-  A v14 payload's bare instants read as zoned in the routine's zone
-  ([`time.md`](./time.md) §1). `DOC_SCHEMA_V` 16 added one optional Task
-  field, `sort_order`, a task's manual-order key
-  ([#340](https://github.com/justin13888/Sunrise/issues/340)). A task nobody
-  placed omits it and encodes as before. It needs no feature: a v15 build
-  keeps the key as an unknown field and writes it back unchanged in its own
-  full-state ops, so it keeps writing tasks and only lists them in its own
-  order. `DOC_SCHEMA_V` 17 added the `svw_` saved-view entity, written only by
-  `Patch` ([#341](https://github.com/justin13888/Sunrise/issues/341)), with
-  its value types and three lossless enums. A v16 build cannot decode a
-  `Patch` naming a prefix it does not know, so no such op is written until
-  every device has advertised `saved_view.entity`. `DOC_SCHEMA_V` 19 made a
-  task's, block's and routine template's stream optional
-  ([#332](https://github.com/justin13888/Sunrise/issues/332),
-  [ADR-0046](../11-adr/0046-optional-stream.md)) and added `Task.triaged_at`,
-  `Stream.rehomed_to` and `ViewFilter.no_stream`, each absent when unset. No
-  stream is still written as the legacy Inbox reference, which every older
-  build reads as its Inbox, so the stream fields keep their wire shape; the
-  three new fields are unknown fields to a v18 build, which writes them back
-  unchanged. None needs a feature. `DOC_SCHEMA_V` 20 gave a task a plan and
-  two deadlines ([#334](https://github.com/justin13888/Sunrise/issues/334),
-  [ADR-0047](../11-adr/0047-deadlines-and-lateness.md)): `planned_at` and
-  `hard_due_at` keep the wire keys `scheduled_at` and `due_at`, whose meaning
-  they are, and `target_at`, `ViewFilter.lateness` and the `WindowField`
-  spelling `target` are new and absent when unset. A v19 build keeps them as
-  unknown and writes them back unchanged, so none needs a feature. `DOC_SCHEMA_V` 21 added
-  `Task.cancel_reason` and `Task.late_acknowledged_at`, what the triage
-  queue's Drop and Keep write ([#335](https://github.com/justin13888/Sunrise/issues/335)),
-  each absent when unset and kept by a v20 build as unknown.
-  `DOC_SCHEMA_V` 22 gave a routine a series
-  ([#331](https://github.com/justin13888/Sunrise/issues/331)):
-  `Routine.split_from`, the series root a split routine continues, and its
-  feature `routine.series`, which an op carrying it uses, because a build that
-  did not read it would key the continuation's occurrences on the wrong id;
-  and `Task.hard_constraint_violated`, absent when false, which an older build
-  keeps as unknown and needs no feature.
+  (§7), and a build writes one only into a vault that requires the feature.
+  `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
+  ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. The
+  one exception is a kind whose parked op loses no data, such as `StreamDigest`
+  ([ADR-0043](../11-adr/0043-commit-tree.md)): it changes no entity, so it may
+  ship without a feature gate. A new field follows a weaker form of the same
+  test. A field that is optional and absent when unset is safe to carry
+  without a feature, because an older build keeps it as an unknown field and
+  writes it back unchanged. Such a field may still take a feature when the entity's
+  writes should wait until every device can represent it. `DOC_SCHEMA_V` 13's
+  eight optional Attachment fields are round-tripped by older builds and are
+  still gated by `attachment.thumbnail`
+  ([ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md)),
+  so an older build stops writing attachments once the vault requires it. A
+  new entity prefix, or a value an older build would misread, always takes a
+  feature and is not written until every device has advertised it.
+
+  What each `DOC_SCHEMA_V` changed, and which feature gates it, is recorded
+  once, in the doc comment on
+  [`DOC_SCHEMA_V`](../../crates/sunrise-cbor/src/version.rs). A bump adds its
+  entry there and nowhere else.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
