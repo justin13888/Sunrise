@@ -10583,6 +10583,345 @@
         ]
       }
     },
+    "/api/v1/pairing/resolve": {
+      "post": {
+        "summary": "Trade the six digits a new device shows for the session they name, within the caller's account.",
+        "description": "Every lookup is charged to the code-lookup ledgers, hit or miss. A code no\nlive session of this account holds — never given, expired, spent, or\nanother account's — is `404` with the same body in every case.",
+        "operationId": "resolvePairingCode",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large; the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairResolveResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
     "/metrics": {
       "get": {
         "summary": "The counter registry, in the Prometheus text exposition format.",
@@ -12145,6 +12484,14 @@
             "minimum": 0.0,
             "format": "uint64",
             "description": "When the session is dropped whatever happens, ms since the epoch."
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]{6}$",
+            "description": "The six digits the existing device may type instead of scanning, on\nthe new device's sends until the existing device has joined. Absent\notherwise."
           }
         },
         "additionalProperties": false,
@@ -12226,6 +12573,43 @@
           "role"
         ],
         "description": "`POST /api/v1/pairing/abort` request body."
+      },
+      "PairResolveRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "description": "The six digits the new device shows beside its QR."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "description": "`POST /api/v1/pairing/resolve` request body."
+      },
+      "PairResolveResponse": {
+        "properties": {
+          "pair_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{22}$",
+            "description": "The session the code names, as the QR would have carried it."
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "When the session is dropped whatever happens, ms since the epoch."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pair_id",
+          "expires_at_ms"
+        ],
+        "description": "`POST /api/v1/pairing/resolve` response body."
       }
     },
     "securitySchemes": {

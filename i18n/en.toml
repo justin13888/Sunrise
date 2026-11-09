@@ -501,6 +501,13 @@ qr_label = "Pairing QR code"
 qr_failed = "This {device} could not draw the code. Copy the text instead."
 # Buttons on the paste step.
 scan_code = "Scan the code"
+enter_code = "Enter code"
+# Placeholder of the field a six-digit pairing code is typed into.
+code_field = "Six-digit code"
+# Above the six digits the device being added shows beside its QR code.
+typed_code_label = "No camera? Type this code instead"
+# Accessibility label; {digits} is the six digits separated by spaces.
+typed_code_accessibility = "Pairing code {digits}"
 paste = "Paste"
 copy = "Copy"
 copied = "Copied"
@@ -543,7 +550,7 @@ relay_refused = "Your relay could not start this pairing ({error}), so it runs b
 # Titles and instructions for each step of pairing. "Settings › Vaults › Add a
 # device" is a navigation path and must match those screens' names.
 relay_code_title = "Scan this with the device that has your vault"
-relay_code_instruction = "On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read."
+relay_code_instruction = "On that device, open Settings › Vaults › Add a device and choose Scan, or Enter code to type the six digits below. The code works for five minutes; this screen moves on by itself once it has been read."
 code_title = "Show this to the device that has your vault"
 code_instruction = "Scan the code, or copy the text below and paste it into Settings › Vaults › Add a device on your other device — the one that already has your vault."
 message_title = "Copy this to the other device"
@@ -557,6 +564,9 @@ grant_title = "Copy this last block to the other device"
 grant_instruction = "This is the certificate admitting that device to your account, and your vault key, sealed so that only the device whose digits you just confirmed can open it. Anything it passes through on the way — a message, a clipboard, a relay — sees nothing usable."
 prompt_code_title = "Scan the code on the device you are adding"
 prompt_code_instruction = "That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here."
+# The same step over the relay, where the other device also shows six digits
+# beside its QR code and this screen offers "Enter code" for them.
+prompt_relay_code_instruction = "That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here."
 prompt_message_title = "Paste what the other device is showing"
 prompt_message_instruction = "Copy the block from the other device's screen and paste it here."
 prompt_offer_title = "Paste the block that names the account"
@@ -570,12 +580,18 @@ prompt_grant_instruction = "The other device is showing one last block, now that
 # The camera scanner sheet.
 title = "Scan the pairing code"
 paste_instead = "Paste the code instead"
+# The same button over the relay, where the other device also shows six digits.
+type_instead = "Type or paste the code instead"
 refused_title = "Sunrise cannot use the camera"
 # "System Settings › Privacy & Security › Camera" is the system's own path;
 # use the system's names for it. "Scan" names the button.
 refused_detail = "Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
+# refused_detail over the relay, where the other device also shows six digits.
+refused_detail_typed = "Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
 no_camera_title = "There is no camera here that can scan"
 no_camera_detail = "Paste the text shown under the code instead."
+# no_camera_detail over the relay, where the other device also shows six digits.
+no_camera_detail_typed = "Type the six-digit code shown beside it, or paste the text shown under it, instead."
 
 [apple.sync]
 # The sync badge's label, and its longer detail where it has one.

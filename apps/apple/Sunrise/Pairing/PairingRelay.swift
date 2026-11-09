@@ -32,6 +32,14 @@ struct RelayTransport: Sendable {
     /// same patience is a spinner that outlasts the user, and the manual flow
     /// works with no relay at all.
     var probe: @Sendable (_ relayURL: String) async -> Bool
+    /// `RelayPairing.acceptCode`: join the rendezvous the six digits typed on
+    /// this device name. The relay resolves them within this account; no key
+    /// comes with them, so the SAS screen is this path's whole check.
+    ///
+    /// Defaulted so a transport built for the QR path alone refuses a typed
+    /// code rather than needing one more closure.
+    var acceptCode: @Sendable (_ code: String, _ relayURL: String, _ bearer: String) async throws
+        -> any RelayPairingProtocol = { _, _, _ in throw PairingUIError.noSession }
 
     /// The real relay, or `nil` when this device has no relay or no bearer to
     /// present to one — in which case the pairing runs by copy and paste.
@@ -47,7 +55,10 @@ struct RelayTransport: Sendable {
             accept: { payload, url, bearer in
                 try RelayPairing.accept(qrPayload: payload, relayUrl: url, bearer: bearer)
             },
-            probe: { url in await RelayProbe.answers(relayURL: url) }
+            probe: { url in await RelayProbe.answers(relayURL: url) },
+            acceptCode: { code, url, bearer in
+                try await RelayPairing.acceptCode(code: code, relayUrl: url, bearer: bearer)
+            }
         )
     }
 }
@@ -186,13 +197,17 @@ extension PairingModel {
             syncSeamState()
             return
         }
-        phase = .handOff(relayCodeHandOff(payload))
+        phase = .handOff(relayCodeHandOff(payload, typedCode: session.code()))
         syncSeamState()
         await runHandshake(session, attempt: mine)
     }
 
-    /// Join the rendezvous a scanned (or pasted) code names, on the device
-    /// that holds the vault.
+    /// Join the rendezvous a scanned, pasted or typed code names, on the
+    /// device that holds the vault.
+    ///
+    /// Six digits are the typed code and go to the relay to be resolved;
+    /// anything else is the QR's text and goes to the seam as it came. The
+    /// seam decides which is which (`typedPairingCode`), not this screen.
     func acceptOverRelay(_ text: String, relay: RelayTransport) async {
         attempt += 1
         let mine = attempt
@@ -205,16 +220,25 @@ extension PairingModel {
             // it is waiting on the relay, not on a pasted Noise message. Both
             // have to start again by copy and paste, and the screen says so.
             fallBackToManual(because: PairingModel.relayDidNotAnswerHere(relay.relayURL))
-            phase = .awaiting(Self.prompt(for: .code))
+            phase = .awaiting(prompt(for: .code))
             return
         }
         guard mine == attempt else { return }
         let session: any RelayPairingProtocol
         do {
-            session = try relay.accept(text, relay.relayURL, relay.bearer)
+            if let code = typedPairingCode(text: text) {
+                session = try await relay.acceptCode(code, relay.relayURL, relay.bearer)
+            } else {
+                session = try relay.accept(text, relay.relayURL, relay.bearer)
+            }
         } catch {
+            guard mine == attempt else { return }
             phase = .failed(PairingModel.relayCodeFailed(error))
             syncSeamState()
+            return
+        }
+        guard mine == attempt else {
+            await session.cancel()
             return
         }
         relaySession = session

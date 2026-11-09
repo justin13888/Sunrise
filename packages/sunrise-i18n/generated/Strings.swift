@@ -545,6 +545,16 @@ enum L10n {
         }
         /// Scan the code
         static var scanCode: String { L10n.tr("apple.pairing.scan_code") }
+        /// Enter code
+        static var enterCode: String { L10n.tr("apple.pairing.enter_code") }
+        /// Six-digit code
+        static var codeField: String { L10n.tr("apple.pairing.code_field") }
+        /// No camera? Type this code instead
+        static var typedCodeLabel: String { L10n.tr("apple.pairing.typed_code_label") }
+        /// Pairing code {digits}
+        static func typedCodeAccessibility(digits: String) -> String {
+            L10n.tr("apple.pairing.typed_code_accessibility", digits)
+        }
         /// Paste
         static var paste: String { L10n.tr("apple.pairing.paste") }
         /// Copy
@@ -620,7 +630,7 @@ enum L10n {
         enum Legs {
             /// Scan this with the device that has your vault
             static var relayCodeTitle: String { L10n.tr("apple.pairing.legs.relay_code_title") }
-            /// On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read.
+            /// On that device, open Settings › Vaults › Add a device and choose Scan, or Enter code to type the six digits below. The code works for five minutes; this screen moves on by itself once it has been read.
             static var relayCodeInstruction: String { L10n.tr("apple.pairing.legs.relay_code_instruction") }
             /// Show this to the device that has your vault
             static var codeTitle: String { L10n.tr("apple.pairing.legs.code_title") }
@@ -648,6 +658,8 @@ enum L10n {
             static var promptCodeTitle: String { L10n.tr("apple.pairing.legs.prompt_code_title") }
             /// That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here.
             static var promptCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_code_instruction") }
+            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here.
+            static var promptRelayCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_relay_code_instruction") }
             /// Paste what the other device is showing
             static var promptMessageTitle: String { L10n.tr("apple.pairing.legs.prompt_message_title") }
             /// Copy the block from the other device's screen and paste it here.
@@ -671,14 +683,20 @@ enum L10n {
             static var title: String { L10n.tr("apple.pairing.scan.title") }
             /// Paste the code instead
             static var pasteInstead: String { L10n.tr("apple.pairing.scan.paste_instead") }
+            /// Type or paste the code instead
+            static var typeInstead: String { L10n.tr("apple.pairing.scan.type_instead") }
             /// Sunrise cannot use the camera
             static var refusedTitle: String { L10n.tr("apple.pairing.scan.refused_title") }
             /// Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
             static var refusedDetail: String { L10n.tr("apple.pairing.scan.refused_detail") }
+            /// Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
+            static var refusedDetailTyped: String { L10n.tr("apple.pairing.scan.refused_detail_typed") }
             /// There is no camera here that can scan
             static var noCameraTitle: String { L10n.tr("apple.pairing.scan.no_camera_title") }
             /// Paste the text shown under the code instead.
             static var noCameraDetail: String { L10n.tr("apple.pairing.scan.no_camera_detail") }
+            /// Type the six-digit code shown beside it, or paste the text shown under it, instead.
+            static var noCameraDetailTyped: String { L10n.tr("apple.pairing.scan.no_camera_detail_typed") }
         }
     }
 

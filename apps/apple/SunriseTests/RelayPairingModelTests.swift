@@ -65,6 +65,7 @@ struct RelayPairingModelTests {
             return PairedBundle(vaultRoot: Data(repeating: 7, count: 32), payloadBytes: Data([1, 2, 3]))
         }
         func qrPayload() -> String? { payload }
+        func code() -> String? { pairingRole == .newDevice ? "012345" : nil }
         func reject() async { record("reject") }
         func role() -> PairingRole { pairingRole }
         func sponsor(core: SunriseCore) async throws { try await sponsorAnywhere() }
@@ -80,6 +81,7 @@ struct RelayPairingModelTests {
     final class Relay {
         var offered = 0
         var accepted: [String] = []
+        var typed: [String] = []
         var sponsored = 0
         var adopted: (root: Data, bundle: Data)?
     }
@@ -106,7 +108,12 @@ struct RelayPairingModelTests {
                 #expect(url == Self.url && bearer == "token")
                 return session
             },
-            probe: { _ in answers }
+            probe: { _ in answers },
+            acceptCode: { code, url, bearer in
+                await MainActor.run { relay.typed.append(code) }
+                #expect(url == Self.url && bearer == "token")
+                return session
+            }
         )
     }
 
@@ -176,6 +183,25 @@ struct RelayPairingModelTests {
 
         await model.confirm(matched: true)
         #expect(relay.sponsored == 1, "the open vault signs the cert, through the bridge")
+        if case .done = model.phase {} else { Issue.record("expected done, got \(model.phase)") }
+    }
+
+    /// Six digits typed on a device with no camera go to the relay to be
+    /// resolved, grouped or not, and never to the QR decoder.
+    @Test
+    func aTypedCodeJoinsByTheDigitsAndSponsors() async throws {
+        let relay = Relay()
+        let session = FakeSession(role: .existingDevice, payload: nil)
+        let model = existingDevice(relay, transport: transport(relay, session: session))
+
+        model.pasted = "012 345"
+        await model.submit()
+        #expect(relay.typed == ["012345"], "spaces dropped by the seam's rule")
+        #expect(relay.accepted.isEmpty, "a typed code is not a QR")
+        #expect(model.phase == .comparing(sas: "123456"))
+
+        await model.confirm(matched: true)
+        #expect(relay.sponsored == 1)
         if case .done = model.phase {} else { Issue.record("expected done, got \(model.phase)") }
     }
 
@@ -255,6 +281,32 @@ struct RelayPairingModelTests {
             return
         }
         #expect(prompt.leg == .code)
+        #expect(
+            prompt.instruction == L10n.Pairing.Legs.promptCodeInstruction,
+            "copy and paste shows no six digits, so its words do not offer to type them"
+        )
+    }
+
+    /// The code leg offers the six digits only over the relay, where the other
+    /// device shows them and this screen has a field for them.
+    @Test
+    func onlyTheRelaysCodeLegMentionsTheTypedCode() {
+        let relay = Relay()
+        let session = FakeSession(role: .existingDevice)
+        let relayModel = existingDevice(relay, transport: transport(relay, session: session))
+        guard case let .awaiting(relayPrompt) = relayModel.phase else {
+            Issue.record("expected the code leg, got \(relayModel.phase)")
+            return
+        }
+        #expect(relayPrompt.instruction == L10n.Pairing.Legs.promptRelayCodeInstruction)
+
+        let manual = PairingModel(intent: .addAnotherDevice, relayURL: "")
+        guard case let .awaiting(manualPrompt) = manual.phase else {
+            Issue.record("expected the code leg, got \(manual.phase)")
+            return
+        }
+        #expect(manualPrompt.instruction == L10n.Pairing.Legs.promptCodeInstruction)
+        #expect(manualPrompt.instruction != relayPrompt.instruction)
     }
 
     /// No relay, or no account to present to one: copy and paste from the

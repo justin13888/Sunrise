@@ -149,6 +149,28 @@ impl PairingDevice {
         ))
     }
 
+    /// Begin on the **existing** device from the six digits the new one
+    /// shows, rather than its QR.
+    ///
+    /// No `n_static_pub` comes with a typed code, so nothing is compared when
+    /// the transcript completes: the SAS is this path's whole authentication
+    /// (`docs/03-crypto/pairing-and-onboarding.md` §Out-of-band channel
+    /// security), and the SAS screen is what enforces it.
+    ///
+    /// # Errors
+    ///
+    /// [`PairingFault::Pairing`] if key generation fails.
+    pub fn accept_by_code() -> Result<Self, PairingFault> {
+        let keys = PairingSession::generate_static_keypair().map_err(pairing)?;
+        let session = PairingSession::new(Role::ExistingDevice, &keys.private).map_err(pairing)?;
+        Ok(Self::wrap(
+            RendezvousRole::ExistingDevice,
+            None,
+            session,
+            None,
+        ))
+    }
+
     /// This device's side.
     #[must_use]
     pub const fn role(&self) -> RendezvousRole {
@@ -489,6 +511,22 @@ mod tests {
         );
         new.confirm(true).unwrap();
         assert_eq!(new.step(), DeviceStep::Confirmed);
+    }
+
+    /// Joined by code, the existing device holds no QR key to compare, and
+    /// the transcript still completes to the same digits on both sides.
+    #[test]
+    fn a_device_joined_by_code_reaches_the_digits_without_the_qr() {
+        let new =
+            PairingDevice::offer("https://relay.example".into(), "ada@example.com").expect("offer");
+        let old = PairingDevice::accept_by_code().expect("accept by code");
+        assert_eq!(old.role(), RendezvousRole::ExistingDevice);
+        assert!(old.qr_payload().is_none());
+        old.receive_message(&new.next_message().unwrap()).unwrap();
+        new.receive_message(&old.next_message().unwrap()).unwrap();
+        old.receive_message(&new.next_message().unwrap()).unwrap();
+        assert_eq!(old.step(), DeviceStep::AwaitingConfirmation);
+        assert_eq!(new.sas().unwrap(), old.sas().unwrap());
     }
 
     #[test]

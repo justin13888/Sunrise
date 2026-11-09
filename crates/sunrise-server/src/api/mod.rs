@@ -146,7 +146,8 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         .mount(kynos::routes![
             pairing::send,
             pairing::receive,
-            pairing::abort
+            pairing::abort,
+            pairing::resolve
         ])
         .merge(operator_surface(config))
         // Who the client is. Empty, nothing a request says about its own
@@ -427,6 +428,7 @@ mod tests {
             "/api/v1/pairing/send",
             "/api/v1/pairing/receive",
             "/api/v1/pairing/abort",
+            "/api/v1/pairing/resolve",
         ] {
             assert!(
                 v["paths"].get(path).is_some(),
