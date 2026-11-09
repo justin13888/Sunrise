@@ -1,7 +1,4 @@
 import Foundation
-#if os(iOS)
-import UIKit
-#endif
 
 /// Keeps the OS's schedule equal to what the core says it should be.
 ///
@@ -71,8 +68,8 @@ final class ReminderScheduler {
     /// The Focus filter in force. Reminders from streams outside its scope
     /// are withdrawn while it is on; see ``FocusFilter``.
     private let focusFilter: FocusFilterStore
-    /// The clock-change observers ``observeTimeChanges()`` installed.
-    private var timeObservers: [NSObjectProtocol] = []
+    /// What ``observeTimeChanges()`` installed.
+    private let clockChanges = ClockChangeObserver()
 
     init(
         bridge: CoreBridge,
@@ -141,30 +138,48 @@ final class ReminderScheduler {
     /// wind-down, both planned and reconciled by the core, then the reminders,
     /// planned here from `Query::ReminderIntents` under this device's
     /// settings, in whatever room the first two leave under the cap.
+    ///
+    /// One pass at a time: a zone change arrives twice (the clock observer
+    /// and the change feed), and two passes that both read the ledger before
+    /// either saves it would both post the same alert. A failed catalog plan
+    /// still plans the reminders, and leaves the catalog as the OS holds it.
     func reconcile() async {
+        let previous = reconciling
+        let pass = _Concurrency.Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.reconcileOnce()
+        }
+        reconciling = pass
+        await pass.value
+    }
+
+    /// The pass in flight, if any; the next ``reconcile()`` waits for it.
+    private var reconciling: _Concurrency.Task<Void, Never>?
+
+    private func reconcileOnce() async {
         let policy = preferences.policy
         let delivering = authorization.allowsScheduling && policy.isEnabled
         let pending = await center.pendingRequests()
-        let others: CatalogPass
+        var failure: String?
+        var others: CatalogPass?
         do {
             others = try await planOthers(delivering: delivering, policy: policy, pending: pending)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-            return
-        }
-        catalogPolicy = others.policy
+            catalogPolicy = others?.policy
+        } catch { failure = error.localizedDescription }
 
         let desired: [PlannedNotification]
         if delivering {
+            // Without a catalog plan, the rest still takes what the OS holds.
+            let held = others?.held.count
+                ?? pending.count { !$0.identifier.hasPrefix(ReminderPlan.identifierPrefix) }
             do {
                 desired = try await intents(
                     policy.settings,
-                    kinds: others.policy,
-                    limit: max(0, ReminderPlan.maxScheduled - others.held.count)
+                    kinds: catalogPolicy,
+                    limit: max(0, ReminderPlan.maxScheduled - held)
                 )
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = failure ?? error.localizedDescription
                 return
             }
         } else {
@@ -172,19 +187,27 @@ final class ReminderScheduler {
         }
 
         let plan = ReminderPlan.reconcile(desired: desired, pending: pending.map(\.identifier))
-        await center.cancel(identifiers: plan.cancel + others.cancel)
-        for notification in plan.add + others.schedule {
+        await center.cancel(identifiers: plan.cancel + (others?.cancel ?? []))
+        var alertsPosted = true
+        for notification in plan.add + (others?.schedule ?? []) {
             do {
                 try await center.schedule(notification)
             } catch {
-                errorMessage = error.localizedDescription
+                if notification.identifier.hasPrefix(NotificationCatalog.prefixes.alert) {
+                    alertsPosted = false
+                }
+                failure = failure ?? error.localizedDescription
             }
         }
-        // Kept only once its alerts are handed over: a ledger saved first
-        // would remember as posted what a crash between the two never showed.
-        if let ledger = others.ledger { preferences.setLedger(ledger, for: others.device) }
+        // Kept only once every alert is handed over, or a failed or crashed
+        // post would be remembered as shown and never raised again. An alert
+        // posted beside a failed one is posted again, replacing itself.
+        if alertsPosted, let others, let ledger = others.ledger {
+            preferences.setLedger(ledger, for: others.device)
+        }
+        errorMessage = failure
         scheduled = desired
-        catalogScheduled = others.held.sorted { $0.fireAtMs < $1.fireAtMs }
+        if let others { catalogScheduled = others.held.sorted { $0.fireAtMs < $1.fireAtMs } }
         lastPlan = plan
     }
 
@@ -370,37 +393,13 @@ final class ReminderScheduler {
         await reconcile()
     }
 
-    /// Re-plan when the clock or the calendar jumps.
-    ///
-    /// The zone is ``TimeZoneWatch``'s, and a zone change reaches this object
-    /// through the change feed. What the feed cannot say is that the clock
-    /// itself moved — set by hand, corrected by the network, or the day rolled
-    /// over at midnight — and every fire time in the plan is measured from
-    /// "now". iOS folds all of those into one significant-time-change
-    /// notification; macOS posts them separately.
+    /// Re-plan when the clock or the calendar jumps; see ``ClockChangeObserver``.
     func observeTimeChanges() {
-        stopObservingTimeChanges()
-        var names: [Notification.Name] = [.NSSystemClockDidChange, .NSCalendarDayChanged]
-        #if os(iOS)
-        names.append(UIApplication.significantTimeChangeNotification)
-        #endif
-        let posts = NotificationCenter.default
-        for name in names {
-            timeObservers.append(
-                posts.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                    _Concurrency.Task { @MainActor in await self?.reconcile() }
-                }
-            )
-        }
+        clockChanges.start { [weak self] in await self?.reconcile() }
     }
 
     /// Stop re-planning on clock changes: the vault this plans for is closing.
-    func stopObservingTimeChanges() {
-        for observer in timeObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        timeObservers.removeAll()
-    }
+    func stopObservingTimeChanges() { clockChanges.stop() }
 
     /// Run one action button against the core.
     ///
