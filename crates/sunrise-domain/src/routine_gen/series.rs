@@ -114,7 +114,9 @@ impl Routine {
     /// key even on a day the DST rule moved the occurrence (#331), and
     /// whichever zone the occurrence was due in. Every key resolves in UTC
     /// within 26 hours of where any real zone resolves it, so three days each
-    /// side of `near` hold it.
+    /// side of `near` hold it. The `UNTIL` is read in that civil-as-UTC frame
+    /// (`civil_frame_rule`), so east of UTC an
+    /// ended series still finds its last occurrence.
     #[must_use]
     pub fn occurrence_key_of(&self, task: &EntityRef, near: Timestamp) -> Option<String> {
         let span = jiff::SignedDuration::from_hours(72);
@@ -125,7 +127,7 @@ impl Routine {
         let utc = TimeZone::UTC;
         let r = self.clone().normalized();
         let anchor = r.anchor_civil()?;
-        expand(&r.rrule, anchor, &utc, window)
+        expand(&r.civil_frame_rule(), anchor, &utc, window)
             .ok()?
             .into_iter()
             .find(|o| occurrence_task_id(&self.series_root(), &o.key) == *task)
