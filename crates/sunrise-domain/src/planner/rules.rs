@@ -3,6 +3,8 @@
 
 use super::{to_ts, Class, PlanViolation, Pos, World};
 use crate::constraint::{ConstraintSeverity, ScheduleConstraint, WeekdaySet};
+use crate::time::SunriseTime;
+use jiff::civil::Date;
 use sunrise_id::EntityRef;
 
 /// The rule a violation breaks.
@@ -99,13 +101,8 @@ pub(crate) fn rules_at(world: &World<'_>, i: usize, s: i64, e: i64, pos: &[Pos])
             }
         }
         for c in &t.constraints {
-            if let Some(rule) = constraint_rule(world, c, s, e) {
-                let severity = if c.severity == ConstraintSeverity::Hard {
-                    PlanSeverity::Blocking
-                } else {
-                    PlanSeverity::Soft
-                };
-                out.push((rule, severity, None));
+            if let Some(rule) = constraint_rule(world, c, s) {
+                out.push((rule, severity_of(c), None));
             }
         }
     }
@@ -123,22 +120,59 @@ pub(crate) fn rules_at(world: &World<'_>, i: usize, s: i64, e: i64, pos: &[Pos])
     out
 }
 
-/// Whether `[s, e)` breaks a `hard` time constraint of item `i`: a position
-/// no rippled item may take (ADR-0048 §4).
-pub(crate) fn blocks_at(world: &World<'_>, i: usize, s: i64, e: i64) -> bool {
+/// Whether a slot starting at `s` breaks a `hard` time constraint of item
+/// `i`: a position no rippled item may take (ADR-0048 §4).
+pub(crate) fn blocks_at(world: &World<'_>, i: usize, s: i64) -> bool {
     world.items[i].task.is_some_and(|t| {
         t.constraints.iter().any(|c| {
-            c.severity == ConstraintSeverity::Hard && constraint_rule(world, c, s, e).is_some()
+            c.severity == ConstraintSeverity::Hard && constraint_rule(world, c, s).is_some()
         })
     })
 }
 
-/// The dimension of `c` that `[s, e)` breaks, checked at its first and last
-/// second, or `None` when both hold.
-fn constraint_rule(world: &World<'_>, c: &ScheduleConstraint, s: i64, e: i64) -> Option<PlanRule> {
+/// Whether task `i` with no time on day `d` breaks a `hard` time
+/// constraint: the no-time lane is then no place for it either.
+pub(crate) fn blocks_on_day(world: &World<'_>, i: usize, d: Date) -> bool {
+    day_rules(world, i, d)
+        .iter()
+        .any(|b| b.1 == PlanSeverity::Blocking)
+}
+
+/// The constraint rules task `i` breaks with no time on day `d`, read as an
+/// ordinary submit reads an all-day plan: at the start of the day in the
+/// reader's zone. A `hard` one is Blocking there too, so the no-time lane is
+/// not a way around it.
+pub(crate) fn day_rules(world: &World<'_>, i: usize, d: Date) -> Vec<Broken> {
+    let Some(t) = world.items[i].task else {
+        return Vec::new();
+    };
+    let Some(s) = SunriseTime::all_day(d).resolve_in(&world.inputs.zone) else {
+        return Vec::new();
+    };
+    let s = s.as_second();
+    t.constraints
+        .iter()
+        .filter_map(|c| constraint_rule(world, c, s).map(|rule| (rule, severity_of(c), None)))
+        .collect()
+}
+
+fn severity_of(c: &ScheduleConstraint) -> PlanSeverity {
+    if c.severity == ConstraintSeverity::Hard {
+        PlanSeverity::Blocking
+    } else {
+        PlanSeverity::Soft
+    }
+}
+
+/// The dimension of `c` that a slot starting at `s` breaks, or `None`.
+///
+/// Checked at the start, as an ordinary submit checks a plan
+/// (`docs/02-domain/scheduling-constraints.md`), so Blocking here is exactly
+/// what that submit would refuse.
+fn constraint_rule(world: &World<'_>, c: &ScheduleConstraint, s: i64) -> Option<PlanRule> {
     let zone = &world.inputs.zone;
     let at = |x: i64| to_ts(x).to_zoned(zone.clone());
-    let points = [at(s), at((e - 1).max(s))];
+    let points = [at(s)];
     if points.iter().all(|z| c.is_satisfied_at(z)) {
         return None;
     }
@@ -194,8 +228,15 @@ pub(crate) fn all_violations(
             push((PlanRule::Invalid, PlanSeverity::Blocking, None));
             continue;
         }
-        let Some((s, e)) = pos[i].slot() else {
-            continue;
+        let (s, e) = match &pos[i] {
+            Pos::Slot(s, e) => (*s, *e),
+            Pos::Day(d) => {
+                for b in day_rules(world, i, *d) {
+                    push(b);
+                }
+                continue;
+            }
+            Pos::Unplanned => continue,
         };
         for &(s2, e2, j) in &slots {
             if s2 >= e {

@@ -525,6 +525,7 @@ pub fn solve(inputs: &PlanInputs, intent: &PlanIntent) -> Result<PlanDiff, PlanI
                     after[i] = Pos::Slot(s, e);
                     out_after.insert(i, world.slot_out(i, s, e));
                 }
+                search::Choice::Stay => {}
                 search::Choice::Unschedule(reason) => {
                     let Some(d) = world.items[i].day else {
                         continue;

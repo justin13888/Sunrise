@@ -1,6 +1,6 @@
 //! The bounded search (`docs/08-features/planner.md` §Solver, steps 2–6).
 
-use super::rules::{blocks_at, rules_at, Broken, PlanSeverity};
+use super::rules::{blocks_at, blocks_on_day, rules_at, Broken, PlanSeverity};
 use super::{Class, Pos, UnscheduleReason, World, UNSCHEDULE_DISPLACEMENT_S};
 use std::collections::BTreeSet;
 use sunrise_id::EntityRef;
@@ -16,6 +16,9 @@ pub(crate) enum Choice {
     Slot(i64, i64),
     /// The no-time lane of its day.
     Unschedule(UnscheduleReason),
+    /// Where it is: the last resort of an item with no other position that
+    /// an ordinary submit would accept.
+    Stay,
 }
 
 /// The best assignment found.
@@ -137,6 +140,7 @@ impl Search<'_, '_> {
                 .filter(|(j, c)| match c {
                     Choice::Slot(s, e) => self.world.items[*j].before != Pos::Slot(*s, *e),
                     Choice::Unschedule(_) => true,
+                    Choice::Stay => false,
                 })
                 .map(|(j, _)| self.world.items[*j].id)
                 .collect();
@@ -175,6 +179,7 @@ impl Search<'_, '_> {
                         UNSCHEDULE_DISPLACEMENT_S,
                     )
                 }
+                Choice::Stay => (self.cur[i].clone(), 0, 0),
             };
             let old = std::mem::replace(&mut self.cur[i], pos);
             self.assigned[i] = true;
@@ -309,7 +314,7 @@ impl Search<'_, '_> {
                     if overlaps_any(&busy, s - gap, e + gap) {
                         continue;
                     }
-                    if blocks_at(world, i, s, e) {
+                    if blocks_at(world, i, s) {
                         hit_hard = true;
                         continue;
                     }
@@ -357,9 +362,16 @@ impl Search<'_, '_> {
         };
         out.sort_by_key(|c| c.key);
         out.truncate(BRANCH);
-        let un = unschedule(reason);
-        let at = out.partition_point(|c| c.key < un.key);
-        out.insert(at, un);
+        if !blocks_on_day(world, i, world.window[d].date) {
+            let un = unschedule(reason);
+            let at = out.partition_point(|c| c.key < un.key);
+            out.insert(at, un);
+        } else if out.is_empty() {
+            out.push(Cand {
+                choice: Choice::Stay,
+                key: (0, 0, 1, 0, usize::MAX),
+            });
+        }
         out
     }
 }
@@ -399,7 +411,7 @@ pub(crate) fn auto_place(
         let mut found = None;
         while c + dur <= hi {
             let (s, e) = (c, c + dur);
-            if !overlaps_any(&busy, s - world.gap, e + world.gap) && !blocks_at(world, i, s, e) {
+            if !overlaps_any(&busy, s - world.gap, e + world.gap) && !blocks_at(world, i, s) {
                 found = Some((s, e));
                 break;
             }
