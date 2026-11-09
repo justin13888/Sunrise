@@ -123,17 +123,23 @@ struct SharedAccountTests {
         try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
     }
 
-    /// Settings under which the ceremony gets as far as asking for a bearer.
-    private func configure(_ defaults: UserDefaults) {
-        let settings = AppSettings(defaults: defaults)
+    /// Settings under which the ceremony gets as far as asking for a bearer,
+    /// written into `directory`, a scratch one, so no case writes the
+    /// developer's own.
+    private func configure(_ defaults: UserDefaults, in directory: URL) {
+        let settings = AppSettings(defaults: defaults, directory: directory)
         settings.relayURL = "wss://relay.invalid/sync"
         settings.accountEmail = "user@example.com"
     }
 
-    private func configuredDefaults() throws -> UserDefaults {
+    private func configuredDefaults(in directory: URL) throws -> UserDefaults {
         let defaults = try scratchDefaults()
-        configure(defaults)
+        configure(defaults, in: directory)
         return defaults
+    }
+
+    private func discard(_ directories: URL...) {
+        for directory in directories { try? FileManager.default.removeItem(at: directory) }
     }
 
     /// The issue's sequence end to end: signed in, a sign-out the Keychain
@@ -141,15 +147,16 @@ struct SharedAccountTests {
     /// sign-in rather than uploading under the credential that survived.
     @Test
     func theCeremonyUsesTheSessionsAccountAndSoHonoursARefusedSignOut() async throws {
-        let directory = scratchDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (directory, settings) = (scratchDirectory(), scratchDirectory())
+        defer { discard(directory, settings) }
         let store = lockedStore()
         let account = model(store: store)
         let session = SessionModel(
             location: VaultLocation(directory: directory),
             rootStore: StubRootStore(),
             appVersion: "test",
-            settingsDefaults: try configuredDefaults(),
+            settingsDefaults: try configuredDefaults(in: settings),
+            settingsDirectory: settings,
             account: account
         )
         #expect(session.account === account)
@@ -175,14 +182,15 @@ struct SharedAccountTests {
     /// before the shell's own `.task` has restored anything.
     @Test
     func theCeremonyTakesTheFirstLookOnAFreshAccount() async throws {
-        let directory = scratchDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (directory, settings) = (scratchDirectory(), scratchDirectory())
+        defer { discard(directory, settings) }
         let account = model(store: StubCredentialStore(value: credentials(accessToken: "access-old")))
         let session = SessionModel(
             location: VaultLocation(directory: directory),
             rootStore: StubRootStore(),
             appVersion: "test",
-            settingsDefaults: try configuredDefaults(),
+            settingsDefaults: try configuredDefaults(in: settings),
+            settingsDirectory: settings,
             account: account
         )
 
@@ -200,18 +208,19 @@ struct SharedAccountTests {
     /// configuration it would have seen had it kept the launch-time snapshot.
     @Test
     func theCeremonyReadsSettingsEnteredAfterLaunch() async throws {
-        let directory = scratchDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (directory, settings) = (scratchDirectory(), scratchDirectory())
+        defer { discard(directory, settings) }
         let defaults = try scratchDefaults()
         let session = SessionModel(
             location: VaultLocation(directory: directory),
             rootStore: StubRootStore(),
             appVersion: "test",
             settingsDefaults: defaults,
+            settingsDirectory: settings,
             account: model(store: StubCredentialStore())
         )
         await session.start()
-        configure(defaults)
+        configure(defaults, in: settings)
 
         await session.createVault()
         let ceremony = try #require(session.recoveryCeremony)

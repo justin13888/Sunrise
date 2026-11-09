@@ -36,6 +36,7 @@ struct SessionRenewalTests {
             rootStore: StubRootStore(),
             appVersion: "test",
             settingsDefaults: try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)")),
+            settingsDirectory: directory.appending(path: "settings"),
             account: account
         )
         await session.start()
