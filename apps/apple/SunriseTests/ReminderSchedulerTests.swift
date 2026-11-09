@@ -49,7 +49,16 @@ actor FakeNotificationCenter: NotificationCenterClient {
         pending.map { PendingReminder(identifier: $0, revision: revisions[$0]) }
     }
 
+    /// Requests whose identifier starts with this are refused, as the real
+    /// service refuses one it cannot hold.
+    private var refusing: String?
+
+    func refuse(prefix: String?) { refusing = prefix }
+
+    struct Refused: Error {}
+
     func schedule(_ notification: PlannedNotification) async throws {
+        if let refusing, notification.identifier.hasPrefix(refusing) { throw Refused() }
         scheduled.append(notification)
         revisions[notification.identifier] = notification.revision
         if !pending.contains(notification.identifier) {
