@@ -197,7 +197,7 @@ impl Engine {
         let mut subjects: Vec<Option<SunriseTime>> = Vec::new();
         for id in &named {
             subjects.push(match id.kind() {
-                EntityKind::Task => read_open_task(conn, *id)?.planned_at,
+                EntityKind::Task => read_live_task(conn, *id)?.planned_at,
                 EntityKind::Block => {
                     let block = read_block(conn, id.bytes())?
                         .filter(|b| !b.deleted)
@@ -446,7 +446,8 @@ impl Engine {
     }
 }
 
-fn read_open_task(conn: &rusqlite::Connection, id: EntityRef) -> Result<Task, PlanError> {
+/// The task an intent names, which must exist and not be deleted.
+fn read_live_task(conn: &rusqlite::Connection, id: EntityRef) -> Result<Task, PlanError> {
     read_task(conn, id.bytes())?
         .filter(|t| !t.deleted)
         .ok_or_else(|| PlanError::Invalid(format!("no task {id}")))
