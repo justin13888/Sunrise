@@ -35,7 +35,7 @@ introduces the items named right after it (the two entities `Note` and
 |---|---|---|
 | Workspace + CI | ✅ live | Cargo + Bun workspace (`Cargo.toml` `[workspace] members`). CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, every entity prefix the registry in `crates/sunrise-id/src/registry/table.rs` declares (`fcs_` for focus sessions and `rvw_` for review snapshots among them), client-side generation |
-| `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
+| `sunrise-error` | ✅ live | Error registry: `ErrorCode`, with each code's `ErrorKind` and `retryable` flag. No core → UI error envelope (removed by [#755](https://github.com/justin13888/Sunrise/issues/755)). TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
