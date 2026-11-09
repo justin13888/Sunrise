@@ -14,11 +14,23 @@ use sunrise_domain::planner::{
 };
 use sunrise_id::EntityRef;
 
-/// See [`sunrise_domain::planner::Edge`].
-#[uniffi::remote(Enum)]
-pub enum Edge {
+/// A block's edge. See [`sunrise_domain::planner::Edge`]; named apart from it
+/// so it does not shadow SwiftUI's `Edge` in a file that imports both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PlanEdge {
+    /// The start.
     Start,
+    /// The end.
     End,
+}
+
+impl From<PlanEdge> for Edge {
+    fn from(e: PlanEdge) -> Self {
+        match e {
+            PlanEdge::Start => Self::Start,
+            PlanEdge::End => Self::End,
+        }
+    }
 }
 
 /// See [`sunrise_domain::planner::UnscheduleKeep`].
@@ -96,7 +108,7 @@ pub enum PlanIntentItem {
         /// The block.
         block: EntityRef,
         /// Which edge.
-        edge: Edge,
+        edge: PlanEdge,
         /// Where the edge lands.
         to: TimeValue,
     },
@@ -144,7 +156,7 @@ impl From<PlanIntentItem> for PlanIntent {
             },
             PlanIntentItem::ResizeBlock { block, edge, to } => Self::ResizeBlock {
                 block,
-                edge,
+                edge: edge.into(),
                 to: to.into(),
             },
             PlanIntentItem::BulkDefer { tasks, to, place } => Self::BulkDefer { tasks, to, place },
