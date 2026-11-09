@@ -132,7 +132,7 @@ struct FocusFilterTests {
         store.apply([(id: work, name: "Work")])
         await scheduler.reconcile()
         #expect(scheduler.scheduled.map(\.title) == ["Standup"])
-        let pending = await center.pending
+        let pending = await center.pendingReminders
         #expect(pending.count == 1, "the muted reminder is withdrawn from the OS, not merely not added")
 
         store.apply(nil)

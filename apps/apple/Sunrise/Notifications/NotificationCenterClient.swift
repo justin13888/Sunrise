@@ -34,13 +34,6 @@ protocol NotificationCenterClient: Sendable {
     func cancel(identifiers: [String]) async
 }
 
-extension NotificationCenterClient {
-    /// Identifiers of every request the OS is currently holding for this app.
-    func pendingIdentifiers() async -> [String] {
-        await pendingRequests().map(\.identifier)
-    }
-}
-
 /// The real one.
 ///
 /// A `struct` with no stored state, so `Sendable` is free and honest: every

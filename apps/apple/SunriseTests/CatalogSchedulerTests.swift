@@ -38,7 +38,7 @@ struct CatalogSchedulerTests {
     }
 
     private func makeScheduler(
-        _ vault: TestVault,
+        _ vault: borrowing TestVault,
         _ name: String,
         center: FakeNotificationCenter,
         route: @escaping @MainActor (DeepLink) -> Void = { _ in }
