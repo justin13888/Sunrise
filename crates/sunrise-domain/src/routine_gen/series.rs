@@ -115,7 +115,7 @@ impl Routine {
     /// whichever zone the occurrence was due in. Every key resolves in UTC
     /// within 26 hours of where any real zone resolves it, so three days each
     /// side of `near` hold it. The `UNTIL` is read in that civil-as-UTC frame
-    /// ([`civil_frame_rule`](super::civil_frame_rule)), so east of UTC an
+    /// (`civil_frame_rule`), so east of UTC an
     /// ended series still finds its last occurrence.
     #[must_use]
     pub fn occurrence_key_of(&self, task: &EntityRef, near: Timestamp) -> Option<String> {
