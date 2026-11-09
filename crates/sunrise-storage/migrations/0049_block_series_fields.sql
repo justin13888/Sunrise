@@ -12,9 +12,10 @@
 -- - `kind` and `source` hold the raw spelling, so a value this build does not
 --   know is kept verbatim (ADR-0045 §6). NULL is an absent field, which reads
 --   by time-blocks.md §Migration default.
--- - `rrule_cbor`, `exceptions` and `notes` hold canonical CBOR, as
+-- - `rrule_cbor` and `exceptions` hold canonical CBOR, as
 --   `routines.rrule_cbor` does: a rule's raw values can hold any string, and
 --   the exceptions are a map of records.
+-- - `notes` holds the note body's raw bytes, as `tasks.body` does.
 -- - `split_from` is the 16-byte id of the series root.
 --
 -- NULL for every existing block: no build before this one wrote any of them.

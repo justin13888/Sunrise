@@ -23,8 +23,8 @@ pub(in crate::engine::merge) fn upsert_block_row(
         encode_unknowns(&b.unknown)?,
     )?;
     // The #1147 fields (migration 0049): `kind` and `source` by their raw
-    // spelling, so an unknown one survives; the rule, the exceptions and
-    // the notes as canonical CBOR.
+    // spelling, so an unknown one survives; the rule and the exceptions as
+    // canonical CBOR; the notes as the body's raw bytes, as tasks store theirs.
     let rrule_blob = b.rrule.as_ref().map(encode_rrule).transpose()?;
     let exceptions_blob = encode_blob_opt(&b.exceptions, b.exceptions.is_empty())?;
     tx.execute(
