@@ -1,9 +1,17 @@
-//! `Plain<T>` — the redaction wrapper.
+//! `Plain<T>` — an optional redaction wrapper.
 //!
-//! Plaintext domain data (Task title/body, Note body, attachment file name,
-//! integration external title, person name, email, Stream name, Context
-//! name, search query, etc.) crosses module boundaries only inside
-//! `Plain<T>`.
+//! Wrap plaintext domain data (Task title/body, Note body, attachment file
+//! name, integration external title, person name, email, Stream name, Context
+//! name, search query, etc.) in `Plain<T>` where a crate wants the type system
+//! to keep it off a log record's value path.
+//!
+//! # Not the control
+//!
+//! The plaintext control is [`crate::RedactionLayer`]'s field-name allowlist,
+//! which every event from a `sunrise_*` target passes through whether or not
+//! its values were wrapped. `Plain<T>` is a guard on top of it, and no crate
+//! outside `sunrise-log` wraps a value in it today. See
+//! `docs/10-cross-cutting/logging.md` §6.3 for the decision.
 //!
 //! # The guarantee
 //!

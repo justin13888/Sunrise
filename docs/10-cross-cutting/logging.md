@@ -173,29 +173,33 @@ never be user-authored content. Broad shapes:
 
 ### How this is enforced
 
-Two independent defences, both in `crates/sunrise-log`:
+One control and one optional guard, both in `crates/sunrise-log`. §6.3 records
+why the allowlist, not the wrapper, is the control.
 
-1. **`Plain<T>` closes the value path.** It implements no `Display`, no
-   `serde::Serialize`, and no `tracing::Value`, and its `Debug` prints the
-   fixed string `Plain<…>`. So `info!(title = plain)` and `info!(title = %plain)`
-   do not compile, and `info!(title = ?plain)` records `Plain<…>`. There is no
-   tracing path that renders the payload. `crates/sunrise-log/tests/redaction.rs`
-   drives random payloads through every one of those paths and asserts the sink
-   saw the marker and not one byte of the payload.
+1. **`RedactionLayer` is the control: it closes the field-name path.** The
+   layer checks every field name on every event from a `sunrise_*` target
+   against the allowlist above and **vetoes the whole event** if one is
+   unrecognised (`Layer::event_enabled` is `AND`-ed across the stack, so a
+   `false` suppresses it for every layer beneath). In debug builds the default
+   is to panic naming the field, so an unvetted name fails CI rather than
+   shipping; in release it drops the record and bumps a counter. Losing a log
+   line beats leaking a task title. It holds for every value, wrapped or not,
+   which is why it is the control.
 
-2. **`RedactionLayer` closes the field-name path.** A value that was
-   legitimately `.expose()`d and then logged is not a `Plain<T>` any more, so
-   defence 1 cannot see it. The layer checks every field name on every event
-   from a `sunrise_*` target against the allowlist above and **vetoes the whole
-   event** if one is unrecognised (`Layer::event_enabled` is `AND`-ed across the
-   stack, so a `false` suppresses it for every layer beneath). In debug builds
-   the default is to panic naming the field, so an unvetted name fails CI rather
-   than shipping; in release it drops the record and bumps a counter. Losing a
-   log line beats leaking a task title.
+2. **`Plain<T>` is an optional guard on the value path.** It implements no
+   `Display`, no `serde::Serialize`, and no `tracing::Value`, and its `Debug`
+   prints the fixed string `Plain<…>`. So `info!(title = plain)` and
+   `info!(title = %plain)` do not compile, and `info!(title = ?plain)` records
+   `Plain<…>`. There is no tracing path that renders the payload.
+   `crates/sunrise-log/tests/redaction.rs` drives random payloads through every
+   one of those paths and asserts the sink saw the marker and not one byte of
+   the payload. It protects only a value someone chose to wrap, and no crate
+   outside `sunrise-log` wraps one today; a value that was `.expose()`d, or was
+   never wrapped, is the layer's to catch.
 
-Neither defence covers `message`. A format string is arbitrary text by
-construction; keeping plaintext out of it is what the `.expose()` CI grep is
-for.
+Neither covers `message`. A format string is arbitrary text by construction;
+keeping plaintext out of it is review's job. The `.expose()` CI grep helps only
+where a value was wrapped in `Plain<T>` to begin with.
 
 `RedactionLayer` does not gate spans: `on_new_span` has no veto and a span
 cannot be rewritten once created. Span field names are gated at the source
@@ -205,7 +209,7 @@ shipped target and fails, naming the file, the span and the field, on a span
 field name outside the allowlist above. It refuses a span it cannot read, and
 refuses `#[instrument]` outright, since that attribute records the function's
 arguments as span fields without naming them. `mise run log-fields` runs it.
-Defence 1 still applies to span field values.
+`Plain<T>` still guards a wrapped span field value.
 
 ### 6.1 Email addresses
 
@@ -241,6 +245,17 @@ and the salt has to come back.
   from the configured URL — dropping any credentials and query string with it.
 
 ### 6.3 CI enforcement
+
+**Which defence is the control.** The `RedactionLayer` allowlist is. `Plain<T>`
+is an optional guard a crate may adopt for a value it wants kept out of the
+value path by the type system. The wrapper was first specified as the control,
+but no crate outside `sunrise-log` wraps a value in it, while every event from
+a `sunrise_*` target passes through the layer. A guarantee that rests on a type
+nobody uses is not a guarantee, so the allowlist is what this section enforces
+and what a new logging site must satisfy. `Plain<T>`, its tests, and the grep
+below stay, so that a crate that does adopt the wrapper gets its escape hatch
+policed. Adopting it at the plaintext boundaries instead would be a separate
+change, and would make it a second control, not a replacement for the layer.
 
 The `log-redaction` job in `.github/workflows/ci.yml` greps
 `\bplain[a-z_]*\.expose[[:space:]]*\(` across the `src` tree of every crate

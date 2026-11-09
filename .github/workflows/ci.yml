@@ -1502,6 +1502,13 @@ jobs:
           # docs/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
           # code that emits log records.
           #
+          # This polices `Plain<T>`'s escape hatch, and `Plain<T>` is an optional
+          # guard, not the plaintext control: §6.3 records that the
+          # `RedactionLayer` field-name allowlist is. No crate outside
+          # `sunrise-log` wraps a value in `Plain<T>` today, so a green run here
+          # says nothing about unwrapped plaintext; the layer and the
+          # `event_catalog` field-name tests are what catch that.
+          #
           # The list below is every crate that emits a log record today
           # (`sunrise-log`, `-server`, `-cli`, `-storage`, `-core`) plus the
           # client-seam crates that are next in line to (`-sync`,
