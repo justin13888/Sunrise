@@ -162,6 +162,7 @@ ALLOWED: dict[str, str] = {
     "apps/apple/Sunrise/Notes/NoteEditorBlock.swift": moving("note_blocks::EditorBlock"),
     "apps/apple/Sunrise/Notes/NoteEditorModel.swift": moving("note_blocks::{edit_lock, set_kind, indent_row, outdent_row}"),
     "apps/apple/Sunrise/Notes/NoteInlineText.swift": SEAM,
+    "apps/apple/Sunrise/Notifications/ClockChangeObserver.swift": PLATFORM,
     "apps/apple/Sunrise/Notifications/DailyBrief.swift": SEAM,
     "apps/apple/Sunrise/Notifications/DeepLink.swift": moving("links::DeepLink"),
     "apps/apple/Sunrise/Notifications/NotificationAuthorization.swift": PLATFORM,
