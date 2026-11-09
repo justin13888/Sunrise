@@ -1,7 +1,7 @@
 //! Block conflicts per `docs/02-domain/time-blocks.md` §Conflicts: which live
 //! Blocks overlap, and the draft the Resolve menu's **Merge** action creates.
 
-use super::{Block, BlockDraft};
+use super::{Block, BlockDraft, BlockKind};
 use crate::time::{SunriseTime, UNANCHORED_MS};
 use crate::validation::ValidationError;
 use jiff::tz::TimeZone;
@@ -13,7 +13,11 @@ use sunrise_id::EntityRef;
 /// survive: nothing auto-merges and nothing auto-deletes. The UI shades the
 /// shared region and offers "keep both / merge / adjust times", so what a
 /// client needs is *where the shading goes*, and that is what this carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It also carries each side's [`Block::effective_kind`], so the planner
+/// (ADR-0048) can tell which side of a conflict it may move: only a
+/// `flexible` one.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockOverlap {
     /// The earlier-starting Block.
     pub a: EntityRef,
@@ -23,6 +27,10 @@ pub struct BlockOverlap {
     pub from_ms: i64,
     /// End of the shared region (epoch ms), exclusive.
     pub to_ms: i64,
+    /// `a`'s effective kind: always a known arm.
+    pub a_kind: BlockKind,
+    /// `b`'s effective kind: always a known arm.
+    pub b_kind: BlockKind,
 }
 
 /// Every pair of `blocks` whose `[starts_at, ends_at)` intersect for a reader
@@ -62,6 +70,8 @@ pub fn overlaps(blocks: &[Block], tz: &TimeZone) -> Vec<BlockOverlap> {
                     b: b.id,
                     from_ms,
                     to_ms,
+                    a_kind: a.effective_kind(),
+                    b_kind: b.effective_kind(),
                 });
             }
         }
@@ -207,6 +217,14 @@ mod tests {
             title_track_task: false,
             tasks: BTreeSet::new(),
             deleted: false,
+            kind: None,
+            rrule: None,
+            exceptions: std::collections::BTreeMap::new(),
+            split_from: None,
+            location: None,
+            notes: None,
+            source: None,
+            external_id: None,
             unknown: Unknowns::new(),
         }
     }
@@ -257,6 +275,50 @@ mod tests {
         assert_eq!(found[0].b, b.id);
         assert_eq!(found[0].from_ms, ms(&floating(10)));
         assert_eq!(found[0].to_ms, ms(&floating(11)));
+    }
+
+    /// Each side's kind is reported as logic reads it: a stored kind as
+    /// itself, an unknown one as fixed, and an absent one by its source.
+    #[test]
+    fn an_overlap_reports_each_sides_effective_kind() {
+        use crate::block::BlockSource;
+        use crate::unknown::UnknownVariant;
+        let kinds = |a: Block, b: Block| {
+            let found = overlaps(&[a, b], &utc());
+            assert_eq!(found.len(), 1);
+            (found[0].a_kind.clone(), found[0].b_kind.clone())
+        };
+        let plain = block(1, floating(9), floating(11));
+        let imported = Block {
+            source: Some(BlockSource::ImportIcs),
+            ..block(2, floating(10), floating(12))
+        };
+        assert_eq!(
+            kinds(plain.clone(), imported),
+            (BlockKind::Flexible, BlockKind::Fixed)
+        );
+        let fixed = Block {
+            kind: Some(BlockKind::Fixed),
+            ..plain.clone()
+        };
+        let newer = Block {
+            kind: Some(BlockKind::Unknown(UnknownVariant::new("tentative"))),
+            ..block(2, floating(10), floating(12))
+        };
+        assert_eq!(kinds(fixed, newer), (BlockKind::Fixed, BlockKind::Fixed));
+        let flexible_import = Block {
+            kind: Some(BlockKind::Flexible),
+            source: Some(BlockSource::ImportIcs),
+            ..block(2, floating(10), floating(12))
+        };
+        let sunrise = Block {
+            source: Some(BlockSource::Sunrise),
+            ..plain
+        };
+        assert_eq!(
+            kinds(sunrise, flexible_import),
+            (BlockKind::Flexible, BlockKind::Flexible)
+        );
     }
 
     /// Back-to-back is not a conflict. Shading a zero-width region would put a

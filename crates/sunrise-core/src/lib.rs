@@ -118,9 +118,7 @@ pub use engine::{
     Engine, EngineError, KeyBundleApplied, RebuildReport, SearchReindex, SnapshotApplied,
     BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
 };
-pub use events::{
-    AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
-};
+pub use events::{AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus};
 pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{

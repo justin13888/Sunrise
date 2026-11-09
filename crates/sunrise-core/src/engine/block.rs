@@ -15,6 +15,7 @@
 //! their one other caller.
 
 use super::ids::{blob16, decode_unknowns, domain_bytes, home_of, ms_to_ts, require_kind};
+use super::routine::decode_blob_opt;
 use super::task::read_task;
 use super::write::Appended;
 use super::{Engine, EngineError};
@@ -25,7 +26,9 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;
 use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
-use sunrise_domain::{imported_block_id, Block, BlockDraft, BlockPatch};
+use sunrise_domain::{
+    imported_block_id, Block, BlockDraft, BlockKind, BlockPatch, BlockSource, NoteBody,
+};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
@@ -70,6 +73,16 @@ impl Engine {
             title_track_task: d.title_track_task,
             tasks,
             deleted: false,
+            // A user-created block leaves `kind` and `source` absent, which
+            // reads as flexible (time-blocks.md §Migration default).
+            kind: None,
+            rrule: None,
+            exceptions: std::collections::BTreeMap::new(),
+            split_from: None,
+            location: None,
+            notes: None,
+            source: None,
+            external_id: None,
             unknown: Unknowns::new(),
         };
         block.validate_invariants(&tz)?;
@@ -184,6 +197,21 @@ impl Engine {
             // import silently incomplete, and the file is the statement of
             // what the external calendar holds.
             deleted: false,
+            // The draft states none of the #1147 fields, so a re-import keeps
+            // the ones the Block holds, as a build before them kept them
+            // among its unknown fields. Mapping an event onto them is the
+            // importer's (#1149).
+            kind: existing.as_ref().and_then(|e| e.kind.clone()),
+            rrule: existing.as_ref().and_then(|e| e.rrule.clone()),
+            exceptions: existing
+                .as_ref()
+                .map(|e| e.exceptions.clone())
+                .unwrap_or_default(),
+            split_from: existing.as_ref().and_then(|e| e.split_from),
+            location: existing.as_ref().and_then(|e| e.location.clone()),
+            notes: existing.as_ref().and_then(|e| e.notes.clone()),
+            source: existing.as_ref().and_then(|e| e.source.clone()),
+            external_id: existing.as_ref().and_then(|e| e.external_id.clone()),
             // Forward-compat fields a newer build wrote are the Block's, not
             // the importer's, so they survive the rewrite.
             unknown: existing
@@ -486,10 +514,22 @@ pub(super) fn read_block(
             "SELECT stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
                     ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
                     deleted, extra, created_at_ms, updated_at_ms,
-                    starts_at_civil, ends_at_civil
+                    starts_at_civil, ends_at_civil,
+                    kind, rrule_cbor, exceptions, split_from, location, notes,
+                    source, external_id
              FROM blocks WHERE id = ?",
             params![&id[..]],
             |r| {
+                let series = BlockSeriesColumns {
+                    kind: r.get(15)?,
+                    rrule: r.get(16)?,
+                    exceptions: r.get(17)?,
+                    split_from: r.get(18)?,
+                    location: r.get(19)?,
+                    notes: r.get(20)?,
+                    source: r.get(21)?,
+                    external_id: r.get(22)?,
+                };
                 Ok((
                     r.get::<_, Option<Vec<u8>>>(0)?,
                     r.get::<_, i64>(1)?,
@@ -506,6 +546,7 @@ pub(super) fn read_block(
                     r.get::<_, i64>(12)?,
                     r.get::<_, Option<String>>(13)?,
                     r.get::<_, Option<String>>(14)?,
+                    series,
                 ))
             },
         )
@@ -513,6 +554,7 @@ pub(super) fn read_block(
     let Some(b) = row else {
         return Ok(None);
     };
+    let s = b.15;
     Ok(Some(Block {
         id: EntityRef::new(EntityKind::Block, *id),
         created_at: ms_to_ts(b.11.max(0)),
@@ -524,8 +566,34 @@ pub(super) fn read_block(
         title_track_task: b.8 != 0,
         tasks: read_block_tasks(conn, id)?,
         deleted: b.9 != 0,
+        kind: s.kind.as_deref().map(BlockKind::from_raw),
+        rrule: s
+            .rrule
+            .map(|bytes| sunrise_cbor::decode_canonical(&bytes))
+            .transpose()
+            .map_err(|e| EngineError::Cbor(e.to_string()))?,
+        exceptions: decode_blob_opt(s.exceptions)?,
+        split_from: s
+            .split_from
+            .map(|raw| EntityRef::new(EntityKind::Block, blob16(&raw))),
+        location: s.location,
+        notes: s.notes.map(NoteBody),
+        source: s.source.as_deref().map(BlockSource::from_raw),
+        external_id: s.external_id,
         unknown: decode_unknowns(b.10),
     }))
+}
+
+/// The `blocks` columns of the #1147 fields (migration 0049), as stored.
+struct BlockSeriesColumns {
+    kind: Option<String>,
+    rrule: Option<Vec<u8>>,
+    exceptions: Option<Vec<u8>>,
+    split_from: Option<Vec<u8>>,
+    location: Option<String>,
+    notes: Option<Vec<u8>>,
+    source: Option<String>,
+    external_id: Option<String>,
 }
 
 /// The Tasks bound to one Block.

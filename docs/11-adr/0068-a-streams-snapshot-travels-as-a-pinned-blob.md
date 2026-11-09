@@ -77,40 +77,24 @@ later compactor.
 
 ### 3. A cursor gap is answered with the stream's record
 
-The relay's gap event names its stream, and the SSE transport now carries the
-stream in the `Error` payload's new optional `stream_id`. On a gap that names a
-stream, the driver fetches the pinned record, checks it, and applies it with
-`Core::apply_stream_snapshot`, which raises the stream's floors and cursors to
-the record's frontier (ADR-0059 §4). It then re-subscribes every stream from
-its cursors, and the relay replays only what lies above them. This runs before
-the next frame is read, so the replay the gap preceded lands on the raised
-floors.
-
-- **Applied.** The stream is caught up. A second gap on it in the same session
-  means the record's frontier is still below what the relay evicted, and the
-  session latches `Degraded` as before.
-- **Deferred.** The record needs a key or a cert this replica does not hold
-  yet, or the relay could not be reached. The session latches `Degraded`, and
-  the stream is tried again after any other record applies, and on the next gap
-  the relay reports (the resync tick re-subscribes). Once every gapped stream
-  of the session has been caught up, the state goes back to catching up.
-- **Failed.** No record is pinned, the one pinned adds nothing (`Covered`), or
-  it is refused. The session latches `Degraded`, as every gap did before.
-
-A new device needs nothing extra: its empty cursors draw a gap on every stream
-whose early ops were trimmed, and the vault-meta stream's record brings the
-certs and key envelopes the other streams' records need.
+The relay's gap event names its stream, which the SSE transport now carries in
+the `Error` payload's new optional `stream_id`. The driver answers a gap that
+names a stream by applying that stream's pinned record
+(`Core::apply_stream_snapshot`, ADR-0059 §4) before it reads another frame,
+then re-subscribing from the cursors the record raised. A gap the record cannot
+close still latches `Degraded`, as every gap did before, and a new device needs
+nothing extra. The mechanics, and what a record that applies, defers or fails
+does to the session, are in
+[compaction.md §Transport](../04-storage/compaction.md#transport).
 
 ### 4. The compactor's duty runs before a session is `Live`
 
-A session about to report `Live` first runs compaction if it is due and
-publishes any record this replica should and the relay does not pin. The
-resync tick publishes too, after the compaction it already ran. On almost every
-session both are nothing; on the one with a record to upload, `Live` waits for
-the upload. So a sync that ends at `Live` (the CLI's `sync --once`, an OS
-background window) leaves the record on the relay. What was published is kept
-in memory per process, so a record is uploaded once, and after a restart the
-first publish asks the relay what it pins before uploading anything.
+A session about to report `Live` first publishes any record this replica should
+and the relay does not pin, and the resync tick publishes too. So a sync that
+ends at `Live` (the CLI's `sync --once`, an OS background window) leaves the
+record on the relay. When the driver publishes and how it remembers what it
+published are in
+[compaction.md §Transport](../04-storage/compaction.md#transport).
 
 Rejected: publishing on the tick alone. The CLI and an app's background
 window end at `Live`, usually before the first tick. Rejected: a client

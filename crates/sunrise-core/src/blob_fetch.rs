@@ -399,17 +399,6 @@ impl Core {
         })
     }
 
-    /// Finished attachment fetches, for a client that wants to follow them
-    /// without awaiting one.
-    ///
-    /// [`Core::fetch_attachment`] is the ordinary way to learn a fetch's
-    /// outcome. This exists for the second view of the same attachment — a list
-    /// row beside an open editor — which never called `fetch_attachment` and
-    /// still has to stop drawing a spinner.
-    pub fn attachment_fetches(&self) -> broadcast::Receiver<AttachmentFetch> {
-        self.blob_fetch_signals().subscribe()
-    }
-
     /// Record that `att`'s bytes have been asked for.
     ///
     /// Upsert rather than `INSERT OR IGNORE`, and that is the difference

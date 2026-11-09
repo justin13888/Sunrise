@@ -71,3 +71,6 @@ sunrise-client-core = { workspace = true, features = ["relay"] }
 # against a real server rather than against a mock of one (#181).
 sunrise-core-bindings = { workspace = true }
 proptest = { workspace = true }
+# The refused-upload scenario names the refusal it expects by its registry
+# code rather than restating the string.
+sunrise-error = { workspace = true }

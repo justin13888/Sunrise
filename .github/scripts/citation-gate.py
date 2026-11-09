@@ -256,12 +256,36 @@ summary in every span that contains it. Every failure is reported with the
 citing file and its line; the gate exits 1 if any failed and 0 with a count
 when clean.
 
+Bare `name.rs:N`
+----------------
+
+One unclaimed shape fails instead of being declined: a span whose path has no
+`/` (a leading `./` aside), whose extension is `.rs`, and which carries a line
+number — `blobs.rs:470`, `signed.rs:128-134`, `sync_driver.rs:797#f`. Which
+file it means is the prose's to establish, so declining it is right for the
+*path*; but the line is the part that rots, and declined it is a line number
+nothing will ever check. That is how it went: #757 found such citations across
+three documents, counted as unchecked and sitting on unrelated code — a `// Parsing` comment, an `.await?;`, a `cause = %message`
+field — while this gate stayed green. Write the repository path instead,
+`crates/<crate>/src/blobs.rs:470#symbol`, and it is checked like any other.
+
+The rule fails only what no anchor claims. A bare `lib.rs:5` that resolves
+against the citing file's own directory or crate is a checked citation and is
+judged as one. Three neighbours stay declined, each because the reason does not
+carry over to it: a bare `.rs` name with **no** line (`qr.rs`) names a file and
+nothing that drifts inside it; a bare name with any other extension
+(`ci.yml:12`) is not where the rot was measured, and widening a red rule past
+its evidence fails documents nobody has looked at; and a **partial** path
+(`api/observe.rs:3-7`, `store/devices.rs:79`) is a fragment of a directory the
+paragraph established, which is the residue below rather than this rule.
+
 What is deliberately not checked
 --------------------------------
 
 The residue is bare filenames whose directory the surrounding paragraph
 established and this gate cannot: `main.rs`, `gcal.rs`, `tokens.rs`, `ci.yml`,
-`project.yml`, `0013_baseline.sql`. Every run prints how many there are, and
+`project.yml`, `0013_baseline.sql` — except a bare `name.rs:N`, which fails, as
+the section above says. Every run prints how many there are, and
 `--list-unanchored` prints each with its file and line, so the hole is visible
 in the gate's own output rather than implied by its silence.
 
@@ -1112,11 +1136,26 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
 
     path = match.group("path")
     candidates, claimed, escapes = readings(citing, path, tree)
-    if not claimed:
-        return "unanchored", None
 
     def broken(message: str) -> tuple[str, Finding]:
         return "checked", Finding(file=citing, line=span.line, span=span.body, message=message)
+
+    if not claimed:
+        if (
+            match.group("start") is not None
+            and match.group("ext").lower() == "rs"
+            and "/" not in path.removeprefix("./")
+        ):
+            # A bare `name.rs:N` that no anchor claims. Which file it names is
+            # still the prose's to establish, but the line it carries is not a
+            # thing a reader can check, and this is the shape that rotted
+            # unseen: #757 found them sitting on unrelated code. See
+            # "Bare `name.rs:N`" in this module's docstring.
+            return broken(
+                "is a bare filename with a line number, which no anchor resolves and so "
+                "nothing checks; write the repository path, as `path:line#symbol`."
+            )
+        return "unanchored", None
 
     if escapes:
         return broken("climbs out of the repository.")
@@ -1585,6 +1624,29 @@ def self_test() -> int:
             verdict(body) != "unanchored",
             f"`{body}` classified {verdict(body)!r}, expected 'unanchored'",
         )
+
+    # A bare `name.rs:N` no anchor claims fails rather than being declined:
+    # the line is what rots, and a declined line is never checked (#757).
+    for body in ("blobs.rs:470", "signed.rs:128-134", "sync_driver.rs:797#f", "./blobs.rs:9"):
+        found = finding_for(body)
+        wrong(
+            found is None or "bare filename with a line number" not in found.message,
+            f"`{body}` reported {found}, expected a bare-filename failure",
+        )
+    # Its neighbours stay declined: no line, another extension, a partial path.
+    for body in ("blobs.rs", "blobs.rs#f", "ci.yml:12", "api/observe.rs:3-7", "Views/Edit.swift:97"):
+        wrong(
+            verdict(body) != "unanchored",
+            f"`{body}` classified {verdict(body)!r}, expected 'unanchored'",
+        )
+    # And one an anchor claims is judged as a citation, not by its shape.
+    # Line 0 because that verdict is reached before any file is read, so the
+    # case asks only which rule judged the span.
+    claimed = finding_for("main.rs:0", "crates/sunrise-cli/src/lib.rs")
+    wrong(
+        claimed is None or "cites line 0" not in claimed.message,
+        f"a bare `main.rs:0` the citing file's own directory claims reported {claimed}",
+    )
 
     # Anchor 3. The same span is dangling from a document and resolved from
     # inside the crate whose layout Cargo fixes -- and `tests/cli.rs` is the

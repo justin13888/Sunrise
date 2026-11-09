@@ -317,8 +317,11 @@ third-party `key_envelope` claim is not
 recorded](./0041-peer-side-revocation-is-a-fold.md#2-a-read-bounded-devices-third-party-key_envelope-claim-is-not-recorded)).
 It can afford that because declining a row can only cause *more* key
 distribution and never less, which is not a general licence;
-[#411](https://github.com/justin13888/Sunrise/issues/411) is the open question
-of what a converging derivation would be. Corollary 3's *prediction* also did
+[#411](https://github.com/justin13888/Sunrise/issues/411) is the question of
+what a converging derivation would be. ADR-0058 answers it for revocations the
+identity holder signs, and
+[#1167](https://github.com/justin13888/Sunrise/issues/1167) holds what remains
+open. Corollary 3's *prediction* also did
 not hold — it expected peer-side enforcement as defence in depth "not as the
 only line", and with `require_device_sig` at its default it is the only line
 there is — which is recorded at revisit trigger 1 below.

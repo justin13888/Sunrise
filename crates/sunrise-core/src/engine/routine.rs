@@ -1295,7 +1295,7 @@ pub(super) fn encode_blob_opt<T: serde::Serialize>(
     Ok(Some(bytes))
 }
 
-fn decode_blob_opt<T: serde::de::DeserializeOwned + serde::Serialize + Default>(
+pub(super) fn decode_blob_opt<T: serde::de::DeserializeOwned + serde::Serialize + Default>(
     blob: Option<Vec<u8>>,
 ) -> Result<T, EngineError> {
     match blob {

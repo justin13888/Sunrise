@@ -172,10 +172,12 @@ question — which is what happened.
   what it claims — that `GET /meta` advertises the binding requirement — and it
   makes no claim about the bearer disclosure. Editing a generator input to
   restate an ADR is not worth the regeneration.
-- **The wording defect #79 names is already fixed.** `signed.rs:128-134`,
-  `error.rs:221` and `codes.toml`'s 204 entry all describe the pre-lookup case as
-  an **incomplete** binding — "either header missing, not only both" — matching
-  the `let else` at `signed.rs:170`. Commit `d52999d` landed that before this
+- **The wording defect #79 names is already fixed.**
+  `crates/sunrise-server/src/api/signed.rs:128-134#verify`,
+  `crates/sunrise-server/src/api/error.rs:277-280#device_sig_invalid` and
+  `codes.toml`'s 204 entry all describe the pre-lookup case as an **incomplete**
+  binding — "either header missing, not only both" — matching the `let else` at
+  `crates/sunrise-server/src/api/signed.rs:202-203#verify_binding`. Commit `d52999d` landed that before this
   record; nothing further is owed.
 - **No new configuration key.** `require_device_sig` keeps its single meaning and
   its derivation from `oidc_issuer`

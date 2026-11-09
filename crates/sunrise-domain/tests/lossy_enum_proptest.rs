@@ -27,9 +27,9 @@ use std::fmt::Debug;
 use std::path::Path;
 use sunrise_cbor::{decode_canonical, encode_canonical};
 use sunrise_domain::{
-    ConstraintSeverity, Energy, FocusKind, Frequency, InterruptionReason, LatenessPart, RRule,
-    RoutineCatchupPolicy, StreamColor, StreamReviewCadence, TaskState, ViewKind, ViewSort, Weekday,
-    WindowField,
+    BlockKind, BlockSource, ConstraintSeverity, Energy, FocusKind, Frequency, InterruptionReason,
+    LatenessPart, RRule, RoutineCatchupPolicy, StreamColor, StreamReviewCadence, TaskState,
+    ViewKind, ViewSort, Weekday, WindowField,
 };
 
 /// Arbitrary strings, weighted toward `known` spellings and near misses.
@@ -156,6 +156,8 @@ lossless_enums! {
     ];
     window_field, WindowField, ["scheduled", "due", "target"];
     lateness_part, LatenessPart, ["late_hard", "late_soft", "stale", "on_track"];
+    block_kind, BlockKind, ["fixed", "flexible"];
+    block_source, BlockSource, ["sunrise", "import:ics"];
 }
 
 /// Collect the enum named by each `lossy_enum!` call under `dir`.
@@ -265,6 +267,10 @@ fn unknown_values_read_as_their_safe_fallback() {
         StreamColor::Slate
     );
     assert_eq!(ViewSort::from_raw("rank").effective(), ViewSort::Default);
+    assert_eq!(
+        BlockKind::from_raw("tentative").effective(),
+        BlockKind::Fixed
+    );
     // …and the value itself still says what it is.
     assert_eq!(TaskState::from_raw("archived").as_str(), "archived");
 }

@@ -18,6 +18,9 @@ pub const MAX_CONTEXT_NAME_LEN: usize = 64;
 /// Maximum length of a Block title per docs/02-domain/time-blocks.md.
 pub const MAX_BLOCK_TITLE_LEN: usize = 256;
 
+/// Maximum length of a Block location per docs/02-domain/time-blocks.md.
+pub const MAX_BLOCK_LOCATION_LEN: usize = 128;
+
 /// Maximum length of an Attachment filename per docs/02-domain/attachments.md.
 pub const MAX_FILENAME_LEN: usize = 256;
 

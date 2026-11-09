@@ -274,6 +274,50 @@ fn the_compaction_keeps_an_authority_row_beside_an_ordinary_one() {
     assert!(by_authority(&db, &x_id));
 }
 
+/// **The read bound converges once the revocation of C is signed**
+/// ([#411](https://github.com/justin13888/Sunrise/issues/411), ADR-0058
+/// §Consequences).
+///
+/// It uses the same two arrival orders as
+/// `the_register_is_the_same_whichever_order_the_two_revocations_arrive`. That
+/// test leaves the two replicas with different bounds on C, because `A -> C`
+/// is an ordinary row there and is gated at every fold run on the replica that
+/// learned of `B -> A` first. Here the holder signs `A -> C`, so it is an
+/// authority row and is never gated. Both replicas put C in the register and
+/// bound it, whichever op arrived first. `B -> A` stays ordinary, because the
+/// gated row is the one that decides convergence.
+#[test]
+fn the_read_bound_is_the_same_whichever_order_an_authority_revocation_arrives() {
+    let e = engines(4);
+    let (ea, eb, er) = (&e[0], &e[1], &e[3]);
+    let (a_id, c_id) = (ea.keychain.device_id(), e[2].keychain.device_id());
+
+    // Replica one: B revokes A first, then A's signed revocation of C.
+    let mut one = db_root(ROOT);
+    revoke(er, &mut one, eb, a_id, T0);
+    revoke_by_identity(er, &mut one, ea, c_id, T0 + 60_000);
+
+    // Replica two: the same two ops in the other order.
+    let mut two = db_root(ROOT);
+    revoke_by_identity(er, &mut two, ea, c_id, T0 + 60_000);
+    revoke(er, &mut two, eb, a_id, T0);
+
+    for id in [&a_id, &c_id] {
+        assert_eq!(revocation_row(&one, id), revocation_row(&two, id));
+        assert_eq!(
+            read_bound_row(&one, id).is_some(),
+            read_bound_row(&two, id).is_some(),
+            "the same op set gives the same read bound in either delivery order"
+        );
+    }
+    assert!(
+        read_bound_row(&one, &c_id).is_some(),
+        "and that bound holds C out, on the replica that left it unbounded \
+         when the row was ordinary"
+    );
+    assert!(by_authority(&one, &c_id) && by_authority(&two, &c_id));
+}
+
 /// Advertise `core.revoke_authority` from `who` to `receiver`.
 fn advertise(receiver: &Engine, db: &mut Db, who: &Engine) {
     let inner = InnerOp::DeviceFeatures(crate::control_op::DeviceFeaturesPayload {

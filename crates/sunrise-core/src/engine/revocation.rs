@@ -45,8 +45,8 @@
 //!   ([`adopt_sponsor_read_bounds`]), so it starts where its sponsor stands
 //!   rather than as the weakest replica
 //!   ([#282](https://github.com/justin13888/Sunrise/issues/282));
-//!   [#411](https://github.com/justin13888/Sunrise/issues/411) holds the half
-//!   between replicas that already exist.
+//!   [#1167](https://github.com/justin13888/Sunrise/issues/1167) holds the half
+//!   between replicas that already exist, for a revocation nobody signed.
 //!
 //! They were one table until `migrations/0028_device_read_bounds.sql`, and
 //! while they were, an ordinary unwind released the read bound: the device
@@ -1409,8 +1409,8 @@ impl Engine {
         // device back-dating `X -> V` below its own cut are the same rows with
         // the names changed, so a rule that bounds C also lets a revoked device
         // bound any honest device. Closing it needs information the ledger
-        // does not carry, and
-        // [#411](https://github.com/justin13888/Sunrise/issues/411) holds it.
+        // does not carry. A holder's signature (ADR-0058, #411) supplies it, and
+        // [#1167](https://github.com/justin13888/Sunrise/issues/1167) holds the rest.
         //
         // A device the discount pass rehabilitates reads `current` in the
         // device list while receiving no keys; that asymmetry is real, and

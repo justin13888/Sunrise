@@ -213,7 +213,7 @@ macro_rules! for_each_entity {
                 tag: "block",
                 merge: Lww,
                 owner: Field("stream_id"),
-                features: [],
+                features: ["block.recurrence"],
                 ops: [
                     /// Create a time block (full state). Boxed to keep the enum small.
                     BlockCreate(Box<Block>) = "block.create", Create, id;
@@ -236,6 +236,15 @@ macro_rules! for_each_entity {
                         title_track_task: bool => Register(Quiet);
                         tasks: BTreeSet<EntityRef> => OrSet;
                         deleted: bool => Register(Tombstone);
+                        // #1147: `docs/02-domain/time-blocks.md` §Fields.
+                        kind: Option<BlockKind> => Register(Tracked);
+                        rrule: Option<RRule> => Register(Tracked);
+                        exceptions: BTreeMap<String, BlockException> => Map;
+                        split_from: Option<EntityRef> => Register(Quiet);
+                        location: Option<String> => Register(Tracked);
+                        notes: Option<NoteBody> => Register(Tracked);
+                        source: Option<BlockSource> => Register(Quiet);
+                        external_id: Option<String> => Register(Quiet);
                         ..unknown
                     }
                 ],
