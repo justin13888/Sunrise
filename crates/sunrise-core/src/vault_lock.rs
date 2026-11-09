@@ -25,23 +25,16 @@
 //!
 //! # Why the OS lock, and why it is not sufficient alone
 //!
-//! The previous implementation used `create_new` as the lock signal and
-//! `remove_file` in `Drop` as the release. Combined with `panic = "abort"` in
-//! the release profile, any SIGKILL, OOM kill, panic, or power loss left the
-//! file behind and bricked the vault permanently. An OS advisory lock is
-//! released by the kernel when the holding process dies, however it dies —
-//! that is the entire point of this module.
+//! An OS advisory lock is released by the kernel when the holding process
+//! dies, however it dies — SIGKILL, OOM kill, a panic under the release
+//! profile's `panic = "abort"`, or power loss — so a crash never leaves the
+//! vault locked. That is the entire point of this module.
 //!
-//! The lock is `std::fs::File::try_lock` / `File::unlock`, stable since Rust
-//! 1.89 — `flock(LOCK_EX | LOCK_NB)` on Unix, `LockFileEx` on Windows. `flock`
+//! The lock is `std::fs::File::try_lock` / `File::unlock` —
+//! `flock(LOCK_EX | LOCK_NB)` on Unix, `LockFileEx` on Windows. `flock`
 //! rather than `fcntl` is load-bearing: `fcntl` locks belong to the *process*
 //! and are dropped when any descriptor for the file closes, so a contender
-//! merely reading the owner payload would destroy the holder's lock. This was
-//! the `fs4` crate while the toolchain pin sat below 1.89; the pin moved to
-//! 1.91.1 (ADR-0026), which is what retired it. std gives the same guarantees
-//! with no dependency at all, which is the strongest form of the
-//! `forbid(unsafe_code)` argument that picked `fs4` over `fs2` and `fd-lock`
-//! to begin with.
+//! merely reading the owner payload would destroy the holder's lock.
 //!
 //! But an OS lock alone does not enforce the *in-process* invariant:
 //!
