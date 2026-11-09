@@ -16,11 +16,13 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > ("EntityById not supported for kind {:?}"). What *is* live is `NoteBody`
 > as a **field**, reached three ways — `Task.body`
 > (`crates/sunrise-domain/src/task.rs:86#Task`), `Stream.description`
-> (`stream.rs:86`, given a column by migration
+> (`crates/sunrise-domain/src/stream.rs:88#Stream`, given a column by migration
 > `0016_stream_description_and_default_context.sql`) and
 > `Routine.template.body`, which is a field of `TaskTemplate`
-> (`routine.rs:68-88`, `body` at `:87`) reached through `Routine.template`
-> (`routine.rs:149`) rather than a field of `Routine` itself. Two of the three
+> (`crates/sunrise-domain/src/routine.rs:53-83#TaskTemplate`, `body` at `:77`)
+> reached through `Routine.template`
+> (`crates/sunrise-domain/src/routine.rs:148#Routine`) rather than a field of
+> `Routine` itself. Two of the three
 > are not called `body` at the path you would guess. A `NoteBody` field is a
 > different thing from a `Note`. The free-standing entity is not built;
 > [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) took it out of the MUST
