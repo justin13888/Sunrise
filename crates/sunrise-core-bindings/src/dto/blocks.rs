@@ -324,10 +324,14 @@ impl From<BlockEdit> for sunrise_domain::BlockPatch {
 
 #[cfg(test)]
 mod tests {
-    use sunrise_domain::{BlockDraft, SunriseTime};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use sunrise_domain::{
+        Block, BlockDraft, BlockException, BlockKind, BlockSource, NoteBody, SunriseTime, Unknowns,
+    };
     use sunrise_id::{EntityKind, EntityRef};
 
-    use super::BlockDraftIn;
+    use super::{BlockDraftIn, BlockItem};
     use crate::dto::TimeValue;
 
     /// Every field crosses, and no stream reads as the legacy Inbox key, the
@@ -366,5 +370,133 @@ mod tests {
             ..d
         });
         assert_eq!(homeless.stream_id, sunrise_domain::stream_key(None));
+    }
+
+    fn block(kind: Option<BlockKind>, source: Option<BlockSource>) -> Block {
+        let at = |ms| SunriseTime::instant(jiff::Timestamp::from_millisecond(ms).unwrap());
+        Block {
+            id: EntityRef::new(EntityKind::Block, [1; 16]),
+            created_at: jiff::Timestamp::UNIX_EPOCH,
+            updated_at: jiff::Timestamp::UNIX_EPOCH,
+            stream_id: None,
+            starts_at: at(1_000),
+            ends_at: at(2_000),
+            title: None,
+            title_track_task: false,
+            tasks: BTreeSet::new(),
+            deleted: false,
+            kind,
+            rrule: None,
+            exceptions: BTreeMap::new(),
+            split_from: None,
+            location: None,
+            notes: None,
+            source,
+            external_id: None,
+            unknown: Unknowns::new(),
+        }
+    }
+
+    /// `kind` crosses as the effective spelling, never absent or unknown:
+    /// an `import:ics` block with no kind reads `fixed`, a `sunrise` or
+    /// sourceless one `flexible`, an unknown kind `fixed`. `source` crosses
+    /// raw, an unknown spelling verbatim.
+    #[test]
+    fn a_blocks_kind_crosses_effective_and_its_source_raw() {
+        let cases = [
+            (
+                None,
+                Some(BlockSource::ImportIcs),
+                "fixed",
+                Some("import:ics"),
+            ),
+            (
+                None,
+                Some(BlockSource::Sunrise),
+                "flexible",
+                Some("sunrise"),
+            ),
+            (None, None, "flexible", None),
+            (
+                None,
+                Some(BlockSource::from_raw("caldav")),
+                "fixed",
+                Some("caldav"),
+            ),
+            (
+                Some(BlockKind::Flexible),
+                Some(BlockSource::ImportIcs),
+                "flexible",
+                Some("import:ics"),
+            ),
+            (Some(BlockKind::from_raw("tentative")), None, "fixed", None),
+        ];
+        for (kind, source, want_kind, want_source) in cases {
+            let item = BlockItem::from(&block(kind.clone(), source.clone()));
+            assert_eq!(item.kind, want_kind, "kind {kind:?}, source {source:?}");
+            assert_eq!(item.source.as_deref(), want_source);
+        }
+    }
+
+    /// The exceptions map flattens into items sorted by key, each field
+    /// carried, and the series, import and note fields cross as they are.
+    #[test]
+    fn a_blocks_series_and_import_fields_cross() {
+        let at = |ms| SunriseTime::instant(jiff::Timestamp::from_millisecond(ms).unwrap());
+        let root = EntityRef::new(EntityKind::Block, [9; 16]);
+        let mut b = block(None, Some(BlockSource::ImportIcs));
+        b.exceptions.insert(
+            "2026-03-10T09:00".into(),
+            BlockException {
+                starts_at: Some(at(5_000)),
+                ends_at: Some(at(6_000)),
+                title: Some("Moved".into()),
+                location: Some("Room 2".into()),
+                notes: Some(NoteBody(vec![7, 8])),
+                ..BlockException::default()
+            },
+        );
+        b.exceptions.insert(
+            "2026-03-03T09:00".into(),
+            BlockException {
+                cancelled: true,
+                ..BlockException::default()
+            },
+        );
+        b.split_from = Some(root);
+        b.location = Some("Office".into());
+        b.notes = Some(NoteBody(vec![1, 2, 3]));
+        b.external_id = Some("uid-1@example.com".into());
+
+        let item = BlockItem::from(&b);
+        let keys: Vec<&str> = item.exceptions.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["2026-03-03T09:00", "2026-03-10T09:00"]);
+        let cancelled = &item.exceptions[0];
+        assert!(cancelled.cancelled);
+        assert!(cancelled.starts_at.is_none() && cancelled.title.is_none());
+        let moved = &item.exceptions[1];
+        assert!(!moved.cancelled);
+        assert_eq!(
+            format!("{:?}", moved.starts_at),
+            format!("{:?}", Some(TimeValue::from(&at(5_000))))
+        );
+        assert_eq!(
+            format!("{:?}", moved.ends_at),
+            format!("{:?}", Some(TimeValue::from(&at(6_000))))
+        );
+        assert_eq!(moved.title.as_deref(), Some("Moved"));
+        assert_eq!(moved.location.as_deref(), Some("Room 2"));
+        assert_eq!(moved.notes, Some(NoteBody(vec![7, 8])));
+        assert_eq!(item.split_from, Some(root));
+        assert_eq!(item.location.as_deref(), Some("Office"));
+        assert_eq!(item.notes, Some(NoteBody(vec![1, 2, 3])));
+        assert_eq!(item.external_id.as_deref(), Some("uid-1@example.com"));
+        assert!(item.rrule.is_none());
+
+        // Back to the domain, the effective kind is now stored explicitly.
+        let back = item.to_domain();
+        assert_eq!(back.kind, Some(BlockKind::Fixed));
+        assert_eq!(back.exceptions, b.exceptions);
+        assert_eq!(back.source, b.source);
     }
 }
