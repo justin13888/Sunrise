@@ -15,8 +15,20 @@ ignore = [
     # behind as stale suppressions.
     #
     # RUSTSEC-2024-0436 (`paste`) was the same shape and left with `ratatui`
-    # when ADR-0019 replaced the terminal client. There are no advisory
-    # suppressions in this workspace.
+    # when ADR-0019 replaced the terminal client.
+
+    # SQLite before 3.54.0 can return uninitialized page-cache memory when a
+    # database is opened beside a crafted `-wal` file of a different page size.
+    # The advisory's fix, `libsqlite3-sys` 0.39, does not fix this workspace:
+    # every native build links SQLCipher through `bundled-sqlcipher`, and 0.39's
+    # `sqlcipher-src =419.0.6` still bundles the affected SQLite 3.53.4, as the
+    # advisory itself says. Taking it would also mean `rusqlite` 0.41 and the
+    # `sqlite-wasm-rs` 0.6 move in `sunrise-core-wasm`, for a passing scanner and
+    # an unchanged binary. Exposure is local: planting the `-wal` needs write
+    # access to the user's data directory. Remove this entry together with the
+    # `rusqlite` swap once a `libsqlite3-sys` release bundles SQLCipher on
+    # SQLite 3.54.0 or later (#1161).
+    { id = "RUSTSEC-2026-0459", reason = "bundled SQLCipher has no patched release; see the comment above" },
 ]
 
 [bans]
