@@ -374,7 +374,9 @@ reads a renamed column under its new name (`RENAMED_COLUMNS` in
 `crates/sunrise-storage/src/vault_fixtures/chain.rs`). `FOLD_V` 8 (#335) projects `Task.cancel_reason`
 and `Task.late_acknowledged_at` into the columns migration 0046 adds. `FOLD_V` 9 (#331) projects `Routine.split_from` and
 `Task.hard_constraint_violated` into the columns migration 0047 adds, and
-a later write of `Task.routine_id` into its column.
+a later write of `Task.routine_id` into its column. `FOLD_V` 10 (#1147)
+projects a Block's `kind`, `rrule`, `exceptions`, `split_from`, `location`,
+`notes`, `source` and `external_id` into the columns migration 0049 adds.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 
