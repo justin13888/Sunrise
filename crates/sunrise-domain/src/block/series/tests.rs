@@ -484,3 +484,111 @@ fn the_split_id_is_a_function_of_root_and_key() {
         split_routine_id(&root, "2026-03-17T09:00").bytes()
     );
 }
+
+/// An occurrence's rule bounds are the anchor's length at its wall clock,
+/// and a key the rule does not produce has none.
+#[test]
+fn an_occurrence_has_the_rules_bounds() {
+    let s = deep_work();
+    assert_eq!(
+        s.occurrence_bounds("2026-03-17T09:00"),
+        Some((
+            SunriseTime::floating(at(2026, 3, 17, 9, 0)),
+            SunriseTime::floating(at(2026, 3, 17, 11, 0)),
+        ))
+    );
+    assert_eq!(s.occurrence_bounds("2026-03-18T09:00"), None);
+}
+
+/// A Block read as one occurrence takes its times and the exception's
+/// fields, and keeps the rest of the series.
+#[test]
+fn a_block_at_an_occurrence_takes_its_times_and_overrides() {
+    let s = deep_work();
+    let block = crate::Block {
+        id: EntityRef::new(EntityKind::Block, [1u8; 16]),
+        created_at: Timestamp::UNIX_EPOCH,
+        updated_at: Timestamp::UNIX_EPOCH,
+        stream_id: None,
+        starts_at: s.starts_at.clone(),
+        ends_at: s.ends_at.clone(),
+        title: Some("Deep work".into()),
+        title_track_task: false,
+        tasks: std::collections::BTreeSet::new(),
+        deleted: false,
+        kind: None,
+        rrule: Some(s.rrule.clone()),
+        exceptions: BTreeMap::new(),
+        split_from: None,
+        location: Some("Desk".into()),
+        notes: None,
+        source: None,
+        external_id: None,
+        unknown: Unknowns::new(),
+    };
+    let (starts_at, ends_at) = s.occurrence_bounds("2026-03-17T09:00").unwrap();
+    let plain = BlockOccurrence {
+        key: "2026-03-17T09:00".into(),
+        starts_at: starts_at.clone(),
+        ends_at: ends_at.clone(),
+        exception: None,
+    };
+    let read = block.at_occurrence(&plain);
+    assert_eq!(
+        (read.starts_at, read.title),
+        (starts_at.clone(), block.title.clone())
+    );
+    assert_eq!(read.rrule, block.rrule);
+
+    let renamed = BlockOccurrence {
+        exception: Some(BlockException {
+            title: Some("Taxes".into()),
+            notes: Some(NoteBody(b"receipts".to_vec())),
+            ..BlockException::default()
+        }),
+        ..plain
+    };
+    let read = block.at_occurrence(&renamed);
+    assert_eq!(read.title.as_deref(), Some("Taxes"));
+    assert_eq!(read.location.as_deref(), Some("Desk"));
+    assert_eq!(read.notes, Some(NoteBody(b"receipts".to_vec())));
+}
+
+/// One occurrence takes the times and a title, over what its exception
+/// already holds; the series' fields are refused.
+#[test]
+fn an_occurrence_edit_carries_only_what_an_exception_can() {
+    let moved = SunriseTime::floating(at(2026, 3, 17, 10, 0));
+    let patch = crate::BlockPatch {
+        starts_at: Some(moved.clone()),
+        title: Some(Some(" Taxes ".into())),
+        ..crate::BlockPatch::default()
+    };
+    assert!(patch.is_occurrence_edit());
+    let mut x = BlockException {
+        location: Some("Library".into()),
+        ..BlockException::default()
+    };
+    patch.apply_to_exception(&mut x);
+    assert_eq!(x.starts_at, Some(moved));
+    assert_eq!(x.title.as_deref(), Some("Taxes"));
+    assert_eq!(x.location.as_deref(), Some("Library"));
+    assert_eq!(x.ends_at, None);
+
+    for series_only in [
+        crate::BlockPatch {
+            title: Some(None),
+            ..crate::BlockPatch::default()
+        },
+        crate::BlockPatch {
+            title_track_task: Some(true),
+            ..crate::BlockPatch::default()
+        },
+        crate::BlockPatch {
+            stream_id: Some(None),
+            ..crate::BlockPatch::default()
+        },
+    ] {
+        assert!(!series_only.is_occurrence_edit());
+    }
+}
