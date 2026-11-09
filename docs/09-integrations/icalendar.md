@@ -36,7 +36,12 @@ user can actually take today, and the only one that creates Blocks.
 >   one raises an `ICalNotice` — but this is why §Mapping rules promises
 >   fidelity over the `Block` schema rather than over the file: import →
 >   export cannot be the identity while three properties have nowhere to
->   live.
+>   live. The domain model a recurring event maps onto is built (`RRULE` to
+>   a rule, each `EXDATE` to a cancelled `BlockException`, expanded by
+>   `crates/sunrise-domain/src/block/series.rs#expand_block`), but `Block` does
+>   not carry it yet ([#1147](https://github.com/justin13888/Sunrise/issues/1147)),
+>   and the importer maps none of these properties until
+>   [#1149](https://github.com/justin13888/Sunrise/issues/1149).
 > - **Export is windowed, not scoped by Stream.** `ExportWindow` is `Day` or
 >   `Week`, because `Query::DayBlocks` / `WeekBlocks` are the only Block windows
 >   the core has — which is why the macOS menu offers exactly Today and This

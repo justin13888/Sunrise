@@ -99,9 +99,13 @@ build that predates them preserves them through `unknown-fields` rather than
 dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
 `split_from` are additive in the same way.
 
-**Status in the tree.** None of the eight exists yet: `Block` has the base
-fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
-optional ([#332](https://github.com/justin13888/Sunrise/issues/332)). [#342](https://github.com/justin13888/Sunrise/issues/342) tracks them.
+**Status in the tree.** None of the eight is on the wire yet: `Block` has the
+base fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
+optional ([#332](https://github.com/justin13888/Sunrise/issues/332)).
+[#1147](https://github.com/justin13888/Sunrise/issues/1147) adds them. The
+series model they feed is built: `BlockSeries`, `BlockException` and
+`expand_block` (`crates/sunrise-domain/src/block/series.rs`), see §Recurring
+blocks.
 
 Two notes on the shape:
 
@@ -172,12 +176,37 @@ expansion is the same Rust function:
 - **Binding a task** to a recurring block binds it to one occurrence: the
   binding carries the occurrence key.
 
+What is built is the pure half, in `crates/sunrise-domain/src/block/series.rs`:
+
+- `expand_block(series, window, zone)` expands a `BlockSeries` (anchor range,
+  rule, exceptions) through `routine_gen::expand`, so a block's keys are a
+  routine's for the same rule and anchor. It yields every occurrence that
+  intersects the window, including one that starts before it and runs in.
+- The anchor and end must both be `zoned` in one zone, or both `floating`,
+  with the end after the start (`BlockSeries::validate`). A series with a time
+  of a kind this build does not know yields nothing (ADR-0045 §6).
+- An exception applies by key. A cancelled occurrence is not yielded. An
+  override of fields only keeps the rule's time. An override that moves the
+  occurrence is yielded where it moved to, and a bound it leaves absent keeps
+  the rule's. An exception whose key the rule does not produce applies to
+  nothing, and `BlockSeries::except` refuses to write one.
+- `BlockSeries::split_at(key)` is *this and future*: the ended series' `UNTIL`
+  is the last occurrence before `key`, a `COUNT` carries over reduced by the
+  occurrences before it, and each half keeps the exceptions on its side. A
+  split at the first occurrence leaves no ended series. `split_block_id` derives
+  the continuation's id under its own hash domain.
+
+Storing a series on a Block is [#1147](https://github.com/justin13888/Sunrise/issues/1147).
+Expanding it in the calendar queries and the edit-scope commands are
+[#1148](https://github.com/justin13888/Sunrise/issues/1148), and drawing it on
+macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
+
 ### Importer status
 
 `crates/sunrise-integrations` parses `RRULE`, `DESCRIPTION` and `LOCATION` out
 of a `VEVENT` and then reports each at the domain boundary as an `ICalNotice`,
 because the tree's `Block` has none of the fields above. So **a recurring event
-imports as a single occurrence** until [#342](https://github.com/justin13888/Sunrise/issues/342) lands. The importer then maps
+imports as a single occurrence** until [#1149](https://github.com/justin13888/Sunrise/issues/1149) lands. The importer then maps
 `RRULE` to `rrule`, `EXDATE` to `cancelled` exceptions, `RECURRENCE-ID`
 overrides to exceptions, `LOCATION` to `location` and `DESCRIPTION` to `notes`,
 and `(source, uid)` stays the id derivation. Nothing is silently dropped in
