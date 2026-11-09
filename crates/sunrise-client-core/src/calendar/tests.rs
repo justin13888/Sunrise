@@ -50,6 +50,14 @@ fn block_between(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         title_track_task: false,
         tasks: std::collections::BTreeSet::new(),
         deleted: false,
+        kind: None,
+        rrule: None,
+        exceptions: std::collections::BTreeMap::new(),
+        split_from: None,
+        location: None,
+        notes: None,
+        source: None,
+        external_id: None,
         unknown: Unknowns::new(),
     }
 }

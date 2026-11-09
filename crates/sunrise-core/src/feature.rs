@@ -71,6 +71,10 @@ pub struct Feature {
 /// `Patch` and nothing else once a vault requires it.
 pub const FIELD_OPS_FEATURE: &str = "core.field_ops";
 
+/// The id of the feature a block op carrying a series uses: `rrule`,
+/// `exceptions` or `split_from` (#1147).
+pub const BLOCK_RECURRENCE_FEATURE: &str = "block.recurrence";
+
 /// The id of the feature that carries identity-signed revocations
 /// (ADR-0058 §7): the holder of `ID_S_priv` signs a revocation only in a
 /// vault that requires it.
@@ -152,6 +156,20 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 22,
+    },
+    // A recurring block (issue #1147, `docs/02-domain/time-blocks.md`
+    // §Recurring blocks): its rule, its per-occurrence exceptions and the
+    // series root a split block continues. A build that does not read them
+    // keeps them as unknown fields and draws the block as its anchor alone,
+    // so no op carrying one is written until every device has advertised
+    // it. The block's other new fields are additive and need no feature.
+    Feature {
+        id: BLOCK_RECURRENCE_FEATURE,
+        op_kinds: &[],
+        fields: &["rrule", "exceptions", "split_from"],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 24,
     },
     // The whole model of ADR-0065: every entity write is a `Patch` naming its
     // writer's heads in `parents`, a multi-entity commit carries `group`, and
@@ -283,6 +301,11 @@ pub fn is_feature_id(s: &str) -> bool {
 /// one of a feature's op kinds, or its payload carries one of a feature's
 /// fields with a value other than null.
 ///
+/// An entity-scoped feature's fields are read only on an op of its own
+/// entity, so a field name two entities share uses each one's feature on its
+/// own ops alone. An op of no entity this build knows is read against every
+/// feature, as before any field name was shared.
+///
 /// A `Patch` is read as the full-state op of its entity would be: the fields
 /// it writes are the fields it carries, each at the value its `set` writes,
 /// and its retyped fields are those of its entity's op variants. It also
@@ -385,19 +408,41 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
             .collect(),
         _ => Vec::new(),
     };
+    let op_entity = patched.or_else(|| entity_of_variant(&variant));
     registry
         .iter()
         .filter(|f| {
             f.op_kinds.contains(&variant.as_str())
-                || f.fields
-                    .iter()
-                    .any(|name| carried.iter().any(|c| c == name))
+                || (fields_apply(f, op_entity)
+                    && f.fields
+                        .iter()
+                        .any(|name| carried.iter().any(|c| c == name)))
                 || patched_entity.as_deref() == Some(f.id)
                 || (versioned && f.id == FIELD_OPS_FEATURE)
                 || uses.contains(&f.id)
         })
         .map(|f| f.id)
         .collect()
+}
+
+/// The entity whose op family holds `variant`, or `None` for a variant no
+/// entity this build knows declares (a control op, or a newer build's).
+fn entity_of_variant(variant: &str) -> Option<EntityKind> {
+    EntityKind::all()
+        .into_iter()
+        .find(|k| k.spec().ops.iter().any(|o| o.variant == variant))
+}
+
+/// Whether `f`'s fields are read on an op of `op_entity`. Two entities can
+/// carry a field of the same name (`split_from` on a routine and on a
+/// block), so an entity-scoped feature's fields are read only on its own
+/// entity's ops; a structural one's, and any feature's on an op of no known
+/// entity, on every op.
+fn fields_apply(f: &Feature, op_entity: Option<EntityKind>) -> bool {
+    match FeatureScope::of(f.id) {
+        FeatureScope::Entity(k) => op_entity.is_none_or(|e| e == k),
+        FeatureScope::Structural | FeatureScope::UnknownEntity(_) => true,
+    }
 }
 
 /// The features in `required` that `supported` lacks, each with its scope,
@@ -680,6 +725,50 @@ mod tests {
             ),
             ["preferences.entity"]
         );
+    }
+
+    /// A field name two entities share uses each one's feature on its own
+    /// ops alone: a routine always carries `rrule` and uses no block
+    /// feature, and a block's `split_from` is `block.recurrence`, not
+    /// `routine.series`.
+    #[test]
+    fn a_shared_field_name_uses_its_own_entitys_feature() {
+        use ciborium::value::Value;
+        let text = |s: &str| Value::Text(s.into());
+        let op = |variant: &str, fields: Vec<(&str, Value)>| {
+            let payload = Value::Map(fields.into_iter().map(|(k, v)| (text(k), v)).collect());
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&Value::Map(vec![(text(variant), payload)]), &mut buf)
+                .unwrap();
+            buf
+        };
+        let rule = Value::Map(vec![(text("freq"), text("DAILY"))]);
+        let root = text("blk_0000000000000000000000000A");
+        assert!(features_used(
+            FEATURES,
+            &op("RoutineUpdate", vec![("rrule", rule.clone())])
+        )
+        .is_empty());
+        assert_eq!(
+            features_used(FEATURES, &op("BlockUpdate", vec![("rrule", rule)])),
+            [BLOCK_RECURRENCE_FEATURE]
+        );
+        assert_eq!(
+            features_used(
+                FEATURES,
+                &op("BlockCreate", vec![("split_from", root.clone())])
+            ),
+            [BLOCK_RECURRENCE_FEATURE]
+        );
+        assert_eq!(
+            features_used(FEATURES, &op("RoutineCreate", vec![("split_from", root)])),
+            ["routine.series"]
+        );
+        assert!(features_used(
+            FEATURES,
+            &op("BlockCreate", vec![("location", text("Room 4"))])
+        )
+        .is_empty());
     }
 
     /// The registry's own invariants: every id is well formed and unique, and

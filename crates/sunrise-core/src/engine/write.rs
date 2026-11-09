@@ -83,6 +83,7 @@ enum Field {
     Set(Value),
     Edit { add: Vec<Value>, remove: Vec<Value> },
     Inc(i64),
+    Map(Vec<(String, Value)>),
 }
 
 impl PatchBuilder {
@@ -128,6 +129,13 @@ impl PatchBuilder {
         self
     }
 
+    /// Write keys of map `name`, `{"map": {k: {"set": v}, ..}}`; a null `v`
+    /// tombstones its key.
+    pub(super) fn map(mut self, name: &str, entries: Vec<(String, Value)>) -> Self {
+        self.fields.insert(name.to_owned(), Field::Map(entries));
+        self
+    }
+
     /// The `Patch`, its parents and observed tags read inside `tx`. `None`
     /// when it writes nothing: an OR-set edit whose removes observed no tag
     /// and that adds nothing, or no field at all.
@@ -138,6 +146,15 @@ impl PatchBuilder {
             let op = match field {
                 Field::Set(v) => kv("set", v),
                 Field::Inc(n) => kv("inc", Value::Integer(n.into())),
+                Field::Map(entries) => kv(
+                    "map",
+                    Value::Map(
+                        entries
+                            .into_iter()
+                            .map(|(k, v)| (Value::Text(k), kv("set", v)))
+                            .collect(),
+                    ),
+                ),
                 Field::Edit { add, remove } => {
                     let mut removed = Vec::new();
                     for element in remove {
@@ -396,9 +413,31 @@ fn diff(
                     out = out.inc(name, delta);
                 }
             }
-            // No entity with full-state ops has a map field: the one map,
-            // `Preferences.values`, is written only by its own `Patch`.
-            Crdt::Map => debug_assert!(false, "`{name}` is a map of a full-state entity"),
+            // A map of registers (`Block.exceptions`): one register write per
+            // key whose value differs, and a null for a key the new state
+            // drops, which tombstones it. A key left alone is not written,
+            // so a concurrent edit of another key survives (ADR-0044 §3).
+            Crdt::Map => {
+                let (b, a) = (
+                    b.and_then(Value::as_map).map_or(&[][..], Vec::as_slice),
+                    a.and_then(Value::as_map).map_or(&[][..], Vec::as_slice),
+                );
+                let mut keys: Vec<&str> = a.iter().filter_map(|(k, _)| k.as_text()).collect();
+                keys.extend(b.iter().filter_map(|(k, _)| k.as_text()));
+                keys.sort_unstable();
+                keys.dedup();
+                let entries: Vec<(String, Value)> = keys
+                    .into_iter()
+                    .filter_map(|k| match (entry(b, k), entry(a, k)) {
+                        (bk, Some(ak)) if bk != Some(ak) => Some((k.to_owned(), ak.clone())),
+                        (Some(_), None) => Some((k.to_owned(), Value::Null)),
+                        _ => None,
+                    })
+                    .collect();
+                if !entries.is_empty() {
+                    out = out.map(name, entries);
+                }
+            }
             Crdt::Nested => {
                 let (b, a) = (
                     b.and_then(Value::as_map).map_or(&[][..], Vec::as_slice),

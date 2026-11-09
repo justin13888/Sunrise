@@ -101,7 +101,7 @@ fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str
     use sunrise_domain::saved_view::{LatenessPart, ViewKind, ViewSort, WindowField};
     use sunrise_domain::stream::{StreamColor, StreamReviewCadence};
     use sunrise_domain::task::TaskState;
-    use sunrise_domain::Energy;
+    use sunrise_domain::{BlockKind, BlockSource, Energy};
 
     macro_rules! spellings {
         ($ty:ty) => {
@@ -120,6 +120,8 @@ fn lossless_enums() -> Vec<(&'static str, Vec<&'static str>, Option<&'static str
     }
 
     vec![
+        with_fallback!("BlockKind", BlockKind),
+        without_fallback!("BlockSource", BlockSource),
         with_fallback!("ConstraintSeverity", ConstraintSeverity),
         with_fallback!("Energy", Energy),
         with_fallback!("FocusKind", FocusKind),

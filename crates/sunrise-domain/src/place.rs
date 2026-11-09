@@ -365,7 +365,7 @@ pub fn select_regions(
 /// equirectangular distance, in (degrees × 10⁷)².
 ///
 /// Longitude wraps at the antimeridian, and is scaled by the cosine of the
-/// mean latitude. The cosine is a fixed polynomial ([`cos_lat`]) rather than
+/// mean latitude. The cosine is a fixed polynomial (`cos_lat`) rather than
 /// the platform's `cos`, whose last bit may differ between targets and could
 /// swap two nearly equidistant places on one device and not another.
 #[must_use]
