@@ -2,6 +2,16 @@
 
 **Status:** accepted
 
+**Amended (#377):** one provisioning profile became three. The app now embeds
+two extensions with App IDs of their own, the widgets
+(`dev.sunrise.SunriseiOS.Widgets`) and the share extension
+(`dev.sunrise.SunriseiOS.Share`), and all three bundles carry the App Group
+`group.dev.sunrise`. An App Store profile names exactly one App ID, so the six
+secrets are now eight, and `ios-release` sets the profile per target. This is
+revisit trigger 4 firing; see
+[Amendment](#amendment-377-one-profile-per-signed-bundle) below. Counts in the
+body that say six now say eight.
+
 **Amends:** [`../07-clients/overview.md`](../07-clients/overview.md)
 §Distribution, whose iOS row said "TestFlight → App Store when a release is
 cut" without saying what produces either.
@@ -22,7 +32,7 @@ So the reserved slot holds two things: **the channel** and **the promotion**.
 This ADR decides the channel and builds it. It does **not** promote iOS to MUST
 parity, and that is honouring Decision 6 rather than working around it: the
 promotion is conditioned on a release being cut, and none has been. Nothing in
-this change puts a build in front of a tester. The six secrets it depends on do
+this change puts a build in front of a tester. The eight secrets it depends on do
 not exist, the App Store Connect app record does not exist, and only the
 account holder can create either. The promotion ADR is the one written when a
 build actually reaches somebody through TestFlight, and its evidence will be
@@ -137,7 +147,7 @@ fails on its own.
 
 ### 4. It no-ops **visibly** until the account records exist
 
-None of the six secrets below exists, and the App Store Connect app record they
+None of the eight secrets below exists, and the App Store Connect app record they
 authenticate against does not exist either; only the account holder can create
 them. The owner's decision is to build the plumbing now and enrol later, so the
 job has to be reviewable without being runnable.
@@ -156,14 +166,14 @@ green tick beside the words "iOS" reads as a successful upload. So:
 * **The no-op runs on `ubuntu-latest`.** macOS minutes bill at 10x and the
   entire body of an unconfigured run is one `echo`.
 
-All six or none: `verify` treats a partial set as unconfigured, because a
+All eight or none: `verify` treats a partial set as unconfigured, because a
 half-configured upload fails twenty minutes into a macOS runner with an Apple
 error that names none of them.
 
 ### 5. The secrets the owner must create — this list is the handover
 
 Every one is a **repository secret** (Settings → Secrets and variables →
-Actions). All six, or `ios-release` does nothing.
+Actions). All eight, or `ios-release` does nothing.
 
 | Secret | What it is | How |
 |---|---|---|
@@ -172,7 +182,40 @@ Actions). All six, or `ios-release` does nothing.
 | `IOS_APPSTORE_API_ISSUER_ID` | The team's Issuer ID, a UUID | Shown above the key table; the same for every key on the team |
 | `IOS_DISTRIBUTION_CERTIFICATE_P12` | Base64 of a `.p12` holding the **Apple Distribution** certificate *and* its private key | Create the certificate at developer.apple.com → Certificates → **+** → Apple Distribution, install it, then export it with its key from Keychain Access → My Certificates. The same procedure `releasing.md` gives for the Developer ID `.p12`, including the `openssl pkcs12` check that the private key is really in there |
 | `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` | The password set when exporting that `.p12` | — |
-| `IOS_PROVISIONING_PROFILE` | Base64 of an **App Store** provisioning profile for `dev.sunrise.SunriseiOS` | developer.apple.com → Profiles → **+** → App Store, against the App ID for that bundle identifier and the certificate above. `base64 -i Sunrise_AppStore.mobileprovision \| pbcopy` |
+| `IOS_PROVISIONING_PROFILE` | Base64 of an **App Store** provisioning profile for `dev.sunrise.SunriseiOS`, granting the App Group `group.dev.sunrise` | developer.apple.com → Profiles → **+** → App Store, against the App ID for that bundle identifier and the certificate above. `base64 -i Sunrise_AppStore.mobileprovision \| pbcopy` |
+| `IOS_WIDGETS_PROVISIONING_PROFILE` | Base64 of an **App Store** provisioning profile for `dev.sunrise.SunriseiOS.Widgets`, the embedded widget extension, granting the same group | The same, against that App ID. `base64 -i SunriseWidgets_AppStore.mobileprovision \| pbcopy` |
+| `IOS_SHARE_PROVISIONING_PROFILE` | Base64 of an **App Store** provisioning profile for `dev.sunrise.SunriseiOS.Share`, the embedded share extension, granting the same group | The same, against that App ID. `base64 -i SunriseShare_AppStore.mobileprovision \| pbcopy` |
+
+The three profiles need the App IDs and the App Group to exist first, on
+developer.apple.com → Certificates, Identifiers & Profiles → Identifiers. In
+this order:
+
+1. **Register the App Group** `group.dev.sunrise` (Identifiers → **+** → App
+   Groups). `apps/apple/project.yml`'s `SUNRISE_APP_GROUP` is where the name
+   comes from.
+2. **Enable it on the app's App ID** `dev.sunrise.SunriseiOS`: App Groups →
+   Configure → tick `group.dev.sunrise`. The same App ID needs **Push
+   Notifications** too, because the app's entitlements carry
+   `aps-environment`.
+3. **Create the App ID `dev.sunrise.SunriseiOS.Widgets`** (Identifiers → **+**
+   → App IDs → App, explicit bundle ID), with App Groups enabled and
+   `group.dev.sunrise` ticked.
+4. **Create the App ID `dev.sunrise.SunriseiOS.Share`** the same way, with the
+   same group.
+5. **Issue one App Store profile per App ID** against the Apple Distribution
+   certificate, and store each in its secret above. A profile issued before
+   its App ID gained the group does not carry it: regenerate it.
+
+`ios-release` checks each profile before it archives anything: the App ID is
+the one its secret is for on team `MACOS_TEAM_ID`, it is an App Store profile
+rather than a development or ad-hoc one, it grants `group.dev.sunrise`, and it
+has not expired. Each failure is reported by the secret's name. To check a
+profile before uploading it:
+
+```sh
+security cms -D -i SunriseWidgets_AppStore.mobileprovision | plutil -p - \
+  | grep -E 'application-identifier|application-groups|group\.|ProvisionedDevices|ExpirationDate'
+```
 
 And one prerequisite that is not a secret: **an App Store Connect app record
 for the bundle identifier `dev.sunrise.SunriseiOS`**, which is what
@@ -232,8 +275,8 @@ a release ran — which is surprising, is not reversible from the workflow, and
 is a poor fit for a credential set the owner is expected to audit. The
 certificate and profile are inputs instead.
 
-The profile's **name** and **UUID** are read out of the profile itself with
-`security cms -D`, rather than carried as two more secrets that could disagree
+Each profile's **name** and **UUID** are read out of the profile itself with
+`security cms -D`, rather than carried as further secrets that could disagree
 with the file.
 
 ## Alternatives considered
@@ -280,7 +323,7 @@ created.
   `ios_configured` and `ios_missing`. Neither is a gate: a missing iOS secret
   is the expected state and does not fail a release, unlike the seven macOS
   ones.
-- **Six repository secrets and one App Store Connect app record are the
+- **Eight repository secrets and one App Store Connect app record are the
   handover.** Decision 5 is the list, and is why this ADR exists as much as the
   cadence answer is.
 - **iOS still carries no MUSTs.** ADR-0028's parity column is untouched, its
@@ -294,7 +337,7 @@ created.
   a distribution certificate, no export options plist has been consumed by
   `-exportArchive` with `destination: upload`, and no build has been uploaded,
   because doing any of that requires credentials that do not exist and an
-  account record only the owner can create. The first run after the six secrets
+  account record only the owner can create. The first run after the eight secrets
   exist is the test. This is stated here rather than discovered then.
 - **A prerelease tag uploads too.** `v1.2.3-rc.1` produces a build like any
   other, which is right for TestFlight — that is what a TestFlight build is —
@@ -322,7 +365,51 @@ created.
    re-uploading it: an operational step with no signal in this repository until
    a build fails. If capabilities start changing regularly,
    `-allowProvisioningUpdates` becomes worth its cost after all and Decision 7
-   should be re-argued.
+   should be re-argued. This fired once, for the App Group and the two
+   extension App IDs; see the amendment below.
 5. **A second Apple account, or a change of team.** `MACOS_TEAM_ID` being one
    secret shared between the macOS and iOS jobs is levelled on there being one
    team. Two would make the shared name actively misleading.
+
+## Amendment (#377): one profile per signed bundle
+
+**What changed in the tree.** The iOS app gained two embedded extensions, each
+its own bundle with its own App ID: `SunriseWidgetsiOS`
+(`dev.sunrise.SunriseiOS.Widgets`, the widgets and the focus Live Activity) and
+`SunriseShare` (`dev.sunrise.SunriseiOS.Share`, the share sheet entry). All
+three bundles carry `com.apple.security.application-groups` =
+`group.dev.sunrise`, the container the app shares with both.
+
+**Why one profile stopped being enough.** An App Store profile names exactly
+one App ID, and on iOS a `group.` App Group is granted only by a profile. The
+job installed one profile and passed it as
+`PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"` on the `xcodebuild
+archive` command line, where a build setting applies to every target. Each
+extension would have been signed against the app's profile, whose App ID is
+not theirs, and the archive would fail on the first run with the secrets in
+place.
+
+**What replaced it.**
+
+- **Two more secrets**, `IOS_WIDGETS_PROVISIONING_PROFILE` and
+  `IOS_SHARE_PROVISIONING_PROFILE`, in Decision 5's table, and in `verify`'s
+  all-or-none check, which is now eight.
+- **The profile is set per target** the way `macos-app` already does it:
+  `PROVISIONING_PROFILE_SPECIFIER='$(SUNRISE_PROFILE_$(TARGET_NAME))'` plus one
+  `SUNRISE_PROFILE_<target>=<Name>` per signed target, resolved in each
+  target's own context. The export options plist's `provisioningProfiles`
+  maps all three bundle ids.
+- **Each profile is checked before the archive**, as `macos-app` checks its
+  own: App ID and team, App Store rather than development or ad-hoc, the App
+  Group granted, not expired.
+
+**Rejected: a per-target `PROVISIONING_PROFILE_SPECIFIER` in
+`apps/apple/project.yml`.** It would put release-only signing in the file every
+local and CI build reads, where those builds sign ad hoc and have no profile to
+name. The command-line reference keeps everything about distribution signing
+in `release.yml`, beside the macOS job that already works this way.
+
+**Still not proved end to end.** As the Consequences say, the first run after
+the secrets exist is the test. The per-target reference is the same mechanism
+`macos-app` uses to keep its profile off its own widget extension; the profile
+checks were exercised against synthetic profiles only.
