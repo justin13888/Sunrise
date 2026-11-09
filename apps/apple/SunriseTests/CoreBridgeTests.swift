@@ -23,6 +23,16 @@ struct TestVault: ~Copyable {
     }
 }
 
+extension TaskListKind {
+    /// Every task in no stream, open or done, dated or not.
+    ///
+    /// For a test that follows a task past the point it leaves the Inbox. The
+    /// Inbox is the open, untriaged tasks (ADR-0046 §3): completing a task or
+    /// giving it a date takes it out, so a test reading the result back from
+    /// `.inbox` finds nothing.
+    static var noStream: TaskListKind { .stream(id: inboxStreamId(), name: "Inbox") }
+}
+
 /// The bridge against a real vault. These are slower than the pure tests and
 /// they earn it: an FFI seam fails at the boundary, and only a real call
 /// crosses it.

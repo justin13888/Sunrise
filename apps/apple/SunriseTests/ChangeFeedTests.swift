@@ -113,9 +113,9 @@ struct ChangeCoalescingTests {
         let (upstream, continuation) = AsyncStream<CoreChange>.makeStream()
         continuation.finish()
 
-        var count = 0
-        for await _ in upstream.coalesced(window: .milliseconds(10)) { count += 1 }
-        #expect(count == 0)
+        var repaints = 0
+        for await _ in upstream.coalesced(window: .milliseconds(10)) { repaints += 1 }
+        #expect(repaints == 0)
     }
 
     /// Every `ChangeEvent` case is a prompt to re-read the entity it names;

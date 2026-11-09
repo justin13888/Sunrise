@@ -86,7 +86,7 @@ struct MenuBarModelTests {
     func completingATaskMovesItOutOfTheBadge() async throws {
         let vault = try await TestVault()
         let now = await vault.bridge.nowMs()
-        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let list = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await list.create(draft("Ship it", dueAt: .instant(at: Int64(now))))
 
         let model = MenuBarModel(bridge: vault.bridge)

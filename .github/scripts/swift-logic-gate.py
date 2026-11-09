@@ -95,6 +95,7 @@ ALLOWED: dict[str, str] = {
     "apps/apple/Share/Extension/ShareReceiver.swift": PLATFORM,
     "apps/apple/Share/Extension/ShareViewController.swift": PLATFORM,
     "apps/apple/Share/Shared/PendingCapture.swift": PLATFORM,
+    "apps/apple/Sunrise/App/AppSurfaceStates.swift": SHELL,
     "apps/apple/Sunrise/App/AppSurfaces+QuickCapture.swift": SHELL,
     "apps/apple/Sunrise/App/AppSurfaces.swift": SHELL,
     "apps/apple/Sunrise/App/VaultModels.swift": SHELL,

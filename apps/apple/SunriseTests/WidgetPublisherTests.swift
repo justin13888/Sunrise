@@ -120,7 +120,7 @@ struct WidgetPublisherTests {
         let vault = try await TestVault()
         let now = await vault.bridge.nowMs()
         let midnight = startOfToday(now)
-        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let list = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await list.create(draft("Due earlier today", dueAt: .instant(at: midnight + 60_000)))
         await list.create(draft("Was due yesterday", dueAt: .instant(at: midnight - 60_000)))
         await list.create(draft("Already done", dueAt: .instant(at: midnight + 120_000)))
