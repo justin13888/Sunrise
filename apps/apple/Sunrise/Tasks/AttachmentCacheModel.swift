@@ -123,6 +123,10 @@ final class NetworkClassMonitor {
         monitor.start(queue: DispatchQueue(label: "sunrise.network-class"))
     }
 
+    /// Whether the OS has a usable path at all — what the sync-stalled notice
+    /// asks, so a device that was offline does not read as stalled.
+    var isOnline: Bool { monitor.currentPath.status == .satisfied }
+
     nonisolated static func classify(_ path: NWPath) -> NetworkClass {
         if path.isConstrained { return .constrained }
         if path.isExpensive { return .cellular }

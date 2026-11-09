@@ -41,10 +41,17 @@ actor FakeNotificationCenter: NotificationCenterClient {
 
     func install(delegate: ReminderResponder) async { hasDelegate = true }
 
-    func pendingIdentifiers() async -> [String] { pending }
+    /// The revision each pending request was scheduled with, as the real
+    /// service keeps it in the request's `userInfo`.
+    private var revisions: [String: String] = [:]
+
+    func pendingRequests() async -> [PendingReminder] {
+        pending.map { PendingReminder(identifier: $0, revision: revisions[$0]) }
+    }
 
     func schedule(_ notification: PlannedNotification) async throws {
         scheduled.append(notification)
+        revisions[notification.identifier] = notification.revision
         if !pending.contains(notification.identifier) {
             pending.append(notification.identifier)
         }
@@ -53,6 +60,24 @@ actor FakeNotificationCenter: NotificationCenterClient {
     func cancel(identifiers: [String]) async {
         cancelled.append(contentsOf: identifiers)
         pending.removeAll { identifiers.contains($0) }
+    }
+
+    /// What was handed over, pending and withdrawn among the reminders alone:
+    /// a fresh vault also has the two briefs planned, at the default 08:00
+    /// and 20:00, and the tests about reminders are not about those.
+    var reminders: [PlannedNotification] { scheduled.filter { Self.isReminder($0.identifier) } }
+    var pendingReminders: [String] { pending.filter(Self.isReminder) }
+    var cancelledReminders: [String] { cancelled.filter(Self.isReminder) }
+
+    private static func isReminder(_ identifier: String) -> Bool {
+        identifier.hasPrefix(ReminderPlan.identifierPrefix)
+    }
+
+    /// Hand a request to the fake as if another part of the app, or an
+    /// earlier run, had scheduled it.
+    func hold(_ identifier: String, revision: String? = nil) {
+        if !pending.contains(identifier) { pending.append(identifier) }
+        revisions[identifier] = revision
     }
 }
 
@@ -154,8 +179,8 @@ struct ReminderSchedulerTests {
         await scheduler.start()
         for _ in 0..<9 { await scheduler.reconcile() }
 
-        let added = await center.scheduled.count
-        let cancelled = await center.cancelled
+        let added = await center.reminders.count
+        let cancelled = await center.cancelledReminders
         #expect(added == 1, "one alert, not ten")
         #expect(cancelled.isEmpty)
         #expect(scheduler.lastPlan.isEmpty, "an unchanged schedule is not rewritten")
@@ -182,7 +207,7 @@ struct ReminderSchedulerTests {
 
         await scheduler.start()
 
-        let added = await center.scheduled
+        let added = await center.reminders
         let asked = await center.requestCount
         #expect(scheduler.scheduled.isEmpty)
         #expect(added.isEmpty)
@@ -270,8 +295,8 @@ struct ReminderSchedulerTests {
         preferences.isPrimaryDevice = false
         await scheduler.reconcile()
 
-        let cancelled = await center.cancelled
-        let pending = await center.pending
+        let cancelled = await center.cancelledReminders
+        let pending = await center.pendingReminders
         #expect(scheduler.scheduled.isEmpty)
         #expect(cancelled == armed)
         #expect(pending.isEmpty)
@@ -297,13 +322,13 @@ struct ReminderSchedulerTests {
         await list.create(scheduledTask("Post the letter", at: Int64(now) + 600_000))
 
         await scheduler.start()
-        let armed = await center.pending.count
+        let armed = await center.pendingReminders.count
         #expect(armed == 1)
 
         preferences.isEnabled = false
         await scheduler.reconcile()
 
-        let pending = await center.pending
+        let pending = await center.pendingReminders
         #expect(pending.isEmpty)
         await vault.bridge.shutdown()
     }
@@ -331,7 +356,7 @@ struct ReminderSchedulerTests {
         await scheduler.handle(.act(task.id, .complete))
 
         await list.refresh()
-        let pending = await center.pending
+        let pending = await center.pendingReminders
         #expect(list.tasks.first?.state == .done)
         #expect(scheduler.scheduled.isEmpty)
         #expect(pending.isEmpty)
@@ -367,7 +392,7 @@ struct ReminderSchedulerTests {
         await list.refresh()
         let moved = try #require(list.tasks.first?.scheduledAt)
         let movedMs = timeValueMs(value: moved, tz: TimeZone.current.identifier)
-        let cancelled = await center.cancelled
+        let cancelled = await center.cancelledReminders
         #expect(list.tasks.first?.deferredCount == 1)
         #expect(
             movedMs > Int64(now) + 20 * 60 * 60 * 1000,

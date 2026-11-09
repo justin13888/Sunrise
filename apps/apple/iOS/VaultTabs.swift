@@ -52,7 +52,8 @@ struct VaultTabs: View {
             .modifier(rowSheets)
             .sheet(isPresented: $showingSettings) { settingsSheet }
             .modifier(library)
-            .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform))
+            .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform,
+                              showSettings: { showingSettings = true }))
             .modifier(Lifecycle(
                 bridge: bridge, session: session,
                 models: models,

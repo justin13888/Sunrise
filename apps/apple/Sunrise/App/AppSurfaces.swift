@@ -129,6 +129,12 @@ final class AppSurfaces {
     /// and the window picks it up.
     private(set) var pendingCommand: AppAction?
 
+    /// A link asked for Settings: sync status, the devices or the recovery
+    /// code, which a sync or security notification opens
+    /// (``DeepLink/opensSettings``). Taken and cleared like
+    /// ``pendingDestination``, by the shell that presents the sheet.
+    private(set) var pendingSettings = false
+
     /// Notification settings are per device and never sync, so they live
     /// beside the vault rather than in it — and they are read before the vault
     /// is open, which is why this is not created in `attach`.
@@ -334,6 +340,11 @@ final class AppSurfaces {
         if case let .focus(entity) = link {
             _Concurrency.Task { await beginFocus(on: entity) }
         }
+        if link.opensSettings {
+            pendingSettings = true
+            if raisingAWindow { raiseWindow(for: link) }
+            return
+        }
         guard let destination = link.destination else { return }
         pendingDestination = destination
         pendingReveal = link.reveal
@@ -415,6 +426,11 @@ final class AppSurfaces {
         pendingDestination = nil
     }
 
+    /// The shell has presented Settings for a link; stop asking.
+    func settingsTaken() {
+        pendingSettings = false
+    }
+
     /// The shell has taken the entity to reveal. Cleared for the reason
     /// ``destinationTaken()`` clears its own request: the same link twice is
     /// two requests, and the second one has to reopen what the first closed.
@@ -468,6 +484,7 @@ final class AppSurfaces {
         #endif
         capture = nil
         menuBar = nil
+        reminders?.stopObservingTimeChanges()
         reminders = nil
         ical = nil
         timeZone?.stop()

@@ -134,6 +134,20 @@ final class NotificationPreferences {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// What this device has already posted for the vault `device` belongs
+    /// to: the core's `NotificationLedger`, as JSON, kept here because it is
+    /// device state and never syncs. One per vault, keyed by this install's
+    /// device id in it, so switching vaults does not post one vault's history
+    /// as news in the other.
+    func ledger(for device: String) -> String? {
+        defaults.string(forKey: Key.ledger(device))
+    }
+
+    /// Keep the ledger the last re-plan returned, once its alerts are posted.
+    func setLedger(_ json: String, for device: String) {
+        defaults.set(json, forKey: Key.ledger(device))
+    }
+
     /// The choices the quiet-hours pickers offer: every half hour.
     static let clockChoices = Array(stride(from: 0, to: 1440, by: 30))
 
@@ -149,5 +163,6 @@ final class NotificationPreferences {
         static let quietStart = "notify.quietHours.startMinutes"
         static let quietEnd = "notify.quietHours.endMinutes"
         static let quietDrop = "notify.quietHours.drop"
+        static func ledger(_ device: String) -> String { "notify.ledger.\(device)" }
     }
 }

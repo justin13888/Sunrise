@@ -25,6 +25,18 @@ enum DeepLink: Equatable, Sendable {
     case task(EntityRef, TaskLinkAction)
     /// `sunrise://focus/<TaskId>` — focus on that task.
     case focus(EntityRef)
+    /// `sunrise://triage` — the tasks waiting on a decision, which the
+    /// triage nudge opens. They are a section of the morning summary here.
+    case triage
+    /// `sunrise://upcoming` — what is coming up, which the time-zone notice's
+    /// Review Times opens. The calendar is where timed items are laid out.
+    case upcoming
+    /// `sunrise://sync` — sync status, from the sync-stalled notice.
+    case sync
+    /// `sunrise://devices` — this account's devices, from a device alert.
+    case devices
+    /// `sunrise://settings/security` — the recovery code, from its alert.
+    case security
 
     /// The scheme, lowercase. Registered in `apps/apple/project.yml`.
     static let scheme = "sunrise"
@@ -60,11 +72,8 @@ enum DeepLink: Equatable, Sendable {
         segments: [String],
         query: [URLQueryItem]
     ) -> DeepLink? {
+        if segments.isEmpty, let screen = screens[route] { return screen }
         switch (route, segments.count) {
-        case ("morning", 0):
-            return .morningSummary
-        case ("evening", 0):
-            return .endOfDayPlan
         case ("capture", 0):
             let text = captureLine(query)
             return text.isEmpty ? nil : .capture(text: text)
@@ -78,10 +87,22 @@ enum DeepLink: Equatable, Sendable {
             // A task, and only a task: a session is time spent on one piece
             // of work, and the core's `StartFocus` takes a `tsk_` id.
             return entityRef(segments[0], kind: "tsk_").map { .focus($0) }
+        case ("settings", 1) where segments[0].lowercased() == "security":
+            return .security
         default:
             return nil
         }
     }
+
+    /// The routes that name a screen and take nothing else.
+    private static let screens: [String: DeepLink] = [
+        "morning": .morningSummary,
+        "evening": .endOfDayPlan,
+        "triage": .triage,
+        "upcoming": .upcoming,
+        "sync": .sync,
+        "devices": .devices
+    ]
 
     /// The link itself, for a notification's payload.
     var url: URL? {
@@ -105,8 +126,29 @@ enum DeepLink: Equatable, Sendable {
         case let .focus(id):
             parts.host = "focus"
             parts.path = "/\(id)"
+        case .triage:
+            parts.host = "triage"
+        case .upcoming:
+            parts.host = "upcoming"
+        case .sync:
+            parts.host = "sync"
+        case .devices:
+            parts.host = "devices"
+        case .security:
+            parts.host = "settings"
+            parts.path = "/security"
         }
         return parts.url
+    }
+
+    /// Whether this link lands in Settings, where sync status, the device list
+    /// and the recovery code live — a sheet over the window rather than a
+    /// sidebar screen, so it is not a ``destination``.
+    var opensSettings: Bool {
+        switch self {
+        case .sync, .devices, .security: true
+        default: false
+        }
     }
 
     /// Where in the app this link lands, when it lands on a screen at all.
@@ -117,9 +159,10 @@ enum DeepLink: Equatable, Sendable {
     /// to a CRDT op without opening UI when possible".
     var destination: Destination? {
         switch self {
-        case .morningSummary: .morning
+        case .morningSummary, .triage: .morning
         case .endOfDayPlan: .evening
-        case .capture: nil
+        case .upcoming: .calendar
+        case .capture, .sync, .devices, .security: nil
         case let .entity(id): Self.home(of: id)
         case let .task(_, action): action == .open ? .list(.todayAll) : nil
         case .focus: .focus
@@ -140,7 +183,8 @@ enum DeepLink: Equatable, Sendable {
         switch self {
         case let .entity(id): id
         case let .task(id, action): action == .open ? id : nil
-        case .morningSummary, .endOfDayPlan, .capture, .focus: nil
+        case .morningSummary, .endOfDayPlan, .capture, .focus,
+             .triage, .upcoming, .sync, .devices, .security: nil
         }
     }
 
