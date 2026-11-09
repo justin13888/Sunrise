@@ -85,6 +85,9 @@ fn expected_dirs() -> Vec<&'static str> {
         "compaction/fold_10000",
         "compaction/snapshot_10000",
         "rebuild/refold_10000",
+        "plan_preview/ripple",
+        "plan_preview/cross_day",
+        "plan_preview/auto_place",
     ]
 }
 
