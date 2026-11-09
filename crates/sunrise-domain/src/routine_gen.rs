@@ -386,6 +386,37 @@ fn within_bound(
     })
 }
 
+/// `rrule` with its `UNTIL` read as the wall clock it bounds in `zone`, the
+/// series' own zone, or `None` for a floating series.
+///
+/// A key lookup expands in the civil-as-UTC frame, where an occurrence's
+/// instant is its wall clock read in UTC, not where it fires. A zoned or
+/// instant `UNTIL` compared with that instant on the timeline is off by the
+/// zone's offset, so east of UTC the occurrence at the `UNTIL` itself (the
+/// last one a split leaves) would read as past it. A floating `UNTIL` is
+/// compared in civil space, as [`expand`] compares a zoned one in its own
+/// zone, so rewriting it to one makes the lookup agree with the expansion.
+/// A floating series has no zone: a zoned `UNTIL` bounds its own wall clock,
+/// and an instant one is left as is, at its UTC wall clock.
+pub(crate) fn civil_frame_rule(rrule: &RRule, zone: Option<&TimeZone>) -> RRule {
+    let mut rule = rrule.clone();
+    rule.until = rule.until.take().map(|until| match (until, zone) {
+        (SunriseTime::Zoned { civil, tz: name }, Some(zone)) => {
+            let own = SunriseTime::zoned(civil, name.clone());
+            match (TimeZone::get(&name), own.resolve_in(zone)) {
+                (Ok(z), Some(at)) if !crate::time::same_zone(&z, zone, at) => {
+                    SunriseTime::floating(zone.to_datetime(at))
+                }
+                _ => SunriseTime::floating(civil),
+            }
+        }
+        (SunriseTime::Zoned { civil, .. }, None) => SunriseTime::floating(civil),
+        (SunriseTime::Instant { at }, Some(zone)) => SunriseTime::floating(zone.to_datetime(at)),
+        (other, _) => other,
+    });
+    rule
+}
+
 /// Expand `rrule` anchored at wall-clock `anchor` into the occurrences whose
 /// instants, resolved in `tz`, fall in `[window.0, window.1)`.
 ///

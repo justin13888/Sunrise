@@ -8,7 +8,7 @@
 //! every replica derives the same split, the same owner and the same lapsed
 //! set from the same data.
 
-use super::{expand, occurrence_task_id, parse_occurrence_key, ExpandError};
+use super::{civil_frame_rule, expand, occurrence_task_id, parse_occurrence_key, ExpandError};
 use crate::routine::{Routine, RoutineCatchupPolicy, RoutinePatch};
 use crate::validation::ValidationError;
 use jiff::civil::DateTime;
@@ -197,6 +197,17 @@ fn civil_utc(civil: DateTime) -> Option<Timestamp> {
 }
 
 impl Routine {
+    /// This normalized routine's rule for an expansion in the civil-as-UTC
+    /// frame: its `UNTIL` as wall clock in the anchor's zone
+    /// ([`civil_frame_rule`]).
+    fn civil_frame_rule(&self) -> crate::rrule::RRule {
+        let zone = match &self.starts_at {
+            crate::time::SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).ok(),
+            _ => None,
+        };
+        civil_frame_rule(&self.rrule, zone.as_ref())
+    }
+
     /// The root of this routine's series: [`Routine::split_from`], or this
     /// routine itself when it was never split off. Every occurrence's task id
     /// is keyed on it ([`Routine::occurrence_task_id`]).
@@ -225,7 +236,7 @@ impl Routine {
         let end = at
             .checked_add(jiff::SignedDuration::from_mins(1))
             .unwrap_or(at);
-        expand(&r.rrule, anchor, &TimeZone::UTC, (at, end))
+        expand(&r.civil_frame_rule(), anchor, &TimeZone::UTC, (at, end))
             .ok()?
             .into_iter()
             .find(|o| o.key == key)
@@ -286,7 +297,7 @@ impl Routine {
         let (Some(from), Some(to)) = (civil_utc(anchor), civil_utc(civil)) else {
             return Err(SplitError::NotAnOccurrence(key.into()));
         };
-        let before = expand(&r.rrule, anchor, &TimeZone::UTC, (from, to))?;
+        let before = expand(&r.civil_frame_rule(), anchor, &TimeZone::UTC, (from, to))?;
 
         let mut ended = r.clone();
         match before.last() {
@@ -487,6 +498,23 @@ mod tests {
             n.occurrence_task_id("2026-03-07T09:00"),
             r.occurrence_task_id("2026-03-07T09:00")
         );
+    }
+
+    /// East of UTC, the ended routine's zoned `UNTIL` fires before the same
+    /// wall clock read in UTC: its last occurrence is still its own.
+    #[test]
+    fn an_ended_routine_east_of_utc_keeps_its_last_occurrence() {
+        let mut r = routine("FREQ=DAILY", "2026-03-01T09:00");
+        r.rezone("Asia/Tokyo".into());
+        let ended = r.split_at("2026-03-06T09:00", now()).unwrap().ended;
+        let until = "2026-03-05T09:00".parse().expect("civil");
+        assert_eq!(
+            ended.rrule.until,
+            Some(SunriseTime::zoned(until, "Asia/Tokyo"))
+        );
+        assert!(ended.produces_key("2026-03-05T09:00"));
+        assert!(!ended.produces_key("2026-03-06T09:00"));
+        assert!(ended.split_at("2026-03-05T09:00", now()).is_ok());
     }
 
     #[test]

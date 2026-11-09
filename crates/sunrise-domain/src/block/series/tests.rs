@@ -415,6 +415,46 @@ fn a_split_partitions_the_series_at_the_key() {
     );
 }
 
+/// East of UTC, the ended series' `UNTIL` is a zoned wall clock that fires
+/// before the same wall clock read in UTC: its last occurrence is still one
+/// of its own, so it can be edited, split again and moved.
+#[test]
+fn an_ended_series_east_of_utc_keeps_its_last_occurrence() {
+    const TOKYO: &str = "Asia/Tokyo";
+    let tokyo = TimeZone::get(TOKYO).unwrap();
+    let s = series(
+        SunriseTime::zoned(at(2026, 3, 3, 9, 0), TOKYO),
+        SunriseTime::zoned(at(2026, 3, 3, 11, 0), TOKYO),
+        "FREQ=WEEKLY;BYDAY=TU",
+    );
+    let mut ended = s.split_at("2026-03-17T09:00").unwrap().ended.unwrap();
+    assert_eq!(
+        ended.rrule.until,
+        Some(SunriseTime::zoned(at(2026, 3, 10, 9, 0), TOKYO))
+    );
+    let last = "2026-03-10T09:00";
+    assert!(ended.produces_key(last));
+    assert!(!ended.produces_key("2026-03-17T09:00"));
+    assert!(ended.split_at(last).is_ok());
+    let moved = BlockException {
+        starts_at: Some(SunriseTime::zoned(at(2026, 3, 11, 9, 0), TOKYO)),
+        ends_at: Some(SunriseTime::zoned(at(2026, 3, 11, 11, 0), TOKYO)),
+        ..BlockException::default()
+    };
+    ended.except(last, moved).unwrap();
+    let occ = expand_block(
+        &ended,
+        window(at(2026, 3, 1, 0, 0), at(2026, 4, 1, 0, 0), &tokyo),
+        &tokyo,
+    )
+    .unwrap();
+    assert_eq!(keys(&occ), ["2026-03-03T09:00", last]);
+    assert_eq!(
+        occ[1].starts_at,
+        SunriseTime::zoned(at(2026, 3, 11, 9, 0), TOKYO)
+    );
+}
+
 #[test]
 fn a_split_at_the_first_occurrence_supersedes_the_series() {
     let split = deep_work().split_at("2026-03-03T09:00").unwrap();

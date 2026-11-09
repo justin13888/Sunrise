@@ -16,7 +16,7 @@
 //! none of them in this build.
 
 use crate::common::NoteBody;
-use crate::routine_gen::{expand, parse_occurrence_key, ExpandError, SplitError};
+use crate::routine_gen::{civil_frame_rule, expand, parse_occurrence_key, ExpandError, SplitError};
 use crate::rrule::RRule;
 use crate::time::SunriseTime;
 use jiff::civil::DateTime;
@@ -177,6 +177,16 @@ impl BlockSeries {
         }
     }
 
+    /// The rule for an expansion in the civil-as-UTC frame: its `UNTIL` as
+    /// wall clock in the anchor's zone ([`civil_frame_rule`]).
+    fn civil_frame_rule(&self) -> RRule {
+        let zone = match &self.starts_at {
+            SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).ok(),
+            _ => None,
+        };
+        civil_frame_rule(&self.rrule, zone.as_ref())
+    }
+
     /// A wall-clock value as a time of the anchor's kind.
     fn time_of(&self, civil: DateTime) -> SunriseTime {
         match &self.starts_at {
@@ -198,11 +208,16 @@ impl BlockSeries {
         let anchor = self.anchor().ok()?;
         let at = civil_utc(parse_occurrence_key(key)?)?;
         let end = at.checked_add(SignedDuration::from_mins(1)).ok()?;
-        expand(&self.rrule, anchor.start, &TimeZone::UTC, (at, end))
-            .ok()?
-            .into_iter()
-            .find(|o| o.key == key)
-            .map(|o| o.civil)
+        expand(
+            &self.civil_frame_rule(),
+            anchor.start,
+            &TimeZone::UTC,
+            (at, end),
+        )
+        .ok()?
+        .into_iter()
+        .find(|o| o.key == key)
+        .map(|o| o.civil)
     }
 
     /// Whether the rule produces occurrence `key`, before its exceptions.
@@ -250,7 +265,12 @@ impl BlockSeries {
         let (Some(from), Some(to)) = (civil_utc(anchor.start), civil_utc(civil)) else {
             return Err(SplitError::NotAnOccurrence(key.into()));
         };
-        let before = expand(&self.rrule, anchor.start, &TimeZone::UTC, (from, to))?;
+        let before = expand(
+            &self.civil_frame_rule(),
+            anchor.start,
+            &TimeZone::UTC,
+            (from, to),
+        )?;
 
         let ended = before.last().map(|last| {
             let mut ended = self.clone();
