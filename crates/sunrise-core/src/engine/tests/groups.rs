@@ -238,7 +238,14 @@ fn a_merge_refuses_one_block_twice_a_missing_one_and_a_deleted_one() {
         p.ea.apply(&mut p.dba, Command::MergeBlocks { a, b: missing }),
         Err(EngineError::NotFound(_))
     ));
-    p.ea.apply(&mut p.dba, Command::DeleteBlock(b)).unwrap();
+    p.ea.apply(
+        &mut p.dba,
+        Command::DeleteBlock {
+            id: b,
+            scope: sunrise_domain::EditScope::All,
+        },
+    )
+    .unwrap();
     let after_delete = op_count(&p.dba);
     invalid(
         p.ea.apply(&mut p.dba, Command::MergeBlocks { a, b }),

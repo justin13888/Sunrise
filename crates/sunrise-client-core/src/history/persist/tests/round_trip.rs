@@ -538,7 +538,11 @@ fn command_arms() -> Vec<BoxedStrategy<Command>> {
             .boxed(),
         id().prop_map(Command::DeleteRoutine).boxed(),
         block_draft().prop_map(Command::CreateBlock).boxed(),
-        id().prop_map(Command::DeleteBlock).boxed(),
+        id().prop_map(|id| Command::DeleteBlock {
+            id,
+            scope: EditScope::All,
+        })
+        .boxed(),
         id().prop_map(Command::DetachFile).boxed(),
         (ids(), of(id()), of(id()))
             .prop_map(|(ids, after, before)| Command::MoveTasks { ids, after, before })

@@ -507,7 +507,11 @@ impl Core {
             | Command::DeleteStream { .. }
             | Command::DeleteContext(_)
             | Command::DeleteRoutine(_)
-            | Command::DeleteBlock(_)
+            // A delete of some occurrences leaves the block, edited.
+            | Command::DeleteBlock {
+                scope: sunrise_domain::EditScope::All,
+                ..
+            }
             | Command::DeleteSavedView(_)
             | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
             _ => DomainEvent::Updated(res.entity),

@@ -213,7 +213,10 @@ pub fn invert_create(cmd: &Command, created: EntityRef) -> Result<Command, NotUn
         // already materialized — `DeleteRoutine` stops generation and leaves
         // existing Tasks standing, and undo is a new write, not a rollback.
         Command::CreateRoutine(_) => Ok(Command::DeleteRoutine(created)),
-        Command::CreateBlock(_) => Ok(Command::DeleteBlock(created)),
+        Command::CreateBlock(_) => Ok(Command::DeleteBlock {
+            id: created,
+            scope: sunrise_domain::EditScope::All,
+        }),
         Command::AttachFile(_) => Ok(Command::DetachFile(created)),
         Command::CreateSavedView(_) => Ok(Command::DeleteSavedView(created)),
         _ => Err(NotUndoable::Unsupported),

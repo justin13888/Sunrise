@@ -275,16 +275,51 @@ pub enum Command {
         /// The Block to write.
         draft: BlockDraft,
     },
-    /// Mutate a Block: move it, retitle it, or change title tracking.
+    /// Mutate a Block: move it, retitle it, or change title tracking, as far
+    /// as `scope` reaches (`docs/02-domain/time-blocks.md` §Recurring
+    /// blocks).
+    ///
+    /// - [`EditScope::All`] edits the block; for a recurring block, its
+    ///   series.
+    /// - [`EditScope::This`] writes the edit into the exception of that
+    ///   occurrence of a recurring block, over what it already holds. Only
+    ///   the start, the end and a title may be set.
+    /// - [`EditScope::ThisAndFuture`] splits a recurring block's series at
+    ///   the key ([`sunrise_domain::BlockSeries::split_at`]): the block ends
+    ///   before it and the block at
+    ///   [`sunrise_domain::split_block_id`]`(series root, key)` continues it
+    ///   with the edit applied, the two written as one group (ADR-0065 §6).
+    ///   The result names the continuation. At the series' first occurrence
+    ///   it is an edit of the whole series, and where the series was already
+    ///   split at the key it edits the block that continues it.
+    ///
+    /// A scope with a key is refused for a block with no rule.
     UpdateBlock {
         /// Target block.
         id: EntityRef,
+        /// How far the edit reaches. `All` when absent.
+        #[serde(default)]
+        scope: EditScope,
         /// Patch.
         patch: BlockPatch,
     },
-    /// Soft-delete a Block. Bound Tasks are untouched — a Block is a plan for
-    /// when to do the work, never the work itself.
-    DeleteBlock(EntityRef),
+    /// Soft-delete a Block, as far as `scope` reaches. Bound Tasks are
+    /// untouched — a Block is a plan for when to do the work, never the work
+    /// itself.
+    ///
+    /// - [`EditScope::All`] tombstones the block.
+    /// - [`EditScope::This`] cancels that occurrence of a recurring block
+    ///   (iCal `EXDATE`), replacing any exception it held.
+    /// - [`EditScope::ThisAndFuture`] ends a recurring block's series before
+    ///   the key, or tombstones the block when the key is its first
+    ///   occurrence.
+    DeleteBlock {
+        /// Target block.
+        id: EntityRef,
+        /// How far the delete reaches. `All` when absent.
+        #[serde(default)]
+        scope: EditScope,
+    },
     /// Merge two Blocks into one (`docs/02-domain/time-blocks.md`
     /// §Conflicts): create their union ([`sunrise_domain::merge_blocks`],
     /// read in the reader's zone) and tombstone both, as one commit

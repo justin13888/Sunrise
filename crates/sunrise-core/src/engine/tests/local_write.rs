@@ -207,7 +207,14 @@ fn a_local_write_and_its_replay_project_identical_rows() {
 
     // Deletes, one of which reaches into every task carrying the context.
     apply(&w, &mut dbw, Command::DeleteContext(home));
-    apply(&w, &mut dbw, Command::DeleteBlock(block));
+    apply(
+        &w,
+        &mut dbw,
+        Command::DeleteBlock {
+            id: block,
+            scope: sunrise_domain::EditScope::All,
+        },
+    );
     apply(&w, &mut dbw, Command::DeleteTask(a));
     apply(&w, &mut dbw, Command::DeleteRoutine(routine));
 

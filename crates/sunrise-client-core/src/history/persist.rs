@@ -285,7 +285,12 @@ impl Cmd {
             Command::UpdateRoutine { id, scope, patch } => Self::UpdateRoutine { id, scope, patch },
             Command::DeleteRoutine(id) => Self::DeleteRoutine(id),
             Command::CreateBlock(d) => Self::CreateBlock(d),
-            Command::DeleteBlock(id) => Self::DeleteBlock(id),
+            // A delete of some occurrences is not undoable, so it is never
+            // in the history to persist.
+            Command::DeleteBlock {
+                id,
+                scope: EditScope::All,
+            } => Self::DeleteBlock(id),
             Command::DetachFile(id) => Self::DetachFile(id),
             Command::MoveTasks { ids, after, before } => Self::MoveTasks { ids, after, before },
             Command::CreateSavedView(d) => Self::CreateSavedView(Cbor(d)),
@@ -331,7 +336,10 @@ impl Cmd {
             Self::UpdateRoutine { id, scope, patch } => Command::UpdateRoutine { id, scope, patch },
             Self::DeleteRoutine(id) => Command::DeleteRoutine(id),
             Self::CreateBlock(d) => Command::CreateBlock(d),
-            Self::DeleteBlock(id) => Command::DeleteBlock(id),
+            Self::DeleteBlock(id) => Command::DeleteBlock {
+                id,
+                scope: EditScope::All,
+            },
             Self::DetachFile(id) => Command::DetachFile(id),
             Self::MoveTasks { ids, after, before } => Command::MoveTasks { ids, after, before },
             Self::CreateSavedView(d) => Command::CreateSavedView(d.0),

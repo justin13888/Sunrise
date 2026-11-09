@@ -243,6 +243,14 @@ impl BlockSeries {
         self.occurrence_civil(key).is_some()
     }
 
+    /// The rule's start and end of occurrence `key`, before its exception,
+    /// when the rule produces it.
+    #[must_use]
+    pub fn occurrence_bounds(&self, key: &str) -> Option<(SunriseTime, SunriseTime)> {
+        let anchor = self.anchor().ok()?;
+        self.bounds_of(&anchor, self.occurrence_civil(key)?)
+    }
+
     /// Edit one occurrence (§Recurring blocks, *Edit scope* "this"): write
     /// `exception` at `key`, replacing any exception already there.
     ///
@@ -323,6 +331,59 @@ pub struct BlockSeriesSplit {
     /// The series that continues from the key, before the edit is applied
     /// to it.
     pub continuation: BlockSeries,
+}
+
+impl crate::Block {
+    /// The Block as its occurrence `occ` reads (§Recurring blocks): its
+    /// start and end are the occurrence's, and the exception's title,
+    /// location and notes stand over the series'. Every other field, the
+    /// series' rule and exceptions included, is the Block's.
+    #[must_use]
+    pub fn at_occurrence(&self, occ: &BlockOccurrence) -> Self {
+        let mut block = self.clone();
+        block.starts_at = occ.starts_at.clone();
+        block.ends_at = occ.ends_at.clone();
+        if let Some(x) = &occ.exception {
+            if let Some(title) = &x.title {
+                block.title = Some(title.clone());
+            }
+            if let Some(location) = &x.location {
+                block.location = Some(location.clone());
+            }
+            if let Some(notes) = &x.notes {
+                block.notes = Some(notes.clone());
+            }
+        }
+        block
+    }
+}
+
+impl crate::BlockPatch {
+    /// Whether the patch changes nothing but what one occurrence's exception
+    /// can carry: its start, its end and a title. What an edit of scope
+    /// [`crate::EditScope::This`] may hold. Clearing the title, tracking the
+    /// bound task's title and moving the block to another stream are the
+    /// series'.
+    #[must_use]
+    pub const fn is_occurrence_edit(&self) -> bool {
+        self.title_track_task.is_none()
+            && self.stream_id.is_none()
+            && !matches!(self.title, Some(None))
+    }
+
+    /// Write the patch onto occurrence exception `x`, over what it already
+    /// holds. Only the fields [`Self::is_occurrence_edit`] admits are read.
+    pub fn apply_to_exception(self, x: &mut BlockException) {
+        if let Some(starts_at) = self.starts_at {
+            x.starts_at = Some(starts_at);
+        }
+        if let Some(ends_at) = self.ends_at {
+            x.ends_at = Some(ends_at);
+        }
+        if let Some(Some(title)) = self.title {
+            x.title = Some(title.trim().to_owned());
+        }
+    }
 }
 
 /// The id of the Block that continues series `root` from occurrence `key`.

@@ -300,6 +300,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
                 .entity;
             Command::UpdateBlock {
                 id,
+                scope: sunrise_domain::EditScope::All,
                 patch: BlockPatch {
                     stream_id: Some(Some(meta_ref())),
                     ..Default::default()

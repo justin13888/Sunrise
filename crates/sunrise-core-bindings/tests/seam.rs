@@ -1861,7 +1861,7 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
     // The three commands the Resolve menu's Merge submits, in the order it
     // submits them.
     for id in [blocks[0].block.id, blocks[1].block.id] {
-        core.submit(CoreCommand::DeleteBlock { id })
+        core.submit(CoreCommand::DeleteBlock { id, scope: None })
             .await
             .expect("tombstone the original");
     }

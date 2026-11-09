@@ -516,8 +516,8 @@ impl Engine {
             Command::ImportBlock { source, uid, draft } => {
                 self.import_block(db, &source, &uid, draft)
             }
-            Command::UpdateBlock { id, patch } => self.update_block(db, id, patch),
-            Command::DeleteBlock(id) => self.delete_block(db, id),
+            Command::UpdateBlock { id, scope, patch } => self.update_block(db, id, scope, patch),
+            Command::DeleteBlock { id, scope } => self.delete_block(db, id, scope),
             Command::MergeBlocks { a, b } => self.merge_blocks(db, a, b),
             Command::BindTask { block, task } => self.bind_task(db, block, task),
             Command::UnbindTask { block, task } => self.unbind_task(db, block, task),

@@ -11,9 +11,9 @@ use sunrise_domain::{Energy, InterruptionReason, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, PreferenceTarget,
-    PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit,
-    TaskDraftIn, TaskEdit, TimeValue,
+    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, EditScopeIn,
+    PreferenceTarget, PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn,
+    StreamEdit, TaskDraftIn, TaskEdit, TimeValue,
 };
 
 /// A mutating command.
@@ -143,17 +143,25 @@ pub enum CoreCommand {
         /// The draft.
         draft: BlockDraftIn,
     },
-    /// Edit a block: move it, retitle it, or change title tracking.
+    /// Edit a block: move it, retitle it, or change title tracking, as far as
+    /// `edit.scope` reaches. For one occurrence of a recurring block the
+    /// scope names its key (`BlockGridRow::occurrence_key`); an edit "this
+    /// and future" names the block that continues the series.
     UpdateBlock {
         /// Target.
         id: EntityRef,
         /// The edit.
         edit: BlockEdit,
     },
-    /// Tombstone a block. Bound tasks are untouched.
+    /// Tombstone a block, as far as `scope` reaches: one occurrence of a
+    /// recurring block is cancelled, and "this and future" ends its series
+    /// before the key. Bound tasks are untouched.
     DeleteBlock {
         /// Target.
         id: EntityRef,
+        /// How far the delete reaches; the whole block when absent.
+        #[uniffi(default = None)]
+        scope: Option<EditScopeIn>,
     },
     /// Bind a task to a block. `TaskItem::blocks` is derived from the binding,
     /// so the symmetry needs no second command.
@@ -452,9 +460,13 @@ impl CoreCommand {
             Self::CreateBlock { draft } => Command::CreateBlock(draft.into()),
             Self::UpdateBlock { id, edit } => Command::UpdateBlock {
                 id,
+                scope: edit.scope.clone().map(Into::into).unwrap_or_default(),
                 patch: edit.into(),
             },
-            Self::DeleteBlock { id } => Command::DeleteBlock(id),
+            Self::DeleteBlock { id, scope } => Command::DeleteBlock {
+                id,
+                scope: scope.map(Into::into).unwrap_or_default(),
+            },
             Self::BindTask { block, task } => Command::BindTask { block, task },
             Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },

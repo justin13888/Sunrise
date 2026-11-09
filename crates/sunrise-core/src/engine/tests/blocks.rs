@@ -314,6 +314,7 @@ fn updating_a_block_moves_it_on_the_grid() {
         &mut db,
         Command::UpdateBlock {
             id: block,
+            scope: sunrise_domain::EditScope::All,
             patch: BlockPatch {
                 starts_at: Some(starts_at.clone()),
                 ends_at: Some(ends_at),
@@ -346,6 +347,7 @@ fn a_patch_that_inverts_the_range_is_rejected() {
             &mut db,
             Command::UpdateBlock {
                 id: block,
+                scope: sunrise_domain::EditScope::All,
                 patch: BlockPatch {
                     ends_at: Some(before_start),
                     ..Default::default()
@@ -377,7 +379,15 @@ fn deleting_a_block_clears_it_from_the_grid_and_from_its_tasks() {
         .entity;
     assert_eq!(day_rows(&e, &db, day_ms()).len(), 1);
 
-    let res = e.apply(&mut db, Command::DeleteBlock(block)).unwrap();
+    let res = e
+        .apply(
+            &mut db,
+            Command::DeleteBlock {
+                id: block,
+                scope: sunrise_domain::EditScope::All,
+            },
+        )
+        .unwrap();
     assert_eq!(inner_op_variant(&e, &db, &res.op_id), "BlockDelete");
     assert!(day_rows(&e, &db, day_ms()).is_empty());
     // The Task survives; only the binding stops being visible.
@@ -425,6 +435,7 @@ fn a_block_delete_that_wins_lww_replaces_the_whole_row() {
         &mut dbb,
         Command::UpdateBlock {
             id: block,
+            scope: sunrise_domain::EditScope::All,
             patch: BlockPatch {
                 title: Some(Some("renamed".into())),
                 ..Default::default()
@@ -435,7 +446,14 @@ fn a_block_delete_that_wins_lww_replaces_the_whole_row() {
 
     // ...and A deletes it strictly later, so the delete wins on both sides.
     set_clock(&ca, T0 + 2_000);
-    ea.apply(&mut dba, Command::DeleteBlock(block)).unwrap();
+    ea.apply(
+        &mut dba,
+        Command::DeleteBlock {
+            id: block,
+            scope: sunrise_domain::EditScope::All,
+        },
+    )
+    .unwrap();
 
     eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.delete"))
         .unwrap();
@@ -484,7 +502,14 @@ fn a_block_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
         .unwrap()
         .entity;
     set_clock(&ca, T0 + 1_000);
-    ea.apply(&mut dba, Command::DeleteBlock(block)).unwrap();
+    ea.apply(
+        &mut dba,
+        Command::DeleteBlock {
+            id: block,
+            scope: sunrise_domain::EditScope::All,
+        },
+    )
+    .unwrap();
 
     // Delete first, create second.
     eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.delete"))
@@ -516,7 +541,13 @@ fn block_commands_reject_a_non_block_id() {
     let e = engine();
     let task = new_task(&e, &mut db, "not a block");
     invalid(
-        e.apply(&mut db, Command::DeleteBlock(task)),
+        e.apply(
+            &mut db,
+            Command::DeleteBlock {
+                id: task,
+                scope: sunrise_domain::EditScope::All,
+            },
+        ),
         "expected Block, got Task",
     );
     invalid(
@@ -524,6 +555,7 @@ fn block_commands_reject_a_non_block_id() {
             &mut db,
             Command::UpdateBlock {
                 id: task,
+                scope: sunrise_domain::EditScope::All,
                 patch: BlockPatch::default(),
             },
         ),
@@ -744,7 +776,14 @@ fn a_re_import_resurrects_a_locally_deleted_block() {
         )
         .unwrap()
         .entity;
-    e.apply(&mut db, Command::DeleteBlock(id)).unwrap();
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: sunrise_domain::EditScope::All,
+        },
+    )
+    .unwrap();
     assert!(day_rows(&e, &db, day_ms()).is_empty());
 
     e.apply(

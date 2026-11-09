@@ -208,7 +208,8 @@ pub enum Query {
     /// that contains `day_ms`, in the device's zone.
     ///
     /// Overlap, not containment — a block that started yesterday evening and
-    /// runs past midnight belongs on today's grid.
+    /// runs past midnight belongs on today's grid. A recurring block is one
+    /// row per occurrence, each with its key ([`BlockRow::occurrence_key`]).
     DayBlocks {
         /// Any instant inside the day to show (ms since epoch).
         day_ms: u64,
@@ -636,6 +637,14 @@ pub struct BlockRow {
     /// `block.tasks` order. Shorter than `block.tasks` when a binding names a
     /// Task whose op has not arrived yet — a valid state, not a repair case.
     pub task_titles: Vec<String>,
+    /// For one occurrence of a recurring block, its key
+    /// (`YYYY-MM-DDTHH:MM`, `docs/02-domain/time-blocks.md` §Recurring
+    /// blocks): `block` then holds that occurrence's start, end and
+    /// exception fields ([`Block::at_occurrence`]), and an edit of it names
+    /// the key in its [`sunrise_domain::EditScope`]. `None` for a block that
+    /// does not recur, and for a recurring block read by id, whose `block`
+    /// is the series as stored.
+    pub occurrence_key: Option<String>,
 }
 
 /// What [`Query::Upcoming`] returns: the domain's view, each day's blocks
