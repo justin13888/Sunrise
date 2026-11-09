@@ -11,10 +11,34 @@ and committed exactly as previewed when it ends.
 reasoning; this page is the contract. [#343](https://github.com/justin13888/Sunrise/issues/343) builds the solver and the seam,
 and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client surfaces.
 
-> **Status: not built.** No solver, no `plan_preview` and no `PlanDiff` exist
-> in the tree. Calendar drags are resolved in Swift by `BlockDrag`
-> (`apps/apple/Sunrise/Calendar/BlockLayout.swift:182`), which this page
-> retires.
+> **Status: solver and seam built ([#343](https://github.com/justin13888/Sunrise/issues/343)); no client uses them yet.**
+> `sunrise_domain::planner::solve` is the solver, `Core::plan_preview`,
+> `Core::plan_commit` and `Core::plan_cancel` are the seam, and all three
+> cross UniFFI (`crates/sunrise-core-bindings/src/planner.rs`). Calendar drags
+> are still resolved in Swift by `BlockDrag`
+> (`apps/apple/Sunrise/Calendar/BlockLayout.swift:182`) until
+> [#344](https://github.com/justin13888/Sunrise/issues/344) moves them onto the
+> seam. What this build does differently from the contract below:
+>
+> - `plan_preview` takes only the intent: `now` is the core's clock and the
+>   zone is the reader's zone every query reads in. The commit recomputes the
+>   base at the preview's `now`, so it refuses only when an input row changed.
+> - `PlanBase` digests the planner inputs themselves (every field the solve
+>   reads, independent of order), not each row's HLC: an edit to a field the
+>   planner does not read, such as a title, does not make a diff stale.
+> - `solve` returns `Result`: an intent naming an item the inputs do not hold,
+>   or the wrong kind, is an error rather than a diff.
+> - Every block is `fixed` (the block kind is [#342](https://github.com/justin13888/Sunrise/issues/342)),
+>   and there are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
+>   A task bound to a block is not placed on its own.
+> - `Unschedule` takes tasks only.
+> - `AutoPlace` and `BulkDefer { place: true }` place each listed task in the
+>   first free slot at or after `max(wake, now, not_before)`, in order, and
+>   move nothing else.
+> - No Place annotation is produced (it is optional, §Places), and there is no
+>   per-gesture day-line cache: each preview gathers its days afresh.
+> - `plan_undo` and the stored inverse are [#1158](https://github.com/justin13888/Sunrise/issues/1158);
+>   `plan_commit` returns only how many items it moved.
 
 ## Principles
 
@@ -213,9 +237,11 @@ pub enum PlanError {
 }
 ```
 
-The error codes `PLAN_STALE` and `PLAN_UNKNOWN` join the error-code registry
+`PlanError::code` answers `PLAN_STALE` and `PLAN_UNKNOWN`, and UniFFI carries
+them as `BindingError::PlanStale` and `BindingError::PlanUnknown`. They join the
+error-code registry
 ([`../10-cross-cutting/error-handling.md`](../10-cross-cutting/error-handling.md))
-when [#343](https://github.com/justin13888/Sunrise/issues/343) lands.
+with [#1159](https://github.com/justin13888/Sunrise/issues/1159).
 
 ## Inputs
 
@@ -422,8 +448,10 @@ for the typical week defined in
 [`../10-cross-cutting/performance-budgets.md`](../10-cross-cutting/performance-budgets.md)
 §Planner preview (200 open tasks, 60 blocks, 40 external events, 20
 dependencies). The bench `plan_preview` in `sunrise-bench` measures a
-single-block move with a three-item ripple, a cross-day move, and an
-`AutoPlace` of 20 tasks over that fixture, and joins the baseline set.
+single-block move dropped onto three tasks (the ripple chains through the
+day's own tasks), a cross-day move, and an `AutoPlace` of 20 tasks over that
+fixture, and joins the baseline set; the measured figures are in
+`performance-budgets.md` §Planner preview.
 
 ## Tests
 
