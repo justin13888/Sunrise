@@ -507,7 +507,6 @@ impl Core {
             | Command::DeleteStream { .. }
             | Command::DeleteContext(_)
             | Command::DeleteRoutine(_)
-            // A delete of some occurrences leaves the block, edited.
             | Command::DeleteBlock {
                 scope: sunrise_domain::EditScope::All,
                 ..
