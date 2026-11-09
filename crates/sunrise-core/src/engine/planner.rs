@@ -8,7 +8,7 @@
 
 use super::block::read_block;
 use super::day_schedule::schedule_in;
-use super::ids::{blob16, domain_bytes, ms_to_ts};
+use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts};
 use super::snapshot::in_tx;
 use super::task::{read_task, TaskWrite};
 use super::{Engine, EngineError};
@@ -246,8 +246,12 @@ impl Engine {
             .filter(|id| id.kind() == EntityKind::Task)
             .collect();
         if !window.is_empty() {
+            // The index prefilter is widened by the slack, and each row's
+            // plan is resolved from its columns before the whole row is read,
+            // so a neighbouring day costs one cheap row each.
             let mut stmt = conn.prepare(
-                "SELECT id FROM tasks
+                "SELECT id, planned_at_ms, planned_at_kind, planned_at_tz, planned_at_civil
+                 FROM tasks
                  WHERE deleted = 0 AND archived = 0
                    AND state != 'done' AND state != 'cancelled'
                    AND planned_at_ms >= ?1 AND planned_at_ms < ?2",
@@ -257,10 +261,27 @@ impl Engine {
                     from.saturating_sub(PREFILTER_SLACK_MS),
                     to.saturating_add(PREFILTER_SLACK_MS)
                 ],
-                |r| r.get::<_, Vec<u8>>(0),
+                |r| {
+                    Ok((
+                        r.get::<_, Vec<u8>>(0)?,
+                        time_from_parts(
+                            r.get::<_, Option<i64>>(1)?,
+                            r.get::<_, Option<String>>(2)?.as_deref(),
+                            r.get::<_, Option<String>>(3)?.as_deref(),
+                            r.get::<_, Option<String>>(4)?.as_deref(),
+                        ),
+                    ))
+                },
             )?;
-            for raw in rows {
-                ids.insert(EntityRef::new(EntityKind::Task, blob16(&raw?)));
+            for row in rows {
+                let (raw, planned) = row?;
+                let in_window = planned
+                    .as_ref()
+                    .and_then(|v| planner_day_of(&schedule, v, &tz))
+                    .is_some_and(|d| dates.contains(&d));
+                if in_window {
+                    ids.insert(EntityRef::new(EntityKind::Task, blob16(&raw)));
+                }
             }
         }
         let mut tasks = Vec::new();
