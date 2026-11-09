@@ -35,7 +35,10 @@ struct ListCommandTests {
     }
 
     private func fixture(_ bridge: CoreBridge) async -> Fixture {
-        let list = TaskListModel(bridge: bridge, kind: .inbox)
+        // The no-stream list rather than the Inbox, which a completed or
+        // dated row leaves: an assertion over `list.tasks` after a done or a
+        // defer would otherwise read an empty list.
+        let list = TaskListModel(bridge: bridge, kind: .noStream)
         for title in ["First", "Second", "Third"] {
             await list.create(draft(title))
         }
