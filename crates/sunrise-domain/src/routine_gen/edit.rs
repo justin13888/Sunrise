@@ -200,7 +200,7 @@ impl Routine {
     /// This normalized routine's rule for an expansion in the civil-as-UTC
     /// frame: its `UNTIL` as wall clock in the anchor's zone
     /// ([`civil_frame_rule`]).
-    fn civil_frame_rule(&self) -> crate::rrule::RRule {
+    pub(super) fn civil_frame_rule(&self) -> crate::rrule::RRule {
         let zone = match &self.starts_at {
             crate::time::SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).ok(),
             _ => None,
@@ -515,6 +515,68 @@ mod tests {
         assert!(ended.produces_key("2026-03-05T09:00"));
         assert!(!ended.produces_key("2026-03-06T09:00"));
         assert!(ended.split_at("2026-03-05T09:00", now()).is_ok());
+        // Its open task is still recovered from the task id, so the engine's
+        // split adopts or drops it.
+        let task = ended.occurrence_task_id("2026-03-05T09:00");
+        let due: Timestamp = "2026-03-05T00:00:00Z".parse().expect("ts");
+        assert_eq!(
+            ended.occurrence_key_of(&task, due).as_deref(),
+            Some("2026-03-05T09:00")
+        );
+    }
+
+    fn until_of(rule: &str, zone: Option<&str>) -> Option<SunriseTime> {
+        let zone = zone.map(|z| TimeZone::get(z).expect("zone"));
+        civil_frame_rule(&RRule::parse(rule).expect("rule"), zone.as_ref()).until
+    }
+
+    fn floating(civil: &str) -> SunriseTime {
+        SunriseTime::floating(civil.parse().expect("civil"))
+    }
+
+    /// An `UNTIL` in another zone is read at its wall clock in the series'.
+    #[test]
+    fn a_civil_frame_until_in_another_zone_is_its_wall_clock_in_the_series_zone() {
+        let mut rule = RRule::parse("FREQ=DAILY").expect("rule");
+        rule.until = Some(SunriseTime::zoned(
+            "2026-03-05T09:00".parse().expect("civil"),
+            "America/New_York",
+        ));
+        let tokyo = TimeZone::get("Asia/Tokyo").expect("zone");
+        assert_eq!(
+            civil_frame_rule(&rule, Some(&tokyo)).until,
+            Some(floating("2026-03-05T23:00"))
+        );
+    }
+
+    /// An instant `UNTIL` is read at its wall clock in the series' zone.
+    #[test]
+    fn a_civil_frame_instant_until_is_its_wall_clock_in_the_series_zone() {
+        assert_eq!(
+            until_of("FREQ=DAILY;UNTIL=20260305T000000Z", Some("Asia/Tokyo")),
+            Some(floating("2026-03-05T09:00"))
+        );
+    }
+
+    /// A floating series has no zone: a zoned `UNTIL` bounds its own wall
+    /// clock, and an instant one is left as is.
+    #[test]
+    fn a_floating_series_keeps_a_zoned_until_wall_clock_and_an_instant_until() {
+        let mut rule = RRule::parse("FREQ=DAILY").expect("rule");
+        rule.until = Some(SunriseTime::zoned(
+            "2026-03-05T09:00".parse().expect("civil"),
+            "Asia/Tokyo",
+        ));
+        assert_eq!(
+            civil_frame_rule(&rule, None).until,
+            Some(floating("2026-03-05T09:00"))
+        );
+        let at: Timestamp = "2026-03-05T00:00:00Z".parse().expect("ts");
+        rule.until = Some(SunriseTime::instant(at));
+        assert_eq!(
+            civil_frame_rule(&rule, None).until,
+            Some(SunriseTime::instant(at))
+        );
     }
 
     #[test]
