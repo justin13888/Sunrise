@@ -135,14 +135,13 @@ final class CommandPaletteModel {
     /// from the last row to the first would move the highlight off screen on a
     /// key that everywhere else means "further down".
     func moveHighlight(_ direction: SelectionMove) {
-        let count = results.count
-        guard count > 0 else {
+        guard !results.isEmpty else {
             highlighted = 0
             return
         }
         switch direction {
         case .up: highlighted = max(0, highlighted - 1)
-        case .down: highlighted = min(count - 1, highlighted + 1)
+        case .down: highlighted = min(results.count - 1, highlighted + 1)
         }
     }
 }

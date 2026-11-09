@@ -45,7 +45,8 @@ extension SunriseUITestCase {
         capture("Renew passport #inbox ^today !1 ~1h", landingAs: "Renew passport")
         capture("Email Sara about Q3 ^today !2 ~30m", landingAs: "Email Sara about Q3")
         capture("Buy groceries @home ^today ~45m", landingAs: "Buy groceries @home")
-        capture("Write the design doc ^tomorrow !1 ~2h", landingAs: "Write the design doc")
+        // Typed into Today, which does not list tomorrow.
+        capture("Write the design doc ^tomorrow !1 ~2h", listedHere: false)
         capture("Call the dentist")
         dismissKeyboard()
     }
