@@ -2498,6 +2498,17 @@
         }
       }
     },
+    "apple.commands.export_everything": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Everything…"
+          }
+        }
+      }
+    },
     "apple.day_schedule.add_month_day": {
       "extractionState": "manual",
       "localizations": {
@@ -5233,6 +5244,210 @@
           "stringUnit": {
             "state": "translated",
             "value": "Unlock"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_attachments": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg attachment was left out; the folder’s manifest.json lists it."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg attachments were left out; the folder’s manifest.json lists them."
+                    }
+                  },
+                  "zero": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "No attachments were left out."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The export did not finish"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_fetch_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg could not be downloaded. Export again while online to include it."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg could not be downloaded. Export again while online to include them."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Wrote %arg file to “%2$@”."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Wrote %arg files to “%2$@”."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_finished": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export finished"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_folder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunrise Export %1$@"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a name and place for a new folder. Everything in this vault is written into it, decrypted."
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_reveal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show in Finder"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporting everything…"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_running_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachments that are not on this Mac are downloaded first, so this can take a while."
           }
         }
       }

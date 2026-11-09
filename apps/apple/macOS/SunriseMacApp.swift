@@ -22,6 +22,9 @@ struct SunriseApp: App {
     /// Publishing into the App Group container, which is what the
     /// Notification Centre widget reads. `project.yml` names the group.
     @State private var surfaces = AppSurfaces(widgets: .appGroup())
+    /// File → Export Everything…'s state, here for the same reason as
+    /// `surfaces`: the menu item exists with every window closed.
+    @State private var exporter = ExportEverythingModel()
 
     /// Starts the updater, and that is the whole reason this initialiser
     /// exists.
@@ -45,6 +48,9 @@ struct SunriseApp: App {
         WindowGroup(L10n.Common.productName, id: SunriseWindow.main.rawValue) {
             RootView(session: session, surfaces: surfaces)
                 .frame(minWidth: 720, minHeight: 480)
+                .sheet(isPresented: exportSheetShown) {
+                    ExportEverythingSheet(model: exporter)
+                }
         }
         .defaultSize(width: 1000, height: 700)
         .commands {
@@ -63,6 +69,9 @@ struct SunriseApp: App {
             // can reach.
             CommandGroup(replacing: .importExport) {
                 IcalMenuItems(surfaces: surfaces)
+                // The whole vault, decrypted, in the open format of
+                // `docs/04-storage/export-format.md`.
+                ExportEverythingMenuItem(surfaces: surfaces, exporter: exporter)
             }
             CommandGroup(after: .importExport) {
                 Divider()
@@ -90,6 +99,15 @@ struct SunriseApp: App {
             MenuBarLabel(surfaces: surfaces)
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// Up while an export runs and until its outcome is dismissed. Closing it
+    /// any other way is ``ExportEverythingModel/dismiss()``'s to refuse.
+    private var exportSheetShown: Binding<Bool> {
+        Binding(
+            get: { exporter.phase != nil },
+            set: { shown in if !shown { exporter.dismiss() } }
+        )
     }
 }
 

@@ -1893,6 +1893,8 @@ enum L10n {
     enum Commands {
         /// Export Calendar
         static var exportCalendar: String { L10n.tr("apple.commands.export_calendar") }
+        /// Export Everything…
+        static var exportEverything: String { L10n.tr("apple.commands.export_everything") }
     }
 
     enum Mac {
@@ -1914,6 +1916,38 @@ enum L10n {
         static var pdfExportMessage: String { L10n.tr("apple.mac.pdf_export_message") }
         /// Export
         static var pdfExportPrompt: String { L10n.tr("apple.mac.pdf_export_prompt") }
+        /// Choose a name and place for a new folder. Everything in this vault is written into it, decrypted.
+        static var exportEverythingMessage: String { L10n.tr("apple.mac.export_everything_message") }
+        /// Export
+        static var exportEverythingPrompt: String { L10n.tr("apple.mac.export_everything_prompt") }
+        /// Sunrise Export {date}
+        static func exportEverythingFolder(date: String) -> String {
+            L10n.tr("apple.mac.export_everything_folder", date)
+        }
+        /// Exporting everything…
+        static var exportEverythingRunning: String { L10n.tr("apple.mac.export_everything_running") }
+        /// Attachments that are not on this Mac are downloaded first, so this can take a while.
+        static var exportEverythingRunningDetail: String { L10n.tr("apple.mac.export_everything_running_detail") }
+        /// Export finished
+        static var exportEverythingFinished: String { L10n.tr("apple.mac.export_everything_finished") }
+        /// {count, plural, one {Wrote # file to “{folder}”.} other {Wrote # files to “{folder}”.}}
+        static func exportEverythingFiles(count: Int, folder: String) -> String {
+            L10n.tr("apple.mac.export_everything_files", count, folder)
+        }
+        /// {count, plural, =0 {No attachments were left out.} one {# attachment was left out; the folder’s manifest.json lists it.} other {# attachments were left out; the folder’s manifest.json lists them.}}
+        static func exportEverythingAttachments(count: Int) -> String {
+            L10n.tr("apple.mac.export_everything_attachments", count)
+        }
+        /// {count, plural, one {# could not be downloaded. Export again while online to include it.} other {# could not be downloaded. Export again while online to include them.}}
+        static func exportEverythingFetchFailed(count: Int) -> String {
+            L10n.tr("apple.mac.export_everything_fetch_failed", count)
+        }
+        /// The export did not finish
+        static var exportEverythingFailed: String { L10n.tr("apple.mac.export_everything_failed") }
+        /// Show in Finder
+        static var exportEverythingReveal: String { L10n.tr("apple.mac.export_everything_reveal") }
+        /// Done
+        static var exportEverythingDone: String { L10n.tr("apple.mac.export_everything_done") }
         /// ⌘⇧N opens quick capture from anywhere.
         static var hotkeyActive: String { L10n.tr("apple.mac.hotkey_active") }
         /// Another app already uses ⌘⇧N. Quick capture is still on the menu bar.
