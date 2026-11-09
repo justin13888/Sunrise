@@ -294,6 +294,14 @@ fn block(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         title_track_task: false,
         tasks: BTreeSet::new(),
         deleted: false,
+        kind: None,
+        rrule: None,
+        exceptions: std::collections::BTreeMap::new(),
+        split_from: None,
+        location: None,
+        notes: None,
+        source: None,
+        external_id: None,
         unknown: sunrise_domain::Unknowns::new(),
     }
 }

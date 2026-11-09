@@ -313,6 +313,10 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 22 → 23 re-freeze (#454, identity-signed revocations) moved the same three
 /// regions and nothing else.
 ///
+/// The 23 → 24 re-freeze (#1147, a block's kind, series and import fields) moved
+/// the same three regions, and the envelope grew by one byte: 24 is the first
+/// document-schema version whose CBOR head in field 12 takes two bytes (`18 18`).
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -326,14 +330,14 @@ pub mod signed_only_envelope {
     /// `nonce` field (unused when `aead_alg = 0`).
     pub const NONCE: [u8; 24] = [0x00; 24];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 195] = super::hex(concat!(
+    pub const ENCODED: [u8; 196] = super::hex(concat!(
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840cd",
-        "9c8421207b2b23fc208c67caee4f1285e6eb8d091add1b6e6f92a3d43fd0",
-        "0f2e51099548db47ebc45c6e9ed533fcbf89bec9a399e1df2f53369f0a6c",
-        "0fc8000c170d487f0884f51ccdb23c",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584006",
+        "fff04cfa204c7babfd7efb8aecd2a4f1d34383747d836c7f36ede5bce3cf",
+        "f3792c1bb05f5bf96621de52f7de5dc0fdf267297a607d77113bbca5343e",
+        "b04b030c18180d4838b444fd794761d7",
     ));
 }
 
@@ -406,6 +410,10 @@ pub mod signed_only_envelope {
 /// The 22 → 23 re-freeze (#454, identity-signed revocations) moved the same four
 /// regions; the ciphertext at `[94..117]` is again untouched.
 ///
+/// The 23 → 24 re-freeze (#1147, a block's kind, series and import fields) moved
+/// the same four regions, and the envelope grew by one byte, field 12's value
+/// taking two (`18 18`); the ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -421,15 +429,15 @@ pub mod sealed_envelope {
     /// Stream key the payload is sealed under.
     pub const STREAM_KEY: [u8; 32] = [0x44; 32];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 212] = super::hex(concat!(
+    pub const ENCODED: [u8; 213] = super::hex(concat!(
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8b52781",
-        "2fe3a54bcae93290389dad7b300b5840eba58bf62e960b041f53c048659a",
-        "dbb736b217463143e9f7956e011ca2ca8deaab317b61f71de0f6da3af102",
-        "29a39c7dee2056e9edcf18af5b4595639aa663000c170d487f0884f51ccd",
-        "b23c",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb84bfcea",
+        "f4d5ea08a5def6ce881ae861b70b584028b237eb94229fa0ee176df0dedc",
+        "c30fcbcd205af13e9fc890d704d6c69c2a9872b54ccea654ff413e0e33b2",
+        "905a3a8546bb6bfba98285d630774cd8c7935e060c18180d4838b444fd79",
+        "4761d7",
     ));
 }
 

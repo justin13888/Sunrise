@@ -99,13 +99,22 @@ build that predates them preserves them through `unknown-fields` rather than
 dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
 `split_from` are additive in the same way.
 
-**Status in the tree.** None of the eight is on the wire yet: `Block` has the
-base fields only (`crates/sunrise-domain/src/block.rs#Block`), with `stream_id`
-optional ([#332](https://github.com/justin13888/Sunrise/issues/332)).
-[#1147](https://github.com/justin13888/Sunrise/issues/1147) adds them. The
-series model they feed is built: `BlockSeries`, `BlockException` and
-`expand_block` (`crates/sunrise-domain/src/block/series.rs`), see §Recurring
-blocks.
+**Status in the tree.** All eight are on the wire and in storage since
+`DOC_SCHEMA_V` 24 ([#1147](https://github.com/justin13888/Sunrise/issues/1147)):
+`crates/sunrise-domain/src/block.rs#Block` carries them, each absent when
+unset, so a block that sets none encodes as it did before them. `BlockKind`
+and `BlockSource` are lossless enums, and `Block::effective_kind` applies the
+migration default above. Migration 0049 gives each its own `blocks` column.
+An op carrying `rrule`, `exceptions` or `split_from` uses the feature
+`block.recurrence` (ADR-0045 §7): a build without it keeps them as unknown
+fields but would draw a recurring block as its anchor alone, so no series is
+written until every device has advertised it. `kind`, `location`, `notes`,
+`source` and `external_id` need no feature. `Block::series` hands the series
+to `expand_block` (§Recurring blocks). No command writes the new fields yet:
+the edit-scope commands are [#1148](https://github.com/justin13888/Sunrise/issues/1148)
+and the importer's mapping [#1149](https://github.com/justin13888/Sunrise/issues/1149).
+A block created in Sunrise leaves `kind` and `source` absent, which reads as
+`flexible`.
 
 Two notes on the shape:
 
@@ -196,7 +205,8 @@ What is built is the pure half, in `crates/sunrise-domain/src/block/series.rs`:
   split at the first occurrence leaves no ended series. `split_block_id` derives
   the continuation's id under its own hash domain.
 
-Storing a series on a Block is [#1147](https://github.com/justin13888/Sunrise/issues/1147).
+A Block stores its series in `rrule`, `exceptions` and `split_from`, and
+`Block::series` reads it off ([#1147](https://github.com/justin13888/Sunrise/issues/1147)).
 Expanding it in the calendar queries and the edit-scope commands are
 [#1148](https://github.com/justin13888/Sunrise/issues/1148), and drawing it on
 macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
@@ -204,8 +214,9 @@ macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
 ### Importer status
 
 `crates/sunrise-integrations` parses `RRULE`, `DESCRIPTION` and `LOCATION` out
-of a `VEVENT` and then reports each at the domain boundary as an `ICalNotice`,
-because the tree's `Block` has none of the fields above. So **a recurring event
+of a `VEVENT` and then reports each at the domain boundary as an `ICalNotice`:
+the `Block` carries the fields above, but the import does not map onto them
+yet. So **a recurring event
 imports as a single occurrence** until [#1149](https://github.com/justin13888/Sunrise/issues/1149) lands. The importer then maps
 `RRULE` to `rrule`, `EXDATE` to `cancelled` exceptions, `RECURRENCE-ID`
 overrides to exceptions, `LOCATION` to `location` and `DESCRIPTION` to `notes`,
@@ -285,8 +296,9 @@ what `source` and `external_id` serve. Not built; ranked on the roadmap
 Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
 per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
 OR-set; `exceptions` is a map of registers, one per occurrence key. A
-`core.field_ops` vault merges the scalar fields that exist and `tasks` this way;
-`exceptions` does not exist yet (§Fields, Status in the tree). A legacy vault
+`core.field_ops` vault merges every field this way: an edit of one
+occurrence's exception writes that key alone, and dropping one writes a
+tombstone for it. A legacy vault
 merges the whole Block as one full-state unit, so a concurrent bind on one
 device and unbind on another resolves by timestamp there.
 
@@ -302,7 +314,8 @@ Overlap is decided by resolving both blocks' bounds in the reader's zone
 ([`time.md` §2](../10-cross-cutting/time.md#2-comparisons-resolve-through-the-readers-zone-never-through-index_ms)),
 never on the storage index key, and recurring blocks overlap per occurrence.
 `overlaps` resolves both bounds in the reader's zone
-(`crates/sunrise-domain/src/block/conflict.rs#overlaps`).
+(`crates/sunrise-domain/src/block/conflict.rs#overlaps`), and reports each
+side's effective kind, so the planner can tell which side it may move.
 A block with a bound this build cannot place (an unknown time kind with no
 `at` instant, or the 9999-01-01 instant a client mirror shows it as) conflicts
 with nothing, and loses a merge's union to the other block's bound.

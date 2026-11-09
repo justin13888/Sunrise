@@ -22,11 +22,12 @@
 // and only in type position.
 #[allow(unused_imports)]
 use crate::{
-    Attachment, Block, CborValue, Chunk, CompatTime, Context, Energy, FocusEnd, FocusKind,
-    FocusStart, Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule,
-    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, SavedView,
-    ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
-    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
+    Attachment, Block, BlockException, BlockKind, BlockSource, CborValue, Chunk, CompatTime,
+    Context, Energy, FocusEnd, FocusKind, FocusStart, Interruption, InterruptionReason, Note,
+    NoteBody, Person, Preferences, RRule, ReviewSnapshot, ReviewSnapshotStream, ReviewTotals,
+    Routine, RoutineCatchupPolicy, SavedView, ScheduleConstraint, StreakRow, Stream, StreamColor,
+    StreamReviewCadence, SunriseTime, Task, TaskState, TaskTemplate, Unknowns, ViewFilter,
+    ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -172,6 +173,15 @@ sunrise_id::describe_value_types! {
             field: WindowField;
             from_days: Option<i32>;
             to_days: Option<i32>;
+            ..unknown
+        }
+        BlockException {
+            cancelled: bool;
+            starts_at: Option<SunriseTime>;
+            ends_at: Option<SunriseTime>;
+            title: Option<String>;
+            location: Option<String>;
+            notes: Option<NoteBody>;
             ..unknown
         }
     ],
@@ -420,6 +430,28 @@ mod tests {
                 title_track_task: false,
                 tasks: BTreeSet::new(),
                 deleted: false,
+                kind: Some(BlockKind::Fixed),
+                rrule: Some(RRule {
+                    freq: Frequency::Daily,
+                    interval: 1,
+                    by_day: Vec::new(),
+                    by_month_day: Vec::new(),
+                    by_month: Vec::new(),
+                    by_set_pos: Vec::new(),
+                    count: None,
+                    until: None,
+                    wkst: None,
+                    unknown: Unknowns::new(),
+                }),
+                exceptions: BTreeMap::from([(
+                    "2026-03-04T09:00".to_owned(),
+                    BlockException::cancelled(),
+                )]),
+                split_from: Some(eref(EntityKind::Block, 2)),
+                location: Some("Room 4".into()),
+                notes: Some(NoteBody(b"n".to_vec())),
+                source: Some(BlockSource::ImportIcs),
+                external_id: Some("uid@example.com".into()),
                 unknown: Unknowns::new(),
             },
             &[],

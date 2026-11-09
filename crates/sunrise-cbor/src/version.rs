@@ -256,7 +256,20 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// the op is emitted only into a vault that requires it, because a build
 /// that cannot read it parks it and would fold a different register. Every
 /// v1..v22 payload shape is unchanged, so the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 23;
+///
+/// `24` adds the eight optional Block fields of
+/// `docs/02-domain/time-blocks.md` §Fields (issue #1147), each absent when
+/// unset: `kind` and `source`, lossless enums (`BlockKind`, whose unknown
+/// value reads as `fixed`, and `BlockSource`); a recurring block's `rrule`,
+/// `exceptions` (a map of `BlockException` registers, one per occurrence key)
+/// and `split_from`; and `location`, `notes` and `external_id`. An op carrying
+/// `rrule`, `exceptions` or `split_from` uses the new feature
+/// `block.recurrence`: a v23 build keeps them as unknown fields but draws the
+/// block as its anchor alone, so none is written until every device has
+/// advertised it. The other five a v23 build keeps and writes back unchanged,
+/// so they need no feature. Every v1..v23 payload shape is unchanged, so the
+/// floor does not move.
+pub const DOC_SCHEMA_V: u16 = 24;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -353,6 +366,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         23,
         hex32("7f0884f51ccdb23cf36769d87c42284780101d1a4ddd0bee5afedcd78437be56"),
+    ),
+    (
+        24,
+        hex32("38b444fd794761d78a30a88636ba3d97fbe997c2152ff079db31e176013cdf67"),
     ),
 ];
 
@@ -708,7 +725,14 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// joins the row's identity, so the table is rebuilt with that identity as a
 /// unique index; `device_revocations` gains `by_authority`, 0 on every
 /// existing row. No row is otherwise rewritten, and no projection moves.
-pub const STORAGE_V: u16 = 48;
+///
+/// `49` is migration `0049_block_series_fields.sql` (issue #1147): `blocks`
+/// gains `kind`, `rrule_cbor`, `exceptions`, `split_from`, `location`,
+/// `notes`, `source` and `external_id`, NULL for every existing block.
+/// Schema-only in what it writes; the first `Core::open` after it rebuilds
+/// the projection, because the fold's version moved with it, which moves any
+/// of them a build before it kept as an unknown field into its column.
+pub const STORAGE_V: u16 = 49;
 
 #[cfg(test)]
 mod tests {

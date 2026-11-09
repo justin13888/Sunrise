@@ -274,6 +274,18 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("lww_hlc_logical", I(53)),
             ("lww_seq", I(54)),
             ("lww_device", B(&DEVICE_LAPTOP)),
+            // 0049's kind, series and import fields.
+            ("kind", T(b"fixed")),
+            ("rrule_cbor", B(b"\xa1\x64freq\x65DAILY")),
+            (
+                "exceptions",
+                B(b"\xa1\x70\x32\x30\x32\x33-11-15T22:35\xa1\x69cancelled\xf5"),
+            ),
+            ("split_from", B(&BLOCK_NO_STREAM)),
+            ("location", T(b"Room 4")),
+            ("notes", B(b"\xa1\x01\x41n")),
+            ("source", T(b"import:ics")),
+            ("external_id", T(b"uid@example.com")),
         ],
     },
     SeedRow {

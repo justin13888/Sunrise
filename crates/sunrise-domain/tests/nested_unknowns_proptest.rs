@@ -22,9 +22,9 @@ use sunrise_cbor::{decode_canonical, encode_canonical};
 use sunrise_domain::constraint::{DateRange, ScheduleConstraint, TimeOfDayRange, WeekdaySet};
 use sunrise_domain::review::StreakRow;
 use sunrise_domain::{
-    Block, Chunk, ConstraintSeverity, Energy, FocusKind, FocusStart, RRule, ReviewSnapshot,
-    ReviewSnapshotStream, ReviewTotals, Routine, SunriseTime, Task, TaskTemplate, Unknowns,
-    Weekday,
+    Block, BlockException, Chunk, ConstraintSeverity, Energy, FocusKind, FocusStart, RRule,
+    ReviewSnapshot, ReviewSnapshotStream, ReviewTotals, Routine, SunriseTime, Task, TaskTemplate,
+    Unknowns, Weekday,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -193,6 +193,30 @@ fn block() -> Block {
         title_track_task: false,
         tasks: BTreeSet::from([eref(EntityKind::Task, 1)]),
         deleted: false,
+        kind: Some(sunrise_domain::BlockKind::Fixed),
+        rrule: Some(RRule::parse("FREQ=DAILY;COUNT=3").unwrap()),
+        // Left empty: the map's own keys are occurrence keys, so a key
+        // injected into it is an occurrence, not an unknown field. One
+        // exception's own map is `block_exception_keeps_unknown_keys`.
+        exceptions: BTreeMap::new(),
+        split_from: Some(eref(EntityKind::Block, 6)),
+        location: Some("Room 4".into()),
+        notes: Some(sunrise_domain::NoteBody(b"n".to_vec())),
+        source: Some(sunrise_domain::BlockSource::ImportIcs),
+        external_id: Some("uid@example.com".into()),
+        unknown: Unknowns::new(),
+    }
+}
+
+/// An override exception with every field set.
+fn block_exception() -> BlockException {
+    BlockException {
+        cancelled: false,
+        starts_at: Some(SunriseTime::floating(date(2026, 3, 2).at(9, 30, 0, 0))),
+        ends_at: Some(SunriseTime::floating(date(2026, 3, 2).at(10, 30, 0, 0))),
+        title: Some("moved".into()),
+        location: Some("Room 5".into()),
+        notes: Some(sunrise_domain::NoteBody(b"m".to_vec())),
         unknown: Unknowns::new(),
     }
 }
@@ -298,12 +322,22 @@ proptest! {
         survives(&routine(), &per_map)?;
     }
 
-    /// A Block: its own map (its two times are known kinds).
+    /// A Block: its own map and its rule (its two times are known kinds).
     #[test]
     fn block_keeps_unknown_keys_at_every_level(
         per_map in proptest::collection::vec(injection(), 0..4),
     ) {
         survives(&block(), &per_map)?;
+    }
+
+    /// One exception of a recurring Block: its own map, as the register of
+    /// the `exceptions` map holds it, and as a Block carries it.
+    #[test]
+    fn block_exception_keeps_unknown_keys(
+        per_map in proptest::collection::vec(injection(), 0..2),
+    ) {
+        survives(&block_exception(), &per_map)?;
+        survives(&BlockException::cancelled(), &per_map)?;
     }
 
     /// A focus `start` (the `focus.start` op): its own map and its chunk

@@ -172,7 +172,10 @@ pub(super) use versions::{heads, precedes};
 /// columns (migration 0047, #331), and a later write of `Task.routine_id` or
 /// `routine_occurrence` into theirs, which only the insert wrote before: a
 /// split's continuation adopts an occurrence by writing its `routine_id`.
-pub(crate) const FOLD_V: u32 = 9;
+/// `10` projects a Block's `kind`, `rrule`, `exceptions`, `split_from`,
+/// `location`, `notes`, `source` and `external_id` into their columns
+/// (migration 0049, #1147), where a build before it kept them in `extra`.
+pub(crate) const FOLD_V: u32 = 10;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;
