@@ -41,6 +41,7 @@ pub mod notify;
 pub mod notify_catalog;
 pub mod person;
 pub mod phrase;
+pub mod place;
 pub mod planning;
 pub mod preferences;
 pub mod recur;
@@ -134,6 +135,9 @@ pub use person::Person;
 pub use phrase::{
     activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
     length_label, plan_reason, relative_day, short_duration,
+};
+pub use place::{
+    evaluate_place, select_regions, Place, PlaceEval, PlaceId, PlaceIdError, Presence, TaskPlaceReq,
 };
 pub use planning::{
     is_overdue, is_overdue_in, today_group, today_section, today_section_in, TodayGroup,

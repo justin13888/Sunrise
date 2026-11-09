@@ -259,6 +259,7 @@ pub(super) fn materialize_member(
         // eighth control family cannot be added without being considered here.
         InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
+        | InnerOp::DeviceRevokeByIdentity(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
         | InnerOp::StreamDigest(_)

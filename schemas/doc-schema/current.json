@@ -1523,6 +1523,15 @@
         {
             "field_op_kinds": [],
             "fields": [],
+            "id": "core.revoke_authority",
+            "op_kinds": ["DeviceRevokeByIdentity"],
+            "retyped": [],
+            "scope": "structural",
+            "since": 23
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
             "id": "preferences.entity",
             "op_kinds": [],
             "retyped": [],
@@ -1594,6 +1603,7 @@
         "DeviceCertPublish",
         "DeviceFeatures",
         "DeviceRevoke",
+        "DeviceRevokeByIdentity",
         "FocusEnd",
         "FocusInterrupt",
         "FocusStart",
@@ -1625,6 +1635,10 @@
         {
             "payload": "DeviceRevokePayload",
             "variant": "DeviceRevoke"
+        },
+        {
+            "payload": "DeviceRevokeByIdentityPayload",
+            "variant": "DeviceRevokeByIdentity"
         },
         {
             "payload": "IdentityTransitionPayload",
@@ -1754,6 +1768,29 @@
             ],
             "keeps_unknowns": true,
             "name": "DeviceFeaturesPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "identity_sig",
+                    "type": "[u8;64]"
+                },
+                {
+                    "name": "reason_code",
+                    "type": "RevokeReason"
+                },
+                {
+                    "name": "revoked_device_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "DeviceRevokeByIdentityPayload",
             "shape": "record"
         },
         {

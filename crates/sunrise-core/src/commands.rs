@@ -789,6 +789,30 @@ pub struct CommandResult {
     /// caller must not print a bare "revoked" over a non-empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revocation_unwound: Vec<String>,
+    /// This `RevokeDevice` was signed by the account identity, so it is an
+    /// **authority revocation** (ADR-0058): no op from any device can unwind
+    /// it while the identity that signed it is in force, and a rotation
+    /// carries it forward.
+    ///
+    /// `false` for every other command, and for a revocation from a device
+    /// that does not hold the account's signing key, which is every device
+    /// admitted by pairing. Such a revocation does everything ADR-0041 gives
+    /// an ordinary one, and a later op can still unwind it; a caller should
+    /// not describe it as permanent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoked_by_authority: bool,
+    /// The devices whose build has to be updated before this device can
+    /// revoke by authority, as lowercase hex ids. Empty for every other
+    /// command, and for every revocation this device either signed or could
+    /// never sign.
+    ///
+    /// Non-empty means this device holds the account's signing key and the
+    /// revocation went out ordinary only because these devices, which are
+    /// not revoked, have not advertised `core.revoke_authority` (ADR-0058
+    /// §7). The revocation itself is not refused or delayed: the device
+    /// being revoked is often the one the user lost.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authority_awaits_update: Vec<String>,
 }
 
 impl CommandResult {
@@ -810,7 +834,18 @@ impl CommandResult {
             unrotated_streams: Vec::new(),
             revocation_gated: false,
             revocation_unwound: Vec::new(),
+            revoked_by_authority: false,
+            authority_awaits_update: Vec::new(),
         }
+    }
+
+    /// Record whether a revocation was signed by the account identity, and
+    /// which devices' builds stood in the way when it was not.
+    #[must_use]
+    pub fn with_revocation_authority(mut self, signed: bool, awaiting: Vec<String>) -> Self {
+        self.revoked_by_authority = signed;
+        self.authority_awaits_update = awaiting;
+        self
     }
 
     /// Attach the streams a revocation could not rotate.

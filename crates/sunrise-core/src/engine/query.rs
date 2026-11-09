@@ -399,7 +399,8 @@ impl Engine {
             "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL,
                     b.device_id IS NOT NULL,
                     d.identity_id IS NOT NULL AND d.identity_id = ?1,
-                    d.admitted_after_revocation
+                    d.admitted_after_revocation,
+                    coalesce(r.by_authority, 0)
              FROM devices d
              LEFT JOIN device_revocations r ON r.device_id = d.device_id
              LEFT JOIN device_read_bounds b ON b.device_id = d.device_id",
@@ -417,6 +418,7 @@ impl Engine {
                 read_bounded: row.get(4)?,
                 current: row.get(5)?,
                 admitted_after_revocation: row.get(6)?,
+                revoked_by_authority: row.get(7)?,
             })
         })?;
         let mut out = Vec::new();

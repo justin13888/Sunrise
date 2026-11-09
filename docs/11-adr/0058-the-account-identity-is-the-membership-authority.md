@@ -4,8 +4,10 @@
 
 **Answers** [#394](https://github.com/justin13888/Sunrise/issues/394).
 
-**Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), which
-waits on §7. Nothing in the engine signs a revocation yet.
+**Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), §2–§5
+and §7. The identity-signed withdrawal of §6 is
+[#383](https://github.com/justin13888/Sunrise/issues/383)'s to build, since it
+lands second.
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user
 sees" item 4, which says no ledger-only rule settles two expelled devices one
@@ -117,11 +119,14 @@ would then converge on different registers.
 ### 3. The ledger keeps the signature, and the fold verifies it
 
 `device_revoke_ops` gains `authority_identity_id` and `authority_sig`, both
-`NULL` on an ordinary row. **`authority_identity_id` joins the row's identity
-and the pair key.** Without it, the pair compaction (#250) would keep only the
-greater-stamped of an ordinary row and an authority row from one sender to one
-target, and could delete the authority row. The per-sender cap (#315) counts
-an authority row toward its sender's cap, like any row.
+`NULL` on an ordinary row. **`authority_identity_id` joins the row's identity,
+and whether it is set joins the pair key.** Without the second, the pair
+compaction (#250) would keep only the greater-stamped of an ordinary row and
+an authority row from one sender to one target, and could delete the
+authority row. The pair key holds whether a row names an identity, not which
+one, so the rows a rotation's carry-forward (§5) re-signs under each successor
+compact to one per target. The per-sender cap (#315) counts an authority row
+toward its sender's cap, like any row, once per target.
 
 **The fold verifies the signature, not the apply.** A replica can hold an
 authority revocation signed under an identity whose transition has not
@@ -255,7 +260,10 @@ different register for good. That is the split ADR-0042 forbids.
   introduces. A client applies and emits `VaultRequires` naming it before its
   first authority revocation, as ADR-0045 §7's emission order requires.
 - **The holder emits authority revocations only while every device that is
-  not revoked advertises the feature.** Until then `Command::RevokeDevice` on
+  not revoked advertises the feature.** The device being revoked is not
+  counted: the op makes it revoked, and a stolen device that never advertises
+  the feature would otherwise keep the account from ever revoking it by
+  authority. Until then `Command::RevokeDevice` on
   the holder emits an ordinary `device_revoke`, as it does at HEAD, and its
   result says the revocation carries no authority and names the devices to
   update. Revoking is never refused for want of the feature. The device being
@@ -266,8 +274,12 @@ different register for good. That is the split ADR-0042 forbids.
   the head's `ID_S_priv` and the feature is required. A paired device cannot
   sign and emits an ordinary revocation.
 - **The device list says which kind revoked a device.** `DeviceRow` gains
-  whether the register's row for the device is an authority row, so a user
-  can tell a revocation nothing can unwind from one a later op can.
+  whether an authority row names the device at the register's fold, so a user
+  can tell a revocation nothing can unwind from one a later op can. It is
+  whether any ungated authority row names the device, not whether the row
+  that won the register is one: a later ordinary revocation can win the row,
+  since the cut and `revoked_by` still follow the LWW rule (§4), and the
+  device stays revoked by authority all the same.
 
 The same change adds the two ledger columns in a new migration and bumps
 `STORAGE_V`, and bumps `DOC_SCHEMA_V` for the op kind

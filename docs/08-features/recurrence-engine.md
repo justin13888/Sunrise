@@ -36,7 +36,7 @@ The engine supports the following RFC 5545 RRULE features. The same subset is re
 | `INTERVAL` | yes |
 | `COUNT` | yes |
 | `UNTIL` | yes; a UTC `UNTIL` is converted at import into the anchor's civil frame |
-| `BYDAY` | yes (e.g. `MO,WE,FR`, `1MO`, `-1FR`) |
+| `BYDAY` | plain weekdays only (e.g. `MO,WE,FR`); an ordinal such as `1MO` or `-1FR` is not supported — write it with `BYSETPOS` (`BYDAY=MO;BYSETPOS=1`, `BYDAY=FR;BYSETPOS=-1`) |
 | `BYMONTHDAY` | yes |
 | `BYMONTH` | yes |
 | `BYSETPOS` | yes |
@@ -51,6 +51,13 @@ The engine supports the following RFC 5545 RRULE features. The same subset is re
 `EXDATE` becomes an occurrence key, and how an unsupported part is refused, are
 in [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
 §Recurrence rule and §Skip list.
+
+An ordinal `BYDAY` token is refused where a rule is typed: `parse_recurrence`
+names the token and gives its `BYSETPOS` spelling. A stored rule that holds
+one, written by another client or a newer build, is kept verbatim as an
+unknown weekday (ADR-0045 §6): it expands to no occurrences, and its summary
+reads `unrecognised schedule (…)` so the routine's row says why it does not
+fire.
 
 Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/src/rrule.rs`), not a third-party crate: the supported subset is deliberately narrow, it adds zero unvetted transitive dependencies to a security-frozen workspace, and it lets us emit an exact error taxonomy rather than remap a library's errors. See [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md).
 

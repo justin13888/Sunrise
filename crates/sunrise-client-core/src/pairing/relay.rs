@@ -12,8 +12,11 @@
 //! Three phases, as a client sees them:
 //!
 //! 1. **Code.** The new device calls [`RelayPairing::offer`] and shows
-//!    [`RelayPairing::qr_payload`]; the existing device calls
-//!    [`RelayPairing::accept`] with the text exactly as scanned.
+//!    [`RelayPairing::qr_payload`] with [`RelayPairing::code`] beside it; the
+//!    existing device calls [`RelayPairing::accept`] with the text exactly as
+//!    scanned, or [`RelayPairing::accept_code`] with the six digits typed —
+//!    the one path with no `n_static_pub` to check, where the SAS alone
+//!    authenticates.
 //! 2. **Compare.** Both call [`RelayPairing::handshake`], which returns the
 //!    six digits once the transcript completes.
 //! 3. **Done.** On "match", the existing device calls [`RelayPairing::sponsor`]
@@ -26,7 +29,7 @@ use sunrise_core::Core;
 use sunrise_pairing::{decode_qr_payload, PairingPayload};
 
 use super::device::PairingDevice;
-use super::{scanned_pair_id, PairingFault, Rendezvous, RendezvousRole};
+use super::{resolve_code, scanned_pair_id, PairingFault, Rendezvous, RendezvousRole};
 
 /// One device's half of a pairing over the relay. See the module comment.
 pub struct RelayPairing {
@@ -96,10 +99,42 @@ impl RelayPairing {
         Ok(Self { device, rendezvous })
     }
 
+    /// Begin on the **existing** device from the six digits the new one
+    /// shows, for a device that cannot scan.
+    ///
+    /// The relay resolves the code to its session within this account. No
+    /// `n_static_pub` comes with it, so nothing binds the handshake to the
+    /// device that showed the code but the SAS, which both users compare
+    /// before anything is sent (`docs/03-crypto/pairing-and-onboarding.md`
+    /// §Out-of-band channel security).
+    ///
+    /// # Errors
+    ///
+    /// As [`resolve_code`], and [`PairingFault::Pairing`] if key generation
+    /// fails.
+    pub async fn accept_code(
+        code: &str,
+        relay_url: &str,
+        bearer: &str,
+    ) -> Result<Self, PairingFault> {
+        let pair_id = resolve_code(relay_url, bearer, code).await?;
+        let device = Arc::new(PairingDevice::accept_by_code()?);
+        let rendezvous =
+            Rendezvous::new(relay_url, bearer, pair_id, RendezvousRole::ExistingDevice)?;
+        Ok(Self { device, rendezvous })
+    }
+
     /// The QR payload to display, on the new device.
     #[must_use]
     pub fn qr_payload(&self) -> Option<String> {
         self.device.qr_payload()
+    }
+
+    /// The six digits to display beside the QR, on the new device: what the
+    /// existing device types into [`Self::accept_code`] when it cannot scan.
+    #[must_use]
+    pub fn code(&self) -> Option<String> {
+        self.rendezvous.code()
     }
 
     /// This device's side.

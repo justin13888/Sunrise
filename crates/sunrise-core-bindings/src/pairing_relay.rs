@@ -18,7 +18,9 @@
 //! 1. **Code.** The new device calls [`RelayPairing::offer`] and shows
 //!    [`RelayPairing::qr_payload`]; the existing device scans it and calls
 //!    [`RelayPairing::accept`] with the text exactly as scanned. The seam
-//!    decodes it — a client never parses a QR.
+//!    decodes it — a client never parses a QR. A device that cannot scan
+//!    types the six digits [`RelayPairing::code`] shows beside the QR into
+//!    [`RelayPairing::accept_code`] instead.
 //! 2. **Compare.** Both call [`RelayPairing::handshake`], which returns the six
 //!    digits once the transcript completes.
 //! 3. **Done.** On "Match", the existing device calls
@@ -123,10 +125,43 @@ impl RelayPairing {
         Ok(Arc::new(Self { inner }))
     }
 
+    /// Begin on the **existing** device from the six digits the new one shows
+    /// beside its QR, typed by a user whose device cannot scan.
+    ///
+    /// Spaces and dashes in `code` are ignored. The relay resolves the code
+    /// to its session within this account, so a code shown by a device signed
+    /// in to another account is not found. No `n_static_pub` comes with a
+    /// typed code: the SAS both users compare is this path's whole
+    /// authentication, and nothing is sent before they confirm it.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] for text that is not six digits or a code no
+    /// pairing of this account waits under, and [`BindingError::Relay`] for a
+    /// relay URL that is not `https://` (or `http://` to a loopback host), a
+    /// lookup over the relay's limit (with its `Retry-After`), or a relay that
+    /// cannot be reached.
+    #[uniffi::constructor]
+    pub async fn accept_code(
+        code: String,
+        relay_url: String,
+        bearer: String,
+    ) -> Result<Arc<Self>, BindingError> {
+        let inner = client::RelayPairing::accept_code(&code, &relay_url, &bearer).await?;
+        Ok(Arc::new(Self { inner }))
+    }
+
     /// The QR payload to display, on the new device.
     #[must_use]
     pub fn qr_payload(&self) -> Option<String> {
         self.inner.qr_payload()
+    }
+
+    /// The six digits to display beside the QR, on the new device, for an
+    /// existing device that cannot scan to type into [`Self::accept_code`].
+    #[must_use]
+    pub fn code(&self) -> Option<String> {
+        self.inner.code()
     }
 
     /// This device's role.
@@ -206,6 +241,17 @@ impl RelayPairing {
     pub async fn cancel(&self) {
         self.inner.cancel().await;
     }
+}
+
+/// The six digits a person typed, spaces and dashes dropped, or `None` for
+/// text that is not a typed pairing code — a QR payload never is.
+///
+/// What a field that takes either decides with: six digits go to
+/// [`RelayPairing::accept_code`], anything else to [`RelayPairing::accept`].
+#[uniffi::export]
+#[must_use]
+pub fn typed_pairing_code(text: String) -> Option<String> {
+    client::typed_code(&text)
 }
 
 /// The rendezvous's failures, as the variants a client branches on: the

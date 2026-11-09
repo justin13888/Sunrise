@@ -123,7 +123,8 @@ fn matches_bymonth(date: Date, rrule: &RRule) -> bool {
 
 /// Does `date` satisfy the `BYDAY` filter (empty list = no constraint)?
 /// `BYDAY` in the supported subset carries no ordinal prefix; ordinals are expressed
-/// via `BYSETPOS`.
+/// via `BYSETPOS`. An ordinal token (`1MO`) is an unknown weekday, so its rule
+/// never reaches here: [`expand`] returns no occurrences for it.
 fn matches_byday(date: Date, rrule: &RRule) -> bool {
     if rrule.by_day.is_empty() {
         return true;

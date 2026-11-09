@@ -46,8 +46,10 @@ enum KeychainError: Error, Equatable {
     /// A ``KeychainMigration`` found a secret already sitting at its
     /// destination whose bytes are **not** the source's, so two different
     /// secrets claim one `(service, account)` and nothing here can tell which
-    /// one the vault was sealed with. Carries no status code because no
-    /// `Security.framework` call failed: both reads succeeded and disagreed.
+    /// one the vault was sealed with — or a write's read-back found bytes other
+    /// than the ones written. Two differing *credentials* are not refused: the
+    /// migration orders them by expiry (#258). Carries no status code because
+    /// no `Security.framework` call failed: both reads succeeded and disagreed.
     ///
     /// This is the one migration failure that refuses the load. Every other
     /// one falls back to the source item, which is still readable and still

@@ -637,9 +637,10 @@ a binding that is supplied is still verified.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/pairing/send` | `{ pair_id, role, index, message }` | `200 { sent, expires_at_ms }` |
+| POST | `/api/v1/pairing/send` | `{ pair_id, role, index, message }` | `200 { sent, expires_at_ms, code? }` |
 | POST | `/api/v1/pairing/receive` | `{ pair_id, role, after }` | `200 { messages, expires_at_ms }`: the other role's messages from index `after` on |
 | POST | `/api/v1/pairing/abort` | `{ pair_id, role }` | `204`, whether or not a session was dropped |
+| POST | `/api/v1/pairing/resolve` | `{ code }` | `200 { pair_id, expires_at_ms }`: the session a typed six-digit code names |
 
 `pair_id` is the QR's, 16 bytes base64url; `role` is `new_device` or
 `existing_device`; `message` is one Noise message, base64url, 1 to 64 KiB
@@ -662,6 +663,14 @@ decoded. The relay never reads it.
   expired, aborted, overflowed, or another account's — is `404
   RELAY_PAIR_SESSION_GONE`. The answer is the same in every case, so the route
   is not an oracle for live pair ids. Start again from a new code.
+- **Each session gets a six-digit `code`** when it opens, for an existing
+  device that cannot scan the QR. `send` returns it to the new device until the
+  existing device has sent its first message; after that it no longer
+  resolves. It is unique among the live sessions of one account, and `resolve`
+  answers only within the caller's account: a code that is unknown there —
+  never given, expired, spent, or another account's — is the same `404
+  RELAY_PAIR_SESSION_GONE`. Every lookup, hit or miss, is charged to ledgers
+  of its own under the same limits as opening a session (§Rate limits).
 
 Clients poll `receive`; there is no stream.
 
@@ -789,7 +798,7 @@ refills continuously.
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
 | `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `PUT /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
 | `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}`, `GET /api/v1/snapshots/{stream_id}`, `PUT /api/v1/snapshots/{stream_id}`, `GET /api/v1/accounts/me/key_bundle`, `PUT /api/v1/accounts/me/key_bundle`, `GET /api/v1/accounts/me/identity_chain`, `PUT /api/v1/accounts/me/identity_chain` | bearer+sig | 600 / min (`blob_per_min`) |
-| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
+| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort`, `POST /api/v1/pairing/resolve` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
 `account`, `blob` or `sync` route is counted, 20 per five minutes

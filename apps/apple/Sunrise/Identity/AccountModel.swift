@@ -168,17 +168,16 @@ final class AccountModel {
     /// a token is sitting in it. `KeychainError.otherDomainUnreadable` is the
     /// shape that arrives when the refusing store is the one this build did not
     /// resolve to; `KeychainError.migrationUnverified` is the shape that arrives
-    /// once two tokens already disagree.
+    /// when the migration's read-back finds a token other than the one it just
+    /// wrote. Two tokens that merely disagree no longer raise it: the migration
+    /// orders them by `expiresAtMs` and keeps the fresher (#258).
     ///
-    /// A `try?` here collapsed the second answer into the first, and the
-    /// collapse was not cosmetic. The signed-out row offers exactly one thing,
-    /// Sign in; signing in writes a *fresh* token into the domain this build
-    /// resolved to while the unreadable one stays where it was; and two secrets
-    /// under one `(service, account)` is `migrationUnverified` on every later
-    /// launch — signed out in silence, for good, by the remedy the app itself
-    /// held out. `KeychainCredentialStore.save` describes the same loop from the
-    /// writing end, and names the one thing that ends it: a sign-in's
-    /// cross-domain write collapses the pair.
+    /// A `try?` here collapsed the refusal into "signed out", and the collapse
+    /// was not cosmetic. The signed-out row offers exactly one thing, Sign in;
+    /// signing in writes a *fresh* token into the domain this build resolved to
+    /// while the unreadable one stays where it was, and the user is signed out
+    /// in silence by the remedy the app itself held out, with the refused copy
+    /// still a live refresh token nobody read.
     ///
     /// So the refusal is reported. It renders through `failed`, which already
     /// carries a sentence — for `otherDomainUnreadable` one naming the *other*
@@ -243,6 +242,13 @@ final class AccountModel {
     /// ``KeychainItem/writeAcrossDomains(_:)`` writes this domain and deletes
     /// the other, which is the collapse that ends the disagreement. Blocking the
     /// login there does not prevent a second token; it prevents the repair.
+    ///
+    /// For the credential store that shape is now narrow: two copies that
+    /// differ are ordered by expiry rather than refused (#258), so it arrives
+    /// only when the migration's read-back after a write finds a token other
+    /// than the one written — a second process writing between the two calls.
+    /// The case stays because the switch is exhaustive and the answer for it
+    /// is still right.
     private static func mayHaveLeftACopyUnread(_ error: any Error) -> Bool {
         guard let refusal = error as? KeychainError else { return true }
         switch refusal {
@@ -269,8 +275,8 @@ final class AccountModel {
         //
         // What is guarded is the *shape* of the last refusal, not the fact of
         // one. `migrationUnverified` never sets the flag and so never reaches
-        // this block: there the two copies already exist and have both been
-        // read, and the login below is what collapses them. Gating on any throw
+        // this block: there both copies have been read, and the login below is
+        // what collapses them. Gating on any throw
         // is what left that shape with no remedy at all — every Try again
         // re-threw and returned. See `mayHaveLeftACopyUnread(_:)`.
         if storeRefusedToAnswer {

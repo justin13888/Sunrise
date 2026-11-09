@@ -19,6 +19,10 @@ struct PairingView: View {
     let dismiss: () -> Void
     /// The scanner sheet, over this one. Only the code leg offers it.
     @State private var scanning = false
+    /// Whether the code leg shows the six-digit field rather than the paste
+    /// block: "Enter code", or a scanner left because the camera cannot scan.
+    @State private var typingCode = false
+    @FocusState private var codeFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,7 +45,14 @@ struct PairingView: View {
                     model.pasted = payload
                     Task { await model.submit() }
                 },
-                pasteInstead: { scanning = false }
+                offersTypedCode: model.transport == .relay,
+                // One tap from a refused or missing camera to the six-digit
+                // field: the scanner's way out lands on it, focused.
+                pasteInstead: {
+                    scanning = false
+                    typingCode = true
+                    codeFieldFocused = true
+                }
             )
         }
     }
@@ -247,6 +258,26 @@ struct PairingView: View {
                     )
                     .foregroundStyle(.orange)
                 }
+                // Beside the QR, for an existing device that cannot scan: it
+                // types these, and the relay finds this session by them.
+                if let typedCode = handOff.typedCode {
+                    VStack(spacing: 4) {
+                        Text(L10n.Pairing.typedCodeLabel)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Text(SASConfirmation.grouped(typedCode))
+                            .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                            .tracking(3)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("pairing.typedCode")
+                            .accessibilityLabel(
+                                L10n.Pairing.typedCodeAccessibility(
+                                    digits: typedCode.map(String.init).joined(separator: " ")
+                                )
+                            )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
                 if !model.accountTag.isEmpty {
                     LabeledContent(L10n.Pairing.accountTag, value: model.accountTag)
                         .monospaced()
@@ -271,23 +302,45 @@ struct PairingView: View {
             // it needs no permission, works on a Mac with the lid shut, and is
             // the only thing that can carry the Noise messages of the manual
             // flow — they are far too long to scan.
+            // "Enter code" beside it, for a device with no camera: the six
+            // digits the other device shows beside its QR, which the relay
+            // resolves within this account.
             if prompt.leg == .code {
-                Button(L10n.Pairing.scanCode, systemImage: "qrcode.viewfinder") { scanning = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .accessibilityIdentifier("pairing.scan")
+                HStack(spacing: 12) {
+                    Button(L10n.Pairing.scanCode, systemImage: "qrcode.viewfinder") { scanning = true }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("pairing.scan")
+                    if model.transport == .relay {
+                        Button(L10n.Pairing.enterCode, systemImage: "number") {
+                            typingCode = true
+                            codeFieldFocused = true
+                        }
+                        .accessibilityIdentifier("pairing.enterCode")
+                    }
+                }
+                .controlSize(.large)
             }
-            TextEditor(text: $model.pasted)
-                // A Noise message in base64. Autocapitalising its first
-                // character or "correcting" a run of letters inside it
-                // produces a block that looks right and no longer decodes,
-                // which is the worst failure this screen can have: the
-                // handshake is refused and nothing on screen says why.
-                .textInput(.opaque)
-                .font(.system(.body, design: .monospaced))
-                .frame(height: 120)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                .accessibilityIdentifier("pairing.paste")
+            if prompt.leg == .code, typingCode, model.transport == .relay {
+                TextField(L10n.Pairing.codeField, text: $model.pasted, prompt: Text(verbatim: "123 456"))
+                    .textInput(.opaque)
+                    .font(.system(.title2, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                    .focused($codeFieldFocused)
+                    .onSubmit { Task { await model.submit() } }
+                    .accessibilityIdentifier("pairing.code")
+            } else {
+                TextEditor(text: $model.pasted)
+                    // A Noise message in base64. Autocapitalising its first
+                    // character or "correcting" a run of letters inside it
+                    // produces a block that looks right and no longer decodes,
+                    // which is the worst failure this screen can have: the
+                    // handshake is refused and nothing on screen says why.
+                    .textInput(.opaque)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 120)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                    .accessibilityIdentifier("pairing.paste")
+            }
             HStack {
                 Button(L10n.Pairing.paste, systemImage: "doc.on.clipboard") {
                     model.pasted = PlatformPasteboard.string ?? model.pasted
@@ -381,10 +434,14 @@ private struct SASConfirmation: View {
     /// Grouped three and three. A run of six digits is read wrong far more
     /// often than two groups of three, and being read wrong is the failure
     /// this screen exists to prevent.
-    private var spaced: String {
-        guard sas.count == 6 else { return sas }
-        let middle = sas.index(sas.startIndex, offsetBy: 3)
-        return "\(sas[sas.startIndex..<middle]) \(sas[middle...])"
+    private var spaced: String { Self.grouped(sas) }
+
+    /// Six digits as two groups of three; anything else as it came. The typed
+    /// pairing code is shown the same way, for the same reason.
+    static func grouped(_ digits: String) -> String {
+        guard digits.count == 6 else { return digits }
+        let middle = digits.index(digits.startIndex, offsetBy: 3)
+        return "\(digits[digits.startIndex..<middle]) \(digits[middle...])"
     }
 }
 

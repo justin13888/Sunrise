@@ -207,6 +207,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "routine_series",
         sql: include_str!("../migrations/0047_routine_series.sql"),
     },
+    Migration {
+        id: 48,
+        name: "device_revoke_authority",
+        sql: include_str!("../migrations/0048_device_revoke_authority.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

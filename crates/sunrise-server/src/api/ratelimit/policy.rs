@@ -27,7 +27,7 @@ pub enum RouteGroup {
     Account,
     /// The four blob routes.
     Blob,
-    /// The five sync routes, and the three pairing rendezvous routes.
+    /// The five sync routes, and the four pairing rendezvous routes.
     Sync,
 }
 
@@ -114,7 +114,9 @@ pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
             // limits in `api/pairing.rs` are what bound pairing itself.
             | "/api/v1/pairing/send"
             | "/api/v1/pairing/receive"
-            | "/api/v1/pairing/abort",
+            | "/api/v1/pairing/abort"
+            // Once a pairing, and charged to code-lookup ledgers of its own.
+            | "/api/v1/pairing/resolve",
         )
         | ("GET", "/api/v1/sync/events") => Sync,
         _ => return None,

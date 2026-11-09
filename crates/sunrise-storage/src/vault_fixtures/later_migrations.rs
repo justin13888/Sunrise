@@ -356,3 +356,54 @@ fn a_v46_vaults_tasks_gain_an_unviolated_hard_constraint_and_routines_no_split_a
         "no routine starts split"
     );
 }
+
+/// Migration 0048 (#454, ADR-0058 §3) over a real v47 vault: every ledger
+/// row survives the rebuild as an ordinary row, with no identity and no
+/// signature, every register row starts as not revoked by authority, and the
+/// row's identity now includes the identity an authority row names, so an
+/// authority row at an ordinary row's stamp is a second row and a second copy
+/// of the ordinary row is still refused.
+#[test]
+fn a_v47_vaults_revocations_stay_ordinary_and_gain_an_authority_identity_after_0048() {
+    let (_dir, db) = open_migrated(&fixture_name(47));
+    let count = |sql: &str| -> i64 {
+        db.conn()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+    };
+    let ledger = row_count(&db, "device_revoke_ops");
+    assert!(ledger > 0, "the fixture's ledger survives");
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM device_revoke_ops
+             WHERE authority_identity_id IS NULL AND authority_sig IS NULL"
+        ),
+        ledger,
+        "every existing row is ordinary"
+    );
+    let register = row_count(&db, "device_revocations");
+    assert!(register > 0, "the fixture's register survives");
+    assert_eq!(
+        count("SELECT count(*) FROM device_revocations WHERE by_authority = 0"),
+        register,
+        "no existing revocation is by authority"
+    );
+
+    let copy = |authority: Option<&[u8]>| {
+        db.conn().execute(
+            "INSERT OR IGNORE INTO device_revoke_ops
+                 (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                  recorded_at_ms, authority_identity_id, authority_sig)
+             SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                    recorded_at_ms, ?1, ?2
+             FROM device_revoke_ops LIMIT 1",
+            rusqlite::params![authority, authority.map(|_| [0u8; 64].to_vec())],
+        )
+    };
+    assert_eq!(copy(None).unwrap(), 0, "an ordinary row is stored once");
+    assert_eq!(
+        copy(Some(&[0x2b; 16])).unwrap(),
+        1,
+        "an authority row at the same stamp is a row of its own"
+    );
+}

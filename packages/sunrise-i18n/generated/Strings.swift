@@ -545,6 +545,16 @@ enum L10n {
         }
         /// Scan the code
         static var scanCode: String { L10n.tr("apple.pairing.scan_code") }
+        /// Enter code
+        static var enterCode: String { L10n.tr("apple.pairing.enter_code") }
+        /// Six-digit code
+        static var codeField: String { L10n.tr("apple.pairing.code_field") }
+        /// No camera? Type this code instead
+        static var typedCodeLabel: String { L10n.tr("apple.pairing.typed_code_label") }
+        /// Pairing code {digits}
+        static func typedCodeAccessibility(digits: String) -> String {
+            L10n.tr("apple.pairing.typed_code_accessibility", digits)
+        }
         /// Paste
         static var paste: String { L10n.tr("apple.pairing.paste") }
         /// Copy
@@ -620,7 +630,7 @@ enum L10n {
         enum Legs {
             /// Scan this with the device that has your vault
             static var relayCodeTitle: String { L10n.tr("apple.pairing.legs.relay_code_title") }
-            /// On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read.
+            /// On that device, open Settings › Vaults › Add a device and choose Scan, or Enter code to type the six digits below. The code works for five minutes; this screen moves on by itself once it has been read.
             static var relayCodeInstruction: String { L10n.tr("apple.pairing.legs.relay_code_instruction") }
             /// Show this to the device that has your vault
             static var codeTitle: String { L10n.tr("apple.pairing.legs.code_title") }
@@ -648,6 +658,8 @@ enum L10n {
             static var promptCodeTitle: String { L10n.tr("apple.pairing.legs.prompt_code_title") }
             /// That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here.
             static var promptCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_code_instruction") }
+            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here.
+            static var promptRelayCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_relay_code_instruction") }
             /// Paste what the other device is showing
             static var promptMessageTitle: String { L10n.tr("apple.pairing.legs.prompt_message_title") }
             /// Copy the block from the other device's screen and paste it here.
@@ -671,14 +683,20 @@ enum L10n {
             static var title: String { L10n.tr("apple.pairing.scan.title") }
             /// Paste the code instead
             static var pasteInstead: String { L10n.tr("apple.pairing.scan.paste_instead") }
+            /// Type or paste the code instead
+            static var typeInstead: String { L10n.tr("apple.pairing.scan.type_instead") }
             /// Sunrise cannot use the camera
             static var refusedTitle: String { L10n.tr("apple.pairing.scan.refused_title") }
             /// Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
             static var refusedDetail: String { L10n.tr("apple.pairing.scan.refused_detail") }
+            /// Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
+            static var refusedDetailTyped: String { L10n.tr("apple.pairing.scan.refused_detail_typed") }
             /// There is no camera here that can scan
             static var noCameraTitle: String { L10n.tr("apple.pairing.scan.no_camera_title") }
             /// Paste the text shown under the code instead.
             static var noCameraDetail: String { L10n.tr("apple.pairing.scan.no_camera_detail") }
+            /// Type the six-digit code shown beside it, or paste the text shown under it, instead.
+            static var noCameraDetailTyped: String { L10n.tr("apple.pairing.scan.no_camera_detail_typed") }
         }
     }
 
@@ -1893,6 +1911,8 @@ enum L10n {
     enum Commands {
         /// Export Calendar
         static var exportCalendar: String { L10n.tr("apple.commands.export_calendar") }
+        /// Export Everything…
+        static var exportEverything: String { L10n.tr("apple.commands.export_everything") }
     }
 
     enum Mac {
@@ -1914,6 +1934,38 @@ enum L10n {
         static var pdfExportMessage: String { L10n.tr("apple.mac.pdf_export_message") }
         /// Export
         static var pdfExportPrompt: String { L10n.tr("apple.mac.pdf_export_prompt") }
+        /// Choose a name and place for a new folder. Everything in this vault is written into it, decrypted.
+        static var exportEverythingMessage: String { L10n.tr("apple.mac.export_everything_message") }
+        /// Export
+        static var exportEverythingPrompt: String { L10n.tr("apple.mac.export_everything_prompt") }
+        /// Sunrise Export {date}
+        static func exportEverythingFolder(date: String) -> String {
+            L10n.tr("apple.mac.export_everything_folder", date)
+        }
+        /// Exporting everything…
+        static var exportEverythingRunning: String { L10n.tr("apple.mac.export_everything_running") }
+        /// Attachments that are not on this Mac are downloaded first, so this can take a while.
+        static var exportEverythingRunningDetail: String { L10n.tr("apple.mac.export_everything_running_detail") }
+        /// Export finished
+        static var exportEverythingFinished: String { L10n.tr("apple.mac.export_everything_finished") }
+        /// {count, plural, one {Wrote # file to “{folder}”.} other {Wrote # files to “{folder}”.}}
+        static func exportEverythingFiles(count: Int, folder: String) -> String {
+            L10n.tr("apple.mac.export_everything_files", count, folder)
+        }
+        /// {count, plural, =0 {No attachments were left out.} one {# attachment was left out; the folder’s manifest.json lists it.} other {# attachments were left out; the folder’s manifest.json lists them.}}
+        static func exportEverythingAttachments(count: Int) -> String {
+            L10n.tr("apple.mac.export_everything_attachments", count)
+        }
+        /// {count, plural, one {# could not be downloaded. Export again while online to include it.} other {# could not be downloaded. Export again while online to include them.}}
+        static func exportEverythingFetchFailed(count: Int) -> String {
+            L10n.tr("apple.mac.export_everything_fetch_failed", count)
+        }
+        /// The export did not finish
+        static var exportEverythingFailed: String { L10n.tr("apple.mac.export_everything_failed") }
+        /// Show in Finder
+        static var exportEverythingReveal: String { L10n.tr("apple.mac.export_everything_reveal") }
+        /// Done
+        static var exportEverythingDone: String { L10n.tr("apple.mac.export_everything_done") }
         /// ⌘⇧N opens quick capture from anywhere.
         static var hotkeyActive: String { L10n.tr("apple.mac.hotkey_active") }
         /// Another app already uses ⌘⇧N. Quick capture is still on the menu bar.
@@ -2024,6 +2076,44 @@ enum L10n {
         static var sampleFlights: String { L10n.tr("apple.widget.sample_flights") }
         /// Water the plants
         static var samplePlants: String { L10n.tr("apple.widget.sample_plants") }
+
+        enum Capture {
+            /// Quick Capture
+            static var displayName: String { L10n.tr("apple.widget.capture.display_name") }
+            /// Opens Sunrise with the capture sheet ready for a new task.
+            static var description: String { L10n.tr("apple.widget.capture.description") }
+            /// Capture a task
+            static var accessibility: String { L10n.tr("apple.widget.capture.accessibility") }
+        }
+
+        enum StreamTile {
+            /// Stream
+            static var displayName: String { L10n.tr("apple.widget.stream_tile.display_name") }
+            /// The first open tasks in a stream you choose.
+            static var description: String { L10n.tr("apple.widget.stream_tile.description") }
+            /// Choose Stream
+            static var intentTitle: String { L10n.tr("apple.widget.stream_tile.intent_title") }
+            /// Pick the stream this widget shows.
+            static var intentDescription: String { L10n.tr("apple.widget.stream_tile.intent_description") }
+            /// Stream
+            static var streamParameter: String { L10n.tr("apple.widget.stream_tile.stream_parameter") }
+            /// Stream
+            static var streamType: String { L10n.tr("apple.widget.stream_tile.stream_type") }
+            /// {count, plural, one {# open} other {# open}}
+            static func openCount(count: Int) -> String {
+                L10n.tr("apple.widget.stream_tile.open_count", count)
+            }
+            /// Nothing open in this stream
+            static var empty: String { L10n.tr("apple.widget.stream_tile.empty") }
+            /// Edit the widget to choose a stream
+            static var choose: String { L10n.tr("apple.widget.stream_tile.choose") }
+            /// This stream is not available. Edit the widget to choose another.
+            static var missing: String { L10n.tr("apple.widget.stream_tile.missing") }
+            /// Open Sunrise to show this stream
+            static var openApp: String { L10n.tr("apple.widget.stream_tile.open_app") }
+            /// Work
+            static var sampleName: String { L10n.tr("apple.widget.stream_tile.sample_name") }
+        }
     }
 
     enum Intents {
@@ -2059,6 +2149,13 @@ enum L10n {
             static func capturedWithIssues(rest: Int, title: String, issue: String) -> String {
                 L10n.tr("apple.intents.capture_task.captured_with_issues", rest, title, issue)
             }
+        }
+
+        enum OpenCapture {
+            /// Open Quick Capture
+            static var title: String { L10n.tr("apple.intents.open_capture.title") }
+            /// Opens Sunrise with the capture sheet ready for a new task.
+            static var description: String { L10n.tr("apple.intents.open_capture.description") }
         }
 
         enum CompleteTask {

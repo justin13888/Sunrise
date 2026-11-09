@@ -2498,6 +2498,17 @@
         }
       }
     },
+    "apple.commands.export_everything": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Everything…"
+          }
+        }
+      }
+    },
     "apple.day_schedule.add_month_day": {
       "extractionState": "manual",
       "localizations": {
@@ -4247,6 +4258,28 @@
         }
       }
     },
+    "apple.intents.open_capture.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens Sunrise with the capture sheet ready for a new task."
+          }
+        }
+      }
+    },
+    "apple.intents.open_capture.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Quick Capture"
+          }
+        }
+      }
+    },
     "apple.intents.shortcuts.capture": {
       "extractionState": "manual",
       "localizations": {
@@ -5215,6 +5248,210 @@
         }
       }
     },
+    "apple.mac.export_everything_attachments": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg attachment was left out; the folder’s manifest.json lists it."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg attachments were left out; the folder’s manifest.json lists them."
+                    }
+                  },
+                  "zero": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "No attachments were left out."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The export did not finish"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_fetch_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg could not be downloaded. Export again while online to include it."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg could not be downloaded. Export again while online to include them."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Wrote %arg file to “%2$@”."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Wrote %arg files to “%2$@”."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_finished": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export finished"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_folder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunrise Export %1$@"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a name and place for a new folder. Everything in this vault is written into it, decrypted."
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_reveal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show in Finder"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exporting everything…"
+          }
+        }
+      }
+    },
+    "apple.mac.export_everything_running_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachments that are not on this Mac are downloaded first, so this can take a while."
+          }
+        }
+      }
+    },
     "apple.mac.hotkey_active": {
       "extractionState": "manual",
       "localizations": {
@@ -6150,6 +6387,17 @@
         }
       }
     },
+    "apple.pairing.code_field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Six-digit code"
+          }
+        }
+      }
+    },
     "apple.pairing.connecting": {
       "extractionState": "manual",
       "localizations": {
@@ -6223,6 +6471,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Email"
+          }
+        }
+      }
+    },
+    "apple.pairing.enter_code": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter code"
           }
         }
       }
@@ -6436,6 +6695,17 @@
         }
       }
     },
+    "apple.pairing.legs.prompt_relay_code_instruction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That device is showing a QR code with the same text underneath it. Scan it with the camera, type the six-digit code shown beside it, or paste the text here."
+          }
+        }
+      }
+    },
     "apple.pairing.legs.prompt_request_instruction": {
       "extractionState": "manual",
       "localizations": {
@@ -6464,7 +6734,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read."
+            "value": "On that device, open Settings › Vaults › Add a device and choose Scan, or Enter code to type the six digits below. The code works for five minutes; this screen moves on by itself once it has been read."
           }
         }
       }
@@ -6799,6 +7069,17 @@
         }
       }
     },
+    "apple.pairing.scan.no_camera_detail_typed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type the six-digit code shown beside it, or paste the text shown under it, instead."
+          }
+        }
+      }
+    },
     "apple.pairing.scan.no_camera_title": {
       "extractionState": "manual",
       "localizations": {
@@ -6832,6 +7113,17 @@
         }
       }
     },
+    "apple.pairing.scan.refused_detail_typed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera access is off for Sunrise. Type the six-digit code shown beside it, or paste the text shown under it, instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
+          }
+        }
+      }
+    },
     "apple.pairing.scan.refused_title": {
       "extractionState": "manual",
       "localizations": {
@@ -6850,6 +7142,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scan the pairing code"
+          }
+        }
+      }
+    },
+    "apple.pairing.scan.type_instead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type or paste the code instead"
           }
         }
       }
@@ -6938,6 +7241,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pair this %1$@"
+          }
+        }
+      }
+    },
+    "apple.pairing.typed_code_accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pairing code %1$@"
+          }
+        }
+      }
+    },
+    "apple.pairing.typed_code_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No camera? Type this code instead"
           }
         }
       }
@@ -11052,6 +11377,39 @@
         }
       }
     },
+    "apple.widget.capture.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture a task"
+          }
+        }
+      }
+    },
+    "apple.widget.capture.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens Sunrise with the capture sheet ready for a new task."
+          }
+        }
+      }
+    },
+    "apple.widget.capture.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quick Capture"
+          }
+        }
+      }
+    },
     "apple.widget.circular_accessibility": {
       "extractionState": "manual",
       "localizations": {
@@ -11389,6 +11747,160 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scheduled"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.choose": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit the widget to choose a stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The first open tasks in a stream you choose."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing open in this stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.intent_description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the stream this widget shows."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.intent_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This stream is not available. Edit the widget to choose another."
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.open_app": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Sunrise to show this stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.open_count": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg open"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg open"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.sample_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Work"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.stream_parameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
+          }
+        }
+      }
+    },
+    "apple.widget.stream_tile.stream_type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream"
           }
         }
       }

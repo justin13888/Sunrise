@@ -55,6 +55,10 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// it is a **forward-compatible** act: older readers keep decoding, and see
 /// fields they do not know as preserved unknowns.
 ///
+/// The entries below are the only record of what each version changed;
+/// `docs/10-cross-cutting/protocol-versioning.md` §2 states the rule they
+/// follow and links here. A bump adds its entry in the same change.
+///
 /// `2` re-typed `Task.scheduled_at` / `due_at` / `completed_at` and
 /// `Block.starts_at` / `ends_at` from a bare instant to a tagged
 /// `SunriseTime` (issue #6, ADR-0017). A v1 payload still decodes: the bare
@@ -119,8 +123,11 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// replica's frontier in one stream and its digest, which a receiver compares
 /// with its own chain roots. Every v8 shape is unchanged, so the floor does
 /// not move. A v8 build parks a `StreamDigest` and replays it after an
-/// upgrade. Envelope fields 14 and 15 land with it, but they are container
-/// fields, not document schema, and move nothing here.
+/// upgrade. It is emitted without a feature gate, because a build that parks
+/// one loses no data: a digest changes no entity, and the parked op only
+/// delays that replica's comparison until it upgrades. Envelope fields 14 and
+/// 15 land with it, but they are container fields, not document schema, and
+/// move nothing here.
 ///
 /// `10` adds the two feature control families, `VaultRequires` and
 /// `DeviceFeatures`, and the feature registry to the canonical schema
@@ -241,7 +248,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// build keeps as an unknown field and writes back unchanged, so it needs no
 /// feature. Every v1..v21 payload shape is unchanged, so the floor does not
 /// move.
-pub const DOC_SCHEMA_V: u16 = 22;
+///
+/// `23` adds the control family `DeviceRevokeByIdentity` (ADR-0058, issue
+/// #454): a device revocation signed by the account identity in force, which
+/// the revocation fold never gates and whose revoker the discount never
+/// removes. Its feature, the structural `core.revoke_authority`, names it, and
+/// the op is emitted only into a vault that requires it, because a build
+/// that cannot read it parks it and would fold a different register. Every
+/// v1..v22 payload shape is unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 23;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -334,6 +349,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         22,
         hex32("878b79742cd6b1884edbbdc4977f89c29391aebff25cb005d9e1cfcaae9a9454"),
+    ),
+    (
+        23,
+        hex32("7f0884f51ccdb23cf36769d87c42284780101d1a4ddd0bee5afedcd78437be56"),
     ),
 ];
 
@@ -682,7 +701,14 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// `Core::open` after it rebuilds the projection, because the fold's version
 /// moved with it, which moves either value a build before it kept as an
 /// unknown field into its column.
-pub const STORAGE_V: u16 = 47;
+///
+/// `48` is migration `0048_device_revoke_authority.sql` (issue #454,
+/// ADR-0058 §3): `device_revoke_ops` gains `authority_identity_id` and
+/// `authority_sig`, NULL on every existing row, and the identity it names
+/// joins the row's identity, so the table is rebuilt with that identity as a
+/// unique index; `device_revocations` gains `by_authority`, 0 on every
+/// existing row. No row is otherwise rewritten, and no projection moves.
+pub const STORAGE_V: u16 = 48;
 
 #[cfg(test)]
 mod tests {

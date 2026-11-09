@@ -18,11 +18,11 @@ struct WidgetPublisherTests {
         )
     }
 
-    private func draft(_ title: String, dueAt: TimeValue? = nil) -> TaskDraftIn {
+    private func draft(_ title: String, dueAt: TimeValue? = nil, stream: EntityRef? = nil) -> TaskDraftIn {
         TaskDraftIn(
             title: title,
             body: nil,
-            streamId: nil,
+            streamId: stream,
             contexts: [],
             priority: nil,
             energy: nil,
@@ -100,6 +100,17 @@ struct WidgetPublisherTests {
         #expect(!base.drawsTheSameAs(different))
     }
 
+    /// A Stream tile finds its stream by id, and a stream the snapshot does
+    /// not carry is absent rather than another stream.
+    @Test
+    func aStreamTileFindsItsStreamById() {
+        let travel = WidgetSnapshot.StreamTile(id: "str_travel", name: "Travel", outstanding: 0, rows: [])
+        let snapshot = WidgetSnapshot(writtenAtMs: 0, outstanding: 0, overdue: 0, rows: [], streams: [travel])
+
+        #expect(snapshot.stream("str_travel") == travel)
+        #expect(snapshot.stream("str_gone") == nil)
+    }
+
     // MARK: - The projection
 
     /// The rows are Today's open tasks, in the core's sections, each linking
@@ -153,6 +164,58 @@ struct WidgetPublisherTests {
         let snapshot = try #require(store.read())
         #expect(snapshot.rows.count == WidgetSnapshot.rowLimit)
         #expect(snapshot.outstanding == total)
+        await vault.bridge.shutdown()
+    }
+
+    /// Each stream carries its own open tasks, with links that parse back,
+    /// so the Stream tile draws what the stream holds and nothing finished.
+    @Test
+    func eachStreamCarriesItsOpenTasks() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        await browse.createStream(name: "Travel", color: .sky)
+        await browse.refresh()
+        let travel = try #require(browse.streams.first { $0.name == "Travel" })
+        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await list.create(draft("Book flights", stream: travel.id))
+        await list.create(draft("Pack", stream: travel.id))
+        await list.create(draft("Not travel"))
+        let travelList = TaskListModel(bridge: vault.bridge, kind: .stream(id: travel.id, name: travel.name))
+        await travelList.refresh()
+        await travelList.complete(try #require(travelList.tasks.first { $0.title == "Pack" }))
+
+        let store = scratchStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        await WidgetPublisher(bridge: vault.bridge, store: store, reload: {}).publish()
+
+        let snapshot = try #require(store.read())
+        let tile = try #require(snapshot.stream(travel.id))
+        #expect(tile.name == "Travel")
+        #expect(tile.outstanding == 1, "a completed task is not left to do")
+        #expect(tile.rows.map(\.title) == ["Book flights"])
+        let link = try #require(tile.rows.first?.link)
+        #expect(DeepLink(url: link) == .task(tile.rows[0].id, .open))
+        await vault.bridge.shutdown()
+    }
+
+    /// Only ``WidgetSnapshot/streamLimit`` streams are carried, the first ones
+    /// in the list the Shortcuts stream picker offers.
+    @Test
+    func theStreamsAreCappedInTheCoresOrder() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        for index in 0 ... WidgetSnapshot.streamLimit {
+            await browse.createStream(name: "Stream \(index)", color: nil)
+        }
+
+        let store = scratchStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        await WidgetPublisher(bridge: vault.bridge, store: store, reload: {}).publish()
+
+        let snapshot = try #require(store.read())
+        #expect(snapshot.streams.count == WidgetSnapshot.streamLimit)
+        let listed = try await StreamLookup.all(in: vault.bridge)
+        #expect(snapshot.streams.map(\.id) == listed.prefix(WidgetSnapshot.streamLimit).map(\.id))
         await vault.bridge.shutdown()
     }
 

@@ -6,15 +6,30 @@
 //! shutdown.
 //!
 //! Determinism rules (per spec):
-//! 1. No clock access except via `CoreConfig::clock`.
+//! 1. No clock access except via `CoreConfig::clock`. Enforced by the
+//!    `disallowed-methods` entries in `clippy.toml` (`SystemTime::now`,
+//!    `Instant::now`, and jiff's host-zone reads), which `mise run
+//!    rust-clippy` denies. The two production reads in [`config`] (the
+//!    wall clock in `SystemClock`, the host zone) each carry their own
+//!    narrowly-scoped `#[allow]`.
 //! 2. No filesystem access except via `CoreConfig::storage`, with two
 //!    exceptions this crate does make directly and which
 //!    `.github/scripts/core-filesystem-gate.py` allows by name: the OS
 //!    advisory lock in [`vault_lock`], and the `/etc/localtime` read in
 //!    [`config`] that recovers the host's zone name. Everything else goes
 //!    through the storage handle.
-//! 3. No randomness except via `CoreConfig::rng`.
-//! 4. No threads spawned except by the core's tokio runtime.
+//! 3. No randomness except via `CoreConfig::rng`. Enforced twice: by the
+//!    `rand::thread_rng` and `rand::random` entries in `clippy.toml`, and by
+//!    the CI `Determinism gate`'s grep (`mise run determinism-rng`), which
+//!    also catches turbofish, `rand::rng()` and a bare `thread_rng()`.
+//! 4. No threads spawned except by the core's tokio runtime. No gate checks
+//!    this rule: nothing rejects a `std::thread::spawn` in this crate, so it
+//!    holds only by review.
+//!
+//! Merge model: every entity is a copy-on-write version DAG and its row is
+//! the fold of that DAG, written only by the fold (ADR-0065,
+//! `docs/11-adr/0065-copy-on-write-entity-versions.md`). The fold lives in
+//! `engine::merge`, whose module doc is the place to start.
 //!
 //! Single-writer guarantee: exactly one [`Core`] per vault path per
 //! process. Enforced by two mechanisms: an OS advisory lock on
@@ -93,8 +108,9 @@ pub use conflicts::{
     WriteOrigin,
 };
 pub use control_op::{
-    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
-    KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
+    DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
+    IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry,
+    VaultRequiresPayload,
 };
 pub use core::{Core, CoreError};
 pub use engine::{

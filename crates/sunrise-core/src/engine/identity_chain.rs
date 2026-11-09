@@ -337,6 +337,9 @@ impl Engine {
                 )?;
             }
             self.recompute_identity_head(tx)?;
+            // The seeded links can move the head, and the head decides which
+            // ledger rows are authority rows (ADR-0058 §3).
+            self.refold_device_revocations(tx)?;
             Ok(stored)
         })?;
         let at_head = self.keychain.identity_id() == head;

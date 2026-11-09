@@ -20,9 +20,9 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Seven families are **control** ops rather than entities: `KeyEnvelope`,
-//! `DeviceRevoke`, `DeviceCertPublish` and `IdentityTransition` carry key
-//! material and trust, `StreamDigest` carries a replica's frontier in one
+//! Eight families are **control** ops rather than entities: `KeyEnvelope`,
+//! `DeviceRevoke`, `DeviceRevokeByIdentity`, `DeviceCertPublish` and
+//! `IdentityTransition` carry key material and trust, `StreamDigest` carries a replica's frontier in one
 //! stream (ADR-0043 §5), and `VaultRequires` and `DeviceFeatures` carry the
 //! vault's feature state (ADR-0045 §7). None has a row or a last-writer-wins
 //! stamp, and all are classed `OpEffect::Control` so the compiler keeps them
@@ -48,8 +48,8 @@
 //! emits the full-state ops (clarification D9).
 
 use crate::control_op::{
-    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
-    VaultRequiresPayload,
+    DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
+    IdentityTransitionPayload, KeyEnvelopePayload, VaultRequiresPayload,
 };
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
@@ -154,6 +154,11 @@ macro_rules! define_inner_op {
             /// The sending device's supported feature ids, read as its latest
             /// such op (ADR-0045 §7). Control op, on the vault-meta stream.
             DeviceFeatures(DeviceFeaturesPayload),
+            /// Record that a device is no longer a member, on the word of the
+            /// account identity in force (ADR-0058 §2). Control op, on the
+            /// vault-meta stream, and emitted only into a vault that requires
+            /// `core.revoke_authority`.
+            DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload),
         }
 
         impl InnerOp {
@@ -176,6 +181,7 @@ macro_rules! define_inner_op {
                     Self::StreamDigest(_) => "stream.digest",
                     Self::VaultRequires(_) => "vault.requires",
                     Self::DeviceFeatures(_) => "device.features",
+                    Self::DeviceRevokeByIdentity(_) => "device.revoke_by_identity",
                 }
             }
 
@@ -186,6 +192,7 @@ macro_rules! define_inner_op {
                     $($( Self::$op(_) => $tag, )*)*
                     Self::KeyEnvelope(_) => "stream_key",
                     Self::DeviceRevoke(_)
+                    | Self::DeviceRevokeByIdentity(_)
                     | Self::DeviceCertPublish(_)
                     | Self::DeviceFeatures(_) => "device",
                     Self::IdentityTransition(_) => "identity",
@@ -206,6 +213,9 @@ macro_rules! define_inner_op {
                     // misleading answer.
                     Self::KeyEnvelope(p) => EntityRef::new(EntityKind::Stream, p.stream_id),
                     Self::DeviceRevoke(p) => EntityRef::new(EntityKind::Device, p.revoked_device_id),
+                    Self::DeviceRevokeByIdentity(p) => {
+                        EntityRef::new(EntityKind::Device, p.revoked_device_id)
+                    }
                     Self::DeviceCertPublish(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
                     // The *successor*, not the predecessor: a ref names the thing the
                     // op brings about, and after this op the account is `to`.
@@ -234,6 +244,7 @@ macro_rules! define_inner_op {
                     $($( Self::$op(_) => OpEffect::$class, )*)*
                     Self::KeyEnvelope(_)
                     | Self::DeviceRevoke(_)
+                    | Self::DeviceRevokeByIdentity(_)
                     | Self::DeviceCertPublish(_)
                     | Self::IdentityTransition(_)
                     | Self::StreamDigest(_)
@@ -249,6 +260,7 @@ macro_rules! define_inner_op {
                     $($( Self::$op(_) => EntityKind::$kind, )*)*
                     Self::KeyEnvelope(_) | Self::VaultRequires(_) => EntityKind::Stream,
                     Self::DeviceRevoke(_)
+                    | Self::DeviceRevokeByIdentity(_)
                     | Self::DeviceCertPublish(_)
                     | Self::DeviceFeatures(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
@@ -266,6 +278,7 @@ macro_rules! define_inner_op {
                     self,
                     Self::KeyEnvelope(_)
                         | Self::DeviceRevoke(_)
+                        | Self::DeviceRevokeByIdentity(_)
                         | Self::DeviceCertPublish(_)
                         | Self::IdentityTransition(_)
                         | Self::StreamDigest(_)
@@ -745,7 +758,7 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"DeviceFeatures"));
+        assert_eq!(kinds.last(), Some(&"DeviceRevokeByIdentity"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
@@ -761,8 +774,8 @@ mod tests {
 
     /// `InnerOp` is the registry's ops, in registry order, then the four
     /// control families, then `Patch`, then `StreamDigest`, then the two
-    /// feature control families — read out of the derive, so it is the list
-    /// the decoder actually accepts.
+    /// feature control families, then the identity-signed revocation — read
+    /// out of the derive, so it is the list the decoder actually accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
         let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
@@ -778,6 +791,7 @@ mod tests {
             "StreamDigest",
             "VaultRequires",
             "DeviceFeatures",
+            "DeviceRevokeByIdentity",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

@@ -23,7 +23,9 @@ acyclic across devices (§Dependencies).
 > (evaluation zone, wrapping windows, re-evaluation on a zone change).
 > [#333](https://github.com/justin13888/Sunrise/issues/333) delivered the
 > dependency cycle rule, wrapping windows and re-evaluation on a zone change.
-> The `at_place` dimension is tracked in [#339](https://github.com/justin13888/Sunrise/issues/339).
+> [#339](https://github.com/justin13888/Sunrise/issues/339) delivered place
+> evaluation and in-memory presence ([`places.md`](./places.md)); the
+> `at_place` dimension itself is tracked in [#1128](https://github.com/justin13888/Sunrise/issues/1128).
 
 ## Fields
 
@@ -249,7 +251,9 @@ SQL; evaluation happens in Rust. See
   [#1084](https://github.com/justin13888/Sunrise/issues/1084)).
 - There is no `at_place` dimension
   (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`,
-  [#339](https://github.com/justin13888/Sunrise/issues/339)).
+  [#1128](https://github.com/justin13888/Sunrise/issues/1128)). What it will
+  be evaluated with is in place:
+  `crates/sunrise-domain/src/place.rs#evaluate_place`.
 - The cycle rule is `sunrise_domain::resolve_cycles`
   (`crates/sunrise-domain/src/deps.rs#resolve_cycles`), applied at read time
   over the dependency index

@@ -321,11 +321,7 @@ record per generation on disk (the record that crosses the cap is written whole 
 roll) rather than a partition. Not gzipped, not time-based, no 14-day retention sweep — see the
 throttling note in §9 for why the size cap is the part that had to exist.
 
-**Removed: the `ring` and `remote` sinks.** `remote` was never implemented and
-had no endpoint behind it; `ring` was implemented but existed only to feed a
-diagnostic-bundle exporter that also does not exist. Both were deleted rather
-than kept as an interface nothing satisfies. Reintroducing `remote` is a
-privacy decision (opt-in only, per the original text), not a plumbing one.
+There is no `ring` or `remote` sink; [ADR-0010](../11-adr/0010-logging-strategy.md#what-we-give-up) records why they were removed.
 
 ---
 
@@ -374,8 +370,7 @@ Registry
 | `SUNRISE_LOG_FORMAT` | `ndjson` | `ndjson` \| `pretty`. `pretty` is refused in release builds. An unrecognised value falls back to `ndjson`. |
 | `SUNRISE_LOG_FILE` | platform default | File destination for file-logging binaries. |
 
-`SUNRISE_LOG_RING_BYTES` and `SUNRISE_LOG_DIAGNOSTIC` are gone with the sinks
-and the mode they configured (§8, §2).
+`SUNRISE_LOG_RING_BYTES` and `SUNRISE_LOG_DIAGNOSTIC` no longer exist; see [ADR-0010](../11-adr/0010-logging-strategy.md#what-we-give-up).
 
 A log call made before `init` is dropped by `tracing`'s no-op default
 subscriber — which is why `init` goes first rather than being defended against.
@@ -395,10 +390,4 @@ one global dispatcher.
 | `crates/sunrise-server/tests/logging.rs` | The §6.3 MUST, over the *public* surface (`ServerState::new` + `sunrise_server::build_service`): `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`, `a_signed_request_that_is_refused_logs_no_signature_bytes`, `the_request_records_carry_the_catalogued_shape`, `healthy_traffic_is_silent_at_info`, `the_refusal_records_survive_redaction_and_carry_their_cause`. |
 | `crates/sunrise-cli/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
 
-**Removed: the per-package conformance triple.** The original §11 asked every
-package for an `ev`-catalogue snapshot, a redaction property test, and a
-throttling test, aggregated by a `log-conformance` target. The throttle is gone
-(§9). The snapshot is replaced by the workspace-wide catalogue scan above, which
-tests source against documentation rather than a constant against itself. The
-redaction property test is centralised, because the guarantee it checks is a
-property of `Plain<T>` and `RedactionLayer`, not of each caller.
+There is no per-package conformance triple or `log-conformance` target; [ADR-0010](../11-adr/0010-logging-strategy.md#what-we-give-up) records what replaced it.

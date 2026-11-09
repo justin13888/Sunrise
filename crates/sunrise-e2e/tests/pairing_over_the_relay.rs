@@ -5,7 +5,8 @@
 //! offer, the cert request and the grant — travels through
 //! `POST /api/v1/pairing/{send,receive}` on a live relay, driven by the same
 //! `RelayPairing` handle the Apple apps hold. The test passes nothing between
-//! the two sides except the QR text, which is what a camera carries.
+//! the two sides except the QR text, which is what a camera carries, or the
+//! six-digit code, which is what a person types when there is no camera.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -112,6 +113,91 @@ async fn two_devices_pair_over_a_live_relay_with_no_manual_transfer() {
 
     joined.shutdown().await;
     sponsor_core.shutdown().await;
+    relay.abort();
+}
+
+/// A device with no camera: the existing device types the six digits the new
+/// one shows, the relay resolves them to the session, and the two reach the
+/// same SAS and finish the pairing with nothing else passed between them.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_devices_pair_by_the_typed_code_alone() {
+    let (addr, relay) = spawn_relay().await;
+    let base_url = format!("http://{addr}");
+
+    let dir = tempfile::tempdir().expect("a vault dir");
+    let sponsor_core = SunriseCore::open(
+        dir.path().to_string_lossy().into_owned(),
+        ROOT.to_vec(),
+        "e2e".into(),
+        None,
+    )
+    .await
+    .expect("the existing device opens its vault");
+
+    let joiner = RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
+        .await
+        .expect("the new device opens a session");
+    let code = joiner.code().expect("the new device shows six digits");
+    assert!(
+        code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()),
+        "{code}"
+    );
+    // As a person types it off a screen that groups the digits.
+    let typed = format!("{} {}", &code[..3], &code[3..]);
+    let sponsor = RelayPairing::accept_code(typed, base_url.clone(), BEARER.into())
+        .await
+        .expect("the existing device finds the session by its code");
+
+    let (sas_new, sas_existing) = tokio::time::timeout(TIMEOUT, async {
+        tokio::join!(joiner.handshake(), sponsor.handshake())
+    })
+    .await
+    .expect("the handshake completes");
+    let sas_new = sas_new.expect("the new device reaches the SAS");
+    assert_eq!(sas_new.len(), 6);
+    assert_eq!(
+        sas_new,
+        sas_existing.expect("the existing device reaches the SAS"),
+        "both screens show the same six digits"
+    );
+
+    let spent = RelayPairing::accept_code(code, base_url, BEARER.into()).await;
+    match spent {
+        Err(BindingError::Pairing(why)) => assert!(
+            why.contains("no pairing is waiting under that code"),
+            "{why}"
+        ),
+        other => panic!("a code is spent once the existing device joins, got {other:?}"),
+    }
+
+    let (bundle, sponsored) = tokio::time::timeout(TIMEOUT, async {
+        tokio::join!(
+            joiner.join("the new device".into(), "test".into(), seed(1), seed(2)),
+            sponsor.sponsor(sponsor_core.clone())
+        )
+    })
+    .await
+    .expect("the three pairing messages cross");
+    sponsored.expect("the existing device issues the grant");
+    assert_eq!(
+        bundle.expect("the new device opens the grant").vault_root,
+        ROOT.to_vec()
+    );
+
+    sponsor_core.shutdown().await;
+    relay.abort();
+}
+
+/// Text that is not six digits is refused before the relay is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typed_code_that_is_not_six_digits_is_refused() {
+    let (addr, relay) = spawn_relay().await;
+    let refused =
+        RelayPairing::accept_code("12345".into(), format!("http://{addr}"), BEARER.into()).await;
+    assert!(
+        matches!(refused, Err(BindingError::Pairing(_))),
+        "{refused:?}"
+    );
     relay.abort();
 }
 

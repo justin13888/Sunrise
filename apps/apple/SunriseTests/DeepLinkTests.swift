@@ -130,6 +130,10 @@ struct DeepLinkTests {
             "sunrise://task/\(task)?action=detonate",
             "sunrise://entity/xxx_01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "sunrise://entity/tsk_short",
+            // Refused here and by `sunrise-client-core`'s parser alike. The
+            // Lock Screen capture widget opens an empty sheet through
+            // `OpenCaptureIntent` instead, so the shared link contract stays
+            // as every client reads it.
             "sunrise://capture",
             // A block is not something to focus on, and a focus link with no
             // task is the sidebar's own destination written as a URL.
