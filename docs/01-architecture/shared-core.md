@@ -237,7 +237,7 @@ Within a single `Core` there is **one writer lock**: the `Mutex<Db>` in `crates/
 
 ## Errors
 
-`thiserror`-defined `enum CoreError`, with stable variant codes carried over FFI. UI translates codes into user-facing copy. Core never produces user-facing strings.
+`thiserror`-defined `enum CoreError` (`crates/sunrise-core/src/core/mod.rs`), wrapping each layer's own error. Over FFI, `sunrise-core-bindings` flattens it into `BindingError`, whose variant a client branches on; no `ErrorCode` crosses the boundary yet. [`error-handling.md`](../10-cross-cutting/error-handling.md) §Errors across the core → UI boundary says what does. Core never produces user-facing strings.
 
 ## Versioning
 
