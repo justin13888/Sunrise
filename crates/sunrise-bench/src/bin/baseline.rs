@@ -308,6 +308,26 @@ const BENCHES: &[Bench] = &[
         p99: "rebuild_refold_10k_tasks_p99_ms",
         unit: Unit::Ms,
     },
+    // The planner preview over the typical week
+    // (`docs/10-cross-cutting/performance-budgets.md` §Planner preview).
+    Bench {
+        dir: "plan_preview/ripple",
+        p50: None,
+        p99: "plan_preview_ripple_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "plan_preview/cross_day",
+        p50: None,
+        p99: "plan_preview_cross_day_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "plan_preview/auto_place",
+        p50: None,
+        p99: "plan_preview_auto_place_p99_ms",
+        unit: Unit::Ms,
+    },
 ];
 
 /// Criterion's own summary directory, which holds no samples.
