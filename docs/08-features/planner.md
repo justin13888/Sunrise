@@ -42,16 +42,17 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   or one standing on an item it writes. A hard constraint already broken on
 >   an item the gesture leaves alone is reported (§Hard and soft in
 >   `scheduling-constraints.md` only flags it) and refuses nothing.
-> - The ripple search tries at most 4 snapped candidate slots per item
->   (`BRANCH` in `planner/search.rs`), nearest first, inside the 4096
->   evaluation budget.
+> - The ripple search branches over at most 4 snapped candidate slots per
+>   item besides unscheduling it (`BRANCH` in `planner/search.rs`): the best
+>   by the objective among those generated outward until four are clean.
 > - UniFFI carries `NotCommittable` and `Invalid` as one
 >   `BindingError::PlanRefused(String)`, whose message names which; `Stale`
 >   and `Unknown` keep their own variants, and `Closed` and `Engine` cross as
 >   `BindingError::Core`. A client knows a refused drop before committing it
 >   from the diff's `committable`. `PlanError::code` also answers
 >   `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`, `PLAN_CLOSED` and `PLAN_FAILED`,
->   which join the registry with the other two in
+>   which the error-code registry does not list yet; it gains `PLAN_STALE`
+>   and `PLAN_UNKNOWN` with
 >   [#1159](https://github.com/justin13888/Sunrise/issues/1159).
 > - `plan_undo` and the stored inverse are [#1158](https://github.com/justin13888/Sunrise/issues/1158);
 >   `plan_commit` returns only how many items it moved.
