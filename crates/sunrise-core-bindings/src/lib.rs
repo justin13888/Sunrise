@@ -77,6 +77,7 @@ pub mod notes;
 pub mod notifications;
 pub mod pairing;
 pub mod pairing_relay;
+pub mod places;
 pub mod print;
 pub mod query;
 pub mod recovery;

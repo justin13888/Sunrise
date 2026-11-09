@@ -153,6 +153,11 @@ pub struct Core {
     /// The clock the engine reads, holding the zone a client last reported
     /// through [`Core::on_time_zone_changed`].
     reader_clock: Arc<crate::config::ReportedZoneClock>,
+    /// Whether the OS last said the user is inside each monitored Place's
+    /// region (ADR-0051 §3). Memory only, and never written anywhere: it is
+    /// empty at every open and rebuilt from the OS's region state, and
+    /// emptied again at shutdown. See [`Core::on_place_presence`].
+    place_presence: Mutex<sunrise_domain::Presence>,
     closed: Mutex<bool>,
 }
 
@@ -372,6 +377,7 @@ impl Core {
             published_identity_chain: Mutex::new(None),
             restored_from_code,
             reader_clock,
+            place_presence: Mutex::new(sunrise_domain::Presence::new()),
             closed: Mutex::new(false),
         };
         // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
@@ -791,6 +797,7 @@ impl Core {
     /// here. Idempotent.
     pub async fn shutdown(&self) {
         *self.closed.lock() = true;
+        self.place_presence.lock().clear();
         self.sync_shared.request_shutdown();
         let handle = self.sync_handle.lock().take();
         if let Some(h) = handle {
@@ -1763,6 +1770,7 @@ fn format_iso8601(ms: u64) -> String {
 mod identity_chain;
 mod key_bundle;
 mod notify;
+mod place;
 mod repair;
 
 pub(crate) use repair::OpenMode;
