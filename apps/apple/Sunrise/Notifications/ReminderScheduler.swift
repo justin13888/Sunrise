@@ -24,8 +24,19 @@ final class ReminderScheduler {
     /// so "reminders are on" is a fact the user can check rather than a claim.
     private(set) var scheduled: [PlannedNotification] = []
 
+    /// The rest of the catalog handed to the OS — the deadline, the briefs,
+    /// the triage nudge and wind-down — earliest first.
+    private(set) var catalogScheduled: [PlannedNotification] = []
+
+    /// How many requests the OS is holding for this app, for Settings.
+    var heldCount: Int { scheduled.count + catalogScheduled.count }
+
     /// What the last reconcile did. Kept for the tests and for Settings.
     private(set) var lastPlan = ReminderReconciliation()
+
+    /// Which kinds of the catalog are on, as the last reconcile read them.
+    /// Settings → Notifications lists one switch per kind from it.
+    private(set) var catalogPolicy: CatalogPolicyItem?
 
     private(set) var errorMessage: String?
 
@@ -57,6 +68,8 @@ final class ReminderScheduler {
     /// The Focus filter in force. Reminders from streams outside its scope
     /// are withdrawn while it is on; see ``FocusFilter``.
     private let focusFilter: FocusFilterStore
+    /// What ``observeTimeChanges()`` installed.
+    private let clockChanges = ClockChangeObserver()
 
     init(
         bridge: CoreBridge,
@@ -93,6 +106,7 @@ final class ReminderScheduler {
         if authorization.canRequest, preferences.isEnabled {
             authorization = await center.requestAuthorization()
         }
+        observeTimeChanges()
         await reconcile()
     }
 
@@ -118,35 +132,150 @@ final class ReminderScheduler {
     /// list before it reads a row, and the reconcile below withdraws whatever
     /// this Mac was still holding. That last part is the point: a device
     /// demoted from primary must go quiet, not merely stop adding.
+    ///
+    /// Three passes over one read of the pending list: the rest of the catalog
+    /// (the deadline, the briefs, the triage nudge and the alerts) and
+    /// wind-down, both planned and reconciled by the core, then the reminders,
+    /// planned here from `Query::ReminderIntents` under this device's
+    /// settings, in whatever room the first two leave under the cap.
+    ///
+    /// One pass at a time: a zone change arrives twice (the clock observer
+    /// and the change feed), and two passes that both read the ledger before
+    /// either saves it would both post the same alert. A failed catalog plan
+    /// still plans the reminders under the last switches read, and leaves the
+    /// catalog as the OS holds it; before any switches are read it leaves the
+    /// reminders as the OS holds them too.
     func reconcile() async {
+        let previous = reconciling
+        let pass = _Concurrency.Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.reconcileOnce()
+        }
+        reconciling = pass
+        await pass.value
+    }
+
+    /// The pass in flight, if any; the next ``reconcile()`` waits for it.
+    private var reconciling: _Concurrency.Task<Void, Never>?
+
+    private func reconcileOnce() async {
         let policy = preferences.policy
+        let delivering = authorization.allowsScheduling && policy.isEnabled
+        let pending = await center.pendingRequests()
+        var failure: String?
+        var others: CatalogPass?
+        do {
+            others = try await planOthers(delivering: delivering, policy: policy, pending: pending)
+            catalogPolicy = others?.policy
+        } catch { failure = error.localizedDescription }
+
         let desired: [PlannedNotification]
-        if authorization.allowsScheduling, policy.isEnabled {
+        if delivering {
+            // Without a catalog plan, the switches are the last ones read (a
+            // switch flipped here since is already applied by `setKind`), and
+            // the rest still takes what the OS holds. With none read yet, which
+            // kinds are off is unknown: the reminders stay as the OS holds them.
+            guard let kinds = catalogPolicy else {
+                errorMessage = failure
+                return
+            }
+            let held = others?.held.count
+                ?? pending.count { !$0.identifier.hasPrefix(ReminderPlan.identifierPrefix) }
             do {
-                desired = try await intents(policy.settings)
-                errorMessage = nil
+                desired = try await intents(
+                    policy.settings,
+                    kinds: kinds,
+                    limit: max(0, ReminderPlan.maxScheduled - held)
+                )
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = failure ?? error.localizedDescription
                 return
             }
         } else {
             desired = []
         }
 
-        let plan = ReminderPlan.reconcile(
-            desired: desired,
-            pending: await center.pendingIdentifiers()
-        )
-        await center.cancel(identifiers: plan.cancel)
-        for notification in plan.add {
+        let plan = ReminderPlan.reconcile(desired: desired, pending: pending.map(\.identifier))
+        await center.cancel(identifiers: plan.cancel + (others?.cancel ?? []))
+        var alertsPosted = true
+        for notification in plan.add + (others?.schedule ?? []) {
             do {
                 try await center.schedule(notification)
             } catch {
-                errorMessage = error.localizedDescription
+                if notification.identifier.hasPrefix(NotificationCatalog.prefixes.alert) {
+                    alertsPosted = false
+                }
+                failure = failure ?? error.localizedDescription
             }
         }
+        // Kept only once every alert is handed over, or a failed or crashed
+        // post would be remembered as shown and never raised again. An alert
+        // posted beside a failed one is posted again, replacing itself.
+        if alertsPosted, let others, let ledger = others.ledger {
+            preferences.setLedger(ledger, for: others.device)
+        }
+        errorMessage = failure
         scheduled = desired
+        if let others { catalogScheduled = others.held.sorted { $0.fireAtMs < $1.fireAtMs } }
         lastPlan = plan
+    }
+
+    /// The deadline, the briefs, the triage nudge, wind-down and the alerts.
+    ///
+    /// Every decision is the core's: what fires, when, with which words and
+    /// buttons, and whether what the OS holds is still right. Two of this
+    /// device's own settings are applied on top, because until #489 moves them
+    /// into the core's preferences they live here: the master switch (off
+    /// hands the core `authorized: false`, which plans nothing), and whether
+    /// this is the primary device (a device that is not keeps only the kinds
+    /// every device shows, which are alerts).
+    private func planOthers(
+        delivering: Bool,
+        policy: ReminderPolicy,
+        pending: [PendingReminder]
+    ) async throws -> CatalogPass {
+        let now = await bridge.nowMs()
+        let device = await bridge.deviceId()
+        let isPrimary = policy.settings.isPrimaryDevice
+        let plan = try await bridge.scheduleNotifications(
+            nowMs: now,
+            authorized: delivering,
+            focusScope: Array(focusFilter.streams ?? []),
+            pending: pending,
+            clock: ReminderPlan.clockStyle(),
+            ledgerJson: preferences.ledger(for: device),
+            networkAvailable: NetworkClassMonitor.shared.isOnline
+        )
+        var out = CatalogPass(device: device, ledger: plan.ledgerJson, policy: plan.catalogPolicy)
+        if isPrimary {
+            out.held = plan.catalog.map { ReminderPlan.notification(for: $0) }
+            let changes = plan.catalogChanges
+            out.schedule = (changes.add + changes.replace).map { ReminderPlan.notification(for: $0) }
+            out.cancel = changes.cancel
+        } else {
+            let prefix = NotificationCatalog.prefixes.catalog
+            out.cancel = pending.map(\.identifier).filter { $0.hasPrefix(prefix) }
+        }
+        out.schedule += ReminderPlan.audible(plan.alerts, isPrimary: isPrimary)
+            .map { ReminderPlan.notification(for: $0, alert: true) }
+
+        let windDown = try await bridge.windDownPlan(
+            nowMs: now,
+            authorized: delivering && isPrimary,
+            pending: pending
+        )
+        if let desired = windDown.desired {
+            out.held.append(ReminderPlan.notification(for: desired))
+        }
+        switch windDown.change {
+        case let .add(notification), let .replace(notification):
+            out.schedule.append(ReminderPlan.notification(for: notification))
+        case .cancel:
+            out.cancel.append(NotificationCatalog.windDown)
+        case .keep:
+            break
+        }
+        return out
     }
 
     /// Reconcile on every change batch, for as long as the app is open.
@@ -204,10 +333,85 @@ final class ReminderScheduler {
             route(link)
         case let .act(entity, action):
             await perform(action, on: entity)
+        case let .catalog(action, delivered):
+            await perform(action, on: delivered)
         case .dismissed:
             break
         }
     }
+
+    /// Run one of a catalog kind's buttons.
+    ///
+    /// Three shapes. Mark Done is the reminder's own command. A snooze posts
+    /// the same notification again later, under an identifier no re-plan
+    /// cancels — the deadline and the briefs fire at instants the core fixes,
+    /// so moving the task would not bring them back. Keep is the answer "leave
+    /// it", and needs nothing. Every other button opens a screen: the one its
+    /// link names, or for Open Triage the triage section.
+    func perform(_ action: NotificationAction, on delivered: PlannedNotification) async {
+        switch action {
+        case .markDone:
+            guard !delivered.entity.isEmpty else { return }
+            await perform(.complete, on: delivered.entity)
+        case .snoozeOneHour, .snoozeFiveMinutes, .snoozeFifteenMinutes, .snoozeTomorrow:
+            await snooze(delivered, by: action)
+        case .keep:
+            break
+        case .openTriage:
+            route(.triage)
+        default:
+            if let link = delivered.link { route(link) }
+        }
+    }
+
+    /// Post `delivered` again when `action` says.
+    private func snooze(_ delivered: PlannedNotification, by action: NotificationAction) async {
+        let at: UInt64
+        if let minutes = action.snoozeMinutes {
+            at = await bridge.nowMs() &+ UInt64(minutes) * 60_000
+        } else {
+            at = await snoozeTarget(.tomorrow)
+        }
+        do {
+            try await center.schedule(ReminderPlan.snoozed(delivered, until: Int64(clamping: at)))
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Turn one kind of the catalog on or off, then re-plan under it.
+    ///
+    /// Written to the vault, so the choice reaches every device, except where
+    /// the key is this device's alone (sync stalled, place arrival): the
+    /// key's own scope decides, read from the core's preferences.
+    func setKind(_ kind: NotificationKind, enabled: Bool) async {
+        guard let key = NotificationCatalog.info(kind)?.enabledKey else { return }
+        do {
+            var target = PreferenceTarget.vault
+            if case let .preferences(items) = try await bridge.query(.preferences),
+               items.first(where: { $0.key == key })?.scope == .device {
+                target = .device
+            }
+            let command = CoreCommand.setPreference(key: key, value: .bool(value: enabled), target: target)
+            _ = try await bridge.submit(command)
+            // Applied here too, so a pass whose catalog plan fails does not
+            // filter the reminders by the switch as it was before this write.
+            catalogPolicy = catalogPolicy.map { NotificationCatalog.switching(kind, to: enabled, in: $0) }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await reconcile()
+    }
+
+    /// Re-plan when the clock or the calendar jumps; see ``ClockChangeObserver``.
+    func observeTimeChanges() {
+        clockChanges.start { [weak self] in await self?.reconcile() }
+    }
+
+    /// Stop re-planning on clock changes: the vault this plans for is closing.
+    func stopObservingTimeChanges() { clockChanges.stop() }
 
     /// Run one action button against the core.
     ///
@@ -254,7 +458,14 @@ final class ReminderScheduler {
     /// OS's sixty-four slots. Withdrawn rather than delivered silently, and
     /// re-added by the next reconcile once the Focus ends — which is the
     /// reconcile the scope changing triggers.
-    private func intents(_ settings: NotificationSettings) async throws -> [PlannedNotification] {
+    ///
+    /// A reminder whose kind is switched off in Settings is left out before
+    /// the cap too, and `limit` is the room the rest of the catalog left.
+    private func intents(
+        _ settings: NotificationSettings,
+        kinds: CatalogPolicyItem,
+        limit: Int
+    ) async throws -> [PlannedNotification] {
         let now = await bridge.nowMs()
         let result = try await bridge.query(
             .reminderIntents(
@@ -264,9 +475,13 @@ final class ReminderScheduler {
             )
         )
         guard case let .reminders(rows) = result else { return [] }
+        let wanted = ReminderPlan.enabled(rows, under: kinds)
         let scope = focusFilter.streams
-        let streams = scope == nil ? [:] : await streams(of: rows)
-        return ReminderPlan.plan(for: FocusFilter.muting(rows, to: scope, streams: streams))
+        let streams = scope == nil ? [:] : await streams(of: wanted)
+        return ReminderPlan.plan(
+            for: FocusFilter.muting(wanted, to: scope, streams: streams),
+            limit: limit
+        )
     }
 
     /// The stream each reminder's entity is filed in, where it has one.

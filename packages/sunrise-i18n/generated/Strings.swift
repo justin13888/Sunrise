@@ -171,6 +171,53 @@ enum L10n {
             static var scheduledNow: String { L10n.tr("apple.account.notifications.scheduled_now") }
         }
 
+        enum NotificationKinds {
+            /// What to notify
+            static var title: String { L10n.tr("apple.account.notification_kinds.title") }
+            /// Each switch syncs to your other devices. Security alerts cannot be turned off.
+            static var caption: String { L10n.tr("apple.account.notification_kinds.caption") }
+            /// Always on
+            static var alwaysOn: String { L10n.tr("apple.account.notification_kinds.always_on") }
+            /// Task reminders
+            static var taskReminder: String { L10n.tr("apple.account.notification_kinds.task_reminder") }
+            /// Deadlines
+            static var deadline: String { L10n.tr("apple.account.notification_kinds.deadline") }
+            /// Routines due
+            static var routineDue: String { L10n.tr("apple.account.notification_kinds.routine_due") }
+            /// Time block starting
+            static var blockStart: String { L10n.tr("apple.account.notification_kinds.block_start") }
+            /// Morning brief
+            static var morningBrief: String { L10n.tr("apple.account.notification_kinds.morning_brief") }
+            /// Late tasks to triage
+            static var triageNudge: String { L10n.tr("apple.account.notification_kinds.triage_nudge") }
+            /// Evening plan
+            static var eveningPlan: String { L10n.tr("apple.account.notification_kinds.evening_plan") }
+            /// Wind down
+            static var windDown: String { L10n.tr("apple.account.notification_kinds.wind_down") }
+            /// Focus session ending
+            static var focusEnd: String { L10n.tr("apple.account.notification_kinds.focus_end") }
+            /// Time zone changed
+            static var timezoneChanged: String { L10n.tr("apple.account.notification_kinds.timezone_changed") }
+            /// Weekly review
+            static var weeklyReview: String { L10n.tr("apple.account.notification_kinds.weekly_review") }
+            /// Sync stalled
+            static var syncStalled: String { L10n.tr("apple.account.notification_kinds.sync_stalled") }
+            /// New device paired
+            static var devicePaired: String { L10n.tr("apple.account.notification_kinds.device_paired") }
+            /// Device removed
+            static var deviceRevoked: String { L10n.tr("apple.account.notification_kinds.device_revoked") }
+            /// Recovery code changed
+            static var recoveryCode: String { L10n.tr("apple.account.notification_kinds.recovery_code") }
+            /// Calendar needs reconnecting
+            static var calendarReconnect: String { L10n.tr("apple.account.notification_kinds.calendar_reconnect") }
+            /// Shared changes
+            static var sharedChange: String { L10n.tr("apple.account.notification_kinds.shared_change") }
+            /// Arriving at a place
+            static var placeArrival: String { L10n.tr("apple.account.notification_kinds.place_arrival") }
+            /// Fires before your sleep time from the day schedule. A Sleep Focus holds it unless Sunrise is allowed in that Focus.
+            static var windDownCaption: String { L10n.tr("apple.account.notification_kinds.wind_down_caption") }
+        }
+
         enum QuietHours {
             /// Quiet hours
             static var title: String { L10n.tr("apple.account.quiet_hours.title") }
@@ -2345,6 +2392,46 @@ enum L10n {
         static var snoozeTomorrow: String { L10n.tr("apple.notifications.snooze_tomorrow") }
         /// Snooze Until Next Week
         static var snoozeNextWeek: String { L10n.tr("apple.notifications.snooze_next_week") }
+        /// Defer…
+        static var actionDefer: String { L10n.tr("apple.notifications.action_defer") }
+        /// Skip
+        static var actionSkip: String { L10n.tr("apple.notifications.action_skip") }
+        /// Snooze 5 Minutes
+        static var actionSnoozeFiveMinutes: String { L10n.tr("apple.notifications.action_snooze_five_minutes") }
+        /// Snooze 15 Minutes
+        static var actionSnoozeFifteenMinutes: String { L10n.tr("apple.notifications.action_snooze_fifteen_minutes") }
+        /// Start Focus
+        static var actionStartFocus: String { L10n.tr("apple.notifications.action_start_focus") }
+        /// Plan My Day
+        static var actionPlanMyDay: String { L10n.tr("apple.notifications.action_plan_my_day") }
+        /// Open Triage
+        static var actionOpenTriage: String { L10n.tr("apple.notifications.action_open_triage") }
+        /// Move Open Tasks to Tomorrow
+        static var actionMoveOpenToTomorrow: String { L10n.tr("apple.notifications.action_move_open_to_tomorrow") }
+        /// Open
+        static var actionOpen: String { L10n.tr("apple.notifications.action_open") }
+        /// See Tomorrow
+        static var actionSeeTomorrow: String { L10n.tr("apple.notifications.action_see_tomorrow") }
+        /// +5 Minutes
+        static var actionAddFiveMinutes: String { L10n.tr("apple.notifications.action_add_five_minutes") }
+        /// Start Break
+        static var actionStartBreak: String { L10n.tr("apple.notifications.action_start_break") }
+        /// Review Times
+        static var actionReviewTimes: String { L10n.tr("apple.notifications.action_review_times") }
+        /// Keep
+        static var actionKeep: String { L10n.tr("apple.notifications.action_keep") }
+        /// Start Review
+        static var actionStartReview: String { L10n.tr("apple.notifications.action_start_review") }
+        /// Open Sync Status
+        static var actionOpenSyncStatus: String { L10n.tr("apple.notifications.action_open_sync_status") }
+        /// Review Devices
+        static var actionReviewDevices: String { L10n.tr("apple.notifications.action_review_devices") }
+        /// Review Security
+        static var actionReviewSecurity: String { L10n.tr("apple.notifications.action_review_security") }
+        /// Reconnect
+        static var actionReconnect: String { L10n.tr("apple.notifications.action_reconnect") }
+        /// Open Here Now
+        static var actionOpenHereNow: String { L10n.tr("apple.notifications.action_open_here_now") }
     }
 
     enum BriefNotification {

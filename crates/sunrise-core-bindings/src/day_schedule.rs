@@ -249,6 +249,14 @@ pub fn today_section_in_schedule(
     )
 }
 
+/// The one identifier a wind-down is held under: what a client withdraws on
+/// [`WindDownChangeItem::Cancel`], which names none.
+#[uniffi::export]
+#[must_use]
+pub fn wind_down_identifier() -> String {
+    plan::WIND_DOWN_IDENTIFIER.to_owned()
+}
+
 /// See [`sunrise_client_core::reminders::WindDownNotification`].
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct WindDownItem {

@@ -85,20 +85,20 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | # | Kind | macOS | iOS / iPadOS | Android | Windows | Linux |
 |---|---|---|---|---|---|---|
 | 1 | Task reminder | **built** (actions: Mark Done, Snooze 1 h, Snooze until tomorrow) | **built** | no client | no client | no client |
-| 2 | Deadline | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 2 | Deadline | **built** (Mark Done; Defer… opens the task; Snooze 1 h posts it again) | **built** (same) | no client | no client | no client |
 | 3 | Routine due | **built** (`ReminderKind::Routine` for a routine occurrence, under its own identifier, with the task category's actions) | **built** (same) | no client | no client | no client |
 | 4 | Block start | **built** (open only; no actions) | **built** (same) | no client | no client | no client |
-| 5 | Morning brief | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 6 | Triage nudge | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 7 | Evening plan | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 8 | Wind-down | not built (planned by the core (`SunriseCore::wind_down_plan`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 5 | Morning brief | **built** (Plan My Day opens the morning summary; Open Triage when the nudge is folded in) | **built** (same) | no client | no client | no client |
+| 6 | Triage nudge | **built** (Open Triage opens the morning summary, whose triage section is the Apple client's only triage view) | **built** (same) | no client | no client | no client |
+| 7 | Evening plan | **built** (Move Open Tasks to Tomorrow and Open open the end-of-day plan, where the move is) | **built** (same) | no client | no client | no client |
+| 8 | Wind-down | **built** (`.timeSensitive` requested; without the Time Sensitive entitlement the system delivers it as active. See Tomorrow opens the end-of-day plan; Snooze 15 min posts it again) | **built** (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |
-| 10 | Time zone changed | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
+| 10 | Time zone changed | **built** (posted on the re-plan a zone change causes; Review Times opens the calendar) | **built** (same) | no client | no client | no client |
 | 11 | Weekly review | not built | not built | no client | no client | no client |
-| 12 | Sync stalled | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 13 | New device paired | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 14 | Device revoked | not built (planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet) | not built (same) | no client | no client | no client |
-| 15 | Recovery code used or changed | not built; a rotation that retires the code is planned by the core (`SunriseCore::schedule_notifications`); Apple does not deliver it yet; a fetch of the blob is blocked on a server account event | not built; same | no client | no client | no client |
+| 12 | Sync stalled | **built** (Open Sync Status opens Settings) | **built** (same) | no client | no client | no client |
+| 13 | New device paired | **built** (Review Devices opens Settings) | **built** (same) | no client | no client | no client |
+| 14 | Device revoked | **built** (same) | **built** (same) | no client | no client | no client |
+| 15 | Recovery code used or changed | **built** for a rotation that retires the code (Review Security opens Settings); a fetch of the blob is blocked on a server account event | same | no client | no client | no client |
 | 16 | Calendar reconnect | not built; blocked on [#930](https://github.com/justin13888/Sunrise/issues/930) | not built; same | no client | no client | no client |
 | 17 | Shared change | not built; blocked on sharing ([#133](https://github.com/justin13888/Sunrise/issues/133)) | not built; same | no client | no client | no client |
 | 18 | Place arrival | not built; blocked on Places ([#339](https://github.com/justin13888/Sunrise/issues/339)) | not built; same | no client | no client | no client |
@@ -121,13 +121,31 @@ What exists today, read from the tree:
   whether focus and quiet hours hold it; a test holds it equal to the table
   above. `place` is the one path every catalog kind's fire time takes:
   focus (§Focus suppression), then quiet hours.
-- **The Apple clients** share one scheduler: `ReminderScheduler` follows the
-  change feed and reconciles against the OS's pending requests, and two
-  categories are registered (`apps/apple/Sunrise/Notifications/ReminderPlan.swift:10`).
-  Settings has one master switch
-  (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift:31`), not a
-  toggle per kind. No request sets an interruption level, and nothing observes a
-  time-zone change.
+- **The Apple clients** share one scheduler: `ReminderScheduler`
+  (`apps/apple/Sunrise/Notifications/ReminderScheduler.swift`) follows the
+  change feed, re-plans on a clock or calendar-day change (iOS's
+  significant-time-change notification, macOS's `NSSystemClockDidChange` and
+  `NSCalendarDayChanged`), and reconciles against the OS's pending requests.
+  Each pass hands the OS three things: the rest of the catalog and the alerts
+  from `SunriseCore::schedule_notifications`, applied as the core reconciled
+  them, with the revision stored in each request's `userInfo` and the ledger
+  kept per vault in `UserDefaults`; wind-down from
+  `SunriseCore::wind_down_plan`; and the reminders, still planned in Swift
+  from `Query::ReminderIntents` under the `UserDefaults` settings until #489
+  moves them, with a kind switched off left out and the cap shared with the
+  first two. The master switch and the primary-device flag those settings hold
+  also gate the catalog: off plans nothing, and a device that is not primary
+  keeps only the kinds every device shows. A category is registered per kind
+  of the catalog with the catalog's buttons
+  (`apps/apple/Sunrise/Notifications/ReminderPlan.swift#ReminderCategory`); a
+  catalog snooze posts the notification again under `sunrise.snoozed.`, which
+  no reconcile cancels, since the core fixes the briefs' and the deadline's
+  instants. Every request carries the catalog's interruption level, and its
+  calendar trigger carries its zone, so it keeps its instant across a zone
+  change. The time-zone notice is the catalog's alert, posted on the re-plan
+  the zone change causes. Settings → Notifications lists each kind with its
+  switch, written to the key's own scope, and its key hint where the keymap
+  binds one (`apps/apple/Sunrise/Views/NotificationKindsSection.swift`).
 - **The wind-down trigger** (#8) is computed: the client layer's
   `reminders::wind_down_notification`
   (`crates/sunrise-client-core/src/reminders/wind_down.rs`) takes the next
@@ -140,8 +158,10 @@ What exists today, read from the tree:
   `reconcile_wind_down` says whether to add, replace, cancel or keep it; a
   zone change moves it and replaces it. `Schedule::wind_down` carries it,
   the seam exports it as `SunriseCore::wind_down_plan`, and `sunrise reminders
-  plan` prints it. No Apple client schedules it: the time-sensitive level and
-  the Sleep Focus guidance (§Wind-down) are the client's.
+  plan` prints it. The Apple clients schedule it at the time-sensitive level;
+  the Time Sensitive entitlement, and Settings showing whether time-sensitive
+  delivery is allowed (§Wind-down), are not done yet, so the system delivers
+  it as active.
 - **The client layer** turns the core's intents into an OS schedule
   (`crates/sunrise-client-core/src/reminders/mod.rs`): the 24-hour horizon,
   the 56-request cap with the earliest kept, the body text, and the reconcile
@@ -156,8 +176,8 @@ What exists today, read from the tree:
   keep that instant across a zone change ([#520](https://github.com/justin13888/Sunrise/issues/520)).
   `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`) does the
   whole re-plan in one call, Focus filter included, and the seam exports it
-  as `SunriseCore::schedule_reminders`. The Apple scheduler still runs its own
-  Swift planner until it adopts this.
+  as `SunriseCore::schedule_reminders`. The Apple scheduler still plans the
+  reminders in Swift until it adopts this.
 - **The rest of the catalog** is planned beside the reminders, in
   `ReminderKind`-free records so no client's exhaustive switch over it breaks
   (`crates/sunrise-client-core/src/reminders/catalog.rs`,

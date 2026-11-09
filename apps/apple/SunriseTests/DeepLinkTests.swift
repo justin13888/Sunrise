@@ -24,6 +24,45 @@ struct DeepLinkTests {
         #expect(link("sunrise://evening") == .endOfDayPlan)
     }
 
+    /// Every link the core's catalog puts on a notification
+    /// (`docs/08-features/notifications.md`): parsed, and written back the
+    /// same way, so a tap on any kind lands rather than being dropped as an
+    /// unknown shape.
+    @Test
+    func everyLinkTheCatalogWritesParsesAndRoundTrips() {
+        let catalog: [(String, DeepLink)] = [
+            ("sunrise://morning", .morningSummary),
+            ("sunrise://evening", .endOfDayPlan),
+            ("sunrise://triage", .triage),
+            ("sunrise://upcoming", .upcoming),
+            ("sunrise://sync", .sync),
+            ("sunrise://devices", .devices),
+            ("sunrise://settings/security", .security),
+            ("sunrise://task/\(task)", .task(task, .open))
+        ]
+        for (text, expected) in catalog {
+            #expect(link(text) == expected, "\(text)")
+            #expect(expected.url.flatMap(DeepLink.init(url:)) == expected, "\(text) round-trips")
+        }
+        #expect(link("sunrise://settings") == nil, "Settings itself is not a route")
+        #expect(link("sunrise://settings/vaults") == nil, "only the security page is")
+    }
+
+    /// Where each catalog link lands. Triage is the morning summary's section
+    /// on Apple, and Review Times opens the calendar; the sync and security
+    /// links open Settings, which is a sheet rather than a screen.
+    @Test
+    func theCatalogLinksLandWhereTheirNotificationsSay() {
+        #expect(DeepLink.triage.destination == .morning)
+        #expect(DeepLink.upcoming.destination == .calendar)
+        for link in [DeepLink.sync, .devices, .security] {
+            #expect(link.destination == nil)
+            #expect(link.opensSettings)
+        }
+        #expect(!DeepLink.morningSummary.opensSettings)
+        #expect(!DeepLink.triage.opensSettings)
+    }
+
     /// The whole point of a deep-linked view: the link names a screen.
     @Test
     func eachBriefLinkNamesItsScreen() {

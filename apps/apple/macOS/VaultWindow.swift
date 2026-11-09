@@ -132,14 +132,15 @@ struct VaultWindow: View {
                     deviceID: deviceID,
                     hotkey: surfaces.hotkeyStatus,
                     authorization: surfaces.reminders?.authorization ?? .notDetermined,
-                    scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
+                    scheduledCount: surfaces.reminders?.heldCount ?? 0,
                     signIn: signIn,
                     allowNotifications: { await surfaces.reminders?.requestAuthorization() },
                     keyboard: keys,
                     session: session,
                     devices: models.devices,
                     storage: models.storage,
-                    daySchedule: daySchedule
+                    daySchedule: daySchedule,
+                    reminders: surfaces.reminders
                 )
                 Button(L10n.Action.done) { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
@@ -207,6 +208,9 @@ struct VaultWindow: View {
             selection = destination
             surfaces.destinationTaken()
         }
+        // A sync or security notification asked for Settings, where sync
+        // status, the devices and the recovery code live.
+        .onChange(of: surfaces.pendingSettings) { if $1 { showingSettings = true; surfaces.settingsTaken() } }
         // …and which *thing* on that screen. Taken separately because it is a
         // read: the sidebar moves now, and the entity's own editor opens when
         // the vault has answered. A block needs no second surface — by then

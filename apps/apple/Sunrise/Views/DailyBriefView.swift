@@ -131,6 +131,7 @@ struct MorningSummaryView: View {
             remove: { await model.delete($0) }
         )
         .navigationTitle(L10n.Brief.morningTitle)
+        .accessibilityIdentifier("brief.morning")
         .task { await model.refresh() }
         .task { await model.follow() }
     }

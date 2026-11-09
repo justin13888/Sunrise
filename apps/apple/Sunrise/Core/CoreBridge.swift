@@ -160,6 +160,42 @@ actor CoreBridge {
         try core.onTimeZoneChanged(zone: zone)
     }
 
+    // MARK: - Notifications
+
+    /// One re-plan of every catalog kind the core plans: the reminders, the
+    /// deadline, the briefs and the triage nudge, and the alerts to post now
+    /// (`docs/08-features/notifications.md`). See ``ReminderScheduler``, the
+    /// one caller.
+    func scheduleNotifications(
+        nowMs: UInt64,
+        authorized: Bool,
+        focusScope: [EntityRef],
+        pending: [PendingReminder],
+        clock: ClockStyle,
+        ledgerJson: String?,
+        networkAvailable: Bool
+    ) async throws -> NotificationSchedule {
+        try await core.scheduleNotifications(
+            nowMs: nowMs,
+            authorized: authorized,
+            focusScope: focusScope,
+            pending: pending,
+            clock: clock,
+            ledgerJson: ledgerJson,
+            networkAvailable: networkAvailable
+        )
+    }
+
+    /// The wind-down this device should hold, and what to do with the one it
+    /// holds (`docs/08-features/notifications.md` #8).
+    func windDownPlan(
+        nowMs: UInt64,
+        authorized: Bool,
+        pending: [PendingReminder]
+    ) async throws -> WindDownPlan {
+        try await core.windDownPlan(nowMs: nowMs, authorized: authorized, pending: pending)
+    }
+
     // MARK: - Recovery
 
     /// Whether this vault holds the account identity's unwrapping key.

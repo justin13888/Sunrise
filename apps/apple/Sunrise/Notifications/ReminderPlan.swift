@@ -7,12 +7,31 @@ import Foundation
 /// have to fail. `docs/08-features/notifications.md` §Action buttons says
 /// "where the OS supports actions", and this is the same reservation one level
 /// down: where the *entity* supports them.
-enum ReminderCategory: String, Equatable, Sendable, CaseIterable {
+enum ReminderCategory: Equatable, Hashable, Sendable {
     /// A Task (or a materialized routine occurrence, which is a Task by the
     /// time it is due): done, defer, snooze, open.
-    case task = "sunrise.reminder.task"
+    case task
     /// A time block: open only.
-    case block = "sunrise.reminder.block"
+    case block
+    /// One of the other kinds of the catalog: the deadline, the briefs, the
+    /// triage nudge, wind-down and the alerts. Its buttons are the catalog's
+    /// own (``catalogActions``), read from the core rather than listed here.
+    case catalog(NotificationKind)
+
+    /// Every category this app registers: the two reminder ones, then one per
+    /// kind of the catalog, in catalog order.
+    static var all: [ReminderCategory] {
+        [.task, .block] + NotificationCatalog.kinds.map { .catalog($0.kind) }
+    }
+
+    /// What the OS knows it by.
+    var identifier: String {
+        switch self {
+        case .task: "sunrise.reminder.task"
+        case .block: "sunrise.reminder.block"
+        case let .catalog(kind): "sunrise.category.\(NotificationCatalog.tag(of: kind))"
+        }
+    }
 
     /// The snooze spans this category offers, in button order.
     ///
@@ -22,11 +41,86 @@ enum ReminderCategory: String, Equatable, Sendable, CaseIterable {
     var snoozeSpans: [SnoozeSpan] {
         switch self {
         case .task: [.oneHour, .tomorrow]
-        case .block: []
+        case .block, .catalog: []
         }
     }
 
     var offersCompletion: Bool { self == .task }
+
+    /// A catalog kind's buttons, in the catalog's order; none for the two
+    /// reminder categories, whose buttons are ``offersCompletion`` and
+    /// ``snoozeSpans``.
+    var catalogActions: [NotificationAction] {
+        guard case let .catalog(kind) = self else { return [] }
+        return NotificationCatalog.info(kind)?.actions ?? []
+    }
+}
+
+/// The core's catalog of notification kinds, read once
+/// (`docs/08-features/notifications.md` §Catalog).
+///
+/// Data, not a list kept here: a kind's key, default, audience and buttons
+/// are the core's, and Settings and the category registration read them from
+/// the same table the planner does.
+enum NotificationCatalog {
+    /// Every kind, in catalog order.
+    static let kinds: [NotificationKindInfo] = notificationCatalog()
+
+    /// The identifier namespaces of the scheduled kinds and of the alerts.
+    static let prefixes: NotificationPrefixes = notificationPrefixes()
+
+    /// The one identifier wind-down is held under. The core's, because a
+    /// cancel names none and must withdraw exactly what an add scheduled.
+    static let windDown: String = windDownIdentifier()
+
+    /// One kind's row.
+    static func info(_ kind: NotificationKind) -> NotificationKindInfo? {
+        kinds.first { $0.kind == kind }
+    }
+
+    /// A kind's name in keys and identifiers: `morning_brief`.
+    static func tag(of kind: NotificationKind) -> String {
+        info(kind)?.tag ?? "unknown"
+    }
+
+    /// The catalog kind a reminder source is.
+    static func kind(of reminder: ReminderKind) -> NotificationKind {
+        switch reminder {
+        case .task: .taskReminder
+        case .block: .blockStart
+        case .routine: .routineDue
+        }
+    }
+
+    /// Whether `kind` is on in `policy`. A kind the policy does not list is
+    /// on: the policy lists every kind, so that only happens across a version
+    /// skew, where staying quiet would be the surprise.
+    static func isOn(_ kind: NotificationKind, in policy: CatalogPolicyItem) -> Bool {
+        policy.toggles.first { $0.kind == kind }?.enabled ?? true
+    }
+
+    /// `policy` with `kind` switched to `enabled`, as a write of its key
+    /// leaves it. A kind the policy does not list is left out, as before.
+    static func switching(
+        _ kind: NotificationKind,
+        to enabled: Bool,
+        in policy: CatalogPolicyItem
+    ) -> CatalogPolicyItem {
+        var out = policy
+        for index in out.toggles.indices where out.toggles[index].kind == kind {
+            out.toggles[index].enabled = enabled
+        }
+        return out
+    }
+
+    /// Whether a device that is not the primary one shows `kind`.
+    ///
+    /// Security alerts go to every device and the device-local kinds to the
+    /// one concerned; the rest are the primary device's alone (§Multi-device
+    /// dedup).
+    static func showsOffPrimary(_ kind: NotificationKind) -> Bool {
+        info(kind)?.audience != .primary
+    }
 }
 
 /// One local notification this app wants the OS to be holding.
@@ -44,10 +138,37 @@ struct PlannedNotification: Equatable, Sendable {
     let category: ReminderCategory
     /// Epoch ms, after lead time and quiet hours — the core applied both.
     let fireAtMs: Int64
-    /// The entity a button acts on.
+    /// The entity a button acts on; empty when it is about no entity (a brief).
     let entity: EntityRef
-    /// What tapping the body opens.
-    let link: DeepLink
+    /// What tapping the body opens; `nil` opens the app where it was.
+    let link: DeepLink?
+    /// The core's revision for a catalog kind, stored with the request and
+    /// handed back on the next re-plan so an unchanged one is left alone.
+    /// `nil` for a reminder, whose identifier carries its fire time.
+    var revision: String?
+    /// How loud.
+    var level: InterruptionLevel = .active
+    /// Post at once rather than at ``fireAtMs``, when that is already due:
+    /// the alerts, which are raised on an event rather than ahead of one.
+    var postsWhenDue = false
+}
+
+/// What one re-plan of the rest of the catalog — everything but the reminders
+/// — says to do. See ``ReminderScheduler/reconcile()``.
+struct CatalogPass {
+    /// This install's device id in the open vault: what the ledger is kept
+    /// under.
+    var device: String
+    /// What the OS should hold for them once this pass is done.
+    var held: [PlannedNotification] = []
+    /// What to hand over: new, replaced, and the alerts to post.
+    var schedule: [PlannedNotification] = []
+    /// What to withdraw.
+    var cancel: [String] = []
+    /// The ledger to keep once the alerts are posted.
+    var ledger: String?
+    /// Which kinds are on.
+    var policy: CatalogPolicyItem?
 }
 
 /// The difference between what the OS is holding and what it should hold.
@@ -135,8 +256,91 @@ enum ReminderPlan {
             entity: reminder.entity,
             link: category == .block
                 ? .entity(reminder.entity)
-                : .task(reminder.entity, .open)
+                : .task(reminder.entity, .open),
+            level: NotificationCatalog.info(NotificationCatalog.kind(of: reminder.kind))?.level ?? .active
         )
+    }
+
+    /// One catalog kind the core planned, as a notification.
+    ///
+    /// Everything is the core's: the identifier, the revision, the words, the
+    /// instant, the level and the link. `alert` marks one of the posted kinds,
+    /// which fires as soon as it is handed over unless focus or quiet hours
+    /// moved it later.
+    static func notification(for item: CatalogNotificationItem, alert: Bool = false) -> PlannedNotification {
+        PlannedNotification(
+            identifier: item.identifier,
+            title: item.title,
+            body: item.body,
+            category: .catalog(item.kind),
+            fireAtMs: item.fireAtMs,
+            entity: item.entity ?? "",
+            link: URL(string: item.link).flatMap(DeepLink.init(url:)),
+            revision: item.revision,
+            level: item.level,
+            postsWhenDue: alert
+        )
+    }
+
+    /// The wind-down the core planned, as a notification: time-sensitive, so
+    /// a Sleep Focus that allows Sunrise lets it through (§Wind-down), and
+    /// opening the end-of-day plan, which is where tomorrow is laid out.
+    static func notification(for windDown: WindDownItem) -> PlannedNotification {
+        PlannedNotification(
+            identifier: windDown.identifier,
+            title: windDown.title,
+            body: "",
+            category: .catalog(.windDown),
+            fireAtMs: windDown.fireAtMs,
+            entity: "",
+            link: .endOfDayPlan,
+            revision: windDown.revision,
+            level: NotificationCatalog.info(.windDown)?.level ?? .timeSensitive
+        )
+    }
+
+    /// The reminders a device with these switches delivers: a reminder whose
+    /// kind is turned off is left out, here rather than after the cap, so it
+    /// does not spend a slot.
+    static func enabled(_ reminders: [Reminder], under policy: CatalogPolicyItem) -> [Reminder] {
+        reminders.filter {
+            NotificationCatalog.isOn(NotificationCatalog.kind(of: $0.kind), in: policy)
+        }
+    }
+
+    /// The catalog notifications this device shows. A device that is not the
+    /// primary one keeps only the kinds every device shows.
+    static func audible(_ items: [CatalogNotificationItem], isPrimary: Bool) -> [CatalogNotificationItem] {
+        isPrimary ? items : items.filter { NotificationCatalog.showsOffPrimary($0.kind) }
+    }
+
+    /// The identifier a snoozed copy of `identifier` is held under.
+    ///
+    /// Outside every reconciled namespace, so no re-plan cancels it: the
+    /// snooze is the user's, and the core never planned it.
+    static func snoozedIdentifier(_ identifier: String) -> String {
+        "sunrise.snoozed.\(identifier)"
+    }
+
+    /// `delivered`, posted again at `fireAtMs` under its snoozed identifier.
+    static func snoozed(_ delivered: PlannedNotification, until fireAtMs: Int64) -> PlannedNotification {
+        PlannedNotification(
+            identifier: snoozedIdentifier(delivered.identifier),
+            title: delivered.title,
+            body: delivered.body,
+            category: delivered.category,
+            fireAtMs: fireAtMs,
+            entity: delivered.entity,
+            link: delivered.link,
+            level: delivered.level
+        )
+    }
+
+    /// 12- or 24-hour, as this locale writes a time: what the core words a
+    /// "held from 06:15" body in.
+    static func clockStyle(locale: Locale = .current) -> ClockStyle {
+        let pattern = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: locale) ?? ""
+        return pattern.contains("a") ? .h12 : .h24
     }
 
     /// What the notification says under its title.
@@ -201,5 +405,47 @@ enum ReminderPlan {
         var style = Date.FormatStyle.dateTime.hour().minute()
         style.timeZone = timeZone
         return date.formatted(style)
+    }
+}
+
+extension NotificationKind {
+    /// Its row in Settings → Notifications.
+    var settingsTitle: String {
+        typealias Kinds = L10n.Account.NotificationKinds
+        return switch self {
+        case .taskReminder: Kinds.taskReminder
+        case .deadline: Kinds.deadline
+        case .routineDue: Kinds.routineDue
+        case .blockStart: Kinds.blockStart
+        case .morningBrief: Kinds.morningBrief
+        case .triageNudge: Kinds.triageNudge
+        case .eveningPlan: Kinds.eveningPlan
+        case .windDown: Kinds.windDown
+        case .focusEnd: Kinds.focusEnd
+        case .timezoneChanged: Kinds.timezoneChanged
+        case .weeklyReview: Kinds.weeklyReview
+        case .syncStalled: Kinds.syncStalled
+        case .devicePaired: Kinds.devicePaired
+        case .deviceRevoked: Kinds.deviceRevoked
+        case .recoveryCode: Kinds.recoveryCode
+        case .calendarReconnect: Kinds.calendarReconnect
+        case .sharedChange: Kinds.sharedChange
+        case .placeArrival: Kinds.placeArrival
+        }
+    }
+
+    /// The command that does in the app what this kind's notification opens,
+    /// where the keymap binds one — the key hint its Settings row shows
+    /// (`docs/08-features/notifications.md` §Settings → Notifications): the
+    /// two briefs (and the nudge, which opens the morning one), Mark Done for
+    /// the task kinds, and Focus for a block.
+    var keyAction: AppAction? {
+        switch self {
+        case .morningBrief, .triageNudge: .morningSummary
+        case .eveningPlan, .windDown: .endOfDay
+        case .taskReminder, .deadline, .routineDue: .markDone
+        case .blockStart: .focusMode
+        default: nil
+        }
     }
 }

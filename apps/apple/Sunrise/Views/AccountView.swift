@@ -46,6 +46,10 @@ struct AccountView: View {
     /// The day schedule, for Settings → Day schedule. Defaulted for the same
     /// reason; the Mac passes it and iOS does not yet.
     var daySchedule: DayScheduleModel?
+    /// The scheduler, for one switch per kind of notification. Defaulted for
+    /// the reason `storage` is: with no open vault there is no catalog policy
+    /// to show, and the section is left out.
+    var reminders: ReminderScheduler?
 
     @State private var pairing: PairingModel?
     @State private var newVaultName = ""
@@ -318,6 +322,12 @@ struct AccountView: View {
 
             LabeledContent(L10n.Account.Notifications.scheduledNow, value: "\(scheduledCount)")
                 .foregroundStyle(.secondary)
+        }
+
+        if let reminders, let policy = reminders.catalogPolicy {
+            NotificationKindsSection(policy: policy) { kind, on in
+                Task { await reminders.setKind(kind, enabled: on) }
+            }
         }
 
         Section(L10n.Account.QuietHours.title) {

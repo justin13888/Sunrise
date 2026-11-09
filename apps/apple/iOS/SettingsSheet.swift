@@ -25,13 +25,14 @@ extension VaultTabs {
                     notifications: surfaces.notifications,
                     deviceID: deviceID,
                     authorization: surfaces.reminders?.authorization ?? .notDetermined,
-                    scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
+                    scheduledCount: surfaces.reminders?.heldCount ?? 0,
                     signIn: signIn,
                     allowNotifications: { await surfaces.reminders?.requestAuthorization() },
                     keyboard: keys,
                     session: session,
                     devices: models.devices,
-                    storage: models.storage
+                    storage: models.storage,
+                    reminders: surfaces.reminders
                 )
                 .navigationTitle(L10n.Settings.title)
                 .navigationBarTitleDisplayMode(.inline)

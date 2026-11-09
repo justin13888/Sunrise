@@ -4,7 +4,6 @@ import AppKit
 import UIKit
 #endif
 import Foundation
-import UserNotifications
 
 /// Forwards the OS time zone to the core, on both platforms
 /// (`docs/10-cross-cutting/time.md` §7).
@@ -19,8 +18,11 @@ import UserNotifications
 /// Reporting the same zone again is free: the core answers `changed: false`
 /// and does nothing. When it did change, the core tells every change-feed
 /// follower to re-read (`CoreChange.zoneChanged`), which is what moves Today,
-/// the calendar and the reminder schedule; this only posts the one optional
-/// notification the core asks for.
+/// the calendar and the reminder schedule. The time-zone notice is not
+/// posted here: it is one of the catalog's alerts, which ``ReminderScheduler``
+/// posts on the re-plan that change causes, on the primary device, with its
+/// switch on and through quiet hours like the rest
+/// (`docs/08-features/notifications.md` #10).
 @MainActor
 final class TimeZoneWatch {
     private let bridge: CoreBridge
@@ -65,25 +67,6 @@ final class TimeZoneWatch {
         // `TimeZone.current` is cached per process; the reset is what makes it
         // read the zone the OS has just changed to.
         NSTimeZone.resetSystemTimeZone()
-        let zone = TimeZone.current.identifier
-        guard let change = try? await bridge.reportTimeZone(zone), change.notify else { return }
-        await Self.notify(change)
-    }
-
-    /// The one local notification `notifications.timezone_changed.enabled`
-    /// asks for: the new zone and how many open tasks moved.
-    private static func notify(_ change: TimeZoneChange) async {
-        let content = UNMutableNotificationContent()
-        content.title = "Time zone changed"
-        let tasks = change.affectedTasks == 1 ? "1 task" : "\(change.affectedTasks) tasks"
-        content.body = "Now in \(change.zone). \(tasks) moved with you."
-        let request = UNNotificationRequest(
-            identifier: "sunrise.timezone-changed",
-            content: content,
-            trigger: nil
-        )
-        // Without permission this is refused, and that is the answer: the
-        // preference cannot grant what the user withheld.
-        try? await UNUserNotificationCenter.current().add(request)
+        _ = try? await bridge.reportTimeZone(TimeZone.current.identifier)
     }
 }

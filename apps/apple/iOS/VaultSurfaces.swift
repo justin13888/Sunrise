@@ -23,6 +23,7 @@ extension VaultTabs {
         let show: (Destination) -> Void
         let reveal: (EntityRef) -> Void
         let perform: (AppAction) -> Void
+        let showSettings: () -> Void
 
         func body(content: Content) -> some View {
             content
@@ -40,6 +41,13 @@ extension VaultTabs {
                     guard let command else { return }
                     surfaces.commandTaken()
                     perform(command)
+                }
+                // A sync or security notification asked for Settings, where
+                // sync status, the devices and the recovery code live.
+                .onChange(of: surfaces.pendingSettings) { _, asked in
+                    guard asked else { return }
+                    surfaces.settingsTaken()
+                    showSettings()
                 }
                 .onChange(of: surfaces.notifications.policy) {
                     Task { await surfaces.reminders?.reconcile() }

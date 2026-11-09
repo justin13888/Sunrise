@@ -25,8 +25,9 @@ protocol NotificationCenterClient: Sendable {
     /// this owns the object's lifetime — a responder created inline here would
     /// be deallocated before the first button was ever pressed.
     func install(delegate: ReminderResponder) async
-    /// Identifiers of every request the OS is currently holding for this app.
-    func pendingIdentifiers() async -> [String]
+    /// Every request the OS is currently holding for this app, with the
+    /// revision each was scheduled with where it carries one.
+    func pendingRequests() async -> [PendingReminder]
     /// Hand one over.
     func schedule(_ notification: PlannedNotification) async throws
     /// Withdraw scheduled requests by identifier.
@@ -58,15 +59,20 @@ struct SystemNotificationCenter: NotificationCenterClient {
     }
 
     func registerCategories() async {
-        center.setNotificationCategories(Set(ReminderCategory.allCases.map(Self.category)))
+        center.setNotificationCategories(Set(ReminderCategory.all.map(Self.category)))
     }
 
     func install(delegate: ReminderResponder) async {
         center.delegate = delegate
     }
 
-    func pendingIdentifiers() async -> [String] {
-        await center.pendingNotificationRequests().map(\.identifier)
+    func pendingRequests() async -> [PendingReminder] {
+        await center.pendingNotificationRequests().map {
+            PendingReminder(
+                identifier: $0.identifier,
+                revision: $0.content.userInfo[ReminderPayload.revision] as? String
+            )
+        }
     }
 
     func schedule(_ notification: PlannedNotification) async throws {
@@ -105,8 +111,19 @@ struct SystemNotificationCenter: NotificationCenterClient {
                 )
             )
         }
+        // A catalog kind's buttons. One that opens a screen brings the app
+        // forward; one that acts (Mark Done, a snooze, Keep) runs without it.
+        for action in kind.catalogActions {
+            actions.append(
+                UNNotificationAction(
+                    identifier: action.identifier,
+                    title: action.buttonTitle,
+                    options: action.opensApp ? [.foreground] : []
+                )
+            )
+        }
         return UNNotificationCategory(
-            identifier: kind.rawValue,
+            identifier: kind.identifier,
             actions: actions,
             intentIdentifiers: [],
             options: []
@@ -129,29 +146,57 @@ struct SystemNotificationCenter: NotificationCenterClient {
     /// lose nothing: a zone change makes the core re-plan in the new zone
     /// (``TimeZoneWatch``), their `fireAtMs` moves, and so does the
     /// identifier, so they are re-armed at the new instant.
-    static func request(for notification: PlannedNotification) -> UNNotificationRequest {
+    ///
+    /// An alert that is already due has no trigger at all, which the OS reads
+    /// as "now".
+    static func request(
+        for notification: PlannedNotification,
+        now: Date = .now
+    ) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         content.title = notification.title
         if !notification.body.isEmpty { content.body = notification.body }
-        content.categoryIdentifier = notification.category.rawValue
+        content.categoryIdentifier = notification.category.identifier
         content.sound = .default
-        content.userInfo = [
+        content.interruptionLevel = interruptionLevel(notification.level)
+        var info: [String: String] = [
             ReminderPayload.entity: notification.entity,
-            ReminderPayload.link: notification.link.url?.absoluteString ?? ""
+            ReminderPayload.link: notification.link?.url?.absoluteString ?? ""
         ]
+        if let revision = notification.revision { info[ReminderPayload.revision] = revision }
+        content.userInfo = info
         let fire = Date(timeIntervalSince1970: Double(notification.fireAtMs) / 1000)
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        var components = calendar.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second],
-            from: fire
-        )
-        components.timeZone = calendar.timeZone
+        let trigger: UNNotificationTrigger? = notification.postsWhenDue && fire <= now
+            ? nil
+            : UNCalendarNotificationTrigger(dateMatching: components(of: fire), repeats: false)
         return UNNotificationRequest(
             identifier: notification.identifier,
             content: content,
-            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            trigger: trigger
         )
+    }
+
+    /// The calendar components of an instant, **with their zone**, so the
+    /// trigger fires at that instant after the device changes zone rather than
+    /// at the same wall clock in the new one.
+    static func components(of fire: Date, in zone: TimeZone = .current) -> DateComponents {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return calendar.dateComponents(
+            [.timeZone, .year, .month, .day, .hour, .minute, .second],
+            from: fire
+        )
+    }
+
+    /// The catalog's level, as the OS spells it. Time-sensitive needs the
+    /// entitlement to be honoured; without it the system delivers the request
+    /// as active, which is the documented degradation (§Platform mechanisms).
+    static func interruptionLevel(_ level: InterruptionLevel) -> UNNotificationInterruptionLevel {
+        switch level {
+        case .passive: .passive
+        case .active: .active
+        case .timeSensitive: .timeSensitive
+        }
     }
 }
 
@@ -159,6 +204,115 @@ struct SystemNotificationCenter: NotificationCenterClient {
 enum ReminderPayload {
     static let entity = "sunrise.entity"
     static let link = "sunrise.link"
+    /// The core's revision for a catalog kind, read back by the next re-plan.
+    static let revision = "sunrise.revision"
+}
+
+extension NotificationAction {
+    /// Every button of the catalog, for reading one back from the OS.
+    static let known: [NotificationAction] = [
+        .markDone, .snoozeOneHour, .snoozeTomorrow, .snoozeFiveMinutes, .snoozeFifteenMinutes,
+        .defer, .skip, .startFocus, .planMyDay, .openTriage, .moveOpenToTomorrow, .open,
+        .seeTomorrow, .addFiveMinutes, .startBreak, .reviewTimes, .keep, .startReview,
+        .openSyncStatus, .reviewDevices, .reviewSecurity, .reconnect, .openHereNow
+    ]
+
+    /// The prefix of a catalog button's identifier. Apart from
+    /// ``ReminderAction``'s, because a catalog snooze re-posts the notification
+    /// where a reminder's snooze moves the task.
+    static let identifierPrefix = "sunrise.catalog."
+
+    /// The identifier the OS hands back when this button is pressed.
+    var identifier: String { "\(Self.identifierPrefix)\(tag)" }
+
+    /// Read a button back from its identifier.
+    init?(identifier: String) {
+        guard identifier.hasPrefix(Self.identifierPrefix) else { return nil }
+        let tag = identifier.dropFirst(Self.identifierPrefix.count)
+        guard let action = Self.known.first(where: { $0.tag == tag }) else { return nil }
+        self = action
+    }
+
+    /// Its name in an identifier.
+    var tag: String {
+        switch self {
+        case .markDone: "mark_done"
+        case .snoozeOneHour: "snooze_one_hour"
+        case .snoozeTomorrow: "snooze_tomorrow"
+        case .snoozeFiveMinutes: "snooze_five_minutes"
+        case .snoozeFifteenMinutes: "snooze_fifteen_minutes"
+        case .defer: "defer"
+        case .skip: "skip"
+        case .startFocus: "start_focus"
+        case .planMyDay: "plan_my_day"
+        case .openTriage: "open_triage"
+        case .moveOpenToTomorrow: "move_open_to_tomorrow"
+        case .open: "open"
+        case .seeTomorrow: "see_tomorrow"
+        case .addFiveMinutes: "add_five_minutes"
+        case .startBreak: "start_break"
+        case .reviewTimes: "review_times"
+        case .keep: "keep"
+        case .startReview: "start_review"
+        case .openSyncStatus: "open_sync_status"
+        case .reviewDevices: "review_devices"
+        case .reviewSecurity: "review_security"
+        case .reconnect: "reconnect"
+        case .openHereNow: "open_here_now"
+        }
+    }
+
+    /// What the button says.
+    var buttonTitle: String {
+        switch self {
+        case .markDone: L10n.Notifications.markDone
+        case .snoozeOneHour: L10n.Notifications.snoozeHour
+        case .snoozeTomorrow: L10n.Notifications.snoozeTomorrow
+        case .snoozeFiveMinutes: L10n.Notifications.actionSnoozeFiveMinutes
+        case .snoozeFifteenMinutes: L10n.Notifications.actionSnoozeFifteenMinutes
+        case .defer: L10n.Notifications.actionDefer
+        case .skip: L10n.Notifications.actionSkip
+        case .startFocus: L10n.Notifications.actionStartFocus
+        case .planMyDay: L10n.Notifications.actionPlanMyDay
+        case .openTriage: L10n.Notifications.actionOpenTriage
+        case .moveOpenToTomorrow: L10n.Notifications.actionMoveOpenToTomorrow
+        case .open: L10n.Notifications.actionOpen
+        case .seeTomorrow: L10n.Notifications.actionSeeTomorrow
+        case .addFiveMinutes: L10n.Notifications.actionAddFiveMinutes
+        case .startBreak: L10n.Notifications.actionStartBreak
+        case .reviewTimes: L10n.Notifications.actionReviewTimes
+        case .keep: L10n.Notifications.actionKeep
+        case .startReview: L10n.Notifications.actionStartReview
+        case .openSyncStatus: L10n.Notifications.actionOpenSyncStatus
+        case .reviewDevices: L10n.Notifications.actionReviewDevices
+        case .reviewSecurity: L10n.Notifications.actionReviewSecurity
+        case .reconnect: L10n.Notifications.actionReconnect
+        case .openHereNow: L10n.Notifications.actionOpenHereNow
+        }
+    }
+
+    /// How far a snooze button puts the notification off, when it is one
+    /// measured in minutes. ``snoozeTomorrow`` is a date, not a span, and is
+    /// asked of the core.
+    var snoozeMinutes: Int? {
+        switch self {
+        case .snoozeOneHour: 60
+        case .snoozeFiveMinutes: 5
+        case .snoozeFifteenMinutes: 15
+        default: nil
+        }
+    }
+
+    /// Whether pressing it opens a screen, so the app must come forward.
+    var opensApp: Bool {
+        switch self {
+        case .markDone, .snoozeOneHour, .snoozeTomorrow, .snoozeFiveMinutes,
+             .snoozeFifteenMinutes, .keep:
+            false
+        default:
+            true
+        }
+    }
 }
 
 /// One of the buttons on a reminder.
@@ -196,6 +350,9 @@ enum ReminderResponse: Equatable, Sendable {
     case open(DeepLink)
     /// Pressed a button: run it against the core, with no window.
     case act(EntityRef, ReminderAction)
+    /// Pressed one of a catalog kind's buttons, on the notification it was
+    /// pressed on — which a snooze posts again.
+    case catalog(NotificationAction, PlannedNotification)
     /// Swiped it away, or pressed something this build does not know.
     case dismissed
 }
@@ -209,13 +366,18 @@ extension ReminderResponse {
     static func decode(
         actionIdentifier: String,
         entity: String?,
-        link: String?
+        link: String?,
+        delivered: PlannedNotification? = nil
     ) -> ReminderResponse {
         if actionIdentifier == UNNotificationDefaultActionIdentifier {
             guard let link, let url = URL(string: link), let parsed = DeepLink(url: url) else {
                 return .dismissed
             }
             return .open(parsed)
+        }
+        if let action = NotificationAction(identifier: actionIdentifier) {
+            guard let delivered else { return .dismissed }
+            return .catalog(action, delivered)
         }
         guard let action = ReminderAction(rawValue: actionIdentifier),
               let entity, !entity.isEmpty else { return .dismissed }
@@ -232,6 +394,36 @@ extension ReminderResponse {
             entity: userInfo[ReminderPayload.entity] as? String,
             link: userInfo[ReminderPayload.link] as? String
         )
+    }
+
+    /// The same, from the request the OS delivered, which a catalog button
+    /// needs whole: a snooze posts it again.
+    static func decode(actionIdentifier: String, request: UNNotificationRequest) -> ReminderResponse {
+        let content = request.content
+        let entity = content.userInfo[ReminderPayload.entity] as? String
+        let link = content.userInfo[ReminderPayload.link] as? String
+        let category = ReminderCategory.all.first { $0.identifier == content.categoryIdentifier }
+        let delivered = category.map {
+            PlannedNotification(
+                identifier: request.identifier,
+                title: content.title,
+                body: content.body,
+                category: $0,
+                fireAtMs: Int64(Date.now.timeIntervalSince1970 * 1000),
+                entity: entity ?? "",
+                link: link.flatMap(URL.init(string:)).flatMap(DeepLink.init(url:)),
+                level: level(content.interruptionLevel)
+            )
+        }
+        return decode(actionIdentifier: actionIdentifier, entity: entity, link: link, delivered: delivered)
+    }
+
+    private static func level(_ level: UNNotificationInterruptionLevel) -> InterruptionLevel {
+        switch level {
+        case .passive: .passive
+        case .timeSensitive, .critical: .timeSensitive
+        default: .active
+        }
     }
 }
 
@@ -255,7 +447,7 @@ final class ReminderResponder: NSObject, UNUserNotificationCenterDelegate, @unch
     ) async {
         let decoded = ReminderResponse.decode(
             actionIdentifier: response.actionIdentifier,
-            userInfo: response.notification.request.content.userInfo
+            request: response.notification.request
         )
         await handle(decoded)
     }
