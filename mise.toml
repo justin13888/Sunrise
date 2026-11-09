@@ -1459,10 +1459,18 @@ xcodebuild test \\
   -resultBundlePath "$root/out/shots/macos.xcresult" \\
   -quiet
 
+# `ios_sim_udid`, when the caller sets it, names the one device to test on:
+# `tools/screenshots/readme.sh` pins a device's status bar and appearance
+# before this runs, and `name=` alone may land on another runtime's device of
+# the same name.
+ios_device="name=$ios_sim"
+if [ -n "${ios_sim_udid:-}" ]; then
+  ios_device="id=$ios_sim_udid"
+fi
 xcodebuild test \\
   -project Sunrise.xcodeproj \\
   -scheme SunriseiOS \\
-  -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -destination "platform=iOS Simulator,$ios_device" \\
   -only-testing:SunriseiOSUITests/ScreenshotWalkTests \\
   -resultBundlePath "$root/out/shots/ios.xcresult" \\
   -quiet \\

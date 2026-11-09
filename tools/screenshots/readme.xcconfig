@@ -1,0 +1,10 @@
+// Build settings `tools/screenshots/readme.sh` lays over every target through
+// `XCODE_XCCONFIG_FILE`, for its run of `mise run apple-shots` only.
+//
+// The macOS walk's runner is signed ad hoc with the hardened runtime on, and
+// the hardened runtime's library validation refuses to load a test bundle
+// signed ad hoc too: "mapping process and mapped file (non-platform) have
+// different Team IDs", before any test runs. With no signing team there is no
+// Team ID to match, so the runtime is what gives way. Nothing built under this
+// file ships.
+ENABLE_HARDENED_RUNTIME = NO
