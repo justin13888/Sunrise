@@ -255,7 +255,11 @@ Structural rules reject the write:
   day of week, date range) in the reader's zone is rejected by every write path:
   ordinary submit, triage and `plan_commit` alike. `plan_preview` reports it as
   Blocking. An `at_place` requirement never rejects a write
-  ([ADR-0051](../11-adr/0051-places.md)).
+  ([ADR-0051](../11-adr/0051-places.md)). A time-of-day window may wrap
+  midnight (`start > end`); `start == end` is invalid.
+- A task that comes to violate a `hard` constraint without a write, because
+  the reader's zone changed, is flagged and never rejected or moved
+  ([`scheduling-constraints.md` §Re-evaluation](./scheduling-constraints.md#re-evaluation)).
 - A Task's serialized envelope (encrypted) MUST NOT exceed **1.25 MiB**.
   Over-limit submits return `VALIDATION_PAYLOAD_TOO_LARGE`, and the UI offers a
   one-click conversion of the body into an Attachment.

@@ -229,7 +229,7 @@ struct ActivityModelTests {
     @Test
     func aTasksHistoryIsReadBackInTheDomainsOwnWords() async throws {
         let vault = try await TestVault()
-        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        let list = TaskListModel(bridge: vault.bridge, kind: .noStream)
         await list.create(
             TaskDraftIn(
                 title: "Renew the passport",
