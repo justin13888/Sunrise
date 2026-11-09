@@ -196,11 +196,6 @@ actor CoreBridge {
         try await core.windDownPlan(nowMs: nowMs, authorized: authorized, pending: pending)
     }
 
-    /// Every catalog kind with whether it is on, for Settings → Notifications.
-    func notificationPolicy() async throws -> CatalogPolicyItem {
-        try await core.notificationPolicy()
-    }
-
     // MARK: - Recovery
 
     /// Whether this vault holds the account identity's unwrapping key.

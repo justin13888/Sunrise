@@ -239,15 +239,12 @@ final class ReminderScheduler {
         case let .add(notification), let .replace(notification):
             out.schedule.append(ReminderPlan.notification(for: notification))
         case .cancel:
-            out.cancel.append(Self.windDownIdentifier)
+            out.cancel.append(NotificationCatalog.windDown)
         case .keep:
             break
         }
         return out
     }
-
-    /// The identifier wind-down is held under, which the core fixes.
-    static let windDownIdentifier = "sunrise.wind_down"
 
     /// Reconcile on every change batch, for as long as the app is open.
     ///

@@ -69,6 +69,10 @@ enum NotificationCatalog {
     /// The identifier namespaces of the scheduled kinds and of the alerts.
     static let prefixes: NotificationPrefixes = notificationPrefixes()
 
+    /// The one identifier wind-down is held under. The core's, because a
+    /// cancel names none and must withdraw exactly what an add scheduled.
+    static let windDown: String = windDownIdentifier()
+
     /// One kind's row.
     static func info(_ kind: NotificationKind) -> NotificationKindInfo? {
         kinds.first { $0.kind == kind }
