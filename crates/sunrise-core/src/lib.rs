@@ -112,11 +112,11 @@ pub use control_op::{
     IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry,
     VaultRequiresPayload,
 };
-pub use core::{Core, CoreError};
+pub use core::{Core, CoreError, PlanCommitResult, PLAN_CACHE_SIZE};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
-    Engine, EngineError, KeyBundleApplied, RebuildReport, SearchReindex, SnapshotApplied,
-    BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
+    Engine, EngineError, KeyBundleApplied, PlanError, RebuildReport, SearchReindex,
+    SnapshotApplied, BOOTSTRAP_FILE, SNAPSHOT_FORMAT_V,
 };
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,

@@ -158,6 +158,11 @@ pub struct Core {
     /// empty at every open and rebuilt from the OS's region state, and
     /// emptied again at shutdown. See [`Core::on_place_presence`].
     place_presence: Mutex<sunrise_domain::Presence>,
+    /// The planner's most recent previews, by diff id, for
+    /// [`Core::plan_commit`] (`docs/08-features/planner.md` §Core seam).
+    /// Memory only: emptied at shutdown, so a reopened vault answers
+    /// `PLAN_UNKNOWN` and the client previews again.
+    plans: Mutex<planner::PlanCache>,
     closed: Mutex<bool>,
 }
 
@@ -184,6 +189,8 @@ impl Core {
 
     /// The open behind [`Self::open`] and [`Self::open_repairing`], and what
     /// a repair's rebuild did.
+    // One open, in order: it initialises every field of `Core`, one line each.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn open_as(
         cfg: CoreConfig,
         unlock: Unlock,
@@ -378,6 +385,7 @@ impl Core {
             restored_from_code,
             reader_clock,
             place_presence: Mutex::new(sunrise_domain::Presence::new()),
+            plans: Mutex::new(planner::PlanCache::default()),
             closed: Mutex::new(false),
         };
         // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
@@ -798,6 +806,7 @@ impl Core {
     pub async fn shutdown(&self) {
         *self.closed.lock() = true;
         self.place_presence.lock().clear();
+        self.plans.lock().clear();
         self.sync_shared.request_shutdown();
         let handle = self.sync_handle.lock().take();
         if let Some(h) = handle {
@@ -1771,8 +1780,10 @@ mod identity_chain;
 mod key_bundle;
 mod notify;
 mod place;
+mod planner;
 mod repair;
 
+pub use planner::{PlanCommitResult, PLAN_CACHE_SIZE};
 pub(crate) use repair::OpenMode;
 
 #[cfg(test)]

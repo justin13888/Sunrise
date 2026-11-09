@@ -1677,3 +1677,7 @@ mod closed;
 /// Presence at a Place, which reaches no storage at all.
 #[cfg(test)]
 mod place;
+
+/// The planner's preview cache (#343).
+#[cfg(test)]
+mod planner;
