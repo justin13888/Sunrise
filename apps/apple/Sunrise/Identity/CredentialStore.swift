@@ -109,14 +109,25 @@ struct KeychainCredentialStore: CredentialStore {
             domain: KeychainDomain.current
         )
         migration = KeychainMigration(
+            kind: .credential,
             source: KeychainItem(
                 service: Self.service,
                 account: account,
                 accessibility: Self.accessibility,
                 domain: .login
             ),
-            destination: item
+            destination: item,
+            expiresAtMs: Self.expiresAtMs
         )
+    }
+
+    /// A stored copy's expiry, which is how the migration orders two copies
+    /// that differ: a sign-in or a renewal always mints the later one. `nil`
+    /// for a copy that does not decode, which loses to one that does, because
+    /// `load` reads an undecodable token as no token at all.
+    @Sendable
+    static func expiresAtMs(_ data: Data) -> UInt64? {
+        try? JSONDecoder().decode(StoredCredentials.self, from: data).expiresAtMs
     }
 
     func load() throws -> StoredCredentials? {
@@ -137,8 +148,11 @@ struct KeychainCredentialStore: CredentialStore {
         // unreadable copy of the old one may still be sitting in the other
         // keychain is the pair of disagreeing secrets `save` describes below.
         // `.migrationUnverified` is the one shape held out of that ordering,
-        // because there the pair already exists and the login is what collapses
-        // it; `AccountModel.mayHaveLeftACopyUnread` is where that is decided.
+        // because there both copies were read; `AccountModel
+        // .mayHaveLeftACopyUnread` is where that is decided. For this store it
+        // no longer means a disagreeing pair: the migration orders two
+        // credentials by expiry and keeps the fresher (#258), so it is raised
+        // only when a write's read-back finds bytes other than the ones written.
         // Throwing is still strictly better than handing back a token in the
         // backup-bearing class — it just no longer costs a session to do it.
         //
@@ -161,20 +175,12 @@ struct KeychainCredentialStore: CredentialStore {
     /// user action at all**: `refreshIfNeeded` renews at 75% of the token's
     /// life, so a single launch whose probe failed open writes the fresh token
     /// to the login keychain while the stale one stays in the data-protection
-    /// one, and every later launch with a correct probe reads two secrets that
-    /// disagree and raises `.migrationUnverified`. `AccountModel.restore()`
-    /// reports that one rather than swallowing it, so the user is told which
-    /// failure they are in — and the Try again it offers goes to a login, which
-    /// is what ends the state. `writeAcrossDomains` writes this domain and then
-    /// deletes the other, so a *successful* sign-in collapses the disagreeing
-    /// pair to one secret and the next launch loads cleanly. `clear` takes both
-    /// copies as well, and the Account screen does now carry a Sign out outside
-    /// `.signedIn` — but only where a refused sign-out has left a residue
-    /// behind, which a refused *read* never does, so it is still not a remedy
-    /// this shape can reach. An earlier revision of this comment inferred from
-    /// the narrower reading that there was no reachable remedy at all. A guard
-    /// was built on the strength of that inference, and it made this the one
-    /// shape with no way out of it.
+    /// one. Every later launch with a correct probe then reads two secrets that
+    /// disagree. Before #258 that raised `.migrationUnverified` on every one of
+    /// them; the migration now orders the two by `expiresAtMs` and keeps the
+    /// fresher, so the pair costs nothing worse than one launch's cleanup.
+    /// `writeAcrossDomains` still writes this domain and then deletes the
+    /// other, so a save that is not refused never leaves the pair at all.
     /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
     /// write must not do this.
     ///
@@ -195,11 +201,13 @@ struct KeychainCredentialStore: CredentialStore {
     /// `CredentialStore.save` is `Void`, and widening it to carry a partial
     /// success is the shape #255 is proposing for the sign-out path, across a
     /// protocol with more than one conformer. What is lost by dropping it is
-    /// named in `KeychainItem.writeAcrossDomains`: the stale copy survives, and
-    /// the next load's migration refuses it with `.migrationUnverified`. That
-    /// state is the refused delete's doing, not this `catch`'s — it exists
-    /// identically whether this line rethrows or not — and rethrowing adds the
-    /// lost session on top of it.
+    /// named in `KeychainItem.writeAcrossDomains`: the stale copy survives. It
+    /// no longer costs a refused load (#258): the next load's migration finds
+    /// the fresh copy expiring later, keeps it, and tries the delete again, and
+    /// a delete refused again leaves the same pair and the same answer on the
+    /// launch after. That state is the refused delete's doing, not this
+    /// `catch`'s — it exists identically whether this line rethrows or not —
+    /// and rethrowing would add a lost session on top of it.
     ///
     /// **This `catch` executes in no test**, and this declares it — one of the
     /// seven listed in `docs/07-clients/desktop.md`, where it is item 5. It is

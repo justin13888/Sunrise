@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// Moves one secret from the keychain an older build wrote it to, into the one
 /// this build addresses — without ever leaving zero readable copies.
@@ -26,35 +25,70 @@ import Security
 ///
 /// | step | action | a crash here leaves | the next launch does |
 /// |---|---|---|---|
-/// | 0 | read the destination | — | non-nil: done; source still present: verify and delete |
+/// | 0 | read the destination | — | restarts at 0 |
 /// | 1 | read the source | source only | restarts at 0 |
-/// | 2 | write the destination | both, unverified | 0 finds the destination, then verifies and deletes |
-/// | 3 | read the destination back and compare | both, verified | 0 finds the destination, then deletes the source |
+/// | 2 | write the destination | both, unverified | 0 and 1 find both, then the plan decides |
+/// | 3 | read the destination back and compare | both, identical | 0 and 1 find both identical, then delete the source |
 /// | 4 | delete the source | destination only | 0 finds the destination; nothing to delete |
+///
+/// ## Who decides
+///
+/// The two reads are this type's; what follows them is not. They are reduced
+/// to a `SecretCopies` — presence, byte equality, and for a credential each
+/// copy's expiry, never the bytes — and `planSecretCopies(kind:copies:)`, in
+/// `crates/sunrise-client-core/src/secret_copies.rs`, answers what to write and
+/// what to delete. After a write, `verifySecretWrite(readBack:)` answers what
+/// the read-back means. Every row of both tables is pinned there, so what this
+/// file adds is only the I/O each answer names.
 ///
 /// ## What it refuses to do, and what it shrugs at
 ///
-/// It throws for exactly one thing: a destination that exists and whose bytes
-/// **differ** from the source's, which means two different secrets claim one
-/// `(service, account)` and this code cannot know which one the vault was
-/// sealed with. Every other `Security.framework` failure falls back to the
-/// source item, because locking a user out over a *destination* problem while
-/// the secret sits perfectly readable in the source is a strictly worse trade
-/// than the one the accessibility raise takes.
+/// It throws for two copies that **differ** and cannot be ordered: two vault
+/// roots or two relay device ids under one `(service, account)`, where this
+/// code cannot know which one the vault was sealed with or which binding is
+/// current. Two differing **credentials** are not refused (#258): each states
+/// its own `expiresAtMs`, a sign-in or a renewal always mints the later one,
+/// so the fresher copy is kept and the other deleted. A wrong guess there costs
+/// one sign-in, never a vault, and a delete that is refused again changes
+/// nothing — the next launch reaches the same answer from the same pair.
 ///
-/// A destination that has *gone away* by step 3 is not that case and is not
-/// refused: it raises ``KeychainError/unexpected(_:)`` carrying
-/// `errSecItemNotFound`, which the fallback below absorbs like any other
-/// destination failure. `KeychainMigrationVerifyTests` pins it.
+/// The read-back after a write is refused for any kind when it finds bytes that
+/// are not the ones just written. Every other `Security.framework` failure
+/// falls back to the source item, because locking a user out over a
+/// *destination* problem while the secret sits perfectly readable in the source
+/// is a strictly worse trade than the one the accessibility raise takes.
+///
+/// A destination that has *gone away* by step 3 is not a refusal either: it
+/// holds no competing secret, so the answer is the source's bytes, left where
+/// they are for the next launch to move. `KeychainMigrationVerifyTests` pins it.
 ///
 /// Nothing on either side is also not an error: neither side holding anything
 /// is first run, and ``KeychainItem/read()`` records why turning that into an
 /// error would generate a new root and orphan the existing vault.
 struct KeychainMigration: Sendable {
+    /// Which secret this moves, which decides whether two copies that differ
+    /// can be ordered or must be refused.
+    let kind: SecretKind
     /// Where an older build put the secret.
     let source: KeychainItem
     /// Where this build reads it from.
     let destination: KeychainItem
+    /// A copy's `expiresAtMs`, or `nil` for a copy that carries none or does
+    /// not decode. Only a ``SecretKind/credential`` store supplies one; for the
+    /// other two kinds the plan refuses a differing pair whatever this says.
+    let expiresAtMs: @Sendable (Data) -> UInt64?
+
+    init(
+        kind: SecretKind,
+        source: KeychainItem,
+        destination: KeychainItem,
+        expiresAtMs: @escaping @Sendable (Data) -> UInt64? = { _ in nil }
+    ) {
+        self.kind = kind
+        self.source = source
+        self.destination = destination
+        self.expiresAtMs = expiresAtMs
+    }
 
     /// The points ``run(before:)`` can be interrupted at.
     ///
@@ -126,10 +160,9 @@ struct KeychainMigration: Sendable {
     ///   test observe the real partial state, structurally rather than by the
     ///   test's error type happening to be distinct.
     /// - Returns: the secret, or `nil` when neither side holds one.
-    /// - Throws: ``KeychainError/migrationUnverified`` when the destination
-    ///   holds bytes that are not the source's; ``KeychainError/unexpected(_:)``
-    ///   carrying `errSecItemNotFound` when the destination no longer exists at
-    ///   all, which the fallback below absorbs; an ``Interruption`` wrapping
+    /// - Throws: ``KeychainError/migrationUnverified`` when the plan refuses
+    ///   two differing copies, or the read-back finds bytes other than the ones
+    ///   written; an ``Interruption`` wrapping
     ///   whatever `before` raises; and whatever reading the *source* raises,
     ///   which is the pre-existing "a key may exist and cannot be reached"
     ///   failure this must not soften.
@@ -312,33 +345,84 @@ struct KeychainMigration: Sendable {
         let alreadyThere = try destination.read()
 
         try interrupting(.readSource, before)
-        guard let fromSource = try source.read() else {
-            // Nothing left to move: either the destination already holds it and
-            // step 4 completed, or this is first run and nobody holds anything.
-            return alreadyThere
-        }
+        let fromSource = try source.read()
 
-        if alreadyThere == nil {
+        switch planSecretCopies(kind: kind, copies: copies(alreadyThere, fromSource)) {
+        case .nothing:
+            return nil
+        case .useDestination:
+            return alreadyThere
+        case .refuse:
+            throw KeychainError.migrationUnverified
+        case .deleteSource:
+            // Keep the destination: either an interrupted move left two
+            // identical copies, or this is the credential the plan found
+            // fresher. Its answer stands whether or not the delete lands — a
+            // refused delete leaves the same pair, and the next launch reaches
+            // this same arm from it. Rethrowing would hand `run()`'s fallback
+            // the *source*, which for a credential is the stale token.
+            try interrupting(.deleteSource, before)
+            try? source.delete()
+            return alreadyThere
+        case .moveSource:
+            guard let fromSource else { return alreadyThere }
+            // A plain `write`, which replaces a destination already there: the
+            // credential whose source is the fresher lands here with one.
             try interrupting(.writeDestination, before)
             try destination.write(fromSource)
+            return try verifyAndDeleteSource(fromSource, before: before)
         }
+    }
 
+    /// Steps 3 and 4: read back what was written, and let
+    /// `verifySecretWrite(readBack:)` say what it means.
+    private func verifyAndDeleteSource(
+        _ written: Data,
+        before: (Step) throws -> Void
+    ) throws -> Data? {
         try interrupting(.verify, before)
-        // Two conditions, two answers, and collapsing them cost a session. A
-        // destination that is *gone* by step 3 — a concurrent `clear()` from a
-        // second process, or the row deleted in Keychain Access between step 0
-        // and here — holds no competing secret at all. Raising
-        // `migrationUnverified` for it locks the user out over a destination
-        // problem while the source is still perfectly readable, which is the one
-        // trade this type exists to refuse. `.unexpected` is absorbed by
-        // `run()`'s fallback arm, which answers with the source's bytes.
-        guard let verified = try destination.read() else {
-            throw KeychainError.unexpected(errSecItemNotFound)
+        let readBack = try destination.read()
+        let found: WriteReadBack = if readBack == nil {
+            .gone
+        } else if readBack == written {
+            .matches
+        } else {
+            .differs
         }
-        guard verified == fromSource else { throw KeychainError.migrationUnverified }
+        switch verifySecretWrite(readBack: found) {
+        case .deleteSource:
+            try interrupting(.deleteSource, before)
+            try source.delete()
+            return readBack
+        case .fallBackToSource:
+            // A destination *gone* by step 3 — a concurrent `clear()` from a
+            // second process, or the row deleted in Keychain Access between the
+            // write and here — holds no competing secret at all. Refusing it
+            // would lock the user out over a destination problem while the
+            // source is still perfectly readable, which is the one trade this
+            // type exists to refuse. The source stays for the next launch.
+            return written
+        case .refuse:
+            throw KeychainError.migrationUnverified
+        }
+    }
 
-        try interrupting(.deleteSource, before)
-        try source.delete()
-        return verified
+    /// What the two reads found, as facts with no secret bytes in them.
+    private func copies(_ destination: Data?, _ source: Data?) -> SecretCopies {
+        switch (destination, source) {
+        case (nil, nil):
+            .neither
+        case (.some, nil):
+            .destinationOnly
+        case (nil, .some):
+            .sourceOnly
+        case let (.some(atDestination), .some(atSource)):
+            atDestination == atSource
+                ? .identical
+                : .differ(
+                    destinationExpiresAtMs: expiresAtMs(atDestination),
+                    sourceExpiresAtMs: expiresAtMs(atSource)
+                )
+        }
     }
 }

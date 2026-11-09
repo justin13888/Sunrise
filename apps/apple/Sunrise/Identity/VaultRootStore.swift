@@ -51,6 +51,7 @@ struct KeychainVaultRootStore: VaultRootStore {
             domain: KeychainDomain.current
         )
         migration = KeychainMigration(
+            kind: .vaultRoot,
             source: KeychainItem(
                 service: Self.service,
                 account: vaultName,

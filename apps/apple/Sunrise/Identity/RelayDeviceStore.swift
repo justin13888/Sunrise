@@ -140,6 +140,7 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
             domain: KeychainDomain.current
         )
         migration = KeychainMigration(
+            kind: .relayDeviceId,
             source: KeychainItem(
                 service: Self.service,
                 account: vaultName,

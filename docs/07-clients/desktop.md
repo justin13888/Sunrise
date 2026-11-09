@@ -462,13 +462,14 @@ the tree:
   credential store with `try?`, so a refusal arrived as a *signed-out* session,
   and the one thing that screen offers is a sign-in that writes a second token
   into the resolved domain while the unreadable copy stays where it is — two
-  secrets under one name, `.migrationUnverified` on every later launch, signed
-  out in silence for good. It now reports the refusal, and what its Try again
-  does with it is decided by the *shape* of the refusal: for every shape that
-  may have left a copy of the token unread it re-reads the store instead of
-  writing that second token, and for `.migrationUnverified` — where both copies
-  have already been read and are known to disagree — it goes to the login,
-  because there the sign-in's cross-domain write is what collapses the pair.
+  secrets under one name, and a session signed out in silence. It now reports
+  the refusal, and what its Try again does with it is decided by the *shape* of
+  the refusal: for every shape that may have left a copy of the token unread it
+  re-reads the store instead of writing that second token, and for
+  `.migrationUnverified` — where both copies have already been read — it goes
+  to the login, because there the sign-in's cross-domain write is what
+  collapses the pair. Since #258 the credential store raises that shape only
+  when the migration's read-back finds a token other than the one it wrote.
   Gating on the fact of a throw rather than on its shape left that one shape
   with no remedy at all.
 
@@ -495,8 +496,8 @@ the tree:
   reporting that as success is the failure the cross-domain half exists to
   prevent: on an entitled Mac a swallowed delete leaves a refresh token behind a
   Sign out the user was told had worked, and a swallowed cross-domain write
-  leaves the two copies that produce `.migrationUnverified` on every later
-  launch. This is behaviourally inert on everything this repository builds,
+  leaves two copies, which for a relay device id produce `.migrationUnverified`
+  on every later launch. This is behaviourally inert on everything this repository builds,
   where the other domain's refusal *is* the missing-entitlement one; it adds one
   throw on an entitled Mac whose other keychain is locked, which is a real
   failure previously reported as success.
@@ -517,15 +518,19 @@ the tree:
   `save` has nowhere to carry it — widening the `CredentialStore` protocol to
   disclose a partial success is the shape #255 proposes for the sign-out path.
 
-  What that does **not** fix, and is worth having written down: the stale copy
-  survives, so the next `load`'s migration compares a destination holding the
-  fresh bytes against a source holding the stale ones and refuses with
-  `.migrationUnverified` — a refused load one launch later, reported rather than
-  silent, and collapsed by the next successful sign-in. The refused delete
-  creates that state whether `save` rethrows or not; rethrowing only adds the
-  lost session on top of it. Closing it means teaching
-  `KeychainMigration` that a just-written destination is authoritative, which is
-  a change to the verify step and not to either cross-domain mutation.
+  The stale copy survives that refused delete, and until #258 the next `load`'s
+  migration compared a destination holding the fresh bytes against a source
+  holding the stale ones and refused with `.migrationUnverified` — on every
+  later launch, because each sign-in rewrote the fresh copy and left the stale
+  one. The migration no longer refuses a **credential** pair. Which copy
+  survives is decided by `planSecretCopies` in
+  `crates/sunrise-client-core/src/secret_copies.rs`: each copy states its own
+  `expiresAtMs`, a sign-in or renewal always mints the later one, so the
+  fresher is kept and the other deleted; a copy that does not decode loses to
+  one that does, and two that cannot be ordered keep the destination. A delete
+  refused again leaves the same pair, and the next launch reaches the same
+  answer, so the user stays signed in throughout. Vault roots and relay device
+  ids carry nothing that orders them, and two that differ are still refused.
 
   **Seven lines are declared untestable** rather than left to be re-discovered,
   on the same rule the rest of this page follows. Three of them are in the pair
@@ -721,10 +726,9 @@ the tree:
   The **credential** store also `save`s across both. Its token is rewritten
   with no user action — `refreshIfNeeded` renews at 75% of the token's life —
   so one launch whose probe failed open leaves a fresh token in one keychain and
-  a stale one in the other, and every later launch with a correct probe reads
-  two secrets under one name and raises `.migrationUnverified`, which refuses
-  the load rather than signing the user out in silence — and which this same
-  cross-domain `save`, run by the next sign-in, is what collapses.
+  a stale one in the other. The next launch with a correct probe reads two
+  tokens under one name and keeps the one that expires later (#258); the
+  cross-domain `save` means an unrefused write never leaves the pair at all.
 
   The **relay device id** store does too (#254), because it is not written once:
   `RelayDeviceRegistration.bind` runs at every sync start and replaces a
@@ -756,10 +760,14 @@ the tree:
   readable copy exists at every instant.** Read the destination, read the
   source, write the destination, read it back and compare byte-for-byte, and
   only then delete the source. A kill between any two steps leaves a state the
-  next launch finishes from. It refuses exactly one thing — a destination whose
-  bytes differ from the source's, meaning two different secrets claim one
-  `(service, account)` — and falls back to the source item for every other
-  Security status, because locking a user out over a *destination* problem
+  next launch finishes from. What follows the two reads is decided by
+  `planSecretCopies` and `verifySecretWrite` in
+  `crates/sunrise-client-core/src/secret_copies.rs`, from presence, byte
+  equality and (for a credential) each copy's expiry — never the bytes. It
+  refuses two vault roots or two relay device ids that differ, and a read-back
+  that finds bytes other than the ones written; two differing credentials are
+  ordered by expiry instead (#258). It falls back to the source item for every
+  other Security status, because locking a user out over a *destination* problem
   while the secret is perfectly readable where it has always been is a worse
   trade than the raise takes. That fallback's value is **what `load` answers
   with**: `KeychainMigration.loadMigratingIfNeeded` is the single step all three
