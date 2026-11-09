@@ -26,7 +26,7 @@ struct EditGateModelTests {
         let tags = Set(EditedEntity.allCases.map(\.rawValue))
         #expect(tags == [
             "task", "stream", "context", "routine", "block", "attachment",
-            "focus_session", "review_snapshot",
+            "focus_session", "review_snapshot"
         ])
     }
 
@@ -62,7 +62,7 @@ struct EditGateModelTests {
     @Test
     func aLockThatCoversNothingHereStillShowsTheBanner() {
         let model = EditGateModel(gate: gate(missing: [
-            MissingFeatureItem(feature: "place.entity", lock: .nothing(entity: "place")),
+            MissingFeatureItem(feature: "place.entity", lock: .nothing(entity: "place"))
         ]))
         #expect(model.isReadOnly)
         #expect(model.allows(.task))

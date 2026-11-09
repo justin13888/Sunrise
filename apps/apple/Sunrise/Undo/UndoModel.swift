@@ -7,9 +7,9 @@ import Foundation
 /// read them at that moment. This model holds two labels and calls two
 /// methods.
 ///
-/// What it will not do is offer an undo that does nothing. A delete writes a
-/// tombstone the core cannot restore, so it never reaches the stack — and the
-/// screens that delete say so in a confirmation, before the fact is useless.
+/// What it will not do is offer an undo that does nothing: a command with no
+/// inverse never reaches the stack. A delete has one — the core restores the
+/// tombstone (ADR-0065 §3) — so it is undone like any other write.
 @MainActor
 @Observable
 final class UndoModel {

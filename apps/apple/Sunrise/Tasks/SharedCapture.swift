@@ -187,11 +187,16 @@ enum SharedCapture {
                 continue
             }
             let name = attachmentName(image.name)
+            // The same thumbnail an attachment picked in the app carries
+            // (ADR-0053 §1), drawn from the file the extension saved.
+            let file = store.folder(for: capture.id).appending(path: image.file)
+            let preview = await ThumbnailRenderer.preview(of: file)
             _ = try await bridge.attachFile(
                 to: task,
                 filename: name,
                 mimeType: mimeType(of: name),
-                bytes: bytes
+                bytes: bytes,
+                preview: preview
             )
             capture.images.removeFirst()
             try store.update(capture)
