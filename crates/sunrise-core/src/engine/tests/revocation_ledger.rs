@@ -662,12 +662,16 @@ fn a_revocation_on_a_vault_with_no_meta_key_yet_gets_its_own_seq() {
     let revokes: i64 = dba
         .conn()
         .query_row(
-            "SELECT COUNT(*) FROM ops WHERE inner_kind = 'device.revoke'",
+            "SELECT COUNT(*) FROM ops
+             WHERE inner_kind IN ('device.revoke', 'device.revoke_by_identity')",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(revokes, 1, "the revocation reached the op log");
+    // The founder holds `ID_S_priv` and the only other device is the one it
+    // revokes, so it signs (ADR-0058 §7), and the rotation that follows
+    // carries the authority forward under the successor (§5): two ops.
+    assert_eq!(revokes, 2, "the revocation reached the op log");
     // Every op in the meta stream has a distinct seq. A stale read would
     // have collided with the `key_envelope` ops minting the epoch emitted.
     let (rows, distinct): (i64, i64) = dba

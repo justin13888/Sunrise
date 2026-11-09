@@ -181,6 +181,39 @@ pub struct DeviceRevokePayload {
     pub reason_code: RevokeReason,
 }
 
+/// A device is no longer a member, **on the account identity's word**
+/// (ADR-0058 §2, `DOC_SCHEMA_V = 23`).
+///
+/// The same claim as [`DeviceRevokePayload`], signed by the `ID_S_priv` of
+/// the identity it names. The revocation fold reads it as an *authority* row
+/// when `identity_id` is the head of the identity chain at that fold and
+/// `identity_sig` verifies under the head's `ID_S_pub`; otherwise it folds as
+/// an ordinary revocation from its sender. The signature covers
+/// [`sunrise_crypto::RevocationClaim`], which takes the sender and the HLC
+/// from the authenticated envelope rather than from this payload, so it
+/// cannot be lifted into another device's op or re-dated.
+///
+/// A new op kind rather than a field on `DeviceRevoke`: an older build
+/// ignores an unknown field and would fold the op as ordinary, which gates it
+/// differently, and the two builds would converge on different registers
+/// (ADR-0056 §Alternatives (d)). It is emitted only into a vault that
+/// requires `core.revoke_authority` ([`crate::feature`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRevokeByIdentityPayload {
+    /// The device being revoked.
+    #[serde(with = "serde_bytes")]
+    pub revoked_device_id: [u8; 16],
+    /// Why.
+    pub reason_code: RevokeReason,
+    /// The identity that signs, `identity_id_from_pub(ID_S_pub)`.
+    #[serde(with = "serde_bytes")]
+    pub identity_id: [u8; 16],
+    /// `Ed25519(ID_S_priv, "sunrise.device_revoke.identity.v1" ||
+    /// BLAKE3(canonical_cbor(claim)))`.
+    #[serde(with = "serde_bytes")]
+    pub identity_sig: [u8; 64],
+}
+
 /// One surviving device's re-issued [`DeviceCert`], signed by the **new**
 /// `ID_S_priv`.
 ///
@@ -376,6 +409,12 @@ sunrise_id::describe_value_types! {
             revoked_device_id: [u8; 16];
             reason_code: RevokeReason;
         }
+        DeviceRevokeByIdentityPayload {
+            revoked_device_id: [u8; 16];
+            reason_code: RevokeReason;
+            identity_id: [u8; 16];
+            identity_sig: [u8; 64];
+        }
         RosterEntry {
             cert: Vec<u8>;
         }
@@ -473,6 +512,7 @@ op_payloads! {
     StreamDigest(StreamDigestPayload),
     VaultRequires(VaultRequiresPayload),
     DeviceFeatures(DeviceFeaturesPayload),
+    DeviceRevokeByIdentity(DeviceRevokeByIdentityPayload),
 }
 
 #[cfg(test)]
@@ -542,6 +582,16 @@ mod tests {
             },
             &[],
         );
+        assert_wire_names(
+            "DeviceRevokeByIdentityPayload",
+            &DeviceRevokeByIdentityPayload {
+                revoked_device_id: [6u8; 16],
+                reason_code: RevokeReason::Stolen,
+                identity_id: [7u8; 16],
+                identity_sig: [8u8; 64],
+            },
+            &[],
+        );
         let t = a_transition();
         assert_wire_names("IdentityTransitionPayload", &t, &[]);
         assert_wire_names("RosterEntry", &t.roster[0], &[]);
@@ -593,6 +643,7 @@ mod tests {
         let checked = [
             "KeyEnvelopePayload",
             "DeviceRevokePayload",
+            "DeviceRevokeByIdentityPayload",
             "IdentityTransitionPayload",
             "RosterEntry",
             "KeyShare",

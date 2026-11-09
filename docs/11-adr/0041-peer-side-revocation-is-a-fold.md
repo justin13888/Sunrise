@@ -661,10 +661,18 @@ there are five visible consequences:
    [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)
    takes it: a revocation signed by the `ID_S_priv` of the identity in force
    is never gated and seats a revoker the discount never removes, so neither
-   expelled device can discount it. Until
-   [#454](https://github.com/justin13888/Sunrise/issues/454) builds it, and
-   in an account with no reachable holder of that key afterwards, the
-   residual above stands.
+   expelled device can discount it.
+   [#454](https://github.com/justin13888/Sunrise/issues/454) built it: on the
+   holder of that key, `Command::RevokeDevice` signs once the vault requires
+   `core.revoke_authority`, and the fold reads such a row as an authority row
+   while its identity is the head of the chain.
+   `an_authority_revocation_keeps_the_second_expelled_device_gated` runs the
+   five steps above with the holder's revocations signed and pins X2 gated.
+   The residual above still stands for every ordinary row: a revocation from
+   a paired device, one the holder made before the vault required the
+   feature, and every revocation in an account with no reachable holder of
+   the key. The holder closes the shape after the fact by revoking both
+   expelled devices by authority.
 
 5. **An unwound device shows as current and still receives nothing.** The keys
    are *not* given back, and that is the one place this design deliberately

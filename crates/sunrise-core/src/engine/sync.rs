@@ -981,6 +981,9 @@ impl Engine {
                 })
             }
             InnerOp::DeviceRevoke(p) => self.apply_device_revoke(tx, p, sender, hlc, now_ms),
+            InnerOp::DeviceRevokeByIdentity(p) => {
+                self.apply_device_revoke(tx, p, sender, hlc, now_ms)
+            }
             // The feature folds (ADR-0045 §7). Neither refuses: a malformed id
             // is skipped and logged, and the rest of the op still counts.
             InnerOp::VaultRequires(p) => {
@@ -1569,6 +1572,11 @@ impl Engine {
                     self.purge_unverifiable_siblings(tx, id, id_s_pub)?;
                 }
                 self.recompute_identity_head(tx)?;
+                // A moved head changes which ledger rows are authority rows,
+                // so the revocation register is folded again (ADR-0058 §3).
+                // It is a function of the op set and of the head, and the head
+                // is a function of the op set too.
+                self.refold_device_revocations(tx)?;
                 // The roster is applied only if this transition actually *won*
                 // the fold. A losing branch carries a perfectly valid roster
                 // for a membership the account did not adopt, and writing it

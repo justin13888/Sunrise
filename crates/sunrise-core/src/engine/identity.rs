@@ -361,6 +361,10 @@ impl Engine {
                 // would fork the chain off a link nobody follows.
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+            // The devices the pre-rotation fold holds an authority row for,
+            // read while `head` is still the head (ADR-0058 §5). Carried
+            // forward below for each the roster leaves out.
+            let authority_held = self.authority_revocations_at(tx, &head)?;
             let successor = self.keychain.mint_successor_identity(self.rng.as_ref());
 
             // The surviving set, on the recipient rule. This device is always
@@ -588,6 +592,19 @@ impl Engine {
                 now_ms,
                 seal_under.0,
             )?;
+            // **The authority carries forward** (ADR-0058 §5). A row signed
+            // under the identity just retired is ordinary from the first fold
+            // that sees the successor, so every authority revocation would
+            // unwind here. Each device the pre-rotation fold held one for is
+            // revoked again under the successor, unless the roster this same
+            // transition signs re-certifies it: a device the successor
+            // certifies is a member, and a revocation of it would contradict
+            // the roster.
+            let carry: Vec<_> = authority_held
+                .into_iter()
+                .filter(|(d, _)| !survivors.iter().any(|s| s.device_id == *d))
+                .collect();
+            self.carry_authority_forward(tx, &successor, &carry, &seal_under, now_ms)?;
             // **The minting device keeps the successor's `ID_D_priv`.** The
             // local apply above adopts through this device's own share, which
             // carries `ID_S_priv` and never `ID_D_priv` (#76), and through the

@@ -334,6 +334,61 @@ fn the_reissued_code_restores_a_current_vault_of_the_same_account() {
         .any(|row| row.device_id == r.keychain.device_id() && row.current));
 }
 
+/// Seeding the chain refolds the register (ADR-0058 §3): a row R signed as
+/// the genesis is an authority row while the genesis is R's head, and the
+/// seeded links move the head past it, so it folds as ordinary from then on
+/// with no revocation op in between.
+#[test]
+fn a_seeded_chain_turns_a_retired_identitys_rows_ordinary() {
+    let (a, mut adb) = open_vault(ROOT_A, &IdentitySeed::Own);
+    let words = code_opens(&a, &adb, &SEED);
+    rotate(&a, &mut adb, true);
+    let chain = chain_of(&a, &adb);
+
+    let (r, mut rdb) = recover(words);
+    let genesis = head(&r, &rdb);
+    let (me, target) = (r.keychain.device_id(), [0x77; 16]);
+    let hlc = Hlc::at(T0);
+    let claim = sunrise_crypto::RevocationClaim {
+        identity_id: genesis,
+        sender_device_id: me,
+        revoked_device_id: target,
+        hlc_physical_ms: hlc.physical_ms,
+        hlc_logical: hlc.logical,
+        reason_code: RevokeReason::Stolen.as_str().to_owned(),
+    };
+    let op = InnerOp::DeviceRevokeByIdentity(crate::control_op::DeviceRevokeByIdentityPayload {
+        revoked_device_id: target,
+        reason_code: RevokeReason::Stolen,
+        identity_id: genesis,
+        identity_sig: r.keychain.sign_revocation_claim(&claim).unwrap(),
+    });
+    rdb.with_tx(|tx| r.apply_control_op(tx, &op, &me, hlc, T0, 1).map(|_| ()))
+        .unwrap();
+    let by_authority = |db: &Db| -> bool {
+        db.conn()
+            .query_row(
+                "SELECT by_authority FROM device_revocations WHERE device_id = ?",
+                params![&target[..]],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert!(by_authority(&rdb), "an authority row under R's head");
+
+    let seeded = r.seed_identity_chain(&mut rdb, &chain).unwrap();
+    assert_ne!(head(&r, &rdb), genesis, "the seeded link moved the head");
+    assert!(seeded.at_head);
+    assert!(
+        r.is_revoked(rdb.conn(), &target).unwrap(),
+        "the row still lands, as an ordinary row from a current device"
+    );
+    assert!(
+        !by_authority(&rdb),
+        "and is no longer an authority row once the head moved"
+    );
+}
+
 /// A chain record of another account is refused before anything is stored.
 #[test]
 fn a_record_from_another_account_is_refused() {

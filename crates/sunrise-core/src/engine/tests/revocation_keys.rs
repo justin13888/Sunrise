@@ -794,7 +794,8 @@ fn a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds() {
         let env: Vec<u8> = dba
             .conn()
             .query_row(
-                "SELECT envelope FROM ops WHERE inner_kind = ?1 AND stream_id = ?2",
+                "SELECT envelope FROM ops WHERE inner_kind = ?1 AND stream_id = ?2
+                 ORDER BY seq LIMIT 1",
                 params![kind, &META_STREAM[..]],
                 |r| r.get(0),
             )
@@ -808,7 +809,11 @@ fn a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds() {
     // device still holds -- it has to be readable by every peer that has not
     // yet received the new one. That is the ceiling on what the cut device can
     // ever seal under.
-    let cut_epoch = sealed_at("device.revoke");
+    //
+    // The founder signs it (ADR-0058 §7): the only other device is the one
+    // it revokes. The first such op is the revocation; the second is the
+    // rotation's carry-forward, sealed beside the transition.
+    let cut_epoch = sealed_at("device.revoke_by_identity");
     let transition_epoch = sealed_at("identity.transition");
     assert!(
         transition_epoch > cut_epoch,

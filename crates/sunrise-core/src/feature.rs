@@ -71,6 +71,11 @@ pub struct Feature {
 /// `Patch` and nothing else once a vault requires it.
 pub const FIELD_OPS_FEATURE: &str = "core.field_ops";
 
+/// The id of the feature that carries identity-signed revocations
+/// (ADR-0058 §7): the holder of `ID_S_priv` signs a revocation only in a
+/// vault that requires it.
+pub const REVOKE_AUTHORITY_FEATURE: &str = "core.revoke_authority";
+
 /// Every feature this build supports.
 pub static FEATURES: &[Feature] = &[
     // The vault's Preferences entity (ADR-0050, issue #337). It has no op
@@ -174,6 +179,19 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 17,
+    },
+    // A revocation signed by the account identity in force (ADR-0058, issue
+    // #454). A build that dropped one would fold a different register for
+    // good, so the op is emitted only into a vault that requires this, and
+    // the holder requires it only once every device that is not revoked
+    // advertises it (§7). Structural, as ADR-0058 §7 names it.
+    Feature {
+        id: REVOKE_AUTHORITY_FEATURE,
+        op_kinds: &["DeviceRevokeByIdentity"],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 23,
     },
 ];
 

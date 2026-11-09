@@ -87,6 +87,45 @@ impl Keychain {
         )?)
     }
 
+    /// Sign a revocation claim as the account identity **in force** on this
+    /// keychain (ADR-0058 §2).
+    ///
+    /// Like [`Self::sign_transition`], the one place it can be done: the
+    /// emitter hands the claim in and gets the signature back rather than
+    /// borrowing `ID_S_priv`.
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing; [`KeychainError::RevocationClaim`] when the claim names
+    /// another identity or does not encode.
+    pub fn sign_revocation_claim(
+        &self,
+        claim: &sunrise_crypto::RevocationClaim,
+    ) -> Result<[u8; 64], KeychainError> {
+        let state = self.identity.lock();
+        Self::sign_revocation_claim_as(&state.identity, claim)
+    }
+
+    /// Sign a revocation claim as `identity`, which a rotation is minting and
+    /// has not put in force yet: the carry-forward of ADR-0058 §5 signs under
+    /// the successor in the transaction that emits the transition.
+    ///
+    /// # Errors
+    /// As [`Self::sign_revocation_claim`].
+    pub fn sign_revocation_claim_as(
+        identity: &Identity,
+        claim: &sunrise_crypto::RevocationClaim,
+    ) -> Result<[u8; 64], KeychainError> {
+        if claim.identity_id != identity.identity_id {
+            return Err(KeychainError::RevocationClaim(
+                "the claim names another identity than the one signing it",
+            ));
+        }
+        claim
+            .sign(identity.signing.require()?)
+            .map_err(|_| KeychainError::RevocationClaim("the claim does not encode"))
+    }
+
     /// Mint a successor account identity: a fresh `ID_S`/`ID_D` pair.
     ///
     /// `created_at_ms` is the **account's** creation, carried forward from the

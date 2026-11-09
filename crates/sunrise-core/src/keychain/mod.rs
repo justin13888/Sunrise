@@ -385,6 +385,10 @@ pub enum KeychainError {
     /// minted, or is not signed by the identity the offer named.
     #[error("pairing grant certificate: {0}")]
     BadGrantCert(&'static str),
+    /// A revocation claim was not signed: it names an identity other than
+    /// the one asked to sign it, or it would not encode (ADR-0058 §2).
+    #[error("revocation claim: {0}")]
+    RevocationClaim(&'static str),
 }
 
 /// The account's Ed25519 signing key, or as much of it as this device has.
