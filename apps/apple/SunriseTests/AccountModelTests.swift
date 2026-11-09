@@ -73,6 +73,8 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
 }
 
 struct StubLoginDriver: LoginDriver {
+    // A literal that parses; a test double has no failure path to give it.
+    // swiftlint:disable:next force_unwrapping
     var authorizeURL = URL(string: "https://issuer.example/authorize")!
     var completed: StoredCredentials?
     var refreshed: StoredCredentials?
