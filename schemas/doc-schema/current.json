@@ -163,7 +163,7 @@
             "tag": "attachment"
         },
         {
-            "features": [],
+            "features": ["block.recurrence"],
             "merge": "lww",
             "ops": [
                 {
@@ -214,10 +214,58 @@
                             "type": "SunriseTime"
                         },
                         {
+                            "conflict": "merge",
+                            "crdt": "map",
+                            "name": "exceptions",
+                            "type": "BTreeMap<String,BlockException>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "external_id",
+                            "type": "Option<String>"
+                        },
+                        {
                             "conflict": "quiet",
                             "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "kind",
+                            "type": "Option<BlockKind>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "location",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "notes",
+                            "type": "Option<NoteBody>"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "rrule",
+                            "type": "Option<RRule>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "source",
+                            "type": "Option<BlockSource>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "split_from",
+                            "type": "Option<EntityRef>"
                         },
                         {
                             "conflict": "tracked",
@@ -1391,6 +1439,16 @@
     ],
     "enums": [
         {
+            "fallback": "fixed",
+            "name": "BlockKind",
+            "variants": ["fixed", "flexible"]
+        },
+        {
+            "fallback": null,
+            "name": "BlockSource",
+            "variants": ["import:ics", "sunrise"]
+        },
+        {
             "fallback": "soft",
             "name": "ConstraintSeverity",
             "variants": ["hard", "soft"]
@@ -1510,6 +1568,17 @@
                 "entity": "attachment"
             },
             "since": 13
+        },
+        {
+            "field_op_kinds": [],
+            "fields": ["exceptions", "rrule", "split_from"],
+            "id": "block.recurrence",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "block"
+            },
+            "since": 24
         },
         {
             "field_op_kinds": [],
@@ -1662,6 +1731,37 @@
         }
     ],
     "values": [
+        {
+            "fields": [
+                {
+                    "name": "cancelled",
+                    "type": "bool"
+                },
+                {
+                    "name": "ends_at",
+                    "type": "Option<SunriseTime>"
+                },
+                {
+                    "name": "location",
+                    "type": "Option<String>"
+                },
+                {
+                    "name": "notes",
+                    "type": "Option<NoteBody>"
+                },
+                {
+                    "name": "starts_at",
+                    "type": "Option<SunriseTime>"
+                },
+                {
+                    "name": "title",
+                    "type": "Option<String>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "BlockException",
+            "shape": "record"
+        },
         {
             "fields": [
                 {

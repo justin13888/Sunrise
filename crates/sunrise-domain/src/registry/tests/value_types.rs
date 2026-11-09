@@ -233,6 +233,32 @@ fn the_saved_view_filter_writes_its_described_names() {
     );
 }
 
+/// A recurring block's exception (#1147): `{ cancelled: true }`, or the
+/// override map with only the fields it sets.
+#[test]
+fn a_block_exception_writes_its_described_names() {
+    use crate::{BlockException, SunriseTime};
+    let at = SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(9, 0, 0, 0));
+    assert_value_wire_names(
+        "BlockException",
+        &BlockException::cancelled(),
+        &["starts_at", "ends_at", "title", "location", "notes"],
+    );
+    assert_value_wire_names(
+        "BlockException",
+        &BlockException {
+            cancelled: false,
+            starts_at: Some(at.clone()),
+            ends_at: Some(at),
+            title: Some("t".into()),
+            location: Some("l".into()),
+            notes: Some(NoteBody(vec![1])),
+            unknown: Unknowns::new(),
+        },
+        &["cancelled"],
+    );
+}
+
 /// The two value types whose wire form is another type: `NoteBody` is
 /// its bytes, and `WeekdaySet`, whose serde is hand-written, is a list of
 /// weekday spellings.
@@ -274,6 +300,7 @@ fn every_described_value_record_is_checked_on_the_wire() {
         "ViewFilter",
         "PriorityRange",
         "DateWindow",
+        "BlockException",
     ];
     for v in VALUE_TYPES {
         if matches!(v.shape, ValueShape::Record { .. }) {

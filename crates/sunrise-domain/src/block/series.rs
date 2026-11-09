@@ -11,17 +11,19 @@
 //! replica derives the same occurrences, the same split and the same split id
 //! from the same data.
 //!
-//! The wire and storage form of these fields (`Block.rrule`,
-//! `Block.exceptions`, `Block.split_from`) is not here yet; a Block carries
-//! none of them in this build.
+//! A Block carries them as `Block.rrule`, `Block.exceptions` and
+//! `Block.split_from` (#1147), and [`crate::Block::series`] reads a series
+//! off one.
 
 use crate::common::NoteBody;
 use crate::routine_gen::{civil_frame_rule, expand, parse_occurrence_key, ExpandError, SplitError};
 use crate::rrule::RRule;
 use crate::time::SunriseTime;
+use crate::unknown::Unknowns;
 use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span, Timestamp};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
@@ -33,21 +35,36 @@ use thiserror::Error;
 /// are written and merged together: two devices changing two different
 /// occurrences both keep their change, and two changing the same one resolve
 /// to one writer's whole exception.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// On the wire it is `{ cancelled: true }`, or the override map with only
+/// the fields it sets (`docs/02-domain/time-blocks.md` §Fields,
+/// `BlockException`). Keys a newer build added are kept in `unknown` and
+/// written back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockException {
     /// The occurrence is removed from the series. The other fields are then
     /// ignored.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cancelled: bool,
     /// The occurrence's new start. Absent keeps the rule's start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<SunriseTime>,
     /// The occurrence's new end. Absent keeps the rule's end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ends_at: Option<SunriseTime>,
     /// The occurrence's title, over the series'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The occurrence's location, over the series'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     /// The occurrence's notes, over the series'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<NoteBody>,
+    /// Keys a newer `DOC_SCHEMA_V` wrote that this build does not model,
+    /// preserved verbatim. See [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 impl BlockException {

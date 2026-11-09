@@ -407,3 +407,26 @@ fn a_v47_vaults_revocations_stay_ordinary_and_gain_an_authority_identity_after_0
         "an authority row at the same stamp is a row of its own"
     );
 }
+
+/// Migration 0049 (#1147) over a real v48 vault: every existing block gains
+/// the eight columns of its kind, series and import fields, each NULL, no
+/// build before it having written one. The fixture holds blocks, so the
+/// assertion is not vacuous.
+#[test]
+fn a_v48_vaults_blocks_gain_no_kind_series_or_import_fields_after_0049() {
+    let (_dir, db) = open_migrated(&fixture_name(48));
+    let blocks = row_count(&db, "blocks");
+    assert!(blocks > 0, "the fixture's blocks survive");
+    let unset: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM blocks
+             WHERE kind IS NULL AND rrule_cbor IS NULL AND exceptions IS NULL
+               AND split_from IS NULL AND location IS NULL AND notes IS NULL
+               AND source IS NULL AND external_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unset, blocks, "no block starts with one of the fields");
+}

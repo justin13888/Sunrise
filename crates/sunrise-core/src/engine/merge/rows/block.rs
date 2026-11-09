@@ -4,6 +4,7 @@
 use super::search::index_block;
 use crate::engine::ids::{encode_unknowns, extra_over_opaque, ExtraTable};
 use crate::engine::lww::LwwStamp;
+use crate::engine::routine::{encode_blob_opt, encode_rrule};
 use rusqlite::{params, Transaction};
 use sunrise_domain::Block;
 
@@ -21,14 +22,22 @@ pub(in crate::engine::merge) fn upsert_block_row(
         &b.id.bytes()[..],
         encode_unknowns(&b.unknown)?,
     )?;
+    // The #1147 fields (migration 0049): `kind` and `source` by their raw
+    // spelling, so an unknown one survives; the rule, the exceptions and
+    // the notes as canonical CBOR.
+    let rrule_blob = b.rrule.as_ref().map(encode_rrule).transpose()?;
+    let exceptions_blob = encode_blob_opt(&b.exceptions, b.exceptions.is_empty())?;
     tx.execute(
         "INSERT INTO blocks
          (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
           ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
           deleted, extra, created_at_ms, updated_at_ms,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device,
-          starts_at_civil, ends_at_civil)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          starts_at_civil, ends_at_civil,
+          kind, rrule_cbor, exceptions, split_from, location, notes, source,
+          external_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
             stream_id = excluded.stream_id,
             starts_at_ms = excluded.starts_at_ms,
@@ -47,7 +56,15 @@ pub(in crate::engine::merge) fn upsert_block_row(
             lww_hlc_ms = excluded.lww_hlc_ms,
             lww_hlc_logical = excluded.lww_hlc_logical,
             lww_seq = excluded.lww_seq,
-            lww_device = excluded.lww_device",
+            lww_device = excluded.lww_device,
+            kind = excluded.kind,
+            rrule_cbor = excluded.rrule_cbor,
+            exceptions = excluded.exceptions,
+            split_from = excluded.split_from,
+            location = excluded.location,
+            notes = excluded.notes,
+            source = excluded.source,
+            external_id = excluded.external_id",
         params![
             &b.id.bytes()[..],
             b.stream_id.map(|s| s.bytes().to_vec()),
@@ -69,6 +86,14 @@ pub(in crate::engine::merge) fn upsert_block_row(
             &lww.device[..],
             b.starts_at.civil_part(),
             b.ends_at.civil_part(),
+            b.kind.as_ref().map(|k| k.as_str()),
+            rrule_blob,
+            exceptions_blob,
+            b.split_from.map(|s| s.bytes().to_vec()),
+            b.location.as_deref(),
+            b.notes.as_ref().map(|n| n.0.as_slice()),
+            b.source.as_ref().map(|s| s.as_str()),
+            b.external_id.as_deref(),
         ],
     )?;
     index_block(tx, b)

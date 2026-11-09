@@ -1,10 +1,10 @@
 //! Time blocks: a stretch of the calendar reserved for work.
 
 use sunrise_core::queries::BlockRow;
-use sunrise_domain::{Block, SunriseTime};
+use sunrise_domain::{Block, BlockException, BlockKind, BlockSource, NoteBody, RRule, SunriseTime};
 use sunrise_id::EntityRef;
 
-use super::{task::patch_field, TimeValue};
+use super::{task::patch_field, Recurrence, TimeValue};
 
 /// See [`sunrise_domain::Block`]: a scheduled range that may bind 0..N tasks.
 #[derive(Debug, Clone, uniffi::Record)]
@@ -30,10 +30,96 @@ pub struct BlockItem {
     pub tasks: Vec<EntityRef>,
     /// Tombstoned.
     pub deleted: bool,
+    /// Whether the planner may move the block: `fixed` or `flexible`, as
+    /// [`Block::effective_kind`] reads it, so never a spelling a client does
+    /// not know.
+    #[uniffi(default = "flexible")]
+    pub kind: String,
+    /// The rule of a recurring block, whose `starts_at` and `ends_at` are
+    /// then the series anchor. Absent for a one-off block.
+    #[uniffi(default = None)]
+    pub rrule: Option<Recurrence>,
+    /// A recurring block's per-occurrence changes, sorted by key.
+    #[uniffi(default = [])]
+    pub exceptions: Vec<BlockExceptionItem>,
+    /// The series root a block split off by an edit *this and future*
+    /// continues.
+    #[uniffi(default = None)]
+    pub split_from: Option<EntityRef>,
+    /// Free-text location.
+    #[uniffi(default = None)]
+    pub location: Option<String>,
+    /// Notes.
+    #[uniffi(default = None)]
+    pub notes: Option<NoteBody>,
+    /// Where the block came from (`sunrise`, `import:ics`, or a spelling a
+    /// newer build wrote), or absent for a block that does not say.
+    #[uniffi(default = None)]
+    pub source: Option<String>,
+    /// The foreign id an `.ics` import read.
+    #[uniffi(default = None)]
+    pub external_id: Option<String>,
+}
+
+/// One occurrence's change on a recurring block. See
+/// [`sunrise_domain::BlockException`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BlockExceptionItem {
+    /// The occurrence key, `YYYY-MM-DDTHH:MM`.
+    pub key: String,
+    /// The occurrence is removed; the other fields are then ignored.
+    pub cancelled: bool,
+    /// The occurrence's new start, over the rule's.
+    pub starts_at: Option<TimeValue>,
+    /// The occurrence's new end, over the rule's.
+    pub ends_at: Option<TimeValue>,
+    /// The occurrence's title, over the series'.
+    pub title: Option<String>,
+    /// The occurrence's location, over the series'.
+    pub location: Option<String>,
+    /// The occurrence's notes, over the series'.
+    pub notes: Option<NoteBody>,
+}
+
+impl BlockExceptionItem {
+    fn new(key: &str, e: &BlockException) -> Self {
+        let BlockException {
+            cancelled,
+            starts_at,
+            ends_at,
+            title,
+            location,
+            notes,
+            // Deliberately not exported: see the module docs.
+            unknown: _,
+        } = e;
+        Self {
+            key: key.to_owned(),
+            cancelled: *cancelled,
+            starts_at: starts_at.as_ref().map(TimeValue::from),
+            ends_at: ends_at.as_ref().map(TimeValue::from),
+            title: title.clone(),
+            location: location.clone(),
+            notes: notes.clone(),
+        }
+    }
+
+    fn to_domain(&self) -> BlockException {
+        BlockException {
+            cancelled: self.cancelled,
+            starts_at: self.starts_at.clone().map(SunriseTime::from),
+            ends_at: self.ends_at.clone().map(SunriseTime::from),
+            title: self.title.clone(),
+            location: self.location.clone(),
+            notes: self.notes.clone(),
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
 }
 
 impl From<&Block> for BlockItem {
     fn from(b: &Block) -> Self {
+        let kind = b.effective_kind();
         let Block {
             id,
             created_at,
@@ -45,6 +131,14 @@ impl From<&Block> for BlockItem {
             title_track_task,
             tasks,
             deleted,
+            kind: _,
+            rrule,
+            exceptions,
+            split_from,
+            location,
+            notes,
+            source,
+            external_id,
             // Deliberately not exported: see the module docs.
             unknown: _,
         } = b;
@@ -59,6 +153,17 @@ impl From<&Block> for BlockItem {
             title_track_task: *title_track_task,
             tasks: tasks.iter().copied().collect(),
             deleted: *deleted,
+            kind: kind.as_str().to_owned(),
+            rrule: rrule.as_ref().map(Recurrence::from),
+            exceptions: exceptions
+                .iter()
+                .map(|(k, e)| BlockExceptionItem::new(k, e))
+                .collect(),
+            split_from: *split_from,
+            location: location.clone(),
+            notes: notes.clone(),
+            source: source.as_ref().map(|s| s.as_str().to_owned()),
+            external_id: external_id.clone(),
         }
     }
 }
@@ -84,6 +189,18 @@ impl BlockItem {
             title_track_task: self.title_track_task,
             tasks: self.tasks.iter().copied().collect(),
             deleted: self.deleted,
+            kind: Some(BlockKind::from_raw(&self.kind)),
+            rrule: self.rrule.clone().map(RRule::from),
+            exceptions: self
+                .exceptions
+                .iter()
+                .map(|e| (e.key.clone(), e.to_domain()))
+                .collect(),
+            split_from: self.split_from,
+            location: self.location.clone(),
+            notes: self.notes.clone(),
+            source: self.source.as_deref().map(BlockSource::from_raw),
+            external_id: self.external_id.clone(),
             unknown: sunrise_domain::Unknowns::new(),
         }
     }

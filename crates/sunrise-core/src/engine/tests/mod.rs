@@ -193,6 +193,9 @@ mod routines;
 /// Time blocks and the blocks an import writes.
 mod blocks;
 
+/// A block's kind, series and import fields on the wire and in storage.
+mod block_series;
+
 /// Attachments: their metadata, routing and tombstones.
 mod attachments;
 
