@@ -44,7 +44,7 @@ Server production work (P4) runs alongside P2–P3, because it shares no code wi
 Open pull requests first, then security and correctness defects in shipped
 behaviour, then the gates that keep them fixed.
 
-1. Revocation soundness: [#411](https://github.com/justin13888/Sunrise/issues/411).
+1. Revocation soundness: [#1167](https://github.com/justin13888/Sunrise/issues/1167).
 2. Apple session and Keychain: [#258](https://github.com/justin13888/Sunrise/issues/258).
 3. Correctness defects in shipped behaviour: [#515](https://github.com/justin13888/Sunrise/issues/515), [#898](https://github.com/justin13888/Sunrise/issues/898), [#838](https://github.com/justin13888/Sunrise/issues/838), [#520](https://github.com/justin13888/Sunrise/issues/520), [#928](https://github.com/justin13888/Sunrise/issues/928), [#807](https://github.com/justin13888/Sunrise/issues/807), [#890](https://github.com/justin13888/Sunrise/issues/890).
 4. Gates and test adequacy: [#304](https://github.com/justin13888/Sunrise/issues/304), [#271](https://github.com/justin13888/Sunrise/issues/271), [#497](https://github.com/justin13888/Sunrise/issues/497), [#518](https://github.com/justin13888/Sunrise/issues/518), [#757](https://github.com/justin13888/Sunrise/issues/757), [#770](https://github.com/justin13888/Sunrise/issues/770), [#761](https://github.com/justin13888/Sunrise/issues/761), [#762](https://github.com/justin13888/Sunrise/issues/762),
