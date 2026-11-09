@@ -483,6 +483,12 @@ pub async fn sync_once<E: From<SyncStatusError>>(
 /// step 8) both are. Unlike [`sync_once`] it accepts the session that is
 /// already up: both callers started the driver themselves a moment before.
 ///
+/// The budget runs on [`Core::now_ms`], not on the tokio timer that paces the
+/// reads between it: the deadline passes only as the core's clock advances.
+/// Against a clock that never moves, a budget above zero never runs out, and
+/// only a status that is caught up or [`ends_the_wait`] returns. A caller
+/// that needs a bound in real time wraps the call in its own timeout.
+///
 /// # Errors
 /// A status read that failed.
 pub async fn wait_until_caught_up(
