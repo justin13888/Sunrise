@@ -139,20 +139,27 @@ struct RoutineModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// Deleting a routine cannot be undone; the model says so rather than
-    /// leaving an Undo item that would do nothing.
+    /// Deleting a routine is undone by a restore (ADR-0065 §3), so the model
+    /// raises no note saying it cannot be, and Undo brings the routine back.
     @Test
-    func deletingARoutineSaysItCannotBeUndone() async throws {
+    func deletingARoutineCanBeUndone() async throws {
         let vault = try await TestVault()
         let model = RoutineModel(bridge: vault.bridge)
+        let undo = UndoModel(bridge: vault.bridge)
         let rule = try #require(RecurrenceField(text: "every day").rule)
         await model.create(draft("Water the plants", rule: rule))
+        let routine = try #require(model.visible.first)
 
-        await model.delete(try #require(model.visible.first))
+        await model.delete(routine)
 
         #expect(model.visible.isEmpty)
-        let note = try #require(model.undoNote)
-        #expect(note.lowercased().contains("tombstone"), "\(note)")
+        #expect(model.undoNote == nil)
+
+        await undo.undo()
+        await model.refresh()
+
+        #expect(undo.errorMessage == nil)
+        #expect(model.visible.map(\.id) == [routine.id])
         await vault.bridge.shutdown()
     }
 
