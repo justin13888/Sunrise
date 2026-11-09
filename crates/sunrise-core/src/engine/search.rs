@@ -39,14 +39,14 @@
 use super::attachment::read_attachment;
 use super::block::{block_row, read_block};
 use super::ids::{blob16, time_from_parts};
-use super::merge::{create_words_sql, rebuild_search_from_rows, to_sql};
+use super::merge::{index_search_rows, to_sql};
 use super::snapshot::in_tx;
 use super::task::read_task;
 use super::{Engine, EngineError};
 use crate::queries::{QueryResult, SearchGroup, SearchHit, SearchNotice, SearchResults};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use sunrise_domain::search::{
     self, fold, is_cjk, match_ranges, snippet, Cmp, DateField, Days, Expr, Filter, HasValue,
@@ -136,6 +136,42 @@ fn mode_of(stemmed: bool) -> &'static str {
     }
 }
 
+/// The tokenizer of `search_words`: `unicode61` folding diacritics, with
+/// Porter stemming in front when the content language is English.
+fn words_tokenizer(stemmed: bool) -> &'static str {
+    if stemmed {
+        "porter unicode61 remove_diacritics 2"
+    } else {
+        "unicode61 remove_diacritics 2"
+    }
+}
+
+/// The SQL that creates a word index named `table`.
+fn create_words_sql(table: &str, stemmed: bool) -> String {
+    format!(
+        "CREATE VIRTUAL TABLE {table} USING fts5 (title, aux, body, tokenize = '{}')",
+        words_tokenizer(stemmed)
+    )
+}
+
+/// Drop both indexes and write them again from the entity rows, with a word
+/// index that stems when `stemmed` is set. The rows are written by the same
+/// writers the fold uses ([`index_search_rows`]), so a rebuild writes what
+/// the fold would for the same rows. Returns how many docs it wrote.
+///
+/// Any background re-index is abandoned: what it was building is replaced.
+fn rebuild_from_rows(tx: &Transaction<'_>, stemmed: bool) -> Result<u64, EngineError> {
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS search_words_next;
+         UPDATE search_meta SET reindex_stemmed = NULL, reindex_cursor = 0;
+         DELETE FROM search_docs;
+         DELETE FROM search_tri;
+         DROP TABLE search_words;",
+    )?;
+    tx.execute_batch(&create_words_sql("search_words", stemmed))?;
+    index_search_rows(tx)
+}
+
 impl Engine {
     /// The vault's content language, and whether its word index should stem.
     fn content_language(&self, db: &Db) -> Result<(Option<String>, bool), EngineError> {
@@ -160,7 +196,7 @@ impl Engine {
         }
         let (language, stemmed) = self.content_language(db)?;
         let n = in_tx(db, |tx| {
-            let n = rebuild_search_from_rows(tx, stemmed)?;
+            let n = rebuild_from_rows(tx, stemmed)?;
             tx.execute(
                 "INSERT INTO search_meta (id, index_v, stemmed, language, reindex_stemmed, reindex_cursor)
                  VALUES (1, ?1, ?2, ?3, NULL, 0)
