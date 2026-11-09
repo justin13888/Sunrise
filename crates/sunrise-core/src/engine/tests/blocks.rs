@@ -821,3 +821,490 @@ fn an_import_validates_its_draft_like_any_other_write() {
         }))
     ));
 }
+
+// ---- recurring blocks (time-blocks.md §Recurring blocks, #1148) ----
+
+use crate::feature::BLOCK_RECURRENCE_FEATURE;
+use sunrise_domain::{split_block_id, Block, EditScope};
+
+/// Give block `id` the rule `rule`, as a build that writes series would:
+/// no command creates one yet.
+fn recur(e: &Engine, db: &mut Db, id: EntityRef, rule: &str) {
+    let b = Block {
+        rrule: Some(RRule::parse(rule).unwrap()),
+        ..read_block(db.conn(), id.bytes()).unwrap().unwrap()
+    };
+    let stream = crate::engine::ids::domain_bytes(b.stream_id);
+    let now_ms = e.clock.now_ms();
+    let op = InnerOp::BlockUpdate(Box::new(b));
+    db.with_tx(|tx| e.append_and_fold(tx, &op, &stream, now_ms).map(|_| ()))
+        .unwrap();
+}
+
+/// A "Standup" every Wednesday 09:00–10:00 (floating) from 2026-03-04, in
+/// a vault that requires `block.recurrence`.
+fn weekly(e: &Engine, db: &mut Db) -> EntityRef {
+    legacy_peer(db);
+    let id = e
+        .apply(db, Command::CreateBlock(block_draft(9, 1, Some("Standup"))))
+        .unwrap()
+        .entity;
+    e.require_features(db, &[BLOCK_RECURRENCE_FEATURE], true)
+        .unwrap();
+    recur(e, db, id, "FREQ=WEEKLY");
+    id
+}
+
+/// Noon on 2026-03-`day`, for a day query.
+fn march(day: i8) -> u64 {
+    SunriseTime::floating(jiff::civil::date(2026, 3, day).at(12, 0, 0, 0))
+        .to_instant(&jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .as_millisecond() as u64
+}
+
+/// 2026-03-`day` at `hour`:00, floating.
+fn at(day: i8, hour: i8) -> SunriseTime {
+    SunriseTime::floating(jiff::civil::date(2026, 3, day).at(hour, 0, 0, 0))
+}
+
+/// What the day grid of 2026-03-`day` shows: each row's block, title and
+/// occurrence key.
+fn day(e: &Engine, db: &Db, day: i8) -> Vec<(EntityRef, Option<String>, Option<String>)> {
+    day_rows(e, db, march(day))
+        .into_iter()
+        .map(|r| (r.block.id, r.title, r.occurrence_key))
+        .collect()
+}
+
+fn key(day: i8) -> String {
+    format!("2026-03-{day:02}T09:00")
+}
+
+fn scoped_update(id: EntityRef, scope: EditScope, patch: BlockPatch) -> Command {
+    Command::UpdateBlock { id, scope, patch }
+}
+
+fn retitle(title: &str) -> BlockPatch {
+    BlockPatch {
+        title: Some(Some(title.into())),
+        ..BlockPatch::default()
+    }
+}
+
+/// A weekly block is one row per week, each at its own date with its key,
+/// and nothing per occurrence is stored.
+#[test]
+fn a_weekly_block_is_one_row_per_week_in_the_window_with_its_key() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let rows = day_rows(&e, &db, march(11));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].block.id, id);
+    assert_eq!(rows[0].occurrence_key, Some(key(11)));
+    assert_eq!(rows[0].block.starts_at, at(11, 9));
+    assert_eq!(rows[0].block.ends_at, at(11, 10));
+    assert!(day(&e, &db, 12).is_empty(), "a Thursday has no standup");
+
+    let from = march(1) as i64;
+    let to = from + 28 * 86_400_000;
+    let QueryResult::Blocks(rows) = e.query_blocks_between(&db, from, to).unwrap() else {
+        panic!("expected blocks");
+    };
+    let keys: Vec<_> = rows.into_iter().filter_map(|r| r.occurrence_key).collect();
+    assert_eq!(keys, vec![key(4), key(11), key(18), key(25)]);
+
+    let stored: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM blocks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, 1);
+}
+
+/// A one-off block keeps no key, and reading a recurring one by id returns
+/// the series as stored.
+#[test]
+fn a_one_off_block_and_a_block_read_by_id_carry_no_key() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let once = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(block_draft(14, 1, Some("Gym"))),
+        )
+        .unwrap()
+        .entity;
+    let rows = day(&e, &db, 4);
+    assert_eq!(
+        rows,
+        vec![
+            (id, Some("Standup".into()), Some(key(4))),
+            (once, Some("Gym".into()), None),
+        ]
+    );
+}
+
+/// *This* writes the occurrence's exception and nothing else: the other
+/// weeks keep the series' title and time.
+#[test]
+fn an_edit_of_this_occurrence_changes_that_week_only() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let patch = BlockPatch {
+        starts_at: Some(at(11, 10)),
+        ends_at: Some(at(11, 11)),
+        ..retitle("Moved standup")
+    };
+    let res = e
+        .apply(
+            &mut db,
+            scoped_update(id, EditScope::This { key: key(11) }, patch),
+        )
+        .unwrap();
+    assert_eq!(res.entity, id);
+
+    let rows = day_rows(&e, &db, march(11));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title.as_deref(), Some("Moved standup"));
+    assert_eq!(rows[0].block.starts_at, at(11, 10));
+    assert_eq!(rows[0].occurrence_key, Some(key(11)));
+    assert_eq!(
+        day(&e, &db, 18),
+        vec![(id, Some("Standup".into()), Some(key(18)))]
+    );
+
+    // A second edit of the same occurrence keeps what the first set.
+    e.apply(
+        &mut db,
+        scoped_update(id, EditScope::This { key: key(11) }, retitle("Sync")),
+    )
+    .unwrap();
+    let stored = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(stored.exceptions.len(), 1);
+    assert_eq!(stored.exceptions[&key(11)].title.as_deref(), Some("Sync"));
+    assert_eq!(stored.exceptions[&key(11)].starts_at, Some(at(11, 10)));
+    assert_eq!(stored.title.as_deref(), Some("Standup"));
+    e.assert_rebuild_identity(&db);
+}
+
+/// What one occurrence cannot hold, a key the rule does not produce, and a
+/// key on a block with no rule are each refused, writing nothing.
+#[test]
+fn an_occurrence_edit_the_series_cannot_take_is_refused() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let once = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(block_draft(14, 1, Some("Gym"))),
+        )
+        .unwrap()
+        .entity;
+    let ops = op_count(&db);
+    let this = |k: String| EditScope::This { key: k };
+
+    let restream = BlockPatch {
+        stream_id: Some(None),
+        ..BlockPatch::default()
+    };
+    invalid(
+        e.apply(&mut db, scoped_update(id, this(key(11)), restream)),
+        "an edit of one occurrence",
+    );
+    let clear = BlockPatch {
+        title: Some(None),
+        ..BlockPatch::default()
+    };
+    invalid(
+        e.apply(&mut db, scoped_update(id, this(key(11)), clear)),
+        "an edit of one occurrence",
+    );
+    assert!(matches!(
+        e.apply(
+            &mut db,
+            scoped_update(id, this("2026-03-12T09:00".into()), retitle("x"))
+        ),
+        Err(EngineError::NotFound(_))
+    ));
+    invalid(
+        e.apply(
+            &mut db,
+            scoped_update(id, this("soon".into()), retitle("x")),
+        ),
+        "not an occurrence key",
+    );
+    invalid(
+        e.apply(&mut db, scoped_update(once, this(key(4)), retitle("x"))),
+        "does not recur",
+    );
+    invalid(
+        e.apply(
+            &mut db,
+            Command::DeleteBlock {
+                id: once,
+                scope: EditScope::ThisAndFuture { key: key(4) },
+            },
+        ),
+        "does not recur",
+    );
+    let inverted = BlockPatch {
+        ends_at: Some(at(11, 8)),
+        ..BlockPatch::default()
+    };
+    assert!(matches!(
+        e.apply(&mut db, scoped_update(id, this(key(11)), inverted)),
+        Err(EngineError::Validation(ValidationError::Field {
+            field: "block.ends_at",
+            constraint: "after_starts_at",
+        }))
+    ));
+    assert_eq!(op_count(&db), ops, "a refused edit wrote nothing");
+}
+
+/// Deleting *this* cancels the one occurrence, and the block stays.
+#[test]
+fn deleting_this_occurrence_cancels_that_week_only() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::This { key: key(11) },
+        },
+    )
+    .unwrap();
+    assert!(day(&e, &db, 11).is_empty());
+    assert_eq!(day(&e, &db, 18).len(), 1);
+    let stored = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert!(!stored.deleted);
+    assert!(stored.exceptions[&key(11)].cancelled);
+
+    // A cancelled occurrence is not there to edit.
+    assert!(matches!(
+        e.apply(
+            &mut db,
+            scoped_update(id, EditScope::This { key: key(11) }, retitle("x"))
+        ),
+        Err(EngineError::NotFound(_))
+    ));
+}
+
+/// *This and future* ends the series before the key and continues it in the
+/// block `split_block_id(root, key)` names, with the edit applied, as one
+/// group. Splitting again at that key edits the continuation.
+#[test]
+fn an_edit_of_this_and_future_splits_the_series_at_the_key() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let ops = op_count(&db);
+    let next = e
+        .apply(
+            &mut db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(18) },
+                retitle("Retro"),
+            ),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(next, split_block_id(&id, &key(18)));
+    assert_eq!(
+        op_count(&db),
+        ops + 2,
+        "the ended series and its continuation"
+    );
+
+    assert_eq!(
+        day(&e, &db, 11),
+        vec![(id, Some("Standup".into()), Some(key(11)))]
+    );
+    assert_eq!(
+        day(&e, &db, 18),
+        vec![(next, Some("Retro".into()), Some(key(18)))]
+    );
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(next, Some("Retro".into()), Some(key(25)))]
+    );
+
+    let continuation = read_block(db.conn(), next.bytes()).unwrap().unwrap();
+    assert_eq!(continuation.split_from, Some(id));
+    assert_eq!(continuation.starts_at, at(18, 9));
+    let ended = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(ended.rrule.unwrap().until, Some(at(11, 9)));
+
+    // Again at the same key: the continuation is edited, nothing new made.
+    let again = e
+        .apply(
+            &mut db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(18) },
+                retitle("Review"),
+            ),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(again, next);
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(next, Some("Review".into()), Some(key(25)))]
+    );
+    e.assert_rebuild_identity(&db);
+}
+
+/// At the series' first occurrence *this and future* is the whole series.
+#[test]
+fn an_edit_of_this_and_future_at_the_first_occurrence_edits_the_block() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let res = e
+        .apply(
+            &mut db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(4) },
+                retitle("Retro"),
+            ),
+        )
+        .unwrap();
+    assert_eq!(res.entity, id);
+    assert_eq!(
+        day(&e, &db, 4),
+        vec![(id, Some("Retro".into()), Some(key(4)))]
+    );
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(id, Some("Retro".into()), Some(key(25)))]
+    );
+}
+
+/// Deleting *this and future* ends the series before the key; at the first
+/// occurrence it tombstones the block.
+#[test]
+fn deleting_this_and_future_ends_the_series() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::ThisAndFuture { key: key(18) },
+        },
+    )
+    .unwrap();
+    assert_eq!(day(&e, &db, 11).len(), 1);
+    assert!(day(&e, &db, 18).is_empty());
+    assert!(day(&e, &db, 25).is_empty());
+    assert!(read_block(db.conn(), split_block_id(&id, &key(18)).bytes())
+        .unwrap()
+        .is_none());
+
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::ThisAndFuture { key: key(4) },
+        },
+    )
+    .unwrap();
+    assert!(read_block(db.conn(), id.bytes()).unwrap().unwrap().deleted);
+    assert!(day(&e, &db, 4).is_empty());
+}
+
+/// Two devices that split one series at the same occurrence derive the same
+/// continuation id, so after they sync there is one continuation, its
+/// fields merged, and the week shows one standup.
+#[test]
+fn two_devices_splitting_at_the_same_key_converge_on_one_block() {
+    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    trust(&ea, &mut dba, &eb);
+    ea.advertise_features(&mut dba).unwrap();
+    eb.advertise_features(&mut dbb).unwrap();
+    let sync = |dba: &mut Db, dbb: &mut Db| {
+        for env in all_envelopes(dba) {
+            let _ = eb.apply_remote(dbb, &env);
+        }
+        for env in all_envelopes(dbb) {
+            let _ = ea.apply_remote(dba, &env);
+        }
+    };
+    sync(&mut dba, &mut dbb);
+    let id = ea
+        .apply(
+            &mut dba,
+            Command::CreateBlock(block_draft(9, 1, Some("Standup"))),
+        )
+        .unwrap()
+        .entity;
+    ea.require_features(&mut dba, &[BLOCK_RECURRENCE_FEATURE], false)
+        .unwrap();
+    set_clock(&ca, T0 + 1_000);
+    recur(&ea, &mut dba, id, "FREQ=WEEKLY");
+    sync(&mut dba, &mut dbb);
+
+    let split = |k: &str| EditScope::ThisAndFuture { key: k.to_owned() };
+    set_clock(&ca, T0 + 2_000);
+    let on_a = ea
+        .apply(
+            &mut dba,
+            scoped_update(id, split(&key(18)), retitle("Retro")),
+        )
+        .unwrap()
+        .entity;
+    set_clock(&cb, T0 + 3_000);
+    let on_b = eb
+        .apply(
+            &mut dbb,
+            scoped_update(id, split(&key(18)), retitle("Review")),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(on_a, on_b);
+    sync(&mut dba, &mut dbb);
+    sync(&mut dba, &mut dbb);
+
+    for (e, db) in [(&ea, &dba), (&eb, &dbb)] {
+        assert_eq!(
+            day(e, db, 25),
+            vec![(on_a, Some("Review".into()), Some(key(25)))],
+            "the later title wins, on one block"
+        );
+        assert_eq!(day(e, db, 11).len(), 1);
+        let continuations: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM blocks WHERE split_from = ? AND deleted = 0",
+                [&id.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(continuations, 1);
+    }
+    assert_eq!(
+        read_block(dba.conn(), on_a.bytes()).unwrap(),
+        read_block(dbb.conn(), on_a.bytes()).unwrap()
+    );
+    assert_eq!(
+        read_block(dba.conn(), id.bytes()).unwrap(),
+        read_block(dbb.conn(), id.bytes()).unwrap()
+    );
+    ea.assert_rebuild_identity(&dba);
+    eb.assert_rebuild_identity(&dbb);
+}

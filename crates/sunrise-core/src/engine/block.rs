@@ -292,6 +292,9 @@ impl Engine {
             )));
         }
         patch.apply_to_exception(&mut exception);
+        series
+            .except(key, exception.clone())
+            .map_err(|e| occurrence_error(id, e))?;
         let (rule_start, rule_end) = series
             .occurrence_bounds(key)
             .ok_or_else(|| occurrence_error(id, SplitError::NotAnOccurrence(key.into())))?;
@@ -307,9 +310,6 @@ impl Engine {
                 constraint: "after_starts_at",
             }));
         }
-        series
-            .except(key, exception)
-            .map_err(|e| occurrence_error(id, e))?;
         block.exceptions = series.exceptions;
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&tz)?;
