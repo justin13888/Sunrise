@@ -142,7 +142,9 @@ final class ReminderScheduler {
     /// One pass at a time: a zone change arrives twice (the clock observer
     /// and the change feed), and two passes that both read the ledger before
     /// either saves it would both post the same alert. A failed catalog plan
-    /// still plans the reminders, and leaves the catalog as the OS holds it.
+    /// still plans the reminders under the last switches read, and leaves the
+    /// catalog as the OS holds it; before any switches are read it leaves the
+    /// reminders as the OS holds them too.
     func reconcile() async {
         let previous = reconciling
         let pass = _Concurrency.Task { @MainActor [weak self] in
@@ -169,13 +171,20 @@ final class ReminderScheduler {
 
         let desired: [PlannedNotification]
         if delivering {
-            // Without a catalog plan, the rest still takes what the OS holds.
+            // Without a catalog plan, the switches are the last ones read (a
+            // switch flipped here since is already applied by `setKind`), and
+            // the rest still takes what the OS holds. With none read yet, which
+            // kinds are off is unknown: the reminders stay as the OS holds them.
+            guard let kinds = catalogPolicy else {
+                errorMessage = failure
+                return
+            }
             let held = others?.held.count
                 ?? pending.count { !$0.identifier.hasPrefix(ReminderPlan.identifierPrefix) }
             do {
                 desired = try await intents(
                     policy.settings,
-                    kinds: catalogPolicy,
+                    kinds: kinds,
                     limit: max(0, ReminderPlan.maxScheduled - held)
                 )
             } catch {
@@ -386,6 +395,9 @@ final class ReminderScheduler {
             }
             let command = CoreCommand.setPreference(key: key, value: .bool(value: enabled), target: target)
             _ = try await bridge.submit(command)
+            // Applied here too, so a pass whose catalog plan fails does not
+            // filter the reminders by the switch as it was before this write.
+            catalogPolicy = catalogPolicy.map { NotificationCatalog.switching(kind, to: enabled, in: $0) }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -451,7 +463,7 @@ final class ReminderScheduler {
     /// the cap too, and `limit` is the room the rest of the catalog left.
     private func intents(
         _ settings: NotificationSettings,
-        kinds: CatalogPolicyItem?,
+        kinds: CatalogPolicyItem,
         limit: Int
     ) async throws -> [PlannedNotification] {
         let now = await bridge.nowMs()

@@ -99,6 +99,20 @@ enum NotificationCatalog {
         policy.toggles.first { $0.kind == kind }?.enabled ?? true
     }
 
+    /// `policy` with `kind` switched to `enabled`, as a write of its key
+    /// leaves it. A kind the policy does not list is left out, as before.
+    static func switching(
+        _ kind: NotificationKind,
+        to enabled: Bool,
+        in policy: CatalogPolicyItem
+    ) -> CatalogPolicyItem {
+        var out = policy
+        for index in out.toggles.indices where out.toggles[index].kind == kind {
+            out.toggles[index].enabled = enabled
+        }
+        return out
+    }
+
     /// Whether a device that is not the primary one shows `kind`.
     ///
     /// Security alerts go to every device and the device-local kinds to the
@@ -288,9 +302,8 @@ enum ReminderPlan {
     /// The reminders a device with these switches delivers: a reminder whose
     /// kind is turned off is left out, here rather than after the cap, so it
     /// does not spend a slot.
-    static func enabled(_ reminders: [Reminder], under policy: CatalogPolicyItem?) -> [Reminder] {
-        guard let policy else { return reminders }
-        return reminders.filter {
+    static func enabled(_ reminders: [Reminder], under policy: CatalogPolicyItem) -> [Reminder] {
+        reminders.filter {
             NotificationCatalog.isOn(NotificationCatalog.kind(of: $0.kind), in: policy)
         }
     }

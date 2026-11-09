@@ -263,7 +263,22 @@ struct CatalogPlanTests {
         ]
         let kept = ReminderPlan.enabled(rows, under: policy(off: [.taskReminder, .blockStart]))
         #expect(kept.map(\.kind) == [.routine])
-        #expect(ReminderPlan.enabled(rows, under: nil).count == 3, "no policy read yet is no filter")
+    }
+
+    /// A switch written on this device reaches the switches the next pass
+    /// filters by, whether or not that pass's catalog plan succeeds.
+    @Test
+    func switchingAKindOffLeavesItsRemindersOut() {
+        let rows = [
+            Reminder(entity: taskID, kind: .task, fireAt: 1, title: "a", deferredFrom: nil),
+            Reminder(entity: taskID, kind: .routine, fireAt: 2, title: "b", deferredFrom: nil)
+        ]
+        let off = NotificationCatalog.switching(.taskReminder, to: false, in: policy(off: []))
+        #expect(!NotificationCatalog.isOn(.taskReminder, in: off))
+        #expect(NotificationCatalog.isOn(.routineDue, in: off), "only the switched kind changes")
+        #expect(ReminderPlan.enabled(rows, under: off).map(\.kind) == [.routine])
+        let on = NotificationCatalog.switching(.taskReminder, to: true, in: off)
+        #expect(on == policy(off: []))
     }
 
     /// A device that is not the primary one shows only what every device
