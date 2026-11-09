@@ -304,7 +304,8 @@ impl Engine {
         }
 
         // Blocks overlapping the window, and every subject. Every block is
-        // fixed until the block kind exists (#342).
+        // fixed until a Block carries its fixed/flexible kind, which no build
+        // has yet.
         let mut blocks = Vec::new();
         let mut seen = BTreeSet::new();
         if !window.is_empty() {

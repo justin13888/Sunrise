@@ -28,8 +28,9 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   planner does not read, such as a title, does not make a diff stale.
 > - `solve` returns `Result`: an intent naming an item the inputs do not hold,
 >   or the wrong kind, is an error rather than a diff.
-> - Every block is `fixed` (the block kind is [#342](https://github.com/justin13888/Sunrise/issues/342)),
->   and there are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
+> - Every block is `fixed`: a Block carries no fixed/flexible kind yet
+>   ([#342](https://github.com/justin13888/Sunrise/issues/342) closed with
+>   recurrence alone), and there are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
 >   A task bound to a block is not placed on its own.
 > - `Unschedule` takes tasks only.
 > - `AutoPlace` and `BulkDefer { place: true }` place each listed task in the

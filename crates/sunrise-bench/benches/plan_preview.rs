@@ -4,7 +4,7 @@
 //!
 //! The week is seven days from the Monday after [`FIXED_NOW_MS`]: 200 open
 //! tasks, 60 blocks, 40 blocks standing in for external events (every block
-//! is fixed until #342 adds the flexible kind, and external events are not
+//! is fixed until a Block carries its flexible kind, and external events are not
 //! stored until #930, so both are fixed intervals the solver works around
 //! either way) and 20 dependencies. It is seeded once through the command
 //! path, outside the measured loop. Each iteration gathers the inputs of the
