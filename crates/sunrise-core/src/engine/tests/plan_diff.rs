@@ -121,6 +121,63 @@ fn a_bulk_defer_counts_a_deferral_on_each_task_and_moves_nothing_else() {
 }
 
 #[test]
+fn a_task_moved_to_a_day_is_committed_date_only_and_not_deferred() {
+    let e = engine();
+    let mut db = db();
+    let t = planned_task(&e, &mut db, "write", at(9, 0), 30);
+    let to = jiff::civil::date(2026, 3, 6);
+    let intent = PlanIntent::MoveTask {
+        task: t,
+        to: SlotTarget::Day(to),
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    assert_eq!(diff.moves.len(), 1, "{diff:#?}");
+    assert_eq!(diff.moves[0].after, PlanPosition::Day(to));
+    assert!(diff.committable);
+    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap(), 1);
+    let task = task_of(&e, &db, t);
+    assert_eq!(task.planned_at, Some(SunriseTime::all_day(to)));
+    // Only a bulk defer counts a deferral.
+    assert_eq!(task.deferred_count, 0);
+    assert!(e.plan_preview(&db, &intent, NOW_MS).unwrap().is_empty());
+}
+
+#[test]
+fn a_placing_bulk_defer_writes_a_slot_on_the_day_and_counts_a_deferral() {
+    let e = engine();
+    let mut db = db();
+    let a = planned_task(&e, &mut db, "a", at(9, 0), 30);
+    let c = planned_task(&e, &mut db, "c", at(10, 0), 30);
+    let to = jiff::civil::date(2026, 3, 5);
+    let intent = PlanIntent::BulkDefer {
+        tasks: vec![a, c],
+        to,
+        place: true,
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    assert_eq!(diff.moves.len(), 2, "{diff:#?}");
+    assert!(diff.unscheduled.is_empty(), "{diff:#?}");
+    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap(), 2);
+    let utc = jiff::tz::TimeZone::UTC;
+    let mut starts = Vec::new();
+    for id in [a, c] {
+        let moved = diff.moves.iter().find(|m| m.item == id).unwrap();
+        let PlanPosition::Slot { start, .. } = &moved.after else {
+            panic!("{diff:#?}");
+        };
+        let task = task_of(&e, &db, id);
+        // Exactly the previewed slot, written through the deferral.
+        assert_eq!(task.planned_at.as_ref(), Some(start));
+        assert_eq!(task.deferred_count, 1);
+        let instant = start.resolve_in(&utc).unwrap();
+        assert_eq!(instant.to_zoned(utc.clone()).date(), to);
+        starts.push(instant);
+    }
+    // In the order named: `c` takes the next free slot after `a`'s.
+    assert!(starts[0] + jiff::SignedDuration::from_mins(30) <= starts[1]);
+}
+
+#[test]
 fn a_drop_outside_a_hard_window_is_refused_at_commit() {
     let e = engine();
     let mut db = db();
