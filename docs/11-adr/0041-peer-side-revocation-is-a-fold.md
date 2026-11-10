@@ -299,7 +299,7 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   replicas, and they must be read together. A device freshly paired from a
   sponsor that bounded the publisher is the first replica, not the second,
   because it adopts that bound (§Decision 5).
-  [#411](https://github.com/justin13888/Sunrise/issues/411) is the gap.
+  [#1167](https://github.com/justin13888/Sunrise/issues/1167) is the gap.
 
   **This bullet's own opening sentence stands as written**, and the reason is
   worth stating rather than leaving as an omission: on that same replica the
@@ -553,7 +553,7 @@ there are five visible consequences:
    current and ungated again.
    `a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`
    pins it. Its read bound stays on a replica that had taken it, which is item
-   5's ratchet and [#411](https://github.com/justin13888/Sunrise/issues/411)'s
+   5's ratchet and [#1167](https://github.com/justin13888/Sunrise/issues/1167)'s
    to close. No withdrawal lifts the lockout
    ([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3): a
    device withdraws only its own revocations, the row gating the honest half is
@@ -932,7 +932,7 @@ authority that settles it. Taken.
   readmission the read bound exists to prevent, and bounding every pair a
   sender ever named is the unbounded table the cap exists to remove. The cost
   falls only on a device a flooding sender revoked, and it is the same
-  per-replica shape #411 already leaves open, so a bound derived from the op
+  per-replica shape #1167 already leaves open, so a bound derived from the op
   set would close this path too.
 
   **Why not the relay.** A per-sender upload quota at the relay was the other

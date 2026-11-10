@@ -13,14 +13,19 @@
 //! `false` here suppresses the event for every layer beneath. So the only
 //! honest enforcement point is a veto, and a veto is what this is.
 //!
-//! Vetoing on the *field name* rather than the value is deliberate. Values
-//! are already covered from the other side: [`crate::Plain`] implements no
-//! `Display`, no `serde::Serialize`, and no `tracing::Value`, and its `Debug`
-//! prints `Plain<…>` — so a `Plain<T>` cannot be formatted into a record as
-//! anything but that literal string, through any tracing path. What the value
-//! defence *cannot* catch is a developer calling `.expose()` first and
-//! logging the `String`. That lands under a field name nobody put on the
-//! allowlist, and this layer refuses it.
+//! Vetoing on the *field name* rather than the value is deliberate, and it
+//! makes this layer the plaintext control: a value cannot be recognised as
+//! user content by looking at it, but a name can be vetted once. Adding a
+//! name to [`crate::field::ALLOWED`] asserts that values under it can never
+//! be user-authored, so anything logged under any other name is refused,
+//! whether or not its value was ever wrapped.
+//!
+//! [`crate::Plain`] is an optional guard on top of this, not a second half
+//! of it. A value a crate does wrap cannot be formatted into a record as
+//! anything but the literal `Plain<…>`, and if it is exposed and logged under
+//! an unvetted name, this layer still refuses it. No crate outside
+//! `sunrise-log` wraps a value in it today, so the allowlist is the guarantee
+//! that holds. See `docs/10-cross-cutting/logging.md` §6.3.
 //!
 //! # Fail loud in dev, fail closed in production
 //!

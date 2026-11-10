@@ -38,8 +38,8 @@ pub use open::{
 };
 pub(crate) use open::{open_core_paired, try_open_core_unlocked};
 pub use relay::{
-    signed_ws_factory, spawn_relay, spawn_relay_unlimited, spawn_relay_with, toxic_ws_factory,
-    ws_factory,
+    refusing_upload_ws_factory, signed_ws_factory, spawn_relay, spawn_relay_unlimited,
+    spawn_relay_with, toxic_ws_factory, ws_factory, UploadRefusal,
 };
 pub use wait::{
     wait_field_ops, wait_live, wait_pending_zero, wait_streams_converge, wait_task_converges,

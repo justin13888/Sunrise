@@ -47,7 +47,7 @@ mod snapshot;
 mod weekly;
 
 pub use daily::{build_daily_review, DailyReview};
-pub use snapshot::{ReviewSnapshot, ReviewSnapshotDraft, ReviewSnapshotStream};
+pub use snapshot::{ReviewSnapshot, ReviewSnapshotDraft, ReviewSnapshotStream, StreamTally};
 pub use weekly::{
     build_weekly_review, ReviewStream, ReviewTotals, StreamReview, WeeklyReview, WeeklyReviewInput,
 };

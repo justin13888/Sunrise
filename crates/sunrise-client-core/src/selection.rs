@@ -487,4 +487,131 @@ mod tests {
         assert_eq!(all.targets(), ["a1", "b2", "c3"]);
         assert_eq!(all.cursor(), Some(&"a1"));
     }
+
+    mod properties {
+        use super::super::*;
+        use proptest::prelude::*;
+        use proptest::sample::subsequence;
+
+        /// Every row id an operation can name: the list draws from these, and
+        /// a `Focus` or an `Adopt` may name one the list does not hold.
+        const UNIVERSE: u8 = 8;
+
+        /// One input the list can receive.
+        #[derive(Debug, Clone)]
+        enum Op {
+            /// New rows: a subset of the universe in any order, so rows leave,
+            /// arrive and are shuffled.
+            Reconcile(Vec<u8>),
+            Step(SelectionMove),
+            Edge(SelectionEdge),
+            Extend(SelectionMove),
+            Toggle,
+            Focus(u8),
+            Adopt(Vec<u8>),
+            SelectAll,
+            Clear,
+        }
+
+        fn movement() -> impl Strategy<Value = SelectionMove> {
+            prop_oneof![Just(SelectionMove::Up), Just(SelectionMove::Down)]
+        }
+
+        fn rows() -> impl Strategy<Value = Vec<u8>> {
+            subsequence((0..UNIVERSE).collect::<Vec<_>>(), 0..=usize::from(UNIVERSE)).prop_shuffle()
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                2 => rows().prop_map(Op::Reconcile),
+                3 => movement().prop_map(Op::Step),
+                1 => prop_oneof![Just(SelectionEdge::First), Just(SelectionEdge::Last)]
+                    .prop_map(Op::Edge),
+                3 => movement().prop_map(Op::Extend),
+                2 => Just(Op::Toggle),
+                1 => (0..UNIVERSE).prop_map(Op::Focus),
+                1 => proptest::collection::vec(0..UNIVERSE, 0..4).prop_map(Op::Adopt),
+                1 => Just(Op::SelectAll),
+                1 => Just(Op::Clear),
+            ]
+        }
+
+        fn apply(s: &mut ListSelection<u8>, op: &Op) {
+            match op {
+                Op::Reconcile(rows) => s.reconcile(rows.clone()),
+                Op::Step(direction) => s.step(*direction),
+                Op::Edge(edge) => s.step_to_edge(*edge),
+                Op::Extend(direction) => s.extend(*direction),
+                Op::Toggle => s.toggle_at_cursor(),
+                Op::Focus(id) => s.focus(id),
+                Op::Adopt(ids) => s.adopt(ids),
+                Op::SelectAll => s.select_all(),
+                Op::Clear => s.clear_selection(),
+            }
+        }
+
+        /// Whether `items` appear in `ids` in the same order, each once.
+        fn in_list_order(ids: &[u8], items: &[u8]) -> bool {
+            let positions: Option<Vec<usize>> = items
+                .iter()
+                .map(|item| ids.iter().position(|id| id == item))
+                .collect();
+            positions.is_some_and(|p| p.windows(2).all(|w| w[0] < w[1]))
+        }
+
+        proptest! {
+            // `Direct`, the shape docs/10-cross-cutting/testing.md section 2 names.
+            #![proptest_config(ProptestConfig {
+                cases: sunrise_test_seed::proptest_cases(2048),
+                rng_seed: sunrise_test_seed::proptest_rng_seed(),
+                failure_persistence: Some(Box::new(
+                    proptest::test_runner::FileFailurePersistence::Direct(
+                        "proptest-regressions/selection.txt",
+                    ),
+                )),
+                ..ProptestConfig::default()
+            })]
+
+            /// The module's invariants hold after every operation of any
+            /// sequence: the cursor and the anchor are rows of the list, the
+            /// ticked set is a subset of it, and the targets come back in list
+            /// order. A `reconcile` that keeps the cursor's row keeps the
+            /// cursor, however the rows were shuffled around it.
+            #[test]
+            fn every_sequence_keeps_the_invariants(
+                ops in proptest::collection::vec(op(), 0..40),
+            ) {
+                let mut s = ListSelection::new();
+                for op in &ops {
+                    let before = s.cursor().copied();
+                    apply(&mut s, op);
+                    let ids = s.ids();
+                    if let Op::Reconcile(rows) = op {
+                        if let Some(c) = before.filter(|c| rows.contains(c)) {
+                            prop_assert_eq!(s.cursor(), Some(&c), "after {:?}", op);
+                        }
+                        if !rows.is_empty() && before.is_some() {
+                            prop_assert!(s.cursor().is_some(), "a cursor lost to {:?}", op);
+                        }
+                    }
+                    if let Some(c) = s.cursor() {
+                        prop_assert!(ids.contains(c), "cursor {} outside {:?} after {:?}", c, ids, op);
+                    }
+                    if let Some(a) = s.anchor() {
+                        prop_assert!(ids.contains(a), "anchor {} outside {:?} after {:?}", a, ids, op);
+                    }
+                    let explicit = s.explicit();
+                    prop_assert!(
+                        explicit.len() == s.explicit.len(),
+                        "ticked rows {:?} outside {:?} after {:?}", s.explicit, ids, op
+                    );
+                    let targets = s.targets();
+                    prop_assert!(
+                        in_list_order(ids, &targets),
+                        "targets {:?} not in the order of {:?} after {:?}", targets, ids, op
+                    );
+                }
+            }
+        }
+    }
 }

@@ -8,7 +8,7 @@
 
 use sunrise_client_core::{brief, review};
 use sunrise_core::{Query, QueryResult};
-use sunrise_domain::{ExportDataset, ExportFormat, ReviewWindow, SnoozeSpan};
+use sunrise_domain::{ExportDataset, ExportFormat, ReviewWindow, SnoozeSpan, StreamTally};
 
 use crate::dto::{
     DailyReviewReport, EveningReport, MorningReport, SnapshotDraftIn, SnapshotStream, StreakEntry,
@@ -184,7 +184,7 @@ pub fn review_snapshot_draft(report: WeeklyReviewReport, note: Option<String>) -
     let streams = report
         .streams
         .into_iter()
-        .map(|s| review::StreamTally {
+        .map(|s| StreamTally {
             stream: s.stream,
             name: s.name,
             completed: s.completed.len(),
