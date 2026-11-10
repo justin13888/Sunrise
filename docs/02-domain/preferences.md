@@ -230,13 +230,21 @@ overlay, the bootstrap store, `Command::SetPreference`,
 
 Not built yet:
 
-- **Clients read and write only the two attachment keys through it.** Apple's
+- **Clients read and write only some keys through it.** Apple's
   Settings → Storage writes `attachments.cache_limit_bytes` and
   `attachments.auto_fetch_on_cellular` to this device's overlay
-  ([#346](https://github.com/justin13888/Sunrise/issues/346)). The Apple
-  `AppSettings` and `NotificationPreferences` still hold their values in
-  `UserDefaults`, and the one-time migration out of it has not run. That is
-  [#489](https://github.com/justin13888/Sunrise/issues/489).
+  ([#346](https://github.com/justin13888/Sunrise/issues/346)). Since
+  [#489](https://github.com/justin13888/Sunrise/issues/489), `AppSettings`
+  keeps `sync.relay_url`, `auth.oidc_issuer` and `auth.oidc_client_id` in the
+  bootstrap file and the account address in the client settings file, both in
+  `~/Library/Application Support/Sunrise/`, moving an earlier build's
+  `UserDefaults` values there the first time it is built.
+  `NotificationPreferences` reads the `notifications.*` keys through the open
+  vault and writes each edit to this device's overlay; the first bind to a
+  vault runs `migrate_legacy_defaults` over the old `notify.*` values and
+  deletes each key it took. `editor.vim_mode` and `keyboard.tips` are still
+  read from `UserDefaults`
+  ([#1182](https://github.com/justin13888/Sunrise/issues/1182)).
 - **The notification keys reach the client core's planner, not the Apple
   client's.** `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`)
   hands `core.reminder_plan` the settings `reminder_policy`
