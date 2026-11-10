@@ -1707,7 +1707,14 @@ jobs:
             secret=$1 bundle=$2 var=$3
             file="$RUNNER_TEMP/$bundle.mobileprovision"
             plist="$RUNNER_TEMP/$bundle.plist"
-            printf '%s' "${!secret}" | base64 --decode > "$file"
+            # A secret that is not base64, or not a profile, is reported and
+            # the next profile is still checked: under `set -e` an unguarded
+            # failure here would end the step naming none of them.
+            if ! printf '%s' "${!secret}" | base64 --decode > "$file"; then
+              echo "::error title=The provisioning profile secret is not base64::$secret does not decode as base64. Encode the .mobileprovision file with base64 and replace the secret, as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
+              fail=1
+              return 0
+            fi
             # A `.mobileprovision` is a CMS envelope around a plist; `security
             # cms -D` unwraps it. The UUID is the file name Xcode looks for and
             # the Name is what the archive and the export options plist refer
@@ -1715,10 +1722,16 @@ jobs:
             # carried as further secrets that could disagree with it.
             # PlistBuddy because `com.apple.application-identifier` has dots
             # in it, which `plutil`'s key paths cannot escape.
-            security cms -D -i "$file" > "$plist"
+            if ! security cms -D -i "$file" > "$plist"; then
+              echo "::error title=The provisioning profile secret is not a provisioning profile::$secret decodes, but not to a signed .mobileprovision file that security cms can unwrap. Replace it with the base64 of the downloaded profile, as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
+              fail=1
+              return 0
+            fi
             uuid=$(pb UUID)
             name=$(pb Name)
-            expires=$(plutil -extract ExpirationDate raw -o - "$plist")
+            # Unreadable reads as empty, which sorts before any date and so is
+            # reported by the expiry check below rather than ending the step.
+            expires=$(plutil -extract ExpirationDate raw -o - "$plist" 2>/dev/null || true)
             echo "$secret: $name ($uuid), expires $expires"
             ok=1
             if [ "$(pb Entitlements:com.apple.application-identifier)" != "${MACOS_TEAM_ID}.${bundle}" ]; then
@@ -1738,7 +1751,7 @@ jobs:
             # ISO 8601 in UTC on both sides, so a string comparison is a date
             # comparison.
             if [[ "$expires" < "$now" ]]; then
-              echo "::error title=The provisioning profile has expired::$secret expired at $expires. Regenerate it as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
+              echo "::error title=The provisioning profile has expired::$secret expired at ${expires:-a date the profile does not state}. Regenerate it as ADR-0039 Decision 5 describes. Nothing is built or uploaded."
               ok=0
             fi
             if [ "$ok" -eq 1 ]; then
