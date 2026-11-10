@@ -73,12 +73,13 @@ final class SessionModel {
     /// sync driver's bearer and the recovery ceremony all read this instance,
     /// so a sign-out the Keychain refused reaches all three.
     let account: AccountModel
-    /// Where per-device settings live. The recovery ceremony reads them afresh
-    /// each time it is built rather than holding an ``AppSettings`` from
-    /// launch: the Settings screen edits its own instance, and a relay or
-    /// email entered there before the vault was created must reach the upload.
-    /// The renewal tick reads it the same way, and for the same reason.
+    /// Where per-device settings live: ``AppSettings`` keeps them in the
+    /// directory, and reads the defaults only for what an earlier build left
+    /// there. The recovery ceremony and the renewal tick read them afresh
+    /// (``currentSettings()``): a relay or email entered in Settings before
+    /// the vault was created must reach the upload.
     let settingsDefaults: UserDefaults
+    let settingsDirectory: URL
     /// The account's renewal tick, owned for as long as a vault is open (#307).
     @ObservationIgnored let renewal = SessionRenewal()
     /// The recovery-code restore on screen, if any (#349).
@@ -115,6 +116,7 @@ final class SessionModel {
         configurationError: String? = nil,
         relayDeviceStore: any RelayDeviceIDStore = InMemoryRelayDeviceIDStore(),
         settingsDefaults: UserDefaults = .standard,
+        settingsDirectory: URL = AppSettings.standardDirectory,
         account: AccountModel? = nil,
         openBridge: @escaping @Sendable (URL, Data, String, Data?) async throws -> CoreBridge = {
             try await CoreBridge.open(
@@ -127,6 +129,7 @@ final class SessionModel {
     ) {
         vaults = nil
         self.settingsDefaults = settingsDefaults
+        self.settingsDirectory = settingsDirectory
         self.account = account ?? AccountModel()
         resolve = { descriptor in throw VaultLocationError.unusableIdentifier(descriptor.id) }
         self.location = location
@@ -154,6 +157,7 @@ final class SessionModel {
     ) {
         self.vaults = vaults
         settingsDefaults = .standard
+        settingsDirectory = AppSettings.standardDirectory
         account = AccountModel()
         self.resolve = resolve
         self.appVersion = appVersion
@@ -330,7 +334,7 @@ final class SessionModel {
     /// (#183); terms are accepted at the issuer's sign-up, per
     /// `docs/06-server/api.md` §Terms acceptance.
     private func makeRecoveryCeremony() -> RecoveryCodeModel {
-        let settings = AppSettings(defaults: settingsDefaults)
+        let settings = currentSettings()
         let account = self.account
         account.restoreIfUnread()
         let nickname = Platform.deviceName
@@ -367,7 +371,7 @@ final class SessionModel {
     /// a refused Keychain read makes `bind` throw, and `SyncPlan` stays off (#284).
     func bindRelayDevice() async {
         guard recoveryCeremony == nil, !isBindingRelayDevice, let bridge else { return }
-        let settings = AppSettings(defaults: settingsDefaults)
+        let settings = currentSettings()
         guard settings.syncIsConfigured, let bearer = account.accessToken else { return }
         let store = relayDeviceStore
         let scope = RelayDeviceScope(relayURL: settings.relayURL, bearer: bearer)

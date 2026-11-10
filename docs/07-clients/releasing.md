@@ -17,9 +17,11 @@ you beyond pushing the tag. [§Two version trains](#two-version-trains) says
 which tag.
 
 **iOS is a different runbook and does not exist yet.** The `ios-release` job
-uploads to App Store Connect and no-ops, visibly, until six further secrets and
-an App Store Connect app record exist.
-[ADR-0039](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
+uploads to App Store Connect and no-ops, visibly, until eight further secrets
+(three of them provisioning profiles, one per bundle the app ships) and an App
+Store Connect app record exist.
+[ADR-0039](../11-adr/0039-ios-distribution.md) §Decision 5 is that list, and
+the App Group and App IDs to register before the profiles can be issued.
 
 **Web is not in this runbook either.** The `web-pages` job deploys the web
 client to Cloudflare Pages and no-ops, visibly, until the owner creates the
@@ -595,7 +597,7 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 - [ADR-0038](../11-adr/0038-macos-update-feed.md) — the update feed, and why
   its EdDSA key is subordinate to the Developer ID certificate.
 - [ADR-0039](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
-  not cover, and the six secrets it will need.
+  not cover, and the eight secrets it will need.
 - [ADR-0064](../11-adr/0064-two-version-trains.md) — the two version trains,
   and why nothing publishes to a registry.
 - [ADR-0027](../11-adr/0027-v1-self-host-first.md) — self-host-first, which is

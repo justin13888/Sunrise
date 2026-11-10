@@ -74,9 +74,8 @@ struct AccountView: View {
                 )
                 .textInput(.url)
                 .textContentType(.URL)
-                Text(L10n.Account.relayHint(device: Platform.deviceName))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                SettingsCaption(hint: L10n.Account.relayHint(device: Platform.deviceName),
+                                refusal: settings.relayURLRefusal)
             }
 
             Section(L10n.Account.sectionAccount) {
@@ -86,6 +85,7 @@ struct AccountView: View {
                     prompt: Text(verbatim: "https://issuer.example")
                 )
                 .textInput(.url)
+                SettingsCaption(refusal: settings.oidcIssuerRefusal)
                 TextField(L10n.Account.clientId, text: $settings.oidcClientID)
                     .textInput(.opaque)
                 LabeledContent(L10n.Account.thisDevice, value: String(deviceID.prefix(16)))
@@ -307,9 +307,7 @@ struct AccountView: View {
                 isOn: $notifications.isEnabled
             )
             Toggle(L10n.Account.Notifications.primaryDevice, isOn: $notifications.isPrimaryDevice)
-            Text(L10n.Account.Notifications.primaryCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            SettingsCaption(hint: L10n.Account.Notifications.primaryCaption, refusal: notifications.refusal)
 
             Picker(L10n.Account.Notifications.remindMe, selection: $notifications.leadMinutes) {
                 ForEach(NotificationPreferences.leadChoices, id: \.self) { minutes in

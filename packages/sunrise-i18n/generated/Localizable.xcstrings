@@ -67,6 +67,17 @@
         }
       }
     },
+    "apple.account.not_saved": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not saved, so the address saved before is still in use: %1$@"
+          }
+        }
+      }
+    },
     "apple.account.notification_kinds.always_on": {
       "extractionState": "manual",
       "localizations": {
@@ -371,6 +382,17 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "apple.account.notifications.not_stored": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These settings could not be read or saved, so the ones shown may not be in effect: %1$@"
           }
         }
       }

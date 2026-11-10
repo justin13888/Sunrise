@@ -102,6 +102,30 @@ crosses a snap boundary, at most once per frame, so it has a frame budget: **≤
 (200 open tasks, 60 blocks, 40 external events, 20 dependencies). On Baseline B the ceiling is
 2 ×. A preview over budget is a bug in the solver's incrementality, not a reason to throttle the drag.
 
+**How it is measured.** `crates/sunrise-bench/benches/plan_preview.rs` seeds that week through the
+command path, from the Monday after the bench's fixed now: 200 open tasks (20 of them unplanned),
+60 blocks, 40 more blocks standing in for external events (the planner treats every block as
+fixed until [#1184](https://github.com/justin13888/Sunrise/issues/1184) honours a Block's
+fixed/flexible kind, and external events are not stored
+until [#930](https://github.com/justin13888/Sunrise/issues/930), so both are fixed intervals either
+way) and 20 dependencies. Each iteration is one `Engine::plan_preview`, the input gather and the
+solve, for three gestures: `ripple` (a 90-minute block dropped onto a busy afternoon, so the
+ripple chains), `cross_day` (a task dragged onto a busy hour of the next day) and `auto_place` (20
+unplanned tasks into one day). The rows `plan_preview/{ripple,cross_day,auto_place}` join
+`bench/baseline.json`, recorded as `null` until a nightly run reports them.
+
+Measured on an Apple M3 Pro under load from other work (not Baseline A), release build, rustc
+1.91.1, at the revision that built [#343](https://github.com/justin13888/Sunrise/issues/343):
+
+| Gesture | p50 | p95 | p99 |
+|---|---|---|---|
+| `ripple` | 7.2 ms | 7.5 ms | 12.5 ms |
+| `cross_day` | 2.3 ms | 2.3 ms | 2.3 ms |
+| `auto_place` | 2.4 ms | 2.5 ms | 2.6 ms |
+
+All three are inside the budget. The ripple's search is most of its cost: about 5 ms of it is the
+bounded search the other two gestures do not run.
+
 ## Search
 
 - p95 ≤100 ms over 10k tasks on all platforms, and ≤ 250 ms over 100k tasks on Baseline A and B,

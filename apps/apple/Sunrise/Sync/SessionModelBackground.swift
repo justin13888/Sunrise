@@ -37,7 +37,7 @@ extension SessionModel {
         guard phase == .unlocked, let bridge else { return .noData }
 
         account.restoreIfUnread()
-        let settings = AppSettings(defaults: settingsDefaults)
+        let settings = currentSettings()
         await account.refreshIfNeeded(
             issuer: settings.oidcIssuer,
             clientID: settings.oidcClientID,
@@ -91,7 +91,7 @@ extension SessionModel {
     /// yet — the id is what the upload is signed as and filed under.
     func pushUploadTarget() -> PushUploadTarget? {
         guard phase == .unlocked, let bridge else { return nil }
-        let settings = AppSettings(defaults: settingsDefaults)
+        let settings = currentSettings()
         guard settings.syncIsConfigured, let bearer = account.accessToken else { return nil }
         let relayURL = settings.relayURL.trimmed
         guard case let .success(id?) = relayDeviceID(relayURL: relayURL, bearer: bearer) else {

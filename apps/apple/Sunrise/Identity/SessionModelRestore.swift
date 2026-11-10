@@ -46,7 +46,7 @@ extension SessionModel {
     /// Put the restore on screen, wired to this session.
     func beginRestore() {
         guard canRestoreFromRecoveryCode, restoration.model == nil else { return }
-        let settings = AppSettings(defaults: settingsDefaults)
+        let settings = currentSettings()
         restoration.model = RestoreFromCodeModel(
             signIn: { try await Self.stepUpBearer(settings: settings) },
             restore: { [weak self] code, bearer, onStep in

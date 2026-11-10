@@ -42,6 +42,7 @@ pub mod notify_catalog;
 pub mod person;
 pub mod phrase;
 pub mod place;
+pub mod planner;
 pub mod planning;
 pub mod preferences;
 pub mod recur;
@@ -142,6 +143,12 @@ pub use phrase::{
 };
 pub use place::{
     evaluate_place, select_regions, Place, PlaceEval, PlaceId, PlaceIdError, Presence, TaskPlaceReq,
+};
+pub use planner::{
+    plan_base, solve as plan_solve, Edge, MoveRole, PlanBase, PlanBlock, PlanBlocker, PlanDay,
+    PlanDiff, PlanDiffId, PlanEvent, PlanInputs, PlanIntent, PlanIntentError, PlanMove,
+    PlanPosition, PlanRule, PlanSeverity, PlanTask, PlanUnscheduled, PlanViolation, SlotTarget,
+    UnscheduleKeep, UnscheduleReason,
 };
 pub use planning::{
     is_overdue, is_overdue_in, today_group, today_section, today_section_in, TodayGroup,
