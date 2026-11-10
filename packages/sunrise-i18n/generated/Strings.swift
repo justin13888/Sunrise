@@ -111,6 +111,10 @@ enum L10n {
         static var clientId: String { L10n.tr("apple.account.client_id") }
         /// This device
         static var thisDevice: String { L10n.tr("apple.account.this_device") }
+        /// Not saved, so the address saved before is still in use: {reason}
+        static func notSaved(reason: String) -> String {
+            L10n.tr("apple.account.not_saved", reason)
+        }
 
         enum QuickCapture {
             /// Quick capture
@@ -169,6 +173,10 @@ enum L10n {
             static var leadCaption: String { L10n.tr("apple.account.notifications.lead_caption") }
             /// Scheduled now
             static var scheduledNow: String { L10n.tr("apple.account.notifications.scheduled_now") }
+            /// These settings could not be read or saved, so the ones shown may not be in effect: {reason}
+            static func notStored(reason: String) -> String {
+                L10n.tr("apple.account.notifications.not_stored", reason)
+            }
         }
 
         enum NotificationKinds {

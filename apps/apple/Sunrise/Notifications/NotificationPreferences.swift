@@ -81,6 +81,12 @@ final class NotificationPreferences {
     /// Why the last read or write through the core failed, or `nil`.
     private(set) var errorMessage: String?
 
+    /// What the settings screen says while ``errorMessage`` is set: the
+    /// toggles may show values the core never stored.
+    var refusal: String? {
+        errorMessage.map { L10n.Account.Notifications.notStored(reason: $0) }
+    }
+
     /// Holds the posted-notification ledger, and the values an earlier build
     /// kept, until ``bind(to:)`` moves them into the core.
     private let defaults: UserDefaults
@@ -219,6 +225,7 @@ final class NotificationPreferences {
     /// keys, and the next bind tries again rather than dropping them.
     func bind(to bridge: CoreBridge) async {
         self.bridge = bridge
+        errorMessage = nil
         var claim = true
         do {
             if let report = try await migrateLegacyValues(into: bridge) {
@@ -245,6 +252,10 @@ final class NotificationPreferences {
     /// Read the preferences back from `bridge`, claiming the primary register
     /// when it is unset and reminders are on here — the claim the core's
     /// `ReminderPolicyItem.claimPrimary` asks for.
+    ///
+    /// Records a failure and never clears one: the caller clears
+    /// ``errorMessage`` before the work this ends, so a migration refused
+    /// just before a read that succeeds is still reported.
     private func reload(from bridge: CoreBridge, claimingIfUnset claim: Bool) async {
         do {
             var read = try await bridge.reminderPolicy()
@@ -255,7 +266,6 @@ final class NotificationPreferences {
             // A vault switched to while this was reading is the one to show.
             guard self.bridge === bridge else { return }
             load(read)
-            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -284,6 +294,9 @@ final class NotificationPreferences {
         let previous = writing
         writing = _Concurrency.Task { @MainActor [weak self] in
             await previous?.value
+            // Cleared before rather than after: the re-read records its own
+            // failure, which clearing after it would hide.
+            self?.errorMessage = nil
             do {
                 switch edit {
                 case .primary: try await bridge.claimPrimaryReminderDevice()
@@ -291,7 +304,6 @@ final class NotificationPreferences {
                 default: break
                 }
                 for command in commands { _ = try await bridge.submit(command) }
-                self?.errorMessage = nil
             } catch {
                 self?.errorMessage = error.localizedDescription
             }

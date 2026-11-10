@@ -87,5 +87,36 @@ struct AppSettingsTests {
         let settings = AppSettings(defaults: defaults, directory: directory)
         #expect(defaults.string(forKey: "sync.relayURL") == "relay.example")
         #expect(settings.relayURL == "relay.example")
+        #expect(settings.relayURLRefusal != nil, "the field says the value is not the stored one")
+    }
+
+    /// An address the core refuses — one typed without its scheme, or cut
+    /// off mid-edit — is not written, and the field says so until one is:
+    /// every other reader builds its settings from the file, which still
+    /// holds the address saved before.
+    @Test
+    func aRefusedAddressIsReportedUntilOneIsTaken() throws {
+        let (defaults, directory) = try scratch()
+        defer { discard(directory) }
+
+        let settings = AppSettings(defaults: defaults, directory: directory)
+        settings.relayURL = "wss://relay.example/sync"
+        settings.oidcIssuer = "https://issuer.example"
+        #expect(settings.relayURLRefusal == nil)
+        #expect(settings.oidcIssuerRefusal == nil)
+
+        settings.relayURL = "relay.example/sync"
+        settings.oidcIssuer = "https://"
+        #expect(settings.relayURLRefusal != nil)
+        #expect(settings.oidcIssuerRefusal != nil)
+        let stored = AppSettings(defaults: defaults, directory: directory)
+        #expect(stored.relayURL == "wss://relay.example/sync", "the address saved before is kept")
+        #expect(stored.oidcIssuer == "https://issuer.example")
+
+        settings.relayURL = "wss://relay.example/v2"
+        settings.oidcIssuer = ""
+        #expect(settings.relayURLRefusal == nil, "a value taken clears the refusal")
+        #expect(settings.oidcIssuerRefusal == nil, "blank is a value: it removes the key")
+        #expect(AppSettings(defaults: defaults, directory: directory).relayURL == "wss://relay.example/v2")
     }
 }

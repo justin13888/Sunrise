@@ -185,6 +185,93 @@ struct NotificationPreferencesTests {
         await vault.bridge.shutdown()
     }
 
+    /// Turning "primary device" on claims the register for this device, and
+    /// turning it off writes nothing: the register is read back, which, while
+    /// it names this device, turns the switch on again (Decision 3).
+    @Test
+    func thePrimarySwitchClaimsTheRegisterAndOffReadsItBack() async throws {
+        let vault = try await TestVault()
+        let (preferences, name) = preferences()
+        defer { discard(name) }
+
+        await preferences.bind(to: vault.bridge)
+        let mine = try #require(try await primaryRegister(in: vault.bridge), "an unset register is claimed")
+        let other = try await claimForAnotherDevice(like: mine, in: vault.bridge)
+        await preferences.bind(to: vault.bridge)
+        #expect(!preferences.isPrimaryDevice, "another device holds the register")
+
+        preferences.isPrimaryDevice = true
+        await preferences.saved()
+        #expect(preferences.errorMessage == nil)
+        #expect(try await primaryRegister(in: vault.bridge) == mine, "turning it on claims the register")
+        #expect(mine != other)
+
+        preferences.isPrimaryDevice = false
+        await preferences.saved()
+        #expect(preferences.errorMessage == nil)
+        #expect(preferences.isPrimaryDevice, "the register still names this device")
+        #expect(try await primaryRegister(in: vault.bridge) == mine, "turning it off writes nothing")
+        await vault.bridge.shutdown()
+    }
+
+    /// A re-read that fails is reported, not cleared by the save it ran in.
+    @Test
+    func aFailedReReadOfTheRegisterIsReported() async throws {
+        let vault = try await TestVault()
+        let (preferences, name) = preferences()
+        defer { discard(name) }
+
+        await preferences.bind(to: vault.bridge)
+        await vault.bridge.shutdown()
+        preferences.isPrimaryDevice = false
+        await preferences.saved()
+        #expect(preferences.errorMessage != nil)
+        #expect(preferences.refusal != nil, "the settings screen shows it")
+    }
+
+    /// An earlier build's switch saying another device is primary leaves the
+    /// register unclaimed on the bind that migrates it (Decision 4), rather
+    /// than taking it from whichever device that was.
+    @Test
+    func anOldSwitchOffLeavesTheRegisterUnclaimed() async throws {
+        let vault = try await TestVault()
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appending(path: name)
+        defer {
+            discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defaults.set(false, forKey: "notify.isPrimaryDevice")
+
+        let preferences = NotificationPreferences(defaults: defaults, directory: directory)
+        await preferences.bind(to: vault.bridge)
+        #expect(preferences.errorMessage == nil)
+        #expect(defaults.object(forKey: "notify.isPrimaryDevice") == nil, "the old key is deleted once moved")
+        #expect(try await primaryRegister(in: vault.bridge) == nil, "the register is left unclaimed")
+        await vault.bridge.shutdown()
+    }
+
+    /// The `notifications.primary_device` register's text, `nil` when unset.
+    private func primaryRegister(in bridge: CoreBridge) async throws -> String? {
+        let items = try await preferenceItems(in: bridge)
+        guard case let .text(value)? = items["notifications.primary_device"] else { return nil }
+        return value
+    }
+
+    /// Point the register at a device other than this one, as that device's
+    /// own claim would: `mine`'s kind prefix with another ULID.
+    private func claimForAnotherDevice(like mine: String, in bridge: CoreBridge) async throws -> String {
+        let other = String(mine.prefix(4)) + "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        let claim = CoreCommand.setPreference(
+            key: "notifications.primary_device",
+            value: .text(value: other),
+            target: .vault
+        )
+        _ = try await bridge.submit(claim)
+        return other
+    }
+
     /// The core's preferences, by key, as `Query::Preferences` reads them.
     private func preferenceItems(in bridge: CoreBridge) async throws -> [String: PreferenceValue] {
         guard case let .preferences(items) = try await bridge.query(.preferences) else { return [:] }

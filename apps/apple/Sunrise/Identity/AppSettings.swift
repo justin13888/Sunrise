@@ -19,7 +19,8 @@ final class AppSettings {
     /// supported way to run: the core is local-first and needs no server.
     ///
     /// A value the core refuses as a URL — one still being typed — stays
-    /// here and is not written; the last one that was stays on disk.
+    /// here and is not written; the last one that was stays on disk, every
+    /// other reader uses it, and ``refusals`` says so until a value is taken.
     var relayURL: String {
         didSet { setBootstrap(Key.relayURL, to: relayURL) }
     }
@@ -50,6 +51,23 @@ final class AppSettings {
         }
     }
 
+    /// Why the bootstrap file refused the value shown for a key, by key
+    /// (`sync.relay_url`, `auth.oidc_issuer`, `auth.oidc_client_id`). A key
+    /// is here while what is shown differs from what is stored: the field
+    /// says so, rather than leaving a value on screen that no reader uses and
+    /// the next launch drops.
+    private(set) var refusals: [String: String] = [:]
+
+    /// What the relay field says while ``relayURL`` is not the stored one.
+    var relayURLRefusal: String? {
+        refusals[Key.relayURL].map { L10n.Account.notSaved(reason: $0) }
+    }
+
+    /// What the issuer field says while ``oidcIssuer`` is not the stored one.
+    var oidcIssuerRefusal: String? {
+        refusals[Key.oidcIssuer].map { L10n.Account.notSaved(reason: $0) }
+    }
+
     /// Where the bootstrap file and the client settings file live.
     let directory: URL
 
@@ -62,7 +80,7 @@ final class AppSettings {
     init(defaults: UserDefaults = .standard, directory: URL = AppSettings.standardDirectory) {
         self.directory = directory
         let path = directory.path(percentEncoded: false)
-        Self.moveLegacyValues(from: defaults, into: path)
+        let refused = Self.moveLegacyValues(from: defaults, into: path)
 
         let bootstrap = (try? bootstrapPreferences(dir: path)) ?? []
         func stored(_ key: String) -> String {
@@ -78,6 +96,7 @@ final class AppSettings {
         oidcClientID = stored(Key.oidcClientID)
         accountEmail = (try? clientSettings(dir: path))?.accountEmail
             ?? defaults.string(forKey: Key.legacyAccountEmail) ?? ""
+        refusals = refused
     }
 
     /// Whether a login can even be attempted.
@@ -97,10 +116,16 @@ final class AppSettings {
 
     private var path: String { directory.path(percentEncoded: false) }
 
-    /// Write one bootstrap key, trimmed; blank removes it.
+    /// Write one bootstrap key, trimmed; blank removes it. A refusal is
+    /// kept in ``refusals`` until a value for the key is written.
     private func setBootstrap(_ key: String, to value: String) {
         let trimmed = value.trimmed
-        try? setBootstrapPreference(dir: path, key: key, value: trimmed.isEmpty ? nil : trimmed)
+        do {
+            try setBootstrapPreference(dir: path, key: key, value: trimmed.isEmpty ? nil : trimmed)
+            refusals[key] = nil
+        } catch {
+            refusals[key] = error.localizedDescription
+        }
     }
 
     /// Move what an earlier build kept in `UserDefaults` into the files, once.
@@ -108,8 +133,10 @@ final class AppSettings {
     /// Here rather than in the core's `migrate_legacy_defaults`, which needs
     /// an open vault: these are read on the locked screen, before there is
     /// one. A key is deleted only once its value is written, so a value the
-    /// file refuses stays where it was and is still read from there.
-    private static func moveLegacyValues(from defaults: UserDefaults, into path: String) {
+    /// file refuses stays where it was and is still read from there; why it
+    /// was refused is returned, by bootstrap key.
+    private static func moveLegacyValues(from defaults: UserDefaults, into path: String) -> [String: String] {
+        var refused: [String: String] = [:]
         for (key, old) in Key.legacy {
             guard let value = defaults.string(forKey: old) else { continue }
             let trimmed = value.trimmed
@@ -117,7 +144,7 @@ final class AppSettings {
                 try setBootstrapPreference(dir: path, key: key, value: trimmed.isEmpty ? nil : trimmed)
                 defaults.removeObject(forKey: old)
             } catch {
-                continue
+                refused[key] = error.localizedDescription
             }
         }
         if let email = defaults.string(forKey: Key.legacyAccountEmail) {
@@ -126,6 +153,7 @@ final class AppSettings {
                 defaults.removeObject(forKey: Key.legacyAccountEmail)
             }
         }
+        return refused
     }
 
     enum Key {
