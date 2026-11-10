@@ -366,12 +366,25 @@ impl Engine {
         };
 
         let existing = read_block(db.conn(), continues.bytes())?;
+        // The continuation shows the title the series shows now, fixed,
+        // because it takes none of the bindings a title could track.
+        let shown = block_row(db.conn(), block.clone())?.title;
         let mut next = Block {
             id: continues,
             created_at: existing.as_ref().map_or(now, |e| e.created_at),
             updated_at: now,
             starts_at: split.continuation.starts_at,
             ends_at: split.continuation.ends_at,
+            title: shown,
+            title_track_task: false,
+            // Bindings stay on the block they were made on: `tasks` merges
+            // as an OR-set, so copying them would bind each task to a second
+            // block no one bound it to. The import fields stay too: the
+            // continuation is this device's block, not the external item a
+            // re-import writes to (time-blocks.md §Recurring blocks).
+            tasks: BTreeSet::new(),
+            source: None,
+            external_id: None,
             rrule: Some(split.continuation.rrule),
             exceptions: split.continuation.exceptions,
             split_from: Some(root),

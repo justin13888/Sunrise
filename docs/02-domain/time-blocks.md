@@ -220,6 +220,11 @@ The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
   `split_block_id(series root, key)` as one group (ADR-0065 §6), and *all*
   edits the block. At the first occurrence *this and future* is *all*, and
   splitting again at a key edits the continuation already there.
+- The continuation a split writes takes no task bindings and no `source` or
+  `external_id`: a task stays bound to the block it was bound to, and a
+  re-import of the external item writes the original block only. Its title is
+  the one the series showed at the split, fixed (`title_track_task` off),
+  since it has no task whose title to track.
 
 A binding still names the whole block, not one occurrence
 ([#1162](https://github.com/justin13888/Sunrise/issues/1162)), and drawing a

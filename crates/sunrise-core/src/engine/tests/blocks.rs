@@ -1308,3 +1308,111 @@ fn two_devices_splitting_at_the_same_key_converge_on_one_block() {
     ea.assert_rebuild_identity(&dba);
     eb.assert_rebuild_identity(&dbb);
 }
+
+/// Give block `id` an import's `source` and `external_id`, as an importer
+/// that maps them would (#1149).
+fn imported_from(e: &Engine, db: &mut Db, id: EntityRef) {
+    let b = Block {
+        source: Some(sunrise_domain::BlockSource::ImportIcs),
+        external_id: Some("standup@example.com".into()),
+        ..read_block(db.conn(), id.bytes()).unwrap().unwrap()
+    };
+    let stream = crate::engine::ids::domain_bytes(b.stream_id);
+    let now_ms = e.clock.now_ms();
+    let op = InnerOp::BlockUpdate(Box::new(b));
+    db.with_tx(|tx| e.append_and_fold(tx, &op, &stream, now_ms).map(|_| ()))
+        .unwrap();
+}
+
+/// A split leaves the task bindings and the import fields on the block they
+/// were made on: the continuation binds no task and is no external item's,
+/// and it keeps the title the series showed (time-blocks.md §Recurring
+/// blocks).
+#[test]
+fn a_split_continuation_takes_no_bindings_and_no_import_fields() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+    e.apply(&mut db, Command::BindTask { block: id, task })
+        .unwrap();
+    imported_from(&e, &mut db, id);
+
+    let move_later = BlockPatch {
+        starts_at: Some(at(18, 10)),
+        ends_at: Some(at(18, 11)),
+        ..BlockPatch::default()
+    };
+    let next = e
+        .apply(
+            &mut db,
+            scoped_update(id, EditScope::ThisAndFuture { key: key(18) }, move_later),
+        )
+        .unwrap()
+        .entity;
+
+    let continuation = read_block(db.conn(), next.bytes()).unwrap().unwrap();
+    assert!(continuation.tasks.is_empty(), "no binding is copied");
+    assert_eq!(continuation.source, None);
+    assert_eq!(continuation.external_id, None);
+    assert_eq!(continuation.title.as_deref(), Some("Standup"));
+    assert!(!continuation.title_track_task);
+
+    let ended = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(ended.tasks, BTreeSet::from([task]), "the original keeps it");
+    assert_eq!(ended.source, Some(sunrise_domain::BlockSource::ImportIcs));
+    assert_eq!(ended.external_id.as_deref(), Some("standup@example.com"));
+
+    // The task lists the original block only, and only its rows bind it.
+    let bound = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+    assert_eq!(bound.blocks, BTreeSet::from([id]));
+    let week_of = |d: i8| day_rows(&e, &db, march(d)).remove(0);
+    assert_eq!(week_of(11).task_titles, vec!["Prepare notes".to_string()]);
+    assert!(week_of(25).task_titles.is_empty());
+    e.assert_rebuild_identity(&db);
+}
+
+/// A split continuation of an untitled block bound to one task shows the
+/// task's title, as the series did, without tracking it.
+#[test]
+fn a_split_continuation_keeps_the_title_a_bound_task_lent_the_series() {
+    let mut db = db();
+    let e = engine();
+    legacy_peer(&db);
+    let task = new_task(&e, &mut db, "Write the report");
+    let id = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                title_track_task: true,
+                tasks: vec![task],
+                ..block_draft(9, 1, None)
+            }),
+        )
+        .unwrap()
+        .entity;
+    e.require_features(&mut db, &[BLOCK_RECURRENCE_FEATURE], true)
+        .unwrap();
+    recur(&e, &mut db, id, "FREQ=WEEKLY");
+    let next = e
+        .apply(
+            &mut db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(18) },
+                BlockPatch {
+                    ends_at: Some(at(18, 11)),
+                    ..BlockPatch::default()
+                },
+            ),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(next, Some("Write the report".into()), Some(key(25)))]
+    );
+    let continuation = read_block(db.conn(), next.bytes()).unwrap().unwrap();
+    assert!(continuation.tasks.is_empty());
+    assert!(!continuation.title_track_task);
+}
