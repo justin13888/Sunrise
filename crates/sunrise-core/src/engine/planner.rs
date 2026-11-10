@@ -303,9 +303,10 @@ impl Engine {
             tasks.push(self.plan_task(conn, &schedule, &task)?);
         }
 
-        // Blocks overlapping the window, and every subject. Every block is
-        // fixed until a Block carries its fixed/flexible kind, which no build
-        // has yet.
+        // Blocks overlapping the window, and every subject. A Block carries a
+        // fixed/flexible kind (#1157), but the planner deliberately still
+        // treats every block as fixed; honouring `Block::effective_kind` is
+        // tracked in #1184.
         let mut blocks = Vec::new();
         let mut seen = BTreeSet::new();
         if !window.is_empty() {

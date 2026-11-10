@@ -28,9 +28,11 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   planner does not read, such as a title, does not make a diff stale.
 > - `solve` returns `Result`: an intent naming an item the inputs do not hold,
 >   or the wrong kind, is an error rather than a diff.
-> - Every block is `fixed`: a Block carries no fixed/flexible kind yet
->   ([#342](https://github.com/justin13888/Sunrise/issues/342) closed with
->   recurrence alone), and there are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
+> - Every block is `fixed`: a Block carries a fixed/flexible kind
+>   ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the
+>   planner deliberately still treats every block as fixed; honouring the kind
+>   is tracked in [#1184](https://github.com/justin13888/Sunrise/issues/1184).
+>   There are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
 >   A task bound to a block is not placed on its own.
 > - `Unschedule` takes tasks only.
 > - `AutoPlace` and `BulkDefer { place: true }` place each listed task in the
@@ -294,7 +296,7 @@ pub struct PlannerDay {
 | Task `blocked_by` | [`../02-domain/tasks.md`](../02-domain/tasks.md) | Ordering: a task starts no earlier than each timed blocker's end (`BeforeBlocker`, Hard). An untimed blocker gives `Info`. |
 | Task `scheduling_constraints` | [`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) | A `hard` time dimension (time of day, day of week, date range) is **Blocking**; a `soft` one is Soft |
 | Task Place requirement | [ADR-0051](../11-adr/0051-places.md) | Not a placement input: an `Info` annotation only (§Places below) |
-| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. Until the field exists, every block is `fixed`. |
+| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. Blocks carry the kind ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the planner still treats every block as `fixed` until [#1184](https://github.com/justin13888/Sunrise/issues/1184) honours it. |
 | Tasks bound to a block | `Block.tasks` | Move with their block; they are not placed independently |
 | External events | [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md) | Always fixed. An event whose busy treatment is `free` is drawn and never blocks. |
 | Day schedule | [ADR-0050](../11-adr/0050-preferences-and-day-schedule.md), [`../02-domain/day-schedule.md`](../02-domain/day-schedule.md) | Each planner day's **plannable window** `plannable(d)`, wake to sleep; civil midnight to midnight when unset |
