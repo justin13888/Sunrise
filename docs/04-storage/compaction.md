@@ -327,9 +327,13 @@ through the blob routes, in chunks of at most 1 MiB, then pins it with
 §Stream snapshots). A replica publishes only a record it wrote, and only while
 it is the stream's compactor, so a device the election has moved past never
 pins its older record over its successor's. The driver publishes before a
-session reports `Live` and on every resync tick, after compaction; what it
-published is remembered per process, and the first publish after a restart asks
-the relay what it pins before uploading.
+session reports `Live`, after running compaction if it is due, and on every
+resync tick, after the compaction the tick already ran. On almost every session
+there is nothing to upload; on the one with a record to upload, `Live` waits
+for it, so a sync that ends at `Live` leaves the record on the relay. What it
+published is remembered in memory per process, so a record is uploaded once,
+and the first publish after a restart asks the relay what it pins before
+uploading.
 
 **What the relay keeps.** One record per stream, the last one pinned: a new pin
 deletes the blob the old one named. Pins are not op retention's, so a record
@@ -337,16 +341,29 @@ outlives every op it covers, and they go only with the account. The relay
 reads one thing from the record, its cleartext magic prefix, and refuses to
 pin a blob of any other kind.
 
-**Recover.** The relay's gap event names its stream. The driver asks for the
-stream's pin, fetches the blob, checks it hashes to the pinned id, and applies
-it (§Applying a snapshot), which raises the stream's floors and cursors to the
-record's frontier. It then re-subscribes every stream from its cursors, before
-reading another frame. A record that cannot be applied yet (`NoKey`,
-`Pending`, a writer whose cert has not arrived) is retried after any other
-record applies and on the next gap; one that is missing, adds nothing or is
-refused leaves the session `Degraded`, as does a second gap on a stream whose
-record was applied. A new device needs nothing extra: its empty cursors draw a
-gap on every stream whose early ops were trimmed.
+**Recover.** The relay's gap event names its stream, in the SSE `Error`
+payload's optional `stream_id`. The driver asks for the stream's pin, fetches
+the blob, checks it hashes to the pinned id, and applies it (§Applying a
+snapshot), which raises the stream's floors and cursors to the record's
+frontier. It then re-subscribes every stream from its cursors, and the relay
+replays only what lies above them. This runs before another frame is read, so
+the replay the gap preceded lands on the raised floors.
+
+- **Applied.** The stream is caught up. A second gap on it in the same session
+  means the record's frontier is still below what the relay evicted, and the
+  session latches `Degraded`.
+- **Deferred.** The record cannot be applied yet (`NoKey`, `Pending`, a writer
+  whose cert has not arrived), or the relay could not be reached. The session
+  latches `Degraded`, and the stream is tried again after any other record
+  applies and on the next gap the relay reports (the resync tick
+  re-subscribes). Once every gapped stream of the session has been caught up,
+  the state goes back to catching up.
+- **Failed.** No record is pinned, the one pinned adds nothing (`Covered`), or
+  it is refused. The session latches `Degraded`, as every gap did before.
+
+A new device needs nothing extra: its empty cursors draw a gap on every stream
+whose early ops were trimmed, and the vault-meta stream's record brings the
+certs and key envelopes the other streams' records need.
 
 **What it does not cover.** A record is as fresh as the compactor's cadence,
 one day. Under the relay's age bound that is always enough; under its size

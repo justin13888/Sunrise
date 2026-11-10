@@ -102,17 +102,26 @@ async fn a_kick_ends_a_session_dialled_before_it() {
 
 /// A transport dialled after the kick is the fresh session the kick asked
 /// for, and must not be ended by it.
-#[tokio::test]
+///
+/// Under a paused clock the timeout fires only once every task is idle, so
+/// it runs out only if the stream had nothing ready, however loaded the
+/// host is. The kick that follows proves the same stream does see a kick.
+#[tokio::test(start_paused = true)]
 async fn a_kick_spares_a_session_dialled_after_it() {
     let link = SyncLink::new();
     link.kick();
     let mut fresh = link.wrap(Box::new(Silent));
     assert_eq!(link.dialled(), 1);
-    let waited = tokio::time::timeout(Duration::from_millis(100), fresh.recv_frame()).await;
+    let waited = tokio::time::timeout(Duration::from_secs(60), fresh.recv_frame()).await;
     assert!(
         waited.is_err(),
         "the fresh session keeps waiting on its stream"
     );
+    link.kick();
+    let ended = tokio::time::timeout(Duration::from_secs(60), fresh.recv_frame())
+        .await
+        .expect("a later kick ends it");
+    assert!(matches!(ended, Ok(None)), "{ended:?}");
 }
 
 /// A vault with no driver running is never `Live`, so the wait runs out

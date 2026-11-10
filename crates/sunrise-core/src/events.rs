@@ -86,16 +86,16 @@ pub enum AttachmentFetchOutcome {
     Unavailable,
 }
 
-/// One finished attachment fetch, streamed via
-/// [`crate::Core::attachment_fetches`].
+/// One finished attachment fetch, broadcast inside the crate to the
+/// [`crate::Core::fetch_attachment`] call waiting on it.
 ///
 /// Only *finished* ones. There is no progress event, because there is no
 /// progress to report: the relay's `GET /blobs/{id}` is one response body, and
 /// a client that drew a percentage from anything would be drawing a guess.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttachmentFetch {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttachmentFetch {
     /// The attachment whose bytes were asked for.
-    pub attachment: EntityRef,
+    pub(crate) attachment: EntityRef,
     /// What happened to them.
-    pub outcome: AttachmentFetchOutcome,
+    pub(crate) outcome: AttachmentFetchOutcome,
 }

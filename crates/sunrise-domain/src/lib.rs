@@ -162,8 +162,8 @@ pub use preferences::{
 pub use recur::parse_recurrence;
 pub use review::{
     build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,
-    ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreamReview, WeeklyReview,
-    WeeklyReviewInput,
+    ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreamReview, StreamTally,
+    WeeklyReview, WeeklyReviewInput,
 };
 pub use routine::{
     materialization_horizon_days, read_legacy_instant, Routine, RoutineCatchupPolicy, RoutineDraft,

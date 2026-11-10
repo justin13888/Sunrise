@@ -3403,6 +3403,7 @@ dependencies = [
  "sunrise-core-bindings",
  "sunrise-crypto",
  "sunrise-domain",
+ "sunrise-error",
  "sunrise-http-sig",
  "sunrise-id",
  "sunrise-pairing",

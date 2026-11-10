@@ -380,6 +380,33 @@ class Failures(GateCase):
         self.write("docs/a.md", "See `docs/untracked.md`.\n")
         self.assert_code(self.run_gate(), DANGLING, "`docs/untracked.md` names no file git tracks.")
 
+    def test_a_bare_rust_filename_with_a_line_fails(self):
+        # Declined, its line number is checked by nothing, and that is how
+        # they came to sit on unrelated code (#757). The range and the
+        # `#symbol` forms carry the same unchecked line.
+        self.write(
+            "docs/a.md",
+            "See `blobs.rs:470`.\n\nAnd `signed.rs:128-134`.\n\nAnd `sync_driver.rs:797#run`.\n",
+        )
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "::error file=docs/a.md,line=1::citations: `blobs.rs:470` is a bare filename "
+            "with a line number, which no anchor resolves and so nothing checks; write the "
+            "repository path, as `path:line#symbol`.",
+            "docs/a.md,line=3::citations: `signed.rs:128-134` is a bare filename",
+            "docs/a.md,line=5::citations: `sync_driver.rs:797#run` is a bare filename",
+            "3 citation(s) resolve to nothing",
+        )
+
+    def test_a_bare_rust_filename_with_a_line_fails_in_a_doc_comment_too(self):
+        self.write("crates/c/src/lib.rs", "/// Mirrors `blobs.rs:470`.\npub fn f() {}\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "file=crates/c/src/lib.rs,line=1::citations: `blobs.rs:470` is a bare filename",
+        )
+
     def test_every_failure_is_reported_not_only_the_first(self):
         self.write(
             "docs/a.md",
@@ -437,6 +464,33 @@ class Discrimination(GateCase):
         # The single most common shape in this tree, and the one that cannot
         # be resolved without guessing which directory is meant.
         self.near_miss("the parser in `qr.rs`, whose predecessor `pair_qr_v0.rs` is gone")
+
+    def test_a_bare_filename_with_a_line_and_another_extension_is_not_checked(self):
+        # The bare-`name.rs:N` rule is drawn where the rot was measured, and
+        # no wider: a bare YAML or Swift name with a line stays declined.
+        self.near_miss("`ci.yml:12` and `TaskEditorView.swift:97`")
+
+    def test_a_bare_rust_filename_with_a_symbol_and_no_line_is_not_checked(self):
+        self.near_miss("`blobs.rs#blob_key`")
+
+    def test_a_partial_rust_path_with_a_line_is_not_checked(self):
+        # A fragment of a directory the paragraph established is the residue,
+        # not the bare-filename rule.
+        self.near_miss("`store/devices.rs:79`")
+
+    def test_a_bare_rust_filename_an_anchor_claims_is_checked_not_failed_as_bare(self):
+        # The rule is about what no anchor claims. A sibling that resolves is
+        # an ordinary citation: clean when its line exists, and when it does
+        # not, failed for that rather than for its shape.
+        self.write("crates/c/src/blobs.rs", "fn a() {}\nfn b() {}\n")
+        self.write("crates/c/src/lib.rs", "/// See `blobs.rs:2`.\npub fn f() {}\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+        self.write("crates/c/src/lib.rs", "/// See `blobs.rs:9`.\npub fn f() {}\n")
+        result = self.run_gate()
+        self.assert_code(
+            result, DANGLING, "cites line 9, but `crates/c/src/blobs.rs` has 2 line(s)."
+        )
+        self.assertNotIn("bare filename", result.stdout)
 
     def test_a_partial_path_relative_to_nothing_is_not_checked(self):
         # A fragment of a path the surrounding paragraph established. It

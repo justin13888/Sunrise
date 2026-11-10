@@ -38,33 +38,23 @@ Codes are stable across versions; new codes can be added but never repurposed.
 - Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304 (`STORAGE_INTEGRITY_CHECK_FAILED`, then `STORAGE_BACKUP_FAILED` and `STORAGE_MIGRATION_FAILED`: the three ways a vault fails to open that [04-storage/migrations.md](../04-storage/migrations.md) §Migration rigor gives a client a way out of).
 - An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
-## Error envelope (core → UI)
+## Errors across the core → UI boundary
 
-```rust
-pub struct CoreError {
-    pub code: ErrorCode,
-    pub recoverable: Recoverability,
-    pub diagnostic: String,           // dev-only, never user-facing verbatim
-}
+There is no error envelope type. Each code carries its classification in the registry instead: `ErrorCode::default_kind` gives its `ErrorKind` (`transient`, `permanent`, `user` or `internal`) and `ErrorCode::retryable` says whether a retry is sanctioned, both mirroring `codes.toml`. A `CoreError { code, recoverable: Recoverability, diagnostic }` struct used to live in `sunrise-error` and was used by nothing; it was removed ([#755](https://github.com/justin13888/Sunrise/issues/755)), and so was `Recoverability`, whose three classes duplicated what `ErrorKind` and `retryable` already say per code.
 
-pub enum Recoverability {
-    Transient,                        // retry
-    UserActionRequired,               // user intervention will resolve
-    Fatal,                            // engineer needed
-}
-```
-
-UI maps `code` → localized user copy + (optionally) an action button.
+What crosses the boundary today is narrower than a code. The core returns `sunrise_core::CoreError`, a `thiserror` enum wrapping each layer's own error. The layer errors that map to a code expose it through their own `as_error_code` (`DbError::as_error_code` among them, reached through `CoreError::db_error`). `sunrise-core-bindings` flattens `CoreError` into `BindingError` (`crates/sunrise-core-bindings/src/lib.rs`): the variant is what a client branches on, and the detail travels as the message. `BindingError` carries no `ErrorCode`, and the bindings crate has no mapping from one. Carrying a code to the UI needs that mapping first; until it exists, clients branch on `BindingError`'s variants.
 
 ## What the user sees
 
-- **Transient:** small unobtrusive toast, auto-dismiss, no action.
-- **UserActionRequired:** persistent banner + button (e.g. "Sign in again" for `INTEGRATION_REAUTH_REQUIRED`).
-- **Fatal:** modal-ish dialog with "Send diagnostics" affordance.
+The target, keyed on the code's registry attributes once a code reaches the UI:
+
+- **`transient`:** small unobtrusive toast, auto-dismiss, no action.
+- **`user` or `permanent`, resolvable by the user:** persistent banner + button (e.g. "Sign in again" for `INTEGRATION_REAUTH_REQUIRED`).
+- **`internal`:** modal-ish dialog with "Send diagnostics" affordance.
 
 ## Logging
 
-- Errors logged at `warn` (transient), `error` (user-action), `error` + `level=fatal` (fatal).
+- Errors logged at `warn` (`transient`) and `error` (every other kind).
 - Logs include code + diagnostic + a span ID; never include `Plain<T>` content.
 
 ## Recovery
@@ -81,20 +71,20 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors whose code the registry gives `kind: transient` AND `retryable: true` (`crates/sunrise-error/codes.toml`; `CoreError` itself carries neither), and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
+Applies only to errors whose code the registry gives `kind: transient` AND `retryable: true` (`crates/sunrise-error/codes.toml`; no error value carries either), and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
 
 **Target state, not built.** The core has no `catch_unwind`, the release profile in the root `Cargo.toml` sets `panic = "abort"`, and the crash report does not exist ([`telemetry-and-privacy.md`](./telemetry-and-privacy.md)). A panic in a release build ends the process. The target is:
 
-- Rust panics in the core are caught at the FFI boundary and surfaced as `CoreError(FATAL_INTERNAL, …)` rather than crashing the host.
+- Rust panics in the core are caught at the FFI boundary and surfaced as a `FATAL_INTERNAL` error rather than crashing the host.
 - A panic generates a crash report (off-by-default; user opt-in for delivery).
 
 ## Validation errors
 
 Validation runs at the command boundary in the core and returns `VALIDATION_*` codes.
 
-**The structured shape below is target state, not built.** Today `CoreError.diagnostic` is a `String` and `CoreError` has no `kind` or `retryable` field; those two are per-code registry attributes. `ValidationError::Field` (`crates/sunrise-domain/src/validation.rs#ValidationError`) carries a `field` and a `constraint` and no operands. The target is:
+**The structured shape below is target state, not built.** Today a validation error reaches a client as `BindingError`'s message, a `String`, with no `code`, `kind` or `retryable` field; the last two are per-code registry attributes. `ValidationError::Field` (`crates/sunrise-domain/src/validation.rs#ValidationError`) carries a `field` and a `constraint` and no operands. The target is:
 
 - Validation errors carry a structured `diagnostic` object.
 - UI surfaces inline at the offending field, keying off `diagnostic.field`.

@@ -306,14 +306,19 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     // C is an ordinary member that will be sealed every epoch this replica
     // mints. #282 closed the systematic case, a joiner that paired with
     // nothing (`a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops`
-    // below). These two replicas already exist, and closing
-    // [#411](https://github.com/justin13888/Sunrise/issues/411) means they
-    // become equal and these assertions turn red — which is the point of
-    // writing them down rather than leaving the gap undiscovered.
+    // below). These two replicas already exist. Where the holder signs
+    // `A -> C` (ADR-0058) they become equal:
+    // `the_read_bound_is_the_same_whichever_order_an_authority_revocation_arrives`
+    // in `revocation_authority.rs` asserts it
+    // ([#411](https://github.com/justin13888/Sunrise/issues/411)). Here
+    // `A -> C` is an ordinary row, and closing
+    // [#1167](https://github.com/justin13888/Sunrise/issues/1167) means these
+    // assertions turn red, which is the point of writing them down rather than
+    // leaving the gap undiscovered.
     assert_eq!(
         read_bound_row(&one, &c_id),
         None,
-        "known gap (#411): the replica that learned of A's own revocation first \
+        "known gap (#1167): the replica that learned of A's own revocation first \
          never bounds C, so it goes on sealing C every epoch it mints"
     );
     assert!(

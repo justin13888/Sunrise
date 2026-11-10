@@ -6,16 +6,20 @@
 //! any of it. It supplies the two things `tracing` has no opinion about and
 //! an end-to-end-encrypted app cannot get wrong:
 //!
-//! 1. **[`Plain<T>`]** — a wrapper for plaintext user data that implements no
-//!    `Display`, no `serde::Serialize`, and no `tracing::Value`, and whose
-//!    `Debug` prints `Plain<…>`. It cannot be formatted into a log record as
-//!    anything but that literal string, through any tracing path. Reading the
-//!    value needs an explicit `.expose()`, which CI forbids inside logging,
-//!    telemetry, and observability surfaces.
-//! 2. **[`RedactionLayer`]** — a `tracing` layer that vetoes any event from a
-//!    `sunrise_*` target carrying a field name outside the
-//!    [`field::ALLOWED`] vocabulary. This is what catches the value that was
-//!    `.expose()`d somewhere legitimate and then logged.
+//! 1. **[`RedactionLayer`]** — the plaintext control. A `tracing` layer that
+//!    vetoes any event from a `sunrise_*` target carrying a field name outside
+//!    the [`field::ALLOWED`] vocabulary. It holds for every value, wrapped or
+//!    not, including one that was `.expose()`d somewhere legitimate and then
+//!    logged.
+//! 2. **[`Plain<T>`]** — an optional guard, for a crate that wants a value kept
+//!    off the value path by the type system. It implements no `Display`, no
+//!    `serde::Serialize`, and no `tracing::Value`, and its `Debug` prints
+//!    `Plain<…>`, so it cannot be formatted into a log record as anything but
+//!    that literal string, through any tracing path. Reading the value needs
+//!    an explicit `.expose()`, which CI forbids inside logging, telemetry, and
+//!    observability surfaces. No crate outside this one wraps a value in it
+//!    today; `docs/10-cross-cutting/logging.md` §6.3 records why the layer, not
+//!    the wrapper, is the control.
 //!
 //! Around those sit the pieces a subscriber needs and `tracing-subscriber`
 //! deliberately leaves to the application: [`init()`] assembles the stack,
