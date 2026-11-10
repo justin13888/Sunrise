@@ -1501,3 +1501,141 @@ fn a_this_and_future_delete_names_the_tombstone_it_wrote() {
     assert_eq!(res.events, vec![DomainEvent::Deleted(id)]);
     assert!(read_block(db.conn(), id.bytes()).unwrap().unwrap().deleted);
 }
+
+/// A series this build cannot expand shows no row, not even its anchor's,
+/// and the query still succeeds with the other blocks (decision 7 of #1164,
+/// ADR-0045 §6).
+#[test]
+fn a_series_that_cannot_be_expanded_yields_no_rows_and_no_anchor() {
+    let mut db = db();
+    let e = engine();
+    legacy_peer(&db);
+    let utc = jiff::tz::TimeZone::UTC;
+    let id = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                starts_at: SunriseTime::instant(at(4, 9).to_instant(&utc).unwrap()),
+                ends_at: SunriseTime::instant(at(4, 10).to_instant(&utc).unwrap()),
+                ..block_draft(9, 1, Some("Pinned"))
+            }),
+        )
+        .unwrap()
+        .entity;
+    let once = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(block_draft(14, 1, Some("Gym"))),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(day(&e, &db, 4).len(), 2, "a one-off instant block shows");
+    e.require_features(&mut db, &[BLOCK_RECURRENCE_FEATURE], true)
+        .unwrap();
+    // Another device's rule on an instant anchor, which has no wall-clock
+    // time to repeat, so `expand_block` refuses it.
+    recur(&e, &mut db, id, "FREQ=WEEKLY");
+    let series = read_block(db.conn(), id.bytes())
+        .unwrap()
+        .unwrap()
+        .series()
+        .expect("a recurring block");
+    let window = (
+        jiff::Timestamp::from_millisecond(march(1) as i64).unwrap(),
+        jiff::Timestamp::from_millisecond(march(28) as i64).unwrap(),
+    );
+    assert!(sunrise_domain::expand_block(&series, window, &utc).is_err());
+
+    assert_eq!(day(&e, &db, 4), vec![(once, Some("Gym".into()), None)]);
+    assert!(day(&e, &db, 11).is_empty());
+}
+
+/// Block reminders are planned per occurrence: a weekly block fires once a
+/// week in the horizon, the block lead before each occurrence's start, and a
+/// cancelled week fires nothing.
+#[test]
+fn a_recurring_block_is_reminded_once_per_occurrence() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::This { key: key(11) },
+        },
+    )
+    .unwrap();
+    let now = march(1);
+    let plan = e
+        .reminder_plan(
+            &db,
+            now,
+            now + 28 * 86_400_000,
+            &sunrise_domain::ReminderSettings::default(),
+        )
+        .unwrap();
+    let fires: Vec<_> = plan
+        .intents
+        .iter()
+        .filter(|i| i.entity == id)
+        .map(|i| (i.kind, i.fire_at, i.title.clone()))
+        .collect();
+    let utc = jiff::tz::TimeZone::UTC;
+    let lead = jiff::SignedDuration::from_secs(i64::from(sunrise_domain::BLOCK_DEFAULT_LEAD_S));
+    let expected: Vec<_> = [4, 18, 25]
+        .into_iter()
+        .map(|d| {
+            (
+                sunrise_domain::ReminderKind::Block,
+                at(d, 9).to_instant(&utc).unwrap() - lead,
+                "Standup".to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(fires, expected);
+}
+
+/// Upcoming lists a recurring block on each day it occurs, read at that
+/// occurrence, and on no other day.
+#[test]
+fn upcoming_lists_a_recurring_block_on_each_day_it_occurs() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    e.apply(
+        &mut db,
+        scoped_update(id, EditScope::This { key: key(11) }, retitle("Planning")),
+    )
+    .unwrap();
+    let QueryResult::Upcoming(v) = e
+        .query(
+            &db,
+            Query::Upcoming {
+                now_ms: march(3),
+                span_days: Some(14),
+                contexts: vec![],
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected Upcoming");
+    };
+    let shown: Vec<_> = v
+        .days
+        .iter()
+        .flat_map(|d| {
+            d.blocks
+                .iter()
+                .map(move |b| (d.date, b.title.clone(), b.occurrence_key.clone()))
+        })
+        .collect();
+    let on = |d: i8| jiff::civil::date(2026, 3, d);
+    assert_eq!(
+        shown,
+        vec![
+            (on(4), Some("Standup".into()), Some(key(4))),
+            (on(11), Some("Planning".into()), Some(key(11))),
+        ]
+    );
+}

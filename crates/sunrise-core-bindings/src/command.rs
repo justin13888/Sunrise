@@ -572,3 +572,66 @@ impl From<DeviceRevokeReason> for sunrise_core::RevokeReason {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CoreCommand;
+    use crate::dto::{BlockEdit, EditScopeIn};
+    use sunrise_core::Command;
+    use sunrise_domain::EditScope;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    const KEY: &str = "2026-03-11T09:00";
+
+    fn lower(cmd: CoreCommand) -> Command {
+        cmd.into_core().expect("lowers")
+    }
+
+    /// Each `EditScopeIn` a block edit or delete carries reaches the core's
+    /// command as the same scope, and an absent one is the whole block.
+    #[test]
+    fn a_block_commands_scope_lowers_to_the_cores() {
+        let id = EntityRef::new(EntityKind::Block, [1; 16]);
+        let cases = [
+            (None, EditScope::All),
+            (Some(EditScopeIn::All), EditScope::All),
+            (
+                Some(EditScopeIn::This { key: KEY.into() }),
+                EditScope::This { key: KEY.into() },
+            ),
+            (
+                Some(EditScopeIn::ThisAndFuture { key: KEY.into() }),
+                EditScope::ThisAndFuture { key: KEY.into() },
+            ),
+        ];
+        for (given, want) in cases {
+            let edit = BlockEdit {
+                set_title: Some("Retro".into()),
+                scope: given.clone(),
+                ..BlockEdit::default()
+            };
+            match lower(CoreCommand::UpdateBlock { id, edit }) {
+                Command::UpdateBlock {
+                    id: got,
+                    scope,
+                    patch,
+                } => {
+                    assert_eq!(got, id);
+                    assert_eq!(scope, want, "edit scope {given:?}");
+                    assert_eq!(patch.title, Some(Some("Retro".into())));
+                }
+                other => panic!("expected UpdateBlock, got {other:?}"),
+            }
+            match lower(CoreCommand::DeleteBlock {
+                id,
+                scope: given.clone(),
+            }) {
+                Command::DeleteBlock { id: got, scope } => {
+                    assert_eq!(got, id);
+                    assert_eq!(scope, want, "delete scope {given:?}");
+                }
+                other => panic!("expected DeleteBlock, got {other:?}"),
+            }
+        }
+    }
+}

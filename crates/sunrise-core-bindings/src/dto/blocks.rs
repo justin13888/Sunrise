@@ -511,4 +511,22 @@ mod tests {
         assert_eq!(back.exceptions, b.exceptions);
         assert_eq!(back.source, b.source);
     }
+
+    /// An occurrence row crosses with its key, and a one-off row with none.
+    #[test]
+    fn a_grid_rows_occurrence_key_crosses() {
+        let row = |occurrence_key: Option<String>| sunrise_core::queries::BlockRow {
+            block: block(None, None),
+            title: Some("Standup".into()),
+            task_titles: Vec::new(),
+            occurrence_key,
+        };
+        let occurrence = super::BlockGridRow::from(&row(Some("2026-03-11T09:00".into())));
+        assert_eq!(
+            occurrence.occurrence_key.as_deref(),
+            Some("2026-03-11T09:00")
+        );
+        assert_eq!(occurrence.title.as_deref(), Some("Standup"));
+        assert_eq!(super::BlockGridRow::from(&row(None)).occurrence_key, None);
+    }
 }
