@@ -1416,3 +1416,88 @@ fn a_split_continuation_keeps_the_title_a_bound_task_lent_the_series() {
     assert!(continuation.tasks.is_empty());
     assert!(!continuation.title_track_task);
 }
+
+/// A split names what it wrote: the continuation made and the series
+/// ended. A continuation tombstoned before is written back, an update.
+#[test]
+fn a_split_names_the_continuation_it_made_and_the_block_it_ended() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let split = |db: &mut Db, title: &str| {
+        e.apply(
+            db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(18) },
+                retitle(title),
+            ),
+        )
+        .unwrap()
+    };
+    let res = split(&mut db, "Retro");
+    let next = split_block_id(&id, &key(18));
+    assert_eq!(
+        res.events,
+        vec![DomainEvent::Created(next), DomainEvent::Updated(id)]
+    );
+
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id: next,
+            scope: EditScope::All,
+        },
+    )
+    .unwrap();
+    // A concurrent edit of the whole series that won its rule back, so the
+    // key is an occurrence of it again.
+    recur(&e, &mut db, id, "FREQ=WEEKLY");
+    let res = split(&mut db, "Review");
+    assert_eq!(
+        res.events,
+        vec![DomainEvent::Updated(next), DomainEvent::Updated(id)]
+    );
+    assert!(
+        !read_block(db.conn(), next.bytes())
+            .unwrap()
+            .unwrap()
+            .deleted
+    );
+}
+
+/// A *this and future* delete names the block deleted when it tombstoned
+/// it (at the first occurrence) and leaves the default, an update, when it
+/// only ended the series. An edit that is one of the whole block names
+/// nothing of its own.
+#[test]
+fn a_this_and_future_delete_names_the_tombstone_it_wrote() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let end = |db: &mut Db, k: String| {
+        e.apply(
+            db,
+            Command::DeleteBlock {
+                id,
+                scope: EditScope::ThisAndFuture { key: k },
+            },
+        )
+        .unwrap()
+    };
+    let res = end(&mut db, key(18));
+    assert!(res.events.is_empty());
+    assert!(!read_block(db.conn(), id.bytes()).unwrap().unwrap().deleted);
+
+    let res = e
+        .apply(
+            &mut db,
+            scoped_update(id, EditScope::ThisAndFuture { key: key(4) }, retitle("x")),
+        )
+        .unwrap();
+    assert!(res.events.is_empty());
+
+    let res = end(&mut db, key(4));
+    assert_eq!(res.events, vec![DomainEvent::Deleted(id)]);
+    assert!(read_block(db.conn(), id.bytes()).unwrap().unwrap().deleted);
+}

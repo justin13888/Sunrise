@@ -1,6 +1,7 @@
 //! Command type submitted via [`crate::Core::submit`].
 
 use crate::control_op::RevokeReason;
+use crate::events::DomainEvent;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, EditScope,
@@ -848,6 +849,13 @@ pub struct CommandResult {
     /// being revoked is often the one the user lost.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authority_awaits_update: Vec<String>,
+    /// The change events this write publishes, when the command alone does
+    /// not say what it changed: a recurring block's *this and future* scope
+    /// can split the series, tombstone the block or only end it. Empty for
+    /// every other command, whose events [`crate::Core::submit`] reads off
+    /// the command itself. Not serialized: it is this process's to publish.
+    #[serde(skip)]
+    pub events: Vec<DomainEvent>,
 }
 
 impl CommandResult {
@@ -871,7 +879,16 @@ impl CommandResult {
             revocation_unwound: Vec::new(),
             revoked_by_authority: false,
             authority_awaits_update: Vec::new(),
+            events: Vec::new(),
         }
+    }
+
+    /// Name the change events this write publishes, in place of those read
+    /// off its command.
+    #[must_use]
+    pub fn with_events(mut self, events: Vec<DomainEvent>) -> Self {
+        self.events = events;
+        self
     }
 
     /// Record whether a revocation was signed by the account identity, and

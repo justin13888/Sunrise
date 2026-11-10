@@ -344,6 +344,9 @@ impl From<&CommandResult> for CommandOutcome {
             // `DeviceListRow` gives for `revoked_by_authority`.
             revoked_by_authority: _,
             authority_awaits_update: _,
+            // What the core publishes on its change stream, which the seam
+            // relays from there rather than from the result.
+            events: _,
         } = r;
         Self {
             entity: *entity,

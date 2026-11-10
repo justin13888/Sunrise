@@ -20,6 +20,7 @@ use super::task::read_task;
 use super::write::Appended;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
+use crate::events::DomainEvent;
 use crate::inner_op::InnerOp;
 use crate::queries::{BlockRow, QueryResult};
 use rusqlite::{params, OptionalExtension};
@@ -351,7 +352,9 @@ impl Engine {
         let Some(ended) = split.ended else {
             return match patch {
                 Some(patch) => self.edit_block(db, id, patch),
-                None => self.delete_block(db, id, EditScope::All),
+                None => Ok(self
+                    .delete_block(db, id, EditScope::All)?
+                    .with_events(vec![DomainEvent::Deleted(id)])),
             };
         };
         let tz = self.device_zone();
@@ -409,12 +412,16 @@ impl Engine {
         let created = done
             .first()
             .ok_or_else(|| EngineError::Invalid("a split wrote nothing".into()))?;
-        Ok(CommandResult::new(
-            continues,
-            None,
-            created.op_id,
-            created.seq,
-        ))
+        // A continuation tombstoned before is written back, not made.
+        let continued = if existing.is_some() {
+            DomainEvent::Updated(continues)
+        } else {
+            DomainEvent::Created(continues)
+        };
+        Ok(
+            CommandResult::new(continues, None, created.op_id, created.seq)
+                .with_events(vec![continued, DomainEvent::Updated(id)]),
+        )
     }
 
     /// [`Command::DeleteBlock`](crate::commands::Command::DeleteBlock), as
