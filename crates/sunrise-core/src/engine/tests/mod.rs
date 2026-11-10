@@ -253,3 +253,6 @@ mod unknown_values;
 
 /// The weekly and daily reviews, their snapshots and the exports.
 mod reviews;
+
+/// The planner seam: preview a gesture, commit exactly the diff (#343).
+mod plan_diff;

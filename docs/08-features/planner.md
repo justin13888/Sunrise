@@ -11,10 +11,53 @@ and committed exactly as previewed when it ends.
 reasoning; this page is the contract. [#343](https://github.com/justin13888/Sunrise/issues/343) builds the solver and the seam,
 and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client surfaces.
 
-> **Status: not built.** No solver, no `plan_preview` and no `PlanDiff` exist
-> in the tree. Calendar drags are resolved in Swift by `BlockDrag`
-> (`apps/apple/Sunrise/Calendar/BlockLayout.swift:182`), which this page
-> retires.
+> **Status: solver and seam built ([#343](https://github.com/justin13888/Sunrise/issues/343)); no client uses them yet.**
+> `sunrise_domain::planner::solve` is the solver, `Core::plan_preview`,
+> `Core::plan_commit` and `Core::plan_cancel` are the seam, and all three
+> cross UniFFI (`crates/sunrise-core-bindings/src/planner.rs`). Calendar drags
+> are still resolved in Swift by `BlockDrag`
+> (`apps/apple/Sunrise/Calendar/BlockLayout.swift:182`) until
+> [#344](https://github.com/justin13888/Sunrise/issues/344) moves them onto the
+> seam. What this build does differently from the contract below:
+>
+> - `plan_preview` takes only the intent: `now` is the core's clock and the
+>   zone is the reader's zone every query reads in. The commit recomputes the
+>   base at the preview's `now`, so it refuses only when an input row changed.
+> - `PlanBase` digests the planner inputs themselves (every field the solve
+>   reads, independent of order), not each row's HLC: an edit to a field the
+>   planner does not read, such as a title, does not make a diff stale.
+> - `solve` returns `Result`: an intent naming an item the inputs do not hold,
+>   or the wrong kind, is an error rather than a diff.
+> - Every block is `fixed`: a Block carries a fixed/flexible kind
+>   ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the
+>   planner deliberately still treats every block as fixed; honouring the kind
+>   is tracked in [#1184](https://github.com/justin13888/Sunrise/issues/1184).
+>   There are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
+>   A task bound to a block is not placed on its own.
+> - `Unschedule` takes tasks only.
+> - `AutoPlace` and `BulkDefer { place: true }` place each listed task in the
+>   first free slot at or after `max(wake, now, not_before)`, in order, and
+>   move nothing else.
+> - No Place annotation is produced (it is optional, §Places), and there is no
+>   per-gesture day-line cache: each preview gathers its days afresh.
+> - `committable` is false only for a Blocking violation the diff introduces
+>   or one standing on an item it writes. A hard constraint already broken on
+>   an item the gesture leaves alone is reported (§Hard and soft in
+>   `scheduling-constraints.md` only flags it) and refuses nothing.
+> - The ripple search branches over at most 4 snapped candidate slots per
+>   item besides unscheduling it (`BRANCH` in `planner/search.rs`): the best
+>   by the objective among those generated outward until four are clean.
+> - UniFFI carries `NotCommittable` and `Invalid` as one
+>   `BindingError::PlanRefused(String)`, whose message names which; `Stale`
+>   and `Unknown` keep their own variants, and `Closed` and `Engine` cross as
+>   `BindingError::Core`. A client knows a refused drop before committing it
+>   from the diff's `committable`. `PlanError::code` also answers
+>   `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`, `PLAN_CLOSED` and `PLAN_FAILED`,
+>   which the error-code registry does not list yet; it gains `PLAN_STALE`
+>   and `PLAN_UNKNOWN` with
+>   [#1159](https://github.com/justin13888/Sunrise/issues/1159).
+> - `plan_undo` and the stored inverse are [#1158](https://github.com/justin13888/Sunrise/issues/1158);
+>   `plan_commit` returns only how many items it moved.
 
 ## Principles
 
@@ -213,9 +256,11 @@ pub enum PlanError {
 }
 ```
 
-The error codes `PLAN_STALE` and `PLAN_UNKNOWN` join the error-code registry
+`PlanError::code` answers `PLAN_STALE` and `PLAN_UNKNOWN`, and UniFFI carries
+them as `BindingError::PlanStale` and `BindingError::PlanUnknown`. They join the
+error-code registry
 ([`../10-cross-cutting/error-handling.md`](../10-cross-cutting/error-handling.md))
-when [#343](https://github.com/justin13888/Sunrise/issues/343) lands.
+with [#1159](https://github.com/justin13888/Sunrise/issues/1159).
 
 ## Inputs
 
@@ -251,7 +296,7 @@ pub struct PlannerDay {
 | Task `blocked_by` | [`../02-domain/tasks.md`](../02-domain/tasks.md) | Ordering: a task starts no earlier than each timed blocker's end (`BeforeBlocker`, Hard). An untimed blocker gives `Info`. |
 | Task `scheduling_constraints` | [`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) | A `hard` time dimension (time of day, day of week, date range) is **Blocking**; a `soft` one is Soft |
 | Task Place requirement | [ADR-0051](../11-adr/0051-places.md) | Not a placement input: an `Info` annotation only (§Places below) |
-| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. Until the field exists, every block is `fixed`. |
+| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. Blocks carry the kind ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the planner still treats every block as `fixed` until [#1184](https://github.com/justin13888/Sunrise/issues/1184) honours it. |
 | Tasks bound to a block | `Block.tasks` | Move with their block; they are not placed independently |
 | External events | [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md) | Always fixed. An event whose busy treatment is `free` is drawn and never blocks. |
 | Day schedule | [ADR-0050](../11-adr/0050-preferences-and-day-schedule.md), [`../02-domain/day-schedule.md`](../02-domain/day-schedule.md) | Each planner day's **plannable window** `plannable(d)`, wake to sleep; civil midnight to midnight when unset |
@@ -422,8 +467,10 @@ for the typical week defined in
 [`../10-cross-cutting/performance-budgets.md`](../10-cross-cutting/performance-budgets.md)
 §Planner preview (200 open tasks, 60 blocks, 40 external events, 20
 dependencies). The bench `plan_preview` in `sunrise-bench` measures a
-single-block move with a three-item ripple, a cross-day move, and an
-`AutoPlace` of 20 tasks over that fixture, and joins the baseline set.
+single-block move dropped onto three tasks (the ripple chains through the
+day's own tasks), a cross-day move, and an `AutoPlace` of 20 tasks over that
+fixture, and joins the baseline set; the measured figures are in
+`performance-budgets.md` §Planner preview.
 
 ## Tests
 

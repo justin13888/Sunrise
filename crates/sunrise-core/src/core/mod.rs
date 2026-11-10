@@ -158,6 +158,11 @@ pub struct Core {
     /// empty at every open and rebuilt from the OS's region state, and
     /// emptied again at shutdown. See [`Core::on_place_presence`].
     place_presence: Mutex<sunrise_domain::Presence>,
+    /// The planner's most recent previews, by diff id, for
+    /// [`Core::plan_commit`] (`docs/08-features/planner.md` §Core seam).
+    /// Memory only: emptied at shutdown, so a reopened vault answers
+    /// `PLAN_UNKNOWN` and the client previews again.
+    plans: Mutex<planner::PlanCache>,
     closed: Mutex<bool>,
 }
 
@@ -184,6 +189,8 @@ impl Core {
 
     /// The open behind [`Self::open`] and [`Self::open_repairing`], and what
     /// a repair's rebuild did.
+    // One open, in order: it initialises every field of `Core`, one line each.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn open_as(
         cfg: CoreConfig,
         unlock: Unlock,
@@ -378,6 +385,7 @@ impl Core {
             restored_from_code,
             reader_clock,
             place_presence: Mutex::new(sunrise_domain::Presence::new()),
+            plans: Mutex::new(planner::PlanCache::default()),
             closed: Mutex::new(false),
         };
         // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
@@ -798,6 +806,7 @@ impl Core {
     pub async fn shutdown(&self) {
         *self.closed.lock() = true;
         self.place_presence.lock().clear();
+        self.plans.lock().clear();
         self.sync_shared.request_shutdown();
         let handle = self.sync_handle.lock().take();
         if let Some(h) = handle {
@@ -1618,79 +1627,6 @@ impl Core {
             tokio::task::yield_now().await;
         }
     }
-
-    /// The latest snapshot record of `stream_id` this vault wrote or applied,
-    /// verbatim: what a new device bootstraps that stream from.
-    ///
-    /// # Errors
-    /// [`CoreError::Closed`] after close; storage failures.
-    pub fn stream_snapshot(&self, stream_id: [u8; 16]) -> Result<Option<Vec<u8>>, CoreError> {
-        self.ensure_open()?;
-        let db = self.db.lock();
-        Ok(self.engine.stream_snapshot(&db, &stream_id)?)
-    }
-
-    /// Apply a snapshot record another device wrote, and broadcast what it
-    /// changed on `changes()`. See [`Engine::apply_snapshot`] for the checks
-    /// and for what each outcome means.
-    ///
-    /// # Errors
-    /// [`CoreError::Closed`] after close; [`EngineError::Invalid`] for a
-    /// record that is malformed, forged or of another history; storage
-    /// failures.
-    pub fn apply_stream_snapshot(
-        &self,
-        record: &[u8],
-    ) -> Result<crate::engine::SnapshotApplied, CoreError> {
-        self.ensure_open()?;
-        let (outcome, events) = {
-            let mut db = self.db.lock();
-            self.engine.apply_snapshot(&mut db, record)?
-        };
-        for ev in events {
-            let _ = self.changes_tx.send(ev);
-        }
-        Ok(outcome)
-    }
-}
-
-impl Core {
-    /// The snapshot records this replica should publish now (ADR-0068): each
-    /// stream's latest record held here that this replica wrote, while it is
-    /// that stream's compactor, unless this process already saw the relay pin
-    /// it.
-    ///
-    /// # Errors
-    /// [`CoreError::Closed`] after close; storage failures.
-    pub(crate) fn snapshots_to_publish(
-        &self,
-    ) -> Result<Vec<crate::snapshot_sync::Publishable>, CoreError> {
-        self.ensure_open()?;
-        let policy = *self.compaction_policy.lock();
-        let mut db = self.db.lock();
-        let own = self.engine.own_stream_snapshots(&db)?;
-        let published = self.published_snapshots.lock().clone();
-        let mut out = Vec::new();
-        for (stream, record) in own {
-            let blob_id = crate::snapshot_sync::blob_id_of(&record);
-            if published.get(&stream) == Some(&blob_id) {
-                continue;
-            }
-            if self.engine.is_stream_compactor(&mut db, &stream, &policy)? {
-                out.push(crate::snapshot_sync::Publishable {
-                    stream,
-                    blob_id,
-                    record,
-                });
-            }
-        }
-        Ok(out)
-    }
-
-    /// Remember that the relay pins `blob_id` as `stream`'s snapshot record.
-    pub(crate) fn note_snapshot_published(&self, stream: [u8; 16], blob_id: [u8; 16]) {
-        self.published_snapshots.lock().insert(stream, blob_id);
-    }
 }
 
 impl Drop for Core {
@@ -1771,8 +1707,11 @@ mod identity_chain;
 mod key_bundle;
 mod notify;
 mod place;
+mod planner;
 mod repair;
+mod snapshot;
 
+pub use planner::{PlanCommitResult, PLAN_CACHE_SIZE};
 pub(crate) use repair::OpenMode;
 
 #[cfg(test)]

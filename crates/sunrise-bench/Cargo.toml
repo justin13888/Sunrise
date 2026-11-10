@@ -44,6 +44,7 @@ sunrise-server = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 sunrise-wire-protocol = { workspace = true }
 sunrise-cbor = { workspace = true }
+sunrise-id = { workspace = true }
 
 [[bench]]
 name = "submit"
@@ -75,4 +76,8 @@ harness = false
 
 [[bench]]
 name = "rebuild"
+harness = false
+
+[[bench]]
+name = "plan_preview"
 harness = false

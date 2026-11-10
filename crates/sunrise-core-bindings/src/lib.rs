@@ -78,6 +78,7 @@ pub mod notifications;
 pub mod pairing;
 pub mod pairing_relay;
 pub mod places;
+pub mod planner;
 pub mod print;
 pub mod query;
 pub mod recovery;
@@ -329,6 +330,19 @@ pub enum BindingError {
     /// Something else has the vault open (`STORAGE_VAULT_LOCKED`).
     #[error("core: {0}")]
     VaultBusy(String),
+    /// `PLAN_STALE`: an input the previewed diff was solved from changed
+    /// before the commit. Nothing was written; preview again.
+    #[error("PLAN_STALE: the plan's inputs changed since it was previewed")]
+    PlanStale,
+    /// `PLAN_UNKNOWN`: the diff is not remembered (evicted, cancelled,
+    /// already committed, or the vault reopened). Nothing was written;
+    /// preview again.
+    #[error("PLAN_UNKNOWN: no such plan is remembered")]
+    PlanUnknown,
+    /// The planner refused the gesture: a diff with a Blocking violation, or
+    /// an intent naming nothing the vault holds. Carries the core's words.
+    #[error("plan: {0}")]
+    PlanRefused(String),
 }
 
 impl From<sunrise_integrations::IntegrationError> for BindingError {

@@ -105,6 +105,7 @@ mod merge;
 mod notify;
 mod oplog;
 mod park;
+mod planner;
 mod preferences;
 mod query;
 mod rebuild;
@@ -139,6 +140,7 @@ pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
 use self::lww::LwwStamp;
 #[cfg(test)]
 pub(crate) use self::merge::FOLD_V;
+pub use self::planner::PlanError;
 pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
 #[cfg(test)]
 pub(crate) use self::rebuild::check::{
