@@ -83,7 +83,10 @@ final class BackgroundHost {
     }
 
     private static func replanReminders(from bridge: CoreBridge) async {
-        let reminders = ReminderScheduler(bridge: bridge, preferences: NotificationPreferences()) { _ in }
+        let preferences = NotificationPreferences()
+        // Read from the vault before planning: unbound, they are the defaults.
+        await preferences.bind(to: bridge)
+        let reminders = ReminderScheduler(bridge: bridge, preferences: preferences) { _ in }
         await reminders.refreshAuthorization()
         await reminders.reconcile()
     }

@@ -131,8 +131,8 @@ What exists today, read from the tree:
   them, with the revision stored in each request's `userInfo` and the ledger
   kept per vault in `UserDefaults`; wind-down from
   `SunriseCore::wind_down_plan`; and the reminders, still planned in Swift
-  from `Query::ReminderIntents` under the `UserDefaults` settings until #489
-  moves them, with a kind switched off left out and the cap shared with the
+  from `Query::ReminderIntents` under the settings `NotificationPreferences`
+  reads from the vault's preferences (#489), with a kind switched off left out and the cap shared with the
   first two. The master switch and the primary-device flag those settings hold
   also gate the catalog: off plans nothing, and a device that is not primary
   keeps only the kinds every device shows. A category is registered per kind
@@ -203,8 +203,10 @@ What exists today, read from the tree:
   move (`crates/sunrise-client-core/src/preferences/legacy.rs`,
   [#489](https://github.com/justin13888/Sunrise/issues/489)). An unset
   primary register reads as primary and asks the client to claim it. The
-  Apple client still builds `ReminderSettings` from `UserDefaults` until it
-  adopts these, and the planner itself does not read the keys yet
+  Apple client reads these through `reminder_policy` when a vault opens, runs
+  that one-time move on the same bind, and writes each edit to this device's
+  overlay (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift`);
+  the planner itself does not read the keys yet
   ([#347](https://github.com/justin13888/Sunrise/issues/347)): the
   `block_start.lead_s` floor in particular is still the domain's constant.
 - **On iOS**, on-event kinds need a background wake. The scheduler reconciles

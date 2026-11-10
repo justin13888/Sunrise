@@ -150,6 +150,17 @@ actor CoreBridge {
         try await core.previewCapture(text: text, tz: timeZone)
     }
 
+    /// This device's notification preferences, as the reminder planner reads them.
+    func reminderPolicy() async throws -> ReminderPolicyItem { try await core.reminderPolicy() }
+
+    /// Make this device the account's primary reminder device.
+    func claimPrimaryReminderDevice() async throws { try await core.claimPrimaryReminderDevice() }
+
+    /// Move old `UserDefaults` values into this vault and `directory`. Idempotent.
+    func migrateLegacyDefaults(_ old: [LegacyDefault], directory: URL) async throws -> LegacyMigrationReport {
+        try await core.migrateLegacyDefaults(dir: directory.path(percentEncoded: false), defaults: old)
+    }
+
     /// The core's clock. One reading should drive a whole screen, so that two
     /// rows in the same list cannot disagree about what "today" is.
     func nowMs() -> UInt64 { core.nowMs() }

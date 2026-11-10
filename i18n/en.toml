@@ -172,6 +172,10 @@ oidc_issuer = "OIDC issuer"
 client_id = "Client ID"
 # Settings, Account: label beside this device's id.
 this_device = "This device"
+# Settings, Sync and Account: under the relay or issuer field when the typed
+# address was not saved. {reason} is the error. Must keep that the address
+# saved before it is still the one in use.
+not_saved = "Not saved, so the address saved before is still in use: {reason}"
 
 [apple.account.quick_capture]
 # macOS Settings: the heading of the global capture shortcut section.
@@ -221,6 +225,10 @@ lead_minutes = "{minutes, plural, one {# minute before} other {# minutes before}
 lead_caption = "The fallback. A lead time set on a task wins over one set on its stream, and either wins over this."
 # Label beside the number of reminders the system is holding right now.
 scheduled_now = "Scheduled now"
+# Under the primary-device caption when the settings could not be read from or
+# written to the vault. {reason} is the error. Must keep that the values shown
+# may not be the ones in effect.
+not_stored = "These settings could not be read or saved, so the ones shown may not be in effect: {reason}"
 
 [apple.account.notification_kinds]
 # Settings: the heading of the section that turns each kind of notification on

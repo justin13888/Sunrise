@@ -62,7 +62,7 @@ extension SessionModel {
     /// the window that called this leaves it running, and only letting go of
     /// the vault ends it.
     ///
-    /// The settings are read afresh on every look, from the same defaults the
+    /// The settings are read afresh on every look, from the same files the
     /// Settings screen writes, so an issuer edited there is the one the next
     /// renewal asks. `every` and `sleep` are for tests.
     func renewSessionWhileOpen(
@@ -72,16 +72,24 @@ extension SessionModel {
         }
     ) {
         guard let bridge else { return }
-        let (account, defaults) = (account, settingsDefaults)
+        let (account, defaults, directory) = (account, settingsDefaults, settingsDirectory)
         renewal.start(against: bridge) {
             await account.renewWhileRunning(
-                issuer: { AppSettings(defaults: defaults).oidcIssuer },
-                clientID: { AppSettings(defaults: defaults).oidcClientID },
+                issuer: { AppSettings(defaults: defaults, directory: directory).oidcIssuer },
+                clientID: { AppSettings(defaults: defaults, directory: directory).oidcClientID },
                 now: { await bridge.nowMs() },
                 every: interval,
                 sleep: sleep,
                 tokenChanged: { await bridge.setSyncCredential($0) }
             )
         }
+    }
+
+    /// This device's settings as they stand now, read afresh: the Settings
+    /// screen edits its own instance, and an edit made there since launch is
+    /// the one every reader here must see. Here rather than beside
+    /// ``settingsDirectory`` for the `file_length` reason above.
+    func currentSettings() -> AppSettings {
+        AppSettings(defaults: settingsDefaults, directory: settingsDirectory)
     }
 }

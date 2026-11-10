@@ -96,26 +96,190 @@ struct NotificationPreferencesTests {
         #expect(NotificationPreferences.civilTime(minutesPastMidnight: 1439) == "23:59:00")
     }
 
-    /// Settings are per device and never synced, so they must survive a
-    /// restart of the app on their own.
+    /// Settings live in the core's preferences, on this device's overlay, so
+    /// they survive a restart of the app: a second object bound to the same
+    /// vault reads back what the first wrote.
     @Test
-    func settingsPersistAcrossARestart() {
-        let name = "sunrise-tests-\(UUID().uuidString)"
+    func settingsPersistAcrossARestartThroughTheCore() async throws {
+        let vault = try await TestVault()
+        let (first, name) = preferences()
         defer { discard(name) }
-        guard let defaults = UserDefaults(suiteName: name) else {
-            Issue.record("scratch defaults")
-            return
-        }
 
-        let first = NotificationPreferences(defaults: defaults)
-        first.isPrimaryDevice = false
+        await first.bind(to: vault.bridge)
+        #expect(first.isPrimaryDevice)
+        let claimed = try await preferenceItems(in: vault.bridge)["notifications.primary_device"]
+        #expect(claimed != nil, "an unset register is claimed")
+        first.isEnabled = false
         first.leadMinutes = 30
         first.quietHoursEnabled = true
+        first.quietPolicyIsDrop = true
+        await first.saved()
+        #expect(first.errorMessage == nil)
 
-        let second = NotificationPreferences(defaults: defaults)
-        #expect(!second.isPrimaryDevice)
+        let (second, other) = preferences()
+        defer { discard(other) }
+        await second.bind(to: vault.bridge)
+        #expect(!second.isEnabled)
         #expect(second.leadMinutes == 30)
         #expect(second.quietHoursEnabled)
+        #expect(second.quietStartMinutes == 22 * 60)
+        #expect(second.quietEndMinutes == 7 * 60)
+        #expect(second.quietPolicyIsDrop)
+        #expect(second.isPrimaryDevice)
+
+        let items = try await preferenceItems(in: vault.bridge)
+        #expect(items["notifications.task_reminder.lead_s"] == .uint(value: 1800))
+        #expect(items["notifications.enabled"] == .bool(value: false))
+
+        second.quietHoursEnabled = false
+        await second.saved()
+        let (third, last) = preferences()
+        defer { discard(last) }
+        await third.bind(to: vault.bridge)
+        #expect(!third.quietHoursEnabled, "turning quiet hours off clears this device's window")
+        await vault.bridge.shutdown()
+    }
+
+    /// Every key an earlier build kept in `UserDefaults` moves into the core
+    /// once, and is deleted: a second bind finds nothing left to move, and
+    /// reads the values back from the core alone.
+    @Test
+    func eachOldKeyMigratesOnceAndIsDeleted() async throws {
+        let vault = try await TestVault()
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        defer { discard(name) }
+        let defaults = try #require(UserDefaults(suiteName: name))
+        let old: [String: Any] = [
+            "notify.enabled": false,
+            "notify.isPrimaryDevice": true,
+            "notify.leadMinutes": 15,
+            "notify.quietHours.enabled": true,
+            "notify.quietHours.startMinutes": 23 * 60,
+            "notify.quietHours.endMinutes": 6 * 60 + 30,
+            "notify.quietHours.drop": true
+        ]
+        for (key, value) in old { defaults.set(value, forKey: key) }
+        defaults.set("{}", forKey: "notify.ledger.dev")
+
+        let first = NotificationPreferences(defaults: defaults)
+        #expect(Set(first.legacyValues().map(\.key)) == Set(old.keys))
+        await first.bind(to: vault.bridge)
+        #expect(first.errorMessage == nil)
+        for key in old.keys {
+            #expect(defaults.object(forKey: key) == nil, "\(key) is deleted once moved")
+        }
+        #expect(first.ledger(for: "dev") == "{}", "the ledger is device state and stays")
+        #expect(!first.isEnabled)
+        #expect(first.leadMinutes == 15)
+        #expect(first.quietHoursEnabled)
+        #expect(first.quietStartMinutes == 23 * 60)
+        #expect(first.quietEndMinutes == 6 * 60 + 30)
+        #expect(first.quietPolicyIsDrop)
+
+        let second = NotificationPreferences(defaults: defaults)
+        #expect(second.legacyValues().isEmpty, "nothing left to move")
+        await second.bind(to: vault.bridge)
+        #expect(!second.isEnabled)
+        #expect(second.leadMinutes == 15)
+        #expect(second.quietPolicyIsDrop)
+        await vault.bridge.shutdown()
+    }
+
+    /// Turning "primary device" on claims the register for this device, and
+    /// turning it off writes nothing: the register is read back, which, while
+    /// it names this device, turns the switch on again (Decision 3).
+    @Test
+    func thePrimarySwitchClaimsTheRegisterAndOffReadsItBack() async throws {
+        let vault = try await TestVault()
+        let (preferences, name) = preferences()
+        defer { discard(name) }
+
+        await preferences.bind(to: vault.bridge)
+        let mine = try #require(try await primaryRegister(in: vault.bridge), "an unset register is claimed")
+        let other = try await claimForAnotherDevice(like: mine, in: vault.bridge)
+        await preferences.bind(to: vault.bridge)
+        #expect(!preferences.isPrimaryDevice, "another device holds the register")
+
+        preferences.isPrimaryDevice = true
+        await preferences.saved()
+        #expect(preferences.errorMessage == nil)
+        #expect(try await primaryRegister(in: vault.bridge) == mine, "turning it on claims the register")
+        #expect(mine != other)
+
+        preferences.isPrimaryDevice = false
+        await preferences.saved()
+        #expect(preferences.errorMessage == nil)
+        #expect(preferences.isPrimaryDevice, "the register still names this device")
+        #expect(try await primaryRegister(in: vault.bridge) == mine, "turning it off writes nothing")
+        await vault.bridge.shutdown()
+    }
+
+    /// A re-read that fails is reported, not cleared by the save it ran in.
+    @Test
+    func aFailedReReadOfTheRegisterIsReported() async throws {
+        let vault = try await TestVault()
+        let (preferences, name) = preferences()
+        defer { discard(name) }
+
+        await preferences.bind(to: vault.bridge)
+        await vault.bridge.shutdown()
+        preferences.isPrimaryDevice = false
+        await preferences.saved()
+        #expect(preferences.errorMessage != nil)
+        #expect(preferences.refusal != nil, "the settings screen shows it")
+    }
+
+    /// An earlier build's switch saying another device is primary leaves the
+    /// register unclaimed on the bind that migrates it (Decision 4), rather
+    /// than taking it from whichever device that was.
+    @Test
+    func anOldSwitchOffLeavesTheRegisterUnclaimed() async throws {
+        let vault = try await TestVault()
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appending(path: name)
+        defer {
+            discard(name)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defaults.set(false, forKey: "notify.isPrimaryDevice")
+
+        let preferences = NotificationPreferences(defaults: defaults, directory: directory)
+        await preferences.bind(to: vault.bridge)
+        #expect(preferences.errorMessage == nil)
+        #expect(defaults.object(forKey: "notify.isPrimaryDevice") == nil, "the old key is deleted once moved")
+        #expect(try await primaryRegister(in: vault.bridge) == nil, "the register is left unclaimed")
+        await vault.bridge.shutdown()
+    }
+
+    /// The `notifications.primary_device` register's text, `nil` when unset.
+    private func primaryRegister(in bridge: CoreBridge) async throws -> String? {
+        let items = try await preferenceItems(in: bridge)
+        guard case let .text(value)? = items["notifications.primary_device"] else { return nil }
+        return value
+    }
+
+    /// Point the register at a device other than this one, as that device's
+    /// own claim would: `mine`'s kind prefix with another ULID.
+    private func claimForAnotherDevice(like mine: String, in bridge: CoreBridge) async throws -> String {
+        let other = String(mine.prefix(4)) + "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        let claim = CoreCommand.setPreference(
+            key: "notifications.primary_device",
+            value: .text(value: other),
+            target: .vault
+        )
+        _ = try await bridge.submit(claim)
+        return other
+    }
+
+    /// The core's preferences, by key, as `Query::Preferences` reads them.
+    private func preferenceItems(in bridge: CoreBridge) async throws -> [String: PreferenceValue] {
+        guard case let .preferences(items) = try await bridge.query(.preferences) else { return [:] }
+        var values: [String: PreferenceValue] = [:]
+        for item in items {
+            values[item.key] = item.value
+        }
+        return values
     }
 
     /// The one value a screen watches. Two reads of an unchanged object have
