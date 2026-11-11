@@ -20,6 +20,7 @@ use super::task::read_task;
 use super::write::Appended;
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
+use crate::events::DomainEvent;
 use crate::inner_op::InnerOp;
 use crate::queries::{BlockRow, QueryResult};
 use rusqlite::{params, OptionalExtension};
@@ -27,7 +28,8 @@ use std::collections::BTreeSet;
 use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    imported_block_id, Block, BlockDraft, BlockKind, BlockPatch, BlockSource, NoteBody,
+    expand_block, imported_block_id, split_block_id, Block, BlockDraft, BlockException, BlockKind,
+    BlockPatch, BlockSeries, BlockSource, EditScope, NoteBody, SplitError, ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -231,56 +233,233 @@ impl Engine {
         Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
 
+    /// [`Command::UpdateBlock`](crate::commands::Command::UpdateBlock), as
+    /// far as `scope` reaches.
     pub(super) fn update_block(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        scope: EditScope,
+        patch: BlockPatch,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Block)?;
+        patch.validate()?;
+        match scope {
+            EditScope::All => self.edit_block(db, id, patch),
+            EditScope::This { key } => self.edit_block_occurrence(db, id, &key, patch),
+            EditScope::ThisAndFuture { key } => self.split_block(db, id, &key, Some(patch)),
+        }
+    }
+
+    /// An edit of the whole block ([`EditScope::All`]): for a recurring
+    /// block, its series, whose anchor `starts_at` and `ends_at` are.
+    fn edit_block(
         &self,
         db: &mut Db,
         id: EntityRef,
         patch: BlockPatch,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Block)?;
-        let home = patch.stream_id.map(home_of).transpose()?;
-        patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
-        if let Some(s) = patch.starts_at {
-            block.starts_at = s;
-        }
-        if let Some(e) = patch.ends_at {
-            block.ends_at = e;
-        }
-        if let Some(t) = patch.title {
-            block.title = t.map(|s| s.trim().to_string());
-        }
-        if let Some(track) = patch.title_track_task {
-            block.title_track_task = track;
-        }
-        if let Some(home) = home {
-            block.stream_id = home;
-        }
+        apply_block_patch(&mut block, patch)?;
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&self.device_zone())?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(id, None, done.op_id, done.seq))
     }
 
-    /// Tombstone a Block. The op carries the Block's **whole state** with
-    /// `deleted` set and goes down [`Self::emit_block`] — the same path an
+    /// An edit of one occurrence ([`EditScope::This`]): written into that
+    /// occurrence's exception, over the fields it already overrides. A
+    /// cancelled occurrence is not there to edit.
+    fn edit_block_occurrence(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        key: &str,
+        patch: BlockPatch,
+    ) -> Result<CommandResult, EngineError> {
+        if !patch.is_occurrence_edit() {
+            return Err(EngineError::Invalid(
+                "an edit of one occurrence sets only its start, its end and its title".into(),
+            ));
+        }
+        let now_ms = self.clock.now_ms();
+        let (mut block, mut series) = recurring_block(db.conn(), id)?;
+        let mut exception = series.exceptions.get(key).cloned().unwrap_or_default();
+        if exception.cancelled {
+            return Err(EngineError::NotFound(format!(
+                "occurrence {key} of block {id} is cancelled"
+            )));
+        }
+        patch.apply_to_exception(&mut exception);
+        series
+            .except(key, exception.clone())
+            .map_err(|e| occurrence_error(id, e))?;
+        let (rule_start, rule_end) = series
+            .occurrence_bounds(key)
+            .ok_or_else(|| occurrence_error(id, SplitError::NotAnOccurrence(key.into())))?;
+        let tz = self.device_zone();
+        let starts_at = exception.starts_at.as_ref().unwrap_or(&rule_start);
+        let ends_at = exception.ends_at.as_ref().unwrap_or(&rule_end);
+        if matches!(
+            (starts_at.resolve_in(&tz), ends_at.resolve_in(&tz)),
+            (Some(s), Some(e)) if e <= s
+        ) {
+            return Err(EngineError::Validation(ValidationError::Field {
+                field: "block.ends_at",
+                constraint: "after_starts_at",
+            }));
+        }
+        block.exceptions = series.exceptions;
+        block.updated_at = ms_to_ts(now_ms as i64);
+        block.validate_invariants(&tz)?;
+        let done = self.emit_block(db, &block, now_ms, "block.update")?;
+        Ok(CommandResult::new(id, None, done.op_id, done.seq))
+    }
+
+    /// Split a recurring block's series at occurrence `key`
+    /// ([`EditScope::ThisAndFuture`]): the block ends before `key`, and with
+    /// an edit, the block at [`split_block_id`]`(series root, key)` continues
+    /// the series from it with the edit applied. Both are one group
+    /// (ADR-0065 §6), so no replica shows the series ended with no
+    /// continuation. Two devices splitting at the same key derive the same
+    /// continuation, and its fields merge.
+    ///
+    /// With no edit (a delete) the series only ends. At the series' first
+    /// occurrence nothing is left before `key`: an edit is then an edit of
+    /// the whole block, and a delete tombstones it.
+    fn split_block(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        key: &str,
+        patch: Option<BlockPatch>,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let now = ms_to_ts(now_ms as i64);
+        let (block, series) = recurring_block(db.conn(), id)?;
+        let root = block.split_from.unwrap_or(block.id);
+        let continues = split_block_id(&root, key);
+        // Splitting again where the series was already split edits the
+        // block that continues it.
+        if let Some(patch) = &patch {
+            if read_block(db.conn(), continues.bytes())?.is_some_and(|b| !b.deleted) {
+                return self.edit_block(db, continues, patch.clone());
+            }
+        }
+        let split = series.split_at(key).map_err(|e| occurrence_error(id, e))?;
+        let Some(ended) = split.ended else {
+            return match patch {
+                Some(patch) => self.edit_block(db, id, patch),
+                None => Ok(self
+                    .delete_block(db, id, EditScope::All)?
+                    .with_events(vec![DomainEvent::Deleted(id)])),
+            };
+        };
+        let tz = self.device_zone();
+        let mut before = block.clone();
+        before.rrule = Some(ended.rrule);
+        before.exceptions = ended.exceptions;
+        before.updated_at = now;
+        before.validate_invariants(&tz)?;
+        let Some(patch) = patch else {
+            let done = self.emit_block(db, &before, now_ms, "block.update")?;
+            return Ok(CommandResult::new(id, None, done.op_id, done.seq));
+        };
+
+        let existing = read_block(db.conn(), continues.bytes())?;
+        // The continuation shows the title the series shows now, fixed,
+        // because it takes none of the bindings a title could track.
+        let shown = block_row(db.conn(), block.clone())?.title;
+        let mut next = Block {
+            id: continues,
+            created_at: existing.as_ref().map_or(now, |e| e.created_at),
+            updated_at: now,
+            starts_at: split.continuation.starts_at,
+            ends_at: split.continuation.ends_at,
+            title: shown,
+            title_track_task: false,
+            // Bindings stay on the block they were made on: `tasks` merges
+            // as an OR-set, so copying them would bind each task to a second
+            // block no one bound it to. The import fields stay too: the
+            // continuation is this device's block, not the external item a
+            // re-import writes to (time-blocks.md §Recurring blocks).
+            tasks: BTreeSet::new(),
+            source: None,
+            external_id: None,
+            rrule: Some(split.continuation.rrule),
+            exceptions: split.continuation.exceptions,
+            split_from: Some(root),
+            deleted: false,
+            ..block
+        };
+        apply_block_patch(&mut next, patch)?;
+        next.validate_invariants(&tz)?;
+        let create = if existing.is_some() {
+            InnerOp::BlockUpdate(Box::new(next.clone()))
+        } else {
+            InnerOp::BlockCreate(Box::new(next.clone()))
+        };
+        let members = vec![
+            (create, domain_bytes(next.stream_id)),
+            (
+                InnerOp::BlockUpdate(Box::new(before.clone())),
+                domain_bytes(before.stream_id),
+            ),
+        ];
+        let done = db.with_tx(|tx| self.append_and_fold_group(tx, members, now_ms))?;
+        let created = done
+            .first()
+            .ok_or_else(|| EngineError::Invalid("a split wrote nothing".into()))?;
+        // A continuation tombstoned before is written back, not made.
+        let continued = if existing.is_some() {
+            DomainEvent::Updated(continues)
+        } else {
+            DomainEvent::Created(continues)
+        };
+        Ok(
+            CommandResult::new(continues, None, created.op_id, created.seq)
+                .with_events(vec![continued, DomainEvent::Updated(id)]),
+        )
+    }
+
+    /// [`Command::DeleteBlock`](crate::commands::Command::DeleteBlock), as
+    /// far as `scope` reaches.
+    ///
+    /// The whole block is tombstoned by an op carrying its **whole state**
+    /// with `deleted` set, down [`Self::emit_block`] — the same path an
     /// update takes — so a delete that wins LWW replaces the row rather than
     /// flipping one column on top of whatever the receiving replica held.
     pub(super) fn delete_block(
         &self,
         db: &mut Db,
         id: EntityRef,
+        scope: EditScope,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Block)?;
         let now_ms = self.clock.now_ms();
-        let mut block = read_block(db.conn(), id.bytes())?
-            .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
-        block.deleted = true;
-        block.updated_at = ms_to_ts(now_ms as i64);
-        let done = self.emit_block(db, &block, now_ms, "block.delete")?;
-        Ok(CommandResult::new(id, None, done.op_id, done.seq))
+        match scope {
+            EditScope::All => {
+                let mut block = read_block(db.conn(), id.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+                block.deleted = true;
+                block.updated_at = ms_to_ts(now_ms as i64);
+                let done = self.emit_block(db, &block, now_ms, "block.delete")?;
+                Ok(CommandResult::new(id, None, done.op_id, done.seq))
+            }
+            EditScope::This { key } => {
+                let (mut block, mut series) = recurring_block(db.conn(), id)?;
+                series
+                    .except(&key, BlockException::cancelled())
+                    .map_err(|e| occurrence_error(id, e))?;
+                block.exceptions = series.exceptions;
+                block.updated_at = ms_to_ts(now_ms as i64);
+                let done = self.emit_block(db, &block, now_ms, "block.update")?;
+                Ok(CommandResult::new(id, None, done.op_id, done.seq))
+            }
+            EditScope::ThisAndFuture { key } => self.split_block(db, id, &key, None),
+        }
     }
 
     /// Bind a Task to a Block. Idempotent on the membership set: re-binding an
@@ -431,7 +610,17 @@ impl Engine {
     /// the device zone (`docs/10-cross-cutting/time.md` §2 rule 2): the index
     /// puts a floating or all-day bound up to 14 hours from where this reader
     /// sees it, so on its own it drops evening blocks west of UTC and invents
-    /// morning ones east of it. Rows come back by resolved start, then id.
+    /// morning ones east of it.
+    ///
+    /// A recurring block is expanded over the window ([`expand_block`],
+    /// `docs/02-domain/time-blocks.md` §Recurring blocks): one row per
+    /// occurrence that overlaps it, carrying its key, and nothing per
+    /// occurrence is stored. Its anchor says nothing about where its
+    /// occurrences fall, so every live recurring block is read. A series this
+    /// build cannot expand over the window yields no rows, as a time of a
+    /// kind it does not know places nothing (ADR-0045 §6).
+    ///
+    /// Rows come back by resolved start, then id, then occurrence key.
     pub(super) fn query_blocks_between(
         &self,
         db: &Db,
@@ -441,7 +630,9 @@ impl Engine {
         let tz = self.device_zone();
         let mut stmt = db.conn().prepare(
             "SELECT id FROM blocks
-             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?",
+             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?
+             UNION
+             SELECT id FROM blocks WHERE deleted = 0 AND rrule_cbor IS NOT NULL",
         )?;
         let ids = stmt
             .query_map(
@@ -452,31 +643,91 @@ impl Engine {
                 |r| r.get::<_, Vec<u8>>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut blocks = Vec::with_capacity(ids.len());
+        let window = (ms_to_ts(from), ms_to_ts(to));
+        let mut blocks: Vec<(Block, Option<String>)> = Vec::with_capacity(ids.len());
         for raw in ids {
             let Some(block) = read_block(db.conn(), &blob16(&raw))? else {
                 continue;
             };
+            if let Some(series) = block.series() {
+                for occ in expand_block(&series, window, &tz).unwrap_or_default() {
+                    blocks.push((block.at_occurrence(&occ), Some(occ.key)));
+                }
+                continue;
+            }
             let resolved = (
                 block.starts_at.resolve_in(&tz),
                 block.ends_at.resolve_in(&tz),
             );
             if let (Some(s), Some(e)) = resolved {
                 if s.as_millisecond() < to && e.as_millisecond() > from {
-                    blocks.push(block);
+                    blocks.push((block, None));
                 }
             }
         }
-        blocks.sort_by(|a, b| {
+        blocks.sort_by(|(a, ka), (b, kb)| {
             a.starts_at
                 .cmp_in(&b.starts_at, &tz)
                 .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| ka.cmp(kb))
         });
         let mut rows = Vec::with_capacity(blocks.len());
-        for block in blocks {
-            rows.push(block_row(db.conn(), block)?);
+        for (block, key) in blocks {
+            let mut row = block_row(db.conn(), block)?;
+            row.occurrence_key = key;
+            rows.push(row);
         }
         Ok(QueryResult::Blocks(rows))
+    }
+}
+
+/// Write an edit of the whole block onto `block`: the times, the title, title
+/// tracking and the stream.
+fn apply_block_patch(block: &mut Block, patch: BlockPatch) -> Result<(), EngineError> {
+    if let Some(stream) = patch.stream_id {
+        block.stream_id = home_of(stream)?;
+    }
+    if let Some(s) = patch.starts_at {
+        block.starts_at = s;
+    }
+    if let Some(e) = patch.ends_at {
+        block.ends_at = e;
+    }
+    if let Some(t) = patch.title {
+        block.title = t.map(|s| s.trim().to_string());
+    }
+    if let Some(track) = patch.title_track_task {
+        block.title_track_task = track;
+    }
+    Ok(())
+}
+
+/// The live recurring Block `id` and its series, for an edit that names one
+/// of its occurrences.
+fn recurring_block(
+    conn: &rusqlite::Connection,
+    id: EntityRef,
+) -> Result<(Block, BlockSeries), EngineError> {
+    let block = read_block(conn, id.bytes())?
+        .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+    if block.deleted {
+        return Err(EngineError::Invalid(format!("block {id} is deleted")));
+    }
+    let series = block
+        .series()
+        .ok_or_else(|| EngineError::Invalid(format!("block {id} does not recur")))?;
+    Ok((block, series))
+}
+
+/// A key the series cannot edit, as the engine reports it: a key that is
+/// not one is invalid, and an occurrence the rule does not produce is not
+/// found.
+fn occurrence_error(id: EntityRef, e: SplitError) -> EngineError {
+    match e {
+        SplitError::NotAnOccurrence(key) => {
+            EngineError::NotFound(format!("occurrence {key} of block {id}"))
+        }
+        other => EngineError::Invalid(format!("block {id}: {other}")),
     }
 }
 
@@ -501,6 +752,7 @@ pub(super) fn block_row(
         block,
         title,
         task_titles,
+        occurrence_key: None,
     })
 }
 

@@ -109,7 +109,7 @@ pub(super) fn deletes(cmd: &Command) -> Option<EntityRef> {
         | Command::DeleteStream { id, .. }
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
-        | Command::DeleteBlock(id)
+        | Command::DeleteBlock { id, .. }
         | Command::DetachFile(id) => Some(*id),
         _ => None,
     }

@@ -511,6 +511,7 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
         &mut db,
         Command::UpdateBlock {
             id: block,
+            scope: sunrise_domain::EditScope::All,
             patch: BlockPatch {
                 title: Some(Some("Deep work".into())),
                 ..Default::default()
@@ -825,6 +826,7 @@ fn every_command_writes_only_the_fields_it_changed() {
             "retitle a block",
             |f| Command::UpdateBlock {
                 id: f.block,
+                scope: sunrise_domain::EditScope::All,
                 patch: BlockPatch {
                     title: Some(Some("Deep work".into())),
                     ..Default::default()

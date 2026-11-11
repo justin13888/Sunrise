@@ -216,6 +216,12 @@ pub struct BlockGridRow {
     /// Titles of the bound live tasks this replica knows about. Shorter than
     /// `block.tasks` when a binding names a task whose op has not arrived.
     pub task_titles: Vec<String>,
+    /// For one occurrence of a recurring block, its key
+    /// (`YYYY-MM-DDTHH:MM`): `block` then holds that occurrence's times and
+    /// fields, and an edit or delete of it names the key in its scope.
+    /// Absent for a block that does not recur.
+    #[uniffi(default = None)]
+    pub occurrence_key: Option<String>,
 }
 
 impl From<&BlockRow> for BlockGridRow {
@@ -224,11 +230,13 @@ impl From<&BlockRow> for BlockGridRow {
             block,
             title,
             task_titles,
+            occurrence_key,
         } = r;
         Self {
             block: BlockItem::from(block),
             title: title.clone(),
             task_titles: task_titles.clone(),
+            occurrence_key: occurrence_key.clone(),
         }
     }
 }
@@ -307,6 +315,10 @@ pub struct BlockEdit {
     /// Move the block to another stream.
     #[uniffi(default = None)]
     pub stream_id: Option<EntityRef>,
+    /// How far the edit reaches on a recurring block; the whole block when
+    /// absent. One occurrence takes only the times and a title.
+    #[uniffi(default = None)]
+    pub scope: Option<super::EditScopeIn>,
 }
 
 impl From<BlockEdit> for sunrise_domain::BlockPatch {
@@ -498,5 +510,23 @@ mod tests {
         assert_eq!(back.kind, Some(BlockKind::Fixed));
         assert_eq!(back.exceptions, b.exceptions);
         assert_eq!(back.source, b.source);
+    }
+
+    /// An occurrence row crosses with its key, and a one-off row with none.
+    #[test]
+    fn a_grid_rows_occurrence_key_crosses() {
+        let row = |occurrence_key: Option<String>| sunrise_core::queries::BlockRow {
+            block: block(None, None),
+            title: Some("Standup".into()),
+            task_titles: Vec::new(),
+            occurrence_key,
+        };
+        let occurrence = super::BlockGridRow::from(&row(Some("2026-03-11T09:00".into())));
+        assert_eq!(
+            occurrence.occurrence_key.as_deref(),
+            Some("2026-03-11T09:00")
+        );
+        assert_eq!(occurrence.title.as_deref(), Some("Standup"));
+        assert_eq!(super::BlockGridRow::from(&row(None)).occurrence_key, None);
     }
 }

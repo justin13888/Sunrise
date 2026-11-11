@@ -437,6 +437,7 @@ pub(crate) fn block_edit(patch: BlockPatch) -> BlockEdit {
         clear_title,
         title_track_task: patch.title_track_task,
         stream_id: patch.stream_id.map(sunrise_domain::stream_key),
+        scope: None,
     }
 }
 

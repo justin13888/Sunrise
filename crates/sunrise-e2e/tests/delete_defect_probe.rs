@@ -328,9 +328,13 @@ async fn block_delete_vs_update_converges() {
         &a,
         &b,
         id,
-        Command::DeleteBlock(id),
+        Command::DeleteBlock {
+            id,
+            scope: sunrise_domain::EditScope::All,
+        },
         Command::UpdateBlock {
             id,
+            scope: sunrise_domain::EditScope::All,
             patch: BlockPatch {
                 title: Some(Some("renamed".into())),
                 ..Default::default()

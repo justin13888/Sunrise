@@ -5,7 +5,7 @@ use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
 
 /// One domain event published to subscribers via `Core::changes()`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DomainEvent {
     /// An entity was created.
     Created(EntityRef),

@@ -35,6 +35,7 @@ fn row(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> BlockGridRow {
         }),
         title: Some("Deep work".into()),
         task_titles: Vec::new(),
+        occurrence_key: None,
     }
 }
 

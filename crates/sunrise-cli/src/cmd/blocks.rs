@@ -12,7 +12,7 @@ use sunrise_cli::when;
 use sunrise_client_core::calendar::{merge_blocks, moved_block_patch, new_block_draft};
 use sunrise_client_core::civil::{seed_ms, TimeKind};
 use sunrise_core::{Command, Query, QueryResult};
-use sunrise_domain::Block;
+use sunrise_domain::{Block, EditScope};
 use sunrise_id::{EntityKind, EntityRef};
 
 use super::{flag_value, id_of, positionals, resolve_home, task_id, Archived, CmdResult, Ctx};
@@ -147,8 +147,14 @@ pub(super) async fn block(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
                 return Err(strings::blocks::usage().into());
             };
             let id = id_of(raw, EntityKind::Block)?;
-            ctx.submit(Command::DeleteBlock(id), strings::undo::delete(raw))
-                .await?;
+            ctx.submit(
+                Command::DeleteBlock {
+                    id,
+                    scope: EditScope::All,
+                },
+                strings::undo::delete(raw),
+            )
+            .await?;
             println!("deleted  {raw}");
             Ok(())
         }
@@ -227,7 +233,11 @@ async fn move_block(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
     };
     let patch = moved_block_patch(&block, start_ms, end_ms, &reader)?;
     ctx.submit(
-        Command::UpdateBlock { id, patch },
+        Command::UpdateBlock {
+            id,
+            scope: EditScope::All,
+            patch,
+        },
         strings::undo::move_block(raw),
     )
     .await?;

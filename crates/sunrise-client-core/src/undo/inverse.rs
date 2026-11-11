@@ -118,8 +118,10 @@ pub(super) fn invert_one<S: EntityLookup + ?Sized>(
         | Command::DeleteStream { id, .. }
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
-        | Command::DeleteBlock(id)
         | Command::DeleteSavedView(id) => Ok(Command::Restore(*id)),
+        // Only the whole block's: a delete of some occurrences edits the
+        // series, whose prior exceptions and rule no row here holds.
+        Command::DeleteBlock { id, scope } if scope.key().is_none() => Ok(Command::Restore(*id)),
         Command::MarkTriaged { ids } => invert_triage(state, ids, true),
         Command::ReturnToInbox { ids } => invert_triage(state, ids, false),
         Command::UpdateSavedView { id, patch } => invert_view_edit(state, *id, patch),
@@ -264,7 +266,10 @@ pub(super) const fn delete_of(id: EntityRef) -> Option<Command> {
         },
         EntityKind::Context => Command::DeleteContext(id),
         EntityKind::Routine => Command::DeleteRoutine(id),
-        EntityKind::Block => Command::DeleteBlock(id),
+        EntityKind::Block => Command::DeleteBlock {
+            id,
+            scope: sunrise_domain::EditScope::All,
+        },
         EntityKind::SavedView => Command::DeleteSavedView(id),
         _ => return None,
     })

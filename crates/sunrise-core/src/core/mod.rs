@@ -481,47 +481,7 @@ impl Core {
         };
         // Best-effort change publish; receivers are bounded broadcast channels
         // and dropped subscribers are accepted.
-        // A command that writes a group touches more than its result names.
-        let also: Vec<DomainEvent> = match &cmd {
-            Command::MergeBlocks { a, b } => {
-                vec![DomainEvent::Deleted(*a), DomainEvent::Deleted(*b)]
-            }
-            Command::BulkTasks(items) => items
-                .iter()
-                .skip(1)
-                .map(|i| DomainEvent::Updated(i.id))
-                .collect(),
-            Command::MoveTasks { ids, .. } | Command::Triage { ids, .. } => ids
-                .iter()
-                .skip(1)
-                .map(|id| DomainEvent::Updated(*id))
-                .collect(),
-            _ => Vec::new(),
-        };
-        let event = match cmd {
-            Command::CreateTask(_)
-            | Command::CreateStream(_)
-            | Command::CreateContext(_)
-            | Command::CreateRoutine(_)
-            | Command::CreateBlock(_)
-            | Command::CreateSavedView(_)
-            | Command::MergeBlocks { .. }
-            | Command::AttachFile(_)
-            // A focus session is created, never mutated: `StartFocus` mints a
-            // new `fcs_` entity, and `EndFocus` appends a separate record to
-            // the same id (so it reads as an update of the session view).
-            | Command::StartFocus(_) => DomainEvent::Created(res.entity),
-            Command::DeleteTask(_)
-            | Command::DeleteStream { .. }
-            | Command::DeleteContext(_)
-            | Command::DeleteRoutine(_)
-            | Command::DeleteBlock(_)
-            | Command::DeleteSavedView(_)
-            | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
-            _ => DomainEvent::Updated(res.entity),
-        };
-        let _ = self.changes_tx.send(event);
-        for event in also {
+        for event in published::published(&cmd, &res) {
             let _ = self.changes_tx.send(event);
         }
         // Wake the sync driver (if running) so the new outbox row drains
@@ -1708,6 +1668,7 @@ mod key_bundle;
 mod notify;
 mod place;
 mod planner;
+mod published;
 mod repair;
 mod snapshot;
 

@@ -804,7 +804,12 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
     core.submit(Command::DetachFile(attachment)).await.unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == attachment));
 
-    core.submit(Command::DeleteBlock(block)).await.unwrap();
+    core.submit(Command::DeleteBlock {
+        id: block,
+        scope: sunrise_domain::EditScope::All,
+    })
+    .await
+    .unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == block));
 
     core.close().await.unwrap();

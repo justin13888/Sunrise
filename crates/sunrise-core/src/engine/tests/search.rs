@@ -162,7 +162,14 @@ fn every_kind_is_indexed_and_a_tombstone_removes_it() {
     assert_eq!(hit.opens, task);
 
     e.apply(&mut db, Command::DetachFile(file)).unwrap();
-    e.apply(&mut db, Command::DeleteBlock(block)).unwrap();
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id: block,
+            scope: sunrise_domain::EditScope::All,
+        },
+    )
+    .unwrap();
     e.apply(&mut db, Command::DeleteTask(task)).unwrap();
     e.apply(&mut db, Command::DeleteContext(errands)).unwrap();
     e.apply(

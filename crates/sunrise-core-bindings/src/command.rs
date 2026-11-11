@@ -11,9 +11,9 @@ use sunrise_domain::{Energy, InterruptionReason, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, PreferenceTarget,
-    PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit,
-    TaskDraftIn, TaskEdit, TimeValue,
+    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, EditScopeIn,
+    PreferenceTarget, PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn,
+    StreamEdit, TaskDraftIn, TaskEdit, TimeValue,
 };
 
 /// A mutating command.
@@ -143,17 +143,25 @@ pub enum CoreCommand {
         /// The draft.
         draft: BlockDraftIn,
     },
-    /// Edit a block: move it, retitle it, or change title tracking.
+    /// Edit a block: move it, retitle it, or change title tracking, as far as
+    /// `edit.scope` reaches. For one occurrence of a recurring block the
+    /// scope names its key (`BlockGridRow::occurrence_key`); an edit "this
+    /// and future" names the block that continues the series.
     UpdateBlock {
         /// Target.
         id: EntityRef,
         /// The edit.
         edit: BlockEdit,
     },
-    /// Tombstone a block. Bound tasks are untouched.
+    /// Tombstone a block, as far as `scope` reaches: one occurrence of a
+    /// recurring block is cancelled, and "this and future" ends its series
+    /// before the key. Bound tasks are untouched.
     DeleteBlock {
         /// Target.
         id: EntityRef,
+        /// How far the delete reaches; the whole block when absent.
+        #[uniffi(default = None)]
+        scope: Option<EditScopeIn>,
     },
     /// Bind a task to a block. `TaskItem::blocks` is derived from the binding,
     /// so the symmetry needs no second command.
@@ -452,9 +460,13 @@ impl CoreCommand {
             Self::CreateBlock { draft } => Command::CreateBlock(draft.into()),
             Self::UpdateBlock { id, edit } => Command::UpdateBlock {
                 id,
+                scope: edit.scope.clone().map(Into::into).unwrap_or_default(),
                 patch: edit.into(),
             },
-            Self::DeleteBlock { id } => Command::DeleteBlock(id),
+            Self::DeleteBlock { id, scope } => Command::DeleteBlock {
+                id,
+                scope: scope.map(Into::into).unwrap_or_default(),
+            },
             Self::BindTask { block, task } => Command::BindTask { block, task },
             Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },
@@ -557,6 +569,69 @@ impl From<DeviceRevokeReason> for sunrise_core::RevokeReason {
             DeviceRevokeReason::Stolen => Self::Stolen,
             DeviceRevokeReason::Retired => Self::Retired,
             DeviceRevokeReason::Compromised => Self::Compromised,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CoreCommand;
+    use crate::dto::{BlockEdit, EditScopeIn};
+    use sunrise_core::Command;
+    use sunrise_domain::EditScope;
+    use sunrise_id::{EntityKind, EntityRef};
+
+    const KEY: &str = "2026-03-11T09:00";
+
+    fn lower(cmd: CoreCommand) -> Command {
+        cmd.into_core().expect("lowers")
+    }
+
+    /// Each `EditScopeIn` a block edit or delete carries reaches the core's
+    /// command as the same scope, and an absent one is the whole block.
+    #[test]
+    fn a_block_commands_scope_lowers_to_the_cores() {
+        let id = EntityRef::new(EntityKind::Block, [1; 16]);
+        let cases = [
+            (None, EditScope::All),
+            (Some(EditScopeIn::All), EditScope::All),
+            (
+                Some(EditScopeIn::This { key: KEY.into() }),
+                EditScope::This { key: KEY.into() },
+            ),
+            (
+                Some(EditScopeIn::ThisAndFuture { key: KEY.into() }),
+                EditScope::ThisAndFuture { key: KEY.into() },
+            ),
+        ];
+        for (given, want) in cases {
+            let edit = BlockEdit {
+                set_title: Some("Retro".into()),
+                scope: given.clone(),
+                ..BlockEdit::default()
+            };
+            match lower(CoreCommand::UpdateBlock { id, edit }) {
+                Command::UpdateBlock {
+                    id: got,
+                    scope,
+                    patch,
+                } => {
+                    assert_eq!(got, id);
+                    assert_eq!(scope, want, "edit scope {given:?}");
+                    assert_eq!(patch.title, Some(Some("Retro".into())));
+                }
+                other => panic!("expected UpdateBlock, got {other:?}"),
+            }
+            match lower(CoreCommand::DeleteBlock {
+                id,
+                scope: given.clone(),
+            }) {
+                Command::DeleteBlock { id: got, scope } => {
+                    assert_eq!(got, id);
+                    assert_eq!(scope, want, "delete scope {given:?}");
+                }
+                other => panic!("expected DeleteBlock, got {other:?}"),
+            }
         }
     }
 }

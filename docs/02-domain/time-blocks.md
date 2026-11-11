@@ -207,9 +207,28 @@ What is built is the pure half, in `crates/sunrise-domain/src/block/series.rs`:
 
 A Block stores its series in `rrule`, `exceptions` and `split_from`, and
 `Block::series` reads it off ([#1147](https://github.com/justin13888/Sunrise/issues/1147)).
-Expanding it in the calendar queries and the edit-scope commands are
-[#1148](https://github.com/justin13888/Sunrise/issues/1148), and drawing it on
-macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
+The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
+
+- `DayBlocks` and `WeekBlocks` (`crates/sunrise-core/src/engine/block.rs#query_blocks_between`)
+  expand every live recurring block over the window, one row per occurrence
+  with its key in `BlockRow::occurrence_key`, the block read at it by
+  `Block::at_occurrence`. So do Upcoming and the block reminders, which read
+  the same rows.
+- `UpdateBlock` and `DeleteBlock` take the routine `EditScope`. *This* writes
+  or cancels one exception (an edit sets only the times and a title), *this
+  and future* writes the ended block and the continuation at
+  `split_block_id(series root, key)` as one group (ADR-0065 §6), and *all*
+  edits the block. At the first occurrence *this and future* is *all*, and
+  splitting again at a key edits the continuation already there.
+- The continuation a split writes takes no task bindings and no `source` or
+  `external_id`: a task stays bound to the block it was bound to, and a
+  re-import of the external item writes the original block only. Its title is
+  the one the series showed at the split, fixed (`title_track_task` off),
+  since it has no task whose title to track.
+
+A binding still names the whole block, not one occurrence
+([#1162](https://github.com/justin13888/Sunrise/issues/1162)), and drawing a
+series on macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
 
 ### Importer status
 
