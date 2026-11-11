@@ -248,7 +248,11 @@ behind it is checked first, and a failed check still starts no migration),
 rebuilds the projection from the op log whatever fold built it, and runs
 `quick_check` again. Damage in what the log re-derives is cleared by the
 rebuild; damage in the log, the keys or another source table is still there,
-and the second check refuses the vault again. The decision a client makes on
+and the second check refuses the vault again. The repair's migration is the
+ordinary one: `the_repair_open_migrates_every_fixture_as_the_ordinary_open_does`
+(`crates/sunrise-storage/src/vault_fixtures/mod.rs`) opens every old-vault
+fixture both ways and requires the same rows at the same version, and the copy
+the repair took to be the committed file byte for byte. The decision a client makes on
 a failed open is `open_remedies` (§Failure recovery): for damage, the repair
 (not after one has failed), the newest copy beside the vault where there is
 one, and the recovery code where the account has one. The macOS app does not

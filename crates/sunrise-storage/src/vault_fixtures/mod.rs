@@ -70,6 +70,14 @@
 //! there afterwards, column for column. The only differences it allows are the
 //! migrations' deliberate ones, listed in `chain::DELIBERATE_CHANGES`, each
 //! with the migration that makes it.
+//! `the_repair_open_migrates_every_fixture_as_the_ordinary_open_does` opens
+//! each one a second way, through the repair's `Db::open_for_repair`, and
+//! requires the same rows at the same version.
+//!
+//! Rule 1's rebuild equivalence is not checked over these files: their ops
+//! are invented envelopes no keychain opens, and a rebuild over one only
+//! clears its invented rows. It runs in `sunrise-core`, over vaults the
+//! engine wrote (`crates/sunrise-core/src/engine/tests/rebuild/fixture.rs`).
 //!
 //! # Where things are
 //!
@@ -198,6 +206,94 @@ fn row_count(db: &Db, table: &str) -> i64 {
     db.conn()
         .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
         .unwrap_or_else(|e| panic!("count {table}: {e}"))
+}
+
+/// Every row of every table in `db`, each table's rows sorted, keyed by the
+/// table's name: what two opens of the same file are compared by.
+fn every_row(db: &Db) -> Vec<(String, Vec<String>)> {
+    let tables: Vec<String> = db
+        .conn()
+        .prepare(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()
+        })
+        .expect("list the tables");
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut stmt = db
+                .conn()
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap_or_else(|e| panic!("read {table}: {e}"));
+            let width = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    (0..width)
+                        .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+                .unwrap_or_else(|e| panic!("read {table}: {e}"))
+                .into_iter()
+                .map(|row| format!("{row:?}"))
+                .collect();
+            rows.sort();
+            (table, rows)
+        })
+        .collect()
+}
+
+/// The repair's open (`Db::open_for_repair`, `docs/04-storage/migrations.md`
+/// §Migration rigor rule 3) brings a vault at any committed `STORAGE_V` to
+/// this build's, as the ordinary open does: every fixture, opened both ways,
+/// ends at the same version holding the same rows. The repair checks the
+/// file before it migrates, and keeps its copies, which the ordinary open
+/// does not; this is what proves neither changes what the chain leaves.
+///
+/// The copy it opens under is the committed file byte for byte, which is
+/// what a restore of it puts back.
+///
+/// The repair's other half, the rebuild from the op log, cannot run here:
+/// these fixtures' ops are invented envelopes no keychain opens, and this
+/// crate cannot fold an op. Rebuild equivalence over committed vaults is
+/// `sunrise-core`'s, over vaults the engine wrote
+/// (`crates/sunrise-core/src/engine/tests/rebuild/fixture.rs`).
+#[test]
+fn the_repair_open_migrates_every_fixture_as_the_ordinary_open_does() {
+    for v in fixture_versions() {
+        let name = fixture_name(v);
+        let (_ordinary_dir, ordinary) = open_migrated(&name);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(&name);
+        fs::copy(fixture_dir().join(&name), &path).expect("copy");
+        let repaired = Db::open_for_repair(&path, &fixture_key())
+            .unwrap_or_else(|e| panic!("the repair must open and migrate `{name}`: {e}"));
+
+        assert_eq!(
+            stamped_storage_v(&repaired),
+            u32::from(STORAGE_V),
+            "`{name}` was not brought to this build's version"
+        );
+        repaired
+            .check_integrity()
+            .unwrap_or_else(|e| panic!("`{name}` after the repair's open: {e}"));
+        assert_eq!(
+            every_row(&repaired),
+            every_row(&ordinary),
+            "the repair's open of `{name}` left other rows than the ordinary open"
+        );
+        let copy = fs::read(Db::rebuild_backup_path(&path)).expect("the repair's copy");
+        let committed = fs::read(fixture_dir().join(&name)).expect("the fixture");
+        assert!(
+            copy == committed,
+            "the repair's copy of `{name}` is not the file it opened"
+        );
+    }
 }
 
 // --- the generator --------------------------------------------------------
