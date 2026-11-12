@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::support::*;
 use super::super::*;
-use super::rich_history;
+use super::{dump, rich_history};
 use sunrise_cbor::version::STORAGE_V;
 
 /// The prefix of every committed projection fixture's file name.
@@ -149,5 +149,54 @@ fn every_projection_fixture_rebuilds_to_what_its_migration_left() {
         let report = e.rebuild_projection(&mut db).unwrap();
         assert_eq!(report.ops_skipped, 0, "v{v}: {report:?}");
         assert!(report.ops_replayed > 20, "v{v}: {report:?}");
+    }
+}
+
+/// The projection a fixture holds once a build opens it the ordinary way:
+/// migrated by `Db::open`, and rebuilt only where its fold is stale.
+fn opened_the_ordinary_way(v: u32, source: &Path) -> Vec<(&'static str, Vec<String>)> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    fs::copy(source, &path).unwrap();
+    let mut db = Db::open(&path, &VaultRootKey::from_bytes(ROOT))
+        .unwrap_or_else(|e| panic!("the v{v} fixture must open and migrate: {e}"));
+    engine_for_fixture().rebuild_if_stale(&mut db).unwrap();
+    dump(db.conn())
+}
+
+/// The repair `Core::open_repairing` runs (`migrations.md` §Migration rigor
+/// rule 3), over every committed fixture: `Db::open_for_repair` copies the
+/// file as it was and brings it to this build's schema, the projection is
+/// rebuilt from the log whatever fold built it, and the check passes. A
+/// sound vault comes out of the repair reading exactly as the ordinary open
+/// leaves it, so a repair never costs a migrated vault a row.
+#[test]
+fn every_projection_fixture_repairs_to_what_the_ordinary_open_leaves() {
+    for (v, source) in committed() {
+        let want = opened_the_ordinary_way(v, &source);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        fs::copy(&source, &path).unwrap();
+        let mut db = Db::open_for_repair(&path, &VaultRootKey::from_bytes(ROOT))
+            .unwrap_or_else(|e| panic!("the v{v} fixture must open for repair: {e}"));
+        let at: u32 = db
+            .conn()
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(at, u32::from(STORAGE_V), "v{v}: the repair migrates");
+        let copy = db
+            .back_up_for_rebuild()
+            .unwrap()
+            .expect("the repair's copy");
+        assert_eq!(
+            fs::read(&copy).unwrap(),
+            fs::read(&source).unwrap(),
+            "v{v}: the copy is the file as it was"
+        );
+        let report = engine_for_fixture().rebuild_projection(&mut db).unwrap();
+        assert_eq!(report.ops_skipped, 0, "v{v}: {report:?}");
+        db.check_integrity()
+            .unwrap_or_else(|e| panic!("v{v}: the repaired vault is sound: {e}"));
+        assert_eq!(dump(db.conn()), want, "v{v}: the repair changed a row");
     }
 }
