@@ -10,7 +10,9 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::{Rendezvous, RendezvousError, RendezvousRole, POLL_INTERVAL, WAIT_CAP};
+use super::{
+    resolve_code, Rendezvous, RendezvousError, RendezvousRole, POLL_INTERVAL, UNREACHABLE, WAIT_CAP,
+};
 
 /// One answer of the fake relay.
 #[derive(Clone)]
@@ -26,6 +28,8 @@ enum Reply {
     /// No answer: the relay reads the request and closes the connection, as a
     /// dropped connection looks to the client.
     HangUp,
+    /// `200` with the code lookup's body, naming this session.
+    Resolved(&'static str),
 }
 
 const NOTHING_YET: Reply = Reply::Messages(&[]);
@@ -153,6 +157,11 @@ async fn answer(socket: &mut TcpStream, reply: &Reply) {
             200,
             "application/json",
             serde_json::json!({ "sent": 1, "expires_at_ms": 1 }),
+        ),
+        Reply::Resolved(pair_id) => (
+            200,
+            "application/json",
+            serde_json::json!({ "pair_id": pair_id, "expires_at_ms": 1 }),
         ),
         Reply::Problem(status, problem) => (
             *status,
@@ -367,8 +376,21 @@ async fn a_relay_that_keeps_hanging_up_is_retried_to_the_cap() {
     let started = Instant::now();
     let waiting = rendezvous.next().await.unwrap_err();
     assert_ended_at(started, WAIT_CAP);
-    assert!(matches!(waiting, RendezvousError::Relay(_)), "{waiting}");
+    assert_eq!(waiting, RendezvousError::Relay(UNREACHABLE.into()));
     assert!(relay.requests() > 1);
+}
+
+/// A typed-code lookup rides out a dropped connection, sending the same code
+/// again.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_connection_is_retried_by_a_code_lookup() {
+    let relay = FakeRelay::start(&[Reply::HangUp], Reply::Resolved("session")).await;
+
+    let pair_id = resolve_code(&relay.url, "token", "123 456").await;
+
+    assert_eq!(pair_id.as_deref(), Ok("session"));
+    assert_eq!(relay.routes(), ["resolve", "resolve"]);
+    assert_eq!(relay.field("code"), ["123456", "123456"]);
 }
 
 /// A failure raised before anything is sent fails the same way every time, so
