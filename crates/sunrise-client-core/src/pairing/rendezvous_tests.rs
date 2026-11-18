@@ -272,18 +272,27 @@ async fn a_cancel_ends_a_wait_at_its_next_poll_and_every_later_one() {
 }
 
 /// A cancel reaches a send that is retrying, too.
+///
+/// As above, the cancel lands once the relay has seen the first attempt, so
+/// the send fails it, sleeps for the retry, and finds the cancel there.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_ends_a_retrying_send() {
     let relay = FakeRelay::start(&[], OVERLOADED).await;
     let rendezvous = relay.rendezvous(RendezvousRole::NewDevice);
 
-    let (sent, ()) = tokio::join!(rendezvous.send("m".into()), async {
-        tokio::time::sleep(POLL_INTERVAL / 2).await;
+    let (sent, cancelled_at) = tokio::join!(rendezvous.send("m".into()), async {
+        relay.reached(1).await;
         rendezvous.cancel();
+        Instant::now()
     });
 
     assert_eq!(sent, Err(RendezvousError::Cancelled));
-    assert_eq!(relay.requests(), 1);
+    assert_ended_at(cancelled_at, POLL_INTERVAL);
+    assert_eq!(
+        relay.requests(),
+        1,
+        "the retry after the cancel asked nothing"
+    );
 }
 
 /// The relay acknowledges a resend by its index, so a retry that carried the
