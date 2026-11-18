@@ -874,7 +874,7 @@ use sunrise_domain::{split_block_id, Block, EditScope};
 
 /// Give block `id` the rule `rule`, as a build that writes series would:
 /// no command creates one yet.
-fn recur(e: &Engine, db: &mut Db, id: EntityRef, rule: &str) {
+pub(super) fn recur(e: &Engine, db: &mut Db, id: EntityRef, rule: &str) {
     let b = Block {
         rrule: Some(RRule::parse(rule).unwrap()),
         ..read_block(db.conn(), id.bytes()).unwrap().unwrap()
@@ -888,7 +888,7 @@ fn recur(e: &Engine, db: &mut Db, id: EntityRef, rule: &str) {
 
 /// A "Standup" every Wednesday 09:00–10:00 (floating) from 2026-03-04, in
 /// a vault that requires `block.recurrence`.
-fn weekly(e: &Engine, db: &mut Db) -> EntityRef {
+pub(super) fn weekly(e: &Engine, db: &mut Db) -> EntityRef {
     legacy_peer(db);
     let id = e
         .apply(db, Command::CreateBlock(block_draft(9, 1, Some("Standup"))))
@@ -901,7 +901,7 @@ fn weekly(e: &Engine, db: &mut Db) -> EntityRef {
 }
 
 /// Noon on 2026-03-`day`, for a day query.
-fn march(day: i8) -> u64 {
+pub(super) fn march(day: i8) -> u64 {
     SunriseTime::floating(jiff::civil::date(2026, 3, day).at(12, 0, 0, 0))
         .to_instant(&jiff::tz::TimeZone::UTC)
         .unwrap()
@@ -909,7 +909,7 @@ fn march(day: i8) -> u64 {
 }
 
 /// 2026-03-`day` at `hour`:00, floating.
-fn at(day: i8, hour: i8) -> SunriseTime {
+pub(super) fn at(day: i8, hour: i8) -> SunriseTime {
     SunriseTime::floating(jiff::civil::date(2026, 3, day).at(hour, 0, 0, 0))
 }
 
@@ -922,11 +922,11 @@ fn day(e: &Engine, db: &Db, day: i8) -> Vec<(EntityRef, Option<String>, Option<S
         .collect()
 }
 
-fn key(day: i8) -> String {
+pub(super) fn key(day: i8) -> String {
     format!("2026-03-{day:02}T09:00")
 }
 
-fn scoped_update(id: EntityRef, scope: EditScope, patch: BlockPatch) -> Command {
+pub(super) fn scoped_update(id: EntityRef, scope: EditScope, patch: BlockPatch) -> Command {
     Command::UpdateBlock { id, scope, patch }
 }
 

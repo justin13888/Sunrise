@@ -1,0 +1,361 @@
+//! A task bound to one occurrence of a recurring block
+//! (`docs/02-domain/time-blocks.md` §Recurring blocks, #1162).
+//!
+//! The series is `blocks::weekly`: a "Standup" every Wednesday from
+//! 2026-03-04, whose occurrence keys are `key(4)`, `key(11)`, `key(18)` and
+//! so on.
+
+use super::blocks::{at, key, march, scoped_update, weekly};
+use super::*;
+use crate::feature::{BLOCK_OCCURRENCE_TASKS_FEATURE, BLOCK_RECURRENCE_FEATURE};
+use sunrise_domain::{split_block_id, EditScope, OccurrenceBinding};
+
+fn bind(block: EntityRef, task: EntityRef, occurrence: Option<String>) -> Command {
+    Command::BindTask {
+        block,
+        task,
+        occurrence,
+    }
+}
+
+fn unbind(block: EntityRef, task: EntityRef, occurrence: Option<String>) -> Command {
+    Command::UnbindTask {
+        block,
+        task,
+        occurrence,
+    }
+}
+
+/// `weekly`, in a vault that also requires `block.occurrence_tasks`.
+fn bindable(e: &Engine, db: &mut Db) -> EntityRef {
+    let id = weekly(e, db);
+    e.require_features(db, &[BLOCK_OCCURRENCE_TASKS_FEATURE], true)
+        .unwrap();
+    id
+}
+
+/// The titles of the tasks the day grid of 2026-03-`day` lists on its one
+/// row.
+fn titles_on(e: &Engine, db: &Db, day: i8) -> Vec<String> {
+    let mut rows = day_rows(e, db, march(day));
+    assert_eq!(rows.len(), 1, "one standup on 2026-03-{day}");
+    rows.remove(0).task_titles
+}
+
+fn blocks_of(db: &Db, task: EntityRef) -> BTreeSet<EntityRef> {
+    read_task(db.conn(), task.bytes()).unwrap().unwrap().blocks
+}
+
+/// A task bound to one week is listed on that week's row alone, and names
+/// the block once however many weeks it is bound to; unbinding one week
+/// leaves the others.
+#[test]
+fn a_task_bound_to_one_occurrence_is_not_bound_to_the_others() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+    assert!(titles_on(&e, &db, 4).is_empty());
+    assert!(titles_on(&e, &db, 18).is_empty());
+    assert_eq!(blocks_of(&db, task), BTreeSet::from([id]));
+    let block = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert!(block.tasks.is_empty(), "nothing is bound to the series");
+    assert_eq!(
+        block.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new(key(11), task)])
+    );
+
+    e.apply(&mut db, bind(id, task, Some(key(18)))).unwrap();
+    assert_eq!(titles_on(&e, &db, 18), ["Prepare notes"]);
+    assert_eq!(blocks_of(&db, task), BTreeSet::from([id]), "named once");
+
+    e.apply(&mut db, unbind(id, task, Some(key(11)))).unwrap();
+    assert!(titles_on(&e, &db, 11).is_empty());
+    assert_eq!(titles_on(&e, &db, 18), ["Prepare notes"]);
+    assert_eq!(blocks_of(&db, task), BTreeSet::from([id]));
+
+    e.apply(&mut db, unbind(id, task, Some(key(18)))).unwrap();
+    assert!(blocks_of(&db, task).is_empty());
+    e.assert_rebuild_identity(&db);
+}
+
+/// A binding to the whole series, made before occurrence bindings existed,
+/// is listed on every week beside one week's own, and unbinding with no key
+/// removes it.
+#[test]
+fn a_whole_series_binding_shows_on_every_occurrence_beside_one_weeks_own() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let every = new_task(&e, &mut db, "Agenda");
+    let one = new_task(&e, &mut db, "Demo");
+    super::blocks::bound_to_the_series(&e, &mut db, id, every);
+    e.apply(&mut db, bind(id, one, Some(key(11)))).unwrap();
+
+    assert_eq!(titles_on(&e, &db, 4), ["Agenda"]);
+    let mut eleventh = titles_on(&e, &db, 11);
+    eleventh.sort();
+    assert_eq!(eleventh, ["Agenda", "Demo"]);
+
+    e.apply(&mut db, unbind(id, every, None)).unwrap();
+    assert!(titles_on(&e, &db, 4).is_empty());
+    assert_eq!(titles_on(&e, &db, 11), ["Demo"]);
+    e.assert_rebuild_identity(&db);
+}
+
+/// A binding that does not name one occurrence is refused, and writes
+/// nothing: no key on a recurring block, a key on a one-off, a key that is
+/// not one, a week the rule skips, and a cancelled week.
+#[test]
+fn a_binding_that_names_no_occurrence_of_the_series_is_refused() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+    let one_off = e
+        .apply(
+            &mut db,
+            Command::CreateBlock(block_draft(14, 1, Some("Gym"))),
+        )
+        .unwrap()
+        .entity;
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::This { key: key(25) },
+        },
+    )
+    .unwrap();
+    let ops = op_count(&db);
+
+    invalid(e.apply(&mut db, bind(id, task, None)), "recurs");
+    invalid(
+        e.apply(&mut db, bind(one_off, task, Some(key(11)))),
+        "does not recur",
+    );
+    invalid(
+        e.apply(&mut db, unbind(one_off, task, Some(key(11)))),
+        "does not recur",
+    );
+    assert!(matches!(
+        e.apply(&mut db, bind(id, task, Some("wednesday".into()))),
+        Err(EngineError::Invalid(_))
+    ));
+    assert!(matches!(
+        e.apply(&mut db, bind(id, task, Some("2026-03-12T09:00".into()))),
+        Err(EngineError::NotFound(_))
+    ));
+    assert!(matches!(
+        e.apply(&mut db, bind(id, task, Some(key(25)))),
+        Err(EngineError::NotFound(m)) if m.contains("cancelled")
+    ));
+    assert_eq!(op_count(&db), ops, "a refused binding writes nothing");
+}
+
+/// An occurrence binding is sealed only once the vault requires
+/// `block.occurrence_tasks`: a build without it would show the week with no
+/// task.
+#[test]
+fn an_occurrence_binding_is_sealed_only_once_the_vault_requires_its_feature() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+    let ops = op_count(&db);
+    let err = e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap_err();
+    assert!(
+        matches!(&err, EngineError::Invalid(m) if m.contains(BLOCK_OCCURRENCE_TASKS_FEATURE)),
+        "{err:?}"
+    );
+    assert_eq!(op_count(&db), ops);
+
+    e.require_features(&mut db, &[BLOCK_OCCURRENCE_TASKS_FEATURE], true)
+        .unwrap();
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+}
+
+/// A split *this and future* carries the bindings at or after the key to
+/// the continuation, and the ones before stay; the task bound after the key
+/// then names the continuation. The edit moves the continuation an hour, and
+/// each binding moves with the week it named.
+#[test]
+fn a_split_carries_the_bindings_at_or_after_the_key_to_the_continuation() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let before = new_task(&e, &mut db, "Agenda");
+    let at_key = new_task(&e, &mut db, "Demo");
+    let after = new_task(&e, &mut db, "Retro notes");
+    for (task, week) in [(before, 11), (at_key, 18), (after, 25)] {
+        e.apply(&mut db, bind(id, task, Some(key(week)))).unwrap();
+    }
+
+    let move_later = BlockPatch {
+        starts_at: Some(at(18, 10)),
+        ends_at: Some(at(18, 11)),
+        ..BlockPatch::default()
+    };
+    let next = e
+        .apply(
+            &mut db,
+            scoped_update(id, EditScope::ThisAndFuture { key: key(18) }, move_later),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(next, split_block_id(&id, &key(18)));
+
+    let ended = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(
+        ended.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new(key(11), before)])
+    );
+    let continuation = read_block(db.conn(), next.bytes()).unwrap().unwrap();
+    assert_eq!(
+        continuation.occurrence_tasks,
+        BTreeSet::from([
+            OccurrenceBinding::new("2026-03-18T10:00", at_key),
+            OccurrenceBinding::new("2026-03-25T10:00", after),
+        ])
+    );
+    assert_eq!(blocks_of(&db, before), BTreeSet::from([id]));
+    assert_eq!(blocks_of(&db, at_key), BTreeSet::from([next]));
+    assert_eq!(blocks_of(&db, after), BTreeSet::from([next]));
+    assert_eq!(titles_on(&e, &db, 11), ["Agenda"]);
+    assert_eq!(titles_on(&e, &db, 18), ["Demo"]);
+    assert_eq!(titles_on(&e, &db, 25), ["Retro notes"]);
+
+    // Binding again on the continuation names its own occurrences.
+    e.apply(&mut db, bind(next, before, Some("2026-04-01T09:00".into())))
+        .unwrap_err();
+    e.apply(&mut db, bind(next, before, Some("2026-04-01T10:00".into())))
+        .unwrap();
+    assert_eq!(blocks_of(&db, before), BTreeSet::from([id, next]));
+    e.assert_rebuild_identity(&db);
+}
+
+/// Deleting *this and future* ends the series before the key, and the
+/// bindings of the weeks it removed go with them.
+#[test]
+fn deleting_this_and_future_drops_the_bindings_of_the_weeks_it_removed() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let kept = new_task(&e, &mut db, "Agenda");
+    let gone = new_task(&e, &mut db, "Retro notes");
+    e.apply(&mut db, bind(id, kept, Some(key(11)))).unwrap();
+    e.apply(&mut db, bind(id, gone, Some(key(25)))).unwrap();
+
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::ThisAndFuture { key: key(18) },
+        },
+    )
+    .unwrap();
+    let ended = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(
+        ended.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new(key(11), kept)])
+    );
+    assert_eq!(blocks_of(&db, kept), BTreeSet::from([id]));
+    assert!(blocks_of(&db, gone).is_empty());
+    e.assert_rebuild_identity(&db);
+}
+
+/// Two devices binding two tasks to the same week at once both keep their
+/// binding: `occurrence_tasks` merges as an OR-set.
+#[test]
+fn two_devices_binding_the_same_week_both_keep_their_binding() {
+    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    trust(&ea, &mut dba, &eb);
+    ea.advertise_features(&mut dba).unwrap();
+    eb.advertise_features(&mut dbb).unwrap();
+    let sync = |dba: &mut Db, dbb: &mut Db| {
+        for env in all_envelopes(dba) {
+            let _ = eb.apply_remote(dbb, &env);
+        }
+        for env in all_envelopes(dbb) {
+            let _ = ea.apply_remote(dba, &env);
+        }
+    };
+    sync(&mut dba, &mut dbb);
+    let id = ea
+        .apply(
+            &mut dba,
+            Command::CreateBlock(block_draft(9, 1, Some("Standup"))),
+        )
+        .unwrap()
+        .entity;
+    ea.require_features(
+        &mut dba,
+        &[BLOCK_RECURRENCE_FEATURE, BLOCK_OCCURRENCE_TASKS_FEATURE],
+        false,
+    )
+    .unwrap();
+    set_clock(&ca, T0 + 1_000);
+    super::blocks::recur(&ea, &mut dba, id, "FREQ=WEEKLY");
+    let on_a = new_task(&ea, &mut dba, "Agenda");
+    let on_b = new_task(&eb, &mut dbb, "Demo");
+    sync(&mut dba, &mut dbb);
+
+    set_clock(&ca, T0 + 2_000);
+    ea.apply(&mut dba, bind(id, on_a, Some(key(11)))).unwrap();
+    set_clock(&cb, T0 + 3_000);
+    eb.apply(&mut dbb, bind(id, on_b, Some(key(11)))).unwrap();
+    sync(&mut dba, &mut dbb);
+    sync(&mut dba, &mut dbb);
+
+    let want = BTreeSet::from([
+        OccurrenceBinding::new(key(11), on_a),
+        OccurrenceBinding::new(key(11), on_b),
+    ]);
+    for (e, db) in [(&ea, &dba), (&eb, &dbb)] {
+        let block = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+        assert_eq!(block.occurrence_tasks, want);
+        let mut titles = titles_on(e, db, 11);
+        titles.sort();
+        assert_eq!(titles, ["Agenda", "Demo"]);
+        assert!(titles_on(e, db, 18).is_empty());
+    }
+    ea.assert_rebuild_identity(&dba);
+    eb.assert_rebuild_identity(&dbb);
+}
+
+/// Moving the whole series moves every occurrence key, and each binding
+/// moves with the week it named.
+#[test]
+fn moving_the_series_moves_its_bindings_with_their_weeks() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+
+    let an_hour_later = BlockPatch {
+        starts_at: Some(at(4, 10)),
+        ends_at: Some(at(4, 11)),
+        ..BlockPatch::default()
+    };
+    e.apply(&mut db, scoped_update(id, EditScope::All, an_hour_later))
+        .unwrap();
+    let block = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(
+        block.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new("2026-03-11T10:00", task)])
+    );
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+    assert!(titles_on(&e, &db, 18).is_empty());
+    e.assert_rebuild_identity(&db);
+}
