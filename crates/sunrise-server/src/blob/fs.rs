@@ -181,6 +181,14 @@ impl BlobBackend for FsBlobs {
         idx: u32,
         bytes: &[u8],
     ) -> Result<(), BlobError> {
+        // `pending()` would create the directory, so the refusal is decided
+        // before it: `open_upload` is the only thing that makes one. A
+        // discard racing this check can still leave a directory behind,
+        // which holds no `opened` marker and is swept like any abandoned
+        // upload.
+        if !self.upload_dir(account, upload).is_dir() {
+            return Err(BlobError::UploadNotOpen);
+        }
         self.pending(account, upload)?
             .put_chunk(&upload, idx, bytes)
             .map_err(unavailable)

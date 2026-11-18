@@ -140,6 +140,13 @@ pub enum BlobError {
     /// retryable: the same read fails the same way until an operator looks.
     #[error("blob manifest unreadable: {0}")]
     Corrupt(String),
+    /// A chunk was written to an upload that is not open: `init` never
+    /// handed out its id, or it was already finalized, discarded, or swept.
+    /// Not retryable under that id: a request path answers
+    /// `404 SYNC_OP_INVALID`, which tells the client to drop the id and
+    /// reserve a fresh one.
+    #[error("no open upload under that id")]
+    UploadNotOpen,
 }
 
 impl From<std::io::Error> for BlobError {
@@ -176,6 +183,11 @@ pub trait BlobBackend: Send + Sync + std::fmt::Debug {
         upload: [u8; 16],
     ) -> Result<Option<u64>, BlobError>;
     /// Store one pending chunk, replacing any earlier copy whole.
+    ///
+    /// [`BlobError::UploadNotOpen`] for an upload
+    /// [`open_upload`](Self::open_upload) never opened, or one already
+    /// discarded: a chunk is never the thing that creates its upload, so an
+    /// upload that skipped `init` cannot skip what `init` checks.
     async fn put_pending(
         &self,
         account: AccountKey,
