@@ -107,6 +107,27 @@ pub(crate) fn client(base_url: &str, bearer: &str) -> Result<api::Client, String
         ))
 }
 
+/// Whether `error` is a request that failed inside the send, before any
+/// response: a connection refused, reset, or closed without an answer.
+///
+/// The generated client files that class — reqwest's request error — under
+/// [`api::Error::RequestConstruction`], beside the causes that are raised
+/// before anything is sent and fail the same way every time: a missing
+/// credential, a token provider that failed, a header or body that would not
+/// encode. Only the first is the network's, and only this crate names
+/// `reqwest`, so the test that tells them apart lives here.
+///
+/// A request this is true for may have reached the relay, so a caller that
+/// retries it must be one whose call is safe to repeat.
+pub fn failed_in_send<E>(error: &api::Error<E>) -> bool {
+    let api::Error::RequestConstruction(cause) = error else {
+        return false;
+    };
+    std::error::Error::source(cause)
+        .and_then(|source| source.downcast_ref::<reqwest::Error>())
+        .is_some_and(reqwest::Error::is_request)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -117,5 +138,25 @@ mod tests {
             !refused.is_empty(),
             "the refusal carries the client's words"
         );
+    }
+
+    /// A cause raised before the send is never the network's, even when it is
+    /// a reqwest error: only reqwest's request class is.
+    #[test]
+    fn only_a_send_that_failed_is_a_failure_in_the_send() {
+        use super::{api, failed_in_send};
+
+        let built = reqwest::Client::new()
+            .get("http://relay.example")
+            .header("x-bad", "line\nbreak")
+            .build()
+            .expect_err("a header value with a newline does not build");
+        assert!(!built.is_request(), "{built:?}");
+        assert!(!failed_in_send(&api::Error::<()>::request_construction(
+            built
+        )));
+        assert!(!failed_in_send(&api::Error::<()>::request_message(
+            "a parameter did not encode"
+        )));
     }
 }
