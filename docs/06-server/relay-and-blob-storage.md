@@ -228,6 +228,8 @@ What `api/blobs/` does:
    <blob_root>/pending/<blake3(account_id)[..16] hex>/<upload_id>/,
    with the time it was opened beside the chunks.
 2. PUT /api/v1/blobs/<upload_id>/<i>   raw ciphertext chunk → 204
+     an upload_id with no pending area (never opened, finalized, or swept)
+     → 404 SYNC_OP_INVALID, and nothing is stored
 3. POST /api/v1/blobs/finalize { upload_id, content_hash, chunk_hashes }
      a. re-read every pending chunk from disk and re-hash it with BLAKE3;
         a chunk whose digest differs from the client's claim → 400 BLOB_HASH_MISMATCH,
