@@ -50,6 +50,12 @@ zeroize = { workspace = true }
 # `blake3` normal dependency).
 serde_jcs = { workspace = true }
 proptest = { workspace = true }
+# The account, recovery and repair tests seal and open recovery blobs without
+# being about the KDF: the cheap Argon2id set (`sunrise-crypto`'s
+# `test-cheap-kdf`), as `sunrise-client-core` takes it. At the production
+# 64 MiB, t=3 set each seal and open costs seconds in a debug build, and every
+# mutant cargo-mutants tests pays this crate's whole test run again (#1122).
+sunrise-crypto = { workspace = true, features = ["test-cheap-kdf"] }
 sunrise-crypto-test-vectors = { workspace = true }
 # `test_util::events_emitted_by`, so an engine test that asserts an `ev` fired
 # shares the one tracing interest-cache pin instead of carrying its own.
