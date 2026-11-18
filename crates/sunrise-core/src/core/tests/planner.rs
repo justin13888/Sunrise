@@ -84,3 +84,48 @@ async fn a_closed_vault_previews_nothing() {
     ));
     assert!(matches!(core.plan_commit(diff.id), Err(PlanError::Closed)));
 }
+
+#[test]
+fn every_plan_error_answers_its_registered_code() {
+    use sunrise_error::{ErrorCode, ErrorKind};
+    let cases = [
+        (PlanError::Stale, ErrorCode::PlanStale, ErrorKind::Permanent),
+        (
+            PlanError::Unknown,
+            ErrorCode::PlanUnknown,
+            ErrorKind::Permanent,
+        ),
+        (
+            PlanError::NotCommittable,
+            ErrorCode::PlanNotCommittable,
+            ErrorKind::User,
+        ),
+        (
+            PlanError::Invalid("x".into()),
+            ErrorCode::PlanInvalid,
+            ErrorKind::User,
+        ),
+        (
+            PlanError::Closed,
+            ErrorCode::PlanClosed,
+            ErrorKind::Permanent,
+        ),
+        (
+            PlanError::from(rusqlite::Error::InvalidQuery),
+            ErrorCode::PlanFailed,
+            ErrorKind::Internal,
+        ),
+    ];
+    for (err, code, kind) in cases {
+        assert_eq!(err.code(), code, "{err}");
+        assert_eq!(code.default_kind(), kind, "{code}");
+        assert!(!code.retryable(), "{code} is never re-sent as it was");
+    }
+    // The two codes a client branches on also lead the message it reads.
+    assert!(PlanError::Stale
+        .to_string()
+        .starts_with(ErrorCode::PlanStale.as_str()));
+    assert!(PlanError::Unknown
+        .to_string()
+        .starts_with(ErrorCode::PlanUnknown.as_str()));
+}

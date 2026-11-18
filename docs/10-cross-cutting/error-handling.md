@@ -26,6 +26,15 @@ A finite enum across the system. Examples:
   ADR-0047 §1 made the order of a task's times a warning,
   `CommandResult::ordering_warnings`; the code stays reserved)
 - `INTERNAL_UNKNOWN_CODE`
+- The planner's six, which `PlanError::code` answers
+  ([08-features/planner.md](../08-features/planner.md) §PlanDiff); none is
+  retryable:
+  - `PLAN_STALE` (`permanent`): an input changed since the preview; preview again
+  - `PLAN_UNKNOWN` (`permanent`): no such diff is remembered; preview again
+  - `PLAN_NOT_COMMITTABLE` (`user`): the diff carries a Blocking violation
+  - `PLAN_INVALID` (`user`): the intent names nothing, or the wrong kind
+  - `PLAN_CLOSED` (`permanent`): the vault is closed
+  - `PLAN_FAILED` (`internal`): the planner's read or write failed
 
 Codes are stable across versions; new codes can be added but never repurposed.
 
