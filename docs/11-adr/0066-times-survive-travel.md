@@ -100,6 +100,11 @@ A `zoned` value persists its **civil date-time and its zone name**, beside its
   time and name byte for byte. It reads with `zone_unknown = true` and
   resolves in the reader's zone for display (time.md §3). It is never
   rewritten as UTC.
+- An `instant` has no civil value, so it is stored as its `index_ms` alone,
+  at millisecond resolution: a finer fraction the wire carried is truncated
+  toward zero, and a key past either end of the timestamp range reads back
+  as that end, never the epoch (time.md §1,
+  [#898](https://github.com/justin13888/Sunrise/issues/898)).
 - The storage change is a `STORAGE_V` migration. It back-fills each `zoned`
   row's civil time from its current `index_ms` and zone. This is the last
   time that derivation runs.
