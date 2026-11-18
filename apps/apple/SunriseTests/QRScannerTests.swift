@@ -48,15 +48,17 @@ struct QRScannerTests {
         #expect(QRDecoder.firstPayload(in: image) == payload)
     }
 
-    /// The detector a device without an inference context falls back to — the
-    /// iOS simulator is one (#1144) — reads the same symbol. Pinned here so a
-    /// Mac, whose current detector runs, still proves the fallback reads.
+    /// The oldest detector, the one a device without an inference context ends
+    /// up reading with — the iOS simulator is one (#1144) — reads the same
+    /// symbol, and reads a blank frame as nothing. Pinned here so a Mac, whose
+    /// newest detector runs, still proves the end of the fallback reads.
     @Test
-    func theFallbackDetectorReadsTheSamePayload() throws {
+    func theOldestDetectorReadsTheSamePayload() throws {
         let payload = try realPayload()
         let image = try #require(QRCode.cgImage(for: payload))
-        #expect(QRDecoder.firstPayload(in: image, revision: QRDecoder.fallbackRevision) == payload)
-        #expect(QRDecoder.firstPayload(in: try blankFrame(), revision: QRDecoder.fallbackRevision) == nil)
+        let oldest = try #require(QRDecoder.oldestRevision)
+        #expect(QRDecoder.firstPayload(in: image, revision: oldest) == payload)
+        #expect(QRDecoder.firstPayload(in: try blankFrame(), revision: oldest) == nil)
     }
 
     /// A frame with no code in it is nothing, not an error and not a guess.
