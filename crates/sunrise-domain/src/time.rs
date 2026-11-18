@@ -448,9 +448,17 @@ impl SunriseTime {
     /// [`SunriseTime::Instant`] at `index_ms` rather than failing: that is
     /// still a real time, a well-formed one to re-emit, and refusing to read
     /// it would lose the whole task over one column.
+    ///
+    /// An instant is read back at the index column's millisecond resolution:
+    /// [`SunriseTime::index_ms`] truncated any finer fraction toward zero, and
+    /// that is the storage contract (`docs/10-cross-cutting/time.md` §1). Every
+    /// key in the timestamp range reads back as exactly that millisecond, the
+    /// last second of the range included. A key past either end, which no
+    /// value this build writes produces, reads as that end of the range,
+    /// never the epoch.
     #[must_use]
     pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>, civil: Option<&str>) -> Self {
-        let at = Timestamp::from_millisecond(index_ms).unwrap_or(Timestamp::UNIX_EPOCH);
+        let at = instant_at_ms(index_ms);
         let utc_civil = || at.to_zoned(TimeZone::UTC).datetime();
         let stored_civil = civil.and_then(|c| c.parse::<civil::DateTime>().ok());
         match kind {
@@ -493,6 +501,21 @@ impl SunriseTime {
     pub const fn is_all_day(&self) -> bool {
         matches!(self, Self::AllDay { .. })
     }
+}
+
+/// The instant an index key names, at millisecond resolution.
+///
+/// Not [`Timestamp::from_millisecond`]: that refuses the last second of the
+/// range, whose keys `Timestamp::MAX.as_millisecond()` and its neighbours are
+/// (#898). A key past either end clamps to that end.
+fn instant_at_ms(index_ms: i64) -> Timestamp {
+    Timestamp::from_duration(jiff::SignedDuration::from_millis(index_ms)).unwrap_or(
+        if index_ms < 0 {
+            Timestamp::MIN
+        } else {
+            Timestamp::MAX
+        },
+    )
 }
 
 impl std::fmt::Display for SunriseTime {
