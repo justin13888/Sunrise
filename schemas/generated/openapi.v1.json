@@ -4592,6 +4592,7 @@
     "/api/v1/blobs/{upload_id}/{chunk_idx}": {
       "put": {
         "summary": "Store one chunk of opaque ciphertext.",
+        "description": "Only into an upload `init` opened and nothing has finalized, discarded or\nswept since. Any other well-formed id is `404 SYNC_OP_INVALID`: the chunk is\nrefused rather than filed under a pending area made on the spot, so an\nupload cannot skip `init`'s bounds and open-upload ledger, and the client\nreads the code as a spent upload id and reserves a fresh one.",
         "operationId": "putBlobChunk",
         "parameters": [
           {
