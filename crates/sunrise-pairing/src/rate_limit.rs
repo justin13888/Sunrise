@@ -45,6 +45,11 @@ impl AttemptLimit {
 
 /// One key's pair attempts over the last day, oldest first.
 ///
+/// The log is kept in time order even when `now_ms` steps back between two
+/// attempts: an attempt is inserted where its timestamp sorts, not appended,
+/// so the oldest attempt in a window is always the first one in it and the
+/// `Retry-After` a refusal promises is exactly when a retry is admitted.
+///
 /// A sliding log rather than a token bucket because the spec's limits are
 /// stated as *rolling* windows, and `Retry-After` has to be "the seconds until
 /// the next slot opens" — the moment the oldest attempt inside a full window
@@ -83,7 +88,9 @@ impl AttemptWindow {
         if wait > 0 {
             return Err(wait);
         }
-        self.admitted_ms.push_back(now_ms);
+        // After every attempt already logged, unless the clock stepped back.
+        let at = self.admitted_ms.partition_point(|&t| t <= now_ms);
+        self.admitted_ms.insert(at, now_ms);
         Ok(())
     }
 
@@ -103,20 +110,20 @@ impl AttemptWindow {
 
     /// With `cap` attempts admitted inside the `span_ms` ending now, the
     /// milliseconds until the oldest of them leaves the window.
+    ///
+    /// The log is sorted, so the attempts inside the window are a suffix of
+    /// it, oldest first. Attempts logged later than `now_ms` (before a clock
+    /// step-back) are inside it too.
     fn full_until(&self, cap: u32, span_ms: u64, now_ms: u64) -> Option<u64> {
         let horizon = now_ms.saturating_sub(span_ms);
-        let inside: Vec<u64> = self
-            .admitted_ms
-            .iter()
-            .copied()
-            .filter(|&t| t > horizon)
-            .collect();
+        let first_inside = self.admitted_ms.partition_point(|&t| t <= horizon);
+        let inside = self.admitted_ms.len() - first_inside;
         let cap = usize::try_from(cap).unwrap_or(usize::MAX);
-        if inside.len() < cap {
+        if inside < cap {
             return None;
         }
         // The attempt whose expiry brings the count back under `cap`.
-        let pivot = inside[inside.len() - cap];
+        let pivot = self.admitted_ms[first_inside + inside - cap];
         Some((pivot + span_ms).saturating_sub(now_ms).max(1))
     }
 }
@@ -164,17 +171,12 @@ mod tests {
         assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, T0 + DAY_MS), Ok(()));
     }
 
-    /// Characterization, not endorsement: this pins what the window does today
-    /// when `now_ms` steps back, so a later change to it is a visible one.
-    ///
-    /// An attempt admitted after a step-back is appended behind later ones,
-    /// so the log is no longer sorted. `full_until` still reads the front of
-    /// the in-window attempts as the oldest, so the `Retry-After` it promises
-    /// is the expiry of the first attempt by position (`T0`), not of the one
-    /// that is oldest by time (`T0 - 5_000`) — and a retry is in fact admitted
-    /// five seconds before the promised moment.
+    /// An attempt admitted after a step-back (`T0 - 5_000`, logged after nine
+    /// attempts from `T0`) is the oldest in the hour, so the `Retry-After` a
+    /// refusal promises is its expiry, and the retry is admitted exactly then
+    /// and not a millisecond before.
     #[test]
-    fn a_clock_step_back_promises_the_expiry_of_the_first_logged_attempt() {
+    fn a_clock_step_back_promises_the_expiry_of_the_oldest_attempt() {
         let mut w = AttemptWindow::default();
         for i in 0..9 {
             assert_eq!(
@@ -184,13 +186,19 @@ mod tests {
         }
         let stepped_back = T0 - 5_000;
         assert_eq!(w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back), Ok(()));
+        assert!(
+            w.admitted_ms.iter().is_sorted(),
+            "the log stays in time order"
+        );
         let now = T0 + 10_000;
         assert_eq!(
             w.try_admit(AttemptLimit::PER_ACCOUNT, now),
-            Err(T0 + HOUR_MS - now)
+            Err(stepped_back + HOUR_MS - now)
         );
-        // The stepped-back attempt leaves the hour first, and its slot opens
-        // before the wait above has run out.
+        assert!(w
+            .clone()
+            .try_admit(AttemptLimit::PER_ACCOUNT, stepped_back + HOUR_MS - 1)
+            .is_err());
         assert_eq!(
             w.try_admit(AttemptLimit::PER_ACCOUNT, stepped_back + HOUR_MS),
             Ok(())
@@ -249,6 +257,97 @@ mod tests {
         admitted.iter().filter(|&&t| t > horizon).count()
     }
 
+    /// Moves between consecutive attempts that may step the clock back:
+    /// mostly forward as `gap_ms`, sometimes back by up to two days, so a
+    /// step-back lands inside the hour, inside the day, and past attempts the
+    /// window has already forgotten.
+    fn step_ms() -> impl proptest::strategy::Strategy<Value = i64> {
+        use proptest::prelude::*;
+        let back = i64::try_from(2 * DAY_MS).unwrap();
+        prop_oneof![
+            8 => gap_ms().prop_map(|g| i64::try_from(g).unwrap()),
+            2 => (1..=back).prop_map(|b| -b),
+        ]
+    }
+
+    /// Feeds `arrivals` to one window and checks, at every attempt, against a
+    /// model that counts the attempts the window still holds: an attempt is
+    /// admitted exactly when both rolling windows ending at it are under their
+    /// caps; a refusal records nothing; its wait is the earliest moment a
+    /// retry is admitted; and the log stays sorted and never holds more than
+    /// one day's admissible attempts.
+    ///
+    /// The model forgets what aged out of the day at each attempt, as the
+    /// window does: over a non-decreasing sequence that changes nothing, and
+    /// after a step-back an attempt the window has forgotten stays forgotten.
+    fn check_arrivals(
+        limit: AttemptLimit,
+        arrivals: impl IntoIterator<Item = u64>,
+    ) -> Result<(), proptest::test_runner::TestCaseError> {
+        let day_bound = usize::try_from(
+            limit
+                .per_day
+                .map_or(24 * limit.per_hour, |d| d.min(24 * limit.per_hour)),
+        )
+        .unwrap();
+        let per_hour = usize::try_from(limit.per_hour).unwrap();
+        let per_day = limit.per_day.map(|d| usize::try_from(d).unwrap());
+        let mut w = AttemptWindow::default();
+        let mut admitted: Vec<u64> = Vec::new();
+        for now in arrivals {
+            admitted.retain(|&t| t > now.saturating_sub(DAY_MS));
+            // Checking every window that ends at an attempt covers every
+            // rolling window: the count only rises at an attempt.
+            let hour_has_room = count_inside(&admitted, HOUR_MS, now) < per_hour;
+            let day_has_room = per_day.is_none_or(|cap| count_inside(&admitted, DAY_MS, now) < cap);
+            let before = w.clone();
+            match w.try_admit(limit, now) {
+                Ok(()) => {
+                    proptest::prop_assert!(
+                        hour_has_room && day_has_room,
+                        "admitted at {now} past a full window"
+                    );
+                    admitted.push(now);
+                }
+                Err(wait) => {
+                    proptest::prop_assert!(
+                        !(hour_has_room && day_has_room),
+                        "refused at {now} with room in both windows"
+                    );
+                    proptest::prop_assert!(wait >= 1);
+                    // A refusal records nothing: what is left is what was
+                    // there, less what aged out of the day.
+                    let kept = w.admitted_ms.len();
+                    proptest::prop_assert!(kept <= before.admitted_ms.len());
+                    proptest::prop_assert!(before
+                        .admitted_ms
+                        .iter()
+                        .skip(before.admitted_ms.len() - kept)
+                        .eq(w.admitted_ms.iter()));
+                    let mut retry = w.clone();
+                    proptest::prop_assert_eq!(retry.try_admit(limit, now + wait), Ok(()));
+                    let mut early = w.clone();
+                    proptest::prop_assert!(
+                        early.try_admit(limit, now + wait - 1).is_err(),
+                        "a retry before the promised wait of {wait} was admitted"
+                    );
+                }
+            }
+            proptest::prop_assert!(w.admitted_ms.iter().is_sorted(), "log out of time order");
+            proptest::prop_assert_eq!(w.admitted_ms.len(), admitted.len());
+            proptest::prop_assert!(
+                w.admitted_ms.len() <= day_bound,
+                "log holds {} attempts, over a day's {day_bound}",
+                w.admitted_ms.len()
+            );
+            proptest::prop_assert!(w
+                .admitted_ms
+                .iter()
+                .all(|&t| t > now.saturating_sub(DAY_MS)));
+        }
+        Ok(())
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
             cases: sunrise_test_seed::proptest_cases(512),
@@ -256,71 +355,33 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Over any non-decreasing arrival sequence: an attempt is admitted
-        /// exactly when both rolling windows ending at it are under their
-        /// caps, so no rolling hour or day ever holds more than its cap; a
-        /// refusal's wait is the earliest moment a retry is admitted; and the
-        /// log never holds more than one day's admissible attempts.
+        /// Over any non-decreasing arrival sequence the window holds its caps
+        /// and keeps its promises, as `check_arrivals` states them.
         #[test]
         fn the_window_holds_its_caps_over_any_arrival_sequence(
             limit in limit(),
             gaps in proptest::collection::vec(gap_ms(), 1..200),
         ) {
-            let day_bound = usize::try_from(
-                limit.per_day.map_or(24 * limit.per_hour, |d| d.min(24 * limit.per_hour)),
-            ).unwrap();
-            let per_hour = usize::try_from(limit.per_hour).unwrap();
-            let per_day = limit.per_day.map(|d| usize::try_from(d).unwrap());
-            let mut w = AttemptWindow::default();
-            let mut admitted: Vec<u64> = Vec::new();
-            let mut now = T0;
-            for gap in gaps {
-                now += gap;
-                // Checking every window that ends at an attempt covers every
-                // rolling window: the count only rises at an attempt.
-                let hour_has_room = count_inside(&admitted, HOUR_MS, now) < per_hour;
-                let day_has_room =
-                    per_day.is_none_or(|cap| count_inside(&admitted, DAY_MS, now) < cap);
-                let before = w.clone();
-                match w.try_admit(limit, now) {
-                    Ok(()) => {
-                        proptest::prop_assert!(
-                            hour_has_room && day_has_room,
-                            "admitted at {now} past a full window"
-                        );
-                        admitted.push(now);
-                    }
-                    Err(wait) => {
-                        proptest::prop_assert!(
-                            !(hour_has_room && day_has_room),
-                            "refused at {now} with room in both windows"
-                        );
-                        proptest::prop_assert!(wait >= 1);
-                        // A refusal records nothing: what is left is what was
-                        // there, less what aged out of the day.
-                        let kept = w.admitted_ms.len();
-                        proptest::prop_assert!(kept <= before.admitted_ms.len());
-                        proptest::prop_assert!(before
-                            .admitted_ms
-                            .iter()
-                            .skip(before.admitted_ms.len() - kept)
-                            .eq(w.admitted_ms.iter()));
-                        let mut retry = w.clone();
-                        proptest::prop_assert_eq!(retry.try_admit(limit, now + wait), Ok(()));
-                        let mut early = w.clone();
-                        proptest::prop_assert!(
-                            early.try_admit(limit, now + wait - 1).is_err(),
-                            "a retry before the promised wait of {wait} was admitted"
-                        );
-                    }
-                }
-                proptest::prop_assert!(
-                    w.admitted_ms.len() <= day_bound,
-                    "log holds {} attempts, over a day's {day_bound}",
-                    w.admitted_ms.len()
-                );
-                proptest::prop_assert!(w.admitted_ms.iter().all(|&t| t > now.saturating_sub(DAY_MS)));
-            }
+            let arrivals = gaps.into_iter().scan(T0, |now, gap| {
+                *now += gap;
+                Some(*now)
+            });
+            check_arrivals(limit, arrivals)?;
+        }
+
+        /// The same holds when the clock steps back between attempts: a
+        /// refusal's wait is never longer than the moment a retry is in fact
+        /// admitted, and never shorter.
+        #[test]
+        fn the_window_holds_its_caps_when_the_clock_steps_back(
+            limit in limit(),
+            steps in proptest::collection::vec(step_ms(), 1..200),
+        ) {
+            let arrivals = steps.into_iter().scan(T0, |now, step| {
+                *now = now.saturating_add_signed(step);
+                Some(*now)
+            });
+            check_arrivals(limit, arrivals)?;
         }
     }
 }
