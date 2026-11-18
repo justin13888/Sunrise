@@ -303,10 +303,7 @@ fn routines_refuse_a_typed_rule_they_cannot_expand() {
     assert!(err.contains("BYSETPOS"), "{err}");
     // The edit is refused whole: the stored rule is the one created.
     let shown = ok(v, &["routines", "--json"]);
-    assert!(
-        shown.contains("BYDAY=MO") && !shown.contains("1MO"),
-        "{shown}"
-    );
+    assert!(shown.contains(r#""rule":"every week on Mo""#), "{shown}");
 }
 
 #[test]
