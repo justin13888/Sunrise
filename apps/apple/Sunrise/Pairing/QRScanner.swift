@@ -28,26 +28,60 @@ import VisionKit
 /// the one most often refused. A refusal is not a dead end — the scanner
 /// shows why and offers the paste field in one tap.
 enum QRDecoder {
-    /// The first non-empty QR payload Vision finds through `handler`.
-    static func firstPayload(_ handler: VNImageRequestHandler) -> String? {
-        let request = VNDetectBarcodesRequest()
-        request.symbologies = [.qr]
-        do {
-            try handler.perform([request])
-        } catch {
-            return nil
-        }
-        return request.results?.lazy
-            .compactMap(\.payloadStringValue)
-            .first { !$0.isEmpty }
+    /// The oldest detector Vision still ships: the last one a device that
+    /// cannot run the newer ones falls back to.
+    ///
+    /// Vision's newer barcode detectors need an inference context, and a
+    /// device that cannot make one refuses them outright. In the iOS
+    /// simulator's app and test processes every revision from 2 up throws
+    /// "Could not create inference context" (Vision error 9), on every runtime
+    /// it has been tried on (#1144), and only revision 1 reads. `usesCPUOnly`
+    /// does not rescue the newer ones: the request then succeeds and finds
+    /// nothing. Every revision reads the same ISO 18004 symbol.
+    static var oldestRevision: Int? {
+        VNDetectBarcodesRequest.supportedRevisions.first
     }
 
-    static func firstPayload(in image: CGImage) -> String? {
-        firstPayload(VNImageRequestHandler(cgImage: image, options: [:]))
+    /// The first non-empty QR payload Vision finds through the handler
+    /// `handler` makes.
+    ///
+    /// `revision` pins a detector. `nil` asks for the newest one Vision
+    /// supports, and where that one cannot run here, for each older one in
+    /// turn until one runs; the answer is the first detector that ran, so a
+    /// frame with no code is read once, not once per revision. Each attempt
+    /// gets a handler of its own: one whose `perform` has failed fails every
+    /// later request with the same error, whatever its revision.
+    static func firstPayload(
+        _ handler: () -> VNImageRequestHandler,
+        revision: Int? = nil
+    ) -> String? {
+        if let revision { return read(handler, revision: revision).flatMap(\.self) }
+        for newestFirst in VNDetectBarcodesRequest.supportedRevisions.reversed() {
+            if let ran = read(handler, revision: newestFirst) { return ran }
+        }
+        return nil
+    }
+
+    /// One attempt with one detector: `nil` when it cannot run here,
+    /// `.some(nil)` when it ran and found no code.
+    private static func read(_ handler: () -> VNImageRequestHandler, revision: Int) -> String?? {
+        let request = VNDetectBarcodesRequest()
+        request.symbologies = [.qr]
+        request.revision = revision
+        guard (try? handler().perform([request])) != nil else { return nil }
+        return .some(
+            request.results?.lazy
+                .compactMap(\.payloadStringValue)
+                .first { !$0.isEmpty }
+        )
+    }
+
+    static func firstPayload(in image: CGImage, revision: Int? = nil) -> String? {
+        firstPayload({ VNImageRequestHandler(cgImage: image, options: [:]) }, revision: revision)
     }
 
     static func firstPayload(in buffer: CVPixelBuffer) -> String? {
-        firstPayload(VNImageRequestHandler(cvPixelBuffer: buffer, options: [:]))
+        firstPayload { VNImageRequestHandler(cvPixelBuffer: buffer, options: [:]) }
     }
 }
 
