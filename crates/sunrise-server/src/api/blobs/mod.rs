@@ -207,6 +207,12 @@ pub async fn init(
 }
 
 /// Store one chunk of opaque ciphertext.
+///
+/// Only into an upload `init` opened and nothing has finalized, discarded or
+/// swept since. Any other well-formed id is `404 SYNC_OP_INVALID`: the chunk is
+/// refused rather than filed under a pending area made on the spot, so an
+/// upload cannot skip `init`'s bounds and open-upload ledger, and the client
+/// reads the code as a spent upload id and reserves a fresh one.
 #[kynos::put("/api/v1/blobs/{upload_id}/{chunk_idx}", operation_id = "putBlobChunk")]
 pub async fn put_chunk(
     Inject(state): Inject<ServerState>,

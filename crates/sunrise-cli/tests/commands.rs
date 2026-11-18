@@ -248,6 +248,64 @@ fn routines_are_created_edited_skipped_and_deleted() {
         .success());
 }
 
+/// A typed rule this build cannot expand would be saved as a routine that
+/// never fires, so create and edit refuse it, naming the `BYSETPOS` spelling
+/// of an ordinal `BYDAY`, and nothing is written.
+#[test]
+fn routines_refuse_a_typed_rule_they_cannot_expand() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = dir.path();
+    let refused = |args: &[&str]| {
+        let out = run_in(v, args);
+        assert!(
+            !out.status.success(),
+            "`sunrise {}` succeeded",
+            args.join(" ")
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    let err = refused(&[
+        "routines",
+        "create",
+        "Standup",
+        "--rule",
+        "FREQ=MONTHLY;BYDAY=1MO",
+    ]);
+    assert!(err.contains("BYDAY=MO;BYSETPOS=1"), "{err}");
+    let err = refused(&[
+        "routines",
+        "create",
+        "Standup",
+        "--rule",
+        "RRULE:FREQ=WEEKLY;BYDAY=XX",
+    ]);
+    assert!(err.contains("BYDAY: XX"), "{err}");
+    assert!(!ok(v, &["routines"]).contains("Standup"));
+
+    ok(
+        v,
+        &[
+            "routines",
+            "create",
+            "Review",
+            "--rule",
+            "FREQ=WEEKLY;BYDAY=MO",
+        ],
+    );
+    let err = refused(&[
+        "routines",
+        "edit",
+        "Review",
+        "--rule",
+        "FREQ=MONTHLY;BYDAY=1MO",
+    ]);
+    assert!(err.contains("BYSETPOS"), "{err}");
+    // The edit is refused whole: the stored rule is the one created.
+    let shown = ok(v, &["routines", "--json"]);
+    assert!(shown.contains(r#""rule":"every week on Mo""#), "{shown}");
+}
+
 #[test]
 fn blocks_are_created_moved_bound_and_merged() {
     let dir = tempfile::tempdir().unwrap();

@@ -486,6 +486,7 @@ lifts the tombstone, because the attachment is back.
 | 401 | `AUTH_TOKEN_INVALID` | Missing or unverifiable bearer. | After OIDC refresh. |
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
 | 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**, on a fetch or a `DELETE`. | No. |
+| 404 | `SYNC_OP_INVALID` | A chunk `PUT` under a well-formed upload id that is not open **for this account**: `init` never handed it out, or it was finalized or swept. Nothing is stored. | No: the client drops the id and reserves a new one with `init`. |
 | 403 | `ACCOUNT_PENDING_DELETION` | `init`, a chunk `PUT` or `finalize` for an account whose deletion is confirmed. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
 

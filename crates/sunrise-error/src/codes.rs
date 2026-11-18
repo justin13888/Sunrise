@@ -144,6 +144,22 @@ pub enum ErrorCode {
     // Internal
     /// Catastrophic internal error (e.g., panic caught at FFI boundary).
     FatalInternal,
+
+    // Planner (`docs/08-features/planner.md` §PlanDiff)
+    /// An input the previewed diff was solved from changed before the
+    /// commit. Nothing was written; preview again.
+    PlanStale,
+    /// No such diff is remembered — evicted, cancelled, already committed,
+    /// or the vault reopened. Nothing was written; preview again.
+    PlanUnknown,
+    /// The diff carries a Blocking violation.
+    PlanNotCommittable,
+    /// The intent names nothing the vault holds, or the wrong kind.
+    PlanInvalid,
+    /// The vault is closed.
+    PlanClosed,
+    /// The planner's read or write failed; nothing was written.
+    PlanFailed,
 }
 
 impl ErrorCode {
@@ -198,6 +214,12 @@ impl ErrorCode {
             Self::IntegrationRateLimited => "INTEGRATION_RATE_LIMITED",
             Self::RateLimited => "RATE_LIMITED",
             Self::FatalInternal => "FATAL_INTERNAL",
+            Self::PlanStale => "PLAN_STALE",
+            Self::PlanUnknown => "PLAN_UNKNOWN",
+            Self::PlanNotCommittable => "PLAN_NOT_COMMITTABLE",
+            Self::PlanInvalid => "PLAN_INVALID",
+            Self::PlanClosed => "PLAN_CLOSED",
+            Self::PlanFailed => "PLAN_FAILED",
         }
     }
 
@@ -211,7 +233,8 @@ impl ErrorCode {
             | Self::CryptoAadMismatch
             | Self::CryptoNonCanonicalCbor
             | Self::CryptoSigVerifyFailed
-            | Self::FatalInternal => ErrorKind::Internal,
+            | Self::FatalInternal
+            | Self::PlanFailed => ErrorKind::Internal,
             // User
             Self::ValidationInvalidTitle
             | Self::ValidationDueBeforeScheduled
@@ -228,7 +251,9 @@ impl ErrorCode {
             | Self::CryptoRecoveryBlobInvalid
             | Self::SyncBatchTooLarge
             | Self::SyncStreamNotFound
-            | Self::IntegrationReauthRequired => ErrorKind::User,
+            | Self::IntegrationReauthRequired
+            | Self::PlanNotCommittable
+            | Self::PlanInvalid => ErrorKind::User,
             // Permanent
             Self::AuthDeviceRevoked
             | Self::CryptoSuiteMismatch
@@ -246,7 +271,10 @@ impl ErrorCode {
             | Self::CapabilityRequiredMissing
             | Self::DocFeatureMissing
             | Self::RelayGrantRevoked
-            | Self::RelayPairSessionGone => ErrorKind::Permanent,
+            | Self::RelayPairSessionGone
+            | Self::PlanStale
+            | Self::PlanUnknown
+            | Self::PlanClosed => ErrorKind::Permanent,
             // Transient
             Self::AuthTokenExpired
             | Self::StorageVaultLocked
@@ -274,7 +302,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 45] {
+    pub const fn all() -> [Self; 51] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -321,6 +349,12 @@ impl ErrorCode {
             Self::IntegrationRateLimited,
             Self::RateLimited,
             Self::FatalInternal,
+            Self::PlanStale,
+            Self::PlanUnknown,
+            Self::PlanNotCommittable,
+            Self::PlanInvalid,
+            Self::PlanClosed,
+            Self::PlanFailed,
         ]
     }
 

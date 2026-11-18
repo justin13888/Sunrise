@@ -51,11 +51,9 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   `BindingError::PlanRefused(String)`, whose message names which; `Stale`
 >   and `Unknown` keep their own variants, and `Closed` and `Engine` cross as
 >   `BindingError::Core`. A client knows a refused drop before committing it
->   from the diff's `committable`. `PlanError::code` also answers
->   `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`, `PLAN_CLOSED` and `PLAN_FAILED`,
->   which the error-code registry does not list yet; it gains `PLAN_STALE`
->   and `PLAN_UNKNOWN` with
->   [#1159](https://github.com/justin13888/Sunrise/issues/1159).
+>   from the diff's `committable`. `PlanError::code` answers a registered
+>   `ErrorCode` for every variant: `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`,
+>   `PLAN_CLOSED` and `PLAN_FAILED` besides `PLAN_STALE` and `PLAN_UNKNOWN`.
 > - `plan_commit` stores the inverse in `planner_commits` and
 >   `planner_commit_fields` (migration 0050), and only for each field whose
 >   register its write changed. `Core::plan_undo` and its UniFFI binding are
@@ -266,11 +264,11 @@ pub enum PlanError {
 }
 ```
 
-`PlanError::code` answers `PLAN_STALE` and `PLAN_UNKNOWN`, and UniFFI carries
-them as `BindingError::PlanStale` and `BindingError::PlanUnknown`. They join the
-error-code registry
-([`../10-cross-cutting/error-handling.md`](../10-cross-cutting/error-handling.md))
-with [#1159](https://github.com/justin13888/Sunrise/issues/1159).
+`PlanError::code` answers the registry's `ErrorCode` (`PLAN_STALE` and
+`PLAN_UNKNOWN` among the six in `crates/sunrise-error/codes.toml`, listed in
+[`../10-cross-cutting/error-handling.md`](../10-cross-cutting/error-handling.md)),
+and UniFFI carries those two as `BindingError::PlanStale` and
+`BindingError::PlanUnknown`.
 
 ## Inputs
 

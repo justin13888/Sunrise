@@ -125,6 +125,7 @@ const BLOB: [u8; 16] = [0xbb; 16];
 /// Run every check against a backend that starts empty.
 pub(crate) async fn run(backend: &dyn BlobBackend) {
     pending_uploads_are_per_upload_and_per_account(backend).await;
+    a_chunk_needs_an_open_upload(backend).await;
     an_interrupted_finalize_leaves_no_readable_blob(backend).await;
     a_committed_blob_reads_back_and_is_removed_manifest_first(backend).await;
     erasure_takes_both_areas_of_one_account(backend).await;
@@ -196,6 +197,42 @@ async fn pending_uploads_are_per_upload_and_per_account(backend: &dyn BlobBacken
         "a discard touches no other upload"
     );
     backend.discard_upload(ALICE, OTHER_UPLOAD).await.unwrap();
+}
+
+/// A chunk is never what creates its upload: one under an id never opened,
+/// under another account's open upload, or under one already discarded is
+/// refused, and leaves nothing behind that a later finalize could commit.
+async fn a_chunk_needs_an_open_upload(backend: &dyn BlobBackend) {
+    assert!(matches!(
+        backend.put_pending(ALICE, UPLOAD, 0, b"stray").await,
+        Err(BlobError::UploadNotOpen)
+    ));
+    assert_eq!(backend.get_pending(ALICE, UPLOAD, 0).await.unwrap(), None);
+    assert_eq!(
+        backend.usage().await.unwrap().pending_uploads,
+        0,
+        "a refused chunk opens no upload"
+    );
+
+    backend.open_upload(BOB, UPLOAD, 0).await.unwrap();
+    assert!(
+        matches!(
+            backend.put_pending(ALICE, UPLOAD, 0, b"stray").await,
+            Err(BlobError::UploadNotOpen)
+        ),
+        "another account's open upload is not this account's"
+    );
+
+    backend.put_pending(BOB, UPLOAD, 0, b"kept").await.unwrap();
+    backend.discard_upload(BOB, UPLOAD).await.unwrap();
+    assert!(
+        matches!(
+            backend.put_pending(BOB, UPLOAD, 0, b"late").await,
+            Err(BlobError::UploadNotOpen)
+        ),
+        "a discarded upload does not come back on a late chunk"
+    );
+    assert_eq!(backend.get_pending(BOB, UPLOAD, 0).await.unwrap(), None);
 }
 
 /// Chunks committed with no manifest after them — a finalize that stopped
