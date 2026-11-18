@@ -270,7 +270,11 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+        let anchor = block.starts_at.clone();
         apply_block_patch(&mut block, patch)?;
+        // Moving a series' anchor moves its occurrence keys, and each
+        // occurrence binding moves with the occurrence it named.
+        block.shift_bindings(&anchor);
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&self.device_zone())?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
@@ -410,7 +414,11 @@ impl Engine {
             deleted: false,
             ..block
         };
+        let anchor = next.starts_at.clone();
         apply_block_patch(&mut next, patch)?;
+        // An edit that moves the continuation moves its occurrence keys, and
+        // each binding moves with the occurrence it named.
+        next.shift_bindings(&anchor);
         next.validate_invariants(&tz)?;
         let create = if existing.is_some() {
             InnerOp::BlockUpdate(Box::new(next.clone()))

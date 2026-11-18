@@ -621,6 +621,19 @@ fn an_occurrence_binding_names_its_occurrence_alone() {
         BTreeSet::from([OccurrenceBinding::new("2026-03-10T09:00", task(2))])
     );
     assert_eq!(block.tasks, BTreeSet::from([task(1)]));
+
+    // Moving the anchor a day and an hour later moves each key with it; an
+    // anchor that is not civil moves nothing.
+    let anchor = block.starts_at.clone();
+    block.starts_at = SunriseTime::floating(at(2026, 3, 4, 10, 0));
+    block.shift_bindings(&anchor);
+    assert_eq!(
+        block.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new("2026-03-11T10:00", task(2))])
+    );
+    let before = block.occurrence_tasks.clone();
+    block.shift_bindings(&SunriseTime::instant(Timestamp::UNIX_EPOCH));
+    assert_eq!(block.occurrence_tasks, before);
 }
 
 /// A key names an occurrence only when it is one the rule produces.
