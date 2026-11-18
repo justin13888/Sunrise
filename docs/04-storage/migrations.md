@@ -381,6 +381,8 @@ and `Task.late_acknowledged_at` into the columns migration 0046 adds. `FOLD_V` 9
 a later write of `Task.routine_id` into its column. `FOLD_V` 10 (#1147)
 projects a Block's `kind`, `rrule`, `exceptions`, `split_from`, `location`,
 `notes`, `source` and `external_id` into the columns migration 0049 adds.
+`FOLD_V` 11 (#1162) projects a Block's `occurrence_tasks` into `block_tasks`
+under the `occurrence_key` migration 0050 adds.
 
 How it behaves on a large vault, decided for ADR-0065's fourth pull request:
 
