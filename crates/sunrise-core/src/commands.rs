@@ -343,19 +343,36 @@ pub enum Command {
     /// the `block_tasks` index and `Task.blocks` is derived from it on read,
     /// so a concurrent edit of the Task on another device cannot lose the
     /// binding to a full-state write of the Task.
+    ///
+    /// A recurring block binds the Task to one occurrence
+    /// (`docs/02-domain/time-blocks.md` §Recurring blocks), so `occurrence`
+    /// is required for one, and refused for a block with no rule. A key the
+    /// series does not produce, or a cancelled occurrence, is not found.
     BindTask {
         /// Target block.
         block: EntityRef,
         /// Task to bind.
         task: EntityRef,
+        /// The occurrence key of a recurring block's occurrence to bind it
+        /// to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<String>,
     },
     /// Unbind a Task from a Block. The Block survives with no Tasks bound:
     /// an empty Block is a legitimate calendar entry.
+    ///
+    /// With `occurrence`, the Task's binding to that occurrence of a
+    /// recurring block, refused for a block with no rule; without, its
+    /// binding to the whole block.
     UnbindTask {
         /// Target block.
         block: EntityRef,
         /// Task to unbind.
         task: EntityRef,
+        /// The occurrence key of a recurring block's occurrence to unbind it
+        /// from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<String>,
     },
     /// Record an Attachment against a Task
     /// (`docs/02-domain/attachments.md`).

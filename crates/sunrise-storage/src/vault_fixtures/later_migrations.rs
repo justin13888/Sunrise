@@ -430,3 +430,48 @@ fn a_v48_vaults_blocks_gain_no_kind_series_or_import_fields_after_0049() {
         .unwrap();
     assert_eq!(unset, blocks, "no block starts with one of the fields");
 }
+
+/// Migration 0050 (#1162) over a real v49 vault: every existing binding is
+/// kept as a binding to the whole block, the empty `occurrence_key`, no build
+/// before it having written an occurrence binding; the key joins the row's
+/// identity, and the index on the task is recreated.
+#[test]
+fn a_v49_vaults_bindings_stay_whole_block_bindings_after_0050() {
+    let (_dir, db) = open_migrated(&fixture_name(49));
+    let bindings = row_count(&db, "block_tasks");
+    assert!(bindings > 0, "the fixture's bindings survive");
+    let whole: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM block_tasks WHERE occurrence_key = ''",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(whole, bindings, "every binding is to the whole block");
+    let (block, task): (Vec<u8>, Vec<u8>) = db
+        .conn()
+        .query_row(
+            "SELECT block_id, task_id FROM block_tasks LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO block_tasks (block_id, task_id, occurrence_key)
+             VALUES (?, ?, '2023-11-15T22:35')",
+            rusqlite::params![block, task],
+        )
+        .expect("the same task bound to one occurrence is a row of its own");
+    let index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'block_tasks_by_task'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1, "the index on the task is recreated");
+}

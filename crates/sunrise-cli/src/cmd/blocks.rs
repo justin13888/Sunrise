@@ -89,8 +89,14 @@ pub(super) async fn list(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         return Ok(());
     }
     for r in rows {
+        // An occurrence of a recurring block shows its key, which
+        // `block bind --occurrence` names.
+        let key = r
+            .occurrence_key
+            .as_deref()
+            .map_or_else(String::new, |k| format!("@{k}"));
         println!(
-            "{}  {} -> {}  {}  [{}]",
+            "{}{key}  {} -> {}  {}  [{}]",
             r.block.id.to_str(),
             when::describe(&r.block.starts_at, &reader),
             when::describe(&r.block.ends_at, &reader),
@@ -113,7 +119,11 @@ pub(super) async fn block(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         Some("create") => create(ctx, args).await,
         Some("move") => move_block(ctx, args).await,
         Some(verb @ ("bind" | "unbind")) => {
-            let [blk, tasks @ ..] = args else {
+            // A recurring block binds a task to one occurrence, named by its
+            // key (`block list` shows it).
+            let occurrence = flag_value(args, "--occurrence");
+            let words = positionals(args, &["--occurrence"], &[]);
+            let [blk, tasks @ ..] = words.as_slice() else {
                 return Err(strings::blocks::bind_usage().into());
             };
             if tasks.is_empty() {
@@ -122,10 +132,19 @@ pub(super) async fn block(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
             let block = id_of(blk, EntityKind::Block)?;
             for raw in tasks {
                 let task = task_id(raw)?;
+                let occurrence = occurrence.clone();
                 let cmd = if verb == "bind" {
-                    Command::BindTask { block, task }
+                    Command::BindTask {
+                        block,
+                        task,
+                        occurrence,
+                    }
                 } else {
-                    Command::UnbindTask { block, task }
+                    Command::UnbindTask {
+                        block,
+                        task,
+                        occurrence,
+                    }
                 };
                 ctx.submit(cmd, strings::undo::bind(&block.to_str()))
                     .await?;

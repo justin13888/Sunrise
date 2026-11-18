@@ -75,6 +75,10 @@ pub const FIELD_OPS_FEATURE: &str = "core.field_ops";
 /// `exceptions` or `split_from` (#1147).
 pub const BLOCK_RECURRENCE_FEATURE: &str = "block.recurrence";
 
+/// The id of the feature a block op binding a task to one occurrence of a
+/// recurring block uses: `occurrence_tasks` (#1162).
+pub const BLOCK_OCCURRENCE_TASKS_FEATURE: &str = "block.occurrence_tasks";
+
 /// The id of the feature that carries identity-signed revocations
 /// (ADR-0058 §7): the holder of `ID_S_priv` signs a revocation only in a
 /// vault that requires it.
@@ -170,6 +174,19 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 24,
+    },
+    // A task bound to one occurrence of a recurring block (issue #1162,
+    // `docs/02-domain/time-blocks.md` §Recurring blocks). A build that does
+    // not read `occurrence_tasks` keeps it as an unknown field, so it would
+    // show the occurrence with no task and the task with no block; no op
+    // carrying one is written until every device has advertised it.
+    Feature {
+        id: BLOCK_OCCURRENCE_TASKS_FEATURE,
+        op_kinds: &[],
+        fields: &["occurrence_tasks"],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 25,
     },
     // The whole model of ADR-0065: every entity write is a `Patch` naming its
     // writer's heads in `parents`, a multi-entity commit carries `group`, and

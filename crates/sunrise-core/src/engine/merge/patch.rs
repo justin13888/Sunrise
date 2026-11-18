@@ -518,6 +518,7 @@ fn probe(kind: EntityKind) -> Option<Value> {
             title: None,
             title_track_task: false,
             tasks: BTreeSet::new(),
+            occurrence_tasks: BTreeSet::new(),
             deleted: false,
             kind: None,
             rrule: None,

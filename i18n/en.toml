@@ -2368,7 +2368,7 @@ no_next = "this routine has no upcoming occurrence to skip; name one with --at <
 usage = "usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`"
 create_usage = "usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]"
 move_usage = "usage: block move <block-id> --from <when> [--to <when>]"
-bind_usage = "usage: block bind|unbind <block-id> <task-id>..."
+bind_usage = "usage: block bind|unbind <block-id> <task-id>... [--occurrence YYYY-MM-DDTHH:MM]"
 merge_usage = "usage: block merge <block-id> <block-id>"
 end_before_start = "a block must end after it starts"
 # {kind} is what the user typed.

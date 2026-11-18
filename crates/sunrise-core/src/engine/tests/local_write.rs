@@ -158,9 +158,21 @@ fn a_local_write_and_its_replay_project_identical_rows() {
 
     // Blocks, created, bound, unbound and imported twice.
     let block = apply(&w, &mut dbw, Command::CreateBlock(block_draft(9, 1, None)));
-    apply(&w, &mut dbw, Command::BindTask { block, task: a });
-    apply(&w, &mut dbw, Command::BindTask { block, task: b });
-    apply(&w, &mut dbw, Command::UnbindTask { block, task: b });
+    let (bind, unbind) = (
+        |task| Command::BindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+        |task| Command::UnbindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    );
+    apply(&w, &mut dbw, bind(a));
+    apply(&w, &mut dbw, bind(b));
+    apply(&w, &mut dbw, unbind(b));
     for _ in 0..2 {
         apply(
             &w,

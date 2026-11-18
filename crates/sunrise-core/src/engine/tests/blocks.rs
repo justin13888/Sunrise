@@ -192,7 +192,15 @@ fn binding_a_task_updates_task_blocks_symmetrically() {
         .unwrap()
         .entity;
 
-    e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+    e.apply(
+        &mut db,
+        Command::BindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    )
+    .unwrap();
 
     // Forward: the block carries the task.
     let rows = day_rows(&e, &db, day_ms());
@@ -206,8 +214,15 @@ fn binding_a_task_updates_task_blocks_symmetrically() {
     assert_eq!(t.blocks.iter().copied().collect::<Vec<_>>(), vec![block]);
 
     // Unbinding takes both halves back down.
-    e.apply(&mut db, Command::UnbindTask { block, task })
-        .unwrap();
+    e.apply(
+        &mut db,
+        Command::UnbindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    )
+    .unwrap();
     let t = read_task(db.conn(), task.bytes()).unwrap().unwrap();
     assert!(t.blocks.is_empty());
     assert!(day_rows(&e, &db, day_ms())[0].block.tasks.is_empty());
@@ -224,7 +239,15 @@ fn an_untitled_block_shadow_copies_the_bound_task_title() {
         .apply(&mut db, Command::CreateBlock(block_draft(9, 1, None)))
         .unwrap()
         .entity;
-    e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+    e.apply(
+        &mut db,
+        Command::BindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    )
+    .unwrap();
     assert_eq!(
         day_rows(&e, &db, day_ms())[0].title.as_deref(),
         Some("Original title")
@@ -289,8 +312,15 @@ fn title_track_task_follows_the_rename() {
     // task title left to shadow, so the STORED title stands — which is the
     // shadow copy taken when the block was created, not the rename.
     let other = new_task(&e, &mut db, "Something else");
-    e.apply(&mut db, Command::BindTask { block, task: other })
-        .unwrap();
+    e.apply(
+        &mut db,
+        Command::BindTask {
+            block,
+            task: other,
+            occurrence: None,
+        },
+    )
+    .unwrap();
     assert_eq!(
         day_rows(&e, &db, day_ms())[0].title.as_deref(),
         Some("Original title"),
@@ -562,7 +592,14 @@ fn block_commands_reject_a_non_block_id() {
         "expected Block, got Task",
     );
     invalid(
-        e.apply(&mut db, Command::BindTask { block: task, task }),
+        e.apply(
+            &mut db,
+            Command::BindTask {
+                block: task,
+                task,
+                occurrence: None,
+            },
+        ),
         "expected Block, got Task",
     );
 }
@@ -724,7 +761,15 @@ fn a_re_import_keeps_a_task_the_user_bound() {
         )
         .unwrap()
         .entity;
-    e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+    e.apply(
+        &mut db,
+        Command::BindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    )
+    .unwrap();
 
     e.apply(
         &mut db,
@@ -1324,18 +1369,29 @@ fn imported_from(e: &Engine, db: &mut Db, id: EntityRef) {
         .unwrap();
 }
 
-/// A split leaves the task bindings and the import fields on the block they
-/// were made on: the continuation binds no task and is no external item's,
-/// and it keeps the title the series showed (time-blocks.md §Recurring
-/// blocks).
+/// Bind `task` to the whole of recurring block `id`, as a build before
+/// occurrence bindings (#1162) did: `BindTask` now names an occurrence.
+pub(super) fn bound_to_the_series(e: &Engine, db: &mut Db, id: EntityRef, task: EntityRef) {
+    let mut b = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    b.tasks.insert(task);
+    let stream = crate::engine::ids::domain_bytes(b.stream_id);
+    let now_ms = e.clock.now_ms();
+    let op = InnerOp::BlockUpdate(Box::new(b));
+    db.with_tx(|tx| e.append_and_fold(tx, &op, &stream, now_ms).map(|_| ()))
+        .unwrap();
+}
+
+/// A split leaves the whole-block task bindings and the import fields on
+/// the block they were made on: the continuation binds no task to the
+/// whole series and is no external item's, and it keeps the title the
+/// series showed (time-blocks.md §Recurring blocks).
 #[test]
 fn a_split_continuation_takes_no_bindings_and_no_import_fields() {
     let mut db = db();
     let e = engine();
     let id = weekly(&e, &mut db);
     let task = new_task(&e, &mut db, "Prepare notes");
-    e.apply(&mut db, Command::BindTask { block: id, task })
-        .unwrap();
+    bound_to_the_series(&e, &mut db, id, task);
     imported_from(&e, &mut db, id);
 
     let move_later = BlockPatch {

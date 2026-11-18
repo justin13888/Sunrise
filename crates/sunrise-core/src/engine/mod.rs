@@ -521,8 +521,16 @@ impl Engine {
             Command::UpdateBlock { id, scope, patch } => self.update_block(db, id, scope, patch),
             Command::DeleteBlock { id, scope } => self.delete_block(db, id, scope),
             Command::MergeBlocks { a, b } => self.merge_blocks(db, a, b),
-            Command::BindTask { block, task } => self.bind_task(db, block, task),
-            Command::UnbindTask { block, task } => self.unbind_task(db, block, task),
+            Command::BindTask {
+                block,
+                task,
+                occurrence,
+            } => self.bind_task(db, block, task, occurrence),
+            Command::UnbindTask {
+                block,
+                task,
+                occurrence,
+            } => self.unbind_task(db, block, task, occurrence),
             Command::AttachFile(d) => self.attach_file(db, d),
             Command::DetachFile(id) => self.detach_file(db, id),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),

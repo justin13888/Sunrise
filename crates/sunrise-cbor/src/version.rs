@@ -269,7 +269,11 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// advertised it. The other five a v23 build keeps and writes back unchanged,
 /// so they need no feature. Every v1..v23 payload shape is unchanged, so the
 /// floor does not move.
-pub const DOC_SCHEMA_V: u16 = 24;
+///
+/// `25` adds the Block's `occurrence_tasks` (#1162), an OR-set of `[occurrence-key,
+/// entity-ref]` pairs, behind the new feature `block.occurrence_tasks`: a v24 build
+/// keeps it unknown and shows no task on the occurrence. The floor does not move.
+pub const DOC_SCHEMA_V: u16 = 25;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -370,6 +374,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         24,
         hex32("38b444fd794761d78a30a88636ba3d97fbe997c2152ff079db31e176013cdf67"),
+    ),
+    (
+        25,
+        hex32("c963f3ddbe7a950b0de0689ce797ae92f62c2ba0931e688926dcb45affd4d041"),
     ),
 ];
 
@@ -732,7 +740,10 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// Schema-only in what it writes; the first `Core::open` after it rebuilds
 /// the projection, because the fold's version moved with it, which moves any
 /// of them a build before it kept as an unknown field into its column.
-pub const STORAGE_V: u16 = 49;
+///
+/// `50` is migration `0050_block_occurrence_tasks.sql` (#1162): `block_tasks` gains
+/// `occurrence_key` in its primary key, empty (the whole block) on every existing row.
+pub const STORAGE_V: u16 = 50;
 
 #[cfg(test)]
 mod tests {

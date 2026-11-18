@@ -1,7 +1,9 @@
 //! Time blocks: a stretch of the calendar reserved for work.
 
 use sunrise_core::queries::BlockRow;
-use sunrise_domain::{Block, BlockException, BlockKind, BlockSource, NoteBody, RRule, SunriseTime};
+use sunrise_domain::{
+    Block, BlockException, BlockKind, BlockSource, NoteBody, OccurrenceBinding, RRule, SunriseTime,
+};
 use sunrise_id::EntityRef;
 
 use super::{task::patch_field, Recurrence, TimeValue};
@@ -26,10 +28,15 @@ pub struct BlockItem {
     pub title: Option<String>,
     /// Recompute the title from the single bound task's current title.
     pub title_track_task: bool,
-    /// Bound tasks, sorted.
+    /// Bound tasks, sorted. On a grid row of a recurring block's occurrence,
+    /// the tasks bound to that occurrence.
     pub tasks: Vec<EntityRef>,
     /// Tombstoned.
     pub deleted: bool,
+    /// Tasks bound to one occurrence of a recurring block, sorted by key,
+    /// then task.
+    #[uniffi(default = [])]
+    pub occurrence_tasks: Vec<OccurrenceTaskItem>,
     /// Whether the planner may move the block: `fixed` or `flexible`, as
     /// [`Block::effective_kind`] reads it, so never a spelling a client does
     /// not know.
@@ -59,6 +66,16 @@ pub struct BlockItem {
     /// The foreign id an `.ics` import read.
     #[uniffi(default = None)]
     pub external_id: Option<String>,
+}
+
+/// A task bound to one occurrence of a recurring block. See
+/// [`sunrise_domain::OccurrenceBinding`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OccurrenceTaskItem {
+    /// The occurrence key, `YYYY-MM-DDTHH:MM`.
+    pub key: String,
+    /// The bound task.
+    pub task: EntityRef,
 }
 
 /// One occurrence's change on a recurring block. See
@@ -130,6 +147,7 @@ impl From<&Block> for BlockItem {
             title,
             title_track_task,
             tasks,
+            occurrence_tasks,
             deleted,
             kind: _,
             rrule,
@@ -153,6 +171,13 @@ impl From<&Block> for BlockItem {
             title_track_task: *title_track_task,
             tasks: tasks.iter().copied().collect(),
             deleted: *deleted,
+            occurrence_tasks: occurrence_tasks
+                .iter()
+                .map(|b| OccurrenceTaskItem {
+                    key: b.key().to_owned(),
+                    task: b.task(),
+                })
+                .collect(),
             kind: kind.as_str().to_owned(),
             rrule: rrule.as_ref().map(Recurrence::from),
             exceptions: exceptions
@@ -188,6 +213,11 @@ impl BlockItem {
             title: self.title.clone(),
             title_track_task: self.title_track_task,
             tasks: self.tasks.iter().copied().collect(),
+            occurrence_tasks: self
+                .occurrence_tasks
+                .iter()
+                .map(|b| OccurrenceBinding::new(b.key.clone(), b.task))
+                .collect(),
             deleted: self.deleted,
             kind: Some(BlockKind::from_raw(&self.kind)),
             rrule: self.rrule.clone().map(RRule::from),
@@ -339,11 +369,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use sunrise_domain::{
-        Block, BlockDraft, BlockException, BlockKind, BlockSource, NoteBody, SunriseTime, Unknowns,
+        Block, BlockDraft, BlockException, BlockKind, BlockSource, NoteBody, OccurrenceBinding,
+        SunriseTime, Unknowns,
     };
     use sunrise_id::{EntityKind, EntityRef};
 
-    use super::{BlockDraftIn, BlockItem};
+    use super::{BlockDraftIn, BlockItem, OccurrenceTaskItem};
     use crate::dto::TimeValue;
 
     /// Every field crosses, and no stream reads as the legacy Inbox key, the
@@ -396,6 +427,7 @@ mod tests {
             title: None,
             title_track_task: false,
             tasks: BTreeSet::new(),
+            occurrence_tasks: BTreeSet::new(),
             deleted: false,
             kind,
             rrule: None,
@@ -479,8 +511,18 @@ mod tests {
         b.location = Some("Office".into());
         b.notes = Some(NoteBody(vec![1, 2, 3]));
         b.external_id = Some("uid-1@example.com".into());
+        let task = EntityRef::new(EntityKind::Task, [4; 16]);
+        b.occurrence_tasks
+            .insert(OccurrenceBinding::new("2026-03-10T09:00", task));
 
         let item = BlockItem::from(&b);
+        assert_eq!(
+            item.occurrence_tasks,
+            [OccurrenceTaskItem {
+                key: "2026-03-10T09:00".into(),
+                task,
+            }]
+        );
         let keys: Vec<&str> = item.exceptions.iter().map(|e| e.key.as_str()).collect();
         assert_eq!(keys, ["2026-03-03T09:00", "2026-03-10T09:00"]);
         let cancelled = &item.exceptions[0];
@@ -509,6 +551,7 @@ mod tests {
         let back = item.to_domain();
         assert_eq!(back.kind, Some(BlockKind::Fixed));
         assert_eq!(back.exceptions, b.exceptions);
+        assert_eq!(back.occurrence_tasks, b.occurrence_tasks);
         assert_eq!(back.source, b.source);
     }
 

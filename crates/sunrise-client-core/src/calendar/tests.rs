@@ -49,6 +49,7 @@ fn block_between(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         title: Some(format!("block {n}")),
         title_track_task: false,
         tasks: std::collections::BTreeSet::new(),
+        occurrence_tasks: std::collections::BTreeSet::new(),
         deleted: false,
         kind: None,
         rrule: None,
