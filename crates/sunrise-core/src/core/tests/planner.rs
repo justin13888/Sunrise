@@ -1,5 +1,6 @@
 //! The planner's preview cache: a commit applies a remembered diff once, and
-//! an evicted, cancelled or already committed one is `PLAN_UNKNOWN`.
+//! an evicted, cancelled or already committed one is `PLAN_UNKNOWN`. And its
+//! undo: per field, from the inverse stored with the commit.
 
 use super::*;
 use crate::engine::PlanError;
@@ -71,16 +72,157 @@ async fn the_cache_forgets_the_oldest_preview_and_a_cancelled_one() {
     core.close().await.unwrap();
 }
 
+fn block_span(core: &Core, block: sunrise_id::EntityRef) -> (i64, i64) {
+    core.db
+        .lock()
+        .conn()
+        .query_row(
+            "SELECT starts_at_ms, ends_at_ms FROM blocks WHERE id = ?1",
+            [&block.bytes()[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+async fn task_at(core: &Core, h: i8) -> sunrise_id::EntityRef {
+    core.submit(Command::CreateTask(sunrise_domain::TaskDraft {
+        title: format!("at {h}"),
+        planned_at: Some(at(h)),
+        estimated_duration_s: Some(1800),
+        ..Default::default()
+    }))
+    .await
+    .unwrap()
+    .entity
+}
+
+async fn read_task(core: &Core, id: sunrise_id::EntityRef) -> sunrise_domain::Task {
+    match core.query(Query::EntityById(id)).await.unwrap() {
+        QueryResult::Task(t) => *t,
+        other => panic!("expected Task, got {other:?}"),
+    }
+}
+
+/// The inverse is stored with the commit, so an undo after every preview
+/// has left the cache still restores, and the commit is then forgotten.
+#[tokio::test]
+async fn an_undo_after_the_preview_was_evicted_restores_the_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let was = block_span(&core, block);
+
+    let diff = core.plan_preview(&move_to(block, 11)).unwrap();
+    let commit = core.plan_commit(diff.id).unwrap().commit;
+    assert_ne!(block_span(&core, block), was);
+    for h in 0..PLAN_CACHE_SIZE {
+        core.plan_preview(&move_to(block, 12 + i8::try_from(h).unwrap()))
+            .unwrap();
+    }
+    assert!(matches!(core.plan_commit(diff.id), Err(PlanError::Unknown)));
+
+    let mut events = core.changes();
+    let undone = core.plan_undo(commit).unwrap();
+    assert_eq!(undone.restored, 2, "starts_at and ends_at");
+    assert!(undone.skipped.is_empty(), "{:?}", undone.skipped);
+    assert_eq!(block_span(&core, block), was);
+    assert!(matches!(
+        events.try_recv(),
+        Ok(DomainEvent::Updated(id)) if id == block
+    ));
+    assert!(matches!(core.plan_undo(commit), Err(PlanError::Unknown)));
+    core.close().await.unwrap();
+}
+
+/// A field written again since the commit is skipped and reported, and the
+/// other fields of the commit are restored; a restored deferral takes its
+/// count back.
+#[tokio::test]
+async fn a_field_edited_since_is_skipped_and_the_others_are_restored() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let kept = task_at(&core, 9).await;
+    let edited = task_at(&core, 14).await;
+
+    let diff = core
+        .plan_preview(&PlanIntent::BulkDefer {
+            tasks: vec![kept, edited],
+            to: jiff::civil::date(2026, 3, 5),
+            place: false,
+        })
+        .unwrap();
+    let commit = core.plan_commit(diff.id).unwrap();
+    assert_eq!(commit.moved, 2);
+    assert_eq!(read_task(&core, kept).await.deferred_count, 1);
+
+    core.submit(Command::UpdateTask {
+        id: edited,
+        patch: sunrise_domain::TaskPatch {
+            planned_at: Some(Some(at(16))),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let undone = core.plan_undo(commit.commit).unwrap();
+    assert_eq!(undone.restored, 1);
+    assert_eq!(
+        undone.skipped,
+        vec![crate::PlanUndoSkip {
+            item: edited,
+            field: crate::PlanField::PlannedAt,
+        }]
+    );
+    let kept = read_task(&core, kept).await;
+    assert_eq!(kept.planned_at, Some(at(9)));
+    assert_eq!(kept.deferred_count, 0, "the restored deferral is undone");
+    let edited = read_task(&core, edited).await;
+    assert_eq!(edited.planned_at, Some(at(16)), "the later edit stands");
+    assert_eq!(edited.deferred_count, 1);
+    core.close().await.unwrap();
+}
+
+/// Only the newest `PLAN_UNDO_HISTORY` commits keep their inverse.
+#[tokio::test]
+async fn the_oldest_commit_past_the_undo_history_is_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = one_block(&core).await;
+    let mut commits = Vec::new();
+    for i in 0..=crate::PLAN_UNDO_HISTORY {
+        let h = 10 + i8::try_from(i % 2).unwrap();
+        let diff = core.plan_preview(&move_to(block, h)).unwrap();
+        commits.push(core.plan_commit(diff.id).unwrap().commit);
+    }
+    assert!(matches!(
+        core.plan_undo(commits[0]),
+        Err(PlanError::Unknown)
+    ));
+    let newest = core.plan_undo(*commits.last().unwrap()).unwrap();
+    assert_eq!(newest.restored, 2);
+    // The one before it wrote the fields the newest wrote over since.
+    let older = core.plan_undo(commits[commits.len() - 2]).unwrap();
+    assert_eq!(older.restored, 0);
+    assert_eq!(older.skipped.len(), 2);
+    core.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_closed_vault_previews_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
     let block = one_block(&core).await;
     let diff = core.plan_preview(&move_to(block, 11)).unwrap();
+    let commit = core
+        .plan_commit(core.plan_preview(&move_to(block, 12)).unwrap().id)
+        .unwrap()
+        .commit;
     core.shutdown().await;
     assert!(matches!(
         core.plan_preview(&move_to(block, 11)),
         Err(PlanError::Closed)
     ));
     assert!(matches!(core.plan_commit(diff.id), Err(PlanError::Closed)));
+    assert!(matches!(core.plan_undo(commit), Err(PlanError::Closed)));
 }
