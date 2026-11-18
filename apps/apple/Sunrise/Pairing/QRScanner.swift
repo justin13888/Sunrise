@@ -28,26 +28,51 @@ import VisionKit
 /// the one most often refused. A refusal is not a dead end — the scanner
 /// shows why and offers the paste field in one tap.
 enum QRDecoder {
-    /// The first non-empty QR payload Vision finds through `handler`.
-    static func firstPayload(_ handler: VNImageRequestHandler) -> String? {
+    /// The detector to fall back to when the current one cannot be built.
+    ///
+    /// Vision's barcode detectors from revision 3 on are neural networks, and
+    /// a device with no inference context to run one on refuses them outright:
+    /// the iOS simulator's `perform` throws "Could not create inference
+    /// context" (Vision error 9), on every runtime it has been tried on (#1144).
+    /// `usesCPUOnly` does not rescue it — the request then succeeds and finds
+    /// nothing. Revision 2 is the last classical detector, it reads the same
+    /// ISO 18004 symbol, and it is still shipped. Its constant is deprecated,
+    /// hence the literal; ``firstPayload(_:revision:)`` only asks for it where
+    /// Vision still lists it.
+    static let fallbackRevision = 2
+
+    /// The first non-empty QR payload Vision finds through the handler
+    /// `handler` makes.
+    ///
+    /// `revision` pins a detector; `nil` is Vision's current one, with
+    /// ``fallbackRevision`` tried once if that one cannot run here. The retry
+    /// gets a handler of its own: one whose `perform` has failed fails every
+    /// later request with the same error, whatever its revision.
+    static func firstPayload(
+        _ handler: () -> VNImageRequestHandler,
+        revision: Int? = nil
+    ) -> String? {
         let request = VNDetectBarcodesRequest()
         request.symbologies = [.qr]
+        if let revision { request.revision = revision }
         do {
-            try handler.perform([request])
+            try handler().perform([request])
         } catch {
-            return nil
+            guard revision == nil,
+                  VNDetectBarcodesRequest.supportedRevisions.contains(fallbackRevision) else { return nil }
+            return firstPayload(handler, revision: fallbackRevision)
         }
         return request.results?.lazy
             .compactMap(\.payloadStringValue)
             .first { !$0.isEmpty }
     }
 
-    static func firstPayload(in image: CGImage) -> String? {
-        firstPayload(VNImageRequestHandler(cgImage: image, options: [:]))
+    static func firstPayload(in image: CGImage, revision: Int? = nil) -> String? {
+        firstPayload({ VNImageRequestHandler(cgImage: image, options: [:]) }, revision: revision)
     }
 
     static func firstPayload(in buffer: CVPixelBuffer) -> String? {
-        firstPayload(VNImageRequestHandler(cvPixelBuffer: buffer, options: [:]))
+        firstPayload { VNImageRequestHandler(cvPixelBuffer: buffer, options: [:]) }
     }
 }
 

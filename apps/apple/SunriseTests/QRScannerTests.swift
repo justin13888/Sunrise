@@ -48,6 +48,17 @@ struct QRScannerTests {
         #expect(QRDecoder.firstPayload(in: image) == payload)
     }
 
+    /// The detector a device without an inference context falls back to — the
+    /// iOS simulator is one (#1144) — reads the same symbol. Pinned here so a
+    /// Mac, whose current detector runs, still proves the fallback reads.
+    @Test
+    func theFallbackDetectorReadsTheSamePayload() throws {
+        let payload = try realPayload()
+        let image = try #require(QRCode.cgImage(for: payload))
+        #expect(QRDecoder.firstPayload(in: image, revision: QRDecoder.fallbackRevision) == payload)
+        #expect(QRDecoder.firstPayload(in: try blankFrame(), revision: QRDecoder.fallbackRevision) == nil)
+    }
+
     /// A frame with no code in it is nothing, not an error and not a guess.
     @Test
     func aFrameWithNoCodeReadsAsNothing() throws {
