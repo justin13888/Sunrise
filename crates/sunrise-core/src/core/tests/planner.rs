@@ -183,6 +183,65 @@ async fn a_field_edited_since_is_skipped_and_the_others_are_restored() {
     core.close().await.unwrap();
 }
 
+/// An item whose restored fields would break its invariants is skipped whole:
+/// a block moved from 14:00-15:00 to 09:00-10:00 and then given a 09:30 end
+/// would restore only its start, ending before it begins, so neither field is
+/// written and both are reported.
+#[tokio::test]
+async fn an_undo_that_would_invert_a_resized_block_skips_it_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let block = core
+        .submit(Command::CreateBlock(BlockDraft {
+            stream_id: None,
+            starts_at: at(14),
+            ends_at: at(15),
+            title: Some("review".into()),
+            title_track_task: false,
+            tasks: Vec::new(),
+        }))
+        .await
+        .unwrap()
+        .entity;
+
+    let diff = core.plan_preview(&move_to(block, 9)).unwrap();
+    let commit = core.plan_commit(diff.id).unwrap().commit;
+    core.submit(Command::UpdateBlock {
+        id: block,
+        scope: sunrise_domain::EditScope::All,
+        patch: sunrise_domain::BlockPatch {
+            ends_at: Some(SunriseTime::floating(
+                jiff::civil::date(2026, 3, 4).at(9, 30, 0, 0),
+            )),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+    let resized = block_span(&core, block);
+
+    let mut events = core.changes();
+    let undone = core.plan_undo(commit).unwrap();
+    assert_eq!(undone.restored, 0);
+    assert_eq!(
+        undone.skipped,
+        vec![
+            crate::PlanUndoSkip {
+                item: block,
+                field: crate::PlanField::EndsAt,
+            },
+            crate::PlanUndoSkip {
+                item: block,
+                field: crate::PlanField::StartsAt,
+            },
+        ],
+        "both fields, in the stored order (by field name)"
+    );
+    assert_eq!(block_span(&core, block), resized, "the block is left as is");
+    assert!(events.try_recv().is_err(), "nothing was written");
+    core.close().await.unwrap();
+}
+
 /// Only the newest `PLAN_UNDO_HISTORY` commits keep their inverse.
 #[tokio::test]
 async fn the_oldest_commit_past_the_undo_history_is_unknown() {
