@@ -121,3 +121,57 @@ async fn a_blocks_edit_and_delete_scope_reach_the_core() {
     assert!(day(&core).await.is_empty());
     core.shutdown().await;
 }
+
+/// `occurrence_key` on `BindTask` and `UnbindTask` reaches the core (#1162):
+/// on a one-off block the core refuses it as not recurring, and with none
+/// the same commands bind and unbind the whole block.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bindings_occurrence_key_reaches_the_core() {
+    let (_dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Prepare notes"),
+        })
+        .await
+        .expect("create task")
+        .entity;
+    let other = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Agenda"),
+        })
+        .await
+        .expect("create task")
+        .entity;
+    let id = standup(&core, task).await;
+    let key = Some("2026-03-04T09:00".to_owned());
+
+    let err = core
+        .submit(CoreCommand::BindTask {
+            block: id,
+            task: other,
+            occurrence_key: key.clone(),
+        })
+        .await
+        .expect_err("an occurrence of a one-off block");
+    assert!(format!("{err:?}").contains("does not recur"), "{err:?}");
+    let err = core
+        .submit(CoreCommand::UnbindTask {
+            block: id,
+            task,
+            occurrence_key: key,
+        })
+        .await
+        .expect_err("an occurrence of a one-off block");
+    assert!(format!("{err:?}").contains("does not recur"), "{err:?}");
+    assert_eq!(day(&core).await[0].task_titles, ["Prepare notes"]);
+
+    core.submit(CoreCommand::UnbindTask {
+        block: id,
+        task,
+        occurrence_key: None,
+    })
+    .await
+    .expect("unbind from the whole block");
+    assert!(day(&core).await[0].task_titles.is_empty());
+    core.shutdown().await;
+}
