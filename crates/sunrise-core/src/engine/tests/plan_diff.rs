@@ -302,6 +302,29 @@ fn a_legacy_vault_undoes_a_block_move_and_a_deferral() {
     let task = task_of(&e, &db, t);
     assert_eq!(task.planned_at, Some(at(14, 0)));
     assert_eq!(task.deferred_count, 0);
+
+    // A full-state op writes every field, so a later edit of the title
+    // alone is a write of the plan too, and the undo leaves it.
+    let intent = PlanIntent::MoveTask {
+        task: t,
+        to: SlotTarget::At(at(16, 0)),
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    let (_, moved) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: t,
+            patch: TaskPatch {
+                title: Some("renamed".into()),
+                ..TaskPatch::default()
+            },
+        },
+    )
+    .unwrap();
+    let undone = e.plan_undo(&mut db, moved).unwrap();
+    assert_eq!((undone.restored, undone.skipped.len()), (0, 1));
+    assert_eq!(task_of(&e, &db, t).planned_at, Some(at(16, 0)));
 }
 
 /// A task deleted since the commit is left deleted, its field reported.
