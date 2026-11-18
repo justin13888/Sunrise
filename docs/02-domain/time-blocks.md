@@ -240,15 +240,25 @@ A task is bound to one occurrence
   block requires one to bind; a key the series does not produce is not
   found, a cancelled occurrence is not there to bind, and a key on a one-off
   block is refused. Unbinding with no key removes a binding to the whole
-  block, which on a recurring block is one made before occurrence bindings.
+  block, which on a recurring block is one made before occurrence bindings;
+  it is refused for a task the block binds only to occurrences, which it
+  would leave bound. A client unbinding from an occurrence's row names the
+  row's key when the task is bound to that occurrence.
 - An occurrence's row lists the tasks bound to the whole block and those
   bound to it (`Block::tasks_at`), and `Task.blocks` names the block once
   however many of its occurrences the task is bound to.
 - A split *this and future* carries the bindings at or after the key to the
   continuation and leaves the ones before; with no edit (a delete) they end
   with the occurrences they named. An edit that moves the series' anchor,
-  of the whole block or of a continuation, moves each binding's key by the
-  same civil distance, so it keeps naming its occurrence.
+  of the whole block, of a continuation or by a re-import, moves each
+  binding's key by the same civil distance, so it keeps naming its
+  occurrence. A re-import otherwise keeps every occurrence binding.
+- The move re-keys only the bindings the moving device holds. A binding
+  another device makes concurrently keeps the key it named before the move,
+  which no occurrence of the moved series has: no row lists the task, though
+  `Task.blocks` still names the block. Two devices splitting one series at
+  the same key with different moves likewise each shift the moved bindings
+  by their own distance. Neither is repaired yet.
 - Binding to an occurrence lends the series no shadow title: the series'
   title is every occurrence's.
 

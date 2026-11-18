@@ -106,6 +106,81 @@ fn a_whole_series_binding_shows_on_every_occurrence_beside_one_weeks_own() {
     e.assert_rebuild_identity(&db);
 }
 
+/// Unbinding with no key a task the block binds only to some weeks is
+/// refused and writes nothing: there is no whole-block binding to remove,
+/// and the task would stay bound. With the week's key it is unbound.
+#[test]
+fn unbinding_with_no_key_a_task_bound_only_to_weeks_is_refused() {
+    let mut db = db();
+    let e = engine();
+    let id = bindable(&e, &mut db);
+    let task = new_task(&e, &mut db, "Prepare notes");
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+    let ops = op_count(&db);
+
+    invalid(
+        e.apply(&mut db, unbind(id, task, None)),
+        "name the occurrence",
+    );
+    assert_eq!(op_count(&db), ops, "a refused unbind writes nothing");
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+
+    e.apply(&mut db, unbind(id, task, Some(key(11)))).unwrap();
+    assert!(blocks_of(&db, task).is_empty());
+}
+
+/// A re-import keeps the occurrence bindings the block holds, and one that
+/// moves the anchor moves each binding with the week it named, as an edit of
+/// the whole block does.
+#[test]
+fn a_reimport_keeps_the_occurrence_bindings_and_moves_them_with_the_anchor() {
+    let mut db = db();
+    let e = engine();
+    legacy_peer(&db);
+    let id = e
+        .apply(
+            &mut db,
+            import("ics", "standup", block_draft(9, 1, Some("Standup"))),
+        )
+        .unwrap()
+        .entity;
+    e.require_features(
+        &mut db,
+        &[BLOCK_RECURRENCE_FEATURE, BLOCK_OCCURRENCE_TASKS_FEATURE],
+        true,
+    )
+    .unwrap();
+    super::blocks::recur(&e, &mut db, id, "FREQ=WEEKLY");
+    let task = new_task(&e, &mut db, "Prepare notes");
+    e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
+    let bound_at = |db: &Db| read_block(db.conn(), id.bytes()).unwrap().unwrap();
+
+    e.apply(
+        &mut db,
+        import("ics", "standup", block_draft(9, 1, Some("Standup"))),
+    )
+    .unwrap();
+    assert_eq!(
+        bound_at(&db).occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new(key(11), task)])
+    );
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+
+    e.apply(
+        &mut db,
+        import("ics", "standup", block_draft(10, 1, Some("Standup"))),
+    )
+    .unwrap();
+    assert_eq!(
+        bound_at(&db).occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new("2026-03-11T10:00", task)])
+    );
+    assert_eq!(titles_on(&e, &db, 11), ["Prepare notes"]);
+    assert!(titles_on(&e, &db, 18).is_empty());
+    assert_eq!(blocks_of(&db, task), BTreeSet::from([id]));
+    e.assert_rebuild_identity(&db);
+}
+
 /// A binding that does not name one occurrence is refused, and writes
 /// nothing: no key on a recurring block, a key on a one-off, a key that is
 /// not one, a week the rule skips, and a cancelled week.
@@ -268,69 +343,157 @@ fn deleting_this_and_future_drops_the_bindings_of_the_weeks_it_removed() {
     e.assert_rebuild_identity(&db);
 }
 
+/// Two paired devices, A and B, each with its own clock and vault, sharing
+/// a weekly "Standup" that A created, with one task made on each: "Agenda"
+/// on A and "Demo" on B.
+struct Pair {
+    ca: Arc<FakeClock>,
+    cb: Arc<FakeClock>,
+    ea: Engine,
+    eb: Engine,
+    dba: Db,
+    dbb: Db,
+    id: EntityRef,
+    on_a: EntityRef,
+    on_b: EntityRef,
+}
+
+impl Pair {
+    fn new() -> Self {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+        ea.advertise_features(&mut dba).unwrap();
+        eb.advertise_features(&mut dbb).unwrap();
+        sync(&ea, &mut dba, &eb, &mut dbb);
+        let id = ea
+            .apply(
+                &mut dba,
+                Command::CreateBlock(block_draft(9, 1, Some("Standup"))),
+            )
+            .unwrap()
+            .entity;
+        ea.require_features(
+            &mut dba,
+            &[BLOCK_RECURRENCE_FEATURE, BLOCK_OCCURRENCE_TASKS_FEATURE],
+            false,
+        )
+        .unwrap();
+        set_clock(&ca, T0 + 1_000);
+        super::blocks::recur(&ea, &mut dba, id, "FREQ=WEEKLY");
+        let on_a = new_task(&ea, &mut dba, "Agenda");
+        let on_b = new_task(&eb, &mut dbb, "Demo");
+        sync(&ea, &mut dba, &eb, &mut dbb);
+        Self {
+            ca,
+            cb,
+            ea,
+            eb,
+            dba,
+            dbb,
+            id,
+            on_a,
+            on_b,
+        }
+    }
+
+    /// Each device applies every envelope the other holds, twice, so what
+    /// one applied reaches the other.
+    fn sync(&mut self) {
+        for _ in 0..2 {
+            sync(&self.ea, &mut self.dba, &self.eb, &mut self.dbb);
+        }
+    }
+
+    /// Both devices hold `want` as the series' occurrence bindings, and each
+    /// rebuilds its projection identically.
+    fn both_hold(&self, want: &BTreeSet<OccurrenceBinding>) {
+        for (e, db) in [(&self.ea, &self.dba), (&self.eb, &self.dbb)] {
+            let block = read_block(db.conn(), self.id.bytes()).unwrap().unwrap();
+            assert_eq!(&block.occurrence_tasks, want);
+            e.assert_rebuild_identity(db);
+        }
+    }
+}
+
+/// B applies every envelope A holds, then A every one B holds.
+fn sync(ea: &Engine, dba: &mut Db, eb: &Engine, dbb: &mut Db) {
+    for env in all_envelopes(dba) {
+        let _ = eb.apply_remote(dbb, &env);
+    }
+    for env in all_envelopes(dbb) {
+        let _ = ea.apply_remote(dba, &env);
+    }
+}
+
 /// Two devices binding two tasks to the same week at once both keep their
 /// binding: `occurrence_tasks` merges as an OR-set.
 #[test]
 fn two_devices_binding_the_same_week_both_keep_their_binding() {
-    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
-    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
-    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
-    let mut dba = db_root(ROOT);
-    let mut dbb = db_root(ROOT);
-    trust(&eb, &mut dbb, &ea);
-    trust(&ea, &mut dba, &eb);
-    ea.advertise_features(&mut dba).unwrap();
-    eb.advertise_features(&mut dbb).unwrap();
-    let sync = |dba: &mut Db, dbb: &mut Db| {
-        for env in all_envelopes(dba) {
-            let _ = eb.apply_remote(dbb, &env);
-        }
-        for env in all_envelopes(dbb) {
-            let _ = ea.apply_remote(dba, &env);
-        }
-    };
-    sync(&mut dba, &mut dbb);
-    let id = ea
-        .apply(
-            &mut dba,
-            Command::CreateBlock(block_draft(9, 1, Some("Standup"))),
-        )
-        .unwrap()
-        .entity;
-    ea.require_features(
-        &mut dba,
-        &[BLOCK_RECURRENCE_FEATURE, BLOCK_OCCURRENCE_TASKS_FEATURE],
-        false,
-    )
-    .unwrap();
-    set_clock(&ca, T0 + 1_000);
-    super::blocks::recur(&ea, &mut dba, id, "FREQ=WEEKLY");
-    let on_a = new_task(&ea, &mut dba, "Agenda");
-    let on_b = new_task(&eb, &mut dbb, "Demo");
-    sync(&mut dba, &mut dbb);
+    let mut p = Pair::new();
+    set_clock(&p.ca, T0 + 2_000);
+    p.ea.apply(&mut p.dba, bind(p.id, p.on_a, Some(key(11))))
+        .unwrap();
+    set_clock(&p.cb, T0 + 3_000);
+    p.eb.apply(&mut p.dbb, bind(p.id, p.on_b, Some(key(11))))
+        .unwrap();
+    p.sync();
 
-    set_clock(&ca, T0 + 2_000);
-    ea.apply(&mut dba, bind(id, on_a, Some(key(11)))).unwrap();
-    set_clock(&cb, T0 + 3_000);
-    eb.apply(&mut dbb, bind(id, on_b, Some(key(11)))).unwrap();
-    sync(&mut dba, &mut dbb);
-    sync(&mut dba, &mut dbb);
-
-    let want = BTreeSet::from([
-        OccurrenceBinding::new(key(11), on_a),
-        OccurrenceBinding::new(key(11), on_b),
-    ]);
-    for (e, db) in [(&ea, &dba), (&eb, &dbb)] {
-        let block = read_block(db.conn(), id.bytes()).unwrap().unwrap();
-        assert_eq!(block.occurrence_tasks, want);
+    p.both_hold(&BTreeSet::from([
+        OccurrenceBinding::new(key(11), p.on_a),
+        OccurrenceBinding::new(key(11), p.on_b),
+    ]));
+    for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
         let mut titles = titles_on(e, db, 11);
         titles.sort();
         assert_eq!(titles, ["Agenda", "Demo"]);
         assert!(titles_on(e, db, 18).is_empty());
     }
-    ea.assert_rebuild_identity(&dba);
-    eb.assert_rebuild_identity(&dbb);
+}
+
+/// A known gap (`docs/02-domain/time-blocks.md` §Recurring blocks): a week
+/// bound on one device while the
+/// other moves the series is kept under the key it named before the move.
+/// The move re-keys only the bindings its device held, so the concurrent
+/// one survives the OR-set merge under a key no occurrence of the moved
+/// series has: no week lists the task, though it still names the block.
+#[test]
+fn a_week_bound_while_another_device_moves_the_series_keeps_its_old_key() {
+    let mut p = Pair::new();
+    p.ea.apply(&mut p.dba, bind(p.id, p.on_a, Some(key(11))))
+        .unwrap();
+    p.sync();
+
+    set_clock(&p.cb, T0 + 2_000);
+    p.eb.apply(&mut p.dbb, bind(p.id, p.on_b, Some(key(18))))
+        .unwrap();
+    set_clock(&p.ca, T0 + 3_000);
+    let an_hour_later = BlockPatch {
+        starts_at: Some(at(4, 10)),
+        ends_at: Some(at(4, 11)),
+        ..BlockPatch::default()
+    };
+    p.ea.apply(
+        &mut p.dba,
+        scoped_update(p.id, EditScope::All, an_hour_later),
+    )
+    .unwrap();
+    p.sync();
+
+    p.both_hold(&BTreeSet::from([
+        OccurrenceBinding::new("2026-03-11T10:00", p.on_a),
+        OccurrenceBinding::new(key(18), p.on_b),
+    ]));
+    for (e, db) in [(&p.ea, &p.dba), (&p.eb, &p.dbb)] {
+        assert_eq!(titles_on(e, db, 11), ["Agenda"]);
+        assert!(titles_on(e, db, 18).is_empty(), "the moved week lost it");
+        assert_eq!(blocks_of(db, p.on_b), BTreeSet::from([p.id]));
+    }
 }
 
 /// Moving the whole series moves every occurrence key, and each binding

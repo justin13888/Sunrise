@@ -182,7 +182,7 @@ impl Engine {
             Some(t) => Some(t.trim().to_string()),
             None => self.shadow_title(db, &tasks)?,
         };
-        let block = Block {
+        let mut block = Block {
             id: block_id,
             // The Block was created when it was first imported; a re-import is
             // not a second creation of it.
@@ -228,6 +228,12 @@ impl Engine {
                 .as_ref()
                 .map_or_else(Unknowns::new, |e| e.unknown.clone()),
         };
+        // A re-import that moves the anchor moves the occurrence keys, and
+        // each occurrence binding moves with the occurrence it named, as an
+        // edit of the whole block does.
+        if let Some(e) = &existing {
+            block.shift_bindings(&e.starts_at);
+        }
         block.validate_invariants(&tz)?;
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
@@ -554,7 +560,9 @@ impl Engine {
     /// With `occurrence` it removes the Task's binding to that occurrence of
     /// a recurring block, and is refused for a block with no rule. Without
     /// one it removes a binding to the whole block, which on a recurring
-    /// block is one made before occurrence bindings existed.
+    /// block is one made before occurrence bindings existed; it is refused
+    /// for a task the block binds only to occurrences, which it would leave
+    /// bound.
     pub(super) fn unbind_task(
         &self,
         db: &mut Db,
@@ -579,7 +587,18 @@ impl Engine {
                     .remove(&OccurrenceBinding::new(key, task));
             }
             None => {
-                block.tasks.remove(&task);
+                // A task the block binds only to some of its occurrences is
+                // not unbound by removing a whole-block binding it does not
+                // have: refuse, rather than write an unchanged block and
+                // report the task unbound.
+                if !block.tasks.remove(&task)
+                    && block.occurrence_tasks.iter().any(|b| b.task() == task)
+                {
+                    return Err(EngineError::Invalid(format!(
+                        "task {task} is bound to occurrences of block {block_id}: \
+                         name the occurrence to unbind it from"
+                    )));
+                }
             }
         }
         block.updated_at = ms_to_ts(now_ms as i64);
