@@ -120,7 +120,7 @@ pub(super) async fn block(ctx: &Ctx<'_>, rest: &[String]) -> CmdResult {
         Some("move") => move_block(ctx, args).await,
         Some(verb @ ("bind" | "unbind")) => {
             // A recurring block binds a task to one occurrence, named by its
-            // key (`block list` shows it).
+            // key (`blocks` shows it on each occurrence's row).
             let occurrence = flag_value(args, "--occurrence");
             let words = positionals(args, &["--occurrence"], &[]);
             let [blk, tasks @ ..] = words.as_slice() else {

@@ -74,9 +74,9 @@ impl crate::Block {
     /// Re-key the occurrence bindings for an anchor moved from `from` to the
     /// block's `starts_at`: each key moves by the civil distance the anchor
     /// moved, so a binding keeps naming the occurrence it named when an edit
-    /// *this and future* moves the continuation (an occurrence key is the
-    /// intended civil start). A key, or an anchor, that is not a civil time
-    /// is kept as it is.
+    /// moves the series, whole or as a split's continuation (an occurrence
+    /// key is the intended civil start). A key, or an anchor, that is not a
+    /// civil time is kept as it is.
     pub fn shift_bindings(&mut self, from: &SunriseTime) {
         let (Some(from), Some(to)) = (civil_of(from), civil_of(&self.starts_at)) else {
             return;
