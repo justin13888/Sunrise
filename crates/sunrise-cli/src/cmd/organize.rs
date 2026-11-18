@@ -404,11 +404,15 @@ async fn resolve_routine(ctx: &Ctx<'_>, raw: &str) -> CmdResult<Routine> {
     }
 }
 
-/// A rule body, `FREQ=…;…`, with an optional `RRULE:` prefix.
+/// A rule body, `FREQ=…;…`, with an optional `RRULE:` prefix, or a phrase
+/// such as `every monday`.
+///
+/// This goes through [`sunrise_domain::parse_recurrence`], the parser the
+/// bindings use, not bare [`RRule::parse`]: that one keeps a value this build
+/// does not know (it also reads stored rules back), so a typed `BYDAY=1MO`
+/// would be saved as a routine that never fires.
 fn rule(raw: &str) -> CmdResult<RRule> {
-    let body = raw.trim();
-    let body = body.strip_prefix("RRULE:").unwrap_or(body);
-    RRule::parse(body).map_err(|e| strings::routines::bad_rule(&e.to_string()).into())
+    sunrise_domain::parse_recurrence(raw).map_err(|e| strings::routines::bad_rule(&e).into())
 }
 
 fn catchup(raw: &str) -> CmdResult<RoutineCatchupPolicy> {
