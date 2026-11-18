@@ -311,8 +311,25 @@ final class CalendarModel {
         await run(.bindTask(block: block, task: task), label: L10n.Calendar.undoBindTask)
     }
 
-    func unbind(task: EntityRef, from block: EntityRef) async {
-        await run(.unbindTask(block: block, task: task), label: L10n.Calendar.undoUnbindTask)
+    /// Unbind `task` from `block`: from the occurrence `occurrenceKey` names,
+    /// or with none from the whole block.
+    func unbind(task: EntityRef, from block: EntityRef, occurrenceKey: String? = nil) async {
+        await run(
+            .unbindTask(block: block, task: task, occurrenceKey: occurrenceKey),
+            label: L10n.Calendar.undoUnbindTask
+        )
+    }
+
+    /// Unbind `task` from the block `row` shows. An occurrence's row lists
+    /// the tasks bound to that occurrence beside those bound to the whole
+    /// block, and the core removes an occurrence binding only when the
+    /// unbind names its key, so a task bound to this occurrence is unbound
+    /// from it, and any other from the whole block.
+    func unbind(task: EntityRef, from row: BlockGridRow) async {
+        let key = row.occurrenceKey.flatMap { key in
+            row.block.occurrenceTasks.contains { $0.key == key && $0.task == task } ? key : nil
+        }
+        await unbind(task: task, from: row.block.id, occurrenceKey: key)
     }
 
     func delete(_ block: EntityRef) async {
