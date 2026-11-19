@@ -21,6 +21,10 @@ final class UpcomingDragUITests: SunriseUITestCase {
         // Not `listedHere`: Today does not list a task planned for tomorrow,
         // so it is found under its day in Upcoming below instead.
         capture("Write report ^tomorrow", listedHere: false)
+        // The capture bar keeps focus after Add, and the software keyboard it
+        // holds up covers the tab bar (`TabShellUITests`), so put it away
+        // before reaching for Browse.
+        dismissKeyboard()
         openUpcoming()
         let tomorrow = civilDate(daysFromToday: 1)
         let later = civilDate(daysFromToday: 3)
