@@ -19,7 +19,13 @@ struct PlacedBlock: Equatable, Identifiable {
     /// How many columns that cluster of overlapping blocks needs.
     let laneCount: Int
 
-    var id: EntityRef { row.block.id }
+    /// The row's grid key: one event of a repeating block is its own chip,
+    /// and a weekly block on a week grid would otherwise be seven chips with
+    /// one identity.
+    var id: String { row.gridKey }
+
+    /// The block this chip draws, or draws one event of.
+    var blockId: EntityRef { row.block.id }
 }
 
 /// A shaded conflict region, placed on the grid.
@@ -70,7 +76,7 @@ enum BlockLayout {
             }
             .sorted { lhs, rhs in
                 lhs.start == rhs.start
-                    ? lhs.row.block.id < rhs.row.block.id
+                    ? lhs.row.gridKey < rhs.row.gridKey
                     : lhs.start < rhs.start
             }
 

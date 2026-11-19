@@ -17,7 +17,13 @@ struct BlockLayoutTests {
         Self.dayStart + Int64(hour) * 3_600_000 + Int64(minute) * 60_000
     }
 
-    private func row(_ id: String, _ from: Int64, _ to: Int64, title: String? = nil) -> BlockGridRow {
+    private func row(
+        _ id: String,
+        _ from: Int64,
+        _ to: Int64,
+        title: String? = nil,
+        occurrence: String? = nil
+    ) -> BlockGridRow {
         BlockGridRow(
             block: BlockItem(
                 id: "blk_\(id)",
@@ -32,8 +38,52 @@ struct BlockLayoutTests {
                 deleted: false
             ),
             title: title,
-            taskTitles: []
+            taskTitles: [],
+            occurrenceKey: occurrence
         )
+    }
+
+    /// **A repeating block is drawn on every day it occurs.** The week query
+    /// returns one row per occurrence, all with the block's id; keyed by the
+    /// id alone, the grid's `ForEach` would hold seven chips with one
+    /// identity and draw whichever it kept.
+    @Test
+    func everyEventOfARepeatingBlockIsItsOwnChip() {
+        let day: Int64 = 86_400_000
+        let week = (0..<7).map { offset in
+            row(
+                "daily",
+                at(9) + Int64(offset) * day,
+                at(10) + Int64(offset) * day,
+                occurrence: "2026-03-0\(4 + offset)T09:00"
+            )
+        }
+        let whole = BlockLayout.place(
+            rows: week,
+            fromMs: Self.dayStart,
+            toMs: Self.dayStart + 7 * day,
+            timeZone: Self.tz
+        )
+        #expect(whole.count == 7)
+        #expect(Set(whole.map(\.id)).count == 7, "one identity per event")
+        #expect(Set(whole.map(\.blockId)) == ["blk_daily"], "one block behind them")
+        for offset in 0..<7 {
+            let from = Self.dayStart + Int64(offset) * day
+            let placed = BlockLayout.place(
+                rows: week, fromMs: from, toMs: from + day, timeZone: Self.tz
+            )
+            #expect(placed.count == 1, "day \(offset) draws its own event")
+            #expect(placed.first?.startMs == at(9) + Int64(offset) * day)
+            #expect(placed.first?.row.occurrenceKey == "2026-03-0\(4 + offset)T09:00")
+        }
+    }
+
+    /// A block that does not recur keeps its id as its key, so nothing that
+    /// already keyed a chip by its block moves.
+    @Test
+    func aOneOffBlockIsKeyedByItsId() {
+        #expect(row("a", at(9), at(10)).gridKey == "blk_a")
+        #expect(row("a", at(9), at(10), occurrence: "2026-03-04T09:00").gridKey == "blk_a@2026-03-04T09:00")
     }
 
     private func place(_ rows: [BlockGridRow]) -> [PlacedBlock] {
