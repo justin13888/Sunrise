@@ -11592,7 +11592,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No task is late or stale. A task comes back here when its next deadline passes."
+            "value": "No task is late or stale. A task you keep comes back here when its lateness next changes."
           }
         }
       }
@@ -11664,7 +11664,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Leave it as it is until its next deadline passes."
+            "value": "Leave it as it is until its lateness next changes."
           }
         }
       }
@@ -11747,7 +11747,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Untouched since %1$@"
+            "value": "Stale since %1$@"
           }
         }
       }

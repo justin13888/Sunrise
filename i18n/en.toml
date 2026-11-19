@@ -1161,12 +1161,13 @@ subtitle = "Late and stale tasks, waiting on your decision. Nothing here changes
 headline = "{count, plural, =0 {Nothing to triage} one {# task needs a decision} other {# tasks need a decision}}"
 # The empty queue.
 empty_title = "Nothing to triage"
-empty_message = "No task is late or stale. A task comes back here when its next deadline passes."
+empty_message = "No task is late or stale. A task you keep comes back here when its lateness next changes."
 # Why a task is in the queue, under its title. {date} is when that began,
-# already formatted.
+# already formatted: for stale, the day the task turned stale, not its last
+# edit, so the line must not claim the task was untouched since then.
 late_hard = "Missed its deadline {date}"
 late_soft = "Missed its target {date}"
-stale = "Untouched since {date}"
+stale = "Stale since {date}"
 # How many rows are ticked, in the action bar. Zero tells the user what to do.
 selection = "{count, plural, =0 {Select tasks to act on} one {# selected} other {# selected}}"
 select_all = "Select all"
@@ -1179,7 +1180,7 @@ already_done_help = "Mark done at the time it was really done."
 drop = "Drop…"
 drop_help = "Cancel it, with a reason if you like."
 keep = "Keep"
-keep_help = "Leave it as it is until its next deadline passes."
+keep_help = "Leave it as it is until its lateness next changes."
 # The Already done sheet: its title, its date picker's label, and its button.
 # The button's words are also the Undo menu's ("Undo Mark done").
 done_title = "When was it done?"

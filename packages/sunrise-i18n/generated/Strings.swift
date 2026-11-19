@@ -1551,7 +1551,7 @@ enum L10n {
         }
         /// Nothing to triage
         static var emptyTitle: String { L10n.tr("apple.triage.empty_title") }
-        /// No task is late or stale. A task comes back here when its next deadline passes.
+        /// No task is late or stale. A task you keep comes back here when its lateness next changes.
         static var emptyMessage: String { L10n.tr("apple.triage.empty_message") }
         /// Missed its deadline {date}
         static func lateHard(date: String) -> String {
@@ -1561,7 +1561,7 @@ enum L10n {
         static func lateSoft(date: String) -> String {
             L10n.tr("apple.triage.late_soft", date)
         }
-        /// Untouched since {date}
+        /// Stale since {date}
         static func stale(date: String) -> String {
             L10n.tr("apple.triage.stale", date)
         }
@@ -1585,7 +1585,7 @@ enum L10n {
         static var dropHelp: String { L10n.tr("apple.triage.drop_help") }
         /// Keep
         static var keep: String { L10n.tr("apple.triage.keep") }
-        /// Leave it as it is until its next deadline passes.
+        /// Leave it as it is until its lateness next changes.
         static var keepHelp: String { L10n.tr("apple.triage.keep_help") }
         /// When was it done?
         static var doneTitle: String { L10n.tr("apple.triage.done_title") }
