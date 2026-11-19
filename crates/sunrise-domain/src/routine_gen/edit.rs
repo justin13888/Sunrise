@@ -525,6 +525,32 @@ mod tests {
         );
     }
 
+    /// After a split, the ended routine still has its last occurrence and the
+    /// continuation has the key it was split at, whichever side of UTC the
+    /// zone is on, including a half-hour DST zone (#838).
+    #[test]
+    fn a_split_keeps_each_side_its_occurrences_in_every_zone() {
+        for zone in [
+            "America/New_York",
+            "UTC",
+            "Europe/Berlin",
+            "Australia/Lord_Howe",
+        ] {
+            let mut r = routine("FREQ=DAILY", "2026-03-01T09:00");
+            r.rezone(zone.into());
+            let s = r.split_at("2026-03-06T09:00", now()).expect("splits");
+            assert!(s.ended.has_occurrence("2026-03-05T09:00"), "{zone}");
+            assert!(s.ended.has_occurrence("2026-03-04T09:00"), "{zone}");
+            assert!(!s.ended.has_occurrence("2026-03-06T09:00"), "{zone}");
+            assert!(
+                s.ended.occurrence_civil("2026-03-05T09:00").is_some(),
+                "{zone}"
+            );
+            assert!(s.continuation.has_occurrence("2026-03-06T09:00"), "{zone}");
+            assert!(!s.continuation.has_occurrence("2026-03-05T09:00"), "{zone}");
+        }
+    }
+
     fn until_of(rule: &str, zone: Option<&str>) -> Option<SunriseTime> {
         let zone = zone.map(|z| TimeZone::get(z).expect("zone"));
         civil_frame_rule(&RRule::parse(rule).expect("rule"), zone.as_ref()).until
