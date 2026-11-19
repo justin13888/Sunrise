@@ -153,6 +153,28 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+/// What a planning key asks of the calendar block with focus. Not an
+/// ``AppAction``: each acts on one block and one plan in progress, so none
+/// can run from the palette, as a note mark cannot.
+enum PlanKey: Hashable, Sendable {
+    /// Move it one snap earlier.
+    case earlier
+    /// Move it one snap later.
+    case later
+    /// Move its end one snap earlier.
+    case shorter
+    /// Move its end one snap later.
+    case longer
+    /// Move it to the day before.
+    case previousDay
+    /// Move it to the day after.
+    case nextDay
+    /// Commit the plan on screen.
+    case commit
+    /// Drop the plan on screen.
+    case cancel
+}
+
 /// How the cheat sheet groups the keymap.
 enum KeySection: String, CaseIterable, Hashable, Sendable {
     case capture
@@ -347,6 +369,32 @@ extension Keymap {
 
     /// Return on the capture bar's Add button.
     static let submitCapture = KeyChord(.returnKey)
+
+    /// The planning keys on a calendar block that has focus — the keyboard
+    /// path of every drag, `docs/08-features/planner.md` §Client contract.
+    /// Each previews the plan the same drag would, and nothing is written
+    /// until Return.
+    static let planning: [(chord: KeyChord, key: PlanKey)] = [
+        (KeyChord(.upArrow, [.option]), .earlier),
+        (KeyChord(.downArrow, [.option]), .later),
+        (KeyChord(.upArrow, [.shift, .option]), .shorter),
+        (KeyChord(.downArrow, [.shift, .option]), .longer),
+        (KeyChord(.leftArrow, [.option]), .previousDay),
+        (KeyChord(.rightArrow, [.option]), .nextDay),
+        (KeyChord(.returnKey), .commit),
+        (KeyChord(.escape), .cancel)
+    ]
+
+    /// The planning key a press on a calendar block means, if any.
+    static func planKey(for chord: KeyChord) -> PlanKey? {
+        planning.first { $0.chord == chord }?.key
+    }
+
+    /// The planning keys, printed for a block's spoken hint and tooltip:
+    /// "⌥↑ ⌥↓ ⌥⇧↑ ⌥⇧↓ ⌥← ⌥→ ↩ esc".
+    static var planningLabel: String {
+        planning.map(\.chord.display).joined(separator: " ")
+    }
 
     /// The note editor's formatting keys — the table in
     /// `docs/08-features/keyboard.md` §Note editor.

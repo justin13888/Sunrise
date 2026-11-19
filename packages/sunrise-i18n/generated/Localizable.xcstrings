@@ -2278,6 +2278,17 @@
         }
       }
     },
+    "apple.calendar.bind_grip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag onto a task to bind it to this block, or onto a bound task to unbind it"
+          }
+        }
+      }
+    },
     "apple.calendar.block_fixed": {
       "extractionState": "manual",
       "localizations": {
@@ -2454,6 +2465,28 @@
         }
       }
     },
+    "apple.calendar.note_plan_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The plan changed while you dropped. Move to commit the new plan, or cancel."
+          }
+        }
+      }
+    },
+    "apple.calendar.note_plan_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not moved: that drop breaks a rule the block cannot break."
+          }
+        }
+      }
+    },
     "apple.calendar.overlaps": {
       "extractionState": "manual",
       "localizations": {
@@ -2461,6 +2494,226 @@
           "stringUnit": {
             "state": "translated",
             "value": "Overlaps %1$@"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_commit_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_keys_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move or resize with %1$@"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_moves": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Moves %arg"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Moves %arg"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can’t drop here"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_after_hard_deadline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "misses its hard deadline"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_after_target": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "misses its target"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_before_blocker": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "starts before what blocks it"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_in_past": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "in the past"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not a time this block can have"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_date_range": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside its date range"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside your day"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_outside_time_of_day": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "outside its time of day"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_overlaps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "overlaps another block"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_overlaps_fixed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "overlaps something fixed"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_rule_wrong_day_of_week": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "on a day of the week it does not allow"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_unscheduled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg unscheduled"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg unscheduled"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -2703,6 +2956,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "move a block"
+          }
+        }
+      }
+    },
+    "apple.calendar.undo_plan_move": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "move ‘%1$@’ (moved %2$lld)"
+          }
+        }
+      }
+    },
+    "apple.calendar.undo_plan_resize": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "resize ‘%1$@’ (moved %2$lld)"
           }
         }
       }
@@ -12067,6 +12342,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "reorder streams"
+          }
+        }
+      }
+    },
+    "apple.undo.restored_some": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restored %1$lld of %2$lld; the rest were changed since"
           }
         }
       }

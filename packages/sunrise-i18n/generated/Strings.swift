@@ -1016,6 +1016,58 @@ enum L10n {
         static var undoDeleteBlock: String { L10n.tr("apple.calendar.undo_delete_block") }
         /// edit a block
         static var undoEditBlock: String { L10n.tr("apple.calendar.undo_edit_block") }
+        /// move ‘{title}’ (moved {count, number})
+        static func undoPlanMove(title: String, count: Int) -> String {
+            L10n.tr("apple.calendar.undo_plan_move", title, count)
+        }
+        /// resize ‘{title}’ (moved {count, number})
+        static func undoPlanResize(title: String, count: Int) -> String {
+            L10n.tr("apple.calendar.undo_plan_resize", title, count)
+        }
+        /// {count, plural, one {Moves #} other {Moves #}}
+        static func planMoves(count: Int) -> String {
+            L10n.tr("apple.calendar.plan_moves", count)
+        }
+        /// {count, plural, one {# unscheduled} other {# unscheduled}}
+        static func planUnscheduled(count: Int) -> String {
+            L10n.tr("apple.calendar.plan_unscheduled", count)
+        }
+        /// overlaps something fixed
+        static var planRuleOverlapsFixed: String { L10n.tr("apple.calendar.plan_rule_overlaps_fixed") }
+        /// overlaps another block
+        static var planRuleOverlaps: String { L10n.tr("apple.calendar.plan_rule_overlaps") }
+        /// misses its hard deadline
+        static var planRuleAfterHardDeadline: String { L10n.tr("apple.calendar.plan_rule_after_hard_deadline") }
+        /// misses its target
+        static var planRuleAfterTarget: String { L10n.tr("apple.calendar.plan_rule_after_target") }
+        /// starts before what blocks it
+        static var planRuleBeforeBlocker: String { L10n.tr("apple.calendar.plan_rule_before_blocker") }
+        /// outside its time of day
+        static var planRuleOutsideTimeOfDay: String { L10n.tr("apple.calendar.plan_rule_outside_time_of_day") }
+        /// on a day of the week it does not allow
+        static var planRuleWrongDayOfWeek: String { L10n.tr("apple.calendar.plan_rule_wrong_day_of_week") }
+        /// outside its date range
+        static var planRuleOutsideDateRange: String { L10n.tr("apple.calendar.plan_rule_outside_date_range") }
+        /// outside your day
+        static var planRuleOutsideDay: String { L10n.tr("apple.calendar.plan_rule_outside_day") }
+        /// in the past
+        static var planRuleInPast: String { L10n.tr("apple.calendar.plan_rule_in_past") }
+        /// not a time this block can have
+        static var planRuleInvalid: String { L10n.tr("apple.calendar.plan_rule_invalid") }
+        /// Can’t drop here
+        static var planRefused: String { L10n.tr("apple.calendar.plan_refused") }
+        /// Not moved: that drop breaks a rule the block cannot break.
+        static var notePlanRefused: String { L10n.tr("apple.calendar.note_plan_refused") }
+        /// The plan changed while you dropped. Move to commit the new plan, or cancel.
+        static var notePlanChanged: String { L10n.tr("apple.calendar.note_plan_changed") }
+        /// Move
+        static var planCommitChanged: String { L10n.tr("apple.calendar.plan_commit_changed") }
+        /// Drag onto a task to bind it to this block, or onto a bound task to unbind it
+        static var bindGrip: String { L10n.tr("apple.calendar.bind_grip") }
+        /// Move or resize with {keys}
+        static func planKeysHint(keys: String) -> String {
+            L10n.tr("apple.calendar.plan_keys_hint", keys)
+        }
         /// Move a repeating block
         static var reachTitleMove: String { L10n.tr("apple.calendar.reach_title_move") }
         /// Change a repeating block
@@ -2070,6 +2122,10 @@ enum L10n {
         static var moveToStream: String { L10n.tr("apple.undo.move_to_stream") }
         /// add a context
         static var addContext: String { L10n.tr("apple.undo.add_context") }
+        /// Restored {restored, number} of {total, number}; the rest were changed since
+        static func restoredSome(restored: Int, total: Int) -> String {
+            L10n.tr("apple.undo.restored_some", restored, total)
+        }
     }
 
     enum Menu {
