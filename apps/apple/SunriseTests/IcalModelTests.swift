@@ -4,8 +4,9 @@ import Testing
 @testable import Sunrise
 
 /// A document with one clean event and one of everything a Block cannot hold:
-/// a recurrence, an alarm, an attendee, a description, a `VTODO`, and a
-/// timezone reference no Mac has ever heard of.
+/// a recurrence outside the rules a Block can repeat by (`FREQ=HOURLY`), an
+/// alarm, an attendee, a `VTODO`, and a timezone reference no Mac has ever
+/// heard of.
 ///
 /// Written out rather than read from `crates/sunrise-integrations/testdata`:
 /// this asserts what *this client* does with a report, and a fixture the Rust
@@ -28,8 +29,7 @@ DTSTAMP:20260301T120000Z
 DTSTART;TZID=Mars/Olympus:20260303T140000
 DTEND;TZID=Mars/Olympus:20260303T150000
 SUMMARY:Weekly sync
-DESCRIPTION:Bring the numbers.
-RRULE:FREQ=WEEKLY;BYDAY=TU
+RRULE:FREQ=HOURLY
 ATTENDEE;CN=Sam:mailto:sam@example.com
 BEGIN:VALARM
 ACTION:DISPLAY
@@ -66,7 +66,7 @@ struct IcalModelTests {
         #expect(summary.blocks.allSatisfy { $0.isNew })
 
         // The whole reason the sheet exists.
-        #expect(summary.hasNotices, "an RRULE, a VALARM, an ATTENDEE and a VTODO were all dropped")
+        #expect(summary.hasNotices, "an hourly RRULE, a VALARM, an ATTENDEE and a VTODO were all dropped")
         let everything = summary.notices.flatMap(\.lines).joined(separator: "\n")
         #expect(everything.contains("VTODO"), "\(everything)")
         #expect(everything.contains("VALARM"), "\(everything)")
