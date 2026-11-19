@@ -67,7 +67,7 @@ struct DeepLinkTests {
     /// The triage nudge's tap and Open Triage both route `sunrise://triage`
     /// (`ReminderScheduler.handle`), which asks the shell for the queue and
     /// leaves the screen underneath where it was.
-    @Test
+    @Test @MainActor
     func aTriageLinkAsksForTheQueueAndNotAScreen() {
         let surfaces = AppSurfaces()
 
