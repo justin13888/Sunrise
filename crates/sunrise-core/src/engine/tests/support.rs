@@ -303,6 +303,20 @@ pub(super) fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
         source: source.into(),
         uid: uid.into(),
         draft,
+        fields: crate::ImportedFields::default(),
+    }
+}
+
+/// [`import`] of an item recurring by `rule`.
+pub(super) fn import_series(source: &str, uid: &str, draft: BlockDraft, rule: &str) -> Command {
+    Command::ImportBlock {
+        source: source.into(),
+        uid: uid.into(),
+        draft,
+        fields: crate::ImportedFields {
+            rrule: Some(sunrise_domain::rrule::RRule::parse(rule).unwrap()),
+            ..crate::ImportedFields::default()
+        },
     }
 }
 

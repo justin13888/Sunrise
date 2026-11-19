@@ -4,7 +4,7 @@
 //! of its arguments, which is what lets the mapping be pinned by unit tests
 //! rather than only by an end-to-end import.
 //!
-//! # `VEVENT` is a [`Block`], not a [`sunrise_domain::Task`]
+//! # `VEVENT` is a [`sunrise_domain::Block`], not a [`sunrise_domain::Task`]
 //!
 //! A `VEVENT` is "this happens between these two times". That is exactly a
 //! Block — `docs/02-domain/time-blocks.md`: a scheduled range that may bind
@@ -30,17 +30,42 @@
 //! | `20260301T090000` (no zone) | [`SunriseTime::Floating`] |
 //! | `VALUE=DATE:20260301` | [`SunriseTime::AllDay`] |
 //!
-//! # What a Block cannot hold
+//! # Recurrence, location and notes
 //!
-//! `DESCRIPTION`, `LOCATION` and `RRULE` are parsed and then reported as
-//! dropped: `docs/02-domain/time-blocks.md` §"Specified but not modelled"
-//! lists `notes`, `location` and `rrule` as fields that have not landed. They
-//! are reported per event rather than dropped in silence, and adding them
-//! later is a schema change, not a change here.
+//! `docs/09-integrations/icalendar.md` §Mapping rules: `RRULE` is the
+//! Block's `rrule`, each `EXDATE` a cancelled exception at its occurrence
+//! key, each `RECURRENCE-ID` override an exception holding what it changes,
+//! `LOCATION` the `location` and `DESCRIPTION` the `notes`. The `UID` is the
+//! `external_id`, and stays the id derivation too
+//! ([`sunrise_domain::imported_block_id`]).
+//!
+//! A recurring Block repeats a wall-clock time (`docs/10-cross-cutting/
+//! time.md` §6), so its anchor is `zoned` or `floating`. A UTC `DTSTART`
+//! is read as wall clock in the zone `UTC`, which names the same instants.
+//! A rule this build cannot expand, or an all-day or mixed-kind anchor, is
+//! reported, not guessed at: the event imports as its first occurrence.
+//!
+//! This file maps one event's range and fields; the `recurrence` submodule
+//! maps its series and exceptions, and [`block_to_events`] raises a Block
+//! back to events.
+
+mod export;
+#[cfg(test)]
+mod fixtures;
+mod recurrence;
+
+pub use export::{block_to_event, block_to_events};
 
 use crate::ical::{ICalEvent, ICalNotice, ICalTime, NoticeCode};
 use jiff::{civil, tz::TimeZone, Span};
-use sunrise_domain::{block_uid, Block, BlockDraft, SunriseTime};
+use recurrence::{drop_recurrence, exceptions_of, recurrence_of};
+use std::collections::BTreeMap;
+use sunrise_core::ImportedFields;
+use sunrise_domain::validation::MAX_BLOCK_LOCATION_LEN;
+use sunrise_domain::{
+    decode_note_body, encode_note_body, note_body_to_plain_text, BlockDraft, Inline, NoteBlock,
+    NoteBody, SunriseTime,
+};
 use sunrise_id::EntityRef;
 
 /// A `VEVENT` lowered to something the core can be handed.
@@ -50,21 +75,78 @@ pub struct MappedEvent {
     pub uid: String,
     /// The Block to write.
     pub draft: BlockDraft,
+    /// The Block's fields beyond the draft: its series, location, notes and
+    /// foreign id.
+    pub fields: ImportedFields,
     /// What the Block could not carry.
     pub notices: Vec<ICalNotice>,
 }
 
+/// The `VEVENT`s of one Block: an event, and the `RECURRENCE-ID` overrides
+/// of its `UID`.
+#[derive(Debug, Clone)]
+pub struct EventGroup<'a> {
+    /// The event, which states the series.
+    pub event: &'a ICalEvent,
+    /// The overrides of its occurrences, in file order.
+    pub overrides: Vec<&'a ICalEvent>,
+}
+
+/// Pair each `RECURRENCE-ID` override with the event of its `UID`, in file
+/// order.
+///
+/// Each event with no `RECURRENCE-ID` is a group. Overrides join the last
+/// such event of their `UID`, which is the one whose write an import keeps.
+/// An override whose `UID` has no such event in the file stands in for it:
+/// the first one is the group's event, imported as a one-off, and the rest
+/// are its overrides.
+#[must_use]
+pub fn group_events(events: &[ICalEvent]) -> Vec<EventGroup<'_>> {
+    let has_event: std::collections::BTreeSet<&str> = events
+        .iter()
+        .filter(|e| e.recurrence_id.is_none())
+        .map(|e| e.uid.as_str())
+        .collect();
+    // The group each UID's overrides join: its last event's, or its first
+    // orphan override's.
+    let mut owner: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut groups: Vec<EventGroup<'_>> = Vec::new();
+    let mut overrides: Vec<&ICalEvent> = Vec::new();
+    for ev in events {
+        let uid = ev.uid.as_str();
+        let stands_alone =
+            ev.recurrence_id.is_none() || (!has_event.contains(uid) && !owner.contains_key(uid));
+        if stands_alone {
+            owner.insert(uid, groups.len());
+            groups.push(EventGroup {
+                event: ev,
+                overrides: Vec::new(),
+            });
+        } else {
+            overrides.push(ev);
+        }
+    }
+    for ev in overrides {
+        if let Some(&i) = owner.get(ev.uid.as_str()) {
+            groups[i].overrides.push(ev);
+        }
+    }
+    groups
+}
+
 /// Lower one `VEVENT` onto a [`BlockDraft`] in `stream_id`, or in no stream
-/// for `None` (ADR-0046).
+/// for `None` (ADR-0046), with `overrides` as the exceptions of its series.
 ///
 /// # Errors
 ///
 /// An [`ICalNotice`] describing why this event has no Block form — a missing
 /// `DTSTART`, a zero-length event, or an end that is not after its start. The
 /// caller reports it and moves on to the next event: one unusable event must
-/// not fail the whole import.
+/// not fail the whole import. An override that cannot be carried is reported
+/// in the result, and the rest of the series kept.
 pub fn event_to_block(
     ev: &ICalEvent,
+    overrides: &[&ICalEvent],
     stream_id: Option<EntityRef>,
 ) -> Result<MappedEvent, ICalNotice> {
     let uid = || Some(ev.uid.clone());
@@ -84,63 +166,10 @@ pub fn event_to_block(
 
     let starts_at = to_sunrise(start);
     let ends_at = to_sunrise(&end);
-    // A pair whose order is the same for every reader is judged here, with no
-    // reader at all, in UTC:
-    //
-    // * two bounds that each resolve without a reader (an instant, or a time
-    //   in a zone the tzdb knows) resolve to the same instants in every zone,
-    //   whatever their kinds or zones;
-    // * two bounds of one kind (and one zone) order the same everywhere,
-    //   because in UTC, which has no transitions, a civil order and its
-    //   resolved order agree.
-    //
-    // Any other pair (a floating or all-day bound beside one of another kind)
-    // orders differently in different zones (`docs/10-cross-cutting/time.md`
-    // §2); it is left to the core, which validates the draft in the reader's
-    // zone when it is written, and `import` reports a refusal there per event.
-    let anchored = |t: &SunriseTime| match t {
-        SunriseTime::Instant { .. } => true,
-        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).is_ok(),
-        _ => false,
-    };
-    let same_kind = match (&starts_at, &ends_at) {
-        (SunriseTime::Zoned { tz: a, .. }, SunriseTime::Zoned { tz: b, .. }) => a == b,
-        (a, b) => a.kind_str() == b.kind_str(),
-    };
-    let reader_free = same_kind || (anchored(&starts_at) && anchored(&ends_at));
-    // On resolved instants, as the core's range check compares them, so an
-    // end at the start's instant under another kind is refused here too.
-    let inverted = matches!(
-        (ends_at.resolve_in(&TimeZone::UTC), starts_at.resolve_in(&TimeZone::UTC)),
-        (Some(e), Some(s)) if e <= s
-    );
-    if reader_free && inverted {
+    if refused_order(&starts_at, &ends_at) {
         return Err(skip(format!(
             "DTEND is not after DTSTART ({starts_at} .. {ends_at})"
         )));
-    }
-
-    for (name, why) in [
-        (
-            ev.description.as_ref().map(|_| "DESCRIPTION"),
-            "a Block has no notes field in this schema",
-        ),
-        (
-            ev.location.as_ref().map(|_| "LOCATION"),
-            "a Block has no location field in this schema",
-        ),
-        (
-            ev.rrule.as_ref().map(|_| "RRULE"),
-            "recurring Blocks are not modelled; only the first occurrence was imported",
-        ),
-    ] {
-        if let Some(name) = name {
-            notices.push(ICalNotice {
-                code: NoticeCode::UnmappedProperty,
-                uid: uid(),
-                detail: format!("{name} was dropped: {why}"),
-            });
-        }
     }
 
     // A Block with no bound Task needs a title of its own, and an untitled
@@ -152,44 +181,167 @@ pub fn event_to_block(
         .filter(|s| !s.is_empty())
         .map_or_else(|| "(untitled event)".to_string(), ToString::to_string);
 
+    let mut draft = BlockDraft {
+        stream_id,
+        starts_at,
+        ends_at,
+        title: Some(title),
+        // An imported Block's title is the calendar's, not a shadow copy of
+        // some task's, so tracking would be wrong even if a task were later
+        // bound to it.
+        title_track_task: false,
+        tasks: Vec::new(),
+    };
+    let mut fields = ImportedFields {
+        location: location_of(ev, &mut notices),
+        notes: ev.description.as_deref().and_then(note_from),
+        external_id: Some(ev.uid.clone()),
+        ..ImportedFields::default()
+    };
+    if let Some(series) = recurrence_of(ev, &draft, &mut notices) {
+        draft.starts_at = series.starts_at.clone();
+        draft.ends_at = series.ends_at.clone();
+        let exceptions = exceptions_of(ev, overrides, &series, &draft, &fields, &mut notices);
+        fields.rrule = Some(series.rrule);
+        fields.exceptions = exceptions;
+    } else {
+        drop_recurrence(ev, overrides, &mut notices);
+    }
+
     Ok(MappedEvent {
         uid: ev.uid.clone(),
-        draft: BlockDraft {
-            stream_id,
-            starts_at,
-            ends_at,
-            title: Some(title),
-            // An imported Block's title is the calendar's, not a shadow copy
-            // of some task's, so tracking would be wrong even if a task were
-            // later bound to it.
-            title_track_task: false,
-            tasks: Vec::new(),
-        },
+        draft,
+        fields,
         notices,
     })
 }
 
-/// Raise a Block back to a `VEVENT`.
+/// Whether the order of `starts_at` and `ends_at` is every reader's, and
+/// inverted.
 ///
-/// `title` is the *resolved* title (`sunrise_core::queries::BlockRow::title`),
-/// not the stored one: a Block that tracks its bound Task's title should
-/// export what a reader would see.
-#[must_use]
-pub fn block_to_event(block: &Block, title: Option<&str>) -> ICalEvent {
-    ICalEvent {
-        // The Block's own id, so re-importing this file finds this Block
-        // rather than making a second one. See `sunrise_domain::import`.
-        uid: block_uid(block.id),
-        summary: title.map(ToString::to_string),
-        dtstart: Some(from_sunrise(&block.starts_at)),
-        dtend: Some(from_sunrise(&block.ends_at)),
-        // Nothing in the Block schema backs these; exporting an empty one
-        // would be inventing content.
-        duration: None,
-        description: None,
-        location: None,
-        rrule: None,
+/// A pair whose order is the same for every reader is judged here, with no
+/// reader at all, in UTC:
+///
+/// * two bounds that each resolve without a reader (an instant, or a time
+///   in a zone the tzdb knows) resolve to the same instants in every zone,
+///   whatever their kinds or zones;
+/// * two bounds of one kind (and one zone) order the same everywhere,
+///   because in UTC, which has no transitions, a civil order and its
+///   resolved order agree.
+///
+/// Any other pair (a floating or all-day bound beside one of another kind)
+/// orders differently in different zones (`docs/10-cross-cutting/time.md`
+/// §2); it is left to the core, which validates the draft in the reader's
+/// zone when it is written, and `import` reports a refusal there per event.
+fn refused_order(starts_at: &SunriseTime, ends_at: &SunriseTime) -> bool {
+    let same_kind = match (starts_at, ends_at) {
+        (SunriseTime::Zoned { tz: a, .. }, SunriseTime::Zoned { tz: b, .. }) => a == b,
+        (a, b) => a.kind_str() == b.kind_str(),
+    };
+    let reader_free = same_kind || (anchored(starts_at) && anchored(ends_at));
+    // On resolved instants, as the core's range check compares them, so an
+    // end at the start's instant under another kind is refused here too.
+    let inverted = matches!(
+        (ends_at.resolve_in(&TimeZone::UTC), starts_at.resolve_in(&TimeZone::UTC)),
+        (Some(e), Some(s)) if e <= s
+    );
+    reader_free && inverted
+}
+
+/// Whether `t` resolves to one instant for every reader.
+fn anchored(t: &SunriseTime) -> bool {
+    match t {
+        SunriseTime::Instant { .. } => true,
+        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).is_ok(),
+        _ => false,
     }
+}
+
+/// Whether `a` and `b` are the same time: equal, or two times that resolve
+/// without a reader to the same instant.
+fn same_time(a: &SunriseTime, b: &SunriseTime) -> bool {
+    a == b
+        || (anchored(a)
+            && anchored(b)
+            && a.resolve_in(&TimeZone::UTC) == b.resolve_in(&TimeZone::UTC))
+}
+
+/// An [`NoticeCode::UnmappedProperty`] notice about `ev`.
+fn unmapped(ev: &ICalEvent, detail: String) -> ICalNotice {
+    ICalNotice {
+        code: NoticeCode::UnmappedProperty,
+        uid: Some(ev.uid.clone()),
+        detail,
+    }
+}
+
+/// `text` cut to `max` characters, with a notice saying so when it was cut.
+fn bounded(
+    ev: &ICalEvent,
+    name: &str,
+    text: &str,
+    max: usize,
+    notices: &mut Vec<ICalNotice>,
+) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    notices.push(unmapped(
+        ev,
+        format!("{name} was cut to the {max} characters a Block holds"),
+    ));
+    text.chars().take(max).collect()
+}
+
+/// The `LOCATION` of `ev` as a Block holds one: trimmed, `None` when empty,
+/// and cut to [`MAX_BLOCK_LOCATION_LEN`] characters.
+fn location_of(ev: &ICalEvent, notices: &mut Vec<ICalNotice>) -> Option<String> {
+    let text = ev
+        .location
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())?;
+    Some(bounded(
+        ev,
+        "LOCATION",
+        text,
+        MAX_BLOCK_LOCATION_LEN,
+        notices,
+    ))
+}
+
+/// A `DESCRIPTION` as a note: one paragraph per blank-line-separated run,
+/// as the CLI writes plain text into a note. `None` when it holds no text.
+fn note_from(text: &str) -> Option<NoteBody> {
+    let blocks: Vec<NoteBlock> = text
+        .replace("\r\n", "\n")
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| NoteBlock::Paragraph {
+            inline: vec![Inline::text(p)],
+        })
+        .collect();
+    (!blocks.is_empty()).then(|| encode_note_body(&blocks))
+}
+
+/// A note as a `DESCRIPTION`: the inverse of [`note_from`] for a note of
+/// paragraphs, and the note's plain text for any other. `None` when it holds
+/// no text.
+fn description_of(body: &NoteBody) -> Option<String> {
+    let doc = decode_note_body(body);
+    let paragraphs: Option<Vec<String>> = doc
+        .blocks
+        .iter()
+        .map(|b| match b {
+            NoteBlock::Paragraph { inline } => {
+                Some(inline.iter().map(Inline::plain_text).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect();
+    let text = paragraphs.map_or_else(|| note_body_to_plain_text(&doc), |p| p.join("\n\n"));
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// The end of an event, from `DTEND`, `DURATION`, or RFC 5545's default.
@@ -297,38 +449,12 @@ fn from_sunrise(t: &SunriseTime) -> ICalTime {
 
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{event, stream, utc};
     use super::*;
-    use jiff::Timestamp;
-    use std::collections::BTreeSet;
-    use sunrise_domain::{imported_block_id, Unknowns};
-    use sunrise_id::EntityKind;
-
-    fn stream() -> EntityRef {
-        EntityRef::new(EntityKind::Stream, [7u8; 16])
-    }
-
-    fn utc(y: i16, m: i8, d: i8, h: i8) -> ICalTime {
-        ICalTime::Utc(
-            civil::date(y, m, d)
-                .at(h, 0, 0, 0)
-                .to_zoned(TimeZone::UTC)
-                .unwrap()
-                .timestamp(),
-        )
-    }
-
-    fn event() -> ICalEvent {
-        ICalEvent {
-            summary: Some("Coffee with Alice".into()),
-            dtstart: Some(utc(2026, 3, 1, 14)),
-            dtend: Some(utc(2026, 3, 1, 15)),
-            ..ICalEvent::new("ev1@example.com")
-        }
-    }
 
     #[test]
     fn a_timed_event_becomes_a_block_over_the_same_range() {
-        let m = event_to_block(&event(), Some(stream())).expect("mapped");
+        let m = event_to_block(&event(), &[], Some(stream())).expect("mapped");
         assert_eq!(m.uid, "ev1@example.com");
         assert_eq!(m.draft.title.as_deref(), Some("Coffee with Alice"));
         assert_eq!(m.draft.stream_id, Some(stream()));
@@ -372,7 +498,7 @@ mod tests {
             dtstart: Some(ICalTime::Date(civil::date(2026, 3, 1))),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.starts_at,
             SunriseTime::all_day(civil::date(2026, 3, 1))
@@ -392,7 +518,7 @@ mod tests {
             dtstart: Some(utc(2026, 3, 1, 9)),
             ..ICalEvent::new("ev1")
         };
-        let err = event_to_block(&ev, Some(stream())).expect_err("no end");
+        let err = event_to_block(&ev, &[], Some(stream())).expect_err("no end");
         assert_eq!(err.code, NoticeCode::Skipped);
         assert!(err.detail.contains("zero length"), "{}", err.detail);
     }
@@ -404,7 +530,7 @@ mod tests {
             duration: Some("PT90M".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
         assert_eq!(
             m.draft.ends_at,
             SunriseTime::instant(
@@ -426,7 +552,7 @@ mod tests {
             duration: Some("P1D".into()),
             ..ICalEvent::new("ev1")
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 2, 9)));
     }
 
@@ -436,7 +562,7 @@ mod tests {
             duration: Some("PT9H".into()),
             ..event()
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
         assert_eq!(m.draft.ends_at, to_sunrise(&utc(2026, 3, 1, 15)));
         assert!(m
             .notices
@@ -450,7 +576,7 @@ mod tests {
             dtstart: None,
             ..event()
         };
-        assert!(event_to_block(&ev, Some(stream())).is_err());
+        assert!(event_to_block(&ev, &[], Some(stream())).is_err());
     }
 
     #[test]
@@ -459,7 +585,7 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 13)),
             ..event()
         };
-        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
+        let err = event_to_block(&ev, &[], Some(stream())).expect_err("inverted");
         assert!(err.detail.contains("not after"), "{}", err.detail);
     }
 
@@ -476,7 +602,7 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 12)),
             ..event()
         };
-        let err = event_to_block(&ev, Some(stream())).expect_err("inverted");
+        let err = event_to_block(&ev, &[], Some(stream())).expect_err("inverted");
         assert_eq!(err.code, NoticeCode::Skipped);
         assert!(err.detail.contains("not after"), "{}", err.detail);
 
@@ -489,7 +615,7 @@ mod tests {
             }),
             ..ev
         };
-        assert!(event_to_block(&ev, Some(stream())).is_err());
+        assert!(event_to_block(&ev, &[], Some(stream())).is_err());
     }
 
     /// A floating start beside a UTC end orders differently in different
@@ -502,23 +628,42 @@ mod tests {
             dtend: Some(utc(2026, 3, 1, 12)),
             ..event()
         };
-        assert!(event_to_block(&ev, Some(stream())).is_ok());
+        assert!(event_to_block(&ev, &[], Some(stream())).is_ok());
+    }
+
+    /// `LOCATION`, `DESCRIPTION` and the `UID` land on the Block's fields,
+    /// with nothing to report.
+    #[test]
+    fn location_description_and_uid_are_carried() {
+        let ev = ICalEvent {
+            description: Some("Agenda\n\nBring the deck".into()),
+            location: Some("  Room 3 ".into()),
+            ..event()
+        };
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
+        assert!(m.notices.is_empty(), "{:?}", m.notices);
+        assert_eq!(m.fields.location.as_deref(), Some("Room 3"));
+        assert_eq!(m.fields.external_id.as_deref(), Some("ev1@example.com"));
+        assert_eq!(m.fields.rrule, None);
+        let notes = m.fields.notes.as_ref().expect("notes");
+        assert_eq!(
+            description_of(notes).as_deref(),
+            Some("Agenda\n\nBring the deck")
+        );
     }
 
     #[test]
-    fn content_a_block_cannot_hold_is_reported_per_event() {
+    fn a_location_longer_than_a_block_holds_is_cut_and_reported() {
         let ev = ICalEvent {
-            description: Some("Long notes".into()),
-            location: Some("Room 3".into()),
-            rrule: Some("FREQ=WEEKLY".into()),
+            location: Some("x".repeat(MAX_BLOCK_LOCATION_LEN + 5)),
             ..event()
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
-        let details: Vec<&str> = m.notices.iter().map(|n| n.detail.as_str()).collect();
-        assert_eq!(details.len(), 3, "{details:?}");
-        assert!(details.iter().any(|d| d.starts_with("DESCRIPTION")));
-        assert!(details.iter().any(|d| d.starts_with("LOCATION")));
-        assert!(details.iter().any(|d| d.starts_with("RRULE")));
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
+        assert_eq!(
+            m.fields.location.as_ref().map(|l| l.chars().count()),
+            Some(MAX_BLOCK_LOCATION_LEN)
+        );
+        assert_eq!(m.notices.len(), 1, "{:?}", m.notices);
     }
 
     #[test]
@@ -527,60 +672,8 @@ mod tests {
             summary: Some("   ".into()),
             ..event()
         };
-        let m = event_to_block(&ev, Some(stream())).expect("mapped");
+        let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
         assert_eq!(m.draft.title.as_deref(), Some("(untitled event)"));
         m.draft.validate(&TimeZone::UTC).expect("valid");
-    }
-
-    fn block_from(m: &MappedEvent, id: EntityRef) -> Block {
-        Block {
-            id,
-            created_at: Timestamp::UNIX_EPOCH,
-            updated_at: Timestamp::UNIX_EPOCH,
-            stream_id: m.draft.stream_id,
-            starts_at: m.draft.starts_at.clone(),
-            ends_at: m.draft.ends_at.clone(),
-            title: m.draft.title.clone(),
-            title_track_task: false,
-            tasks: BTreeSet::new(),
-            occurrence_tasks: BTreeSet::new(),
-            deleted: false,
-            kind: None,
-            rrule: None,
-            exceptions: std::collections::BTreeMap::new(),
-            split_from: None,
-            location: None,
-            notes: None,
-            source: None,
-            external_id: None,
-            unknown: Unknowns::new(),
-        }
-    }
-
-    /// Export → import is the identity on the Block, which is what stops a
-    /// user's own `.ics` from doubling their calendar when they read it back.
-    #[test]
-    fn a_block_exported_and_re_imported_maps_to_the_same_block() {
-        let m = event_to_block(&event(), Some(stream())).expect("mapped");
-        let id = imported_block_id("ics", &m.uid);
-        let block = block_from(&m, id);
-
-        let exported = block_to_event(&block, block.title.as_deref());
-        assert_eq!(imported_block_id("ics", &exported.uid), id);
-        // Under a different source too: the id is in the UID, not the hash.
-        assert_eq!(imported_block_id("other", &exported.uid), id);
-
-        let back = event_to_block(&exported, Some(stream())).expect("mapped");
-        assert_eq!(back.draft.starts_at, m.draft.starts_at);
-        assert_eq!(back.draft.ends_at, m.draft.ends_at);
-        assert_eq!(back.draft.title, m.draft.title);
-    }
-
-    #[test]
-    fn export_uses_the_resolved_title_not_the_stored_one() {
-        let m = event_to_block(&event(), Some(stream())).expect("mapped");
-        let block = block_from(&m, imported_block_id("ics", &m.uid));
-        let ev = block_to_event(&block, Some("What the grid shows"));
-        assert_eq!(ev.summary.as_deref(), Some("What the grid shows"));
     }
 }

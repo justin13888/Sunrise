@@ -291,6 +291,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
                 source: "ics".into(),
                 uid: "uid-1".into(),
                 draft,
+                fields: crate::ImportedFields::default(),
             }
         }),
         ("UpdateBlock.patch.stream_id", |e, db| {

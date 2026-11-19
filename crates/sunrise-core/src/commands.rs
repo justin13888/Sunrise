@@ -3,11 +3,14 @@
 use crate::control_op::RevokeReason;
 use crate::events::DomainEvent;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
-    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Disposition, EditScope,
-    Energy, InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft,
-    RoutinePatch, SavedViewDraft, SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft,
-    StreamPatch, SunriseTime, TaskDraft, TaskPatch, TaskState,
+    AttachmentDraft, BlockDraft, BlockException, BlockPatch, ContextDraft, ContextPatch,
+    Disposition, EditScope, Energy, InterruptionReason, NoteBody, PrefTarget, PrefValue,
+    ReviewSnapshotDraft, RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch,
+    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime, TaskDraft, TaskPatch,
+    TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -264,9 +267,14 @@ pub enum Command {
     /// and the planner never moves it (`docs/02-domain/time-blocks.md`
     /// §Migration default).
     ///
-    /// What it overwrites: the times and the title, which are the imported
-    /// calendar's to state (`docs/09-integrations/icalendar.md`: "Imported
-    /// entities are read-only").
+    /// What it overwrites: the times, the title and every field of
+    /// [`ImportedFields`] (the series, the location, the notes and the
+    /// foreign id), which are the imported calendar's to state
+    /// (`docs/09-integrations/icalendar.md`: "Imported entities are
+    /// read-only"). A draft that states a series makes the vault require
+    /// `block.recurrence` first, and is refused with
+    /// [`crate::EngineError::FeatureUnsupportedByDevices`] while a paired
+    /// device lacks it.
     ///
     /// Reaches [`crate::DomainEvent`] as `Updated` in both cases. A change
     /// notification is a prompt to re-read (see [`crate::DomainEvent`]), and
@@ -280,6 +288,10 @@ pub enum Command {
         uid: String,
         /// The Block to write.
         draft: BlockDraft,
+        /// The external item's fields beyond the draft's. All absent when
+        /// left out, which clears them on the Block.
+        #[serde(default)]
+        fields: ImportedFields,
     },
     /// Mutate a Block: move it, retitle it, or change title tracking, as far
     /// as `scope` reaches (`docs/02-domain/time-blocks.md` §Recurring
@@ -620,6 +632,44 @@ pub enum Command {
     },
     /// Delete a saved view. [`Self::Restore`] brings it back.
     DeleteSavedView(EntityRef),
+}
+
+/// What [`Command::ImportBlock`] writes beyond its [`BlockDraft`]: the fields
+/// of `docs/02-domain/time-blocks.md` §Fields an external calendar item
+/// states (`docs/09-integrations/icalendar.md` §Mapping rules).
+///
+/// Each one is the importing calendar's, so an import writes it whole, and
+/// an absent one clears what the Block held.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedFields {
+    /// The rule of a recurring item (`RRULE`). The draft's bounds are then
+    /// the series anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rrule: Option<RRule>,
+    /// Per-occurrence changes, keyed by occurrence key: each `EXDATE` a
+    /// cancelled exception, each `RECURRENCE-ID` override the fields it
+    /// changes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exceptions: BTreeMap<String, BlockException>,
+    /// Free-text location (`LOCATION`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Notes (`DESCRIPTION`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<NoteBody>,
+    /// The foreign id (`UID`), carried back out on export. Never the dedup
+    /// key: the Block's id is (§`external_id` is not the dedup key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+}
+
+impl ImportedFields {
+    /// Whether these fields state a series, which needs the vault to
+    /// require `block.recurrence` before it is written.
+    #[must_use]
+    pub fn has_series(&self) -> bool {
+        self.rrule.is_some() || !self.exceptions.is_empty()
+    }
 }
 
 /// One item of [`Command::BulkTasks`]: a task, and what to do to it.

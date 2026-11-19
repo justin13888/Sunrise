@@ -91,6 +91,7 @@ fn event(v: &mut BenchVault, title: String, start: SunriseTime, end: SunriseTime
                     title_track_task: false,
                     tasks: Vec::new(),
                 },
+                fields: sunrise_core::ImportedFields::default(),
             },
         )
         .expect("import event")

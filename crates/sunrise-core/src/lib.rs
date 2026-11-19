@@ -98,7 +98,8 @@ pub use attach::{AttachError, AttachPreview, ThumbnailImage};
 pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClass};
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{
-    BulkTaskAction, BulkTaskItem, Command, CommandResult, FocusStartDraft, TimeZoneChange,
+    BulkTaskAction, BulkTaskItem, Command, CommandResult, FocusStartDraft, ImportedFields,
+    TimeZoneChange,
 };
 pub use config::{
     Clock, CoreConfig, HlcClock, MonotonicHlc, ReportedZoneClock, Rng, SystemClock, SystemRng,

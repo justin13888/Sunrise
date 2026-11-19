@@ -21,9 +21,10 @@
 //! refusal is counted and reported instead.
 
 use crate::ical::{self, ICalNotice, NoticeCode};
-use crate::ical_map::{block_to_event, event_to_block};
+use crate::ical_map::{block_to_events, event_to_block, group_events};
 use crate::IntegrationError;
-use sunrise_core::{Command, Core, CoreError, EngineError, Query, QueryResult};
+use sunrise_core::queries::BlockRow;
+use sunrise_core::{Command, Core, CoreError, EngineError, ImportedFields, Query, QueryResult};
 use sunrise_id::EntityRef;
 
 /// The `import_source_id` for a one-shot `.ics` file import.
@@ -76,7 +77,9 @@ pub enum ExportWindow {
 }
 
 /// Import every `VEVENT` in `text` as a Block in `stream_id`, or in no
-/// stream for `None` (ADR-0046).
+/// stream for `None` (ADR-0046): one Block per event, each `RECURRENCE-ID`
+/// override of its `UID` an exception of its series
+/// ([`crate::ical_map::group_events`]).
 ///
 /// # Errors
 ///
@@ -95,8 +98,8 @@ pub async fn import(
         ..ImportReport::default()
     };
 
-    for ev in &calendar.events {
-        let mapped = match event_to_block(ev, stream_id) {
+    for group in group_events(&calendar.events) {
+        let mapped = match event_to_block(group.event, &group.overrides, stream_id) {
             Ok(m) => m,
             Err(notice) => {
                 report.failed += 1;
@@ -113,14 +116,38 @@ pub async fn import(
         let created = !block_exists(core, id).await;
         let title = mapped.draft.title.clone().unwrap_or_default();
 
-        let res = match core
-            .submit(Command::ImportBlock {
+        let submit = |fields: ImportedFields| {
+            core.submit(Command::ImportBlock {
                 source: source.to_string(),
                 uid: mapped.uid.clone(),
-                draft: mapped.draft,
+                draft: mapped.draft.clone(),
+                fields,
             })
-            .await
-        {
+        };
+        let mut written = submit(mapped.fields.clone()).await;
+        // A paired device that cannot draw a series yet would show its
+        // anchor alone, so the vault refuses one until every device can
+        // (ADR-0045 §7). The event then imports as its first occurrence, as
+        // it did before series, and a re-import once they can brings the
+        // series.
+        if let Err(CoreError::Engine(EngineError::FeatureUnsupportedByDevices { .. })) = &written {
+            if mapped.fields.has_series() {
+                report.notices.push(ICalNotice {
+                    code: NoticeCode::UnmappedProperty,
+                    uid: Some(mapped.uid.clone()),
+                    detail: "RRULE was dropped: a paired device cannot show a recurring block \
+                             until it is updated; only the first occurrence was imported"
+                        .into(),
+                });
+                written = submit(ImportedFields {
+                    rrule: None,
+                    exceptions: std::collections::BTreeMap::new(),
+                    ..mapped.fields.clone()
+                })
+                .await;
+            }
+        }
+        let res = match written {
             Ok(res) => res,
             // The core refused this one event's draft (a range whose order
             // depends on the reader's zone, inverted in this one): that is the
@@ -169,12 +196,32 @@ pub async fn export(
             "the calendar query returned something other than blocks".into(),
         ));
     };
-    let events: Vec<_> = rows
-        .iter()
-        .filter(|r| !r.block.deleted)
-        .map(|r| block_to_event(&r.block, r.title.as_deref()))
-        .collect();
+    // A recurring block's rows are its occurrences in the window. The file
+    // states its series once, as stored, so a reader recurs it the same way.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut events = Vec::new();
+    for r in rows.iter().filter(|r| !r.block.deleted) {
+        if r.occurrence_key.is_none() {
+            events.extend(block_to_events(&r.block, r.title.as_deref()));
+        } else if seen.insert(r.block.id) {
+            let series = stored_block(core, r.block.id).await.ok_or_else(|| {
+                IntegrationError::Core(format!(
+                    "the series of block {} could not be read",
+                    r.block.id
+                ))
+            })?;
+            events.extend(block_to_events(&series.block, series.title.as_deref()));
+        }
+    }
     Ok(ical::write(&events))
+}
+
+/// The Block with this id as stored: for a recurring block, its series.
+async fn stored_block(core: &Core, id: EntityRef) -> Option<BlockRow> {
+    match core.query(Query::EntityById(id)).await {
+        Ok(QueryResult::Blocks(mut rows)) if !rows.is_empty() => Some(rows.swap_remove(0)),
+        _ => None,
+    }
 }
 
 /// Whether a Block with this id is already materialized here.
