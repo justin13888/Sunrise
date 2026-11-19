@@ -220,7 +220,15 @@ impl Engine {
             split_from: existing.as_ref().and_then(|e| e.split_from),
             location: existing.as_ref().and_then(|e| e.location.clone()),
             notes: existing.as_ref().and_then(|e| e.notes.clone()),
-            source: existing.as_ref().and_then(|e| e.source.clone()),
+            // An imported Block is marked as one, so an absent `kind` reads
+            // as `fixed` and the planner never moves it
+            // (`docs/02-domain/time-blocks.md` §Migration default). `ics`
+            // names `import:ics`; a source this build does not know is kept
+            // verbatim under the same prefix, which also reads as fixed.
+            source: existing
+                .as_ref()
+                .and_then(|e| e.source.clone())
+                .or_else(|| Some(BlockSource::from_raw(&format!("import:{source}")))),
             external_id: existing.as_ref().and_then(|e| e.external_id.clone()),
             // Forward-compat fields a newer build wrote are the Block's, not
             // the importer's, so they survive the rewrite.

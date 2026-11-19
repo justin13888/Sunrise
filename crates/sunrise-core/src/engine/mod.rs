@@ -140,7 +140,9 @@ pub(crate) use self::key_bundle::{KeyBundlePlan, PinnedKeyBundle};
 use self::lww::LwwStamp;
 #[cfg(test)]
 pub(crate) use self::merge::FOLD_V;
-pub use self::planner::PlanError;
+pub use self::planner::{
+    PlanCommitId, PlanError, PlanField, PlanUndoSkip, PlanUndone, PLAN_UNDO_HISTORY,
+};
 pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
 #[cfg(test)]
 pub(crate) use self::rebuild::check::{

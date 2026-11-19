@@ -8,22 +8,22 @@
 
 use super::block::read_block;
 use super::day_schedule::schedule_in;
-use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts};
+use super::ids::{blob16, domain_bytes, ms_to_ts, time_from_parts, time_to_parts};
 use super::snapshot::in_tx;
 use super::task::{read_task, TaskWrite};
 use super::{Engine, EngineError};
 use crate::inner_op::InnerOp;
 use jiff::civil::Date;
-use rusqlite::params;
-use std::collections::BTreeSet;
+use rusqlite::{params, OptionalExtension, Transaction};
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::planner::{
     plan_base, solve, PlanBlock, PlanBlocker, PlanDay, PlanDiff, PlanInputs, PlanIntent,
     PlanPosition, PlanTask, SlotTarget, DEFAULT_SNAP_S, DEFAULT_TASK_DURATION_S, SEARCH_BUDGET,
 };
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::{
-    day_bounds, deadline_at, plannable, planner_day_of, DaySchedule, PrefValue, SunriseTime, Task,
-    TaskPatch, TaskState,
+    day_bounds, deadline_at, plannable, planner_day_of, Block, BlockKind, DaySchedule, PrefValue,
+    SunriseTime, Task, TaskPatch, TaskState,
 };
 use sunrise_error::ErrorCode;
 use sunrise_id::{EntityKind, EntityRef};
@@ -52,6 +52,92 @@ pub enum PlanError {
     /// The read or the write failed.
     #[error(transparent)]
     Engine(#[from] EngineError),
+}
+
+/// Names one planner commit, whose inverse [`Engine::plan_undo`] restores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PlanCommitId(pub [u8; 16]);
+
+/// How many planner commits keep their inverse: committing one more forgets
+/// the oldest, whose undo is then `PLAN_UNKNOWN`.
+pub const PLAN_UNDO_HISTORY: u32 = 64;
+
+/// A field a planner commit writes, and its undo restores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PlanField {
+    /// A task's `planned_at`.
+    PlannedAt,
+    /// A block's `starts_at`.
+    StartsAt,
+    /// A block's `ends_at`.
+    EndsAt,
+}
+
+impl PlanField {
+    /// The field's register name (`merge_registers.field`).
+    const fn register(self) -> &'static str {
+        match self {
+            Self::PlannedAt => "scheduled_at",
+            Self::StartsAt => "starts_at",
+            Self::EndsAt => "ends_at",
+        }
+    }
+
+    fn from_register(name: &str) -> Option<Self> {
+        [Self::PlannedAt, Self::StartsAt, Self::EndsAt]
+            .into_iter()
+            .find(|f| f.register() == name)
+    }
+}
+
+/// A field an undo left as it is, because it was written again since the
+/// commit, or its item is gone or would be invalid with it restored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanUndoSkip {
+    /// The task or block.
+    pub item: EntityRef,
+    /// The field.
+    pub field: PlanField,
+}
+
+/// What [`Engine::plan_undo`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlanUndone {
+    /// The items it wrote.
+    pub items: Vec<EntityRef>,
+    /// How many fields it restored.
+    pub restored: u32,
+    /// The fields it left as they are.
+    pub skipped: Vec<PlanUndoSkip>,
+}
+
+/// One field a commit is about to write: the value it replaces.
+struct Prior {
+    item: EntityRef,
+    field: PlanField,
+    value: Option<SunriseTime>,
+    /// A deferral: restoring the field also takes one off `deferred_count`.
+    undefer: bool,
+}
+
+/// The stamp a register holds: `(hlc_ms, hlc_logical, device, seq, stream)`
+/// from `merge_registers`, compared whole.
+type RegisterStamp = (i64, i64, Vec<u8>, i64, Vec<u8>);
+
+/// The stamp of `item`'s `field` register in `tx`, or `None` when it has no
+/// register row.
+fn register_stamp(
+    tx: &Transaction<'_>,
+    item: EntityRef,
+    field: PlanField,
+) -> rusqlite::Result<Option<RegisterStamp>> {
+    tx.query_row(
+        "SELECT hlc_ms, hlc_logical, device, seq, stream FROM merge_registers
+         WHERE entity_id = ?1 AND field = ?2",
+        params![&item.bytes()[..], field.register()],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .optional()
 }
 
 impl From<rusqlite::Error> for PlanError {
@@ -96,7 +182,14 @@ impl Engine {
     /// Write `diff`, previewed at `now_ms`, exactly: `planned_at` for each
     /// task, `starts_at` and `ends_at` for each block, and for a
     /// [`PlanIntent::BulkDefer`] one more `deferred_count` on each task it
-    /// names, as one group (ADR-0065 §6). Returns how many items it moved.
+    /// names, as one group (ADR-0065 §6). Returns how many items it moved,
+    /// and the commit whose inverse it stored.
+    ///
+    /// In the same transaction it stores the commit's inverse
+    /// (`planner_commits`, `planner_commit_fields`): for each field whose
+    /// register the write changed, the value it replaced and the stamp the
+    /// write left. [`Self::plan_undo`] restores from it. Only the newest
+    /// [`PLAN_UNDO_HISTORY`] commits are kept.
     ///
     /// It never re-solves. The inputs are gathered again and digested; any
     /// difference from the diff's base refuses with nothing written.
@@ -105,7 +198,12 @@ impl Engine {
     /// [`PlanError::Stale`] when an input changed; [`PlanError::NotCommittable`]
     /// for a diff with a Blocking violation; [`PlanError::Engine`] for a write
     /// the domain refuses or a failed transaction.
-    pub fn plan_apply(&self, db: &mut Db, diff: &PlanDiff, now_ms: u64) -> Result<u32, PlanError> {
+    pub fn plan_apply(
+        &self,
+        db: &mut Db,
+        diff: &PlanDiff,
+        now_ms: u64,
+    ) -> Result<(u32, PlanCommitId), PlanError> {
         if !diff.committable {
             return Err(PlanError::NotCommittable);
         }
@@ -117,6 +215,7 @@ impl Engine {
         let defers = matches!(diff.intent, PlanIntent::BulkDefer { .. });
         let mut tasks: Vec<TaskWrite> = Vec::new();
         let mut blocks = Vec::new();
+        let mut priors: Vec<Prior> = Vec::new();
         let positions = diff.moves.iter().map(|m| (m.item, m.after.clone())).chain(
             diff.unscheduled
                 .iter()
@@ -131,6 +230,13 @@ impl Engine {
                         PlanPosition::Unplanned => None,
                     };
                     let conn = db.conn();
+                    let prior = read_task(conn, item.bytes())?.and_then(|t| t.planned_at);
+                    priors.push(Prior {
+                        item,
+                        field: PlanField::PlannedAt,
+                        value: prior,
+                        undefer: defers && planned.is_some(),
+                    });
                     tasks.push(match (defers, planned) {
                         (true, Some(to)) => self.plan_defer(conn, item, to, write_ms)?,
                         (_, planned) => self.plan_update(
@@ -152,6 +258,17 @@ impl Engine {
                     };
                     let mut block = read_block(db.conn(), item.bytes())?
                         .ok_or_else(|| EngineError::NotFound(format!("block {item}")))?;
+                    for (field, value) in [
+                        (PlanField::StartsAt, &block.starts_at),
+                        (PlanField::EndsAt, &block.ends_at),
+                    ] {
+                        priors.push(Prior {
+                            item,
+                            field,
+                            value: Some(value.clone()),
+                            undefer: false,
+                        });
+                    }
                     block.starts_at = start;
                     block.ends_at = end;
                     block.updated_at = ms_to_ts(write_ms as i64);
@@ -164,24 +281,151 @@ impl Engine {
             }
         }
         let moved = u32::try_from(tasks.len() + blocks.len()).unwrap_or(u32::MAX);
-        if moved == 0 {
-            return Ok(0);
-        }
+        let mut commit = [0u8; 16];
+        self.rng.fill_bytes(&mut commit);
+        let commit = PlanCommitId(commit);
         in_tx(db, |tx| {
-            let mode = self.write_mode(tx, write_ms)?;
-            let mut members: Vec<(InnerOp, [u8; 16])> = Vec::new();
-            for w in &tasks {
-                members.extend(w.op_in(self, tx, mode)?);
+            let before = priors
+                .iter()
+                .map(|p| register_stamp(tx, p.item, p.field))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if moved > 0 {
+                let mode = self.write_mode(tx, write_ms)?;
+                let mut members: Vec<(InnerOp, [u8; 16])> = Vec::new();
+                for w in &tasks {
+                    members.extend(w.op_in(self, tx, mode)?);
+                }
+                for b in &blocks {
+                    members.push((
+                        InnerOp::BlockUpdate(Box::new(b.clone())),
+                        domain_bytes(b.stream_id),
+                    ));
+                }
+                self.append_and_fold_group(tx, members, write_ms)?;
             }
-            for b in &blocks {
-                members.push((
-                    InnerOp::BlockUpdate(Box::new(b.clone())),
-                    domain_bytes(b.stream_id),
-                ));
-            }
-            Ok(self.append_and_fold_group(tx, members, write_ms)?)
+            record_inverse(tx, commit, write_ms, &priors, &before)?;
+            Ok(())
         })?;
-        Ok(moved)
+        Ok((moved, commit))
+    }
+
+    /// Undo planner commit `commit` from its stored inverse, per field, in
+    /// one local transaction (`docs/08-features/planner.md` §Undo).
+    ///
+    /// A field whose register still holds the commit's write is restored to
+    /// the value the commit replaced, as a new write; a restored deferral
+    /// also takes one off `deferred_count`. A field written again since, by
+    /// any device, is skipped and reported, as is every field of an item
+    /// deleted since or one its restored fields would leave invalid. Never
+    /// refuses as stale and never re-solves. The commit is forgotten: a
+    /// second undo of it is [`PlanError::Unknown`].
+    ///
+    /// # Errors
+    /// [`PlanError::Unknown`] for a commit that is not kept (undone already,
+    /// forgotten past [`PLAN_UNDO_HISTORY`], or never made);
+    /// [`PlanError::Engine`] for a failed transaction.
+    pub fn plan_undo(&self, db: &mut Db, commit: PlanCommitId) -> Result<PlanUndone, PlanError> {
+        let write_ms = self.clock.now_ms();
+        let tz = self.device_zone();
+        let done = in_tx(db, |tx| {
+            let kept: Option<i64> = tx
+                .query_row(
+                    "SELECT n FROM planner_commits WHERE commit_id = ?1",
+                    params![&commit.0[..]],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if kept.is_none() {
+                return Ok(None);
+            }
+            let mut by_item: BTreeMap<EntityRef, Vec<InverseRow>> = BTreeMap::new();
+            for mut row in inverse_rows(tx, commit)? {
+                row.held = register_stamp(tx, row.item, row.field)?.as_ref() == Some(&row.stamp);
+                by_item.entry(row.item).or_default().push(row);
+            }
+            let mut out = PlanUndone::default();
+            let mut members: Vec<(InnerOp, [u8; 16])> = Vec::new();
+            for (item, fields) in by_item {
+                let mut restored = 0u32;
+                let mut skipped: Vec<PlanUndoSkip> = Vec::new();
+                let op = match item.kind() {
+                    EntityKind::Task => {
+                        let task = read_task(tx, item.bytes())?.filter(|t| !t.deleted);
+                        task.and_then(|mut task| {
+                            for row in &fields {
+                                if row.held && row.field == PlanField::PlannedAt {
+                                    task.planned_at.clone_from(&row.prior);
+                                    if row.undefer {
+                                        task.deferred_count = task.deferred_count.saturating_sub(1);
+                                    }
+                                    restored += 1;
+                                } else {
+                                    skipped.push(PlanUndoSkip {
+                                        item,
+                                        field: row.field,
+                                    });
+                                }
+                            }
+                            task.updated_at = ms_to_ts(write_ms as i64);
+                            task.validate_invariants(&tz).ok()?;
+                            Some(TaskWrite::plain(task).op())
+                        })
+                    }
+                    EntityKind::Block => {
+                        let block = read_block(tx, item.bytes())?.filter(|b| !b.deleted);
+                        block.and_then(|mut block| {
+                            for row in &fields {
+                                match (row.field, &row.prior, row.held) {
+                                    (PlanField::StartsAt, Some(v), true) => {
+                                        block.starts_at = v.clone();
+                                    }
+                                    (PlanField::EndsAt, Some(v), true) => {
+                                        block.ends_at = v.clone();
+                                    }
+                                    _ => {
+                                        skipped.push(PlanUndoSkip {
+                                            item,
+                                            field: row.field,
+                                        });
+                                        continue;
+                                    }
+                                }
+                                restored += 1;
+                            }
+                            block.updated_at = ms_to_ts(write_ms as i64);
+                            block.validate_invariants(&tz).ok()?;
+                            let stream = domain_bytes(block.stream_id);
+                            Some((InnerOp::BlockUpdate(Box::new(block)), stream))
+                        })
+                    }
+                    _ => None,
+                };
+                match op {
+                    Some(op) if restored > 0 => {
+                        members.push(op);
+                        out.items.push(item);
+                        out.restored += restored;
+                        out.skipped.extend(skipped);
+                    }
+                    Some(_) => out.skipped.extend(skipped),
+                    // Gone, or invalid with its fields restored: every field
+                    // is left as it is.
+                    None => out.skipped.extend(fields.iter().map(|row| PlanUndoSkip {
+                        item,
+                        field: row.field,
+                    })),
+                }
+            }
+            if !members.is_empty() {
+                self.append_and_fold_group(tx, members, write_ms)?;
+            }
+            tx.execute(
+                "DELETE FROM planner_commits WHERE commit_id = ?1",
+                params![&commit.0[..]],
+            )?;
+            Ok(Some(out))
+        })?;
+        done.ok_or(PlanError::Unknown)
     }
 
     /// The [`PlanInputs`] of the planner days `intent` touches.
@@ -305,21 +549,13 @@ impl Engine {
             tasks.push(self.plan_task(conn, &schedule, &task)?);
         }
 
-        // Blocks overlapping the window, and every subject. A Block carries a
-        // fixed/flexible kind (#1157), but the planner deliberately still
-        // treats every block as fixed; honouring `Block::effective_kind` is
-        // tracked in #1184.
+        // Blocks overlapping the window, and every subject.
         let mut blocks = Vec::new();
         let mut seen = BTreeSet::new();
         if !window.is_empty() {
             for row in self.blocks_overlapping(conn, from, to)? {
                 seen.insert(row.id);
-                blocks.push(PlanBlock {
-                    id: row.id,
-                    starts_at: row.starts_at,
-                    ends_at: row.ends_at,
-                    fixed: true,
-                });
+                blocks.push(plan_block(row));
             }
         }
         for id in named.iter().filter(|id| id.kind() == EntityKind::Block) {
@@ -327,12 +563,7 @@ impl Engine {
                 continue;
             }
             if let Some(b) = read_block(conn, id.bytes())? {
-                blocks.push(PlanBlock {
-                    id: b.id,
-                    starts_at: b.starts_at,
-                    ends_at: b.ends_at,
-                    fixed: true,
-                });
+                blocks.push(plan_block(b));
             }
         }
 
@@ -447,6 +678,128 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+}
+
+/// Store commit `commit`'s inverse: each field of `priors` whose register
+/// the write changed from its stamp in `before`, with the value it replaced
+/// and the stamp it left. Then forget all but the newest
+/// [`PLAN_UNDO_HISTORY`] commits.
+fn record_inverse(
+    tx: &Transaction<'_>,
+    commit: PlanCommitId,
+    write_ms: u64,
+    priors: &[Prior],
+    before: &[Option<RegisterStamp>],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO planner_commits (commit_id, committed_ms) VALUES (?1, ?2)",
+        params![&commit.0[..], i64::try_from(write_ms).unwrap_or(i64::MAX)],
+    )?;
+    for (p, was) in priors.iter().zip(before) {
+        let Some(now) = register_stamp(tx, p.item, p.field)? else {
+            continue;
+        };
+        if was.as_ref() == Some(&now) {
+            continue;
+        }
+        let (ms, kind, zone, civil) = time_to_parts(p.value.as_ref());
+        let (hlc_ms, hlc_logical, device, seq, stream) = now;
+        tx.execute(
+            "INSERT INTO planner_commit_fields
+                 (commit_id, entity_id, field, prior_ms, prior_kind, prior_tz, prior_civil,
+                  hlc_ms, hlc_logical, device, seq, stream, undefer)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                &commit.0[..],
+                &p.item.bytes()[..],
+                p.field.register(),
+                ms,
+                kind,
+                zone,
+                civil,
+                hlc_ms,
+                hlc_logical,
+                device,
+                seq,
+                stream,
+                p.undefer,
+            ],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM planner_commits
+         WHERE n <= (SELECT MAX(n) FROM planner_commits) - ?1",
+        params![PLAN_UNDO_HISTORY],
+    )?;
+    Ok(())
+}
+
+/// One stored field of a commit's inverse.
+struct InverseRow {
+    item: EntityRef,
+    field: PlanField,
+    prior: Option<SunriseTime>,
+    stamp: RegisterStamp,
+    undefer: bool,
+    /// The register still holds `stamp`: filled in by the undo.
+    held: bool,
+}
+
+/// Commit `commit`'s stored inverse. A row naming a field this build does
+/// not plan is left out.
+fn inverse_rows(tx: &Transaction<'_>, commit: PlanCommitId) -> rusqlite::Result<Vec<InverseRow>> {
+    let mut stmt = tx.prepare(
+        "SELECT entity_id, field, prior_ms, prior_kind, prior_tz, prior_civil,
+                hlc_ms, hlc_logical, device, seq, stream, undefer
+         FROM planner_commit_fields WHERE commit_id = ?1
+         ORDER BY entity_id, field",
+    )?;
+    let rows = stmt.query_map(params![&commit.0[..]], |r| {
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, String>(1)?,
+            time_from_parts(
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<String>>(3)?.as_deref(),
+                r.get::<_, Option<String>>(4)?.as_deref(),
+                r.get::<_, Option<String>>(5)?.as_deref(),
+            ),
+            (r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?),
+            r.get::<_, bool>(11)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (raw, field, prior, stamp, undefer) = row?;
+        let Some(field) = PlanField::from_register(&field) else {
+            continue;
+        };
+        let kind = match field {
+            PlanField::PlannedAt => EntityKind::Task,
+            PlanField::StartsAt | PlanField::EndsAt => EntityKind::Block,
+        };
+        out.push(InverseRow {
+            item: EntityRef::new(kind, blob16(&raw)),
+            field,
+            prior,
+            stamp,
+            undefer,
+            held: false,
+        });
+    }
+    Ok(out)
+}
+
+/// A block as the planner reads it: fixed unless its effective kind is
+/// `flexible` (`docs/02-domain/time-blocks.md` §Migration default). The solve
+/// itself holds a past or in-progress block fixed whatever its kind.
+fn plan_block(block: Block) -> PlanBlock {
+    PlanBlock {
+        fixed: block.effective_kind() != BlockKind::Flexible,
+        id: block.id,
+        starts_at: block.starts_at,
+        ends_at: block.ends_at,
     }
 }
 

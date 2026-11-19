@@ -3,10 +3,12 @@
 //! budget p95 ≤ 16 ms, p99 ≤ 33 ms on Baseline A).
 //!
 //! The week is seven days from the Monday after [`FIXED_NOW_MS`]: 200 open
-//! tasks, 60 blocks, 40 blocks standing in for external events (every block
-//! is fixed until a Block carries its flexible kind, and external events are not
-//! stored until #930, so both are fixed intervals the solver works around
-//! either way) and 20 dependencies. It is seeded once through the command
+//! tasks, 60 Sunrise blocks, which state no kind and so read as `flexible`,
+//! 40 blocks standing in for external events and 20 dependencies. External
+//! events are not stored until #930 and are always fixed, so their stand-ins
+//! are written through `ImportBlock` as an `.ics` import would write them:
+//! marked `import:ics`, which reads as `fixed` (no command sets a Block's
+//! `kind`). It is seeded once through the command
 //! path, outside the measured loop. Each iteration gathers the inputs of the
 //! days the gesture touches and solves:
 //!
@@ -72,6 +74,29 @@ fn block(v: &mut BenchVault, title: String, start: SunriseTime, end: SunriseTime
         .entity
 }
 
+/// A stand-in for an external event: a block an `.ics` import writes, which
+/// the planner holds fixed.
+fn event(v: &mut BenchVault, title: String, start: SunriseTime, end: SunriseTime) -> EntityRef {
+    v.engine
+        .apply(
+            &mut v.db,
+            Command::ImportBlock {
+                source: "ics".into(),
+                uid: format!("{title}@bench.invalid"),
+                draft: BlockDraft {
+                    stream_id: None,
+                    starts_at: start,
+                    ends_at: end,
+                    title: Some(title),
+                    title_track_task: false,
+                    tasks: Vec::new(),
+                },
+            },
+        )
+        .expect("import event")
+        .entity
+}
+
 /// The gestures the bench measures, over the seeded week.
 struct Week {
     ripple: PlanIntent,
@@ -96,7 +121,7 @@ fn seed(v: &mut BenchVault) -> Week {
     for n in 0..40i32 {
         let day = i8::try_from(n % 7).expect("day");
         let start = 15 * 60 + (n / 7) * 60;
-        block(v, format!("event {n}"), at(day, start), at(day, start + 30));
+        event(v, format!("event {n}"), at(day, start), at(day, start + 30));
     }
     // 177 planned tasks over the week's evenings and gaps, the dependent
     // half of 20 pairs among them, and 20 unplanned for the auto-place.

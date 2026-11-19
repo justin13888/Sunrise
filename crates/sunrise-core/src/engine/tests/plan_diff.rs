@@ -4,7 +4,9 @@
 
 use super::*;
 use crate::engine::PlanError;
+use crate::inner_op::InnerOp;
 use sunrise_domain::planner::{PlanIntent, PlanPosition, SlotTarget};
+use sunrise_domain::{BlockKind, BlockSource};
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -40,6 +42,45 @@ fn read_block_row(db: &Db, id: EntityRef) -> sunrise_domain::Block {
         .unwrap()
 }
 
+/// A block from `start` to `end` on the test date, rewritten to carry `kind`
+/// and `source` as a newer writer or an importer would.
+fn block_of_kind(
+    e: &Engine,
+    db: &mut Db,
+    start: SunriseTime,
+    end: SunriseTime,
+    kind: Option<BlockKind>,
+    source: Option<BlockSource>,
+) -> EntityRef {
+    let mut draft = block_draft(9, 1, Some("held"));
+    draft.starts_at = start;
+    draft.ends_at = end;
+    let id = e.apply(db, Command::CreateBlock(draft)).unwrap().entity;
+    let block = sunrise_domain::Block {
+        kind,
+        source,
+        ..read_block_row(db, id)
+    };
+    let stream = crate::engine::ids::domain_bytes(block.stream_id);
+    let now_ms = e.clock.now_ms();
+    let op = InnerOp::BlockUpdate(Box::new(block));
+    db.with_tx(|tx| e.append_and_fold(tx, &op, &stream, now_ms).map(|_| ()))
+        .unwrap();
+    id
+}
+
+/// Moves the block at 09:00 onto 11:00, where `other` sits, and returns
+/// whether the diff moves `other`.
+fn moving_onto_moves(kind: Option<BlockKind>, source: Option<BlockSource>) -> bool {
+    let e = engine();
+    let mut db = db();
+    let b = block(&e, &mut db, 9);
+    let other = block_of_kind(&e, &mut db, at(11, 0), at(12, 0), kind, source);
+    let diff = e.plan_preview(&db, &move_to_eleven(b), NOW_MS).unwrap();
+    assert!(diff.moves.iter().any(|m| m.item == b), "{diff:#?}");
+    diff.moves.iter().any(|m| m.item == other)
+}
+
 fn move_to_eleven(b: EntityRef) -> PlanIntent {
     PlanIntent::MoveBlock {
         block: b,
@@ -57,7 +98,7 @@ fn a_committed_preview_writes_exactly_its_moves_and_previews_again_as_empty() {
     let diff = e.plan_preview(&db, &move_to_eleven(b), NOW_MS).unwrap();
     assert_eq!(diff.moves.len(), 2, "{diff:#?}");
     assert!(diff.committable);
-    let moved = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    let moved = e.plan_apply(&mut db, &diff, NOW_MS).unwrap().0;
     assert_eq!(moved, 2);
 
     let written = read_block_row(&db, b);
@@ -111,7 +152,7 @@ fn a_bulk_defer_counts_a_deferral_on_each_task_and_moves_nothing_else() {
         place: false,
     };
     let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
-    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap(), 2);
+    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap().0, 2);
     for id in [a, c] {
         let task = task_of(&e, &db, id);
         assert_eq!(task.planned_at, Some(SunriseTime::all_day(to)));
@@ -134,7 +175,7 @@ fn a_task_moved_to_a_day_is_committed_date_only_and_not_deferred() {
     assert_eq!(diff.moves.len(), 1, "{diff:#?}");
     assert_eq!(diff.moves[0].after, PlanPosition::Day(to));
     assert!(diff.committable);
-    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap(), 1);
+    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap().0, 1);
     let task = task_of(&e, &db, t);
     assert_eq!(task.planned_at, Some(SunriseTime::all_day(to)));
     // Only a bulk defer counts a deferral.
@@ -157,7 +198,7 @@ fn a_placing_bulk_defer_writes_a_slot_on_the_day_and_counts_a_deferral() {
     let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
     assert_eq!(diff.moves.len(), 2, "{diff:#?}");
     assert!(diff.unscheduled.is_empty(), "{diff:#?}");
-    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap(), 2);
+    assert_eq!(e.plan_apply(&mut db, &diff, NOW_MS).unwrap().0, 2);
     let utc = jiff::tz::TimeZone::UTC;
     let mut starts = Vec::new();
     for id in [a, c] {
@@ -235,6 +276,194 @@ fn an_auto_place_slots_unplanned_tasks_into_the_first_free_time() {
     );
     e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
     assert!(task_of(&e, &db, t).planned_at.is_some());
+}
+
+/// An edit since the commit to a field the commit did not write leaves the
+/// commit's fields restorable: the undo is per field, not per item.
+#[test]
+fn an_edit_to_another_field_since_does_not_skip_the_undo() {
+    let e = engine();
+    let mut db = db();
+    let t = planned_task(&e, &mut db, "write", at(9, 0), 30);
+    let intent = PlanIntent::MoveTask {
+        task: t,
+        to: SlotTarget::At(at(13, 0)),
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    let (_, commit) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: t,
+            patch: TaskPatch {
+                title: Some("rewrite".into()),
+                ..TaskPatch::default()
+            },
+        },
+    )
+    .unwrap();
+
+    let undone = e.plan_undo(&mut db, commit).unwrap();
+    assert_eq!((undone.restored, undone.skipped.len()), (1, 0));
+    let task = task_of(&e, &db, t);
+    assert_eq!(task.planned_at, Some(at(9, 0)));
+    assert_eq!(task.title, "rewrite");
+}
+
+/// In a vault an older device shares, each write is a full-state op, and the
+/// undo restores a block and a deferral the same way.
+#[test]
+fn a_legacy_vault_undoes_a_block_move_and_a_deferral() {
+    let e = engine();
+    let mut db = db();
+    legacy_peer(&db);
+    let b = block(&e, &mut db, 9);
+    let before = read_block_row(&db, b);
+    let diff = e.plan_preview(&db, &move_to_eleven(b), NOW_MS).unwrap();
+    let (_, moved) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    let undone = e.plan_undo(&mut db, moved).unwrap();
+    assert_eq!((undone.restored, undone.skipped.len()), (2, 0));
+    let after = read_block_row(&db, b);
+    assert_eq!(
+        (after.starts_at, after.ends_at),
+        (before.starts_at, before.ends_at)
+    );
+
+    let t = planned_task(&e, &mut db, "a", at(14, 0), 30);
+    let intent = PlanIntent::BulkDefer {
+        tasks: vec![t],
+        to: jiff::civil::date(2026, 3, 5),
+        place: false,
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    let (_, deferred) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    assert_eq!(task_of(&e, &db, t).deferred_count, 1);
+    let undone = e.plan_undo(&mut db, deferred).unwrap();
+    assert_eq!(undone.restored, 1);
+    let task = task_of(&e, &db, t);
+    assert_eq!(task.planned_at, Some(at(14, 0)));
+    assert_eq!(task.deferred_count, 0);
+
+    // A full-state op writes every field, so a later edit of the title
+    // alone is a write of the plan too, and the undo leaves it.
+    let intent = PlanIntent::MoveTask {
+        task: t,
+        to: SlotTarget::At(at(16, 0)),
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    let (_, moved) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: t,
+            patch: TaskPatch {
+                title: Some("renamed".into()),
+                ..TaskPatch::default()
+            },
+        },
+    )
+    .unwrap();
+    let undone = e.plan_undo(&mut db, moved).unwrap();
+    assert_eq!((undone.restored, undone.skipped.len()), (0, 1));
+    assert_eq!(task_of(&e, &db, t).planned_at, Some(at(16, 0)));
+}
+
+/// A task deleted since the commit is left deleted, its field reported.
+#[test]
+fn an_item_deleted_since_is_skipped() {
+    let e = engine();
+    let mut db = db();
+    let t = planned_task(&e, &mut db, "write", at(9, 0), 30);
+    let intent = PlanIntent::MoveTask {
+        task: t,
+        to: SlotTarget::At(at(13, 0)),
+    };
+    let diff = e.plan_preview(&db, &intent, NOW_MS).unwrap();
+    let (_, commit) = e.plan_apply(&mut db, &diff, NOW_MS).unwrap();
+    e.apply(&mut db, Command::DeleteTask(t)).unwrap();
+
+    let undone = e.plan_undo(&mut db, commit).unwrap();
+    assert_eq!(undone.restored, 0);
+    assert_eq!(
+        undone.skipped,
+        vec![crate::engine::PlanUndoSkip {
+            item: t,
+            field: crate::engine::PlanField::PlannedAt,
+        }]
+    );
+    assert!(undone.items.is_empty());
+}
+
+/// The planner reads each block's effective kind (#1184): a flexible block
+/// ripples out of the way, a fixed one never moves.
+#[test]
+fn a_flexible_block_in_the_way_is_moved() {
+    assert!(moving_onto_moves(Some(BlockKind::Flexible), None));
+    // A Sunrise-created block with no kind reads as flexible.
+    assert!(moving_onto_moves(None, None));
+}
+
+#[test]
+fn a_fixed_block_in_the_way_is_not_moved() {
+    assert!(!moving_onto_moves(Some(BlockKind::Fixed), None));
+}
+
+#[test]
+fn an_imported_block_with_no_kind_is_not_moved() {
+    assert!(!moving_onto_moves(None, Some(BlockSource::ImportIcs)));
+}
+
+/// The import path itself marks what it writes, so a block an `.ics` import
+/// wrote, which states no kind, is held fixed.
+#[test]
+fn a_block_written_by_an_ics_import_is_not_moved() {
+    let e = engine();
+    let mut db = db();
+    let b = block(&e, &mut db, 9);
+    let other = e
+        .apply(
+            &mut db,
+            import(
+                "ics",
+                "meeting@example.com",
+                block_draft(11, 1, Some("meeting")),
+            ),
+        )
+        .unwrap()
+        .entity;
+    let written = read_block_row(&db, other);
+    assert_eq!(written.source, Some(BlockSource::ImportIcs));
+    assert_eq!(written.kind, None);
+    let diff = e.plan_preview(&db, &move_to_eleven(b), NOW_MS).unwrap();
+    assert!(diff.moves.iter().any(|m| m.item == b), "{diff:#?}");
+    assert!(!diff.moves.iter().any(|m| m.item == other), "{diff:#?}");
+}
+
+/// A block already under way is fixed whatever its kind.
+#[test]
+fn an_in_progress_flexible_block_is_not_moved() {
+    let e = engine();
+    let mut db = db();
+    let b = block(&e, &mut db, 12);
+    let other = block_of_kind(
+        &e,
+        &mut db,
+        at(9, 30),
+        at(10, 30),
+        Some(BlockKind::Flexible),
+        None,
+    );
+    let now_ms = at(10, 0)
+        .resolve_in(&jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .as_millisecond() as u64;
+    let intent = PlanIntent::MoveBlock {
+        block: b,
+        to_start: at(10, 0),
+    };
+    let diff = e.plan_preview(&db, &intent, now_ms).unwrap();
+    assert!(diff.moves.iter().any(|m| m.item == b), "{diff:#?}");
+    assert!(!diff.moves.iter().any(|m| m.item == other), "{diff:#?}");
 }
 
 #[test]

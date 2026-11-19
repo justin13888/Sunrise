@@ -256,6 +256,33 @@ fn an_unknown_kind_without_its_sidecar_degrades_to_an_instant() {
     }
 }
 
+/// An index key in the last second of the range reads back as that
+/// millisecond, and one past either end as that end, never the epoch (#898).
+/// A sub-millisecond fraction is truncated, as the storage contract says.
+#[test]
+fn an_index_key_reads_back_as_its_millisecond_or_the_nearer_end() {
+    let read = |ms: i64| SunriseTime::from_parts(ms, kind::INSTANT, None, None);
+    let last: Timestamp = "9999-12-30T22:00:00.5Z".parse().unwrap();
+    assert_eq!(read(last.as_millisecond()), SunriseTime::instant(last));
+    assert_eq!(
+        read(Timestamp::MAX.as_millisecond()).index_ms(),
+        Timestamp::MAX.as_millisecond()
+    );
+    assert_eq!(read(i64::MAX), SunriseTime::instant(Timestamp::MAX));
+    assert_eq!(read(i64::MIN), SunriseTime::instant(Timestamp::MIN));
+    assert_eq!(
+        read(Timestamp::MIN.as_millisecond() - 1),
+        SunriseTime::instant(Timestamp::MIN)
+    );
+    let fine: Timestamp = "2024-01-01T00:00:00.123456Z".parse().unwrap();
+    let fine = SunriseTime::instant(fine);
+    let (ms, kind, _) = fine.to_parts();
+    assert_eq!(
+        SunriseTime::from_parts(ms, kind, None, None),
+        SunriseTime::instant("2024-01-01T00:00:00.123Z".parse().unwrap())
+    );
+}
+
 /// The index key must not move when the device's zone does — an index
 /// built on one device has to stay valid on another.
 #[test]
@@ -373,30 +400,41 @@ fn any_zone_name() -> impl Strategy<Value = String> {
 }
 
 /// An instant at millisecond resolution, which is what the index column holds:
-/// negative ones and both ends of the range `from_millisecond` admits included.
-/// That range stops at `Timestamp::MAX`'s whole second, short of its fraction.
+/// negative ones and both ends of the range included, the last second of the
+/// range among them (#898).
 fn any_ms_instant() -> impl Strategy<Value = Timestamp> {
     let (min, max) = (
         Timestamp::MIN.as_millisecond(),
-        Timestamp::MAX.as_second() * 1000,
+        Timestamp::MAX.as_millisecond(),
     );
     prop_oneof![
         6 => min..=max,
         2 => -86_400_000i64..=86_400_000,
+        2 => (max - 999)..=max,
         1 => Just(min),
         1 => Just(max),
     ]
-    .prop_map(|ms| Timestamp::from_millisecond(ms).expect("in range"))
+    .prop_map(ms_instant)
 }
 
-/// An instant at the full nanosecond resolution the wire carries, short of
-/// `Timestamp::MAX`'s second: storage cannot rebuild that one's key (#898), so
-/// only the wire-only property below draws from it.
+/// The instant at `ms`. Not `Timestamp::from_millisecond`, which refuses the
+/// last second of the range.
+fn ms_instant(ms: i64) -> Timestamp {
+    Timestamp::from_duration(jiff::SignedDuration::from_millis(ms)).expect("in range")
+}
+
+/// An instant at the full nanosecond resolution the wire carries, over the
+/// whole range: both ends' seconds, negative instants, and the last second.
 fn any_nano_instant() -> impl Strategy<Value = Timestamp> {
-    let seconds = (Timestamp::MIN.as_second() + 1)..Timestamp::MAX.as_second();
-    prop_oneof![seconds, -86_400i64..=86_400]
-        .prop_flat_map(|s| (Just(s), 0i32..1_000_000_000))
-        .prop_map(|(s, n)| Timestamp::new(s, n).expect("in range"))
+    let seconds = Timestamp::MIN.as_second()..=Timestamp::MAX.as_second();
+    prop_oneof![
+        6 => seconds,
+        2 => -86_400i64..=86_400,
+        1 => Just(Timestamp::MIN.as_second()),
+        2 => Just(Timestamp::MAX.as_second()),
+    ]
+    .prop_flat_map(|s| (Just(s), 0i32..1_000_000_000))
+    .prop_map(|(s, n)| Timestamp::new(s, n).expect("in range"))
 }
 
 /// A kind a newer build added, with whatever fields it chose.
@@ -495,28 +533,36 @@ proptest! {
     }
 
     /// The wire carries an instant to the nanosecond, negative ones included.
-    /// The index column holds milliseconds, so storage keeps the key stable
-    /// and nothing finer.
+    /// The index column holds milliseconds, so storage keeps the instant
+    /// truncated toward zero to the millisecond, and nothing finer
+    /// (time.md §1). The last second of the range is no exception (#898).
     #[test]
     fn any_instant_round_trips_at_the_resolution_of_its_carrier(at in any_nano_instant()) {
         let t = SunriseTime::instant(at);
         assert_wire_round_trip(&t);
         let (ms, kind, tz) = t.to_parts();
         let stored = SunriseTime::from_parts(ms, kind, tz.as_deref(), None);
+        prop_assert_eq!(&stored, &SunriseTime::instant(ms_instant(at.as_millisecond())));
         prop_assert_eq!(stored.index_ms(), ms);
+        assert_storage_round_trip(&stored);
     }
 
     /// The last second of the range, `Timestamp::MAX` itself included, arrives
-    /// by decoding a peer's value, so the wire holds it to the nanosecond.
+    /// by decoding a peer's value, so the wire holds it to the nanosecond and
+    /// storage to the millisecond, never as the epoch (#898).
     #[test]
-    fn an_instant_in_the_last_second_round_trips_over_the_wire(
+    fn an_instant_in_the_last_second_round_trips_over_the_wire_and_storage(
         nanos in prop_oneof![
             8 => 0i32..1_000_000_000,
             2 => Just(Timestamp::MAX.subsec_nanosecond()),
         ],
     ) {
         let at = Timestamp::new(Timestamp::MAX.as_second(), nanos).expect("in range");
-        assert_wire_round_trip(&SunriseTime::instant(at));
+        let t = SunriseTime::instant(at);
+        assert_wire_round_trip(&t);
+        let (ms, kind, tz) = t.to_parts();
+        let stored = SunriseTime::from_parts(ms, kind, tz.as_deref(), None);
+        prop_assert_eq!(stored, SunriseTime::instant(ms_instant(at.as_millisecond())));
     }
 
     /// A wall clock a zone skipped or repeated round-trips as written, and

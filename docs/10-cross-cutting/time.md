@@ -43,6 +43,18 @@ civil time with a zone in a sibling field.
 On the wire they keep the bare `timestamp` encoding, which ADR-0017's decoder
 already reads as `instant`, so no existing byte changes.
 
+**An `instant` is stored to the millisecond.** The wire carries an instant to
+the nanosecond; a storage column holds it as its `index_ms`, so a fraction
+finer than a millisecond is truncated toward zero, and
+`SunriseTime::from_parts` reads `2024-01-01T00:00:00.123456Z` back as
+`2024-01-01T00:00:00.123Z`. That is the contract, not a loss to repair: the op
+log's envelope keeps the value as written, and keeping the fraction in the
+projection would take a `STORAGE_V` migration adding a column. Every
+millisecond in the timestamp range reads back as itself, the last second up
+to `Timestamp::MAX` included, and a key past either end reads as that end,
+never as the epoch (ADR-0066 §3;
+[#898](https://github.com/justin13888/Sunrise/issues/898)).
+
 **An unknown kind** (a newer build added a fifth) is carried as
 `Unknown { kind, raw }`, round-trips byte for byte, never fails the op that
 contains it, and sorts by its `index_ms` when it has one ([#322](https://github.com/justin13888/Sunrise/issues/322)).

@@ -221,7 +221,7 @@ if [ "$(uname)" = Darwin ] && [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
   export CC_wasm32_unknown_unknown="$llvm/clang" AR_wasm32_unknown_unknown="$llvm/llvm-ar"
 fi
 cargo build -p sunrise-core-wasm --target wasm32-unknown-unknown --release
-cargo install --quiet --locked wasm-bindgen-cli --version 0.2.127 --root target/tools
+cargo install --quiet --locked wasm-bindgen-cli --version 0.2.130 --root target/tools
 target/tools/bin/wasm-bindgen --target web --no-typescript \
   --out-dir apps/web/public/wasm \
   target/wasm32-unknown-unknown/release/sunrise_core_wasm.wasm

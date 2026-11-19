@@ -517,13 +517,31 @@ fn refusal_429<E>(e: &api::Error<E>) -> Option<RendezvousError> {
     Some(RendezvousError::Refused { retry_after })
 }
 
+/// What a wait that ran out on dropped or refused connections reports.
+const UNREACHABLE: &str = "the relay could not be reached: the connection was refused or dropped \
+                           before it answered; check this device's network connection and try again";
+
+/// What a failed relay call means for the wait it is in.
+///
+/// A connection that dropped or was refused before the relay answered is the
+/// network's, and transient, though the generated client files it as request
+/// construction: [`sunrise_relay_client::failed_in_send`] tells it apart from a
+/// missing credential or a request that would not encode, which fail the same
+/// way every time and stay final. Repeating any call this module retries is
+/// safe even if the first one reached the relay: a send carries its index and
+/// the relay acknowledges a resend, and the reads and the code lookup leave
+/// the session as they found it. Such a connection is described as the
+/// network's, because the generated client's own words for it name request
+/// construction.
 fn classify<E: std::fmt::Display>(e: &api::Error<E>) -> Fault {
     if let api::Error::Api(value) = e {
         if value.status().as_u16() == 404 {
             return Fault::Gone;
         }
     }
-    if e.is_transient() {
+    if sunrise_relay_client::failed_in_send(e) {
+        Fault::Transient(UNREACHABLE.to_owned())
+    } else if e.is_transient() {
         Fault::Transient(e.to_string())
     } else {
         Fault::Fatal(e.to_string())

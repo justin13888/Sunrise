@@ -28,11 +28,7 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   planner does not read, such as a title, does not make a diff stale.
 > - `solve` returns `Result`: an intent naming an item the inputs do not hold,
 >   or the wrong kind, is an error rather than a diff.
-> - Every block is `fixed`: a Block carries a fixed/flexible kind
->   ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the
->   planner deliberately still treats every block as fixed; honouring the kind
->   is tracked in [#1184](https://github.com/justin13888/Sunrise/issues/1184).
->   There are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
+> - There are no external events to read yet ([#930](https://github.com/justin13888/Sunrise/issues/930)).
 >   A task bound to a block is not placed on its own.
 > - `Unschedule` takes tasks only.
 > - `AutoPlace` and `BulkDefer { place: true }` place each listed task in the
@@ -54,8 +50,18 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   from the diff's `committable`. `PlanError::code` answers a registered
 >   `ErrorCode` for every variant: `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`,
 >   `PLAN_CLOSED` and `PLAN_FAILED` besides `PLAN_STALE` and `PLAN_UNKNOWN`.
-> - `plan_undo` and the stored inverse are [#1158](https://github.com/justin13888/Sunrise/issues/1158);
->   `plan_commit` returns only how many items it moved.
+> - `plan_commit` stores the inverse in `planner_commits` and
+>   `planner_commit_fields` (migration 0050), and only for each field whose
+>   register its write changed. `Core::plan_undo` and its UniFFI binding are
+>   built ([#1158](https://github.com/justin13888/Sunrise/issues/1158)).
+>   The newest 64 commits keep their inverse (`PLAN_UNDO_HISTORY`), and an
+>   undone commit is forgotten, so a second undo is `PLAN_UNKNOWN`.
+>   `PlanUndoSkip::field` is a `PlanField` (`PlannedAt`, `StartsAt`,
+>   `EndsAt`), and `restored` counts fields. An item deleted since the commit,
+>   or one its restored fields would leave invalid, is skipped whole. In a
+>   vault an older device shares, every write is a full-state op that writes
+>   every field, so an edit of any field of an item since the commit skips
+>   its undo.
 
 ## Principles
 
@@ -294,7 +300,7 @@ pub struct PlannerDay {
 | Task `blocked_by` | [`../02-domain/tasks.md`](../02-domain/tasks.md) | Ordering: a task starts no earlier than each timed blocker's end (`BeforeBlocker`, Hard). An untimed blocker gives `Info`. |
 | Task `scheduling_constraints` | [`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) | A `hard` time dimension (time of day, day of week, date range) is **Blocking**; a `soft` one is Soft |
 | Task Place requirement | [ADR-0051](../11-adr/0051-places.md) | Not a placement input: an `Info` annotation only (§Places below) |
-| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. Blocks carry the kind ([#1157](https://github.com/justin13888/Sunrise/pull/1157)), but the planner still treats every block as `fixed` until [#1184](https://github.com/justin13888/Sunrise/issues/1184) honours it. |
+| Block `kind` | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) ([#342](https://github.com/justin13888/Sunrise/issues/342)) | `fixed` never moves; `flexible` may. The planner reads `Block::effective_kind`, so a block with no `kind` is `flexible` when Sunrise created it and `fixed` when it was imported (`time-blocks.md` §Migration default). |
 | Tasks bound to a block | `Block.tasks` | Move with their block; they are not placed independently |
 | External events | [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md) | Always fixed. An event whose busy treatment is `free` is drawn and never blocks. |
 | Day schedule | [ADR-0050](../11-adr/0050-preferences-and-day-schedule.md), [`../02-domain/day-schedule.md`](../02-domain/day-schedule.md) | Each planner day's **plannable window** `plannable(d)`, wake to sleep; civil midnight to midnight when unset |

@@ -1,4 +1,4 @@
--- 0050: a task bound to one occurrence of a recurring block (issue #1162,
+-- 0051: a task bound to one occurrence of a recurring block (issue #1162,
 -- docs/02-domain/time-blocks.md §Recurring blocks).
 --
 -- Why
@@ -33,17 +33,17 @@
 -- the one `projection_rebuild` records, so the first `Core::open` after this
 -- migration rebuilds every row from the ops, which puts each in the table.
 
-CREATE TABLE block_tasks_0050 (
+CREATE TABLE block_tasks_0051 (
     block_id        BLOB NOT NULL REFERENCES blocks (id) ON DELETE CASCADE,
     task_id         BLOB NOT NULL,
     occurrence_key  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (block_id, task_id, occurrence_key)
 );
 
-INSERT INTO block_tasks_0050 (block_id, task_id)
+INSERT INTO block_tasks_0051 (block_id, task_id)
 SELECT block_id, task_id FROM block_tasks;
 
 DROP TABLE block_tasks;
-ALTER TABLE block_tasks_0050 RENAME TO block_tasks;
+ALTER TABLE block_tasks_0051 RENAME TO block_tasks;
 
 CREATE INDEX block_tasks_by_task ON block_tasks (task_id);

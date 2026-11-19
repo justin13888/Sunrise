@@ -741,9 +741,14 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// the projection, because the fold's version moved with it, which moves any
 /// of them a build before it kept as an unknown field into its column.
 ///
-/// `50` is migration `0050_block_occurrence_tasks.sql` (#1162): `block_tasks` gains
+/// `50` is migration `0050_planner_commit_inverse.sql` (issue #1158):
+/// `planner_commits` and `planner_commit_fields`, the local-only inverse of
+/// each planner commit that `plan_undo` restores from. Both start empty; no
+/// row is rewritten and no projection moves.
+///
+/// `51` is migration `0051_block_occurrence_tasks.sql` (#1162): `block_tasks` gains
 /// `occurrence_key` in its primary key, empty (the whole block) on every existing row.
-pub const STORAGE_V: u16 = 50;
+pub const STORAGE_V: u16 = 51;
 
 #[cfg(test)]
 mod tests {

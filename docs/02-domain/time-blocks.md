@@ -84,11 +84,12 @@ by the planner whatever its `kind`.
 before it existed carries no value, and a reader fills one in by the same rule
 a new Block gets: an absent `kind` reads as **`flexible`** when `source` is
 absent or `sunrise` (a user-created block), and as **`fixed`** when `source` is
-`import:ics` (or any other value, the safe answer). Today's tree stores no
-`source` either, so a block imported from `.ics` before `source` lands carries
-no marker and reads as `flexible`; re-importing the same file recomputes the
-same id (§`external_id` is not the dedup key) and rewrites it with
-`source = import:ics` and `kind = fixed`.
+`import:ics` (or any other value, the safe answer). `ImportBlock` writes
+`source = import:<source>` (`import:ics` for a file import) onto a Block that
+holds none, so an imported block reads as `fixed`. A block imported by a build
+before it carries no marker and reads as `flexible`; re-importing the same file
+recomputes the same id (§`external_id` is not the dedup key) and rewrites it
+with `source = import:ics`.
 
 `rrule`, `location`, `notes`, `source` and `external_id` are what
 [ADR-0025](../11-adr/0025-integration-account-entity.md) adds, and each answers
@@ -111,9 +112,9 @@ An op carrying `rrule`, `exceptions` or `split_from` uses the feature
 fields but would draw a recurring block as its anchor alone, so no series is
 written until every device has advertised it. `kind`, `location`, `notes`,
 `source` and `external_id` need no feature. `Block::series` hands the series
-to `expand_block` (§Recurring blocks). No command writes the new fields yet:
+to `expand_block` (§Recurring blocks). `ImportBlock` marks `source` (above);
 the edit-scope commands are [#1148](https://github.com/justin13888/Sunrise/issues/1148)
-and the importer's mapping [#1149](https://github.com/justin13888/Sunrise/issues/1149).
+and the importer's mapping of the rest [#1149](https://github.com/justin13888/Sunrise/issues/1149).
 A block created in Sunrise leaves `kind` and `source` absent, which reads as
 `flexible`.
 
@@ -235,7 +236,7 @@ A task is bound to one occurrence
   `block.occurrence_tasks` (`DOC_SCHEMA_V` 25): a build without it keeps the
   pairs as an unknown field but would show the occurrence with no task.
   `block_tasks` holds both sets, `occurrence_key` empty for a binding to the
-  whole block (migration 0050).
+  whole block (migration 0051).
 - `BindTask` and `UnbindTask` take an optional occurrence key. A recurring
   block requires one to bind; a key the series does not produce is not
   found, a cancelled occurrence is not there to bind, and a key on a one-off

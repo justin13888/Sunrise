@@ -259,6 +259,11 @@ pub enum Command {
     /// * Task bindings — a user who bound a task to an imported Block keeps
     ///   the binding; the draft's tasks are unioned in, never substituted.
     ///
+    /// What it marks: a Block holding no `source` gets `import:<source>`
+    /// (`import:ics` for a file import), so with no `kind` it reads as fixed
+    /// and the planner never moves it (`docs/02-domain/time-blocks.md`
+    /// §Migration default).
+    ///
     /// What it overwrites: the times and the title, which are the imported
     /// calendar's to state (`docs/09-integrations/icalendar.md`: "Imported
     /// entities are read-only").

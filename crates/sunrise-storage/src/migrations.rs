@@ -219,8 +219,13 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         id: 50,
+        name: "planner_commit_inverse",
+        sql: include_str!("../migrations/0050_planner_commit_inverse.sql"),
+    },
+    Migration {
+        id: 51,
         name: "block_occurrence_tasks",
-        sql: include_str!("../migrations/0050_block_occurrence_tasks.sql"),
+        sql: include_str!("../migrations/0051_block_occurrence_tasks.sql"),
     },
 ];
 
