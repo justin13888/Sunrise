@@ -33,7 +33,10 @@ final class UpcomingDragUITests: SunriseUITestCase {
 
         let heading = app.descendants(matching: .any)["upcoming-day-\(later)"]
         XCTAssertTrue(heading.appears(within: 10), "the day three days on has a heading to drop on")
-        row.press(forDuration: 1.0, thenDragTo: heading, withVelocity: .slow, thenHoldForDuration: 1.0)
+        // Held long enough to lift the row, and moved before its context menu
+        // opens: held a full second, the menu opened and the move slid down
+        // it onto "Schedule…" instead of starting a drag.
+        row.press(forDuration: 0.6, thenDragTo: heading, withVelocity: .slow, thenHoldForDuration: 1.0)
 
         XCTAssertTrue(
             task("Write report", on: later).appears(within: 10),
