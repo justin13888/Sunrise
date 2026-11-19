@@ -160,7 +160,15 @@ blocks), so its anchor is `zoned` or `floating`:
 - **Re-import** writes the series whole, as it writes the times and the
   title: the file states what the calendar holds. A user's edit of one
   occurrence of an imported block is overwritten by the next import, as an
-  edit of its title is.
+  edit of its title is. So is a split: after the user changes *this and
+  future* occurrences of an imported series, the original Block holds the
+  rule up to the split and a continuation Block (no `source`, no
+  `external_id`) the rest; a re-import restores the file's full rule on the
+  original, and every occurrence after the split then shows twice, once from
+  each, until the user deletes one. The importer does not reconcile them: the
+  continuation is the user's Block, which an import never touches, and
+  truncating the file's rule would make the import disagree with the
+  calendar it reads.
 - **Feature gate.** A series is written only once the vault requires
   `block.recurrence`, which an import does by itself when every paired
   device supports it. While one does not, the event imports as its first
