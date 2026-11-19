@@ -379,108 +379,322 @@ struct DropWritesTests {
 
         await vault.bridge.shutdown()
     }
+
+    /// **Calendar block → Task.** A block dropped on a task row binds the
+    /// task; dropped again on the same row, now bound, it unbinds it.
+    @Test
+    func aBlockDroppedOnATaskBindsItAndDroppedAgainUnbindsIt() async throws {
+        let vault = try await TestVault()
+        let calendar = CalendarModel(bridge: vault.bridge)
+        await calendar.refresh()
+        let start = calendar.dayStartMs(offset: 0) + 9 * 3_600_000
+        await calendar.createBlock(fromMs: start, toMs: start + 3_600_000,
+                                   title: "Deep work", kind: .zoned)
+        let block = try #require(calendar.rows.first).block.id
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Write the memo")))
+        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await list.refresh()
+
+        await list.toggleBinding(try #require(list.tasks.first), block: block)
+        #expect(list.tasks.first?.blocks == [block])
+        await calendar.refresh()
+        #expect(calendar.rows.first?.taskTitles == ["Write the memo"])
+
+        await list.toggleBinding(try #require(list.tasks.first), block: block)
+        #expect(list.tasks.first?.blocks.isEmpty == true)
+        await calendar.refresh()
+        #expect(calendar.rows.first?.block.tasks.isEmpty == true)
+
+        await vault.bridge.shutdown()
+    }
 }
 
-/// Moving and resizing a block already on the grid — the third gap
-/// `parity-matrix.md` names.
-struct BlockDragTests {
-    private let day: Int64 = 1_772_409_600_000
-    private var dayEnd: Int64 { day + 24 * 3_600_000 }
+/// Moving and resizing a block on the grid through the planner
+/// (`docs/08-features/planner.md`): the client sends the gesture, draws the
+/// diff it gets back, and commits exactly that diff on drop.
+///
+/// Every test plans on tomorrow, so nothing it moves is in the past, which
+/// the planner holds fixed.
+@MainActor
+struct PlannedDragTests {
+    private func model(_ vault: borrowing TestVault) async -> CalendarModel {
+        let model = CalendarModel(bridge: vault.bridge)
+        await model.refresh()
+        await model.step(1)
+        return model
+    }
 
-    private func apply(
-        _ mode: BlockDragMode,
-        from startMs: Int64,
-        to endMs: Int64,
-        by deltaMs: Int64,
-        snap: Int = 15
-    ) -> (startMs: Int64, endMs: Int64) {
-        BlockDrag.apply(
-            mode: mode,
-            startMs: startMs,
-            endMs: endMs,
-            deltaMs: deltaMs,
-            snapMinutes: snap,
-            dayStartMs: day,
-            dayEndMs: dayEnd
+    private func hour(_ model: CalendarModel, _ hours: Double) -> Int64 {
+        model.windowStartMs + Int64(hours * 3_600_000)
+    }
+
+    private func row(_ model: CalendarModel, _ title: String) throws -> BlockGridRow {
+        try #require(model.rows.first { $0.title == title })
+    }
+
+    private func start(_ model: CalendarModel, _ title: String) throws -> Int64 {
+        timeValueMs(value: try row(model, title).block.startsAt, tz: model.timeZone)
+    }
+
+    private func end(_ model: CalendarModel, _ title: String) throws -> Int64 {
+        timeValueMs(value: try row(model, title).block.endsAt, tz: model.timeZone)
+    }
+
+    /// Standup 9–10 and Focus 10–11, both flexible: what Sunrise creates.
+    private func twoBlocks(_ model: CalendarModel) async {
+        await model.createBlock(fromMs: hour(model, 9), toMs: hour(model, 10), title: "Standup", kind: .zoned)
+        await model.createBlock(fromMs: hour(model, 10), toMs: hour(model, 11), title: "Focus", kind: .zoned)
+    }
+
+    /// **The ripple, drawn and then committed as drawn.** Standup dragged
+    /// onto Focus moves Focus out of its way. The preview draws a ghost for
+    /// each, writes nothing, and names the consequence; the drop commits the
+    /// same positions, and one undo puts both back.
+    @Test
+    func aDropOntoAnotherBlockRipplesItAndOneUndoRestoresBoth() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        let standup = try row(model, "Standup")
+        let focus = try row(model, "Focus").block.id
+        #expect(!(try row(model, "Focus").isFixed), "a block Sunrise made is flexible")
+
+        await model.previewDrag(standup, mode: .move, toMs: hour(model, 10))
+
+        let plan = try #require(model.plan)
+        #expect(plan.committable)
+        #expect(Set(plan.moves.map(\.item)) == [standup.block.id, focus])
+        let ghosts = model.ghosts(dayOffset: 0)
+        #expect(ghosts.count == 2)
+        let rippled = try #require(ghosts.first { $0.item == focus })
+        #expect(rippled.role == .rippled)
+        #expect(rippled.before == GridSpan(startMs: hour(model, 10), endMs: hour(model, 11)))
+        let ghostOfFocus = try #require(rippled.after)
+        #expect(model.planSummary?.hasPrefix(L10n.Calendar.planMoves(count: 2)) == true)
+        #expect(try start(model, "Standup") == hour(model, 9), "a preview writes nothing")
+
+        await model.dropDrag(standup, mode: .move, toMs: hour(model, 10))
+
+        #expect(model.plan == nil)
+        #expect(try start(model, "Standup") == hour(model, 10))
+        #expect(try start(model, "Focus") == ghostOfFocus.startMs, "Focus landed where its ghost was")
+        #expect(try end(model, "Focus") == ghostOfFocus.endMs)
+
+        let undo = UndoModel(bridge: vault.bridge)
+        await undo.refresh()
+        #expect(undo.undoTitle == L10n.Undo.undoNamed(action: L10n.Calendar.undoPlanMove(title: "Standup", count: 2)))
+        await undo.undo()
+        await model.refresh()
+        #expect(try start(model, "Standup") == hour(model, 9))
+        #expect(try start(model, "Focus") == hour(model, 10))
+        #expect(try end(model, "Focus") == hour(model, 11))
+
+        await undo.refresh()
+        #expect(!undo.canRedo, "a planner commit has no redo")
+        await vault.bridge.shutdown()
+    }
+
+    /// A resize is planned too: the end moves, the start stays.
+    @Test
+    func aResizeMovesTheEndAndKeepsTheStart() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await model.createBlock(fromMs: hour(model, 9), toMs: hour(model, 10), title: "Reading", kind: .floating)
+
+        await model.dropDrag(try row(model, "Reading"), mode: .resizeEnd, toMs: hour(model, 11.5))
+
+        #expect(try start(model, "Reading") == hour(model, 9))
+        #expect(try end(model, "Reading") == hour(model, 11.5))
+        guard case .floating = try row(model, "Reading").block.endsAt else {
+            Issue.record("resizing a floating block pinned it to a zone")
+            return
+        }
+        await vault.bridge.shutdown()
+    }
+
+    /// Dropped back where it started, a drag is a cancel: nothing is written
+    /// and nothing goes on the undo stack.
+    @Test
+    func aDropBackAtTheOriginCommitsNothing() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        let standup = try row(model, "Standup")
+        let undo = UndoModel(bridge: vault.bridge)
+        await undo.refresh()
+        let before = undo.undoTitle
+
+        await model.previewDrag(standup, mode: .move, toMs: hour(model, 10))
+        #expect(model.plan != nil)
+        await model.dropDrag(standup, mode: .move, toMs: hour(model, 9))
+
+        #expect(model.plan == nil)
+        #expect(try start(model, "Standup") == hour(model, 9))
+        await undo.refresh()
+        #expect(undo.undoTitle == before)
+        await vault.bridge.shutdown()
+    }
+
+    /// Esc clears the plan on screen and writes nothing.
+    @Test
+    func cancellingClearsTheGhostsAndWritesNothing() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        let standup = try row(model, "Standup")
+
+        await model.previewDrag(standup, mode: .move, toMs: hour(model, 10))
+        #expect(!model.ghosts(dayOffset: 0).isEmpty)
+        model.cancelPlan()
+
+        #expect(model.plan == nil)
+        #expect(model.ghosts(dayOffset: 0).isEmpty)
+        #expect(model.planSummary == nil)
+        await model.refresh()
+        #expect(try start(model, "Focus") == hour(model, 10))
+        await vault.bridge.shutdown()
+    }
+
+    /// **Keyboard parity.** ⌥↓ twice previews the block two snaps later, the
+    /// same plan a drag there would; Return commits it.
+    @Test
+    func theNudgeKeysPreviewAndReturnCommits() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        model.snapMinutes = 15
+        await model.createBlock(fromMs: hour(model, 9), toMs: hour(model, 10), title: "Standup", kind: .zoned)
+
+        #expect(await model.plan(.later, on: try row(model, "Standup")))
+        #expect(await model.plan(.later, on: try row(model, "Standup")))
+        let subject = try #require(model.plan?.moves.first)
+        guard case let .slot(start, _) = subject.after else {
+            Issue.record("the nudge did not preview a slot")
+            return
+        }
+        #expect(timeValueMs(value: start, tz: model.timeZone) == hour(model, 9.5))
+        #expect(try self.start(model, "Standup") == hour(model, 9), "nothing written before Return")
+
+        #expect(await model.plan(.commit, on: try row(model, "Standup")))
+        #expect(try self.start(model, "Standup") == hour(model, 9.5))
+        #expect(model.nudge == nil)
+        await vault.bridge.shutdown()
+    }
+
+    /// The resize keys move the end, and Esc drops the nudge.
+    @Test
+    func theResizeKeysMoveTheEndAndEscapeDropsThem() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        model.snapMinutes = 30
+        await model.createBlock(fromMs: hour(model, 9), toMs: hour(model, 10), title: "Standup", kind: .zoned)
+
+        #expect(await model.plan(.longer, on: try row(model, "Standup")))
+        let subject = try #require(model.plan?.moves.first)
+        guard case let .slot(start, end) = subject.after else {
+            Issue.record("the nudge did not preview a slot")
+            return
+        }
+        #expect(timeValueMs(value: start, tz: model.timeZone) == hour(model, 9))
+        #expect(timeValueMs(value: end, tz: model.timeZone) == hour(model, 10.5))
+
+        #expect(await model.plan(.cancel, on: try row(model, "Standup")))
+        #expect(model.plan == nil)
+        #expect(!(await model.plan(.commit, on: try row(model, "Standup"))), "nothing left to commit")
+        #expect(try self.end(model, "Standup") == hour(model, 10))
+        await vault.bridge.shutdown()
+    }
+
+    /// A task dropped on the grid becomes a block as long as the planner
+    /// says the task is: its estimate.
+    @Test
+    func aDroppedTaskTakesItsEstimate() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        var task = draft("Draft the proposal")
+        task.estimatedDurationS = 90 * 60
+        let created = try await vault.bridge.submit(.createTask(draft: task))
+
+        await model.dropTask(created.entity, atMs: hour(model, 14))
+
+        #expect(try start(model, "Draft the proposal") == hour(model, 14))
+        #expect(try end(model, "Draft the proposal") == hour(model, 15.5))
+        await vault.bridge.shutdown()
+    }
+
+    private func draft(_ title: String) -> TaskDraftIn {
+        TaskDraftIn(
+            title: title,
+            body: nil,
+            streamId: nil,
+            contexts: [],
+            priority: nil,
+            energy: nil,
+            estimatedDurationS: nil,
+            scheduledAt: nil,
+            dueAt: nil,
+            schedulingConstraints: [],
+            assignee: nil,
+            reminderLeadS: nil
         )
     }
+}
 
-    /// A moved block keeps its length. Dragging a floating hour an hour later
-    /// must not turn it into ninety minutes.
+/// The one-in-flight rule for previews, without a vault.
+struct PlanPreviewPumpTests {
     @Test
-    func movingKeepsTheLength() {
-        let start = day + 9 * 3_600_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: 3_600_000)
-        #expect(moved.startMs == day + 10 * 3_600_000)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
+    func theFirstPositionIsSentAtOnce() {
+        var pump = PlanPreviewPump<Int>()
+        #expect(pump.request(1) == 1)
+        #expect(pump.inFlight)
     }
 
-    /// The translation is snapped, at whatever the user set the grid to.
+    /// While one call runs, newer positions queue, each replacing the last;
+    /// the result that comes back is then stale and the newest is sent.
     @Test
-    func aMoveSnapsToTheGrid() {
-        let start = day + 9 * 3_600_000
-        let nudged = apply(.move, from: start, to: start + 3_600_000, by: 8 * 60_000)
-        #expect(nudged.startMs == day + 9 * 3_600_000 + 15 * 60_000, "on a 15-minute grid, 8 rounds up")
+    func aNewerPositionReplacesTheQueuedOneAndSupersedesTheResult() {
+        var pump = PlanPreviewPump<Int>()
+        _ = pump.request(1)
+        #expect(pump.request(2) == nil)
+        #expect(pump.request(3) == nil)
 
-        let fine = apply(.move, from: start, to: start + 3_600_000, by: 8 * 60_000, snap: 5)
-        #expect(fine.startMs == day + 9 * 3_600_000 + 10 * 60_000, "on a 5-minute grid it lands on 10")
+        let first = pump.finished()
+        #expect(!first.current, "the result for 1 is not drawn")
+        #expect(first.next == 3, "2 was replaced by 3")
+
+        let second = pump.finished()
+        #expect(second.current)
+        #expect(second.next == nil)
+        #expect(!pump.inFlight)
     }
 
-    /// A block dragged off the bottom of the column stops at midnight with its
-    /// length intact — clamping the two ends separately is how a dragged block
-    /// arrives three minutes long.
+    /// The gesture ended: what was queued is dropped.
     @Test
-    func aBlockDraggedPastMidnightStopsAtItWithoutShrinking() {
-        let start = day + 23 * 3_600_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: 5 * 3_600_000)
-        #expect(moved.endMs == dayEnd)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
+    func resetDropsTheQueuedPosition() {
+        var pump = PlanPreviewPump<Int>()
+        _ = pump.request(1)
+        _ = pump.request(2)
+        pump.reset()
+        let done = pump.finished()
+        #expect(done.next == nil)
+        #expect(!pump.inFlight)
     }
+}
 
+/// How the planning keys add up, without a vault.
+struct PlanNudgeTests {
     @Test
-    func aBlockDraggedAboveMidnightStopsAtTheTopOfTheDay() {
-        let start = day + 30 * 60_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: -5 * 3_600_000)
-        #expect(moved.startMs == day)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
-    }
+    func movesAndDaysAddUpAndAResizeStartsAgain() {
+        var nudge = PlanNudge(block: "blk_1")
+        nudge.press(.later)
+        nudge.press(.later)
+        nudge.press(.nextDay)
+        #expect(nudge.mode == .move)
+        #expect(nudge.steps == 2)
+        #expect(nudge.days == 1)
 
-    /// A resize holds the start still. That is the whole difference between
-    /// the two gestures, and getting it wrong moves an appointment while the
-    /// user thought they were lengthening it.
-    @Test
-    func resizingHoldsTheStartAndMovesTheEnd() {
-        let start = day + 9 * 3_600_000
-        let stretched = apply(.resizeEnd, from: start, to: start + 3_600_000, by: 30 * 60_000)
-        #expect(stretched.startMs == start)
-        #expect(stretched.endMs == start + 90 * 60_000)
-    }
-
-    /// Dragged shorter than a snap step, a block stops at one step rather than
-    /// becoming a zero-length block the core would refuse and the grid could
-    /// not draw.
-    @Test
-    func aResizeNeverShortensPastOneSnapStep() {
-        let start = day + 9 * 3_600_000
-        let squashed = apply(.resizeEnd, from: start, to: start + 3_600_000, by: -5 * 3_600_000)
-        #expect(squashed.startMs == start)
-        #expect(squashed.endMs == start + 15 * 60_000)
-    }
-
-    @Test
-    func aResizeStopsAtMidnight() {
-        let start = day + 23 * 3_600_000
-        let stretched = apply(.resizeEnd, from: start, to: start + 30 * 60_000, by: 5 * 3_600_000)
-        #expect(stretched.endMs == dayEnd)
-    }
-
-    /// A drag of nothing changes nothing, so a click that wobbles two points
-    /// does not put a write on the undo stack.
-    @Test
-    func aZeroDragIsAZeroChange() {
-        let start = day + 9 * 3_600_000
-        let same = apply(.move, from: start, to: start + 3_600_000, by: 0)
-        #expect(same.startMs == start)
-        #expect(same.endMs == start + 3_600_000)
+        nudge.press(.shorter)
+        #expect(nudge.mode == .resizeEnd)
+        #expect(nudge.steps == -1)
+        #expect(nudge.days == 0)
     }
 }

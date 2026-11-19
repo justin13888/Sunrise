@@ -179,6 +179,29 @@ struct KeymapTests {
         }
     }
 
+    /// The planning keys on a calendar block, `docs/08-features/planner.md`
+    /// §Client contract: ⌥↑/⌥↓ nudge by one snap, ⇧⌥↑/⇧⌥↓ resize, ⌥←/⌥→ move
+    /// a day, Return commits and Esc cancels.
+    @Test
+    func thePlanningKeysAreTheOnesThePlannerSpecStates() {
+        let expected: [(KeyChord, PlanKey)] = [
+            (press(.upArrow, [.option]), .earlier),
+            (press(.downArrow, [.option]), .later),
+            (press(.upArrow, [.option, .shift]), .shorter),
+            (press(.downArrow, [.option, .shift]), .longer),
+            (press(.leftArrow, [.option]), .previousDay),
+            (press(.rightArrow, [.option]), .nextDay),
+            (press(.returnKey), .commit),
+            (press(.escape), .cancel)
+        ]
+        for (chord, key) in expected {
+            #expect(Keymap.planKey(for: chord) == key, "\(chord.display) should be \(key)")
+        }
+        #expect(Keymap.planning.count == expected.count, "and nothing else")
+        #expect(Keymap.planKey(for: press(.downArrow)) == nil, "a bare arrow is not a nudge")
+        #expect(Keymap.planningLabel == "⌥↑ ⌥↓ ⌥⇧↑ ⌥⇧↓ ⌥← ⌥→ ↩ esc")
+    }
+
     /// The label the palette prints. Alternates are joined rather than one of
     /// them being chosen, because `↑` and `K` are both true.
     @Test

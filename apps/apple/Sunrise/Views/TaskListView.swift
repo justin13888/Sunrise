@@ -191,7 +191,15 @@ struct TaskRows: View {
         // the cursor say "no" rather than promising a move that never happens.
         // The answer is known before the write, which goes to the core as
         // `MoveTasks` and so syncs.
+        //
+        // A block dropped here, from its grip on the calendar, binds this
+        // task to it or unbinds it — in every list, Today and Search
+        // included, since it changes the task and not where the row sits.
         .dropDestination(for: String.self) { items, _ in
+            if let block = DropPayload.blockIDs(items).first {
+                Task { await model.toggleBinding(task, block: block) }
+                return true
+            }
             let moved = DropPayload.taskIDs(items).filter { $0 != task.id }
             guard model.reorderCommand(moved, before: task.id) != nil else { return false }
             Task { await model.reorder(moved, before: task.id) }

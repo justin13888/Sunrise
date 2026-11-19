@@ -782,6 +782,38 @@ undo_bind_task = "bind a task"
 undo_unbind_task = "unbind a task"
 undo_delete_block = "delete a block"
 undo_edit_block = "edit a block"
+# A planned drag of a block, named by the block and by how many items it
+# moved in all, the dragged block included: "move ‘Standup’ (moved 3)".
+undo_plan_move = "move ‘{title}’ (moved {count, number})"
+undo_plan_resize = "resize ‘{title}’ (moved {count, number})"
+# The line under a drag in progress, naming what dropping would do, its parts
+# joined by " · ": "Moves 3 · 1 unscheduled · misses its hard deadline".
+plan_moves = "{count, plural, one {Moves #} other {Moves #}}"
+plan_unscheduled = "{count, plural, one {# unscheduled} other {# unscheduled}}"
+# The worst rule the drop would break, in the same line.
+plan_rule_overlaps_fixed = "overlaps something fixed"
+plan_rule_overlaps = "overlaps another block"
+plan_rule_after_hard_deadline = "misses its hard deadline"
+plan_rule_after_target = "misses its target"
+plan_rule_before_blocker = "starts before what blocks it"
+plan_rule_outside_time_of_day = "outside its time of day"
+plan_rule_wrong_day_of_week = "on a day of the week it does not allow"
+plan_rule_outside_date_range = "outside its date range"
+plan_rule_outside_day = "outside your day"
+plan_rule_in_past = "in the past"
+plan_rule_invalid = "not a time this block can have"
+# The same line when the drop would be refused, and nothing would move.
+plan_refused = "Can’t drop here"
+# A banner after a drop that was refused: nothing moved.
+note_plan_refused = "Not moved: that drop breaks a rule the block cannot break."
+# A banner after a drop whose plan changed underneath it, so it was not
+# committed: the new plan is on the grid, waiting for Return or Esc.
+note_plan_changed = "The plan changed while you dropped. Press Return to commit it or Esc to cancel."
+# Tooltip and spoken label on the grip that drags a block onto a task list.
+bind_grip = "Drag onto a task to bind it to this block, or onto a bound task to unbind it"
+# Spoken hint on a block: the keys that move or resize it while it has focus.
+# {keys} is the list of keys, set by the app.
+plan_keys_hint = "Move or resize with {keys}"
 # The question asked before a change to one event of a repeating block: its
 # heading for a move, an edit and a delete, and the line under it.
 reach_title_move = "Move a repeating block"
@@ -1433,6 +1465,9 @@ unarchive_context = "unarchive @{name}"
 delete_context = "delete @{name}"
 move_to_stream = "move to stream"
 add_context = "add a context"
+# After undoing a planned move, when some of what it moved was changed again
+# since and left as it is: how many of its changes were put back.
+restored_some = "Restored {restored, number} of {total, number}; the rest were changed since"
 
 # The app's shells and system surfaces: menus, windows, the iOS tabs,
 # widgets, Shortcuts, notifications and printing.

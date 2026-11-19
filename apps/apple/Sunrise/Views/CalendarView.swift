@@ -21,6 +21,7 @@ struct CalendarView: View {
             }
             Divider()
             grid
+                .overlay(alignment: .top) { planSummary }
         }
         .task { await model.refresh() }
         .task { await model.follow() }
@@ -87,6 +88,26 @@ struct CalendarView: View {
         }
     }
 
+    /// What dropping now would do, in words, for as long as a plan is on
+    /// screen: "Moves 3 · 1 unscheduled · misses its hard deadline". Spoken
+    /// to VoiceOver each time it changes.
+    @ViewBuilder
+    private var planSummary: some View {
+        if let summary = model.planSummary {
+            Text(summary)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 6)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("calendar-plan-summary")
+                .onChange(of: summary, initial: true) { _, said in
+                    AccessibilityNotification.Announcement(said).post()
+                }
+        }
+    }
+
     private var spanPicker: some View {
         Picker(L10n.Calendar.span, selection: $model.span) {
             ForEach(CalendarSpan.allCases) { Text($0.title).tag($0) }
@@ -114,6 +135,7 @@ struct CalendarView: View {
             Task { await model.step(1) }
         }
         .labelStyle(.iconOnly)
+        .accessibilityIdentifier("calendar-next")
     }
 
     /// The date, on one line whatever happens.
@@ -232,6 +254,13 @@ private struct DayColumn: View {
 
     @State private var dragFrom: CGFloat?
     @State private var dragTo: CGFloat?
+    /// The last snapped position a block drag previewed, so a pointer that
+    /// moves within one snap does not ask the planner again.
+    @State private var dragSnapped: Int64?
+    /// Esc pressed during a block drag: its drop commits nothing.
+    @State private var dragCancelled = false
+    /// The block with keyboard focus, which the planning keys act on.
+    @FocusState private var focusedBlock: String?
 
     private var dayStartMs: Int64 { model.dayStartMs(offset: dayOffset) }
 
@@ -274,8 +303,17 @@ private struct DayColumn: View {
                             }
                         },
                         resolve: resolveMenu(for: placed),
-                        drag: { mode, points in dragBlock(placed, mode: mode, byPoints: points) }
+                        isMoving: isMoving(placed),
+                        drag: { mode, points, ended in
+                            dragBlock(placed, mode: mode, byPoints: points, ended: ended)
+                        }
                     )
+                    .modifier(PlanningKeys(focus: $focusedBlock, id: placed.id) { chord in
+                        planKey(chord, on: placed)
+                    })
+                }
+                ForEach(model.ghosts(dayOffset: dayOffset)) { ghost in
+                    PlanGhostView(ghost: ghost, dayStartMs: dayStartMs, width: proxy.size.width)
                 }
                 if let ghost = ghostRect {
                     RoundedRectangle(cornerRadius: 4)
@@ -354,33 +392,75 @@ private struct DayColumn: View {
 
     /// **Moving or resizing a block by dragging it.**
     ///
-    /// The translation is turned into milliseconds here — points are the
-    /// view's unit and the grid's scale is the view's business — and every
-    /// decision after that is `BlockDrag`'s, so what happens at midnight and
-    /// what happens to a block dragged shorter than a snap step are both
-    /// testable without a window.
-    private func dragBlock(_ placed: PlacedBlock, mode: BlockDragMode, byPoints points: CGFloat) {
-        let deltaMs = Int64(points / CalendarMetrics.hourHeight * 3_600_000)
-        let bounds = BlockDrag.apply(
-            mode: mode,
-            startMs: placed.startMs,
-            endMs: placed.endMs,
-            deltaMs: deltaMs,
-            snapMinutes: model.snapMinutes,
-            dayStartMs: dayStartMs,
-            dayEndMs: dayStartMs + 24 * 3_600_000
+    /// The translation is turned into the snapped instant the held edge is
+    /// over — points are the view's unit and the grid's scale is the view's
+    /// business — and that is the gesture the planner is sent. Where the
+    /// block lands, what moves out of its way and what it would break are
+    /// the core's answers, drawn as ghosts while the drag goes on and
+    /// committed exactly as drawn on release (`docs/08-features/planner.md`).
+    /// Released where it started, or after Esc, it writes nothing.
+    ///
+    /// One event of a repeating block is not planned: the planner reads the
+    /// series, not the event. It keeps asking how far the change reaches and
+    /// writes the edit on release.
+    private func dragBlock(
+        _ placed: PlacedBlock,
+        mode: BlockDragMode,
+        byPoints points: CGFloat,
+        ended: Bool
+    ) {
+        let row = placed.row
+        let held = timeValueMs(
+            value: mode == .move ? row.block.startsAt : row.block.endsAt,
+            tz: model.timeZone
         )
-        guard bounds.startMs != placed.startMs || bounds.endMs != placed.endMs else { return }
-        reaching(placed.row, .move) { reach in
-            Task {
-                await model.moveBlock(
-                    placed.row,
-                    toStartMs: bounds.startMs,
-                    toEndMs: bounds.endMs,
-                    reach: reach
-                )
-            }
+        let deltaMs = Int64(points / CalendarMetrics.hourHeight * 3_600_000)
+        let toMs = model.snap(held + deltaMs, dayOffset: dayOffset)
+
+        guard ended else {
+            guard !row.recurs, !dragCancelled, toMs != dragSnapped else { return }
+            if dragSnapped == nil { focusedBlock = placed.id }
+            dragSnapped = toMs
+            Task { await model.previewDrag(row, mode: mode, toMs: toMs) }
+            return
         }
+        let cancelled = dragCancelled
+        dragSnapped = nil
+        dragCancelled = false
+        guard !cancelled else { return }
+        if row.recurs {
+            guard toMs != held else { return }
+            reaching(row, .move) { reach in
+                Task { await model.moveRepeating(row, mode: mode, toMs: toMs, reach: reach) }
+            }
+        } else {
+            Task { await model.dropDrag(row, mode: mode, toMs: toMs) }
+        }
+    }
+
+    /// A planning key pressed on a block with focus (``Keymap/planning``).
+    /// Esc during a drag also cancels the drag's drop.
+    private func planKey(_ chord: KeyChord, on placed: PlacedBlock) -> Bool {
+        guard let key = Keymap.planKey(for: chord) else { return false }
+        if key == .cancel, dragSnapped != nil {
+            dragCancelled = true
+            model.cancelPlan()
+            return true
+        }
+        guard key == .commit || key == .cancel || !placed.row.recurs else { return false }
+        if key == .cancel {
+            guard model.plan != nil || model.nudge != nil else { return false }
+            model.cancelPlan()
+            return true
+        }
+        if key == .commit, model.plan == nil { return false }
+        Task { await model.plan(key, on: placed.row) }
+        return true
+    }
+
+    /// Whether the plan on screen moves this block.
+    private func isMoving(_ placed: PlacedBlock) -> Bool {
+        model.plan?.moves.contains { $0.item == placed.blockId } ?? false
     }
 
     /// Make `change` now for a block that does not recur, which asks nothing,
@@ -402,15 +482,15 @@ private struct DayColumn: View {
     ///
     /// The payload is the task's `EntityRef`, which is its text form — the same
     /// string the CLI accepts. A drop of anything else is ignored rather than
-    /// guessed at.
+    /// guessed at. How long the block it makes is, is the core's answer
+    /// (``CalendarModel/dropTask(_:atMs:)``).
     private func accept(items: [String], at y: CGFloat) -> Bool {
-        guard let raw = items.first, raw.hasPrefix("tsk_") else { return false }
+        guard let raw = DropPayload.taskIDs(items).first else { return false }
         let start = model.snap(
             CalendarMetrics.instant(at: y, dayStartMs: dayStartMs),
             dayOffset: dayOffset
         )
-        let end = start + Int64(max(model.snapMinutes, 30)) * 60_000
-        Task { await model.dropTask(raw, fromMs: start, toMs: end, kind: .zoned) }
+        Task { await model.dropTask(raw, atMs: start) }
         return true
     }
 
@@ -433,6 +513,31 @@ private struct DayColumn: View {
                     adjust: { adjust(conflict) }
                 )
             }
+    }
+}
+
+/// The planning keys on a block (``Keymap/planning``): the block takes
+/// keyboard focus, and a press it holds is handed to `handle`.
+///
+/// The Mac only, as the keyboard path of a pointer drag. On iOS the chip
+/// stays a plain tap target: making it focusable there changes what a tap
+/// does on a phone, which has no keys to press.
+private struct PlanningKeys: ViewModifier {
+    var focus: FocusState<String?>.Binding
+    let id: String
+    let handle: (KeyChord) -> Bool
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .focusable()
+            .focused(focus, equals: id)
+            .onKeyPress(phases: .down) { press in
+                handle(KeyChord(press)) ? .handled : .ignored
+            }
+        #else
+        content
+        #endif
     }
 }
 
