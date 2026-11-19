@@ -503,19 +503,24 @@ impl SunriseTime {
     }
 }
 
-/// The instant an index key names, at millisecond resolution.
+/// The instant `ms` epoch milliseconds name, exactly, or `None` past either
+/// end of the range.
 ///
 /// Not [`Timestamp::from_millisecond`]: that refuses the last second of the
 /// range, whose keys `Timestamp::MAX.as_millisecond()` and its neighbours are
-/// (#898). A key past either end clamps to that end.
+/// (#898). Every epoch-millisecond reader in this crate goes through here.
+pub(crate) fn timestamp_at_ms(ms: i64) -> Option<Timestamp> {
+    Timestamp::from_duration(jiff::SignedDuration::from_millis(ms)).ok()
+}
+
+/// The instant an index key names, at millisecond resolution. A key past
+/// either end clamps to that end.
 fn instant_at_ms(index_ms: i64) -> Timestamp {
-    Timestamp::from_duration(jiff::SignedDuration::from_millis(index_ms)).unwrap_or(
-        if index_ms < 0 {
-            Timestamp::MIN
-        } else {
-            Timestamp::MAX
-        },
-    )
+    timestamp_at_ms(index_ms).unwrap_or(if index_ms < 0 {
+        Timestamp::MIN
+    } else {
+        Timestamp::MAX
+    })
 }
 
 impl std::fmt::Display for SunriseTime {
