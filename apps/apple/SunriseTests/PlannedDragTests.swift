@@ -176,6 +176,157 @@ struct PlannedDragTests {
         #expect(try start(model, "Focus") == hour(model, 10))
         await vault.bridge.shutdown()
     }
+}
+
+// MARK: - Drops that do not go as previewed, and the keyboard
+
+extension PlannedDragTests {
+    /// Write new times to `title` straight through the bridge, as another
+    /// window or a synced device would: off this model's undo stack, and
+    /// under the planner's feet.
+    private func moveBehindThePlanner(
+        _ vault: borrowing TestVault, _ model: CalendarModel, _ title: String, from: Double, to: Double
+    ) async throws {
+        let row = try row(model, title)
+        let zone = model.timeZone
+        var edit = BlockEdit()
+        edit.startsAt = CalendarModel.sameKind(as: row.block.startsAt, ms: hour(model, from), timeZone: zone)
+        edit.endsAt = CalendarModel.sameKind(as: row.block.endsAt, ms: hour(model, to), timeZone: zone)
+        _ = try await vault.bridge.submit(.updateBlock(id: row.block.id, edit: edit))
+    }
+
+    /// **A stale drop whose answer did not change is committed.** A block
+    /// written between the preview and the drop makes the diff on screen
+    /// stale; the drop previews once more, gets the same moves, and commits
+    /// them without asking.
+    @Test
+    func aStaleDropWhosePlanIsTheSameIsCommittedAnyway() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        await model.createBlock(
+            fromMs: hour(model, 15), toMs: hour(model, 16), title: "Reading", kind: .zoned
+        )
+
+        try await drag(model, "Standup", .move, to: 10)
+        let plan = try #require(model.planner.plan)
+        let ghostOfFocus = try #require(ghosts(model).first { $0.role == .rippled }?.after)
+        try await moveBehindThePlanner(vault, model, "Reading", from: 16, to: 17)
+        await #expect(throws: BindingError.self, "the write made the diff on screen stale") {
+            _ = try await vault.bridge.planCommit(plan.id, label: "stale")
+        }
+
+        try await drop(model, "Standup", .move, at: 10)
+
+        #expect(model.planner.plan == nil)
+        #expect(model.planner.note == nil)
+        #expect(!model.planner.awaitingDecision)
+        #expect(try start(model, "Standup") == hour(model, 10))
+        #expect(try start(model, "Focus") == ghostOfFocus.startMs)
+        #expect(try start(model, "Reading") == hour(model, 16), "the write behind the planner stands")
+        await vault.bridge.shutdown()
+    }
+
+    /// **A stale drop whose answer changed waits, and the button commits
+    /// it.** Focus moved out of the way between the preview and the drop, so
+    /// the new plan moves Standup alone. Nothing is written until the person
+    /// commits the plan now on screen.
+    @Test
+    func aStaleDropWhosePlanChangedWaitsUntilItIsCommitted() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        let standup = try row(model, "Standup").block.id
+
+        try await drag(model, "Standup", .move, to: 10)
+        #expect(model.planner.plan?.moves.count == 2)
+        try await moveBehindThePlanner(vault, model, "Focus", from: 13, to: 14)
+
+        try await drop(model, "Standup", .move, at: 10)
+
+        let waiting = try #require(model.planner.plan, "the new plan is left on screen")
+        #expect(waiting.moves.map(\.item) == [standup])
+        #expect(model.planner.note == L10n.Calendar.notePlanChanged)
+        #expect(model.planner.awaitingDecision)
+        #expect(try start(model, "Standup") == hour(model, 9), "nothing written before the answer")
+        #expect(try start(model, "Focus") == hour(model, 13))
+
+        await model.planner.commitPlan()
+
+        #expect(model.planner.plan == nil)
+        #expect(model.planner.note == nil)
+        #expect(!model.planner.awaitingDecision)
+        #expect(try start(model, "Standup") == hour(model, 10))
+        #expect(try start(model, "Focus") == hour(model, 13))
+        await vault.bridge.shutdown()
+    }
+
+    /// The same changed plan, cancelled: the ghosts and the note go, and
+    /// nothing is written.
+    @Test
+    func aStaleDropWhosePlanChangedCanBeCancelled() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+
+        try await drag(model, "Standup", .move, to: 10)
+        try await moveBehindThePlanner(vault, model, "Focus", from: 13, to: 14)
+        try await drop(model, "Standup", .move, at: 10)
+        #expect(model.planner.awaitingDecision)
+
+        model.planner.cancel()
+
+        #expect(model.planner.plan == nil)
+        #expect(ghosts(model).isEmpty)
+        #expect(model.planner.note == nil)
+        #expect(!model.planner.awaitingDecision)
+        await model.refresh()
+        #expect(try start(model, "Standup") == hour(model, 9))
+        await vault.bridge.shutdown()
+    }
+
+    /// A drop the planner refuses writes nothing and says why: a resize
+    /// that ends the block before it starts.
+    @Test
+    func aRefusedDropWritesNothingAndSaysSo() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+
+        try await drop(model, "Standup", .resizeEnd, at: 8.5)
+
+        #expect(model.planner.plan == nil)
+        #expect(model.planner.note == L10n.Calendar.notePlanRefused)
+        #expect(!model.planner.awaitingDecision, "a refusal waits for nothing")
+        await model.refresh()
+        #expect(try end(model, "Standup") == hour(model, 10))
+        await vault.bridge.shutdown()
+    }
+
+    /// **Undo after a later edit restores what it can.** Focus was moved
+    /// again after the commit, so undo puts Standup back, leaves Focus
+    /// where the later write put it, and says how much it restored.
+    @Test
+    func undoAfterALaterEditRestoresTheRestAndSaysHowMuch() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await twoBlocks(model)
+        try await drop(model, "Standup", .move, at: 10)
+        #expect(try start(model, "Standup") == hour(model, 10))
+        try await moveBehindThePlanner(vault, model, "Focus", from: 13, to: 14)
+
+        let undo = UndoModel(bridge: vault.bridge)
+        await undo.refresh()
+        await undo.undo()
+        await model.refresh()
+
+        let label = L10n.Calendar.undoPlanMove(title: "Standup", count: 2)
+        let partial = L10n.Undo.restoredSome(restored: 2, total: 4)
+        #expect(undo.lastAction == "\(L10n.Undo.undid(action: label)). \(partial)")
+        #expect(try start(model, "Standup") == hour(model, 9))
+        #expect(try start(model, "Focus") == hour(model, 13), "the later write is kept")
+        await vault.bridge.shutdown()
+    }
 
     /// **Keyboard parity.** ⌥↓ twice previews the block two snaps later, the
     /// same plan a drag there would; Return commits it.
