@@ -36,13 +36,16 @@ final class PlannedDragUITests: SunriseUITestCase {
         drawBlock("Focus", from: Self.secondTop, to: Self.secondBottom)
 
         // Standup's middle, dragged down by the distance between the two
-        // blocks' tops, so it lands on Focus.
+        // blocks' tops, so it lands on Focus. Held for less than the chip's
+        // context menu takes to open: a press as long as `drawBlock`'s lifts
+        // the chip into that menu instead, and the move never starts. Held at
+        // all, so the scroll view's pan does not claim the drag first.
         let middle = (Self.firstTop + Self.firstBottom) / 2
         let from = app.coordinate(withNormalizedOffset: CGVector(dx: Self.dragX, dy: middle))
         let to = app.coordinate(
             withNormalizedOffset: CGVector(dx: Self.dragX, dy: middle + Self.secondTop - Self.firstTop)
         )
-        from.press(forDuration: 0.6, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 1.0)
+        from.press(forDuration: 0.2, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 1.0)
 
         XCTAssertTrue(
             waitUntil(timeout: 10) { !self.app.descendants(matching: .any)["calendar-plan-summary"].exists },
