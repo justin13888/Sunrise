@@ -4,8 +4,8 @@
 //! for the reader now (`engine::lateness`), its Keep and its stream's pause,
 //! and from whether its plan breaks a `hard` scheduling constraint in the
 //! reader's zone now (#1084); nothing about the queue is stored but the Keep
-//! itself. `Command::Triage`
-//! applies one action to a selection: every id is checked and every write
+//! itself. `Command::Triage` applies one action to a selection: every id is
+//! checked and every write
 //! planned against the vault as it stands before any is logged, one refusal
 //! refuses the batch with nothing written, and the writes are one group
 //! (ADR-0065 §6), each task with its own ops. Nothing here runs unless a user

@@ -256,7 +256,8 @@ SQL; evaluation happens in Rust. See
   lateness. The Apple app's triage row says so
   (`apps/apple/Sunrise/Views/TriageView.swift`); the CLI's `triage list` does
   not print the flag yet. The triage queue is the only read that flags it:
-  Today, the lists and the task detail do not.
+  Today, the lists and the task detail do not
+  ([#1218](https://github.com/justin13888/Sunrise/issues/1218)).
 - There is no `at_place` dimension
   (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`,
   [#1128](https://github.com/justin13888/Sunrise/issues/1128)). What it will
