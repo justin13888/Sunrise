@@ -146,6 +146,20 @@ async fn seed(core: &Core) {
     }))
     .await
     .unwrap();
+    seed_place(core).await;
+}
+
+/// One place, so `entities/place.jsonl` has a row.
+async fn seed_place(core: &Core) {
+    core.submit(Command::CreatePlace(sunrise_domain::PlaceDraft {
+        name: "Gym".into(),
+        lat_e7: 437_000_000,
+        lon_e7: -794_000_000,
+        radius_m: 150,
+        address_label: None,
+    }))
+    .await
+    .unwrap();
 }
 
 /// Every file under `dir`, by `/`-separated relative path.
