@@ -8,6 +8,7 @@ struct CalendarView: View {
     @State private var draft: BlockDraftSheet?
     @State private var editing: BlockGridRow?
     @State private var adjusting: BlockConflict?
+    @State private var pendingReach: PendingBlockReach?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +33,7 @@ struct CalendarView: View {
         .sheet(item: $adjusting) { conflict in
             AdjustBlocksView(model: model, conflict: conflict)
         }
+        .askingBlockReach($pendingReach)
     }
 
     /// Span, the date stepper and the snap size.
@@ -150,7 +152,8 @@ struct CalendarView: View {
                             draft = BlockDraftSheet(fromMs: from, toMs: to)
                         },
                         edit: { editing = $0 },
-                        adjust: { adjusting = $0 }
+                        adjust: { adjusting = $0 },
+                        ask: { pendingReach = $0 }
                     )
                 }
             }
@@ -224,6 +227,8 @@ private struct DayColumn: View {
     let beginDraft: (Int64, Int64) -> Void
     let edit: (BlockGridRow) -> Void
     let adjust: (BlockConflict) -> Void
+    /// Put "which events?" to the person, for a change to a repeating block.
+    let ask: (PendingBlockReach) -> Void
 
     @State private var dragFrom: CGFloat?
     @State private var dragTo: CGFloat?
@@ -263,7 +268,11 @@ private struct DayColumn: View {
                         dayStartMs: dayStartMs,
                         conflicted: isConflicted(placed),
                         open: { edit(placed.row) },
-                        delete: { Task { await model.delete(placed.row.block.id) } },
+                        delete: {
+                            reaching(placed.row, .delete) { reach in
+                                Task { await model.delete(placed.row, reach: reach) }
+                            }
+                        },
                         resolve: resolveMenu(for: placed),
                         drag: { mode, points in dragBlock(placed, mode: mode, byPoints: points) }
                     )
@@ -362,7 +371,31 @@ private struct DayColumn: View {
             dayEndMs: dayStartMs + 24 * 3_600_000
         )
         guard bounds.startMs != placed.startMs || bounds.endMs != placed.endMs else { return }
-        Task { await model.moveBlock(placed.row, toStartMs: bounds.startMs, toEndMs: bounds.endMs) }
+        reaching(placed.row, .move) { reach in
+            Task {
+                await model.moveBlock(
+                    placed.row,
+                    toStartMs: bounds.startMs,
+                    toEndMs: bounds.endMs,
+                    reach: reach
+                )
+            }
+        }
+    }
+
+    /// Make `change` now for a block that does not recur, which asks nothing,
+    /// or once the person has said how far a change to this event of a
+    /// repeating block reaches. Dismissing the question makes no change.
+    private func reaching(
+        _ row: BlockGridRow,
+        _ action: BlockReachAction,
+        _ change: @escaping (BlockEditReach?) -> Void
+    ) {
+        guard row.recurs else {
+            change(nil)
+            return
+        }
+        ask(PendingBlockReach(action: action) { change($0) })
     }
 
     /// A task dragged from a list onto the grid.
@@ -382,16 +415,16 @@ private struct DayColumn: View {
     }
 
     private func isConflicted(_ placed: PlacedBlock) -> Bool {
-        model.conflicts.contains { $0.a == placed.id || $0.b == placed.id }
+        model.conflicts.contains { CalendarModel.isPart(placed, of: $0) }
     }
 
     /// The conflicts this block is part of, for its Resolve menu.
     private func resolveMenu(for placed: PlacedBlock) -> [ResolveOption] {
         model.conflicts
-            .filter { $0.a == placed.id || $0.b == placed.id }
+            .filter { CalendarModel.isPart(placed, of: $0) }
             .compactMap { conflict in
-                let otherId = conflict.a == placed.id ? conflict.b : conflict.a
-                guard let other = model.row(otherId) else { return nil }
+                let otherId = conflict.a == placed.blockId ? conflict.b : conflict.a
+                guard let other = model.row(otherId, in: conflict) else { return nil }
                 return ResolveOption(
                     conflict: conflict,
                     otherTitle: other.title ?? L10n.Calendar.untitledBlock,
@@ -413,106 +446,4 @@ struct ResolveOption: Identifiable {
     let adjust: () -> Void
 
     var id: String { "\(conflict.a)|\(conflict.b)" }
-}
-
-/// One block on the grid.
-private struct BlockChip: View {
-    let placed: PlacedBlock
-    let width: CGFloat
-    let dayStartMs: Int64
-    let conflicted: Bool
-    let open: () -> Void
-    let delete: () -> Void
-    let resolve: [ResolveOption]
-    /// Where a drag on this chip ended up, in points down the column.
-    let drag: (BlockDragMode, CGFloat) -> Void
-
-    /// The live offset while a drag is in flight, so the chip follows the
-    /// pointer instead of jumping when the write lands.
-    @State private var offset: CGFloat = 0
-    @State private var stretch: CGFloat = 0
-
-    var body: some View {
-        let top = CalendarMetrics.offset(ms: placed.startMs, dayStartMs: dayStartMs)
-        let bottom = CalendarMetrics.offset(ms: placed.endMs, dayStartMs: dayStartMs)
-        let laneWidth = max(24, width / CGFloat(placed.laneCount))
-
-        VStack(alignment: .leading, spacing: 2) {
-            Text(placed.row.title ?? L10n.Calendar.untitledBlock)
-                .font(.caption.weight(.medium))
-                .lineLimit(2)
-            if !placed.row.taskTitles.isEmpty {
-                Text(placed.row.taskTitles.joined(separator: ", "))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(4)
-        .frame(
-            width: laneWidth - 2,
-            height: max(14, bottom - top + stretch),
-            alignment: .topLeading
-        )
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.accentColor.opacity(0.18))
-                .stroke(conflicted ? Color.orange : Color.accentColor, lineWidth: conflicted ? 2 : 1)
-        )
-        // The bottom few points resize instead of moving — the same edge every
-        // calendar on this platform puts a resize on.
-        .overlay(alignment: .bottom) { resizeHandle }
-        .offset(x: laneWidth * CGFloat(placed.lane) + 1, y: top + offset)
-        .opacity(offset == 0 && stretch == 0 ? 1 : DropHighlight.ghostOpacity)
-        .onTapGesture(perform: open)
-        .gesture(moveGesture)
-        .accessibilityIdentifier("calendar-block")
-        .contextMenu {
-            Button(L10n.Calendar.editEllipsis, action: open)
-            if !resolve.isEmpty {
-                Menu(L10n.Calendar.resolve) {
-                    ForEach(resolve) { option in
-                        Section(L10n.Calendar.overlaps(title: option.otherTitle)) {
-                            Button(L10n.Calendar.keepBoth, action: option.keepBoth)
-                            Button(L10n.Calendar.merge, action: option.merge)
-                            Button(L10n.Calendar.adjustTimes, action: option.adjust)
-                        }
-                    }
-                }
-            }
-            Divider()
-            Button(L10n.Action.delete, role: .destructive, action: delete)
-        }
-    }
-
-    /// Drag the body: the block keeps its length and changes when it is.
-    private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { offset = $0.translation.height }
-            .onEnded { value in
-                offset = 0
-                drag(.move, value.translation.height)
-            }
-    }
-
-    /// Drag the bottom edge: the block keeps its start and changes how long it
-    /// is. A strip rather than a corner grip, because a block can be eight
-    /// points tall and a grip would not fit on one.
-    private var resizeHandle: some View {
-        Color.clear
-            .frame(height: BlockChip.resizeGrip)
-            .contentShape(.rect)
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { stretch = $0.translation.height }
-                    .onEnded { value in
-                        stretch = 0
-                        drag(.resizeEnd, value.translation.height)
-                    }
-            )
-    }
-
-    /// How tall the resize strip is.
-    private static let resizeGrip: CGFloat = 6
 }

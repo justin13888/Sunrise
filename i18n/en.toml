@@ -782,6 +782,24 @@ undo_bind_task = "bind a task"
 undo_unbind_task = "unbind a task"
 undo_delete_block = "delete a block"
 undo_edit_block = "edit a block"
+# The question asked before a change to one event of a repeating block: its
+# heading for a move, an edit and a delete, and the line under it.
+reach_title_move = "Move a repeating block"
+reach_title_edit = "Change a repeating block"
+reach_title_delete = "Delete a repeating block"
+reach_message = "This block repeats. Which of its events should change?"
+# The answers: the one event chosen, it and every later one, or the whole series.
+reach_this = "This event"
+reach_this_and_following = "This and following events"
+reach_all = "All events"
+# What a block on the grid is, read aloud with it: whether planning may move
+# it, and whether it is one event of a repeating block.
+block_fixed = "Fixed"
+block_flexible = "Flexible"
+block_repeats = "Repeats"
+# A banner when a Resolve action cannot take a repeating block: merging one
+# event would remove the whole series.
+note_merge_repeating = "A repeating block cannot be merged. Adjust its times instead."
 
 [apple.block_editor]
 # The block sheets' fields: the block's title and its start and end times.
