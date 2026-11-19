@@ -2278,6 +2278,39 @@
         }
       }
     },
+    "apple.calendar.block_fixed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fixed"
+          }
+        }
+      }
+    },
+    "apple.calendar.block_flexible": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flexible"
+          }
+        }
+      }
+    },
+    "apple.calendar.block_repeats": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repeats"
+          }
+        }
+      }
+    },
     "apple.calendar.edit_ellipsis": {
       "extractionState": "manual",
       "localizations": {
@@ -2399,6 +2432,17 @@
         }
       }
     },
+    "apple.calendar.note_merge_repeating": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A repeating block cannot be merged. Adjust its times instead."
+          }
+        }
+      }
+    },
     "apple.calendar.note_merged": {
       "extractionState": "manual",
       "localizations": {
@@ -2428,6 +2472,83 @@
           "stringUnit": {
             "state": "translated",
             "value": "Previous"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All events"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This block repeats. Which of its events should change?"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_this": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This event"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_this_and_following": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This and following events"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_title_delete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete a repeating block"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_title_edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change a repeating block"
+          }
+        }
+      }
+    },
+    "apple.calendar.reach_title_move": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move a repeating block"
           }
         }
       }

@@ -7,7 +7,7 @@
 
 use crate::dto::TimeValue;
 use crate::{BindingError, SunriseCore};
-use sunrise_core::PlanError;
+use sunrise_core::{PlanCommitId, PlanError, PlanField};
 use sunrise_domain::planner::{
     Edge, MoveRole, PlanDiff, PlanDiffId, PlanIntent, PlanPosition, PlanRule, PlanSeverity,
     SlotTarget, UnscheduleKeep, UnscheduleReason,
@@ -309,10 +309,41 @@ impl From<&PlanDiff> for PlanDiffItem {
 }
 
 /// What a commit wrote.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PlanCommitItem {
+    /// The commit's id, 32 hex digits: what [`SunriseCore::plan_undo`]
+    /// takes.
+    pub commit_id: String,
     /// How many tasks and blocks it moved.
     pub moved: u32,
+}
+
+/// See [`sunrise_core::PlanField`].
+#[uniffi::remote(Enum)]
+pub enum PlanField {
+    PlannedAt,
+    StartsAt,
+    EndsAt,
+}
+
+/// A field an undo left as it is. See [`sunrise_core::PlanUndoSkip`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct PlanUndoSkipItem {
+    /// The task or block.
+    pub item: EntityRef,
+    /// The field.
+    pub field: PlanField,
+}
+
+/// What an undo restored, and what it left. See
+/// [`sunrise_core::PlanUndoResult`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanUndoItem {
+    /// How many fields it restored.
+    pub restored: u32,
+    /// Fields written again since the commit, or of an item deleted since,
+    /// left as they are: "Restored 4 of 5; ‘Standup’ was changed since".
+    pub skipped: Vec<PlanUndoSkipItem>,
 }
 
 impl From<PlanError> for BindingError {
@@ -334,10 +365,11 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// `id` as a [`PlanDiffId`], or [`BindingError::BadFixedBytes`].
-fn diff_id(id: &str) -> Result<PlanDiffId, BindingError> {
+/// `id`, 32 hex digits, as 16 bytes, or [`BindingError::BadFixedBytes`]
+/// naming `field`.
+fn bytes16(id: &str, field: &str) -> Result<[u8; 16], BindingError> {
     let bad = || BindingError::BadFixedBytes {
-        field: "diff_id".into(),
+        field: field.into(),
         expected: 16,
     };
     if id.len() != 32 || !id.is_ascii() {
@@ -347,7 +379,17 @@ fn diff_id(id: &str) -> Result<PlanDiffId, BindingError> {
     for (i, byte) in out.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&id[i * 2..i * 2 + 2], 16).map_err(|_| bad())?;
     }
-    Ok(PlanDiffId(out))
+    Ok(out)
+}
+
+/// `id` as a [`PlanDiffId`], or [`BindingError::BadFixedBytes`].
+fn diff_id(id: &str) -> Result<PlanDiffId, BindingError> {
+    bytes16(id, "diff_id").map(PlanDiffId)
+}
+
+/// `id` as a [`PlanCommitId`], or [`BindingError::BadFixedBytes`].
+fn commit_id(id: &str) -> Result<PlanCommitId, BindingError> {
+    bytes16(id, "commit_id").map(PlanCommitId)
 }
 
 #[uniffi::export]
@@ -375,7 +417,31 @@ impl SunriseCore {
     pub fn plan_commit(&self, diff_id: String) -> Result<PlanCommitItem, BindingError> {
         let result = self.inner.plan_commit(self::diff_id(&diff_id)?)?;
         Ok(PlanCommitItem {
+            commit_id: hex(&result.commit.0),
             moved: result.moved,
+        })
+    }
+
+    /// Undo the commit `commit_id` per field: each field still holding the
+    /// commit's write is restored, and each written again since is left and
+    /// reported in `skipped`. Never refuses as stale.
+    ///
+    /// # Errors
+    /// [`BindingError::PlanUnknown`] for a commit undone already or too old
+    /// to keep; [`BindingError::BadFixedBytes`] for an id that is not 32 hex
+    /// digits.
+    pub fn plan_undo(&self, commit_id: String) -> Result<PlanUndoItem, BindingError> {
+        let result = self.inner.plan_undo(self::commit_id(&commit_id)?)?;
+        Ok(PlanUndoItem {
+            restored: result.restored,
+            skipped: result
+                .skipped
+                .into_iter()
+                .map(|s| PlanUndoSkipItem {
+                    item: s.item,
+                    field: s.field,
+                })
+                .collect(),
         })
     }
 
@@ -398,6 +464,12 @@ mod tests {
     fn a_diff_id_round_trips_through_hex_and_a_bad_one_is_refused() {
         let id = PlanDiffId([0xab; 16]);
         assert_eq!(diff_id(&hex(&id.0)).unwrap(), id);
+        let commit = PlanCommitId([0x3c; 16]);
+        assert_eq!(commit_id(&hex(&commit.0)).unwrap(), commit);
+        assert!(matches!(
+            commit_id("00"),
+            Err(BindingError::BadFixedBytes { field, .. }) if field == "commit_id"
+        ));
         for bad in ["", "ab", &"zz".repeat(16), &"é".repeat(16)] {
             assert!(matches!(
                 diff_id(bad),

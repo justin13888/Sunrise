@@ -776,9 +776,13 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
         .entity;
     assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == block));
 
-    core.submit(Command::BindTask { block, task })
-        .await
-        .unwrap();
+    core.submit(Command::BindTask {
+        block,
+        task,
+        occurrence: None,
+    })
+    .await
+    .unwrap();
     assert!(matches!(next(&mut events).await, DomainEvent::Updated(id) if id == block));
 
     let attachment = core

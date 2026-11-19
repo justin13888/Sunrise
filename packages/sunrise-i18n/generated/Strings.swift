@@ -971,6 +971,28 @@ enum L10n {
         static var undoDeleteBlock: String { L10n.tr("apple.calendar.undo_delete_block") }
         /// edit a block
         static var undoEditBlock: String { L10n.tr("apple.calendar.undo_edit_block") }
+        /// Move a repeating block
+        static var reachTitleMove: String { L10n.tr("apple.calendar.reach_title_move") }
+        /// Change a repeating block
+        static var reachTitleEdit: String { L10n.tr("apple.calendar.reach_title_edit") }
+        /// Delete a repeating block
+        static var reachTitleDelete: String { L10n.tr("apple.calendar.reach_title_delete") }
+        /// This block repeats. Which of its events should change?
+        static var reachMessage: String { L10n.tr("apple.calendar.reach_message") }
+        /// This event
+        static var reachThis: String { L10n.tr("apple.calendar.reach_this") }
+        /// This and following events
+        static var reachThisAndFollowing: String { L10n.tr("apple.calendar.reach_this_and_following") }
+        /// All events
+        static var reachAll: String { L10n.tr("apple.calendar.reach_all") }
+        /// Fixed
+        static var blockFixed: String { L10n.tr("apple.calendar.block_fixed") }
+        /// Flexible
+        static var blockFlexible: String { L10n.tr("apple.calendar.block_flexible") }
+        /// Repeats
+        static var blockRepeats: String { L10n.tr("apple.calendar.block_repeats") }
+        /// A repeating block cannot be merged. Adjust its times instead.
+        static var noteMergeRepeating: String { L10n.tr("apple.calendar.note_merge_repeating") }
     }
 
     enum BlockEditor {

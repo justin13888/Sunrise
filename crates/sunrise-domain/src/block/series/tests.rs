@@ -515,6 +515,7 @@ fn a_block_at_an_occurrence_takes_its_times_and_overrides() {
         title: Some("Deep work".into()),
         title_track_task: false,
         tasks: std::collections::BTreeSet::new(),
+        occurrence_tasks: std::collections::BTreeSet::new(),
         deleted: false,
         kind: None,
         rrule: Some(s.rrule.clone()),
@@ -552,6 +553,99 @@ fn a_block_at_an_occurrence_takes_its_times_and_overrides() {
     assert_eq!(read.title.as_deref(), Some("Taxes"));
     assert_eq!(read.location.as_deref(), Some("Desk"));
     assert_eq!(read.notes, Some(NoteBody(b"receipts".to_vec())));
+}
+
+/// A Task bound to one occurrence (#1162) is bound to that occurrence alone,
+/// and one bound to the whole block to every occurrence; a split at a key
+/// takes the bindings at or after it and leaves the ones before.
+#[test]
+fn an_occurrence_binding_names_its_occurrence_alone() {
+    use crate::OccurrenceBinding;
+    use std::collections::BTreeSet;
+    let s = deep_work();
+    let task = |n: u8| EntityRef::new(EntityKind::Task, [n; 16]);
+    let mut block = crate::Block {
+        id: EntityRef::new(EntityKind::Block, [1u8; 16]),
+        created_at: Timestamp::UNIX_EPOCH,
+        updated_at: Timestamp::UNIX_EPOCH,
+        stream_id: None,
+        starts_at: s.starts_at.clone(),
+        ends_at: s.ends_at.clone(),
+        title: Some("Deep work".into()),
+        title_track_task: false,
+        tasks: BTreeSet::from([task(1)]),
+        occurrence_tasks: BTreeSet::from([
+            OccurrenceBinding::new("2026-03-10T09:00", task(2)),
+            OccurrenceBinding::new("2026-03-17T09:00", task(3)),
+            OccurrenceBinding::new("2026-03-24T09:00", task(4)),
+        ]),
+        deleted: false,
+        kind: None,
+        rrule: Some(s.rrule.clone()),
+        exceptions: BTreeMap::new(),
+        split_from: None,
+        location: None,
+        notes: None,
+        source: None,
+        external_id: None,
+        unknown: Unknowns::new(),
+    };
+    assert_eq!(
+        block.tasks_at("2026-03-17T09:00"),
+        BTreeSet::from([task(1), task(3)])
+    );
+    assert_eq!(
+        block.tasks_at("2026-03-31T09:00"),
+        BTreeSet::from([task(1)])
+    );
+    let (starts_at, ends_at) = s.occurrence_bounds("2026-03-17T09:00").unwrap();
+    let read = block.at_occurrence(&BlockOccurrence {
+        key: "2026-03-17T09:00".into(),
+        starts_at,
+        ends_at,
+        exception: None,
+    });
+    assert_eq!(read.tasks, BTreeSet::from([task(1), task(3)]));
+    assert_eq!(read.occurrence_tasks, block.occurrence_tasks);
+
+    let moved = block.take_bindings_from("2026-03-17T09:00");
+    assert_eq!(
+        moved,
+        BTreeSet::from([
+            OccurrenceBinding::new("2026-03-17T09:00", task(3)),
+            OccurrenceBinding::new("2026-03-24T09:00", task(4)),
+        ])
+    );
+    assert_eq!(
+        block.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new("2026-03-10T09:00", task(2))])
+    );
+    assert_eq!(block.tasks, BTreeSet::from([task(1)]));
+
+    // Moving the anchor a day and an hour later moves each key with it; an
+    // anchor that is not civil moves nothing.
+    let anchor = block.starts_at.clone();
+    block.starts_at = SunriseTime::floating(at(2026, 3, 4, 10, 0));
+    block.shift_bindings(&anchor);
+    assert_eq!(
+        block.occurrence_tasks,
+        BTreeSet::from([OccurrenceBinding::new("2026-03-11T10:00", task(2))])
+    );
+    let before = block.occurrence_tasks.clone();
+    block.shift_bindings(&SunriseTime::instant(Timestamp::UNIX_EPOCH));
+    assert_eq!(block.occurrence_tasks, before);
+}
+
+/// A key names an occurrence only when it is one the rule produces.
+#[test]
+fn check_key_refuses_a_bad_key_and_a_key_the_rule_skips() {
+    let s = deep_work();
+    s.check_key("2026-03-17T09:00").unwrap();
+    assert!(matches!(s.check_key("tuesday"), Err(SplitError::BadKey(_))));
+    assert!(matches!(
+        s.check_key("2026-03-18T09:00"),
+        Err(SplitError::NotAnOccurrence(_))
+    ));
 }
 
 /// One occurrence takes the times and a title, over what its exception

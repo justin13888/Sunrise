@@ -258,11 +258,22 @@ impl BlockSeries {
     /// [`SplitError::BadKey`] when `key` is not `YYYY-MM-DDTHH:MM`, and
     /// [`SplitError::NotAnOccurrence`] when the rule does not produce it.
     pub fn except(&mut self, key: &str, exception: BlockException) -> Result<(), SplitError> {
+        self.check_key(key)?;
+        self.exceptions.insert(key.to_owned(), exception);
+        Ok(())
+    }
+
+    /// Whether `key` names one of this series' occurrences, as an edit or a
+    /// binding of one occurrence needs.
+    ///
+    /// # Errors
+    /// [`SplitError::BadKey`] when `key` is not `YYYY-MM-DDTHH:MM`, and
+    /// [`SplitError::NotAnOccurrence`] when the rule does not produce it.
+    pub fn check_key(&self, key: &str) -> Result<(), SplitError> {
         parse_occurrence_key(key).ok_or_else(|| SplitError::BadKey(key.into()))?;
         if !self.produces_key(key) {
             return Err(SplitError::NotAnOccurrence(key.into()));
         }
-        self.exceptions.insert(key.to_owned(), exception);
         Ok(())
     }
 
@@ -336,11 +347,15 @@ pub struct BlockSeriesSplit {
 impl crate::Block {
     /// The Block as its occurrence `occ` reads (§Recurring blocks): its
     /// start and end are the occurrence's, and the exception's title,
-    /// location and notes stand over the series'. Every other field, the
-    /// series' rule and exceptions included, is the Block's.
+    /// location and notes stand over the series'. Its `tasks` are the ones
+    /// bound to that occurrence ([`crate::Block::tasks_at`]): those bound to
+    /// the whole block, and those bound to it alone. Every other field, the
+    /// series' rule, exceptions and occurrence bindings included, is the
+    /// Block's.
     #[must_use]
     pub fn at_occurrence(&self, occ: &BlockOccurrence) -> Self {
         let mut block = self.clone();
+        block.tasks = self.tasks_at(&occ.key);
         block.starts_at = occ.starts_at.clone();
         block.ends_at = occ.ends_at.clone();
         if let Some(x) = &occ.exception {

@@ -39,6 +39,7 @@ Block = {
     title?:       text<256>,                  ; defaults to the bound task's title
     title_track_task: bool,                   ; default false; recompute title from the one bound Task
     tasks:        [* entity-ref],             ; tsk_ refs bound to this Block; OR-set
+    occurrence_tasks?: [* [occurrence-key, entity-ref]], ; tsk_ refs bound to one occurrence; OR-set
     rrule?:       RRule,                      ; recurring blocks; see §Recurring blocks
     exceptions?:  { * occurrence-key => BlockException }, ; per-occurrence changes; map of registers
     split_from?:  entity-ref,                 ; blk_ ref of the series this one continues
@@ -184,7 +185,7 @@ expansion is the same Rust function:
   split block's id is derived from `(series root, split key)`, so two devices
   splitting at the same occurrence converge on one new block.
 - **Binding a task** to a recurring block binds it to one occurrence: the
-  binding carries the occurrence key.
+  binding carries the occurrence key, as an element of `occurrence_tasks`.
 
 What is built is the pure half, in `crates/sunrise-domain/src/block/series.rs`:
 
@@ -221,15 +222,54 @@ The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
   `split_block_id(series root, key)` as one group (ADR-0065 §6), and *all*
   edits the block. At the first occurrence *this and future* is *all*, and
   splitting again at a key edits the continuation already there.
-- The continuation a split writes takes no task bindings and no `source` or
-  `external_id`: a task stays bound to the block it was bound to, and a
-  re-import of the external item writes the original block only. Its title is
-  the one the series showed at the split, fixed (`title_track_task` off),
-  since it has no task whose title to track.
+- The continuation a split writes takes no whole-block task bindings and no
+  `source` or `external_id`: a task bound to the whole block stays bound to
+  the block it was bound to, and a re-import of the external item writes the
+  original block only. Its title is the one the series showed at the split,
+  fixed (`title_track_task` off), since it has no task whose title to track.
 
-A binding still names the whole block, not one occurrence
-([#1162](https://github.com/justin13888/Sunrise/issues/1162)), and drawing a
-series on macOS is [#1150](https://github.com/justin13888/Sunrise/issues/1150).
+The macOS calendar draws one chip per occurrence row, keyed by block id and
+occurrence key, and asks *this event*, *this and following events* or *all
+events* before a move, edit or delete of one, sending the matching scope; a
+block that does not recur asks nothing. *All events* moves the anchor by as
+much as the occurrence moved. A fixed block is drawn solid with a pin, a
+flexible one dashed. Merging an occurrence is refused, since the tombstone
+would take the whole series.
+
+A task is bound to one occurrence
+([#1162](https://github.com/justin13888/Sunrise/issues/1162)):
+
+- `Block.occurrence_tasks` is an OR-set of `[occurrence-key, task]` pairs
+  beside `tasks`, absent when empty. An op carrying it uses the feature
+  `block.occurrence_tasks` (`DOC_SCHEMA_V` 25): a build without it keeps the
+  pairs as an unknown field but would show the occurrence with no task.
+  `block_tasks` holds both sets, `occurrence_key` empty for a binding to the
+  whole block (migration 0051).
+- `BindTask` and `UnbindTask` take an optional occurrence key. A recurring
+  block requires one to bind; a key the series does not produce is not
+  found, a cancelled occurrence is not there to bind, and a key on a one-off
+  block is refused. Unbinding with no key removes a binding to the whole
+  block, which on a recurring block is one made before occurrence bindings;
+  it is refused for a task the block binds only to occurrences, which it
+  would leave bound. A client unbinding from an occurrence's row names the
+  row's key when the task is bound to that occurrence.
+- An occurrence's row lists the tasks bound to the whole block and those
+  bound to it (`Block::tasks_at`), and `Task.blocks` names the block once
+  however many of its occurrences the task is bound to.
+- A split *this and future* carries the bindings at or after the key to the
+  continuation and leaves the ones before; with no edit (a delete) they end
+  with the occurrences they named. An edit that moves the series' anchor,
+  of the whole block, of a continuation or by a re-import, moves each
+  binding's key by the same civil distance, so it keeps naming its
+  occurrence. A re-import otherwise keeps every occurrence binding.
+- The move re-keys only the bindings the moving device holds. A binding
+  another device makes concurrently keeps the key it named before the move,
+  which no occurrence of the moved series has: no row lists the task, though
+  `Task.blocks` still names the block. Two devices splitting one series at
+  the same key with different moves likewise each shift the moved bindings
+  by their own distance. Neither is repaired yet.
+- Binding to an occurrence lends the series no shadow title: the series'
+  title is every occurrence's.
 
 ### Importer status
 
@@ -314,8 +354,8 @@ what `source` and `external_id` serve. Not built; ranked on the roadmap
 ## Merge mapping
 
 Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
-per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
-OR-set; `exceptions` is a map of registers, one per occurrence key. A
+per-field LWW register on `(hlc, device_id, seq)`; `tasks` and `occurrence_tasks` are
+add/remove OR-sets; `exceptions` is a map of registers, one per occurrence key. A
 `core.field_ops` vault merges every field this way: an edit of one
 occurrence's exception writes that key alone, and dropping one writes a
 tombstone for it. A legacy vault

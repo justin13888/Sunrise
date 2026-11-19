@@ -317,6 +317,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// the same three regions, and the envelope grew by one byte: 24 is the first
 /// document-schema version whose CBOR head in field 12 takes two bytes (`18 18`).
 ///
+/// The 24 → 25 re-freeze (#1162, a task bound to one occurrence of a recurring
+/// block) moved the same three regions and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -334,10 +337,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584006",
-        "fff04cfa204c7babfd7efb8aecd2a4f1d34383747d836c7f36ede5bce3cf",
-        "f3792c1bb05f5bf96621de52f7de5dc0fdf267297a607d77113bbca5343e",
-        "b04b030c18180d4838b444fd794761d7",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58405a",
+        "e2910640195774dcb2307b737a15ff348cd29bc3dde7e607300078140238",
+        "d940e047820ee86902b15e0d541c34e5dd975d453feeae71938ff454bdee",
+        "6cf5000c18190d48c963f3ddbe7a950b",
     ));
 }
 
@@ -414,6 +417,10 @@ pub mod signed_only_envelope {
 /// the same four regions, and the envelope grew by one byte, field 12's value
 /// taking two (`18 18`); the ciphertext at `[94..117]` is again untouched.
 ///
+/// The 24 → 25 re-freeze (#1162, a task bound to one occurrence of a recurring
+/// block) moved the same four regions; the ciphertext at `[94..117]` is again
+/// untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -433,11 +440,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb84bfcea",
-        "f4d5ea08a5def6ce881ae861b70b584028b237eb94229fa0ee176df0dedc",
-        "c30fcbcd205af13e9fc890d704d6c69c2a9872b54ccea654ff413e0e33b2",
-        "905a3a8546bb6bfba98285d630774cd8c7935e060c18180d4838b444fd79",
-        "4761d7",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb852544f",
+        "75c916753d88d8e19140b02d050b584089d465ab285dd7e148fd100000b8",
+        "b96c938b9121662c34bd88f80aee94c181549c09d87c54982622002b3b10",
+        "6fe24ce386504f0ef127b97c5e4d5214244561050c18190d48c963f3ddbe",
+        "7a950b",
     ));
 }
 

@@ -506,7 +506,14 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
         Command::CreateBlock(block_draft(9, 1, Some("Desk"))),
     )
     .entity;
-    apply(&mut db, Command::BindTask { block, task });
+    apply(
+        &mut db,
+        Command::BindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    );
     apply(
         &mut db,
         Command::UpdateBlock {
@@ -518,7 +525,14 @@ fn no_full_state_op_is_emitted_once_field_ops_is_required() {
             },
         },
     );
-    apply(&mut db, Command::UnbindTask { block, task });
+    apply(
+        &mut db,
+        Command::UnbindTask {
+            block,
+            task,
+            occurrence: None,
+        },
+    );
     let second = apply(
         &mut db,
         Command::CreateBlock(block_draft(10, 1, Some("Desk"))),
@@ -839,6 +853,7 @@ fn every_command_writes_only_the_fields_it_changed() {
             |f| Command::BindTask {
                 block: f.block,
                 task: f.task,
+                occurrence: None,
             },
             |f| vec![(f.block, &["tasks"])],
         ),
@@ -850,12 +865,14 @@ fn every_command_writes_only_the_fields_it_changed() {
                     Command::BindTask {
                         block: f.block,
                         task: f.task,
+                        occurrence: None,
                     },
                 )
                 .unwrap();
                 Command::UnbindTask {
                     block: f.block,
                     task: f.task,
+                    occurrence: None,
                 }
             },
             |f| vec![(f.block, &["tasks"])],

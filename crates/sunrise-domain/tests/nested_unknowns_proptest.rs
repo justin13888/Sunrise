@@ -204,6 +204,10 @@ fn block() -> Block {
         notes: Some(sunrise_domain::NoteBody(b"n".to_vec())),
         source: Some(sunrise_domain::BlockSource::ImportIcs),
         external_id: Some("uid@example.com".into()),
+        occurrence_tasks: BTreeSet::from([sunrise_domain::OccurrenceBinding::new(
+            "2026-03-02T09:00",
+            eref(EntityKind::Task, 1),
+        )]),
         unknown: Unknowns::new(),
     }
 }

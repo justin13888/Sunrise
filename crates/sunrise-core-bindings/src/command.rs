@@ -164,19 +164,29 @@ pub enum CoreCommand {
         scope: Option<EditScopeIn>,
     },
     /// Bind a task to a block. `TaskItem::blocks` is derived from the binding,
-    /// so the symmetry needs no second command.
+    /// so the symmetry needs no second command. A recurring block binds the
+    /// task to one occurrence, so `occurrence_key` (a grid row's
+    /// `occurrence_key`) is required for one and refused for a one-off block.
     BindTask {
         /// Target block.
         block: EntityRef,
         /// Task to bind.
         task: EntityRef,
+        /// The occurrence of a recurring block to bind it to.
+        #[uniffi(default = None)]
+        occurrence_key: Option<String>,
     },
     /// Unbind a task from a block. The block survives with no tasks bound.
+    /// With `occurrence_key`, the task's binding to that occurrence of a
+    /// recurring block; without, its binding to the whole block.
     UnbindTask {
         /// Target block.
         block: EntityRef,
         /// Task to unbind.
         task: EntityRef,
+        /// The occurrence of a recurring block to unbind it from.
+        #[uniffi(default = None)]
+        occurrence_key: Option<String>,
     },
     /// Record an attachment against a task. The bytes are uploaded first,
     /// sealed under a key the client generated; this writes the metadata that
@@ -467,8 +477,24 @@ impl CoreCommand {
                 id,
                 scope: scope.map(Into::into).unwrap_or_default(),
             },
-            Self::BindTask { block, task } => Command::BindTask { block, task },
-            Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
+            Self::BindTask {
+                block,
+                task,
+                occurrence_key,
+            } => Command::BindTask {
+                block,
+                task,
+                occurrence: occurrence_key,
+            },
+            Self::UnbindTask {
+                block,
+                task,
+                occurrence_key,
+            } => Command::UnbindTask {
+                block,
+                task,
+                occurrence: occurrence_key,
+            },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },
             Self::RevokeDevice { device_id, reason } => Command::RevokeDevice {
                 device_id,

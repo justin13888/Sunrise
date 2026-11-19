@@ -175,7 +175,10 @@ pub(super) use versions::{heads, precedes};
 /// `10` projects a Block's `kind`, `rrule`, `exceptions`, `split_from`,
 /// `location`, `notes`, `source` and `external_id` into their columns
 /// (migration 0049, #1147), where a build before it kept them in `extra`.
-pub(crate) const FOLD_V: u32 = 10;
+/// `11` projects a Block's `occurrence_tasks` into `block_tasks`, each with
+/// its `occurrence_key` (migration 0050, #1162), where a build before it
+/// kept them in `extra`.
+pub(crate) const FOLD_V: u32 = 11;
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

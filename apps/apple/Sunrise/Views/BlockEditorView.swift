@@ -85,6 +85,7 @@ struct BlockEditorView: View {
     @State private var endsAt: Date
     @State private var trackTask: Bool
     @State private var kind: BlockTimeKind
+    @State private var pendingReach: PendingBlockReach?
 
     /// What the fields were seeded with, so an edit can carry only what moved.
     private let original: Seeded
@@ -149,7 +150,7 @@ struct BlockEditorView: View {
                             Text(name)
                             Spacer()
                             Button(L10n.BlockEditor.unbind, systemImage: "minus.circle") {
-                                Task { await model.unbind(task: task, from: row.block.id) }
+                                Task { await model.unbind(task: task, from: row) }
                             }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.plain)
@@ -167,9 +168,11 @@ struct BlockEditorView: View {
             }
             ToolbarItem(placement: .destructiveAction) {
                 Button(L10n.Action.delete, role: .destructive) {
-                    Task {
-                        await model.delete(row.block.id)
-                        dismiss()
+                    reaching(.delete) { reach in
+                        Task {
+                            await model.delete(row, reach: reach)
+                            dismiss()
+                        }
                     }
                 }
                 .disabledUnlessEditable(.block)
@@ -177,9 +180,14 @@ struct BlockEditorView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button(L10n.Action.save) {
-                    Task {
-                        await model.apply(edit, to: row.block.id)
-                        dismiss()
+                    // Read when Save is pressed, not when the question is
+                    // answered: the edit is what the form held then.
+                    let changes = edit
+                    reaching(.edit) { reach in
+                        Task {
+                            await model.apply(changes, to: row, reach: reach)
+                            dismiss()
+                        }
                     }
                 }
                 .disabled(endsAt <= startsAt)
@@ -190,6 +198,17 @@ struct BlockEditorView: View {
         }
         .padding(.bottom, 8)
         .sheetCommitBar(title: L10n.BlockEditor.editBlock)
+        .askingBlockReach($pendingReach)
+    }
+
+    /// Make `change` now for a block that does not recur, or once the person
+    /// has said how far a change to this event of a repeating block reaches.
+    private func reaching(_ action: BlockReachAction, _ change: @escaping (BlockEditReach?) -> Void) {
+        guard row.recurs else {
+            change(nil)
+            return
+        }
+        pendingReach = PendingBlockReach(action: action) { change($0) }
     }
 
     /// Only what changed.
@@ -282,7 +301,7 @@ struct AdjustBlocksView: View {
                 .foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 16) {
                 ForEach([conflict.a, conflict.b], id: \.self) { id in
-                    if let row = model.row(id) {
+                    if let row = model.row(id, in: conflict) {
                         AdjustableBlock(model: model, row: row)
                     }
                 }
@@ -317,6 +336,7 @@ private struct AdjustableBlock: View {
 
     @State private var startsAt: Date
     @State private var endsAt: Date
+    @State private var pendingReach: PendingBlockReach?
 
     init(model: CalendarModel, row: BlockGridRow) {
         self.model = model
@@ -340,24 +360,27 @@ private struct AdjustableBlock: View {
             DatePicker(L10n.BlockEditor.starts, selection: $startsAt)
             DatePicker(L10n.BlockEditor.ends, selection: $endsAt)
             Button(L10n.BlockEditor.apply) {
-                Task {
-                    await model.moveBlock(
-                        row,
-                        toStartMs: Int64(startsAt.timeIntervalSince1970 * 1000),
-                        toEndMs: Int64(endsAt.timeIntervalSince1970 * 1000)
-                    )
+                let from = Int64(startsAt.timeIntervalSince1970 * 1000)
+                let to = Int64(endsAt.timeIntervalSince1970 * 1000)
+                guard row.recurs else {
+                    Task { await model.moveBlock(row, toStartMs: from, toEndMs: to) }
+                    return
+                }
+                pendingReach = PendingBlockReach(action: .move) { reach in
+                    Task { await model.moveBlock(row, toStartMs: from, toEndMs: to, reach: reach) }
                 }
             }
             .disabled(endsAt <= startsAt)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .askingBlockReach($pendingReach)
     }
 }
 
 // The generated bindings are compiled into this module, so these conformances
 // are ours to add and need no `@retroactive`.
 extension BlockGridRow: Identifiable {
-    public var id: EntityRef { block.id }
+    public var id: String { gridKey }
 }
 
 extension BlockConflict: Identifiable {
