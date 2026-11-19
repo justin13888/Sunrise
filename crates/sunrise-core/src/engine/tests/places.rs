@@ -300,6 +300,65 @@ fn a_place_syncs_and_concurrent_edits_of_different_fields_both_survive() {
     p.eb.assert_rebuild_identity(&p.dbb);
 }
 
+/// Two renames of one place made apart are a tracked conflict on `name`,
+/// the same on both devices, and resolving it on one settles the value on
+/// both and clears the conflict everywhere.
+#[test]
+fn concurrent_renames_of_a_place_are_a_conflict_that_resolves() {
+    let mut p = pair();
+    let id = create(&p.ea, &mut p.dba, "Gym");
+    sync(&mut p);
+    *p.ca.0.lock() = T0 + 1_000;
+    *p.cb.0.lock() = T0 + 1_000;
+    for (e, db, name) in [(&p.ea, &mut p.dba, "Pool"), (&p.eb, &mut p.dbb, "Track")] {
+        update(
+            e,
+            db,
+            id,
+            PlacePatch {
+                name: Some(name.into()),
+                ..PlacePatch::default()
+            },
+        );
+    }
+    sync(&mut p);
+    let conflicts = |e: &Engine, db: &Db| match e
+        .query(
+            db,
+            Query::Conflicts {
+                entity: Some(id),
+                include_quiet: false,
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Conflicts(c) => c,
+        other => panic!("{other:?}"),
+    };
+    let on_a = conflicts(&p.ea, &p.dba);
+    assert_eq!(on_a.len(), 1, "{on_a:?}");
+    assert_eq!(on_a[0].field, "name");
+    assert_eq!(on_a, conflicts(&p.eb, &p.dbb), "one conflict on both");
+    p.ea.apply(
+        &mut p.dba,
+        Command::ResolveConflict {
+            entity: id,
+            field: "name".into(),
+            value: sunrise_domain::CborValue(ciborium::value::Value::Text("Gym and pool".into())),
+        },
+    )
+    .unwrap();
+    sync(&mut p);
+    assert!(conflicts(&p.ea, &p.dba).is_empty());
+    assert!(conflicts(&p.eb, &p.dbb).is_empty());
+    let a = places(&p.ea, &p.dba);
+    assert_eq!(a, places(&p.eb, &p.dbb), "one place on both");
+    assert_eq!(a[0].name, "Gym and pool");
+    assert_eq!(a[0].radius_m, 150, "the other fields untouched");
+    p.ea.assert_rebuild_identity(&p.dba);
+    p.eb.assert_rebuild_identity(&p.dbb);
+}
+
 /// A place requirement never rejects a write, at any severity, and a
 /// deleted place stays named on the task that names it.
 #[test]
