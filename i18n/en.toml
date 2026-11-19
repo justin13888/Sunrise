@@ -436,6 +436,38 @@ opening = "Opening your vault…"
 # Heading when the app could not start; the reason is shown under it.
 failed_title = "Sunrise could not start"
 
+[apple.vault_open]
+# The screen shown when the vault exists and would not open, with the ways
+# out the app offers. Heading.
+title = "Sunrise could not open your vault"
+# Under the heading, one per reason. Each must keep what it says about the
+# vault being unchanged where it says so.
+damaged = "Your vault failed its integrity check, so Sunrise opened nothing and changed nothing."
+backup_failed = "Sunrise could not write the copy it keeps before it changes your vault, so it changed nothing. Free some disk space, then try again."
+migration_failed = "Updating your vault to this version of Sunrise failed and was undone. The vault is as it was."
+too_new = "A newer version of Sunrise wrote this vault."
+too_old = "This vault is older than any version of Sunrise that can still update it."
+busy = "Another copy of Sunrise has this vault open. Close it, then try again."
+# Shown when the only way out is to report it.
+fatal = "Nothing on this screen can mend it. Copy the diagnostics and report it."
+# Buttons and the caption under each. Captions must keep that nothing is
+# deleted: a copy is taken, or the vault is moved aside.
+repair = "Repair from its history"
+repair_caption = "Rebuilds the vault from its own record of changes. A copy of the vault as it is now is kept beside it first."
+restore = "Restore the newest copy"
+restore_caption = "Puts back the copy Sunrise kept beside the vault, losing what was written after it. The vault it replaces is moved aside, not deleted."
+recover = "Restore from recovery code…"
+recover_caption = "Restores your account from the relay into a new vault. This vault is moved aside, not deleted."
+update = "Install a newer version of Sunrise, which opens it."
+diagnostics = "Copy diagnostics"
+diagnostics_caption = "Copies the error and the versions of Sunrise and its core, to paste into a report. None of your tasks or keys are in it."
+diagnostics_copied = "Copied."
+# A remedy did not work. {remedy} is the button's title; {reason} is the
+# error's own explanation. Must keep that the other choices still stand.
+remedy_failed = "{remedy} did not work: {reason} The other choices below still stand."
+# The copy the screen offered to restore has gone.
+no_copy = "There is no copy beside the vault any more."
+
 [apple.recovery]
 # Recovery-code sheet titles, one per step.
 title_setting_up = "Setting up recovery"

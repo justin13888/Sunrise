@@ -103,8 +103,9 @@ actor CoreBridge {
     /// Here, where every bridge is made, rather than in a view: an iOS
     /// background launch syncs with no scene on screen, and a bridge never
     /// told would drain as `Unmetered` on cellular or Low Data Mode
-    /// (ADR-0053 §6).
-    private static func made(_ core: SunriseCore) async -> CoreBridge {
+    /// (ADR-0053 §6). Internal for `CoreBridge+Repair.swift`, which makes one
+    /// too.
+    static func made(_ core: SunriseCore) async -> CoreBridge {
         let bridge = CoreBridge(core: core)
         await NetworkClassMonitor.shared.report(to: bridge)
         return bridge

@@ -84,6 +84,8 @@ final class SessionModel {
     @ObservationIgnored let renewal = SessionRenewal()
     /// The recovery-code restore on screen, if any (#349).
     let restoration = SessionRestoration()
+    /// The ways out of a vault that would not open, if one did not (#1115).
+    let openFailure = SessionOpenFailure()
 
     /// Both `var`: switching vaults replaces them together, and replacing only
     /// one would file a vault's key under another vault's name. Readable from
@@ -95,7 +97,7 @@ final class SessionModel {
     /// next vault's signing key does not open.
     private(set) var relayDeviceStore: any RelayDeviceIDStore
     let appVersion: String
-    private let openBridge: @Sendable (URL, Data, String, Data?) async throws -> CoreBridge
+    let openBridge: @Sendable (URL, Data, String, Data?) async throws -> CoreBridge
     private let resolve: @Sendable (VaultDescriptor) throws -> VaultBinding
     /// Set when the app could not even work out where its vault goes. Checked
     /// first by `start`, so retrying reports the real cause rather than
@@ -285,23 +287,6 @@ final class SessionModel {
         }
     }
 
-    /// Whether this process presents the ceremony at all.
-    ///
-    /// `true` everywhere except a UI test that did not ask for it. The
-    /// ceremony is a sheet over the whole window and every UI test in both
-    /// suites begins by creating a vault, so leaving it on covered the app
-    /// before the first assertion and failed twelve tests across five suites
-    /// at once — the whole iOS suite, since macOS runs no `XCUITest` in CI and
-    /// could not see it. `SunriseiOSUITests/RecoveryCeremonyUITests` is the one
-    /// that opts back in, so the ceremony is covered rather than hidden.
-    static var presentsRecoveryCeremony: Bool {
-        #if DEBUG
-        return UITestHarness.presentsRecoveryCeremony()
-        #else
-        return true
-        #endif
-    }
-
     /// The recovery ceremony a freshly created vault owes its user, or `nil`
     /// when there is nothing outstanding.
     ///
@@ -445,6 +430,7 @@ final class SessionModel {
         do {
             binding = try resolve(descriptor)
         } catch {
+            openFailure.model = nil
             phase = .failed(error.localizedDescription)
             return
         }
@@ -478,18 +464,28 @@ final class SessionModel {
     }
 
     /// Open ``location`` under `root`. Internal for `SessionModelRestore.swift`.
+    /// A vault that will not open lands on `.failed` with its remedies.
     func open(with root: Data, bundle: Data? = nil) async {
         do {
-            let opened = try await openBridge(location.directory, root, appVersion, bundle)
-            // Asked once, here, because it cannot be asked from a view body:
-            // `CoreBridge` is an actor and `canSponsorPairing` is a fact about
-            // the vault that does not move while it is open.
-            canSponsorPairing = await opened.canSponsorPairing()
-            bridge = opened
-            phase = .unlocked
+            try await reopen { try await openBridge(location.directory, root, appVersion, bundle) }
         } catch {
             phase = .failed(error.localizedDescription)
+            openFailure.model = makeRepairModel(for: error, root: root, bundle: bundle)
         }
+    }
+
+    /// Open through `opening` and take the vault it opened, or throw what it
+    /// threw with the phase as it was. Internal for `VaultRepairModel.swift`,
+    /// whose remedies report their own failure on the screen they ran from.
+    func reopen(_ opening: () async throws -> CoreBridge) async throws {
+        let opened = try await opening()
+        // Asked once, here, because it cannot be asked from a view body:
+        // `CoreBridge` is an actor and `canSponsorPairing` is a fact about
+        // the vault that does not move while it is open.
+        canSponsorPairing = await opened.canSponsorPairing()
+        bridge = opened
+        openFailure.model = nil
+        phase = .unlocked
     }
 
     /// Close the vault, releasing the core's lock on it.

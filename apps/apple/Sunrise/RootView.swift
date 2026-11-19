@@ -58,11 +58,18 @@ struct RootView: View {
                         }
                 }
             case let .failed(message):
-                ContentUnavailableView(
-                    L10n.Root.failedTitle,
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(message)
-                )
+                // A vault that would not open for a reason the core names
+                // gets its remedies (#1115); anything else is a failure
+                // nothing on screen can mend.
+                if let repair = session.openFailure.model {
+                    VaultOpenFailureView(model: repair)
+                } else {
+                    ContentUnavailableView(
+                        L10n.Root.failedTitle,
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(message)
+                    )
+                }
             }
         }
         .task { await session.start() }

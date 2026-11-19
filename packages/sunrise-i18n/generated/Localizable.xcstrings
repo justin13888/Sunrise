@@ -12181,6 +12181,226 @@
         }
       }
     },
+    "apple.vault_open.backup_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunrise could not write the copy it keeps before it changes your vault, so it changed nothing. Free some disk space, then try again."
+          }
+        }
+      }
+    },
+    "apple.vault_open.busy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another copy of Sunrise has this vault open. Close it, then try again."
+          }
+        }
+      }
+    },
+    "apple.vault_open.damaged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your vault failed its integrity check, so Sunrise opened nothing and changed nothing."
+          }
+        }
+      }
+    },
+    "apple.vault_open.diagnostics": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy diagnostics"
+          }
+        }
+      }
+    },
+    "apple.vault_open.diagnostics_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copies the error and the versions of Sunrise and its core, to paste into a report. None of your tasks or keys are in it."
+          }
+        }
+      }
+    },
+    "apple.vault_open.diagnostics_copied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied."
+          }
+        }
+      }
+    },
+    "apple.vault_open.fatal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing on this screen can mend it. Copy the diagnostics and report it."
+          }
+        }
+      }
+    },
+    "apple.vault_open.migration_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updating your vault to this version of Sunrise failed and was undone. The vault is as it was."
+          }
+        }
+      }
+    },
+    "apple.vault_open.no_copy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no copy beside the vault any more."
+          }
+        }
+      }
+    },
+    "apple.vault_open.recover": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore from recovery code…"
+          }
+        }
+      }
+    },
+    "apple.vault_open.recover_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restores your account from the relay into a new vault. This vault is moved aside, not deleted."
+          }
+        }
+      }
+    },
+    "apple.vault_open.remedy_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ did not work: %2$@ The other choices below still stand."
+          }
+        }
+      }
+    },
+    "apple.vault_open.repair": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair from its history"
+          }
+        }
+      }
+    },
+    "apple.vault_open.repair_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuilds the vault from its own record of changes. A copy of the vault as it is now is kept beside it first."
+          }
+        }
+      }
+    },
+    "apple.vault_open.restore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore the newest copy"
+          }
+        }
+      }
+    },
+    "apple.vault_open.restore_caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puts back the copy Sunrise kept beside the vault, losing what was written after it. The vault it replaces is moved aside, not deleted."
+          }
+        }
+      }
+    },
+    "apple.vault_open.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunrise could not open your vault"
+          }
+        }
+      }
+    },
+    "apple.vault_open.too_new": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A newer version of Sunrise wrote this vault."
+          }
+        }
+      }
+    },
+    "apple.vault_open.too_old": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This vault is older than any version of Sunrise that can still update it."
+          }
+        }
+      }
+    },
+    "apple.vault_open.update": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install a newer version of Sunrise, which opens it."
+          }
+        }
+      }
+    },
     "apple.vaults.add_device": {
       "extractionState": "manual",
       "localizations": {

@@ -260,7 +260,7 @@ struct SessionRestoreTests {
             atPath: directory.deletingLastPathComponent().path(percentEncoded: false)
         )
         #expect(
-            !siblings.contains { $0.hasPrefix("\(directory.lastPathComponent).unreadable-") },
+            !siblings.contains { $0.hasPrefix("\(directory.lastPathComponent).set-aside-") },
             "nothing is stranded beside the vault"
         )
     }
