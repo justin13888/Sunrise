@@ -50,8 +50,18 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 >   from the diff's `committable`. `PlanError::code` answers a registered
 >   `ErrorCode` for every variant: `PLAN_NOT_COMMITTABLE`, `PLAN_INVALID`,
 >   `PLAN_CLOSED` and `PLAN_FAILED` besides `PLAN_STALE` and `PLAN_UNKNOWN`.
-> - `plan_undo` and the stored inverse are [#1158](https://github.com/justin13888/Sunrise/issues/1158);
->   `plan_commit` returns only how many items it moved.
+> - `plan_commit` stores the inverse in `planner_commits` and
+>   `planner_commit_fields` (migration 0050), and only for each field whose
+>   register its write changed. `Core::plan_undo` and its UniFFI binding are
+>   built ([#1158](https://github.com/justin13888/Sunrise/issues/1158)).
+>   The newest 64 commits keep their inverse (`PLAN_UNDO_HISTORY`), and an
+>   undone commit is forgotten, so a second undo is `PLAN_UNKNOWN`.
+>   `PlanUndoSkip::field` is a `PlanField` (`PlannedAt`, `StartsAt`,
+>   `EndsAt`), and `restored` counts fields. An item deleted since the commit,
+>   or one its restored fields would leave invalid, is skipped whole. In a
+>   vault an older device shares, every write is a full-state op that writes
+>   every field, so an edit of any field of an item since the commit skips
+>   its undo.
 
 ## Principles
 

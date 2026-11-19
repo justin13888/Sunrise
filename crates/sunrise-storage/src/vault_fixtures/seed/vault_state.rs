@@ -12,6 +12,8 @@ use super::{SeedRow, BLOB_ID, HLC_MS};
 
 const GROUP_ID: [u8; 16] = [0x2b; 16];
 
+const PLAN_COMMIT_ID: [u8; 16] = [0x3c; 16];
+
 /// CBOR `[[h'01' * 16, h'02' * 16, 7]]`: a version's one parent op-ref.
 const VERSION_PARENTS: [u8; 37] = {
     let mut b = [0u8; 37];
@@ -198,6 +200,34 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("language", T(b"en-CA")),
             ("reindex_stemmed", I(0)),
             ("reindex_cursor", I(291)),
+        ],
+    },
+    // One planner commit (0050), a deferral of the seed task off a floating
+    // plan, with the stamp its write left.
+    SeedRow {
+        table: "planner_commits",
+        values: &[
+            ("n", I(1)),
+            ("commit_id", B(&PLAN_COMMIT_ID)),
+            ("committed_ms", I(HLC_MS + 60)),
+        ],
+    },
+    SeedRow {
+        table: "planner_commit_fields",
+        values: &[
+            ("commit_id", B(&PLAN_COMMIT_ID)),
+            ("entity_id", B(&TASK_IN_ALPHA)),
+            ("field", T(b"scheduled_at")),
+            ("prior_ms", I(HLC_MS + 61)),
+            ("prior_kind", T(b"floating")),
+            ("prior_tz", T(b"America/Toronto")),
+            ("prior_civil", T(b"2023-11-14T22:13:20")),
+            ("hlc_ms", I(HLC_MS + 62)),
+            ("hlc_logical", I(292)),
+            ("device", B(&DEVICE_LAPTOP)),
+            ("seq", I(293)),
+            ("stream", B(&STREAM_ALPHA)),
+            ("undefer", I(1)),
         ],
     },
 ];

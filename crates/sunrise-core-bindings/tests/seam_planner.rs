@@ -1,8 +1,9 @@
 //! The planner across the seam (#343): a client sends a gesture, renders the
-//! diff, and commits it by id. `flavor = "multi_thread"` for the reason
-//! `seam.rs` gives.
+//! diff, commits it by id, and undoes the commit per field (#1158).
+//! `flavor = "multi_thread"` for the reason `seam.rs` gives.
 
-use sunrise_core_bindings::dto::{BlockDraftIn, TimeValue};
+use sunrise_core::PlanField;
+use sunrise_core_bindings::dto::{BlockDraftIn, TaskEdit, TimeValue};
 use sunrise_core_bindings::planner::{PlanIntentItem, PlanPositionItem};
 use sunrise_core_bindings::{BindingError, CoreCommand};
 use sunrise_domain::planner::MoveRole;
@@ -63,9 +64,32 @@ async fn a_drag_previews_a_ripple_and_commits_it_once() {
         }
     ));
 
-    assert_eq!(core.plan_commit(diff.id.clone()).expect("commit").moved, 2);
+    let commit = core.plan_commit(diff.id.clone()).expect("commit");
+    assert_eq!(commit.moved, 2);
+    assert_eq!(commit.commit_id.len(), 32);
     assert!(matches!(
         core.plan_commit(diff.id),
+        Err(BindingError::PlanUnknown)
+    ));
+
+    // The task is moved again by hand: its undo is skipped and reported,
+    // and the block's two fields are restored.
+    core.submit(CoreCommand::UpdateTask {
+        id: task,
+        edit: TaskEdit {
+            set_scheduled_at: Some(at(15)),
+            ..TaskEdit::default()
+        },
+    })
+    .await
+    .expect("edit");
+    let undone = core.plan_undo(commit.commit_id.clone()).expect("undo");
+    assert_eq!(undone.restored, 2);
+    assert_eq!(undone.skipped.len(), 1);
+    assert_eq!(undone.skipped[0].item, task);
+    assert!(matches!(undone.skipped[0].field, PlanField::PlannedAt));
+    assert!(matches!(
+        core.plan_undo(commit.commit_id),
         Err(BindingError::PlanUnknown)
     ));
 }

@@ -1672,7 +1672,7 @@ mod published;
 mod repair;
 mod snapshot;
 
-pub use planner::{PlanCommitResult, PLAN_CACHE_SIZE};
+pub use planner::{PlanCommitResult, PlanUndoResult, PLAN_CACHE_SIZE};
 pub(crate) use repair::OpenMode;
 
 #[cfg(test)]

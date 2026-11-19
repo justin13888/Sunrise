@@ -430,3 +430,16 @@ fn a_v48_vaults_blocks_gain_no_kind_series_or_import_fields_after_0049() {
         .unwrap();
     assert_eq!(unset, blocks, "no block starts with one of the fields");
 }
+
+/// Migration 0050 (#1158) over a real v49 vault: the planner's commit tables
+/// arrive empty, since no build before it committed a plan it kept, and the
+/// vault's blocks and tasks are left as they were.
+#[test]
+fn a_v49_vault_gains_empty_planner_commit_tables_after_0050() {
+    let (_dir, db) = open_migrated(&fixture_name(49));
+    assert!(row_count(&db, "tasks") > 0, "the fixture's tasks survive");
+    assert!(row_count(&db, "blocks") > 0, "the fixture's blocks survive");
+    for table in ["planner_commits", "planner_commit_fields"] {
+        assert_eq!(row_count(&db, table), 0, "`{table}` starts empty");
+    }
+}

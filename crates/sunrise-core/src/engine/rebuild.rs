@@ -203,6 +203,9 @@ pub(super) const TABLE_CLASSES: &[(&str, TableClass)] = {
         ("blob_fetches", Source),
         ("blob_cache", Source),
         ("blob_cache_backfill", Source),
+        // The inverse of each planner commit, which `plan_undo` reads.
+        ("planner_commits", Source),
+        ("planner_commit_fields", Source),
         // How the full-text indexes were built: their tokenizer, which a
         // rebuild keeps, and any re-index under way, which it abandons.
         ("search_meta", Source),
