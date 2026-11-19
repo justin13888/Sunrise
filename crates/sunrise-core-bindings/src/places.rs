@@ -328,4 +328,56 @@ mod tests {
         );
         assert_eq!(PlaceStatus::from(PlaceEval::Unknown), PlaceStatus::Unknown);
     }
+
+    #[test]
+    fn a_draft_defaults_its_radius_and_an_edit_clears_the_label_only_when_asked() {
+        let d = PlaceDraft::from(PlaceDraftIn {
+            name: "Gym".into(),
+            lat_e7: 1,
+            lon_e7: 2,
+            radius_m: None,
+            address_label: None,
+        });
+        assert_eq!(d.radius_m, sunrise_domain::place::DEFAULT_RADIUS_M);
+        let clear = PlacePatch::from(PlaceEdit {
+            clear_address_label: true,
+            ..PlaceEdit::default()
+        });
+        assert_eq!(clear.address_label, Some(None));
+        let set = PlacePatch::from(PlaceEdit {
+            address_label: Some("x".into()),
+            clear_address_label: true,
+            ..PlaceEdit::default()
+        });
+        assert_eq!(set.address_label, Some(Some("x".into())));
+        assert!(PlacePatch::from(PlaceEdit::default()).is_empty());
+    }
+
+    #[test]
+    fn a_place_crosses_the_seam_field_for_field() {
+        let p = Place {
+            id: EntityRef::new(sunrise_id::EntityKind::Place, [7; 16]),
+            created_at: jiff::Timestamp::UNIX_EPOCH,
+            updated_at: jiff::Timestamp::UNIX_EPOCH,
+            name: "Gym".into(),
+            lat_e7: -3,
+            lon_e7: 4,
+            radius_m: 200,
+            address_label: Some("a".into()),
+            deleted: true,
+            unknown: sunrise_domain::Unknowns::new(),
+        };
+        let item = PlaceItem::from(&p);
+        assert_eq!(
+            (
+                item.id,
+                item.lat_e7,
+                item.lon_e7,
+                item.radius_m,
+                item.deleted
+            ),
+            (p.id, -3, 4, 200, true)
+        );
+        assert_eq!(item.address_label.as_deref(), Some("a"));
+    }
 }

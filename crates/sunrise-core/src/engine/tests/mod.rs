@@ -130,6 +130,7 @@ mod groups;
 mod task_order;
 
 /// Saved views, a synced entity written only by `Patch` (#341).
+mod places;
 mod saved_views;
 
 /// The account's key bundle: what a replica publishes and absorbing one
