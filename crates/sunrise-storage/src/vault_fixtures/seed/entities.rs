@@ -290,7 +290,12 @@ pub(super) const ROWS: &[SeedRow] = &[
     },
     SeedRow {
         table: "block_tasks",
-        values: &[("block_id", B(&BLOCK)), ("task_id", B(&TASK_IN_ALPHA))],
+        values: &[
+            ("block_id", B(&BLOCK)),
+            ("task_id", B(&TASK_IN_ALPHA)),
+            // The recurring block's binding names one of its occurrences.
+            ("occurrence_key", T(b"2023-11-15T22:35")),
+        ],
     },
     // A block in the Inbox sentinel and its binding, as for the task above.
     SeedRow {

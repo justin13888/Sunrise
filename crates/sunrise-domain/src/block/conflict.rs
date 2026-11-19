@@ -216,6 +216,7 @@ mod tests {
             title: Some(format!("Block {n}")),
             title_track_task: false,
             tasks: BTreeSet::new(),
+            occurrence_tasks: BTreeSet::new(),
             deleted: false,
             kind: None,
             rrule: None,

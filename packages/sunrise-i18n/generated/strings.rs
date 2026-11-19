@@ -1847,12 +1847,12 @@ pub mod blocks {
     }
 
     /// ```text
-    /// usage: block bind|unbind <block-id> <task-id>...
+    /// usage: block bind|unbind <block-id> <task-id>... [--occurrence YYYY-MM-DDTHH:MM]
     /// ```
     #[must_use]
     pub fn bind_usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: block bind|unbind <block-id> <task-id>...");
+        out.push_str("usage: block bind|unbind <block-id> <task-id>... [--occurrence YYYY-MM-DDTHH:MM]");
         out
     }
 

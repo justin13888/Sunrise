@@ -77,7 +77,7 @@ pub use attachment::{
 pub use block::{
     expand_block, merge_blocks, overlaps, split_block_id, Block, BlockDraft, BlockException,
     BlockKind, BlockOccurrence, BlockOverlap, BlockPatch, BlockSeries, BlockSeriesError,
-    BlockSeriesSplit, BlockSource,
+    BlockSeriesSplit, BlockSource, OccurrenceBinding,
 };
 pub use capture::{resolve_named, NameKind, NamedRef};
 pub use common::{Energy, NoteBody};

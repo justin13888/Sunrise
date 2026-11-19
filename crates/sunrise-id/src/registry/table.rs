@@ -213,7 +213,7 @@ macro_rules! for_each_entity {
                 tag: "block",
                 merge: Lww,
                 owner: Field("stream_id"),
-                features: ["block.recurrence"],
+                features: ["block.recurrence", "block.occurrence_tasks"],
                 ops: [
                     /// Create a time block (full state). Boxed to keep the enum small.
                     BlockCreate(Box<Block>) = "block.create", Create, id;
@@ -245,6 +245,8 @@ macro_rules! for_each_entity {
                         notes: Option<NoteBody> => Register(Tracked);
                         source: Option<BlockSource> => Register(Quiet);
                         external_id: Option<String> => Register(Quiet);
+                        // #1162: a task bound to one occurrence.
+                        occurrence_tasks: BTreeSet<OccurrenceBinding> => OrSet;
                         ..unknown
                     }
                 ],

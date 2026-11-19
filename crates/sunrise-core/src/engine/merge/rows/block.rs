@@ -99,8 +99,12 @@ pub(in crate::engine::merge) fn upsert_block_row(
     index_block(tx, b)
 }
 
-/// Replace a Block's bindings with the op's set. Full-state, like every other
-/// entity op: the set on the winning op is the set.
+/// Replace a Block's bindings with the op's sets. Full-state, like every other
+/// entity op: the sets on the winning op are the sets.
+///
+/// A binding to the whole block (`tasks`) is stored with the empty
+/// `occurrence_key`, and a binding to one occurrence (`occurrence_tasks`)
+/// with its key (migration 0050, #1162).
 pub(in crate::engine::merge) fn replace_block_tasks(
     tx: &Transaction<'_>,
     b: &Block,
@@ -109,10 +113,13 @@ pub(in crate::engine::merge) fn replace_block_tasks(
         "DELETE FROM block_tasks WHERE block_id = ?",
         params![&b.id.bytes()[..]],
     )?;
-    for t in &b.tasks {
+    let whole = b.tasks.iter().map(|t| ("", *t));
+    let occurrences = b.occurrence_tasks.iter().map(|o| (o.key(), o.task()));
+    for (key, t) in whole.chain(occurrences) {
         tx.execute(
-            "INSERT OR IGNORE INTO block_tasks (block_id, task_id) VALUES (?, ?)",
-            params![&b.id.bytes()[..], &t.bytes()[..]],
+            "INSERT OR IGNORE INTO block_tasks (block_id, task_id, occurrence_key)
+             VALUES (?, ?, ?)",
+            params![&b.id.bytes()[..], &t.bytes()[..], key],
         )?;
     }
     Ok(())

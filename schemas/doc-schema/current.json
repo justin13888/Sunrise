@@ -163,7 +163,7 @@
             "tag": "attachment"
         },
         {
-            "features": ["block.recurrence"],
+            "features": ["block.occurrence_tasks", "block.recurrence"],
             "merge": "lww",
             "ops": [
                 {
@@ -248,6 +248,12 @@
                             "crdt": "register",
                             "name": "notes",
                             "type": "Option<NoteBody>"
+                        },
+                        {
+                            "conflict": "merge",
+                            "crdt": "or_set",
+                            "name": "occurrence_tasks",
+                            "type": "BTreeSet<OccurrenceBinding>"
                         },
                         {
                             "conflict": "tracked",
@@ -1571,6 +1577,17 @@
         },
         {
             "field_op_kinds": [],
+            "fields": ["occurrence_tasks"],
+            "id": "block.occurrence_tasks",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "block"
+            },
+            "since": 25
+        },
+        {
+            "field_op_kinds": [],
             "fields": ["exceptions", "rrule", "split_from"],
             "id": "block.recurrence",
             "op_kinds": [],
@@ -2017,6 +2034,11 @@
             "name": "NoteBody",
             "shape": "alias",
             "type": "Vec<u8>"
+        },
+        {
+            "items": ["String", "EntityRef"],
+            "name": "OccurrenceBinding",
+            "shape": "tuple"
         },
         {
             "items": ["[u8;16]", "[u8;16]", "u64"],

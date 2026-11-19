@@ -150,7 +150,7 @@ struct BlockEditorView: View {
                             Text(name)
                             Spacer()
                             Button(L10n.BlockEditor.unbind, systemImage: "minus.circle") {
-                                Task { await model.unbind(task: task, from: row.block.id) }
+                                Task { await model.unbind(task: task, from: row) }
                             }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.plain)

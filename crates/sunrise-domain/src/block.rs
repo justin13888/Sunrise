@@ -1,7 +1,9 @@
 //! Block (time-block) entity per `docs/02-domain/time-blocks.md`.
 //!
 //! A Block is a scheduled time range that may bind to 0..N Tasks, through its
-//! `tasks` OR-set. A Task's `blocks` is derived from those sets on read.
+//! `tasks` OR-set, and a recurring Block binds a Task to one occurrence
+//! through its `occurrence_tasks` OR-set. A Task's `blocks` is derived from
+//! those sets on read.
 //!
 //! # Title
 //!
@@ -22,9 +24,11 @@
 //! default rule; [`Block::series`] is the series a block with an `rrule`
 //! holds, which [`expand_block`] expands.
 
+mod binding;
 mod conflict;
 mod series;
 
+pub use binding::OccurrenceBinding;
 pub use conflict::{merge_blocks, overlaps, BlockOverlap};
 pub use series::{
     expand_block, split_block_id, BlockException, BlockOccurrence, BlockSeries, BlockSeriesError,
@@ -118,9 +122,16 @@ pub struct Block {
     /// when the Block binds two or more Tasks.
     #[serde(default)]
     pub title_track_task: bool,
-    /// Tasks bound to this Block (OR-Set).
+    /// Tasks bound to this Block (OR-Set). On a recurring block a Task is
+    /// bound to one occurrence, in [`Self::occurrence_tasks`]; one here is
+    /// bound to every occurrence, as a binding made before occurrence
+    /// bindings existed is.
     #[serde(default)]
     pub tasks: BTreeSet<EntityRef>,
+    /// Tasks bound to one occurrence of a recurring block (OR-Set), each
+    /// with its occurrence key. Absent when empty.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub occurrence_tasks: BTreeSet<OccurrenceBinding>,
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
@@ -385,6 +396,7 @@ mod tests {
             title: Some("Deep work".into()),
             title_track_task: false,
             tasks: BTreeSet::new(),
+            occurrence_tasks: BTreeSet::new(),
             deleted: false,
             kind: None,
             rrule: None,

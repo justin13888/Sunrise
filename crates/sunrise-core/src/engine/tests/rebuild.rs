@@ -255,7 +255,15 @@ fn legacy_history(e: &Engine, db: &mut Db) {
         )
         .unwrap()
         .entity;
-    e.apply(db, Command::BindTask { block, task: b }).unwrap();
+    e.apply(
+        db,
+        Command::BindTask {
+            block,
+            task: b,
+            occurrence: None,
+        },
+    )
+    .unwrap();
     e.apply(db, Command::AttachFile(attachment_draft(b)))
         .unwrap();
     let session = open_session(e, db, b);

@@ -499,6 +499,7 @@ mod tests {
             title: Some(format!("block {n}")),
             title_track_task: false,
             tasks: std::collections::BTreeSet::new(),
+            occurrence_tasks: std::collections::BTreeSet::new(),
             deleted: false,
             kind: None,
             rrule: None,

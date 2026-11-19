@@ -196,6 +196,9 @@ mod blocks;
 /// A block's kind, series and import fields on the wire and in storage.
 mod block_series;
 
+/// A task bound to one occurrence of a recurring block.
+mod block_bindings;
+
 /// Attachments: their metadata, routing and tombstones.
 mod attachments;
 

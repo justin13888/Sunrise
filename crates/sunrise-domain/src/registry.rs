@@ -24,10 +24,10 @@
 use crate::{
     Attachment, Block, BlockException, BlockKind, BlockSource, CborValue, Chunk, CompatTime,
     Context, Energy, FocusEnd, FocusKind, FocusStart, Interruption, InterruptionReason, Note,
-    NoteBody, Person, Preferences, RRule, ReviewSnapshot, ReviewSnapshotStream, ReviewTotals,
-    Routine, RoutineCatchupPolicy, SavedView, ScheduleConstraint, StreakRow, Stream, StreamColor,
-    StreamReviewCadence, SunriseTime, Task, TaskState, TaskTemplate, Unknowns, ViewFilter,
-    ViewKind, ViewSort,
+    NoteBody, OccurrenceBinding, Person, Preferences, RRule, ReviewSnapshot, ReviewSnapshotStream,
+    ReviewTotals, Routine, RoutineCatchupPolicy, SavedView, ScheduleConstraint, StreakRow, Stream,
+    StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState, TaskTemplate, Unknowns,
+    ViewFilter, ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -191,7 +191,9 @@ sunrise_id::describe_value_types! {
     aliases: [
         WeekdaySet = Vec<Weekday>;
     ],
-    tuples: [],
+    tuples: [
+        OccurrenceBinding(String, EntityRef);
+    ],
     variants: [
         SunriseTime "kind" {
             Instant as "instant" = { at: Timestamp; };
@@ -452,6 +454,10 @@ mod tests {
                 notes: Some(NoteBody(b"n".to_vec())),
                 source: Some(BlockSource::ImportIcs),
                 external_id: Some("uid@example.com".into()),
+                occurrence_tasks: BTreeSet::from([OccurrenceBinding::new(
+                    "2026-03-05T09:00",
+                    eref(EntityKind::Task, 3),
+                )]),
                 unknown: Unknowns::new(),
             },
             &[],

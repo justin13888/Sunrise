@@ -293,6 +293,7 @@ fn block(n: u8, starts_at: SunriseTime, ends_at: SunriseTime) -> Block {
         title: None,
         title_track_task: false,
         tasks: BTreeSet::new(),
+        occurrence_tasks: BTreeSet::new(),
         deleted: false,
         kind: None,
         rrule: None,

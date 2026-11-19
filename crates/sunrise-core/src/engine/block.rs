@@ -29,7 +29,8 @@ use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     expand_block, imported_block_id, split_block_id, Block, BlockDraft, BlockException, BlockKind,
-    BlockPatch, BlockSeries, BlockSource, EditScope, NoteBody, SplitError, ValidationError,
+    BlockPatch, BlockSeries, BlockSource, EditScope, NoteBody, OccurrenceBinding, SplitError,
+    ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -74,6 +75,7 @@ impl Engine {
             title,
             title_track_task: d.title_track_task,
             tasks,
+            occurrence_tasks: BTreeSet::new(),
             deleted: false,
             // A user-created block leaves `kind` and `source` absent, which
             // reads as flexible (time-blocks.md §Migration default).
@@ -180,7 +182,7 @@ impl Engine {
             Some(t) => Some(t.trim().to_string()),
             None => self.shadow_title(db, &tasks)?,
         };
-        let block = Block {
+        let mut block = Block {
             id: block_id,
             // The Block was created when it was first imported; a re-import is
             // not a second creation of it.
@@ -194,6 +196,12 @@ impl Engine {
             title,
             title_track_task: d.title_track_task,
             tasks,
+            // The user's, as `tasks` is: a re-import keeps every occurrence
+            // binding the Block holds.
+            occurrence_tasks: existing
+                .as_ref()
+                .map(|e| e.occurrence_tasks.clone())
+                .unwrap_or_default(),
             // Re-importing an event the user deleted locally brings it back.
             // The alternative — honouring the tombstone — would make the
             // import silently incomplete, and the file is the statement of
@@ -228,6 +236,12 @@ impl Engine {
                 .as_ref()
                 .map_or_else(Unknowns::new, |e| e.unknown.clone()),
         };
+        // A re-import that moves the anchor moves the occurrence keys, and
+        // each occurrence binding moves with the occurrence it named, as an
+        // edit of the whole block does.
+        if let Some(e) = &existing {
+            block.shift_bindings(&e.starts_at);
+        }
         block.validate_invariants(&tz)?;
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
@@ -270,7 +284,11 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+        let anchor = block.starts_at.clone();
         apply_block_patch(&mut block, patch)?;
+        // Moving a series' anchor moves its occurrence keys, and each
+        // occurrence binding moves with the occurrence it named.
+        block.shift_bindings(&anchor);
         block.updated_at = ms_to_ts(now_ms as i64);
         block.validate_invariants(&self.device_zone())?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
@@ -369,6 +387,10 @@ impl Engine {
         let mut before = block.clone();
         before.rrule = Some(ended.rrule);
         before.exceptions = ended.exceptions;
+        // The ended series keeps the occurrence bindings before `key`; the
+        // ones at or after it go to the continuation, or with no edit, with
+        // the occurrences they named.
+        let moved = before.take_bindings_from(key);
         before.updated_at = now;
         before.validate_invariants(&tz)?;
         let Some(patch) = patch else {
@@ -378,7 +400,8 @@ impl Engine {
 
         let existing = read_block(db.conn(), continues.bytes())?;
         // The continuation shows the title the series shows now, fixed,
-        // because it takes none of the bindings a title could track.
+        // because it takes none of the whole-block bindings a title could
+        // track.
         let shown = block_row(db.conn(), block.clone())?.title;
         let mut next = Block {
             id: continues,
@@ -388,12 +411,15 @@ impl Engine {
             ends_at: split.continuation.ends_at,
             title: shown,
             title_track_task: false,
-            // Bindings stay on the block they were made on: `tasks` merges
-            // as an OR-set, so copying them would bind each task to a second
-            // block no one bound it to. The import fields stay too: the
-            // continuation is this device's block, not the external item a
-            // re-import writes to (time-blocks.md §Recurring blocks).
+            // Whole-block bindings stay on the block they were made on:
+            // `tasks` merges as an OR-set, so copying them would bind each
+            // task to a second block no one bound it to. A binding to one
+            // occurrence moves with its occurrence (#1162). The import fields
+            // stay too: the continuation is this device's block, not the
+            // external item a re-import writes to (time-blocks.md §Recurring
+            // blocks).
             tasks: BTreeSet::new(),
+            occurrence_tasks: moved,
             source: None,
             external_id: None,
             rrule: Some(split.continuation.rrule),
@@ -402,7 +428,11 @@ impl Engine {
             deleted: false,
             ..block
         };
+        let anchor = next.starts_at.clone();
         apply_block_patch(&mut next, patch)?;
+        // An edit that moves the continuation moves its occurrence keys, and
+        // each binding moves with the occurrence it named.
+        next.shift_bindings(&anchor);
         next.validate_invariants(&tz)?;
         let create = if existing.is_some() {
             InnerOp::BlockUpdate(Box::new(next.clone()))
@@ -473,23 +503,59 @@ impl Engine {
     /// Bind a Task to a Block. Idempotent on the membership set: re-binding an
     /// already-bound Task writes the same set, so every replica converges to
     /// the same membership whichever order the ops land in.
+    ///
+    /// A recurring block binds a Task to one occurrence, `occurrence`, which
+    /// is then required (`docs/02-domain/time-blocks.md` §Recurring blocks):
+    /// a key the series does not produce is not found, and a cancelled
+    /// occurrence is not there to bind. A key is refused for a block with no
+    /// rule.
     pub(super) fn bind_task(
         &self,
         db: &mut Db,
         block_id: EntityRef,
         task: EntityRef,
+        occurrence: Option<String>,
     ) -> Result<CommandResult, EngineError> {
         require_kind(block_id, EntityKind::Block)?;
         require_kind(task, EntityKind::Task)?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), block_id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
-        block.tasks.insert(task);
-        // The first Task bound to an untitled Block lends it the shadow copy,
-        // which is what makes drag-a-task-onto-the-grid produce a labelled
-        // block instead of a blank one.
-        if block.title.is_none() {
-            block.title = self.shadow_title(db, &block.tasks)?;
+        match (block.series(), occurrence) {
+            (Some(series), Some(key)) => {
+                series
+                    .check_key(&key)
+                    .map_err(|e| occurrence_error(block_id, e))?;
+                if series.exceptions.get(&key).is_some_and(|x| x.cancelled) {
+                    return Err(EngineError::NotFound(format!(
+                        "occurrence {key} of block {block_id} is cancelled"
+                    )));
+                }
+                // No shadow title: the series' title is every occurrence's,
+                // and this task is bound to one of them.
+                block
+                    .occurrence_tasks
+                    .insert(OccurrenceBinding::new(key, task));
+            }
+            (Some(_), None) => {
+                return Err(EngineError::Invalid(format!(
+                    "block {block_id} recurs: a task is bound to one of its occurrences"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(EngineError::Invalid(format!(
+                    "block {block_id} does not recur"
+                )));
+            }
+            (None, None) => {
+                block.tasks.insert(task);
+                // The first Task bound to an untitled Block lends it the
+                // shadow copy, which is what makes drag-a-task-onto-the-grid
+                // produce a labelled block instead of a blank one.
+                if block.title.is_none() {
+                    block.title = self.shadow_title(db, &block.tasks)?;
+                }
+            }
         }
         block.updated_at = ms_to_ts(now_ms as i64);
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
@@ -498,18 +564,51 @@ impl Engine {
 
     /// Unbind a Task from a Block. The Block survives with no tasks bound: an
     /// empty Block is a legitimate calendar entry ("gym", "lunch").
+    ///
+    /// With `occurrence` it removes the Task's binding to that occurrence of
+    /// a recurring block, and is refused for a block with no rule. Without
+    /// one it removes a binding to the whole block, which on a recurring
+    /// block is one made before occurrence bindings existed; it is refused
+    /// for a task the block binds only to occurrences, which it would leave
+    /// bound.
     pub(super) fn unbind_task(
         &self,
         db: &mut Db,
         block_id: EntityRef,
         task: EntityRef,
+        occurrence: Option<String>,
     ) -> Result<CommandResult, EngineError> {
         require_kind(block_id, EntityKind::Block)?;
         require_kind(task, EntityKind::Task)?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), block_id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
-        block.tasks.remove(&task);
+        match occurrence {
+            Some(key) => {
+                if block.rrule.is_none() {
+                    return Err(EngineError::Invalid(format!(
+                        "block {block_id} does not recur"
+                    )));
+                }
+                block
+                    .occurrence_tasks
+                    .remove(&OccurrenceBinding::new(key, task));
+            }
+            None => {
+                // A task the block binds only to some of its occurrences is
+                // not unbound by removing a whole-block binding it does not
+                // have: refuse, rather than write an unchanged block and
+                // report the task unbound.
+                if !block.tasks.remove(&task)
+                    && block.occurrence_tasks.iter().any(|b| b.task() == task)
+                {
+                    return Err(EngineError::Invalid(format!(
+                        "task {task} is bound to occurrences of block {block_id}: \
+                         name the occurrence to unbind it from"
+                    )));
+                }
+            }
+        }
         block.updated_at = ms_to_ts(now_ms as i64);
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
@@ -815,6 +914,7 @@ pub(super) fn read_block(
         return Ok(None);
     };
     let s = b.15;
+    let (tasks, occurrence_tasks) = read_block_tasks(conn, id)?;
     Ok(Some(Block {
         id: EntityRef::new(EntityKind::Block, *id),
         created_at: ms_to_ts(b.11.max(0)),
@@ -824,7 +924,8 @@ pub(super) fn read_block(
         ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref(), b.14.as_deref()),
         title: b.7,
         title_track_task: b.8 != 0,
-        tasks: read_block_tasks(conn, id)?,
+        tasks,
+        occurrence_tasks,
         deleted: b.9 != 0,
         kind: s.kind.as_deref().map(BlockKind::from_raw),
         rrule: s
@@ -856,19 +957,29 @@ struct BlockSeriesColumns {
     external_id: Option<String>,
 }
 
-/// The Tasks bound to one Block.
+/// The Tasks bound to one Block: those bound to the whole block (the empty
+/// `occurrence_key`), and those bound to one occurrence, each with its key.
 fn read_block_tasks(
     conn: &rusqlite::Connection,
     block: &[u8; 16],
-) -> Result<BTreeSet<EntityRef>, EngineError> {
-    let mut stmt = conn.prepare("SELECT task_id FROM block_tasks WHERE block_id = ?")?;
-    let out = stmt
-        .query_map(params![&block[..]], |r| r.get::<_, Vec<u8>>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|raw| EntityRef::new(EntityKind::Task, blob16(&raw)))
-        .collect();
-    Ok(out)
+) -> Result<(BTreeSet<EntityRef>, BTreeSet<OccurrenceBinding>), EngineError> {
+    let mut stmt =
+        conn.prepare("SELECT task_id, occurrence_key FROM block_tasks WHERE block_id = ?")?;
+    let rows = stmt
+        .query_map(params![&block[..]], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let (mut whole, mut occurrences) = (BTreeSet::new(), BTreeSet::new());
+    for (raw, key) in rows {
+        let task = EntityRef::new(EntityKind::Task, blob16(&raw));
+        if key.is_empty() {
+            whole.insert(task);
+        } else {
+            occurrences.insert(OccurrenceBinding::new(key, task));
+        }
+    }
+    Ok((whole, occurrences))
 }
 
 /// The live Blocks scheduling one Task — the derived other half of the
@@ -877,12 +988,15 @@ fn read_block_tasks(
 /// Deleted Blocks are filtered here rather than at bind time: a Block
 /// tombstoned on another device stops appearing on its Tasks the moment the
 /// tombstone merges, with no repair pass over `block_tasks`.
+///
+/// A Task bound to occurrences of a recurring block names that block once,
+/// however many of its occurrences it is bound to.
 pub(super) fn read_task_blocks(
     conn: &rusqlite::Connection,
     task: &[u8; 16],
 ) -> Result<BTreeSet<EntityRef>, EngineError> {
     let mut stmt = conn.prepare(
-        "SELECT bt.block_id FROM block_tasks bt
+        "SELECT DISTINCT bt.block_id FROM block_tasks bt
          JOIN blocks b ON b.id = bt.block_id
          WHERE bt.task_id = ? AND b.deleted = 0",
     )?;

@@ -104,7 +104,7 @@ fn week_start(date: Date, wkst: JiffWeekday) -> Date {
 }
 
 /// Format the stable occurrence key from an intended civil date + time.
-fn format_key(date: Date, tod: Time) -> String {
+pub(crate) fn format_key(date: Date, tod: Time) -> String {
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}",
         date.year(),
