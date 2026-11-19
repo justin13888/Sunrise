@@ -64,7 +64,8 @@ mod time;
 use crate::IntegrationError;
 use jiff::{civil, Timestamp};
 use lex::{escape, param, push_line, split_property, unescape, unfold_lines};
-use time::{parse_time, write_time};
+pub(crate) use time::{bare_time_value, parse_bare_time};
+use time::{read_time, write_time};
 
 /// Properties that exist to bookkeep an iCalendar object rather than to carry
 /// anything a user typed. Dropped without a notice.
@@ -352,53 +353,6 @@ fn read_event_property(
             format!("{other} is not carried by a Block and was dropped"),
         )),
     }
-}
-
-/// One time value of property `name`, or `None` with the reason reported. A
-/// `TZID` the tzdb does not know reads as UTC, and is reported too.
-fn read_time(
-    name: &str,
-    params: &str,
-    value: &str,
-    uid: Option<String>,
-    notices: &mut Vec<ICalNotice>,
-) -> Option<ICalTime> {
-    match parse_time(params, value) {
-        Ok((t, unknown_zone)) => {
-            if let Some(zone) = unknown_zone {
-                notices.push(ICalNotice::new(
-                    NoticeCode::UnknownTimezone,
-                    uid,
-                    format!(
-                        "{name} names TZID={zone}, which is not in the IANA database; read as UTC"
-                    ),
-                ));
-            }
-            Some(t)
-        }
-        Err(why) => {
-            notices.push(ICalNotice::new(
-                NoticeCode::BadValue,
-                uid,
-                format!("{name}:{value} did not parse ({why})"),
-            ));
-            None
-        }
-    }
-}
-
-/// A bare time value with no parameters (an `RRULE`'s `UNTIL`), as
-/// `DTSTART` reads one: `…Z` a UTC instant, eight digits a date, otherwise a
-/// floating time.
-pub(crate) fn parse_bare_time(value: &str) -> Option<ICalTime> {
-    parse_time("", value).ok().map(|(t, _)| t)
-}
-
-/// The value [`parse_bare_time`] reads back as `t`, for a time with no zone
-/// to name: a [`ICalTime::Zoned`] has none, so its caller resolves it to a
-/// UTC instant first.
-pub(crate) fn bare_time_value(t: &ICalTime) -> String {
-    write_time(t).1
 }
 
 /// Render events as an iCalendar document, CRLF-terminated and folded.

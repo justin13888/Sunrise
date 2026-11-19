@@ -92,7 +92,7 @@ user can actually take today, and the only one that creates Blocks.
 ([`caldav.md`](./caldav.md)), and it maps events onto `ExternalEvent`, not
 onto Blocks, so it shares no table with this file. The
 `.ics` file mapping is below, and it is read off
-`crates/sunrise-integrations/src/ical_map.rs` — `group_events`,
+`crates/sunrise-integrations/src/ical_map/` — `group_events`,
 `event_to_block`, `block_to_event` and `block_to_events` — which is the only
 place it exists.
 
