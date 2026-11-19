@@ -52,8 +52,8 @@ struct VaultTabs: View {
             .modifier(rowSheets)
             .sheet(isPresented: $showingSettings) { settingsSheet }
             .modifier(library)
-            .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform,
-                              showSettings: { showingSettings = true }))
+            .modifier(Routing(surfaces: surfaces, triage: models.triage, show: show, reveal: reveal,
+                              perform: perform, showSettings: { showingSettings = true }))
             .modifier(Lifecycle(
                 bridge: bridge, session: session,
                 models: models,
@@ -63,8 +63,7 @@ struct VaultTabs: View {
             ))
     }
 
-    /// Split out of `body`, and not for tidiness: with the six modifiers above
-    /// inline, the type checker gives up on the whole expression.
+    /// Split out of `body`: with the six modifiers above inline, the type checker gives up.
     private var tabs: some View {
         TabView(selection: $tab) {
             Tab(AppTab.today.title, systemImage: AppTab.today.symbol, value: AppTab.today) {
@@ -207,6 +206,7 @@ struct VaultTabs: View {
                 Section(L10n.Ios.sectionToday) {
                     menuLink(to: .morning)
                     menuLink(to: .evening)
+                    Button(L10n.Triage.title, systemImage: "tray.full") { surfaces.open(.triage) }
                 }
                 Section {
                     menuLink(to: .routines)

@@ -20,10 +20,15 @@ extension VaultTabs {
     /// type-checked with it inline.
     struct Routing: ViewModifier {
         let surfaces: AppSurfaces
+        /// The queue a `sunrise://triage` link opens, presented here as the
+        /// Mac presents it on its window.
+        let triage: TriageModel
         let show: (Destination) -> Void
         let reveal: (EntityRef) -> Void
         let perform: (AppAction) -> Void
         let showSettings: () -> Void
+
+        @State private var showingTriage = false
 
         func body(content: Content) -> some View {
             content
@@ -43,12 +48,17 @@ extension VaultTabs {
                     perform(command)
                 }
                 // A sync or security notification asked for Settings, where
-                // sync status, the devices and the recovery code live.
-                .onChange(of: surfaces.pendingSettings) { _, asked in
-                    guard asked else { return }
-                    surfaces.settingsTaken()
-                    showSettings()
+                // sync status, the devices and the recovery code live; the
+                // triage nudge or Open Triage asked for the triage queue.
+                .onChange(of: surfaces.pendingSheet) { _, sheet in
+                    guard let sheet else { return }
+                    surfaces.sheetTaken()
+                    switch sheet {
+                    case .settings: showSettings()
+                    case .triage: showingTriage = true
+                    }
                 }
+                .sheet(isPresented: $showingTriage) { TriageSheet(model: triage) }
                 .onChange(of: surfaces.notifications.policy) {
                     Task { await surfaces.reminders?.reconcile() }
                 }

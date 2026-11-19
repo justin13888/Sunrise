@@ -129,11 +129,11 @@ final class AppSurfaces {
     /// and the window picks it up.
     private(set) var pendingCommand: AppAction?
 
-    /// A link asked for Settings: sync status, the devices or the recovery
-    /// code, which a sync or security notification opens
-    /// (``DeepLink/opensSettings``). Taken and cleared like
+    /// A link asked for a sheet: Settings, from a sync or security
+    /// notification, or the triage queue, from the triage nudge or Open
+    /// Triage (``DeepLink/sheet``). Taken and cleared like
     /// ``pendingDestination``, by the shell that presents the sheet.
-    private(set) var pendingSettings = false
+    private(set) var pendingSheet: DeepLink.Sheet?
 
     /// Notification settings: the core's preferences, read through whichever
     /// vault is open. One for the life of the app, which the screens watch;
@@ -344,8 +344,8 @@ final class AppSurfaces {
         if case let .focus(entity) = link {
             _Concurrency.Task { await beginFocus(on: entity) }
         }
-        if link.opensSettings {
-            pendingSettings = true
+        if let sheet = link.sheet {
+            pendingSheet = sheet
             if raisingAWindow { raiseWindow(for: link) }
             return
         }
@@ -430,9 +430,9 @@ final class AppSurfaces {
         pendingDestination = nil
     }
 
-    /// The shell has presented Settings for a link; stop asking.
-    func settingsTaken() {
-        pendingSettings = false
+    /// The shell has presented the sheet a link asked for; stop asking.
+    func sheetTaken() {
+        pendingSheet = nil
     }
 
     /// The shell has taken the entity to reveal. Cleared for the reason

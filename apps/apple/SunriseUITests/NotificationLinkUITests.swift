@@ -26,14 +26,14 @@ final class NotificationLinkUITests: SunriseUITestCase {
         )
     }
 
-    func testTheTriageNudgeLinkOpensTheTriageSection() throws {
+    func testTheTriageNudgeLinkOpensTheTriageQueue() throws {
         createVault()
 
         try open("sunrise://triage")
 
         XCTAssertTrue(
-            app.descendants(matching: .any)["brief.morning"].appears(within: 10),
-            "the nudge's tap lands on the morning summary, whose triage section it is about"
+            app.descendants(matching: .any)["triage.queue"].appears(within: 10),
+            "the nudge's tap and Open Triage land on the triage queue"
         )
     }
 

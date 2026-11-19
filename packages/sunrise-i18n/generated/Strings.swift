@@ -1562,6 +1562,69 @@ enum L10n {
         static var moveMessage: String { L10n.tr("apple.brief.move_message") }
     }
 
+    enum Triage {
+        /// Triage
+        static var title: String { L10n.tr("apple.triage.title") }
+        /// Late and stale tasks, waiting on your decision. Nothing here changes until you choose.
+        static var subtitle: String { L10n.tr("apple.triage.subtitle") }
+        /// {count, plural, =0 {Nothing to triage} one {# task needs a decision} other {# tasks need a decision}}
+        static func headline(count: Int) -> String {
+            L10n.tr("apple.triage.headline", count)
+        }
+        /// Nothing to triage
+        static var emptyTitle: String { L10n.tr("apple.triage.empty_title") }
+        /// No task is late or stale. A task you keep comes back here when its lateness next changes.
+        static var emptyMessage: String { L10n.tr("apple.triage.empty_message") }
+        /// Missed its deadline {date}
+        static func lateHard(date: String) -> String {
+            L10n.tr("apple.triage.late_hard", date)
+        }
+        /// Missed its target {date}
+        static func lateSoft(date: String) -> String {
+            L10n.tr("apple.triage.late_soft", date)
+        }
+        /// Stale since {date}
+        static func stale(date: String) -> String {
+            L10n.tr("apple.triage.stale", date)
+        }
+        /// {count, plural, =0 {Select tasks to act on} one {# selected} other {# selected}}
+        static func selection(count: Int) -> String {
+            L10n.tr("apple.triage.selection", count)
+        }
+        /// Select all
+        static var selectAll: String { L10n.tr("apple.triage.select_all") }
+        /// Defer
+        static var deferAction: String { L10n.tr("apple.triage.defer_action") }
+        /// Move to the next free day.
+        static var deferHelp: String { L10n.tr("apple.triage.defer_help") }
+        /// Already done…
+        static var alreadyDone: String { L10n.tr("apple.triage.already_done") }
+        /// Mark done at the time it was really done.
+        static var alreadyDoneHelp: String { L10n.tr("apple.triage.already_done_help") }
+        /// Drop…
+        static var drop: String { L10n.tr("apple.triage.drop") }
+        /// Cancel it, with a reason if you like.
+        static var dropHelp: String { L10n.tr("apple.triage.drop_help") }
+        /// Keep
+        static var keep: String { L10n.tr("apple.triage.keep") }
+        /// Leave it as it is until its lateness next changes.
+        static var keepHelp: String { L10n.tr("apple.triage.keep_help") }
+        /// When was it done?
+        static var doneTitle: String { L10n.tr("apple.triage.done_title") }
+        /// Done at
+        static var doneAt: String { L10n.tr("apple.triage.done_at") }
+        /// Mark done
+        static var doneConfirm: String { L10n.tr("apple.triage.done_confirm") }
+        /// {count, plural, one {Drop # task?} other {Drop # tasks?}}
+        static func dropTitle(count: Int) -> String {
+            L10n.tr("apple.triage.drop_title", count)
+        }
+        /// Reason (optional)
+        static var dropReason: String { L10n.tr("apple.triage.drop_reason") }
+        /// Drop
+        static var dropConfirm: String { L10n.tr("apple.triage.drop_confirm") }
+    }
+
     enum Attachments {
         /// Attachments
         static var title: String { L10n.tr("apple.attachments.title") }

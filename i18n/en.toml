@@ -1168,6 +1168,48 @@ move_confirm = "{count, plural, one {Move # open task to tomorrow?} other {Move 
 move_them = "Move them"
 move_message = "Each task's deferral count goes up. That is the point: it is how a task that keeps slipping becomes visible."
 
+[apple.triage]
+# The triage queue's title: its sheet's navigation title, the Mac toolbar
+# button and the iOS overflow menu item that open it.
+title = "Triage"
+# The line under the queue's headline. It must keep that nothing here changes
+# on its own: every task waits for the user's decision.
+subtitle = "Late and stale tasks, waiting on your decision. Nothing here changes until you choose."
+# The queue's headline.
+headline = "{count, plural, =0 {Nothing to triage} one {# task needs a decision} other {# tasks need a decision}}"
+# The empty queue.
+empty_title = "Nothing to triage"
+empty_message = "No task is late or stale. A task you keep comes back here when its lateness next changes."
+# Why a task is in the queue, under its title. {date} is when that began,
+# already formatted: for stale, the day the task turned stale, not its last
+# edit, so the line must not claim the task was untouched since then.
+late_hard = "Missed its deadline {date}"
+late_soft = "Missed its target {date}"
+stale = "Stale since {date}"
+# How many rows are ticked, in the action bar. Zero tells the user what to do.
+selection = "{count, plural, =0 {Select tasks to act on} one {# selected} other {# selected}}"
+select_all = "Select all"
+# The four actions, on the action bar and on each row's context menu. The
+# ellipsis says a sheet asks one more question first.
+defer_action = "Defer"
+defer_help = "Move to the next free day."
+already_done = "Already done…"
+already_done_help = "Mark done at the time it was really done."
+drop = "Drop…"
+drop_help = "Cancel it, with a reason if you like."
+keep = "Keep"
+keep_help = "Leave it as it is until its lateness next changes."
+# The Already done sheet: its title, its date picker's label, and its button.
+# The button's words are also the Undo menu's ("Undo Mark done").
+done_title = "When was it done?"
+done_at = "Done at"
+done_confirm = "Mark done"
+# The Drop sheet: its title, the reason field's placeholder, and its button.
+# The button's words are also the Undo menu's.
+drop_title = "{count, plural, one {Drop # task?} other {Drop # tasks?}}"
+drop_reason = "Reason (optional)"
+drop_confirm = "Drop"
+
 [apple.attachments]
 title = "Attachments"
 empty_title = "No attachments"
