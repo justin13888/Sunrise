@@ -16,12 +16,12 @@ import XCTest
 final class UpcomingDragUITests: SunriseUITestCase {
     func testDraggingATaskToALaterDayMovesItAndUndoReturnsIt() {
         createVault()
-        openUpcoming()
 
-        // Typed into Upcoming itself, which lists whatever a capture dates
-        // inside its span. Not `listedHere`: the row carries Upcoming's own
-        // identifier, so it is found by its day below instead.
+        // Typed into Today, where the app opens: Upcoming has no capture bar.
+        // Not `listedHere`: Today does not list a task planned for tomorrow,
+        // so it is found under its day in Upcoming below instead.
         capture("Write report ^tomorrow", listedHere: false)
+        openUpcoming()
         let tomorrow = civilDate(daysFromToday: 1)
         let later = civilDate(daysFromToday: 3)
         let row = task("Write report", on: tomorrow)

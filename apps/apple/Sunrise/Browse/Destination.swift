@@ -99,12 +99,12 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// The key for the one action that fills this view — `docs/08-features/keyboard.md`
     /// Rule 1's empty-state row. Capture where a capture would land here;
     /// on Search, the field, and then a fresh query. Empty for a list nothing
-    /// typed can fill: a context, or a filtered Today, refuses capture.
+    /// typed can fill: a context, a filtered Today, or Upcoming refuses capture.
     var emptyHint: String {
         switch self {
-        case .today, .inbox, .stream, .upcoming:
+        case .today, .inbox, .stream:
             acceptsCapture ? Keymap.pressHint(.quickCapture, L10n.Browse.hintCapture(keys:)) : ""
-        case .context:
+        case .context, .upcoming:
             ""
         case let .search(text) where text.trimmed.isEmpty:
             Keymap.pressHint(.searchInView, L10n.Browse.hintSearchField(keys:))
@@ -154,14 +154,15 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// Today does accept capture, because ``TaskListModel/create(_:)`` gives
     /// the line the date that list selects on.
     ///
-    /// Upcoming accepts it as it is: a line with a date in the span lands on
-    /// its day, and one with none lands in the no-date lane, so whatever is
-    /// typed there is on screen once it is written.
+    /// Upcoming refuses it for the same reason. A line dated past the span is
+    /// written and drawn on no day, and an undated one past the core's
+    /// per-stream cap on the no-date lane (`NO_DATE_LANE_CAP`) is only a
+    /// higher "N more". ⌘N there opens the capture panel instead.
     var acceptsCapture: Bool {
         switch self {
         case let .today(contexts): contexts.isEmpty
-        case .inbox, .stream, .upcoming: true
-        case .context, .search: false
+        case .inbox, .stream: true
+        case .context, .search, .upcoming: false
         }
     }
 

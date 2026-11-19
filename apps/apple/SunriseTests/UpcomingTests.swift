@@ -47,9 +47,13 @@ struct UpcomingLayoutTests {
     }
 
     @Test
-    func upcomingIsAListTheSidebarOffersAndCaptureLandsIn() {
+    func upcomingIsAListTheSidebarOffersAndCaptureDoesNotLandIn() {
         #expect(Destination.fixed.contains(.list(.upcomingDefault)))
-        #expect(TaskListKind.upcomingDefault.acceptsCapture)
+        #expect(
+            !TaskListKind.upcomingDefault.acceptsCapture,
+            "a line dated past the span, or undated past the lane's cap, would be written and not drawn"
+        )
+        #expect(TaskListKind.upcomingDefault.emptyHint.isEmpty)
         #expect(!TaskListKind.upcomingDefault.acceptsReordering)
         guard case let .upcoming(_, span, contexts) = TaskListKind.upcomingDefault.query(nowMs: 7) else {
             Issue.record("Upcoming reads Query::Upcoming")
@@ -265,5 +269,171 @@ struct UpcomingModelTests {
         #expect(again.upcomingSpan == 14)
         #expect(again.kind == .upcomingDefault, "the sidebar's entry stays the one selected")
         await vault.bridge.shutdown()
+    }
+}
+
+/// A drop whose diff went stale, or that the planner refuses, as
+/// `PlannedDragTests` drives the calendar's: the same contract over tasks and
+/// a day.
+extension UpcomingModelTests {
+    /// Report, planned for tomorrow and previewed onto three days on.
+    private func hovered(_ vault: borrowing TestVault) async throws -> (TaskListModel, EntityRef) {
+        let model = await model(vault)
+        let tomorrow = UpcomingLayout.adding(1, to: model.upcomingToday)
+        _ = try await vault.bridge.submit(.createTask(draft: task("Report", on: tomorrow)))
+        await model.refresh()
+        let report = try id(of: "Report", in: model)
+        model.upcomingPlanner.beginDrag([report])
+        await model.upcomingPlanner.hover(.day(UpcomingLayout.adding(3, to: model.upcomingToday)))
+        #expect(model.upcomingPlanner.plan != nil)
+        return (model, report)
+    }
+
+    /// Report moved to two days on behind the planner, which changes the
+    /// diff a drop on three days on would commit.
+    private func moveBehindThePlanner(
+        _ vault: borrowing TestVault, _ report: EntityRef, to date: CivilDate
+    ) async throws {
+        var edit = TaskEdit()
+        edit.setScheduledAt = .allDay(date: date)
+        _ = try await vault.bridge.submit(.updateTask(id: report, edit: edit))
+    }
+
+    /// **A stale drop whose answer did not change is committed.** Another
+    /// task planned on the target day between the hover and the drop makes
+    /// the diff on screen stale; the drop previews once more, gets the same
+    /// move, and commits it without asking.
+    @Test
+    func aStaleDropWhosePlanIsTheSameIsCommittedAnyway() async throws {
+        let vault = try await TestVault()
+        let (model, report) = try await hovered(vault)
+        let later = UpcomingLayout.adding(3, to: model.upcomingToday)
+        let plan = try #require(model.upcomingPlanner.plan)
+        _ = try await vault.bridge.submit(.createTask(draft: task("Errand", on: later)))
+        await #expect(throws: BindingError.self, "the write made the diff on screen stale") {
+            _ = try await vault.bridge.planCommit(plan.id, label: "stale")
+        }
+
+        await model.reschedule([report], to: .day(later))
+
+        #expect(model.upcomingPlanner.plan == nil)
+        #expect(model.upcomingPlanner.note == nil)
+        #expect(!model.upcomingPlanner.awaitingDecision)
+        #expect(day(of: "Report", in: model) == later)
+        #expect(day(of: "Errand", in: model) == later, "the write behind the planner stands")
+        await vault.bridge.shutdown()
+    }
+
+    /// **A stale drop whose answer changed waits, and Move commits it.**
+    /// Report was moved behind the planner, so the new plan moves it from a
+    /// different day. Nothing is written until the plan now on screen is
+    /// committed.
+    @Test
+    func aStaleDropWhosePlanChangedWaitsUntilItIsCommitted() async throws {
+        let vault = try await TestVault()
+        let (model, report) = try await hovered(vault)
+        let twoOn = UpcomingLayout.adding(2, to: model.upcomingToday)
+        let later = UpcomingLayout.adding(3, to: model.upcomingToday)
+        try await moveBehindThePlanner(vault, report, to: twoOn)
+
+        await model.reschedule([report], to: .day(later))
+
+        let waiting = try #require(model.upcomingPlanner.plan, "the new plan is left on screen")
+        #expect(waiting.moves.map(\.item) == [report])
+        #expect(model.upcomingPlanner.note == L10n.Calendar.notePlanChanged)
+        #expect(model.upcomingPlanner.awaitingDecision)
+        #expect(model.upcomingPlanner.target == .day(later))
+        #expect(day(of: "Report", in: model) == twoOn, "nothing written before the answer")
+
+        await model.commitUpcomingPlan()
+
+        #expect(model.upcomingPlanner.plan == nil)
+        #expect(model.upcomingPlanner.note == nil)
+        #expect(!model.upcomingPlanner.awaitingDecision)
+        #expect(day(of: "Report", in: model) == later)
+        await vault.bridge.shutdown()
+    }
+
+    /// The same changed plan, cancelled: the plan and its note go, and
+    /// nothing is written.
+    @Test
+    func aStaleDropWhosePlanChangedCanBeCancelled() async throws {
+        let vault = try await TestVault()
+        let (model, report) = try await hovered(vault)
+        let twoOn = UpcomingLayout.adding(2, to: model.upcomingToday)
+        try await moveBehindThePlanner(vault, report, to: twoOn)
+        await model.reschedule([report], to: .day(UpcomingLayout.adding(3, to: model.upcomingToday)))
+        #expect(model.upcomingPlanner.awaitingDecision)
+
+        model.upcomingPlanner.cancel()
+
+        #expect(model.upcomingPlanner.plan == nil)
+        #expect(model.upcomingPlanner.target == nil)
+        #expect(model.upcomingPlanner.note == nil)
+        #expect(!model.upcomingPlanner.awaitingDecision)
+        await model.refresh()
+        #expect(day(of: "Report", in: model) == twoOn)
+        await vault.bridge.shutdown()
+    }
+
+    /// A drop the planner refuses writes nothing and says why: a task held
+    /// to tomorrow's weekday by a hard constraint, dropped on another day.
+    @Test
+    func aRefusedDropWritesNothingAndSaysSo() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        let tomorrow = UpcomingLayout.adding(1, to: model.upcomingToday)
+        var draft = task("Report", on: tomorrow)
+        draft.schedulingConstraints = [Constraint(
+            timeOfDay: nil, daysOfWeek: [weekday(of: tomorrow)], dateRange: nil,
+            severity: .hard, atPlace: [], extra: nil
+        )]
+        _ = try await vault.bridge.submit(.createTask(draft: draft))
+        await model.refresh()
+
+        let later = UpcomingLayout.adding(3, to: model.upcomingToday)
+        await model.reschedule([try id(of: "Report", in: model)], to: .day(later))
+
+        #expect(model.upcomingPlanner.plan == nil)
+        #expect(model.upcomingPlanner.note == L10n.Upcoming.notePlanRefused)
+        #expect(!model.upcomingPlanner.awaitingDecision, "a refusal waits for nothing")
+        await model.refresh()
+        #expect(day(of: "Report", in: model) == tomorrow)
+        await vault.bridge.shutdown()
+    }
+
+    /// ⌥→ counts from a task's plan, not from the deadline's day it is first
+    /// drawn under: planned after its hard deadline, it still moves later.
+    @Test
+    func theKeyboardCountsFromThePlanNotTheDeadline() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        let due = UpcomingLayout.adding(2, to: model.upcomingToday)
+        let planned = UpcomingLayout.adding(4, to: model.upcomingToday)
+        var draft = task("Report", on: planned)
+        draft.dueAt = .allDay(date: due)
+        _ = try await vault.bridge.submit(.createTask(draft: draft))
+        await model.refresh()
+        let report = try id(of: "Report", in: model)
+        #expect(day(of: "Report", in: model) == due, "first drawn under its deadline's day")
+
+        await model.moveUpcoming([report], days: 1)
+
+        #expect(model.upcomingPlanner.target == .day(UpcomingLayout.adding(1, to: planned)))
+        model.upcomingPlanner.cancel()
+        await vault.bridge.shutdown()
+    }
+
+    /// The weekday `date` falls on.
+    private func weekday(of date: CivilDate) -> Weekday {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let parts = date.split(separator: "-").compactMap { Int($0) }
+        let noon = calendar.date(
+            from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12)
+        )
+        // `Calendar` counts from Sunday, 1.
+        let order: [Weekday] = [.su, .mo, .tu, .we, .th, .fr, .sa]
+        return order[calendar.component(.weekday, from: noon ?? Date()) - 1]
     }
 }

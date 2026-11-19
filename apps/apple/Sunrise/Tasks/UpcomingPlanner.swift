@@ -118,10 +118,13 @@ enum UpcomingLayout {
         }
     }
 
-    /// The day `task` is first drawn under, or `nil` when it is drawn only in
-    /// the no-date lane or not at all.
-    static func day(of task: EntityRef, in sections: [UpcomingSection]) -> CivilDate? {
-        sections.first { section in section.rows.contains { $0.id == task } }?.date
+    /// The day `task` is drawn under as planned, or `nil` when no day in the
+    /// span holds its plan. A row under its Due or Target day is not where it
+    /// is planned, so it is not counted.
+    static func plannedDay(of task: EntityRef, in sections: [UpcomingSection]) -> CivilDate? {
+        sections.first { section in
+            section.rows.contains { $0.id == task && $0.mark == .planned }
+        }?.date
     }
 
     /// `date` moved by whole civil days. Computed on the Gregorian calendar
@@ -264,7 +267,7 @@ final class UpcomingPlanner {
 
     // MARK: - The keyboard
 
-    /// ⌥← or ⌥→ on `tasks`, drawn under `from`: move them a day and preview
+    /// ⌥← or ⌥→ on `tasks`, planned for `from`: move them a day and preview
     /// it. Undated tasks (`from` is `nil`) count from the day before `today`,
     /// so their first ⌥→ plans them for today. Moves add up until Return
     /// commits them (``commitPlan(label:)``) or Esc cancels (``cancel()``).
@@ -285,8 +288,10 @@ final class UpcomingPlanner {
         await commit(planRequest, label: label)
     }
 
-    /// Esc, or Cancel: forget the plan on screen and write nothing.
+    /// Esc, or Cancel: forget the plan on screen and write nothing. A changed
+    /// plan's note goes with it, as the answer it waited for.
     func cancel() {
+        settleDecision()
         end(cancelling: plan?.id)
     }
 
@@ -371,6 +376,8 @@ final class UpcomingPlanner {
         }
     }
 
+    /// The choice a changed plan waited for is being made, one way or the
+    /// other: its note goes with it.
     private func settleDecision() {
         guard awaitingDecision else { return }
         awaitingDecision = false
@@ -427,11 +434,20 @@ extension TaskListModel {
     }
 
     /// ⌥← / ⌥→ on the selection: preview moving it `days` from the day the
-    /// first of it is drawn under.
+    /// first of it is planned for. A task drawn under a deadline's day counts
+    /// from its plan, not from that day, so ⌥→ always moves a plan later.
     func moveUpcoming(_ ids: [EntityRef], days: Int) async {
         guard let first = ids.first else { return }
-        let from = UpcomingLayout.day(of: first, in: upcoming)
+        let from = UpcomingLayout.plannedDay(of: first, in: upcoming)
+            ?? tasks.first { $0.id == first }?.scheduledAt.map(plannedDate)
         await upcomingPlanner.move(ids, days: days, from: from, today: upcomingToday)
+    }
+
+    /// The civil day a plan outside the span falls on, in the zone the list
+    /// was read in.
+    private func plannedDate(_ value: TimeValue) -> CivilDate {
+        if case let .allDay(date) = value { return date }
+        return DayScheduleModel.civilDate(ms: timeValueMs(value: value, tz: timeZone), timeZone: timeZone)
     }
 
     /// Return after ⌥← / ⌥→, or Move after a drop whose plan changed.
