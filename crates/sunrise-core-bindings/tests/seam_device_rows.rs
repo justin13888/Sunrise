@@ -124,3 +124,41 @@ fn a_plainly_revoked_device_row_crosses_the_seam_as_itself() {
     assert_eq!(lowered.nickname, "Retired phone");
     assert_eq!(lowered.platform, "ios");
 }
+
+/// **A device revoked by the account identity crosses the seam as one.**
+///
+/// The row is `a_plainly_revoked_device_row_crosses_the_seam_as_itself`'s
+/// with one flag changed, so the pair pins `revoked_by_authority` to the core's
+/// value rather than to a constant: a lowering that returned `false` fails
+/// here, and one that returned `true` fails there. It also cannot be crossed
+/// with any of the other four, because each of them holds the same value in
+/// both rows while this one does not.
+///
+/// The distinction is ADR-0058 §7's whole ask of the device list: a
+/// revocation nothing can unwind, beside one a later op can.
+#[test]
+fn a_device_revoked_by_authority_crosses_the_seam_as_one() {
+    let row = DeviceRow {
+        device_id: [0xa3; 16],
+        nickname: "Stolen laptop".into(),
+        platform: "macos".into(),
+        revoked: true,
+        read_bounded: true,
+        current: false,
+        admitted_after_revocation: false,
+        revoked_by_authority: true,
+    };
+
+    let lowered = DeviceListRow::from(&row);
+
+    assert!(
+        lowered.revoked_by_authority,
+        "a client that received `false` here would describe a revocation \
+         nothing can unwind as one a later op can"
+    );
+    assert!(lowered.revoked);
+    assert!(lowered.read_bounded);
+    assert!(!lowered.current);
+    assert!(!lowered.admitted_after_revocation);
+    assert_eq!(lowered.device_id, "a3".repeat(16));
+}
