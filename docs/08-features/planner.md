@@ -11,14 +11,31 @@ and committed exactly as previewed when it ends.
 reasoning; this page is the contract. [#343](https://github.com/justin13888/Sunrise/issues/343) builds the solver and the seam,
 and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client surfaces.
 
-> **Status: solver and seam built ([#343](https://github.com/justin13888/Sunrise/issues/343)); no client uses them yet.**
+> **Status: solver and seam built ([#343](https://github.com/justin13888/Sunrise/issues/343)); the Apple calendar uses them ([#344](https://github.com/justin13888/Sunrise/issues/344)).**
 > `sunrise_domain::planner::solve` is the solver, `Core::plan_preview`,
 > `Core::plan_commit` and `Core::plan_cancel` are the seam, and all three
-> cross UniFFI (`crates/sunrise-core-bindings/src/planner.rs`). Calendar drags
-> are still resolved in Swift by `BlockDrag`
-> (`apps/apple/Sunrise/Calendar/BlockLayout.swift:182`) until
-> [#344](https://github.com/justin13888/Sunrise/issues/344) moves them onto the
-> seam. What this build does differently from the contract below:
+> cross UniFFI (`crates/sunrise-core-bindings/src/planner.rs`). The Apple
+> client's calendar block move and resize send `MoveBlock` and `ResizeBlock`
+> (edge `End`) on each snapped position, draw the diff, and commit it on drop
+> (`apps/apple/Sunrise/Calendar/CalendarModel.swift`); the keyboard path is
+> `Keymap.planning`. Where that client stops short of the contract below:
+>
+> - One event of a repeating block is not planned: the planner reads a
+>   block's series row, not its events, so the drag keeps its "which
+>   events?" question and writes an ordinary edit.
+> - A task dropped on the grid is sized by a `MoveTask` preview (its
+>   estimate, or `default_task_duration_s`) and becomes a bound block; the
+>   preview is cancelled, not committed, because the grid draws blocks and
+>   not a task's `planned_at`.
+> - A block's top edge is not draggable, so `ResizeBlock { edge: Start }` is
+>   never sent.
+> - The undo step is ordered against the command stack in Swift
+>   (`UndoJournal`, beside `CoreBridge`), not in `sunrise-client-core`, and a
+>   planner commit has no redo.
+> - Task → day in Upcoming, triage Defer and "Plan my day" send no intent
+>   yet: Upcoming does not exist ([#351](https://github.com/justin13888/Sunrise/issues/351)).
+>
+> What this build does differently from the contract below:
 >
 > - `plan_preview` takes only the intent: `now` is the core's clock and the
 >   zone is the reader's zone every query reads in. The commit recomputes the
