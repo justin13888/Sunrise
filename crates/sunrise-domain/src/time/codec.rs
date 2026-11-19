@@ -131,8 +131,9 @@ impl<'de> Deserialize<'de> for SunriseTime {
 /// always held, so a value that means what it meant before reads, on a build
 /// that predates the change, exactly as it always did. Every other kind is
 /// written in the tagged form of every `SunriseTime`, which such a build
-/// cannot read: an op carrying one uses the feature `routine.civil_times`
-/// and is written only into a vault that requires it
+/// cannot read: an op carrying one uses the feature `routine.civil_times`,
+/// or `stream.civil_times` for a stream's, and is written only into a vault
+/// that requires it
 /// (`crates/sunrise-core/src/feature.rs`). Reading accepts both forms, as
 /// every `SunriseTime` does.
 ///
