@@ -469,7 +469,8 @@ where a touch gesture replaces a pointer.
 - **Drop** commits the diff on screen. `PLAN_STALE` or `PLAN_UNKNOWN` triggers
   one immediate re-preview at the same position and a second commit only if
   the new diff has the same moves; otherwise the new diff is shown and the drop
-  waits for the user.
+  waits for the user, with a commit and a cancel control on screen beside the
+  note that says so: a touch client has no Return or Esc to press.
 - **Cancel** (Esc, or dropping back at the origin) commits nothing.
 - **Undo** is one step, labelled by the gesture ("Undo move ‘Standup’ (moved
   3)"), and calls `plan_undo` with the commit's id (§Undo).

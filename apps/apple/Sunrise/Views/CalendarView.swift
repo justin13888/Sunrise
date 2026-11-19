@@ -20,7 +20,11 @@ struct CalendarView: View {
                 NoteBanner(text: error) { model.dismissError() }
             }
             if let note = model.planner.note {
-                NoteBanner(text: note) { model.planner.dismissNote() }
+                if model.planner.awaitingDecision {
+                    PlanDecisionBanner(text: note, planner: model.planner)
+                } else {
+                    NoteBanner(text: note) { model.planner.dismissNote() }
+                }
             }
             if let error = model.planner.errorMessage {
                 NoteBanner(text: error) { model.planner.dismissError() }

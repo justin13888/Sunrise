@@ -25,6 +25,10 @@ final class CalendarPlanner {
     /// Set after a drop that was refused or whose plan changed underneath it.
     private(set) var note: String?
     private(set) var errorMessage: String?
+    /// A drop's plan changed underneath it, and the new plan is on screen
+    /// waiting for the person to commit or cancel it. The calendar shows
+    /// that choice as buttons, because a phone has no Return or Esc to press.
+    private(set) var awaitingDecision = false
 
     /// The line under the gesture that names `plan`'s consequence.
     var summary: String? { plan.map(PlanGhosts.summary(of:)) }
@@ -155,6 +159,7 @@ final class CalendarPlanner {
 
     /// Preview `intent` under the one-in-flight rule (``PlanPreviewPump``).
     func preview(_ intent: PlanIntentItem, gesture: PlanGesture) async {
+        settleDecision()
         let request = PlanRequest(generation: generation, intent: intent, gesture: gesture)
         var next = pump.request(request)
         while let sent = next {
@@ -182,6 +187,7 @@ final class CalendarPlanner {
     /// for this very position, or a fresh preview of it when the last one
     /// to come back was for an earlier position.
     func drop(_ intent: PlanIntentItem, gesture: PlanGesture) async {
+        settleDecision()
         let diff: PlanDiffItem
         if let plan, planIntent == intent {
             diff = plan
@@ -198,16 +204,27 @@ final class CalendarPlanner {
     }
 
     /// Commit whatever plan is on screen: Return, after a keyboard nudge or
-    /// after a drop whose plan changed underneath it.
+    /// after a drop whose plan changed underneath it, or the banner's Move
+    /// button after the latter.
     func commitPlan() async {
         guard let plan, let planIntent, let planGesture else { return }
+        settleDecision()
         await commit(plan, intent: planIntent, gesture: planGesture, retry: true)
     }
 
-    /// Esc, or the end of a gesture: forget the plan on screen and write
-    /// nothing.
+    /// Esc, the banner's Cancel button, or the end of a gesture: forget the
+    /// plan on screen and write nothing.
     func cancel() {
+        settleDecision()
         end(cancelling: plan?.id)
+    }
+
+    /// The choice a changed plan waited for is being made, one way or the
+    /// other: its note goes with it.
+    private func settleDecision() {
+        guard awaitingDecision else { return }
+        awaitingDecision = false
+        note = nil
     }
 
     /// The ghosts of the plan on screen that the column `[fromMs, toMs)`
@@ -264,6 +281,7 @@ final class CalendarPlanner {
                 planIntent = intent
                 planGesture = gesture
                 note = L10n.Calendar.notePlanChanged
+                awaitingDecision = true
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -279,6 +297,7 @@ final class CalendarPlanner {
         planIntent = nil
         planGesture = nil
         nudge = nil
+        awaitingDecision = false
     }
 
     // MARK: - The keyboard

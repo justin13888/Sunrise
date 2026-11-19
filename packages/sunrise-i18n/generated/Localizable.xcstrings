@@ -2471,7 +2471,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The plan changed while you dropped. Press Return to commit it or Esc to cancel."
+            "value": "The plan changed while you dropped. Move to commit the new plan, or cancel."
           }
         }
       }
@@ -2494,6 +2494,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Overlaps %1$@"
+          }
+        }
+      }
+    },
+    "apple.calendar.plan_commit_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move"
           }
         }
       }

@@ -275,6 +275,31 @@ struct PlanSummaryLine: View {
     }
 }
 
+/// The note after a drop whose plan changed underneath it, with the two
+/// answers it waits for: commit the new plan on screen, or cancel it. Buttons
+/// rather than a hint at Return and Esc, because a phone has no keys to press
+/// and its ghosts would otherwise stay until the next drag.
+struct PlanDecisionBanner: View {
+    let text: String
+    let planner: CalendarPlanner
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle")
+            Text(text).font(.callout)
+            Spacer()
+            Button(L10n.Action.cancel) { planner.cancel() }
+                .accessibilityIdentifier("calendar-plan-cancel")
+            Button(L10n.Calendar.planCommitChanged) { Task { await planner.commitPlan() } }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("calendar-plan-commit")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5))
+    }
+}
+
 /// The planning keys on a block (``Keymap/planning``): the block takes
 /// keyboard focus, and a press it holds is handed to `handle`.
 ///

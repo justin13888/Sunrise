@@ -1058,8 +1058,10 @@ enum L10n {
         static var planRefused: String { L10n.tr("apple.calendar.plan_refused") }
         /// Not moved: that drop breaks a rule the block cannot break.
         static var notePlanRefused: String { L10n.tr("apple.calendar.note_plan_refused") }
-        /// The plan changed while you dropped. Press Return to commit it or Esc to cancel.
+        /// The plan changed while you dropped. Move to commit the new plan, or cancel.
         static var notePlanChanged: String { L10n.tr("apple.calendar.note_plan_changed") }
+        /// Move
+        static var planCommitChanged: String { L10n.tr("apple.calendar.plan_commit_changed") }
         /// Drag onto a task to bind it to this block, or onto a bound task to unbind it
         static var bindGrip: String { L10n.tr("apple.calendar.bind_grip") }
         /// Move or resize with {keys}
