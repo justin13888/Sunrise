@@ -114,7 +114,9 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > and into the no-date lane `Unschedule { keep: Nothing }`, to `plan_preview`
 > while it hovers; the heading shows the plan's summary, and the drop commits
 > that diff as one undo step (`UpcomingPlanner`). A hover cannot read a
-> drag's payload, so the row records what it lends when the drag starts. ⌥←
+> drag's payload, so the row records what it lends when the drag starts. On
+> the phone that drag is unverified: no drop target inside the list receives
+> it on the simulator ([#1234](https://github.com/justin13888/Sunrise/issues/1234)). ⌥←
 > / ⌥→ preview moving the selection a day from its plan, never from the
 > deadline's day it may be drawn under (an undated task's first ⌥→ is
 > today), Return commits and Esc cancels. A drop whose diff went stale is
