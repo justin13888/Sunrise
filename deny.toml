@@ -29,6 +29,14 @@ ignore = [
     # `rusqlite` swap once a `libsqlite3-sys` release bundles SQLCipher on
     # SQLite 3.54.0 or later (#1161).
     { id = "RUSTSEC-2026-0459", reason = "bundled SQLCipher has no patched release; see the comment above" },
+
+    # `chrono` is declared unmaintained, with no release that clears it. It
+    # reaches the workspace only through `oauth2` 5.0, which depends on it
+    # unconditionally (`clock`, `serde`) for token expiry times; no workspace
+    # crate names it. The advisory reports no vulnerability, only that fixes
+    # will stop coming. Remove this entry once `oauth2` drops `chrono` or
+    # `sunrise-auth` moves off `oauth2` (#1192).
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, reached only through oauth2 5.0; see the comment above" },
 ]
 
 [bans]

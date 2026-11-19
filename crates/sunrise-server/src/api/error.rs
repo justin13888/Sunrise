@@ -61,6 +61,13 @@ pub mod codes {
     /// Mirrors [`sunrise_error::ErrorCode::SyncResumeConflict`] (registry id
     /// 513).
     pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
+    /// A chunk `PUT` named an upload that is not open: `init` never handed
+    /// out its id, or it was finalized, discarded, or swept. The client drops
+    /// the id and reserves a fresh one; re-sending under it cannot succeed.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::SyncOpInvalid`], the code the
+    /// client's upload drain switches on to forget a reserved upload id.
+    pub const SYNC_OP_INVALID: &str = "SYNC_OP_INVALID";
     /// The relay could not read or write its storage: the durable op log, the
     /// metadata store behind it, the session store, or the blob backend
     /// (ADR-0062 §1). Retryable.
@@ -430,13 +437,19 @@ impl From<crate::store::MetadataError> for ApiError {
 impl From<crate::blob::BlobError> for ApiError {
     /// A blob backend that did not answer is `503 RELAY_STORAGE_UNAVAILABLE`,
     /// like the metadata store's; a manifest that does not parse is the
-    /// server's own fault and stays `500`.
+    /// server's own fault and stays `500`; a chunk for an upload that is not
+    /// open is `404 SYNC_OP_INVALID`, the refusal the client reads as "this
+    /// upload id is spent" and answers with a fresh `init`.
     fn from(e: crate::blob::BlobError) -> Self {
         match e {
             crate::blob::BlobError::Unavailable(_) => {
                 storage_failed(&e);
                 Self::unavailable("the relay's blob store is unavailable")
             }
+            crate::blob::BlobError::UploadNotOpen => Self::not_found(
+                codes::SYNC_OP_INVALID,
+                "no open upload under that id; reserve a new one with init",
+            ),
             crate::blob::BlobError::Corrupt(_) => {
                 tracing::error!(
                     ev = "srv.store.failed",
