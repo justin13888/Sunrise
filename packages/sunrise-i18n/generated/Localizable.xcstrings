@@ -11729,6 +11729,17 @@
         }
       }
     },
+    "apple.triage.hard_violation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Its plan is outside a hard scheduling window"
+          }
+        }
+      }
+    },
     "apple.triage.headline": {
       "extractionState": "manual",
       "localizations": {

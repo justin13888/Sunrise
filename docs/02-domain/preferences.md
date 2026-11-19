@@ -242,9 +242,14 @@ Not built yet:
   `NotificationPreferences` reads the `notifications.*` keys through the open
   vault and writes each edit to this device's overlay; the first bind to a
   vault runs `migrate_legacy_defaults` over the old `notify.*` values and
-  deletes each key it took. `editor.vim_mode` and `keyboard.tips` are still
-  read from `UserDefaults`
-  ([#1182](https://github.com/justin13888/Sunrise/issues/1182)).
+  deletes each key it took. Since
+  [#1182](https://github.com/justin13888/Sunrise/issues/1182),
+  `KeyboardPreferences` reads `keyboard.vim_mode` through the open vault and
+  writes it to this device's overlay, its first bind moving the old
+  `editor.vim_mode` value through `migrate_legacy_defaults`; `KeyboardTips`
+  keeps `keyboard_tips` in the client settings file, moving the old
+  `keyboard.tips` value there the first time it is built. Each old key is
+  deleted once its value is written.
 - **The notification keys reach the client core's planner, not the Apple
   client's.** `schedule` (`crates/sunrise-client-core/src/reminders/schedule.rs`)
   hands `core.reminder_plan` the settings `reminder_policy`

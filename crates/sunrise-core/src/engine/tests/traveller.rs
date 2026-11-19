@@ -470,3 +470,97 @@ fn a_zone_change_flags_a_plan_that_breaks_a_hard_window() {
         vec![ids[1]]
     );
 }
+
+/// The triage queue flags a hard violation on every read, in the reader's
+/// zone now (#1084): nothing is flagged at home; abroad the instant plan is
+/// listed first, ahead of a missed deadline, though it is not late; a Keep
+/// does not clear it, and a re-plan inside the window does.
+#[test]
+fn the_triage_queue_flags_a_hard_violation_in_the_readers_zone() {
+    use sunrise_domain::{DeferTarget, Lateness, TriageAction};
+    let c = TravelClock::new("America/New_York", date(2026, 3, 2).at(8, 0, 0, 0));
+    let e = device(5, c.clone());
+    let mut db = db_root(ROOT);
+    let window = sunrise_domain::ScheduleConstraint {
+        time_of_day: Some(sunrise_domain::TimeOfDayRange::new(
+            jiff::civil::time(20, 0, 0, 0),
+            jiff::civil::time(23, 0, 0, 0),
+        )),
+        days_of_week: sunrise_domain::WeekdaySet::new(),
+        date_range: None,
+        at_place: Vec::new(),
+        severity: sunrise_domain::ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
+    };
+    let ny = TimeZone::get("America/New_York").unwrap();
+    let evening = date(2026, 3, 3).at(21, 0, 0, 0);
+    let mut create =
+        |draft: TaskDraft| e.apply(&mut db, Command::CreateTask(draft)).unwrap().entity;
+    // A floating plan moves with the reader, so it stays inside the window.
+    create(TaskDraft {
+        title: "floating".into(),
+        planned_at: Some(SunriseTime::floating(evening)),
+        scheduling_constraints: vec![window.clone()],
+        ..Default::default()
+    });
+    let pinned = create(TaskDraft {
+        title: "pinned".into(),
+        planned_at: Some(SunriseTime::instant(
+            ny.to_zoned(evening).unwrap().timestamp(),
+        )),
+        scheduling_constraints: vec![window.clone()],
+        ..Default::default()
+    });
+    let missed = create(TaskDraft {
+        title: "missed".into(),
+        hard_due_at: Some(SunriseTime::instant(
+            ny.to_zoned(date(2026, 3, 1).at(12, 0, 0, 0))
+                .unwrap()
+                .timestamp(),
+        )),
+        ..Default::default()
+    });
+    let queue = |db: &Db| match e.query(db, Query::Triage).unwrap() {
+        QueryResult::Triage(rows) => rows
+            .into_iter()
+            .map(|r| (r.task.id, r.lateness.state, r.hard_violation))
+            .collect::<Vec<_>>(),
+        other => panic!("expected Triage, got {other:?}"),
+    };
+
+    assert_eq!(queue(&db), vec![(missed, Lateness::LateHard, false)]);
+
+    // Abroad, with no write since: the pinned plan is now outside its window.
+    c.at("Asia/Kathmandu", date(2026, 3, 2).at(18, 45, 0, 0));
+    assert_eq!(
+        queue(&db),
+        vec![
+            (pinned, Lateness::OnTrack, true),
+            (missed, Lateness::LateHard, false),
+        ]
+    );
+
+    // Keep acknowledges lateness, not a broken window.
+    e.apply(
+        &mut db,
+        Command::Triage {
+            ids: vec![pinned, missed],
+            action: TriageAction::Keep,
+        },
+    )
+    .unwrap();
+    assert_eq!(queue(&db), vec![(pinned, Lateness::OnTrack, true)]);
+
+    // A re-plan inside the window, as read here, clears it.
+    e.apply(
+        &mut db,
+        Command::Triage {
+            ids: vec![pinned],
+            action: TriageAction::Defer {
+                to: DeferTarget::At(SunriseTime::floating(evening)),
+            },
+        },
+    )
+    .unwrap();
+    assert!(queue(&db).is_empty());
+}

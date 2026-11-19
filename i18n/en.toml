@@ -1186,6 +1186,10 @@ empty_message = "No task is late or stale. A task you keep comes back here when 
 late_hard = "Missed its deadline {date}"
 late_soft = "Missed its target {date}"
 stale = "Stale since {date}"
+# A task whose plan now falls outside one of its hard scheduling windows, in
+# the zone the user is in now (a zone change, or an edit from another
+# device). Only re-planning it clears this; keeping it does not.
+hard_violation = "Its plan is outside a hard scheduling window"
 # How many rows are ticked, in the action bar. Zero tells the user what to do.
 selection = "{count, plural, =0 {Select tasks to act on} one {# selected} other {# selected}}"
 select_all = "Select all"

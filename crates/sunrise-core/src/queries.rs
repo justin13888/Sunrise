@@ -376,6 +376,13 @@ pub enum Query {
     /// `LateSoft` or `Stale` for the reader now, not kept since that state
     /// began and not in a paused stream, with its lateness, `LateHard` first,
     /// then `LateSoft`, then `Stale`, each oldest first, then by id.
+    ///
+    /// Every open task whose plan breaks a `hard` scheduling constraint in
+    /// the reader's zone now is in it too, flagged
+    /// ([`TriageRow::hard_violation`]), whatever its lateness and whether or
+    /// not it was kept, unless its stream is paused or it is a lapsed
+    /// occurrence; flagged rows come first
+    /// (`docs/02-domain/scheduling-constraints.md` §Hard and soft, #1084).
     Triage,
     /// The routine occurrences the catch-up policy lapses now: past, open
     /// and untouched occurrences that Today, the stream and context lists
@@ -496,6 +503,10 @@ pub struct TriageRow {
     /// Its lateness for the reader now: why it needs a decision, and since
     /// when.
     pub lateness: sunrise_domain::LatenessState,
+    /// Whether its plan breaks a `hard` scheduling constraint for the reader
+    /// now, recomputed on this read in the reader's zone. Only a re-plan, a
+    /// completion or a drop clears it; Keep does not.
+    pub hard_violation: bool,
 }
 
 /// One row of [`Query::TodayView`].

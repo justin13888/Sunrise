@@ -284,11 +284,7 @@ impl Engine {
     ) -> Result<Vec<EntityRef>, EngineError> {
         let mut out: Vec<EntityRef> = super::review::read_live_tasks(db.conn())?
             .iter()
-            .filter(|t| {
-                !t.archived
-                    && matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress)
-            })
-            .filter(|t| !constraint_violations(t, reader).0.is_empty())
+            .filter(|t| breaks_hard_constraint(t, reader))
             .map(|t| t.id)
             .collect();
         out.sort_unstable();
@@ -695,6 +691,20 @@ fn constraint_zone(task: &Task, reader: &jiff::tz::TimeZone) -> jiff::tz::TimeZo
         }
         _ => reader.clone(),
     }
+}
+
+/// Whether `task` is open, unarchived and planned where it breaks a `hard`
+/// scheduling constraint for a reader in `reader`: what a zone change
+/// reports ([`Engine::hard_constraint_violations`]) and what the triage queue
+/// flags on every read (`Query::Triage`, #1084). Derived, never stored
+/// (`docs/02-domain/scheduling-constraints.md` §Re-evaluation).
+pub(super) fn breaks_hard_constraint(task: &Task, reader: &jiff::tz::TimeZone) -> bool {
+    !task.archived
+        && matches!(
+            task.state.effective(),
+            TaskState::Todo | TaskState::InProgress
+        )
+        && !constraint_violations(task, reader).0.is_empty()
 }
 
 /// `task`'s violated constraints at its plan, `(hard, soft)`, for a reader in

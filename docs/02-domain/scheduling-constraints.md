@@ -246,10 +246,19 @@ SQL; evaluation happens in Rust. See
   (`crates/sunrise-core/src/engine/task.rs#hard_constraint_violations`). A
   routine occurrence generated against one carries
   `hard_constraint_violated`.
-- No read flags a violation that arose without a write: no query recomputes
-  it, and neither the triage queue nor the Apple app shows the zone change's
-  list (§Re-evaluation,
-  [#1084](https://github.com/justin13888/Sunrise/issues/1084)).
+- `Query::Triage` recomputes the violation on every read, in the reader's
+  zone now (`crates/sunrise-core/src/engine/task.rs#breaks_hard_constraint`):
+  an open, unarchived `todo` or `in_progress` task whose plan breaks a `hard`
+  constraint is in the queue whatever its lateness, flagged
+  `TriageRow::hard_violation`, ahead of every unflagged row
+  (`crates/sunrise-core/src/engine/triage.rs`). A Keep does not clear the
+  flag; a re-plan inside the window, a completion or a drop does. A paused
+  stream and a lapsed routine occurrence hide it from the queue as they hide
+  lateness. The Apple app's triage row says so
+  (`apps/apple/Sunrise/Views/TriageView.swift`); the CLI's `triage list` does
+  not print the flag yet. The triage queue is the only read that flags it:
+  Today, the lists and the task detail do not
+  ([#1218](https://github.com/justin13888/Sunrise/issues/1218)).
 - `at_place` (`DOC_SCHEMA_V` 26,
   `crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`) is
   validated as 1..=8 distinct `plc_` refs and never joins the time kind key,

@@ -138,6 +138,58 @@ async fn triage_queue(core: &SunriseCore) -> Vec<EntityRef> {
     }
 }
 
+/// A hard violation reaches `TriageRowItem.hardViolation` on read (#1084): a
+/// plan pinned to 21:00 New York inside a hard `20:00–23:00` window is not in
+/// the queue while the device is in New York, and is flagged there once the
+/// device reports Kathmandu, with no write in between.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hard_violation_is_flagged_in_the_triage_queue_on_read() {
+    use sunrise_core_bindings::dto::{Constraint, TimeWindow};
+    use sunrise_domain::ConstraintSeverity;
+    let (_dir, core) = open_core().await;
+    core.on_time_zone_changed("America/New_York".into())
+        .expect("home");
+    let ny = jiff::tz::TimeZone::get("America/New_York").unwrap();
+    let now = jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap()).unwrap();
+    let tomorrow = now.to_zoned(ny.clone()).date().tomorrow().unwrap();
+    let at = ny.to_zoned(tomorrow.at(21, 0, 0, 0)).unwrap().timestamp();
+    let id = core
+        .submit(CoreCommand::CreateTask {
+            draft: TaskDraftIn {
+                scheduled_at: Some(TimeValue::Instant { at }),
+                scheduling_constraints: vec![Constraint {
+                    time_of_day: Some(TimeWindow {
+                        start: jiff::civil::time(20, 0, 0, 0),
+                        end: jiff::civil::time(23, 0, 0, 0),
+                        extra: None,
+                    }),
+                    days_of_week: Vec::new(),
+                    date_range: None,
+                    severity: ConstraintSeverity::Hard,
+                    at_place: Vec::new(),
+                    extra: None,
+                }],
+                ..draft("call home")
+            },
+        })
+        .await
+        .expect("inside the window at home")
+        .entity;
+    assert!(triage_queue(&core).await.is_empty());
+
+    core.on_time_zone_changed("Asia/Kathmandu".into())
+        .expect("abroad");
+    match core.query(CoreQuery::Triage).await.expect("triage") {
+        CoreQueryResult::Triage { rows } => {
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0].task.id, id);
+            assert!(rows[0].hard_violation);
+            assert_eq!(rows[0].lateness.state, LatenessKind::OnTrack);
+        }
+        other => panic!("expected Triage, got {other:?}"),
+    }
+}
+
 /// The triage queue and its actions across the seam (#335): a late task is
 /// in the queue, a batch with a bad id is refused whole, a drop carries its
 /// reason onto `TaskItem.cancelReason`, and a Keep takes a task out.
