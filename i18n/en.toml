@@ -134,7 +134,13 @@ done = "Done"
 # A mark under the row for the device the user is holding. {device} is the
 # platform's word for it ("Mac", "iPhone").
 mark_this_device = "This {device}."
-mark_removed = "Removed. It reads nothing written since."
+# A removal signed by the account identity (ADR-0058). Must keep that nothing
+# can take it back, beside `mark_removed`, which a later change can.
+mark_removed_by_authority = "Removed by the account identity. It reads nothing written since, and nothing can take this removal back."
+# A removal made by a device without the account identity's signature. Must
+# keep that a later change can take it off the list, and that the device still
+# receives no keys when it does.
+mark_removed = "Removed by a device. It reads nothing written since. A later change on the account can take this removal back off the list, though the device would still receive no keys."
 mark_read_bounded = "Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust."
 mark_not_current = "Not active on this account — the identity that certified it is no longer the one in force. An honest device that has not caught up with a change yet looks the same."
 mark_admitted_after_revocation = "Joined after a device was removed. Usually that is just a device you added later; it is worth a look if it is not."
@@ -151,6 +157,12 @@ removed_all_rotated = "Every Stream key was rotated, and the account identity wi
 removed_some_unrotated = "{count, plural, one {The account identity rotated, and every Stream key but one. That device may still read that Stream. This is a damaged row in this vault's storage, not something the removal can retry.} other {The account identity rotated, and every Stream key but #. That device may still read those. This is a damaged row in this vault's storage, not something the removal can retry.}}"
 relay_pending = "The relay has NOT been told yet. That is queued and goes out on the next sync."
 relay_told = "The relay has been told."
+# Under a removal that went through, saying which kind it was (ADR-0058).
+authority_signed = "The account identity signed this removal, so nothing can take it back."
+authority_ordinary = "This removal comes from this {device}, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys."
+# {count} devices run a version too old to read a signed removal; their ids
+# are listed below it.
+authority_awaits_update = "{count, plural, one {The account identity did NOT sign this removal, because one device runs a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on that device; removals after that are signed.} other {The account identity did NOT sign this removal, because # devices run a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on those devices; removals after that are signed.}}"
 # {count} earlier removals the account stopped recording; their ids follow.
 unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
 
@@ -2784,6 +2796,9 @@ ambiguous = "{count, plural, one {`{prefix}` matches # device; use more characte
 # The marks in brackets after a row of `sunrise devices`, comma-separated.
 mark_this_device = "this device"
 mark_revoked = "revoked"
+# Replaces `mark_revoked` for a revocation signed by the account identity
+# (ADR-0058). Must keep that nothing can undo it.
+mark_revoked_by_authority = "revoked by the account identity; nothing can undo it"
 mark_read_bounded = "removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust"
 mark_not_current = "not active on this account"
 mark_admitted_after_revocation = "joined after a device was removed"
@@ -2811,6 +2826,15 @@ unrotated_row = "(not a 16-byte stream id; nothing to rotate)"
 unrotated_note = "that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry."
 no_recertify = "that device cannot certify itself back in under a new id"
 irreversible = "this cannot be undone: to use that device again, pair it as a new device"
+# A bullet under a revocation that went through, saying which kind it was
+# (ADR-0058).
+authority_signed = "signed by the account identity: no op from any device can undo this revocation"
+authority_ordinary = "an ordinary revocation: this device does not hold the account's signing key, so a later op can take it back off the list (the device would still receive no keys)"
+# Followed by the ids of the devices to update, one per line.
+authority_awaits_update = "NOT signed by the account identity, because these devices run a build that cannot read a signed revocation:"
+# Printed after each id listed under `authority_awaits_update`.
+authority_awaits_update_row = "(update Sunrise on it)"
+authority_awaits_update_note = "Until then this is an ordinary revocation, and a later op can take it back off the list. Once they are updated, run this command again to sign it."
 relay_pending = "the relay has NOT been told yet; it is queued and will be sent on the next `sunrise sync`"
 relay_told = "the relay has been told"
 

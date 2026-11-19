@@ -52,7 +52,9 @@ enum L10n {
         static func markThisDevice(device: String) -> String {
             L10n.tr("apple.devices.mark_this_device", device)
         }
-        /// Removed. It reads nothing written since.
+        /// Removed by the account identity. It reads nothing written since, and nothing can take this removal back.
+        static var markRemovedByAuthority: String { L10n.tr("apple.devices.mark_removed_by_authority") }
+        /// Removed by a device. It reads nothing written since. A later change on the account can take this removal back off the list, though the device would still receive no keys.
         static var markRemoved: String { L10n.tr("apple.devices.mark_removed") }
         /// Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust.
         static var markReadBounded: String { L10n.tr("apple.devices.mark_read_bounded") }
@@ -88,6 +90,16 @@ enum L10n {
         static var relayPending: String { L10n.tr("apple.devices.relay_pending") }
         /// The relay has been told.
         static var relayTold: String { L10n.tr("apple.devices.relay_told") }
+        /// The account identity signed this removal, so nothing can take it back.
+        static var authoritySigned: String { L10n.tr("apple.devices.authority_signed") }
+        /// This removal comes from this {device}, not the account identity, so a later change on the account can take it back off the list. The device would still receive no keys.
+        static func authorityOrdinary(device: String) -> String {
+            L10n.tr("apple.devices.authority_ordinary", device)
+        }
+        /// {count, plural, one {The account identity did NOT sign this removal, because one device runs a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on that device; removals after that are signed.} other {The account identity did NOT sign this removal, because # devices run a version of Sunrise too old to read a signed one. Until it is signed, a later change on the account can take it back off the list. Update Sunrise on those devices; removals after that are signed.}}
+        static func authorityAwaitsUpdate(count: Int) -> String {
+            L10n.tr("apple.devices.authority_awaits_update", count)
+        }
         /// {count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}
         static func unwound(count: Int) -> String {
             L10n.tr("apple.devices.unwound", count)
