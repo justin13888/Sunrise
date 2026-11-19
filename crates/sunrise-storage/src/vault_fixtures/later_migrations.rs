@@ -488,3 +488,36 @@ fn a_v50_vaults_bindings_stay_whole_block_bindings_after_0051() {
         .unwrap();
     assert_eq!(index, 1, "the index on the task is recreated");
 }
+
+/// Migration 0052 (#1128, ADR-0051) over a real v51 vault: the `places`
+/// table exists, empty, with the index the list reads, and every row the
+/// fixture held survives. No column of it, or of any table, holds presence.
+#[test]
+fn a_v51_vault_gains_an_empty_places_table() {
+    let (_dir, db) = open_migrated(&fixture_name(51));
+    assert_eq!(row_count(&db, "places"), 0);
+    assert!(row_count(&db, "tasks") > 0, "the fixture's tasks survive");
+    let index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'places_live'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+    let presence: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master m, pragma_table_info(m.name) c
+             WHERE m.type = 'table' AND (c.name LIKE '%presen%' OR c.name LIKE '%inside%')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        presence, 0,
+        "no column records whether the user is at a place"
+    );
+}

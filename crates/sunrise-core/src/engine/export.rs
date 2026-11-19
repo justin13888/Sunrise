@@ -50,6 +50,9 @@ impl Engine {
         let mut views = super::saved_view::read_saved_views(conn)?;
         views.sort_by_key(|v| v.id);
         out.saved_views = views;
+        let mut places = super::place::read_places(conn)?;
+        places.sort_by_key(|p| p.id);
+        out.places = places;
         for id in ids(
             conn,
             "SELECT stream_id FROM streams WHERE deleted = 0 ORDER BY stream_id ASC",

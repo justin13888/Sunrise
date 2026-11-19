@@ -14,6 +14,7 @@ fn tod(constraint: TimeOfDayRange, sev: ConstraintSeverity) -> ScheduleConstrain
         time_of_day: Some(constraint),
         days_of_week: WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sev,
         unknown: Unknowns::new(),
     }
@@ -25,6 +26,7 @@ fn empty_constraint_rejected() {
         time_of_day: None,
         days_of_week: WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -66,6 +68,7 @@ fn date_range_must_be_ordered() {
             end: Some(date(2026, 8, 3)),
             unknown: Unknowns::new(),
         }),
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -82,6 +85,7 @@ fn open_ended_date_range_valid() {
             end: None,
             unknown: Unknowns::new(),
         }),
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Soft,
         unknown: Unknowns::new(),
     };
@@ -94,6 +98,7 @@ fn days_only_constraint_valid() {
         time_of_day: None,
         days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -209,6 +214,7 @@ fn is_satisfied_weekday() {
         time_of_day: None,
         days_of_week: WeekdaySet::from_days([Weekday::Mo]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -226,6 +232,7 @@ fn is_satisfied_date_range_inclusive() {
             end: Some(date(2026, 8, 17)),
             unknown: Unknowns::new(),
         }),
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -256,6 +263,7 @@ fn is_satisfied_all_dimensions_and() {
             end: Some(date(2026, 8, 31)),
             unknown: Unknowns::new(),
         }),
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -315,6 +323,7 @@ fn list_violations_different_kind_and() {
             Weekday::Fr,
         ]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -367,6 +376,7 @@ fn violations_split_by_severity() {
             Weekday::Fr,
         ]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -399,6 +409,7 @@ fn serde_skips_empty_days_and_absent_ranges() {
         time_of_day: None,
         days_of_week: WeekdaySet::from_days([Weekday::Sa, Weekday::Su]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Soft,
         unknown: Unknowns::new(),
     };
@@ -498,4 +509,90 @@ fn a_constraint_of_only_unknown_fields_validates_and_never_blocks() {
     assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 3, 0)));
     let (hard, soft) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 3, 0));
     assert!(hard.is_empty() && soft.is_empty());
+}
+
+fn place_ref(n: u8) -> EntityRef {
+    EntityRef::new(EntityKind::Place, [n; 16])
+}
+
+fn at_place(refs: Vec<EntityRef>, severity: ConstraintSeverity) -> ScheduleConstraint {
+    ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: WeekdaySet::new(),
+        date_range: None,
+        at_place: refs,
+        severity,
+        unknown: Unknowns::new(),
+    }
+}
+
+#[test]
+fn a_constraint_naming_only_places_validates() {
+    assert_eq!(
+        at_place(vec![place_ref(1)], ConstraintSeverity::Hard).validate(),
+        Ok(())
+    );
+    let eight = (1..=8).map(place_ref).collect();
+    assert_eq!(at_place(eight, ConstraintSeverity::Soft).validate(), Ok(()));
+}
+
+#[test]
+fn at_place_refuses_more_than_eight_a_duplicate_and_another_kind() {
+    let nine = (1..=9).map(place_ref).collect();
+    let twice = vec![place_ref(1), place_ref(1)];
+    let task = vec![EntityRef::new(EntityKind::Task, [1; 16])];
+    for refs in [nine, twice, task] {
+        assert_eq!(
+            at_place(refs, ConstraintSeverity::Hard).validate(),
+            Err(ConstraintError::AtPlace)
+        );
+    }
+    assert_eq!(
+        ValidationError::from(ConstraintError::AtPlace),
+        ValidationError::Field {
+            field: "task.scheduling_constraints",
+            constraint: "at_place",
+        }
+    );
+}
+
+/// ADR-0051 §4: time evaluation never reads `at_place`. A place-only hard
+/// constraint is satisfied at every moment, and one that also names a time
+/// window is judged by the window alone.
+#[test]
+fn time_evaluation_ignores_at_place() {
+    let night = zoned(2026, 3, 4, 23, 0);
+    let place_only = at_place(vec![place_ref(1)], ConstraintSeverity::Hard);
+    assert!(place_only.is_satisfied_at(&night));
+    let mut window = tod(
+        TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0)),
+        ConstraintSeverity::Hard,
+    );
+    let plain = list_violations(std::slice::from_ref(&window), &night);
+    window.at_place = vec![place_ref(2)];
+    assert_eq!(
+        list_violations(std::slice::from_ref(&window), &night),
+        plain,
+        "the place does not change the window's verdict"
+    );
+    // The place-only constraint does not join the window's kind group, so
+    // it cannot satisfy it.
+    let list = [window, place_only];
+    assert_eq!(list_violations(&list, &night), vec![0]);
+    let (hard, soft) = violations_by_severity(&list, &night);
+    assert_eq!((hard.len(), soft.len()), (1, 0));
+}
+
+#[test]
+fn at_place_is_absent_on_the_wire_when_empty_and_round_trips_when_set() {
+    let none = tod(
+        TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0)),
+        ConstraintSeverity::Soft,
+    );
+    let j = serde_json::to_value(&none).unwrap();
+    assert!(j.get("at_place").is_none());
+    let set = at_place(vec![place_ref(3), place_ref(1)], ConstraintSeverity::Hard);
+    let j = serde_json::to_value(&set).unwrap();
+    let back: ScheduleConstraint = serde_json::from_value(j).unwrap();
+    assert_eq!(back, set, "the refs keep their order");
 }

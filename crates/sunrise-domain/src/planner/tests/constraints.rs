@@ -11,6 +11,7 @@ fn hard_window(start: i8, end: i8) -> ScheduleConstraint {
         )),
         days_of_week: crate::constraint::WeekdaySet::default(),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: crate::unknown::Unknowns::default(),
     }

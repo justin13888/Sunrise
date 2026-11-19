@@ -301,17 +301,22 @@ fn a_feature_of_an_entity_this_build_lacks_is_reported_and_locks_nothing() {
     let ea = engine_seeded(ROOT, [1u8; 32], clock());
     let eb = engine_seeded(ROOT, [2u8; 32], clock());
     let mut dbb = db_root(ROOT);
-    apply_requires(&eb, &mut dbb, &ea, &["place.entity", "Not An Id", "core"]);
+    apply_requires(
+        &eb,
+        &mut dbb,
+        &ea,
+        &["external_event.entity", "Not An Id", "core"],
+    );
     assert_eq!(
         required(&dbb),
-        vec!["place.entity".to_owned()],
+        vec!["external_event.entity".to_owned()],
         "malformed ids are skipped"
     );
     assert_eq!(
         eb.missing_features(&dbb).unwrap(),
         vec![MissingFeature {
-            id: "place.entity".into(),
-            scope: FeatureScope::UnknownEntity("place".into()),
+            id: "external_event.entity".into(),
+            scope: FeatureScope::UnknownEntity("external_event".into()),
         }]
     );
     new_task(&eb, &mut dbb, "still writable");

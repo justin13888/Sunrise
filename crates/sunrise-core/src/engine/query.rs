@@ -360,6 +360,12 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("saved view {r}")))?;
                 Ok(QueryResult::SavedViews(vec![v]))
             }
+            // The one place, deleted or not, in the list shape.
+            EntityKind::Place => {
+                let p = super::place::read_place(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("place {r}")))?;
+                Ok(QueryResult::Places(vec![p]))
+            }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?}",
                 r.kind()

@@ -5,7 +5,7 @@ use sunrise_domain::search::{Highlighted, NoticeKind, SearchKind};
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
-    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SavedView,
+    Place, ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SavedView,
     SessionPlan, Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
@@ -350,6 +350,9 @@ pub enum Query {
     /// it is: the tasks it matches, in its order. The result is never stored
     /// (`docs/08-features/planning-views.md` §Saved views).
     SavedView(EntityRef),
+    /// Every live Place (ADR-0051), by name and then id. Holds no presence:
+    /// whether the user is at one is `Core`'s, in memory only.
+    Places,
     /// Today as ADR-0047 composes it (`docs/08-features/planning-views.md`
     /// §Today): each task in Today with its [`sunrise_domain::TodayGroup`]
     /// (planned, carried over, due today, late) and its lateness for the
@@ -487,6 +490,9 @@ pub enum QueryResult {
     Lateness(Vec<TaskLateness>),
     /// `Triage` returns the queue, in its order.
     Triage(Vec<TriageRow>),
+    /// `Places` returns the live places; `EntityById` of a `plc_` id returns
+    /// the one place, deleted or not.
+    Places(Vec<Place>),
 }
 
 /// One row of [`Query::Triage`].

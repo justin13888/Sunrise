@@ -287,6 +287,7 @@ fn an_unknown_severity_survives_its_constraint_and_reads_as_soft() {
         time_of_day: None,
         days_of_week: WeekdaySet::from_days([Weekday::Mo]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::from_raw("critical"),
         unknown: sunrise_domain::Unknowns::new(),
     };

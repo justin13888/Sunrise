@@ -263,6 +263,7 @@ mod tests {
             )),
             days_of_week: WeekdaySet::new(),
             date_range: None,
+            at_place: Vec::new(),
             severity: ConstraintSeverity::Soft,
             unknown: crate::Unknowns::new(),
         }

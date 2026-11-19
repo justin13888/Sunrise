@@ -8,13 +8,16 @@ fn id(n: u8) -> PlaceId {
 
 fn place(n: u8, lat_e7: i32, lon_e7: i32) -> Place {
     Place {
-        id: id(n),
+        id: id(n).to_ref(),
+        created_at: Timestamp::UNIX_EPOCH,
+        updated_at: Timestamp::UNIX_EPOCH,
         name: format!("place {n}"),
         lat_e7,
         lon_e7,
         radius_m: DEFAULT_RADIUS_M,
         address_label: None,
         deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 
@@ -246,4 +249,111 @@ fn the_cosine_polynomial_tracks_the_platform_cosine() {
         let err = (cos_lat(f64::from(lat_e7)) - x.cos()).abs();
         assert!(err < 3e-7, "lat_e7 {lat_e7}: off by {err}");
     }
+}
+
+#[test]
+fn a_place_id_converts_to_and_from_its_entity_ref() {
+    let p = id(7);
+    assert_eq!(PlaceId::from_ref(p.to_ref()), Some(p));
+    assert_eq!(p.to_ref().to_str(), p.to_str());
+    assert_eq!(place(7, 0, 0).place_id(), p);
+    let task = EntityRef::new(EntityKind::Task, *p.ulid().as_bytes());
+    assert_eq!(PlaceId::from_ref(task), None);
+}
+
+#[test]
+fn a_draft_and_a_patch_validate_what_they_write() {
+    let draft = PlaceDraft {
+        name: "Gym".into(),
+        lat_e7: 0,
+        lon_e7: 0,
+        radius_m: DEFAULT_RADIUS_M,
+        address_label: None,
+    };
+    assert_eq!(draft.validate(), Ok(()));
+    assert_eq!(
+        PlaceDraft {
+            radius_m: MIN_RADIUS_M - 1,
+            ..draft.clone()
+        }
+        .validate(),
+        Err(ValidationError::Field {
+            field: "place.radius_m",
+            constraint: "range_50_5000",
+        })
+    );
+    let defaulted: PlaceDraft =
+        serde_json::from_value(serde_json::json!({"name": "Gym", "lat_e7": 0, "lon_e7": 0}))
+            .unwrap();
+    assert_eq!(defaulted, draft, "an absent radius is the default one");
+
+    assert!(PlacePatch::default().is_empty());
+    assert_eq!(PlacePatch::default().validate(), Ok(()));
+    let far = PlacePatch {
+        lon_e7: Some(MAX_LON_E7 + 1),
+        ..PlacePatch::default()
+    };
+    assert_eq!(
+        far.validate(),
+        Err(ValidationError::Field {
+            field: "place.lon_e7",
+            constraint: "range",
+        })
+    );
+    let clear = PlacePatch {
+        address_label: Some(None),
+        ..PlacePatch::default()
+    };
+    assert!(!clear.is_empty());
+    let back: PlacePatch = serde_json::from_value(serde_json::to_value(&clear).unwrap()).unwrap();
+    assert_eq!(back, clear, "clearing the label survives a round trip");
+}
+
+fn constraint(places: &[u8], severity: ConstraintSeverity) -> ScheduleConstraint {
+    ScheduleConstraint {
+        time_of_day: None,
+        days_of_week: crate::WeekdaySet::new(),
+        date_range: None,
+        at_place: places.iter().map(|&n| id(n).to_ref()).collect(),
+        severity,
+        unknown: Unknowns::new(),
+    }
+}
+
+#[test]
+fn a_tasks_requirement_is_every_place_its_constraints_name() {
+    assert_eq!(TaskPlaceReq::of(&[]), None);
+    assert_eq!(
+        TaskPlaceReq::of(&[constraint(&[], ConstraintSeverity::Hard)]),
+        None
+    );
+    let both = TaskPlaceReq::of(&[
+        constraint(&[2, 1], ConstraintSeverity::Soft),
+        constraint(&[1, 3], ConstraintSeverity::Hard),
+    ])
+    .unwrap();
+    assert_eq!(both, req(&[1, 2, 3], true));
+    let unknown =
+        TaskPlaceReq::of(&[constraint(&[4], ConstraintSeverity::from_raw("critical"))]).unwrap();
+    assert!(!unknown.hard, "an unknown severity reads as soft");
+}
+
+#[test]
+fn only_a_hard_requirement_known_violated_is_not_actionable_here() {
+    let mut presence = Presence::new();
+    let hard = req(&[1, 2], true);
+    let soft = req(&[1, 2], false);
+    assert!(
+        !hard.not_actionable_here(&presence),
+        "unknown is never flagged"
+    );
+    presence.set(id(1), false);
+    assert!(!hard.not_actionable_here(&presence), "one is still unknown");
+    presence.set(id(2), false);
+    assert_eq!(hard.evaluate(&presence), PlaceEval::Violated);
+    assert!(hard.not_actionable_here(&presence));
+    assert!(!soft.not_actionable_here(&presence));
+    presence.set(id(2), true);
+    assert_eq!(hard.evaluate(&presence), PlaceEval::Satisfied);
+    assert!(!hard.not_actionable_here(&presence));
 }

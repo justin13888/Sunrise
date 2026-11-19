@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockException, BlockPatch, ContextDraft, ContextPatch,
-    Disposition, EditScope, Energy, InterruptionReason, NoteBody, PrefTarget, PrefValue,
-    ReviewSnapshotDraft, RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch,
-    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime, TaskDraft, TaskPatch,
-    TaskState,
+    Disposition, EditScope, Energy, InterruptionReason, NoteBody, PlaceDraft, PlacePatch,
+    PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch, SavedViewDraft,
+    SavedViewPatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, SunriseTime,
+    TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -632,6 +632,26 @@ pub enum Command {
     },
     /// Delete a saved view. [`Self::Restore`] brings it back.
     DeleteSavedView(EntityRef),
+    /// Create a Place (ADR-0051, `docs/02-domain/places.md` §Commands): a
+    /// new `plc_` entity, only ever from an explicit user act.
+    ///
+    /// Written as one `Patch` on the vault-meta stream, which needs the vault
+    /// to require `place.entity`: refused with `FeatureUnsupportedByDevices`
+    /// while a paired device lacks it.
+    CreatePlace(PlaceDraft),
+    /// Edit a Place: one `Patch` writing exactly the fields the patch names.
+    /// Refused with `NotFound` for a place this replica does not hold or
+    /// holds deleted, and `Invalid` for an edit that changes nothing.
+    UpdatePlace {
+        /// The place.
+        id: EntityRef,
+        /// The fields to write.
+        patch: PlacePatch,
+    },
+    /// Delete a Place: a tombstone, and nothing else. A task that names it
+    /// keeps the ref, which then evaluates `Unknown`. [`Self::Restore`]
+    /// brings it back.
+    DeletePlace(EntityRef),
 }
 
 /// What [`Command::ImportBlock`] writes beyond its [`BlockDraft`]: the fields

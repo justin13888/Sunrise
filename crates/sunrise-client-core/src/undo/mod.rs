@@ -62,7 +62,7 @@ mod tests;
 use inverse::invert_one;
 use sunrise_core::queries::{ContextRow, StreamRow};
 use sunrise_core::Command;
-use sunrise_domain::{RoutineRow, SavedView, Task};
+use sunrise_domain::{Place, RoutineRow, SavedView, Task};
 use sunrise_id::EntityRef;
 
 /// What [`invert`] needs to read out of whatever the client is holding.
@@ -89,6 +89,12 @@ pub trait EntityLookup {
     /// holds none can leave this out: an edit of a view is then not
     /// undoable, which is what a miss always means here.
     fn saved_view(&self, id: EntityRef) -> Option<&SavedView> {
+        let _ = id;
+        None
+    }
+    /// The place `id`, if this client is holding it. A client that holds
+    /// none can leave this out: an edit of a place is then not undoable.
+    fn place(&self, id: EntityRef) -> Option<&Place> {
         let _ = id;
         None
     }
@@ -175,6 +181,7 @@ pub const fn is_create(cmd: &Command) -> bool {
             | Command::CreateBlock(_)
             | Command::AttachFile(_)
             | Command::CreateSavedView(_)
+            | Command::CreatePlace(_)
     )
 }
 
@@ -219,6 +226,7 @@ pub fn invert_create(cmd: &Command, created: EntityRef) -> Result<Command, NotUn
         }),
         Command::AttachFile(_) => Ok(Command::DetachFile(created)),
         Command::CreateSavedView(_) => Ok(Command::DeleteSavedView(created)),
+        Command::CreatePlace(_) => Ok(Command::DeletePlace(created)),
         _ => Err(NotUndoable::Unsupported),
     }
 }

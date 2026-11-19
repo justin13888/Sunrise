@@ -12,9 +12,9 @@ use ciborium::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
-    Attachment, Block, Context, Frequency, Preferences, RRule, Routine, RoutineCatchupPolicy,
-    SavedView, Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
-    ViewFilter, ViewKind, ViewSort,
+    Attachment, Block, Context, Frequency, Place, Preferences, RRule, Routine,
+    RoutineCatchupPolicy, SavedView, Stream, StreamColor, StreamReviewCadence, Task, TaskState,
+    TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, FieldSpec, Merge, RecordSpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -370,6 +370,7 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
         EntityKind::Attachment => value.deserialized::<Attachment>().is_ok(),
         EntityKind::Preferences => value.deserialized::<Preferences>().is_ok(),
         EntityKind::SavedView => value.deserialized::<SavedView>().is_ok(),
+        EntityKind::Place => value.deserialized::<Place>().is_ok(),
         _ => true,
     }
 }
@@ -388,7 +389,8 @@ pub(in crate::engine) fn round_trip(kind: EntityKind, value: Value) -> Option<Va
         EntityKind::Routine => again::<Routine>(value),
         EntityKind::Block => again::<Block>(value),
         EntityKind::Attachment => again::<Attachment>(value),
-        // Preferences and saved views have no full-state op to round-trip.
+        // Preferences, saved views and places have no full-state op to
+        // round-trip.
         _ => None,
     }
 }
@@ -570,6 +572,18 @@ fn probe(kind: EntityKind) -> Option<Value> {
             filter: ViewFilter::default(),
             sort: ViewSort::Default,
             sort_order: None,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }),
+        EntityKind::Place => Value::serialized(&Place {
+            id: id(EntityKind::Place),
+            created_at: at,
+            updated_at: at,
+            name: String::new(),
+            lat_e7: 0,
+            lon_e7: 0,
+            radius_m: sunrise_domain::place::DEFAULT_RADIUS_M,
+            address_label: None,
             deleted: false,
             unknown: Unknowns::new(),
         }),

@@ -180,6 +180,7 @@ fn constraint_rule(world: &World<'_>, c: &ScheduleConstraint, s: i64) -> Option<
         time_of_day,
         days_of_week,
         date_range,
+        at_place: Vec::new(),
         severity: c.severity.clone(),
         unknown: crate::unknown::Unknowns::default(),
     };

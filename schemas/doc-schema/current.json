@@ -668,6 +668,76 @@
             "tag": "person"
         },
         {
+            "features": ["place.entity"],
+            "merge": "lww",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "plc_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "address_label",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "conflict": "tombstone",
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "lat_e7",
+                            "type": "i32"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "lon_e7",
+                            "type": "i32"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "name",
+                            "type": "String"
+                        },
+                        {
+                            "conflict": "tracked",
+                            "crdt": "register",
+                            "name": "radius_m",
+                            "type": "u32"
+                        },
+                        {
+                            "conflict": "quiet",
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Place"
+                }
+            ],
+            "tag": "place"
+        },
+        {
             "features": ["preferences.entity"],
             "merge": "lww",
             "ops": [],
@@ -1618,6 +1688,17 @@
         {
             "field_op_kinds": [],
             "fields": [],
+            "id": "place.entity",
+            "op_kinds": [],
+            "retyped": [],
+            "scope": {
+                "entity": "place"
+            },
+            "since": 26
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
             "id": "preferences.entity",
             "op_kinds": [],
             "retyped": [],
@@ -2237,6 +2318,10 @@
         },
         {
             "fields": [
+                {
+                    "name": "at_place",
+                    "type": "Vec<EntityRef>"
+                },
                 {
                     "name": "date_range",
                     "type": "Option<DateRange>"

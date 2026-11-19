@@ -44,6 +44,7 @@ fn update_task_replaces_whole_constraint_list() {
         time_of_day: None,
         days_of_week: sunrise_domain::WeekdaySet::from_days([sunrise_domain::Weekday::Sa]),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Soft,
         unknown: Unknowns::new(),
     };
@@ -171,6 +172,7 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
         time_of_day: None,
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };

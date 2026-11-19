@@ -24,7 +24,8 @@
 //!
 //! # Not built yet
 //!
-//! * `TODO(#339)`: a place predicate. There is no Place entity yet.
+//! * `TODO(#339)`: a place predicate. Places are an entity now (#1128), but
+//!   a filter cannot name one yet.
 //! * `TODO(#345)`: [`ViewFilter::text`] is the search grammar for a Search
 //!   view, run by the core's search; for every other view it is a plain
 //!   case-insensitive match on the title.
@@ -558,11 +559,11 @@ pub struct SavedViewPatch {
 
 /// `Option<Option<T>>` as absent (`None`), `null` (`Some(None)`) or a value,
 /// so a patch that unplaces a view survives a round trip as one.
-mod double {
+pub(crate) mod double {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     #[allow(clippy::option_option, clippy::ref_option)]
-    pub(super) fn serialize<T: Serialize, S: Serializer>(
+    pub(crate) fn serialize<T: Serialize, S: Serializer>(
         v: &Option<Option<T>>,
         s: S,
     ) -> Result<S::Ok, S::Error> {
@@ -573,7 +574,7 @@ mod double {
     }
 
     #[allow(clippy::option_option)]
-    pub(super) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
         d: D,
     ) -> Result<Option<Option<T>>, D::Error> {
         Option::<T>::deserialize(d).map(Some)

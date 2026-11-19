@@ -166,6 +166,7 @@ async fn a_hard_violation_is_flagged_in_the_triage_queue_on_read() {
                     days_of_week: Vec::new(),
                     date_range: None,
                     severity: ConstraintSeverity::Hard,
+                    at_place: Vec::new(),
                     extra: None,
                 }],
                 ..draft("call home")

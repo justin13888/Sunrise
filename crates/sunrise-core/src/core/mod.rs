@@ -479,6 +479,13 @@ impl Core {
             let mut db = self.db.lock();
             self.engine.apply(&mut db, cmd.clone())?
         };
+        // A deleted place is unknown from now on (`docs/02-domain/places.md`
+        // §Deletion): what the OS last said about it is dropped.
+        if let Command::DeletePlace(id) = &cmd {
+            if let Some(place) = sunrise_domain::PlaceId::from_ref(*id) {
+                self.forget_place_presence(place);
+            }
+        }
         // Best-effort change publish; receivers are bounded broadcast channels
         // and dropped subscribers are accepted.
         for event in published::published(&cmd, &res) {
@@ -1672,6 +1679,7 @@ mod published;
 mod repair;
 mod snapshot;
 
+pub use place::TaskPlaceStatus;
 pub use planner::{PlanCommitResult, PlanUndoResult, PLAN_CACHE_SIZE};
 pub(crate) use repair::OpenMode;
 

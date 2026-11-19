@@ -69,6 +69,7 @@ fn value_records_write_their_described_names() {
             time_of_day: Some(TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0))),
             days_of_week: WeekdaySet::from_days([Weekday::Mo]),
             date_range: Some(DateRange::new(date(2024, 1, 1), None)),
+            at_place: vec![eref(EntityKind::Place, 4)],
             severity: ConstraintSeverity::Hard,
             unknown: Unknowns::new(),
         },

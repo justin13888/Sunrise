@@ -370,6 +370,26 @@ pub enum CoreCommand {
         /// What to do to each.
         action: crate::lateness::TriageActionIn,
     },
+    /// Create a Place, from an explicit user act. See
+    /// [`sunrise_core::Command::CreatePlace`].
+    CreatePlace {
+        /// The place.
+        draft: crate::places::PlaceDraftIn,
+    },
+    /// Edit a Place: only the fields set are written. See
+    /// [`sunrise_core::Command::UpdatePlace`].
+    UpdatePlace {
+        /// The place.
+        id: EntityRef,
+        /// The fields to write.
+        edit: crate::places::PlaceEdit,
+    },
+    /// Delete a Place; `Restore` brings it back. A task naming it keeps the
+    /// ref, which evaluates unknown.
+    DeletePlace {
+        /// The place.
+        id: EntityRef,
+    },
 }
 
 /// One item of [`CoreCommand::BulkTasks`].
@@ -567,6 +587,12 @@ impl CoreCommand {
                 ids,
                 action: action.into(),
             },
+            Self::CreatePlace { draft } => Command::CreatePlace(draft.into()),
+            Self::UpdatePlace { id, edit } => Command::UpdatePlace {
+                id,
+                patch: edit.into(),
+            },
+            Self::DeletePlace { id } => Command::DeletePlace(id),
         })
     }
 }

@@ -438,6 +438,7 @@ fn a_zone_change_flags_a_plan_that_breaks_a_hard_window() {
         )),
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };
@@ -487,6 +488,7 @@ fn the_triage_queue_flags_a_hard_violation_in_the_readers_zone() {
         )),
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };

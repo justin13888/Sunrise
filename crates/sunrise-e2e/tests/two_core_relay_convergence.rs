@@ -130,6 +130,7 @@ async fn two_core_relay_convergence() {
         time_of_day: Some(TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0))),
         days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We, Weekday::Fr]),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: sunrise_domain::Unknowns::new(),
     };

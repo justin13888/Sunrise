@@ -21,6 +21,7 @@ fn id() -> impl Strategy<Value = EntityRef> {
             EntityKind::Routine,
             EntityKind::Block,
             EntityKind::SavedView,
+            EntityKind::Place,
         ]),
         any::<[u8; 16]>(),
     )
@@ -108,6 +109,7 @@ fn constraints() -> impl Strategy<Value = Vec<ScheduleConstraint>> {
                 time_of_day,
                 days_of_week: WeekdaySet::from_days([weekday]),
                 date_range,
+                at_place: Vec::new(),
                 severity: ConstraintSeverity::from_raw(severity),
                 unknown: Unknowns::new(),
             },
@@ -483,6 +485,44 @@ fn saved_view_patch() -> impl Strategy<Value = SavedViewPatch> {
         })
 }
 
+fn place_draft() -> impl Strategy<Value = PlaceDraft> {
+    (
+        any::<String>(),
+        any::<i32>(),
+        any::<i32>(),
+        any::<u32>(),
+        of(any::<String>()),
+    )
+        .prop_map(
+            |(name, lat_e7, lon_e7, radius_m, address_label)| PlaceDraft {
+                name,
+                lat_e7,
+                lon_e7,
+                radius_m,
+                address_label,
+            },
+        )
+}
+
+fn place_patch() -> impl Strategy<Value = PlacePatch> {
+    (
+        of(any::<String>()),
+        of(any::<i32>()),
+        of(any::<i32>()),
+        of(any::<u32>()),
+        clearable(any::<String>()),
+    )
+        .prop_map(
+            |(name, lat_e7, lon_e7, radius_m, address_label)| PlacePatch {
+                name,
+                lat_e7,
+                lon_e7,
+                radius_m,
+                address_label,
+            },
+        )
+}
+
 /// One strategy per [`Cmd`] variant, at the index [`cmd_index`] gives it.
 fn command_arms() -> Vec<BoxedStrategy<Command>> {
     vec![
@@ -554,6 +594,11 @@ fn command_arms() -> Vec<BoxedStrategy<Command>> {
             .prop_map(|(id, patch)| Command::UpdateSavedView { id, patch })
             .boxed(),
         id().prop_map(Command::DeleteSavedView).boxed(),
+        place_draft().prop_map(Command::CreatePlace).boxed(),
+        (id(), place_patch())
+            .prop_map(|(id, patch)| Command::UpdatePlace { id, patch })
+            .boxed(),
+        id().prop_map(Command::DeletePlace).boxed(),
     ]
 }
 
@@ -591,6 +636,9 @@ fn cmd_index(cmd: &Cmd) -> usize {
         Cmd::CreateSavedView(_) => 26,
         Cmd::UpdateSavedView { .. } => 27,
         Cmd::DeleteSavedView(_) => 28,
+        Cmd::CreatePlace(_) => 29,
+        Cmd::UpdatePlace { .. } => 30,
+        Cmd::DeletePlace(_) => 31,
     }
 }
 
@@ -599,7 +647,7 @@ fn cmd_index(cmd: &Cmd) -> usize {
 #[test]
 fn every_persisted_command_has_a_strategy_that_draws_it() {
     let arms = command_arms();
-    assert_eq!(arms.len(), 29, "one arm per variant `cmd_index` names");
+    assert_eq!(arms.len(), 32, "one arm per variant `cmd_index` names");
     let mut runner = TestRunner::deterministic();
     for (index, arm) in arms.iter().enumerate() {
         let command = arm.new_tree(&mut runner).expect("draws").current();

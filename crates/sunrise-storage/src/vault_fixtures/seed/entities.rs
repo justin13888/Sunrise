@@ -19,6 +19,7 @@ const REVIEW: [u8; 16] = [0x07; 16];
 const NOTE: [u8; 16] = [0x08; 16];
 const PERSON: [u8; 16] = [0x0a; 16];
 const SAVED_VIEW: [u8; 16] = [0x2c; 16];
+const PLACE: [u8; 16] = [0x3d; 16];
 
 pub(super) const ROWS: &[SeedRow] = &[
     SeedRow {
@@ -148,6 +149,25 @@ pub(super) const ROWS: &[SeedRow] = &[
             ("lww_seq", I(54)),
             ("lww_device", B(&DEVICE_LAPTOP)),
             ("extra", B(b"\xa1\x01\x41v")),
+        ],
+    },
+    SeedRow {
+        table: "places",
+        values: &[
+            ("id", B(&PLACE)),
+            ("name", T(b"Gym")),
+            ("lat_e7", I(437_000_000)),
+            ("lon_e7", I(-794_000_000)),
+            ("radius_m", I(150)),
+            ("address_label", T(b"1 Front St")),
+            ("deleted", I(0)),
+            ("created_at_ms", I(61)),
+            ("updated_at_ms", I(62)),
+            ("lww_hlc_ms", I(HLC_MS + 10)),
+            ("lww_hlc_logical", I(63)),
+            ("lww_seq", I(64)),
+            ("lww_device", B(&DEVICE_LAPTOP)),
+            ("extra", B(b"\xa1\x01\x41p")),
         ],
     },
     SeedRow {

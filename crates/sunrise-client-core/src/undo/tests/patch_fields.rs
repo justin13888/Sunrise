@@ -144,6 +144,7 @@ fn constraint(severity: sunrise_domain::ConstraintSeverity) -> sunrise_domain::S
         time_of_day: None,
         days_of_week: sunrise_domain::WeekdaySet::default(),
         date_range: None,
+        at_place: Vec::new(),
         severity,
         unknown: Unknowns::new(),
     }

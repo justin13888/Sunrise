@@ -144,6 +144,7 @@ fn each_tracked_field_is_reported_under_its_own_name() {
         time_of_day: None,
         days_of_week: WeekdaySet::default(),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: sunrise_domain::Unknowns::new(),
     }];

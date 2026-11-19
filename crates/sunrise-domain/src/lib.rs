@@ -142,7 +142,8 @@ pub use phrase::{
     length_label, plan_reason, relative_day, short_duration,
 };
 pub use place::{
-    evaluate_place, select_regions, Place, PlaceEval, PlaceId, PlaceIdError, Presence, TaskPlaceReq,
+    evaluate_place, select_regions, Place, PlaceDraft, PlaceEval, PlaceId, PlaceIdError,
+    PlacePatch, Presence, TaskPlaceReq,
 };
 pub use planner::{
     plan_base, solve as plan_solve, Edge, MoveRole, PlanBase, PlanBlock, PlanBlocker, PlanDay,

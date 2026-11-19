@@ -35,10 +35,10 @@
 use serde::{Deserialize, Serialize};
 use sunrise_core::{BulkTaskAction, BulkTaskItem, Command};
 use sunrise_domain::{
-    BlockDraft, ContextDraft, ContextPatch, Disposition, EditScope, Energy, NoteBody, RRule,
-    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, SavedViewDraft, SavedViewPatch,
-    ScheduleConstraint, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, SunriseTime,
-    TaskDraft, TaskPatch, TaskState, TaskTemplate,
+    BlockDraft, ContextDraft, ContextPatch, Disposition, EditScope, Energy, NoteBody, PlaceDraft,
+    PlacePatch, RRule, RoutineCatchupPolicy, RoutineDraft, RoutinePatch, SavedViewDraft,
+    SavedViewPatch, ScheduleConstraint, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
+    SunriseTime, TaskDraft, TaskPatch, TaskState, TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -220,6 +220,12 @@ enum Cmd {
         patch: Cbor<SavedViewPatch>,
     },
     DeleteSavedView(EntityRef),
+    CreatePlace(PlaceDraft),
+    UpdatePlace {
+        id: EntityRef,
+        patch: PlacePatch,
+    },
+    DeletePlace(EntityRef),
 }
 
 /// A value written as the hex of its canonical CBOR: a saved view's filter
@@ -299,6 +305,9 @@ impl Cmd {
                 patch: Cbor(patch),
             },
             Command::DeleteSavedView(id) => Self::DeleteSavedView(id),
+            Command::CreatePlace(d) => Self::CreatePlace(d),
+            Command::UpdatePlace { id, patch } => Self::UpdatePlace { id, patch },
+            Command::DeletePlace(id) => Self::DeletePlace(id),
             _ => return None,
         })
     }
@@ -345,6 +354,9 @@ impl Cmd {
             Self::CreateSavedView(d) => Command::CreateSavedView(d.0),
             Self::UpdateSavedView { id, patch } => Command::UpdateSavedView { id, patch: patch.0 },
             Self::DeleteSavedView(id) => Command::DeleteSavedView(id),
+            Self::CreatePlace(d) => Command::CreatePlace(d),
+            Self::UpdatePlace { id, patch } => Command::UpdatePlace { id, patch },
+            Self::DeletePlace(id) => Command::DeletePlace(id),
         }
     }
 }
