@@ -17,16 +17,17 @@ and [#344](https://github.com/justin13888/Sunrise/issues/344) builds the client 
 > cross UniFFI (`crates/sunrise-core-bindings/src/planner.rs`). The Apple
 > client's calendar block move and resize send `MoveBlock` and `ResizeBlock`
 > (edge `End`) on each snapped position, draw the diff, and commit it on drop
-> (`apps/apple/Sunrise/Calendar/CalendarModel.swift`); the keyboard path is
+> (`apps/apple/Sunrise/Calendar/CalendarPlanner.swift`); the keyboard path is
 > `Keymap.planning`. Where that client stops short of the contract below:
 >
 > - One event of a repeating block is not planned: the planner reads a
 >   block's series row, not its events, so the drag keeps its "which
->   events?" question and writes an ordinary edit.
+>   events?" question and writes an ordinary edit
+>   ([#1224](https://github.com/justin13888/Sunrise/issues/1224)).
 > - A task dropped on the grid is sized by a `MoveTask` preview (its
 >   estimate, or `default_task_duration_s`) and becomes a bound block; the
 >   preview is cancelled, not committed, because the grid draws blocks and
->   not a task's `planned_at`.
+>   not a task's `planned_at` ([#1225](https://github.com/justin13888/Sunrise/issues/1225)).
 > - A block's top edge is not draggable, so `ResizeBlock { edge: Start }` is
 >   never sent.
 > - The undo step is ordered against the command stack in Swift
