@@ -83,7 +83,7 @@ macro_rules! for_each_entity {
                 tag: "stream",
                 merge: Lww,
                 owner: Meta,
-                features: [],
+                features: ["stream.civil_times"],
                 ops: [
                     /// Create a stream (full state).
                     StreamCreate(Stream) = "stream.create", Create, id;

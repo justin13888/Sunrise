@@ -1150,7 +1150,7 @@
             "tag": "saved_view"
         },
         {
-            "features": [],
+            "features": ["stream.civil_times"],
             "merge": "lww",
             "ops": [
                 {
@@ -1755,6 +1755,21 @@
                 "entity": "saved_view"
             },
             "since": 17
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "stream.civil_times",
+            "op_kinds": [],
+            "retyped": [
+                "StreamCreate.paused_until",
+                "StreamDelete.paused_until",
+                "StreamUpdate.paused_until"
+            ],
+            "scope": {
+                "entity": "stream"
+            },
+            "since": 27
         }
     ],
     "format": 1,

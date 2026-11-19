@@ -79,6 +79,11 @@ pub const BLOCK_RECURRENCE_FEATURE: &str = "block.recurrence";
 /// recurring block uses: `occurrence_tasks` (#1162).
 pub const BLOCK_OCCURRENCE_TASKS_FEATURE: &str = "block.occurrence_tasks";
 
+/// The id of the feature a stream op uses when its `paused_until` is a
+/// civil time (`floating`, `zoned` or `all_day`) rather than an instant
+/// (#788).
+pub const STREAM_CIVIL_TIMES_FEATURE: &str = "stream.civil_times";
+
 /// The id of the feature every write of a Place uses (ADR-0051, #1128).
 pub const PLACE_FEATURE: &str = "place.entity";
 
@@ -203,6 +208,22 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 26,
+    },
+    // A stream's pause expiry as a civil time (issue #788), the stream side
+    // of `routine.civil_times`. An instant is still written as the bare
+    // timestamp a build before `DOC_SCHEMA_V` 15 reads; only an op whose
+    // `paused_until` is `floating`, `zoned` or `all_day` uses this.
+    Feature {
+        id: STREAM_CIVIL_TIMES_FEATURE,
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[
+            ("StreamCreate", "paused_until"),
+            ("StreamUpdate", "paused_until"),
+            ("StreamDelete", "paused_until"),
+        ],
+        since: 27,
     },
     // The whole model of ADR-0065: every entity write is a `Patch` naming its
     // writer's heads in `parents`, a multi-entity commit carries `group`, and
