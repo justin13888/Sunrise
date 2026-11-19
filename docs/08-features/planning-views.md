@@ -88,7 +88,7 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 - **Surfaces:** a sidebar entry on desktop, an entry in Browse on phone and
   tablet, and `sunrise upcoming [7|14|30]` on the CLI.
 
-> **Today's build** has the query and the CLI. `Query::Upcoming { now_ms,
+> **Today's build** has the query, the CLI and the Apple surfaces. `Query::Upcoming { now_ms,
 > span_days, contexts }` (`crates/sunrise-core/src/engine/upcoming.rs`) folds
 > through the pure `crates/sunrise-domain/src/upcoming.rs#build_upcoming`: days
 > are planner days in the reader's zone (`Clock::timezone`, ADR-0066 §5, rather
@@ -101,8 +101,24 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > "No stream" is listed last. `span_days: None` reads `views.upcoming.span_days`; any
 > span but 7, 14 or 30 is refused. Blocks overlap a day as on the calendar
 > grid. The seam carries it as `CoreQuery.upcoming` / `UpcomingReport`, and
-> `sunrise upcoming` prints it. Drag rescheduling (`plan_preview`, #343/#344)
-> and the Apple surfaces are not built.
+> `sunrise upcoming` prints it.
+>
+> On macOS and iOS, `TaskListKind.upcoming(span:)`
+> (`apps/apple/Sunrise/Browse/Destination.swift`) is a sidebar entry, a
+> Browse entry on the phone, and ⌘3. `TaskListView` draws the report's days
+> and no-date groups in the order they arrive (`UpcomingLayout`, in
+> `apps/apple/Sunrise/Tasks/UpcomingPlanner.swift`), with every day kept so
+> it can be dropped on, a deadline row badged Due or Target, and the 7 / 14 /
+> 30 chips writing `views.upcoming.span_days` for this device. A task dragged
+> onto a day's heading or row sends `BulkDefer { to: day, place: false }`,
+> and into the no-date lane `Unschedule { keep: Nothing }`, to `plan_preview`
+> while it hovers; the heading shows the plan's summary, and the drop commits
+> that diff as one undo step (`UpcomingPlanner`). A hover cannot read a
+> drag's payload, so the row records what it lends when the drag starts. ⌥←
+> / ⌥→ preview moving the selection a day (an undated task's first ⌥→ is
+> today), Return commits and Esc cancels. Not built on Apple: the context
+> filter (the client sends none), and a saved view of Upcoming
+> ([#1229](https://github.com/justin13888/Sunrise/issues/1229)).
 
 ## Needs decision (triage)
 

@@ -141,10 +141,6 @@ added:**
   embedded ([#14](https://github.com/justin13888/Sunrise/issues/14)), but
   nobody has seen a Mac offer it, so it stays **unmet** until someone does
   ([#1116](https://github.com/justin13888/Sunrise/issues/1116)).
-- **Upcoming** on macOS and iOS. The view is the core's (`Query::Upcoming`)
-  and crosses the seam as `CoreQuery.upcoming`, but no Apple screen reaches it
-  yet: `TaskListKind.upcoming(span:)`, its sidebar and Browse entries and ⌘3
-  are the rest of [#351](https://github.com/justin13888/Sunrise/issues/351).
 
 The iOS widget row is graded **met**. The graded MUSTs live in
 three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
@@ -162,7 +158,7 @@ around it is recorded in the cells below and in
 | Read/write tasks | met | sidebar → `TaskListView` → `TaskListModel` → `submit`/`query` |
 | Streams, contexts, routines | met | `BrowseSidebar` CRUD; `RoutinesView` → `RoutineEditorView` |
 | Today / Inbox / Stream views | met | `Destination.fixed` + per-stream tags → `TaskListView` |
-| Upcoming | unmet | No surface. `CoreQuery.upcoming` returns the days and the no-date lane, and nothing in `apps/apple` asks for it ([#351](https://github.com/justin13888/Sunrise/issues/351)) |
+| Upcoming | met *(no context filter, not a saved view)* | sidebar → `TaskListKind.upcoming(span:)` (⌘3, View menu) → `TaskListView`, which draws `CoreQuery.upcoming`'s days and no-date lane as they arrive (`UpcomingLayout`), with the 7 / 14 / 30 chips writing the device's `views.upcoming.span_days`. A task dragged onto a day or into the no-date lane is previewed through `plan_preview` while it hovers and committed on drop as one undo step (`UpcomingPlanner`); ⌥← / ⌥→ move the selection a day and Return commits. `UpcomingModelTests` drives it against a real vault. No context filter, and a saved view cannot name it yet ([#1229](https://github.com/justin13888/Sunrise/issues/1229)) |
 | Focus mode | met | sidebar → `FocusView` → `FocusModel` (plan, start, interrupt, cascade) |
 | Time-blocking on calendar grid | met | sidebar → `CalendarView` → `CalendarModel`; day and week |
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
@@ -261,7 +257,7 @@ guessing would have left every such vault readable by anyone holding a copy of
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **24 met**, and Upcoming unmet (below). The widget row is the newest met row. The other 23
+everything below it. **All 25 met**. The Upcoming row is the newest met row, after the widget's. The other 23
 were graded as SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and are MUSTs of the
 phone/tablet class under ADR-0042. It is the record of what a user can
@@ -271,7 +267,7 @@ actually reach on a phone.
 |---|---|---|
 | Read/write tasks | met | Today tab (`iOS/VaultTabs.swift:69-71`) → the shared `TaskListView` (`:149-166`); the row menu's **Edit…** (`TaskListView.swift:217`) opens the Mac's own `TaskEditorView`; swipe actions for Delete and Tomorrow (`:199-203`) |
 | Streams, contexts, routines | met | Browse tab → `BrowseSidebar`: the toolbar's **Add** menu, which is where iOS puts what the Mac draws as a bottom bar (`:100-113`) → `StreamEditorView` / `ContextEditorView` (`:122-135`), and per-row Edit / Pause / Archive / Delete on a stream (`:268-285`) and on a context (`:311-318`). More → Routines → `RoutinesView`'s **New routine** (`:44`) |
-| Upcoming | unmet | No surface: Browse has no Upcoming entry yet, though `CoreQuery.upcoming` is on the seam ([#351](https://github.com/justin13888/Sunrise/issues/351)) |
+| Upcoming | met *(no context filter, not a saved view)* | Browse → **Upcoming** (`iOS/TabRoute.swift` pushes it onto Browse) → the shared `TaskListView`, the Mac's screen: the days, the no-date lane and the span chips. A long-press drag of a row onto a day's heading reschedules it through the planner, as on the Mac. `SunriseiOSUITests/UpcomingDragUITests` drags a task from tomorrow to three days on, finds it there, and undoes it back. Same narrowness as the Mac's row ([#1229](https://github.com/justin13888/Sunrise/issues/1229)) |
 | Today / Inbox / Stream views | met | Today is a tab root (`VaultTabs.swift:69-71`); the Inbox, a stream and a context push onto Browse instead, so the list they came from stays behind them (`iOS/TabRoute.swift:97-98`) |
 | Focus mode | met | Focus tab (`VaultTabs.swift:87-93`) → the shared `FocusView`, and **Start focus session** on any row (`TaskListView.swift:225`) |
 | Time-blocking on calendar grid | met | Calendar tab (`VaultTabs.swift:77-83`) → the shared `CalendarView`: drag-to-create (`CalendarView.swift:279`), block move (`:467`) and resize (`:504`), `BlockEditorView` on tap |
