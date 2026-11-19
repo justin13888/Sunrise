@@ -8,25 +8,36 @@ A named location the user entered, which a task can require. The decision, the
 privacy argument and the alternatives are
 [ADR-0051](../11-adr/0051-places.md). Implementation is tracked in [#339](https://github.com/justin13888/Sunrise/issues/339).
 
-> **Implemented so far** ([#339](https://github.com/justin13888/Sunrise/issues/339)):
-> the pure layer and the in-memory presence, nothing in the vault.
+> **Implemented so far** ([#339](https://github.com/justin13888/Sunrise/issues/339),
+> [#1128](https://github.com/justin13888/Sunrise/issues/1128)): everything but
+> the clients.
 >
-> - `crates/sunrise-domain/src/place.rs` holds `PlaceId`, `Place` with
->   §Validation (`crates/sunrise-domain/src/place.rs#validate_coordinates`,
->   `crates/sunrise-domain/src/place.rs#validate_radius`), `Presence`,
+> - `crates/sunrise-domain/src/place.rs` holds `PlaceId`, `Place` (the vault
+>   record) with §Validation
+>   (`crates/sunrise-domain/src/place.rs#validate_coordinates`,
+>   `crates/sunrise-domain/src/place.rs#validate_radius`), `PlaceDraft`,
+>   `PlacePatch`, `Presence`, `TaskPlaceReq`,
 >   `crates/sunrise-domain/src/place.rs#evaluate_place` and
 >   `crates/sunrise-domain/src/place.rs#select_regions`. `Presence` has no
 >   `Serialize`, and its `Debug` prints a count and never a place or a state.
+> - `plc_` (tag `place`) is in the entity registry
+>   (`crates/sunrise-id/src/registry/table.rs`), written only by `Patch` on the
+>   vault-meta stream and gated on the feature `place.entity`
+>   (`DOC_SCHEMA_V` 26). Migration `0052_places.sql` (`STORAGE_V` 52) adds its
+>   projection. `CreatePlace`, `UpdatePlace`, `DeletePlace`, `Query::Places`
+>   and `EntityById` are in `crates/sunrise-core/src/engine/place.rs`;
+>   `Restore` and `ResolveConflict` settle a place with a `Patch`.
 > - `Core::on_place_presence`, `forget_place_presence`,
 >   `clear_place_presence` and `evaluate_place`
 >   (`crates/sunrise-core/src/core/place.rs`) keep presence on the `Core`
 >   handle: empty at open, emptied at shutdown, and a report after close is
->   dropped. The bindings expose them with the same names
+>   dropped. `Core::here_now`, `Core::place_requirements` (the "not actionable
+>   here" flag) and `Core::select_regions` read it, narrowed to the vault's
+>   live places, and `DeletePlace` forgets the deleted place. The bindings
+>   expose all of them with the same names
 >   (`crates/sunrise-core-bindings/src/places.rs`).
-> - Not yet: the `plc_` entity, its commands and its feature id, the
->   `at_place` dimension and the "here now" query
->   ([#1128](https://github.com/justin13888/Sunrise/issues/1128)); the Apple
->   opt-in flow, region manager and view
+> - Not yet: search does not index places, and the Apple opt-in flow, region
+>   manager and view
 >   ([#1129](https://github.com/justin13888/Sunrise/issues/1129)).
 
 ## Fields

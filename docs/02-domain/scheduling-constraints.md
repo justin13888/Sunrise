@@ -24,8 +24,9 @@ acyclic across devices (§Dependencies).
 > [#333](https://github.com/justin13888/Sunrise/issues/333) delivered the
 > dependency cycle rule, wrapping windows and re-evaluation on a zone change.
 > [#339](https://github.com/justin13888/Sunrise/issues/339) delivered place
-> evaluation and in-memory presence ([`places.md`](./places.md)); the
-> `at_place` dimension itself is tracked in [#1128](https://github.com/justin13888/Sunrise/issues/1128).
+> evaluation and in-memory presence ([`places.md`](./places.md));
+> [#1128](https://github.com/justin13888/Sunrise/issues/1128) delivered the
+> `at_place` dimension.
 
 ## Fields
 
@@ -249,11 +250,16 @@ SQL; evaluation happens in Rust. See
   it, and neither the triage queue nor the Apple app shows the zone change's
   list (§Re-evaluation,
   [#1084](https://github.com/justin13888/Sunrise/issues/1084)).
-- There is no `at_place` dimension
-  (`crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`,
-  [#1128](https://github.com/justin13888/Sunrise/issues/1128)). What it will
-  be evaluated with is in place:
-  `crates/sunrise-domain/src/place.rs#evaluate_place`.
+- `at_place` (`DOC_SCHEMA_V` 26,
+  `crates/sunrise-domain/src/constraint/mod.rs#ScheduleConstraint`) is
+  validated as 1..=8 distinct `plc_` refs and never joins the time kind key,
+  so `list_violations` and `violations_by_severity` never read it. A task's
+  place requirement is every ref of every constraint that names one, `hard`
+  when any of those constraints is
+  (`crates/sunrise-domain/src/place.rs#TaskPlaceReq`), evaluated by
+  `Core::here_now` and `Core::place_requirements`
+  (`crates/sunrise-core/src/core/place.rs`). It needs no feature: a build
+  before 26 keeps it as an unknown field, which restricts nothing.
 - The cycle rule is `sunrise_domain::resolve_cycles`
   (`crates/sunrise-domain/src/deps.rs#resolve_cycles`), applied at read time
   over the dependency index
