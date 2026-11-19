@@ -297,6 +297,32 @@ fn an_imported_block_with_no_kind_is_not_moved() {
     assert!(!moving_onto_moves(None, Some(BlockSource::ImportIcs)));
 }
 
+/// The import path itself marks what it writes, so a block an `.ics` import
+/// wrote, which states no kind, is held fixed.
+#[test]
+fn a_block_written_by_an_ics_import_is_not_moved() {
+    let e = engine();
+    let mut db = db();
+    let b = block(&e, &mut db, 9);
+    let other = e
+        .apply(
+            &mut db,
+            import(
+                "ics",
+                "meeting@example.com",
+                block_draft(11, 1, Some("meeting")),
+            ),
+        )
+        .unwrap()
+        .entity;
+    let written = read_block_row(&db, other);
+    assert_eq!(written.source, Some(BlockSource::ImportIcs));
+    assert_eq!(written.kind, None);
+    let diff = e.plan_preview(&db, &move_to_eleven(b), NOW_MS).unwrap();
+    assert!(diff.moves.iter().any(|m| m.item == b), "{diff:#?}");
+    assert!(!diff.moves.iter().any(|m| m.item == other), "{diff:#?}");
+}
+
 /// A block already under way is fixed whatever its kind.
 #[test]
 fn an_in_progress_flexible_block_is_not_moved() {
