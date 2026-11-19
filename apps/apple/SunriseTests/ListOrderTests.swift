@@ -211,4 +211,16 @@ struct ListOrderImportTests {
         #expect(store.placedHere.isEmpty)
         #expect(defaults.object(forKey: ListOrderImport.placedHereKey) == nil)
     }
+
+    /// With no stored order left nothing reads the record, so a drag on a
+    /// device that has imported everything adds nothing to it.
+    @Test
+    func nothingIsRecordedOnceNoStoredOrderIsLeft() throws {
+        let defaults = try scratchDefaults()
+        let store = ListOrderImport(defaults: defaults)
+        store.recordPlaced(.moveTasks(ids: [Rows.one], after: nil, before: nil))
+
+        #expect(store.placedHere.isEmpty)
+        #expect(defaults.object(forKey: ListOrderImport.placedHereKey) == nil)
+    }
 }
