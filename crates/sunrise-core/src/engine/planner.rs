@@ -22,8 +22,8 @@ use sunrise_domain::planner::{
 };
 use sunrise_domain::time::PREFILTER_SLACK_MS;
 use sunrise_domain::{
-    day_bounds, deadline_at, plannable, planner_day_of, DaySchedule, PrefValue, SunriseTime, Task,
-    TaskPatch, TaskState,
+    day_bounds, deadline_at, plannable, planner_day_of, Block, BlockKind, DaySchedule, PrefValue,
+    SunriseTime, Task, TaskPatch, TaskState,
 };
 use sunrise_error::ErrorCode;
 use sunrise_id::{EntityKind, EntityRef};
@@ -549,21 +549,13 @@ impl Engine {
             tasks.push(self.plan_task(conn, &schedule, &task)?);
         }
 
-        // Blocks overlapping the window, and every subject. A Block carries a
-        // fixed/flexible kind (#1157), but the planner deliberately still
-        // treats every block as fixed; honouring `Block::effective_kind` is
-        // tracked in #1184.
+        // Blocks overlapping the window, and every subject.
         let mut blocks = Vec::new();
         let mut seen = BTreeSet::new();
         if !window.is_empty() {
             for row in self.blocks_overlapping(conn, from, to)? {
                 seen.insert(row.id);
-                blocks.push(PlanBlock {
-                    id: row.id,
-                    starts_at: row.starts_at,
-                    ends_at: row.ends_at,
-                    fixed: true,
-                });
+                blocks.push(plan_block(row));
             }
         }
         for id in named.iter().filter(|id| id.kind() == EntityKind::Block) {
@@ -571,12 +563,7 @@ impl Engine {
                 continue;
             }
             if let Some(b) = read_block(conn, id.bytes())? {
-                blocks.push(PlanBlock {
-                    id: b.id,
-                    starts_at: b.starts_at,
-                    ends_at: b.ends_at,
-                    fixed: true,
-                });
+                blocks.push(plan_block(b));
             }
         }
 
@@ -802,6 +789,18 @@ fn inverse_rows(tx: &Transaction<'_>, commit: PlanCommitId) -> rusqlite::Result<
         });
     }
     Ok(out)
+}
+
+/// A block as the planner reads it: fixed unless its effective kind is
+/// `flexible` (`docs/02-domain/time-blocks.md` §Migration default). The solve
+/// itself holds a past or in-progress block fixed whatever its kind.
+fn plan_block(block: Block) -> PlanBlock {
+    PlanBlock {
+        fixed: block.effective_kind() != BlockKind::Flexible,
+        id: block.id,
+        starts_at: block.starts_at,
+        ends_at: block.ends_at,
+    }
 }
 
 /// The task an intent names, which must exist and not be deleted.

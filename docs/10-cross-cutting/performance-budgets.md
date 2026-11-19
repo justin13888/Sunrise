@@ -104,11 +104,11 @@ crosses a snap boundary, at most once per frame, so it has a frame budget: **≤
 
 **How it is measured.** `crates/sunrise-bench/benches/plan_preview.rs` seeds that week through the
 command path, from the Monday after the bench's fixed now: 200 open tasks (20 of them unplanned),
-60 blocks, 40 more blocks standing in for external events (the planner treats every block as
-fixed until [#1184](https://github.com/justin13888/Sunrise/issues/1184) honours a Block's
-fixed/flexible kind, and external events are not stored
-until [#930](https://github.com/justin13888/Sunrise/issues/930), so both are fixed intervals either
-way) and 20 dependencies. Each iteration is one `Engine::plan_preview`, the input gather and the
+60 Sunrise blocks (no `kind`, so `flexible`: the planner may ripple them), 40 more blocks standing
+in for external events and 20 dependencies. External events are not stored
+until [#930](https://github.com/justin13888/Sunrise/issues/930) and are always fixed, so their
+stand-ins are written through `ImportBlock` as an `.ics` import writes them, marked
+`source = import:ics`, which reads as `fixed`. Each iteration is one `Engine::plan_preview`, the input gather and the
 solve, for three gestures: `ripple` (a 90-minute block dropped onto a busy afternoon, so the
 ripple chains), `cross_day` (a task dragged onto a busy hour of the next day) and `auto_place` (20
 unplanned tasks into one day). The rows `plan_preview/{ripple,cross_day,auto_place}` join

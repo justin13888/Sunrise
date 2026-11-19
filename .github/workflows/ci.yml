@@ -1103,8 +1103,23 @@ jobs:
     # The other three crates' longest shard is 61 minutes and needs nothing.
     # sunrise-cbor (134 mutants) and sunrise-id (109) joined the matrix after
     # that nightly and have no runner wall clock yet; each runs whole, and at
-    # sunrise-core's slowest per-mutant rate 134 mutants would be 94 minutes,
-    # so neither can set this bound past 120 at its present size.
+    # sunrise-core's 42.1 s rate 134 mutants would be 94 minutes, so neither
+    # can set this bound past 120 at its present size.
+    #
+    # The 42.1 s figure is stale, and the 24-shard arithmetic with it (#1122).
+    # The scheduled nightly 42365516288 at `3f0b348` (2026-11-07) cancelled
+    # all 24 `sunrise-core` shards at 120 minutes: the unmutated test run had
+    # grown to 346-622 s (baseline phase 398-742 s), a mutant cost 165-655 s,
+    # and a shard finished 9-39 mutants. Taking the cheap Argon2id set into
+    # sunrise-core's tests and comparing equal rebuild-identity dumps in one
+    # pass did not bring it back. At `231b4d2`, the unit-test binary alone
+    # (debug, as cargo-mutants builds it) ran past a 560 s cutoff on a 12-core
+    # M3 Pro with 1043 of its 1049 tests done and 5,751 s of per-test time.
+    # Most of that is a fresh in-memory vault migrated from version 0 for
+    # every proptest case: 68% of one sampled test. #1203 tracks that. A shard
+    # of about 105 mutants finishes under 120 minutes only at about 60 s a
+    # mutant, rebuild included, so expect `sunrise-core`'s shards to time out
+    # until #1203 lands and a nightly re-measures them.
     #
     # The rates are shard averages over the first third of each slice, not
     # over the whole crate: cargo-mutants' default `slice` sharding gives each
@@ -1146,8 +1161,9 @@ jobs:
         # Shard counts are not proportional to those populations, and should
         # not be: per-mutant cost differs across the crates, so the population
         # is not the cost. The wall clocks above are what they balance against —
-        # sunrise-core at 24 shards is about 105 mutants at up to 42.1 s, about
-        # 76 minutes a shard; sunrise-domain at 6 is about 241 and took 24-33
+        # sunrise-core at 24 shards is about 105 mutants, which fits 120
+        # minutes only at about 60 s a mutant, and its test run is far above
+        # that (#1122, #1203; see the `timeout-minutes` comment); sunrise-domain at 6 is about 241 and took 24-33
         # minutes; sunrise-sync whole took 61.
         #
         # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects

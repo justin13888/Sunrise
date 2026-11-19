@@ -43,8 +43,11 @@ final class PairingScanUITests: SunriseUITestCase {
             "the scanned code was accepted, so the sheet asks for the next message; "
                 + "it says \(progress.label)"
         )
-        XCTAssertFalse(
-            app.descendants(matching: .any)["pairing.scan.viewfinder"].exists,
+        // Waited for, not read once: the sheet is still animating away when
+        // the model has already moved to step 2.
+        let viewfinder = app.descendants(matching: .any)["pairing.scan.viewfinder"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { !viewfinder.exists },
             "and the scanner closed itself"
         )
     }

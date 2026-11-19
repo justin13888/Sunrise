@@ -644,6 +644,13 @@ pub(super) mod check {
             self.rebuild_in(&tx).expect("rebuild");
             let after = dump(&tx);
             tx.rollback().expect("roll the check back");
+            // Each table's rows are sorted, so equal dumps compare in one
+            // pass. The row-by-row difference below is quadratic, and this
+            // runs after every write of every engine test (#1122), so it is
+            // computed only to name what differs.
+            if before == after {
+                return;
+            }
             for ((table, a), (_, b)) in before.iter().zip(&after) {
                 let lost: Vec<&String> = a.iter().filter(|r| !b.contains(r)).collect();
                 let gained: Vec<&String> = b.iter().filter(|r| !a.contains(r)).collect();

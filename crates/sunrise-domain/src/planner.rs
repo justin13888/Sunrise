@@ -189,7 +189,9 @@ pub struct PlanBlock {
     pub starts_at: SunriseTime,
     /// Its end.
     pub ends_at: SunriseTime,
-    /// A fixed block never ripples.
+    /// A fixed block never ripples. False for a block whose effective kind
+    /// is `flexible`; the solve still holds a past or in-progress block
+    /// fixed whatever this says.
     pub fixed: bool,
 }
 
