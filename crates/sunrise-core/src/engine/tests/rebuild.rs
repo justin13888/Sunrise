@@ -58,7 +58,8 @@ fn rename(e: &Engine, db: &mut Db, task: EntityRef, title: &str) {
 /// A history that writes every projection table: contexts, a stream, tasks
 /// with contexts and blockers, a completion, a defer, deletes, a routine and
 /// its occurrences, a block bound to a task, an attachment, a focus session
-/// with an interruption, a review snapshot and a vault preference.
+/// with an interruption, a review snapshot, a vault preference, a saved view
+/// and a place.
 fn rich_history(e: &Engine, db: &mut Db) {
     legacy_history(e, db);
     e.apply(
@@ -92,6 +93,31 @@ fn rich_history(e: &Engine, db: &mut Db) {
             id: view,
             patch: sunrise_domain::SavedViewPatch {
                 name: Some("Errands run".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    // A place (#1128), also written only by `Patch`.
+    let gym = e
+        .apply(
+            db,
+            Command::CreatePlace(sunrise_domain::PlaceDraft {
+                name: "Gym".into(),
+                lat_e7: 437_000_000,
+                lon_e7: -794_000_000,
+                radius_m: 150,
+                address_label: Some("1 Front St".into()),
+            }),
+        )
+        .unwrap()
+        .entity;
+    e.apply(
+        db,
+        Command::UpdatePlace {
+            id: gym,
+            patch: sunrise_domain::PlacePatch {
+                radius_m: Some(300),
                 ..Default::default()
             },
         },

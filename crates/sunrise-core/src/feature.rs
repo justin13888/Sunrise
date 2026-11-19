@@ -576,8 +576,12 @@ mod tests {
             FeatureScope::Entity(EntityKind::FocusSession)
         );
         assert_eq!(
-            FeatureScope::of("place.entity"),
-            FeatureScope::UnknownEntity("place".into())
+            FeatureScope::of(PLACE_FEATURE),
+            FeatureScope::Entity(EntityKind::Place)
+        );
+        assert_eq!(
+            FeatureScope::of("external_event.entity"),
+            FeatureScope::UnknownEntity("external_event".into())
         );
     }
 
@@ -599,7 +603,7 @@ mod tests {
         assert!(task.locks(EntityKind::Task));
         assert!(!task.locks(EntityKind::Stream));
 
-        assert!(!FeatureScope::UnknownEntity("place".into()).locks(EntityKind::Task));
+        assert!(!FeatureScope::UnknownEntity("external_event".into()).locks(EntityKind::Task));
     }
 
     #[test]
@@ -613,7 +617,12 @@ mod tests {
             since: 8,
         }];
         let got = missing(
-            ["task.have", "core.lack", "core.lack", "place.entity"],
+            [
+                "task.have",
+                "core.lack",
+                "core.lack",
+                "external_event.entity",
+            ],
             HAVE,
         );
         assert_eq!(
@@ -624,8 +633,8 @@ mod tests {
                     scope: FeatureScope::Structural
                 },
                 MissingFeature {
-                    id: "place.entity".into(),
-                    scope: FeatureScope::UnknownEntity("place".into())
+                    id: "external_event.entity".into(),
+                    scope: FeatureScope::UnknownEntity("external_event".into())
                 },
             ]
         );
