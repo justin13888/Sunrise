@@ -55,7 +55,11 @@ final class UpcomingDragUITests: SunriseUITestCase {
 
     private func openUpcoming() {
         activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
-        activate(app.descendants(matching: .any)["sidebar.upcoming"], named: "Upcoming in Browse")
+        // The cell, not the identifier's own element: the row is a `Label`,
+        // whose image and text both inherit the identifier, and the image the
+        // query resolves to first is not hittable (`TabShellUITests`).
+        let upcoming = app.cells.containing(.staticText, identifier: "sidebar.upcoming").firstMatch
+        activate(upcoming, named: "Upcoming in Browse")
         XCTAssertTrue(
             app.descendants(matching: .any)["upcoming-span"].appears(within: 10),
             "Upcoming is on screen"
