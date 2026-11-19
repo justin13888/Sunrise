@@ -3,6 +3,63 @@ import Testing
 
 @testable import Sunrise
 
+/// The order of undo steps across the command stack and planner commits,
+/// without a vault.
+struct UndoJournalTests {
+    /// Undo takes the newest step first, whichever kind it is.
+    @Test
+    func undoWalksBackAcrossBothKindsInOrder() {
+        var journal = UndoJournal()
+        journal.recordCommand()
+        journal.recordPlan(commitId: "c1", label: "move ‘Standup’ (moved 2)")
+        journal.recordCommand()
+
+        #expect(journal.planLabel == nil, "the newest step is a command")
+        #expect(journal.takeUndo() == .command)
+        #expect(journal.planLabel == "move ‘Standup’ (moved 2)")
+        #expect(journal.takeUndo() == .plan(commitId: "c1", label: "move ‘Standup’ (moved 2)"))
+        #expect(journal.takeUndo() == .command)
+        #expect(journal.takeUndo() == nil)
+    }
+
+    /// Only command steps are redone; a planner commit, like any new step,
+    /// clears what could have been redone.
+    @Test
+    func aPlannerCommitHasNoRedoAndClearsTheRedoSide() {
+        var journal = UndoJournal()
+        journal.recordCommand()
+        _ = journal.takeUndo()
+        #expect(journal.canRedo)
+
+        journal.recordPlan(commitId: "c1", label: "move")
+        #expect(!journal.canRedo, "a step undone before the commit is not replayed on top of it")
+
+        _ = journal.takeUndo()
+        #expect(!journal.canRedo, "undoing a planner commit leaves nothing to redo")
+    }
+
+    @Test
+    func aRedoneCommandIsUndoableAgain() {
+        var journal = UndoJournal()
+        journal.recordCommand()
+        _ = journal.takeUndo()
+        journal.redid()
+        #expect(!journal.canRedo)
+        #expect(journal.takeUndo() == .command)
+    }
+
+    /// The journal holds as many steps as the core's stack does.
+    @Test
+    func theJournalIsBoundedLikeTheStack() {
+        var journal = UndoJournal()
+        for index in 0..<(UndoJournal.depth + 5) {
+            journal.recordPlan(commitId: "c\(index)", label: "step \(index)")
+        }
+        #expect(journal.undoSteps.count == UndoJournal.depth)
+        #expect(journal.undoSteps.first == .plan(commitId: "c5", label: "step 5"))
+    }
+}
+
 /// Undo and redo, through the app's own writing paths.
 @MainActor
 struct UndoModelTests {

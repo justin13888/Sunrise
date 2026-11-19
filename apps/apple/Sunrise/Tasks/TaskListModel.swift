@@ -226,6 +226,19 @@ final class TaskListModel {
         await run(.bindTask(block: block, task: task))
     }
 
+    /// **Calendar block → Task**: a block dropped on a task row binds the
+    /// task to it, or, when the task is bound to it already, unbinds it. The
+    /// same two commands the block editor sends, so the drop and the editor
+    /// cannot disagree about what binding means. An unbind from the whole
+    /// block: the row knows the block, not which of its events was dragged.
+    func toggleBinding(_ task: TaskItem, block: EntityRef) async {
+        if task.blocks.contains(block) {
+            await run(.unbindTask(block: block, task: task.id, occurrenceKey: nil))
+        } else {
+            await run(.bindTask(block: block, task: task.id))
+        }
+    }
+
     /// The command a drop of `moved` onto `target` would submit, or `nil`
     /// when it would change nothing.
     ///

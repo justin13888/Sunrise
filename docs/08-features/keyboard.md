@@ -179,6 +179,23 @@ not shadow:
 | Strikethrough | `Cmd+X` |
 | Code | `Cmd+E` |
 
+### Calendar block
+
+A block on the calendar grid that has keyboard focus takes the planning keys,
+the keyboard path of every drag ([`planner.md`](./planner.md) §Client
+contract). Each previews the plan the same drag would, and nothing is written
+until Return. They are `Keymap.planning`, not `AppAction`s: each acts on one
+block and the plan in progress, so none runs from the palette. The block's
+tooltip and spoken hint list them. A repeating block does not take them.
+
+| Action | macOS |
+|---|---|
+| Move one snap earlier / later | `Opt+Up` / `Opt+Down` |
+| Move the end one snap earlier / later | `Opt+Shift+Up` / `Opt+Shift+Down` |
+| Move a day earlier / later | `Opt+Left` / `Opt+Right` |
+| Commit the plan | `Return` |
+| Cancel the plan | `Esc` |
+
 ## Vim mode (opt-in)
 
 Settings toggle `keyboard.vim_mode: bool = false`. Persisted as a per-device

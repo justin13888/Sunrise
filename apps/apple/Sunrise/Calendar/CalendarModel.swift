@@ -80,10 +80,15 @@ final class CalendarModel {
     /// Set after a Resolve action, so the grid can say what it did.
     private(set) var note: String?
 
+    /// The grid's drags, planned by the core: see ``CalendarPlanner``.
+    @ObservationIgnored let planner: CalendarPlanner
+
     private let bridge: CoreBridge
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
+        planner = CalendarPlanner(bridge: bridge)
+        planner.afterWrite = { [weak self] in await self?.refresh() }
     }
 
     // MARK: - Reading
@@ -297,24 +302,14 @@ final class CalendarModel {
         await run(.createBlock(draft: draft), label: L10n.Calendar.undoCreateBlock)
     }
 
-    /// Drop an existing task onto the grid.
+    /// Set a block's times outright: from the Adjust times sheet, where the
+    /// person typed both, or from a drag of one event of a repeating block,
+    /// which the planner cannot preview (``CalendarPlanner/repeatingSpan(of:mode:toMs:timeZone:)``).
     ///
-    /// The block is created with the task already bound and **no title**, which
-    /// is not an omission: `Command::CreateBlock` shadow-copies the single
-    /// bound task's title as it is now, so the block gets the right name from
-    /// the core rather than one composed here that could disagree with it.
-    func dropTask(_ task: EntityRef, fromMs: Int64, toMs: Int64, kind: BlockTimeKind) async {
-        await createBlock(fromMs: fromMs, toMs: toMs, title: nil, kind: kind, tasks: [task])
-    }
-
-    /// Move or resize a block by dragging it.
-    ///
-    /// The kind is preserved: dragging a floating block an hour later must not
-    /// quietly pin it to a zone. That is why this reads the row's own kind back
-    /// rather than taking one from the caller.
-    ///
-    /// `reach` is the answer to "which events?" for one event of a repeating
-    /// block, and is ignored for a block that does not recur.
+    /// The kind is preserved: dragging a floating block an hour later must
+    /// not quietly pin it to a zone. `reach` is the answer to "which
+    /// events?" for one event of a repeating block, and is ignored for a
+    /// block that does not recur.
     func moveBlock(
         _ row: BlockGridRow,
         toStartMs: Int64,

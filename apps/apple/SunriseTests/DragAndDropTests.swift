@@ -379,108 +379,32 @@ struct DropWritesTests {
 
         await vault.bridge.shutdown()
     }
-}
 
-/// Moving and resizing a block already on the grid — the third gap
-/// `parity-matrix.md` names.
-struct BlockDragTests {
-    private let day: Int64 = 1_772_409_600_000
-    private var dayEnd: Int64 { day + 24 * 3_600_000 }
-
-    private func apply(
-        _ mode: BlockDragMode,
-        from startMs: Int64,
-        to endMs: Int64,
-        by deltaMs: Int64,
-        snap: Int = 15
-    ) -> (startMs: Int64, endMs: Int64) {
-        BlockDrag.apply(
-            mode: mode,
-            startMs: startMs,
-            endMs: endMs,
-            deltaMs: deltaMs,
-            snapMinutes: snap,
-            dayStartMs: day,
-            dayEndMs: dayEnd
-        )
-    }
-
-    /// A moved block keeps its length. Dragging a floating hour an hour later
-    /// must not turn it into ninety minutes.
+    /// **Calendar block → Task.** A block dropped on a task row binds the
+    /// task; dropped again on the same row, now bound, it unbinds it.
     @Test
-    func movingKeepsTheLength() {
-        let start = day + 9 * 3_600_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: 3_600_000)
-        #expect(moved.startMs == day + 10 * 3_600_000)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
-    }
+    func aBlockDroppedOnATaskBindsItAndDroppedAgainUnbindsIt() async throws {
+        let vault = try await TestVault()
+        let calendar = CalendarModel(bridge: vault.bridge)
+        await calendar.refresh()
+        let start = calendar.dayStartMs(offset: 0) + 9 * 3_600_000
+        await calendar.createBlock(fromMs: start, toMs: start + 3_600_000,
+                                   title: "Deep work", kind: .zoned)
+        let block = try #require(calendar.rows.first).block.id
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Write the memo")))
+        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await list.refresh()
 
-    /// The translation is snapped, at whatever the user set the grid to.
-    @Test
-    func aMoveSnapsToTheGrid() {
-        let start = day + 9 * 3_600_000
-        let nudged = apply(.move, from: start, to: start + 3_600_000, by: 8 * 60_000)
-        #expect(nudged.startMs == day + 9 * 3_600_000 + 15 * 60_000, "on a 15-minute grid, 8 rounds up")
+        await list.toggleBinding(try #require(list.tasks.first), block: block)
+        #expect(list.tasks.first?.blocks == [block])
+        await calendar.refresh()
+        #expect(calendar.rows.first?.taskTitles == ["Write the memo"])
 
-        let fine = apply(.move, from: start, to: start + 3_600_000, by: 8 * 60_000, snap: 5)
-        #expect(fine.startMs == day + 9 * 3_600_000 + 10 * 60_000, "on a 5-minute grid it lands on 10")
-    }
+        await list.toggleBinding(try #require(list.tasks.first), block: block)
+        #expect(list.tasks.first?.blocks.isEmpty == true)
+        await calendar.refresh()
+        #expect(calendar.rows.first?.block.tasks.isEmpty == true)
 
-    /// A block dragged off the bottom of the column stops at midnight with its
-    /// length intact — clamping the two ends separately is how a dragged block
-    /// arrives three minutes long.
-    @Test
-    func aBlockDraggedPastMidnightStopsAtItWithoutShrinking() {
-        let start = day + 23 * 3_600_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: 5 * 3_600_000)
-        #expect(moved.endMs == dayEnd)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
-    }
-
-    @Test
-    func aBlockDraggedAboveMidnightStopsAtTheTopOfTheDay() {
-        let start = day + 30 * 60_000
-        let moved = apply(.move, from: start, to: start + 3_600_000, by: -5 * 3_600_000)
-        #expect(moved.startMs == day)
-        #expect(moved.endMs - moved.startMs == 3_600_000)
-    }
-
-    /// A resize holds the start still. That is the whole difference between
-    /// the two gestures, and getting it wrong moves an appointment while the
-    /// user thought they were lengthening it.
-    @Test
-    func resizingHoldsTheStartAndMovesTheEnd() {
-        let start = day + 9 * 3_600_000
-        let stretched = apply(.resizeEnd, from: start, to: start + 3_600_000, by: 30 * 60_000)
-        #expect(stretched.startMs == start)
-        #expect(stretched.endMs == start + 90 * 60_000)
-    }
-
-    /// Dragged shorter than a snap step, a block stops at one step rather than
-    /// becoming a zero-length block the core would refuse and the grid could
-    /// not draw.
-    @Test
-    func aResizeNeverShortensPastOneSnapStep() {
-        let start = day + 9 * 3_600_000
-        let squashed = apply(.resizeEnd, from: start, to: start + 3_600_000, by: -5 * 3_600_000)
-        #expect(squashed.startMs == start)
-        #expect(squashed.endMs == start + 15 * 60_000)
-    }
-
-    @Test
-    func aResizeStopsAtMidnight() {
-        let start = day + 23 * 3_600_000
-        let stretched = apply(.resizeEnd, from: start, to: start + 30 * 60_000, by: 5 * 3_600_000)
-        #expect(stretched.endMs == dayEnd)
-    }
-
-    /// A drag of nothing changes nothing, so a click that wobbles two points
-    /// does not put a write on the undo stack.
-    @Test
-    func aZeroDragIsAZeroChange() {
-        let start = day + 9 * 3_600_000
-        let same = apply(.move, from: start, to: start + 3_600_000, by: 0)
-        #expect(same.startMs == start)
-        #expect(same.endMs == start + 3_600_000)
+        await vault.bridge.shutdown()
     }
 }
