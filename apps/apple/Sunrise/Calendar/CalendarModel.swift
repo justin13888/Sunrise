@@ -260,6 +260,18 @@ final class CalendarModel {
         rows.first { $0.block.id == id }
     }
 
+    /// The row for an id that `conflict` names: for a repeating block, the
+    /// event the overlap is in rather than the first of its events on the
+    /// grid, which a conflict's two block ids alone cannot tell apart.
+    func row(_ id: EntityRef, in conflict: BlockConflict) -> BlockGridRow? {
+        rows.first { row in
+            guard row.block.id == id else { return false }
+            let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
+            let end = timeValueMs(value: row.block.endsAt, tz: timeZone)
+            return start < conflict.toMs && end > conflict.fromMs
+        }
+    }
+
     // MARK: - Writing
 
     /// Create a block from a drag on the grid.
@@ -300,11 +312,19 @@ final class CalendarModel {
     /// The kind is preserved: dragging a floating block an hour later must not
     /// quietly pin it to a zone. That is why this reads the row's own kind back
     /// rather than taking one from the caller.
-    func moveBlock(_ row: BlockGridRow, toStartMs: Int64, toEndMs: Int64) async {
+    ///
+    /// `reach` is the answer to "which events?" for one event of a repeating
+    /// block, and is ignored for a block that does not recur.
+    func moveBlock(
+        _ row: BlockGridRow,
+        toStartMs: Int64,
+        toEndMs: Int64,
+        reach: BlockEditReach? = nil
+    ) async {
         var edit = BlockEdit()
-        edit.startsAt = sameKind(as: row.block.startsAt, ms: toStartMs)
-        edit.endsAt = sameKind(as: row.block.endsAt, ms: toEndMs)
-        await run(.updateBlock(id: row.block.id, edit: edit), label: L10n.Calendar.undoMoveBlock)
+        edit.startsAt = Self.sameKind(as: row.block.startsAt, ms: toStartMs, timeZone: timeZone)
+        edit.endsAt = Self.sameKind(as: row.block.endsAt, ms: toEndMs, timeZone: timeZone)
+        await update(row, with: edit, reach: reach, label: L10n.Calendar.undoMoveBlock)
     }
 
     func bind(task: EntityRef, to block: EntityRef) async {
@@ -332,13 +352,46 @@ final class CalendarModel {
         await unbind(task: task, from: row.block.id, occurrenceKey: key)
     }
 
-    func delete(_ block: EntityRef) async {
-        await run(.deleteBlock(id: block), label: L10n.Calendar.undoDeleteBlock)
+    /// Delete a block, or as much of a repeating one as `reach` says.
+    func delete(_ row: BlockGridRow, reach: BlockEditReach? = nil) async {
+        guard let command = Self.deleteCommand(row: row, reach: reach) else { return }
+        await run(command, label: L10n.Calendar.undoDeleteBlock)
     }
 
-    /// Apply an edit from the block editor.
-    func apply(_ edit: BlockEdit, to block: EntityRef) async {
-        await run(.updateBlock(id: block, edit: edit), label: L10n.Calendar.undoEditBlock)
+    /// Apply an edit from the block editor, as far as `reach` says for one
+    /// event of a repeating block.
+    func apply(_ edit: BlockEdit, to row: BlockGridRow, reach: BlockEditReach? = nil) async {
+        await update(row, with: edit, reach: reach, label: L10n.Calendar.undoEditBlock)
+    }
+
+    /// Send `edit` for `row`. An edit of every event moves the series'
+    /// anchor, which is not on the row, so it is read first.
+    private func update(
+        _ row: BlockGridRow,
+        with edit: BlockEdit,
+        reach: BlockEditReach?,
+        label: String
+    ) async {
+        var anchor: BlockItem?
+        if row.recurs, reach == .allEvents, edit.movesTimes {
+            do {
+                guard case let .blocks(stored) = try await bridge.query(.entityById(id: row.block.id)),
+                      let first = stored.first
+                else { return }
+                anchor = first.block
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
+        guard let command = Self.updateCommand(
+            row: row,
+            edit: edit,
+            reach: reach,
+            anchor: anchor,
+            timeZone: timeZone
+        ) else { return }
+        await run(command, label: label)
     }
 
     // MARK: - Resolving a conflict
@@ -362,8 +415,17 @@ final class CalendarModel {
     /// user looking at three blocks. The second is recoverable by hand and the
     /// first is not, so the create is validated by the seam *before* anything
     /// is deleted.
+    ///
+    /// A repeating block is not merged: the tombstone would remove every
+    /// event of it, not the one that overlaps. The note says to adjust its
+    /// times instead, which asks how far the change reaches.
     func merge(_ conflict: BlockConflict) async {
-        guard let first = row(conflict.a), let second = row(conflict.b) else { return }
+        guard let first = row(conflict.a, in: conflict),
+              let second = row(conflict.b, in: conflict) else { return }
+        guard !first.recurs, !second.recurs else {
+            note = L10n.Calendar.noteMergeRepeating
+            return
+        }
         do {
             let draft = try mergedBlockDraft(a: first, b: second, tz: timeZone)
             for id in [first.block.id, second.block.id] {
@@ -400,26 +462,30 @@ final class CalendarModel {
     }
 
     /// The same value at a new instant, keeping whichever of the four kinds it
-    /// already had.
-    private func sameKind(as existing: TimeValue, ms: Int64) -> TimeValue {
+    /// already had. `timeZone` is the zone the grid draws in.
+    static func sameKind(as existing: TimeValue, ms: Int64, timeZone: String) -> TimeValue {
         switch existing {
         case .instant: .instant(at: ms)
         case let .zoned(_, tz): .zoned(civil: civilText(ms: ms, tz: tz), tz: tz)
-        case .floating: .floating(civil: civilText(ms: ms))
+        case .floating: .floating(civil: civilText(ms: ms, tz: timeZone))
         // An all-day block dragged to a time is no longer all-day: the user
         // just gave it one. Widening to zoned is the honest reading of that.
-        case .allDay: .zoned(civil: civilText(ms: ms), tz: timeZone)
+        case .allDay: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
         // A kind a newer build wrote cannot be re-expressed at another
         // instant here; the drag is an explicit set, so it reads as local
         // time, as all-day does.
-        case .unknown: .zoned(civil: civilText(ms: ms), tz: timeZone)
+        case .unknown: .zoned(civil: civilText(ms: ms, tz: timeZone), tz: timeZone)
         }
     }
 
+    private func civilText(ms: Int64) -> String {
+        Self.civilText(ms: ms, tz: timeZone)
+    }
+
     /// `2026-03-04T09:15:00`, the text `jiff` parses a civil date-time from.
-    private func civilText(ms: Int64, tz: String? = nil) -> String {
+    private static func civilText(ms: Int64, tz: String) -> String {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: tz ?? timeZone) ?? .current
+        calendar.timeZone = TimeZone(identifier: tz) ?? .current
         let parts = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
             from: Date(timeIntervalSince1970: Double(ms) / 1000)

@@ -104,6 +104,7 @@ ALLOWED: dict[str, str] = {
     "apps/apple/Sunrise/Browse/Destination.swift": SHELL,
     "apps/apple/Sunrise/Browse/StreamOrder.swift": SEAM,
     "apps/apple/Sunrise/Calendar/BlockLayout.swift": SEAM,
+    "apps/apple/Sunrise/Calendar/CalendarModel+Reach.swift": SEAM,
     "apps/apple/Sunrise/Calendar/CalendarModel.swift": SEAM,
     "apps/apple/Sunrise/Calendar/DayScheduleModel.swift": SEAM,
     "apps/apple/Sunrise/Core/ChangeFeed.swift": SEAM,

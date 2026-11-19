@@ -228,6 +228,14 @@ The core uses it ([#1148](https://github.com/justin13888/Sunrise/issues/1148)):
   original block only. Its title is the one the series showed at the split,
   fixed (`title_track_task` off), since it has no task whose title to track.
 
+The macOS calendar draws one chip per occurrence row, keyed by block id and
+occurrence key, and asks *this event*, *this and following events* or *all
+events* before a move, edit or delete of one, sending the matching scope; a
+block that does not recur asks nothing. *All events* moves the anchor by as
+much as the occurrence moved. A fixed block is drawn solid with a pin, a
+flexible one dashed. Merging an occurrence is refused, since the tombstone
+would take the whole series.
+
 A task is bound to one occurrence
 ([#1162](https://github.com/justin13888/Sunrise/issues/1162)):
 
@@ -262,9 +270,6 @@ A task is bound to one occurrence
   by their own distance. Neither is repaired yet.
 - Binding to an occurrence lends the series no shadow title: the series'
   title is every occurrence's.
-
-Drawing a series on macOS is
-[#1150](https://github.com/justin13888/Sunrise/issues/1150).
 
 ### Importer status
 
