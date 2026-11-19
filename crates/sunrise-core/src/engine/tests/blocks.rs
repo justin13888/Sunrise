@@ -867,6 +867,88 @@ fn an_import_validates_its_draft_like_any_other_write() {
     ));
 }
 
+/// The imported fields are the calendar's: an import writes them whole, a
+/// series once the vault requires `block.recurrence` (which a vault with no
+/// other device does by itself), and a re-import that states none clears
+/// them.
+#[test]
+fn an_import_writes_the_items_fields_and_a_re_import_restates_them() {
+    let mut db = db();
+    let e = engine();
+    let fields = crate::ImportedFields {
+        rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+        exceptions: [(
+            "2026-03-11T09:00".to_owned(),
+            sunrise_domain::BlockException::cancelled(),
+        )]
+        .into(),
+        location: Some("Room 4".into()),
+        notes: Some(NoteBody(b"agenda".to_vec())),
+        external_id: Some("standup@example.com".into()),
+    };
+    let id = e
+        .apply(
+            &mut db,
+            Command::ImportBlock {
+                source: "ics".into(),
+                uid: "standup@example.com".into(),
+                draft: block_draft(9, 1, Some("Standup")),
+                fields: fields.clone(),
+            },
+        )
+        .unwrap()
+        .entity;
+    let b = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(b.rrule, fields.rrule);
+    assert_eq!(b.exceptions, fields.exceptions);
+    assert_eq!(b.location, fields.location);
+    assert_eq!(b.notes, fields.notes);
+    assert_eq!(b.external_id, fields.external_id);
+    assert_eq!(b.effective_kind(), sunrise_domain::BlockKind::Fixed);
+
+    e.apply(
+        &mut db,
+        import(
+            "ics",
+            "standup@example.com",
+            block_draft(9, 1, Some("Standup")),
+        ),
+    )
+    .unwrap();
+    let b = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(b.rrule, None);
+    assert!(b.exceptions.is_empty());
+    assert_eq!((b.location, b.notes, b.external_id), (None, None, None));
+    e.assert_rebuild_identity(&db);
+}
+
+/// A series is refused while a paired device lacks `block.recurrence`, and
+/// writes nothing; the same item with no series imports.
+#[test]
+fn an_imported_series_waits_for_every_device_to_support_it() {
+    let mut db = db();
+    let e = engine();
+    legacy_peer(&db);
+    let ops = op_count(&db);
+    let err = e
+        .apply(
+            &mut db,
+            import_series("ics", "ev1", block_draft(9, 1, Some("Gym")), "FREQ=DAILY"),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&err, EngineError::FeatureUnsupportedByDevices { feature, .. }
+            if feature == BLOCK_RECURRENCE_FEATURE),
+        "{err:?}"
+    );
+    assert_eq!(op_count(&db), ops, "the refused import wrote nothing");
+    e.apply(
+        &mut db,
+        import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+    )
+    .unwrap();
+}
+
 // ---- recurring blocks (time-blocks.md §Recurring blocks, #1148) ----
 
 use crate::feature::BLOCK_RECURRENCE_FEATURE;
@@ -1354,8 +1436,8 @@ fn two_devices_splitting_at_the_same_key_converge_on_one_block() {
     eb.assert_rebuild_identity(&dbb);
 }
 
-/// Give block `id` an import's `source` and `external_id`, as an importer
-/// that maps them would (#1149).
+/// Give block `id` an import's `source` and `external_id`, as an import of
+/// a recurring item writes them.
 fn imported_from(e: &Engine, db: &mut Db, id: EntityRef) {
     let b = Block {
         source: Some(sunrise_domain::BlockSource::ImportIcs),

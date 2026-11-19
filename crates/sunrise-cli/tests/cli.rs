@@ -1309,20 +1309,21 @@ fn ical_export_writes_the_document_to_stdout_and_notices_to_stderr() {
     let ics = write_ics(
         dir.path(),
         "cal.ics",
-        // DESCRIPTION and LOCATION are real content a Block cannot hold; the
+        // CATEGORIES and ATTENDEE are real content a Block cannot hold; the
         // import must say so on stderr and still commit the event.
         &ics_this_week("ev1@example.com", "Design review").replace(
             "END:VEVENT",
-            "DESCRIPTION:Bring the roadmap\r\nLOCATION:Room 4B\r\nEND:VEVENT",
+            "CATEGORIES:work\r\nATTENDEE:mailto:sam@example.com\r\n\
+             LOCATION:Room 4B\r\nEND:VEVENT",
         ),
     );
     let imported = run(dir.path(), &["ical", "import", ics.to_str().unwrap()]);
     assert!(imported.status.success());
     let notes = String::from_utf8_lossy(&imported.stderr);
-    assert!(notes.contains("DESCRIPTION"), "got {notes:?}");
-    assert!(notes.contains("LOCATION"), "got {notes:?}");
+    assert!(notes.contains("CATEGORIES"), "got {notes:?}");
+    assert!(notes.contains("ATTENDEE"), "got {notes:?}");
     assert!(
-        !stdout(&imported).contains("DESCRIPTION"),
+        !stdout(&imported).contains("CATEGORIES"),
         "notices must not pollute stdout"
     );
 
@@ -1332,6 +1333,8 @@ fn ical_export_writes_the_document_to_stdout_and_notices_to_stderr() {
     assert!(doc.starts_with("BEGIN:VCALENDAR\r\n"), "got {doc:?}");
     assert!(doc.trim_end().ends_with("END:VCALENDAR"));
     assert!(doc.contains("SUMMARY:Design review"));
+    // The location the Block holds is written back.
+    assert!(doc.contains("LOCATION:Room 4B"), "got {doc:?}");
 }
 
 /// With a path the document is written there and only the path is printed,

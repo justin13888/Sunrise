@@ -19,8 +19,9 @@ use super::routine::decode_blob_opt;
 use super::task::read_task;
 use super::write::Appended;
 use super::{Engine, EngineError};
-use crate::commands::CommandResult;
+use crate::commands::{CommandResult, ImportedFields};
 use crate::events::DomainEvent;
+use crate::feature::BLOCK_RECURRENCE_FEATURE;
 use crate::inner_op::InnerOp;
 use crate::queries::{BlockRow, QueryResult};
 use rusqlite::{params, OptionalExtension};
@@ -147,8 +148,10 @@ impl Engine {
     /// identical column values, which is what makes the whole operation
     /// idempotent without a "have I seen this UID" table to keep in step.
     ///
-    /// Two fields are read back off the existing Block rather than taken from
-    /// the draft, because they are not the importing calendar's to state — see
+    /// The fields that are not the importing calendar's to state (its
+    /// creation time, task bindings, kind, `split_from`, source and unknown
+    /// fields) are read back off the existing Block rather than taken from
+    /// the draft and its [`ImportedFields`] — see
     /// [`Command::ImportBlock`](crate::commands::Command::ImportBlock).
     pub(super) fn import_block(
         &self,
@@ -156,6 +159,7 @@ impl Engine {
         source: &str,
         uid: &str,
         d: BlockDraft,
+        fields: ImportedFields,
     ) -> Result<CommandResult, EngineError> {
         if uid.trim().is_empty() {
             return Err(EngineError::Invalid(
@@ -207,19 +211,16 @@ impl Engine {
             // import silently incomplete, and the file is the statement of
             // what the external calendar holds.
             deleted: false,
-            // The draft states none of the #1147 fields, so a re-import keeps
-            // the ones the Block holds, as a build before them kept them
-            // among its unknown fields. Mapping an event onto them is the
-            // importer's (#1149).
+            // The user's: an import states no kind, so a re-import keeps the
+            // one the Block holds, and an absent one reads as fixed below.
             kind: existing.as_ref().and_then(|e| e.kind.clone()),
-            rrule: existing.as_ref().and_then(|e| e.rrule.clone()),
-            exceptions: existing
-                .as_ref()
-                .map(|e| e.exceptions.clone())
-                .unwrap_or_default(),
+            // The series, the location and the notes are the importing
+            // calendar's to state, as the times and the title are (#1149).
+            rrule: fields.rrule,
+            exceptions: fields.exceptions,
             split_from: existing.as_ref().and_then(|e| e.split_from),
-            location: existing.as_ref().and_then(|e| e.location.clone()),
-            notes: existing.as_ref().and_then(|e| e.notes.clone()),
+            location: fields.location,
+            notes: fields.notes,
             // An imported Block is marked as one, so an absent `kind` reads
             // as `fixed` and the planner never moves it
             // (`docs/02-domain/time-blocks.md` §Migration default). `ics`
@@ -229,7 +230,7 @@ impl Engine {
                 .as_ref()
                 .and_then(|e| e.source.clone())
                 .or_else(|| Some(BlockSource::from_raw(&format!("import:{source}")))),
-            external_id: existing.as_ref().and_then(|e| e.external_id.clone()),
+            external_id: fields.external_id,
             // Forward-compat fields a newer build wrote are the Block's, not
             // the importer's, so they survive the rewrite.
             unknown: existing
@@ -243,6 +244,11 @@ impl Engine {
             block.shift_bindings(&e.starts_at);
         }
         block.validate_invariants(&tz)?;
+        // A series is sealed only once the vault requires `block.recurrence`
+        // (ADR-0045 §7): a build without it would draw the anchor alone.
+        if block.rrule.is_some() || !block.exceptions.is_empty() || block.split_from.is_some() {
+            self.require_features(db, &[BLOCK_RECURRENCE_FEATURE], false)?;
+        }
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
         // remote replica — every Block op is full-state.

@@ -517,9 +517,12 @@ impl Engine {
                 self.skip_routine_occurrence(db, id, occurrence_key)
             }
             Command::CreateBlock(d) => self.create_block(db, d),
-            Command::ImportBlock { source, uid, draft } => {
-                self.import_block(db, &source, &uid, draft)
-            }
+            Command::ImportBlock {
+                source,
+                uid,
+                draft,
+                fields,
+            } => self.import_block(db, &source, &uid, draft, fields),
             Command::UpdateBlock { id, scope, patch } => self.update_block(db, id, scope, patch),
             Command::DeleteBlock { id, scope } => self.delete_block(db, id, scope),
             Command::MergeBlocks { a, b } => self.merge_blocks(db, a, b),

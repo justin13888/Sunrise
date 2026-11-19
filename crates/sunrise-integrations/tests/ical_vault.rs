@@ -33,10 +33,14 @@ impl Clock for FixedClock {
 const NOW_MS: u64 = 1_772_452_800_000;
 
 fn fixture(vendor: &str) -> String {
+    fixture_file(vendor, "basic.ics")
+}
+
+fn fixture_file(vendor: &str, file: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
         .join(vendor)
-        .join("basic.ics");
+        .join(file);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
@@ -338,14 +342,17 @@ async fn a_vtodo_is_reported_as_unmodelled_rather_than_silently_dropped() {
         report.notices
     );
 
-    // The folded DESCRIPTION reassembled, and was then reported as unheld.
-    assert!(report
-        .notices
-        .iter()
-        .any(|n| n.detail.starts_with("DESCRIPTION")));
+    // The folded DESCRIPTION reassembled, and landed in the notes whole.
+    let rows = week_blocks(&core).await;
+    let notes = rows[0].block.notes.as_ref().expect("the description");
+    let text = sunrise_domain::note_body_to_plain_text(&sunrise_domain::decode_note_body(notes));
+    assert!(
+        text.starts_with("A deliberately long description that has to be folded across more"),
+        "{text}"
+    );
+    assert!(text.ends_with("with a synthetic string in it."), "{text}");
 
     // The floating event stays floating: it is "19:00 wherever I am".
-    let rows = week_blocks(&core).await;
     assert!(
         rows.iter()
             .any(|r| matches!(r.block.starts_at, SunriseTime::Floating { .. })),
@@ -458,5 +465,156 @@ async fn exporting_an_empty_week_yields_an_empty_calendar() {
         .expect("export");
     let parsed = ical::parse(&doc).expect("a well-formed document");
     assert!(parsed.events.is_empty());
+    core.shutdown().await;
+}
+
+/// The `.ics` a recurring event exports: an event with a rule and an
+/// `EXDATE`, and a second `VEVENT` of the same `UID` moving one occurrence.
+fn recurring() -> String {
+    fixture_file("google", "recurring.ics")
+}
+
+const STANDUP_UID: &str = "3r5t7v9x1z3b5d7f@google.com";
+
+/// The Block an import of `uid` wrote, as stored: for a recurring block,
+/// its series.
+async fn stored(core: &Core, uid: &str) -> sunrise_domain::Block {
+    let id = sunrise_domain::imported_block_id(ICS_SOURCE, uid);
+    match core.query(Query::EntityById(id)).await.expect("by id") {
+        QueryResult::Blocks(mut rows) if rows.len() == 1 => rows.swap_remove(0).block,
+        other => panic!("expected one block, got {other:?}"),
+    }
+}
+
+/// A recurring event is one recurring Block, not its first occurrence: its
+/// rule, its `EXDATE` as a cancelled occurrence, its moved occurrence as an
+/// exception, and its location, description and `UID` on the Block.
+#[tokio::test]
+async fn a_recurring_event_imports_as_one_series_with_its_exceptions() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let report = import(&core, &recurring(), None, ICS_SOURCE)
+        .await
+        .expect("import");
+    assert_eq!(report.created(), 1, "two VEVENTs, one Block: {report:?}");
+    assert_eq!(report.failed, 0);
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
+
+    let block = stored(&core, STANDUP_UID).await;
+    assert!(block.rrule.is_some());
+    assert_eq!(block.location.as_deref(), Some("Room 2A"));
+    assert_eq!(block.external_id.as_deref(), Some(STANDUP_UID));
+    assert!(block.notes.is_some());
+    assert_eq!(
+        block.effective_kind(),
+        sunrise_domain::BlockKind::Fixed,
+        "an imported block is fixed"
+    );
+    assert!(block.exceptions["2026-03-04T10:00"].cancelled);
+    let moved = &block.exceptions["2026-03-02T10:00"];
+    assert_eq!(
+        moved.starts_at,
+        Some(SunriseTime::zoned(
+            jiff::civil::date(2026, 3, 2).at(11, 0, 0, 0),
+            "America/New_York"
+        ))
+    );
+    assert_eq!(
+        moved.title.as_deref(),
+        Some("Team standup (moved for the all-hands)")
+    );
+    assert_eq!(moved.location, None, "the series' location stands");
+
+    // The week of 2026-03-02 reads Monday moved, Wednesday cancelled and
+    // Friday as the rule has it.
+    let rows = week_blocks(&core).await;
+    let keys: Vec<(&str, Option<&str>)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r.occurrence_key.as_deref().unwrap_or(""),
+                r.title.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            (
+                "2026-03-02T10:00",
+                Some("Team standup (moved for the all-hands)")
+            ),
+            ("2026-03-06T10:00", Some("Team standup")),
+        ]
+    );
+
+    core.shutdown().await;
+}
+
+/// Importing the recurring file again writes the same series onto the same
+/// Block, and nothing else.
+#[tokio::test]
+async fn re_importing_a_recurring_event_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let first = import(&core, &recurring(), None, ICS_SOURCE)
+        .await
+        .expect("import");
+    let before = stored(&core, STANDUP_UID).await;
+
+    let second = import(&core, &recurring(), None, ICS_SOURCE)
+        .await
+        .expect("re-import");
+    assert_eq!(second.created(), 0);
+    assert_eq!(second.updated(), 1);
+    assert_eq!(second.block_ids(), first.block_ids());
+    let after = stored(&core, STANDUP_UID).await;
+    assert_eq!(
+        sunrise_domain::Block {
+            updated_at: before.updated_at,
+            ..after
+        },
+        before
+    );
+    assert_eq!(week_blocks(&core).await.len(), 2);
+
+    core.shutdown().await;
+}
+
+/// The week's export states the series once, whatever number of its
+/// occurrences the week holds, and reads back onto the same series.
+#[tokio::test]
+async fn a_recurring_block_exports_and_re_imports_as_the_same_series() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    import(&core, &recurring(), None, ICS_SOURCE)
+        .await
+        .expect("import");
+    let before = stored(&core, STANDUP_UID).await;
+
+    let doc = export(&core, ExportWindow::Week, NOW_MS)
+        .await
+        .expect("export");
+    let events = ical::parse(&doc).unwrap().events;
+    assert_eq!(events.len(), 2, "the series and its override: {doc}");
+    assert!(events.iter().all(|e| e.uid == STANDUP_UID));
+    assert_eq!(events[0].location.as_deref(), Some("Room 2A"));
+    assert_eq!(events[0].exdates.len(), 1);
+    assert!(events[1].recurrence_id.is_some());
+
+    let back = import(&core, &doc, None, ICS_SOURCE)
+        .await
+        .expect("re-import");
+    assert_eq!(back.created(), 0);
+    assert!(back.notices.is_empty(), "{:?}", back.notices);
+    let after = stored(&core, STANDUP_UID).await;
+    assert_eq!(
+        sunrise_domain::Block {
+            updated_at: before.updated_at,
+            ..after
+        },
+        before
+    );
+
     core.shutdown().await;
 }

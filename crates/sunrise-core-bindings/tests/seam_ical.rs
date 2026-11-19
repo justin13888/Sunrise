@@ -108,7 +108,7 @@ async fn what_a_block_cannot_hold_reaches_the_client() {
     let (_dir, core) = open_core().await;
     let text = ics_now(core.now_ms(), "ev1", "Design review").replace(
         "END:VEVENT",
-        "DESCRIPTION:Bring the roadmap\r\nRRULE:FREQ=WEEKLY\r\n\
+        "CATEGORIES:work\r\nRRULE:FREQ=HOURLY\r\n\
 BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT",
     );
     let report = core.import_ical(text, None, None).await.expect("import");
@@ -116,7 +116,7 @@ BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT",
 
     let details: Vec<&str> = report.notices.iter().map(|n| n.detail.as_str()).collect();
     assert!(
-        details.iter().any(|d| d.starts_with("DESCRIPTION")),
+        details.iter().any(|d| d.starts_with("CATEGORIES")),
         "{details:?}"
     );
     assert!(
