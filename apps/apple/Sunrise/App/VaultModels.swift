@@ -25,6 +25,8 @@ final class VaultModels {
     let review: ReviewModel
     let morning: MorningSummaryModel
     let evening: EndOfDayPlanModel
+    /// The triage queue, which both shells present as a sheet.
+    let triage: TriageModel
     let undo: UndoModel
     /// What has access to this account, and the three signals about it that
     /// reached no user before #144.
@@ -63,6 +65,7 @@ final class VaultModels {
         review = ReviewModel(bridge: bridge)
         morning = MorningSummaryModel(bridge: bridge)
         evening = EndOfDayPlanModel(bridge: bridge)
+        triage = TriageModel(bridge: bridge)
         undo = UndoModel(bridge: bridge)
         devices = DeviceListModel(bridge: bridge)
         storage = AttachmentCacheModel(bridge: bridge)
