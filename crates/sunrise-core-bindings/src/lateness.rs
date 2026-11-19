@@ -146,6 +146,9 @@ pub struct TriageRowItem {
     pub task: TaskItem,
     /// Why it needs a decision, and since when.
     pub lateness: LatenessItem,
+    /// Whether its plan breaks a `hard` scheduling constraint for the reader
+    /// now, recomputed on every read in the reader's zone (#1084).
+    pub hard_violation: bool,
 }
 
 impl From<&TriageRow> for TriageRowItem {
@@ -153,6 +156,7 @@ impl From<&TriageRow> for TriageRowItem {
         Self {
             task: TaskItem::from(&r.task),
             lateness: LatenessItem::from(&r.lateness),
+            hard_violation: r.hard_violation,
         }
     }
 }

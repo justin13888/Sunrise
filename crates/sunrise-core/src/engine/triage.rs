@@ -1,8 +1,10 @@
 //! The triage queue and its four actions (ADR-0047 §3–§4, issue #335).
 //!
 //! `Query::Triage` is derived on every read from each open task's lateness
-//! for the reader now (`engine::lateness`), its Keep and its stream's pause;
-//! nothing about the queue is stored but the Keep itself. `Command::Triage`
+//! for the reader now (`engine::lateness`), its Keep and its stream's pause,
+//! and from whether its plan breaks a `hard` scheduling constraint in the
+//! reader's zone now (#1084); nothing about the queue is stored but the Keep
+//! itself. `Command::Triage`
 //! applies one action to a selection: every id is checked and every write
 //! planned against the vault as it stands before any is logged, one refusal
 //! refuses the batch with nothing written, and the writes are one group
@@ -13,7 +15,7 @@ use super::ids::{ms_to_ts, require_kind};
 use super::lateness::LatenessReader;
 use super::review::read_live_tasks;
 use super::stream::read_stream;
-use super::task::{read_task, TaskWrite};
+use super::task::{breaks_hard_constraint, read_task, TaskWrite};
 use super::{Engine, EngineError};
 use crate::commands::CommandResult;
 use crate::queries::{QueryResult, TriageRow};
@@ -27,7 +29,9 @@ use sunrise_storage::Db;
 
 impl Engine {
     /// `Query::Triage`: every open task in the queue for the reader now, with
-    /// its lateness, in the queue's order (`sunrise_domain::triage_order`).
+    /// its lateness and whether its plan breaks a `hard` scheduling
+    /// constraint, flagged rows first, then in the queue's order
+    /// (`sunrise_domain::triage_order`).
     pub(super) fn query_triage(&self, db: &Db) -> Result<QueryResult, EngineError> {
         let now_ms = self.clock.now_ms();
         let reader = self.lateness_reader(db, now_ms)?;
@@ -43,7 +47,11 @@ impl Engine {
                 continue;
             }
             let lateness = reader.of(&task);
-            if !lateness.state.needs_decision() {
+            // Recomputed on every read in the reader's zone: a plan that a
+            // zone change or a concurrent edit put outside a `hard` window is
+            // flagged here until it is re-planned (#1084).
+            let hard_violation = breaks_hard_constraint(&task, &reader.tz);
+            if !lateness.state.needs_decision() && !hard_violation {
                 continue;
             }
             let paused = match task.stream_id {
@@ -60,11 +68,22 @@ impl Engine {
                 }
                 None => false,
             };
-            if in_triage(&task, &lateness, paused) {
-                rows.push(TriageRow { task, lateness });
+            // A Keep acknowledges lateness, not a broken window: a flagged
+            // row stays until the plan changes.
+            if (hard_violation && !paused) || in_triage(&task, &lateness, paused) {
+                rows.push(TriageRow {
+                    task,
+                    lateness,
+                    hard_violation,
+                });
             }
         }
-        rows.sort_by(|a, b| triage_order((&a.task, &a.lateness), (&b.task, &b.lateness)));
+        // A plan that cannot be kept as it stands comes first.
+        rows.sort_by(|a, b| {
+            b.hard_violation
+                .cmp(&a.hard_violation)
+                .then_with(|| triage_order((&a.task, &a.lateness), (&b.task, &b.lateness)))
+        });
         Ok(QueryResult::Triage(rows))
     }
 
