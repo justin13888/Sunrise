@@ -142,7 +142,7 @@ struct CalendarModelTests {
         let task = try #require(list.tasks.first)
         let model = await model(vault)
 
-        await model.dropTask(task.id, atMs: hour(model, 14))
+        await model.planner.dropTask(task.id, atMs: hour(model, 14), timeZone: model.timeZone)
 
         let row = try #require(model.rows.first)
         #expect(row.title == "Draft the proposal")
@@ -261,7 +261,7 @@ struct CalendarModelTests {
         await list.create(draft("Write the report"))
         let task = try #require(list.tasks.first)
         let model = await model(vault)
-        await model.dropTask(task.id, atMs: hour(model, 9))
+        await model.planner.dropTask(task.id, atMs: hour(model, 9), timeZone: model.timeZone)
         let block = try #require(model.rows.first).block.id
 
         await model.unbind(task: task.id, from: block)

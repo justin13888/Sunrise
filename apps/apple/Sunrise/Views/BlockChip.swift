@@ -252,6 +252,54 @@ struct PlanGhostView: View {
     }
 }
 
+/// What dropping now would do, in words, for as long as a plan is on screen:
+/// "Moves 3 · 1 unscheduled · misses its hard deadline". Spoken to VoiceOver
+/// each time it changes.
+struct PlanSummaryLine: View {
+    let summary: String?
+
+    var body: some View {
+        if let summary {
+            Text(summary)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 6)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("calendar-plan-summary")
+                .onChange(of: summary, initial: true) { _, said in
+                    AccessibilityNotification.Announcement(said).post()
+                }
+        }
+    }
+}
+
+/// The planning keys on a block (``Keymap/planning``): the block takes
+/// keyboard focus, and a press it holds is handed to `handle`.
+///
+/// The Mac only, as the keyboard path of a pointer drag. On iOS the chip
+/// stays a plain tap target: making it focusable there changes what a tap
+/// does on a phone, which has no keys to press.
+struct PlanningKeys: ViewModifier {
+    var focus: FocusState<String?>.Binding
+    let id: String
+    let handle: (KeyChord) -> Bool
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .focusable()
+            .focused(focus, equals: id)
+            .onKeyPress(phases: .down) { press in
+                handle(KeyChord(press)) ? .handled : .ignored
+            }
+        #else
+        content
+        #endif
+    }
+}
+
 extension View {
     /// "Which events?", asked before a change to one event of a repeating
     /// block: *this event*, *this and following events* or *all events*

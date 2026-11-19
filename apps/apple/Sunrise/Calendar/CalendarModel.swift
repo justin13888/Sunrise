@@ -80,27 +80,15 @@ final class CalendarModel {
     /// Set after a Resolve action, so the grid can say what it did.
     private(set) var note: String?
 
-    /// The plan on screen: what the drag or the keyboard nudge in progress
-    /// would do if dropped now. `nil` when no gesture is previewing.
-    private(set) var plan: PlanDiffItem?
-    /// The line under the gesture that names `plan`'s consequence.
-    var planSummary: String? { plan.map(PlanGhosts.summary(of:)) }
-    /// The keyboard nudge in progress, if any.
-    private(set) var nudge: PlanNudge?
-
-    /// The intent `plan` was solved for.
-    private var planIntent: PlanIntentItem?
-    /// What the gesture is, for its undo label.
-    private var planGesture: PlanGesture?
-    private var pump = PlanPreviewPump<PlanRequest>()
-    /// Bumped when a gesture ends, so a preview still in flight for it is
-    /// not drawn over the grid afterwards.
-    private var generation = 0
+    /// The grid's drags, planned by the core: see ``CalendarPlanner``.
+    @ObservationIgnored let planner: CalendarPlanner
 
     private let bridge: CoreBridge
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
+        planner = CalendarPlanner(bridge: bridge)
+        planner.afterWrite = { [weak self] in await self?.refresh() }
     }
 
     // MARK: - Reading
@@ -314,43 +302,12 @@ final class CalendarModel {
         await run(.createBlock(draft: draft), label: L10n.Calendar.undoCreateBlock)
     }
 
-    /// Drop an existing task onto the grid at `atMs`.
+    /// Set a block's times outright: from the Adjust times sheet, where the
+    /// person typed both, or from a drag of one event of a repeating block,
+    /// which the planner cannot preview (``CalendarPlanner/repeatingSpan(of:mode:toMs:timeZone:)``).
     ///
-    /// The block is created with the task already bound and **no title**, which
-    /// is not an omission: `Command::CreateBlock` shadow-copies the single
-    /// bound task's title as it is now, so the block gets the right name from
-    /// the core rather than one composed here that could disagree with it.
-    ///
-    /// How long it is, is the planner's answer: the slot `plan_preview` gives
-    /// the task dropped there, which is its estimate, or the
-    /// `planner.default_task_duration_s` preference when it has none. The
-    /// preview is cancelled once read; the drop writes the block, not the
-    /// task's `planned_at`, because the grid draws blocks.
-    func dropTask(_ task: EntityRef, atMs: Int64) async {
-        let at = timeValue(ms: atMs, kind: .zoned)
-        do {
-            let diff = try await bridge.planPreview(.moveTaskTo(task: task, at: at))
-            await bridge.planCancel(diff.id)
-            guard case let .slot(start, end)? = diff.moves.first(where: { $0.item == task })?.after
-            else { return }
-            let draft = BlockDraftIn(
-                streamId: inboxStreamId(),
-                startsAt: start,
-                endsAt: end,
-                title: nil,
-                titleTrackTask: false,
-                tasks: [task]
-            )
-            await run(.createBlock(draft: draft), label: L10n.Calendar.undoCreateBlock)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// Set a block's times outright, from the Adjust times sheet of a
-    /// conflict's Resolve menu: the person typed both, so nothing is planned.
-    ///
-    /// The kind is preserved, as for a drag. `reach` is the answer to "which
+    /// The kind is preserved: dragging a floating block an hour later must
+    /// not quietly pin it to a zone. `reach` is the answer to "which
     /// events?" for one event of a repeating block, and is ignored for a
     /// block that does not recur.
     func moveBlock(
@@ -363,247 +320,6 @@ final class CalendarModel {
         edit.startsAt = Self.sameKind(as: row.block.startsAt, ms: toStartMs, timeZone: timeZone)
         edit.endsAt = Self.sameKind(as: row.block.endsAt, ms: toEndMs, timeZone: timeZone)
         await update(row, with: edit, reach: reach, label: L10n.Calendar.undoMoveBlock)
-    }
-
-    /// Move or resize one event of a repeating block by dragging it.
-    ///
-    /// The planner reads a repeating block as its series row, not as the
-    /// event on screen, so a drag of one event is not a plan it can preview:
-    /// this keeps the edit the grid made before the planner, and `reach`
-    /// says how far it goes. A block that does not repeat is planned
-    /// (``previewDrag(_:mode:toMs:)``).
-    ///
-    /// The kind is preserved: dragging a floating block an hour later must not
-    /// quietly pin it to a zone. That is why this reads the row's own kind back
-    /// rather than taking one from the caller.
-    func moveRepeating(
-        _ row: BlockGridRow,
-        mode: BlockDragMode,
-        toMs: Int64,
-        reach: BlockEditReach?
-    ) async {
-        let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
-        let end = timeValueMs(value: row.block.endsAt, tz: timeZone)
-        var edit = BlockEdit()
-        switch mode {
-        case .move:
-            edit.startsAt = Self.sameKind(as: row.block.startsAt, ms: toMs, timeZone: timeZone)
-            edit.endsAt = Self.sameKind(as: row.block.endsAt, ms: toMs + (end - start), timeZone: timeZone)
-        case .resizeEnd:
-            guard toMs > start else { return }
-            edit.endsAt = Self.sameKind(as: row.block.endsAt, ms: toMs, timeZone: timeZone)
-        }
-        await update(row, with: edit, reach: reach, label: L10n.Calendar.undoMoveBlock)
-    }
-
-    // MARK: - Planning a drag
-
-    /// The intent for dragging `row` in `mode` so that the held edge lands
-    /// at `toMs`: its start for a move, its end for a resize. The time keeps
-    /// the kind the block already has.
-    func intent(for row: BlockGridRow, mode: BlockDragMode, toMs: Int64) -> PlanIntentItem {
-        switch mode {
-        case .move:
-            .moveBlock(
-                block: row.block.id,
-                toStart: Self.sameKind(as: row.block.startsAt, ms: toMs, timeZone: timeZone)
-            )
-        case .resizeEnd:
-            .resizeBlock(
-                block: row.block.id,
-                edge: .end,
-                to: Self.sameKind(as: row.block.endsAt, ms: toMs, timeZone: timeZone)
-            )
-        }
-    }
-
-    /// A drag of `row` reached a new snapped position: preview it. The diff
-    /// is drawn when it comes back, unless a newer position or the end of
-    /// the gesture overtook it.
-    func previewDrag(_ row: BlockGridRow, mode: BlockDragMode, toMs: Int64) async {
-        await preview(intent(for: row, mode: mode, toMs: toMs), gesture: PlanGesture(row: row, mode: mode))
-    }
-
-    /// Preview `intent` under the one-in-flight rule (``PlanPreviewPump``).
-    func preview(_ intent: PlanIntentItem, gesture: PlanGesture) async {
-        let request = PlanRequest(generation: generation, intent: intent, gesture: gesture)
-        var next = pump.request(request)
-        while let sent = next {
-            let result: Result<PlanDiffItem, Error>
-            do {
-                result = try await .success(bridge.planPreview(sent.intent))
-            } catch {
-                result = .failure(error)
-            }
-            let (current, queued) = pump.finished()
-            next = queued
-            guard current, sent.generation == generation else { continue }
-            switch result {
-            case let .success(diff):
-                plan = diff
-                planIntent = sent.intent
-                planGesture = sent.gesture
-            case let .failure(error):
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    /// The drag of `row` ended with its held edge at `toMs`: commit the plan
-    /// for that position. Dropped where it started, it commits nothing.
-    func dropDrag(_ row: BlockGridRow, mode: BlockDragMode, toMs: Int64) async {
-        await drop(intent(for: row, mode: mode, toMs: toMs), gesture: PlanGesture(row: row, mode: mode))
-    }
-
-    /// Commit the plan for `intent`: the diff on screen when it was solved
-    /// for this very position, or a fresh preview of it when the last one
-    /// to come back was for an earlier position.
-    func drop(_ intent: PlanIntentItem, gesture: PlanGesture) async {
-        let diff: PlanDiffItem
-        if let plan, planIntent == intent {
-            diff = plan
-        } else {
-            do {
-                diff = try await bridge.planPreview(intent)
-            } catch {
-                errorMessage = error.localizedDescription
-                endPlan()
-                return
-            }
-        }
-        await commit(diff, intent: intent, gesture: gesture, retry: true)
-    }
-
-    /// Commit `diff`, exactly. Stale or forgotten, it is previewed once more
-    /// at the same position and committed only if the new diff moves the
-    /// same things to the same places; otherwise the new one is left on
-    /// screen for Return or Esc (`docs/08-features/planner.md` §Client
-    /// contract).
-    private func commit(
-        _ diff: PlanDiffItem,
-        intent: PlanIntentItem,
-        gesture: PlanGesture,
-        retry: Bool
-    ) async {
-        // Dropped back where it started: a cancel.
-        guard !diff.moves.isEmpty || !diff.unscheduled.isEmpty else {
-            endPlan(cancelling: diff.id)
-            return
-        }
-        guard diff.committable else {
-            note = L10n.Calendar.notePlanRefused
-            endPlan(cancelling: diff.id)
-            return
-        }
-        let label = gesture.label(moved: diff.moves.count + diff.unscheduled.count)
-        do {
-            _ = try await bridge.planCommit(diff.id, label: label)
-            // Re-read before the ghosts go, so the grid steps from the plan
-            // to the blocks where it put them without showing the old ones.
-            await refresh()
-            endPlan()
-        } catch BindingError.PlanStale, BindingError.PlanUnknown {
-            guard retry, let again = try? await bridge.planPreview(intent) else {
-                endPlan()
-                await refresh()
-                return
-            }
-            if again.moves == diff.moves, again.unscheduled == diff.unscheduled {
-                await commit(again, intent: intent, gesture: gesture, retry: false)
-            } else {
-                await refresh()
-                plan = again
-                planIntent = intent
-                planGesture = gesture
-                note = L10n.Calendar.notePlanChanged
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-            endPlan()
-        }
-    }
-
-    /// Commit whatever plan is on screen: Return, after a keyboard nudge or
-    /// after a drop whose plan changed underneath it.
-    func commitPlan() async {
-        guard let plan, let planIntent, let planGesture else { return }
-        await commit(plan, intent: planIntent, gesture: planGesture, retry: true)
-    }
-
-    /// Esc, or the end of a gesture: forget the plan on screen and write
-    /// nothing.
-    func cancelPlan() {
-        endPlan(cancelling: plan?.id)
-    }
-
-    private func endPlan(cancelling id: String? = nil) {
-        if let id { Task { [bridge] in await bridge.planCancel(id) } }
-        generation += 1
-        pump.reset()
-        plan = nil
-        planIntent = nil
-        planGesture = nil
-        nudge = nil
-    }
-
-    /// The ghosts of the plan on screen that the `offset`-th day draws.
-    func ghosts(dayOffset: Int) -> [PlanGhost] {
-        guard let plan else { return [] }
-        return PlanGhosts.place(
-            diff: plan,
-            fromMs: dayStartMs(offset: dayOffset),
-            toMs: dayStartMs(offset: dayOffset + 1),
-            timeZone: timeZone
-        )
-    }
-
-    // MARK: - Planning from the keyboard
-
-    /// One planning key on the block `row`: ⌥↑/⌥↓ move it a snap, ⇧⌥↑/⇧⌥↓
-    /// move its end a snap, ⌥←/⌥→ move it a day, each previewing the same
-    /// plan a drag there would; Return commits it and Esc cancels it.
-    ///
-    /// Returns whether the key did anything. A repeating block is not
-    /// planned (``moveRepeating(_:mode:toMs:reach:)``), so its keys fall
-    /// through. Nudges add up until Return or Esc; switching between moving
-    /// and resizing starts again from where the block is.
-    @discardableResult
-    func plan(_ key: PlanKey, on row: BlockGridRow) async -> Bool {
-        switch key {
-        case .commit:
-            guard plan != nil else { return false }
-            await commitPlan()
-            return true
-        case .cancel:
-            guard plan != nil || nudge != nil else { return false }
-            cancelPlan()
-            return true
-        default:
-            guard !row.recurs else { return false }
-            var next = nudge.flatMap { $0.block == row.gridKey ? $0 : nil } ?? PlanNudge(block: row.gridKey)
-            next.press(key)
-            nudge = next
-            await preview(intent(for: row, nudge: next), gesture: PlanGesture(row: row, mode: next.mode))
-            return true
-        }
-    }
-
-    /// The intent a nudge stands for, from where `row` is now.
-    func intent(for row: BlockGridRow, nudge: PlanNudge) -> PlanIntentItem {
-        let step = Int64(snapMinutes) * 60_000
-        switch nudge.mode {
-        case .move:
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: timeZone) ?? .current
-            let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
-            let date = Date(timeIntervalSince1970: Double(start) / 1000)
-            let moved = calendar.date(byAdding: .day, value: nudge.days, to: date) ?? date
-            let ms = Int64(moved.timeIntervalSince1970 * 1000) + Int64(nudge.steps) * step
-            return intent(for: row, mode: .move, toMs: ms)
-        case .resizeEnd:
-            let end = timeValueMs(value: row.block.endsAt, tz: timeZone)
-            return intent(for: row, mode: .resizeEnd, toMs: end + Int64(nudge.steps) * step)
-        }
     }
 
     func bind(task: EntityRef, to block: EntityRef) async {
@@ -785,70 +501,6 @@ final class CalendarModel {
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-}
-
-/// What a planned gesture did to its block, for the one undo step it
-/// becomes: "move ‘Standup’ (moved 3)".
-struct PlanGesture: Equatable, Sendable {
-    let title: String
-    let mode: BlockDragMode
-
-    init(title: String, mode: BlockDragMode) {
-        self.title = title
-        self.mode = mode
-    }
-
-    init(row: BlockGridRow, mode: BlockDragMode) {
-        self.init(title: row.title ?? L10n.Calendar.untitledBlock, mode: mode)
-    }
-
-    /// `moved` counts every item the commit moves, the dragged block too.
-    func label(moved: Int) -> String {
-        switch mode {
-        case .move: L10n.Calendar.undoPlanMove(title: title, count: moved)
-        case .resizeEnd: L10n.Calendar.undoPlanResize(title: title, count: moved)
-        }
-    }
-}
-
-/// One preview the pump sends: the gesture it belongs to and the position.
-struct PlanRequest {
-    let generation: Int
-    let intent: PlanIntentItem
-    let gesture: PlanGesture
-}
-
-/// A keyboard nudge in progress: how far the planning keys have taken one
-/// block since the last Return or Esc.
-struct PlanNudge: Equatable, Sendable {
-    /// The grid key of the block's row.
-    let block: String
-    private(set) var mode: BlockDragMode = .move
-    /// Snaps: of the start for a move, of the end for a resize.
-    private(set) var steps = 0
-    /// Whole days, for a move.
-    private(set) var days = 0
-
-    init(block: String) {
-        self.block = block
-    }
-
-    /// Add one key's worth. A key of the other kind starts the count again.
-    mutating func press(_ key: PlanKey) {
-        let wanted: BlockDragMode = key == .shorter || key == .longer ? .resizeEnd : .move
-        if wanted != mode {
-            mode = wanted
-            steps = 0
-            days = 0
-        }
-        switch key {
-        case .earlier, .shorter: steps -= 1
-        case .later, .longer: steps += 1
-        case .previousDay: days -= 1
-        case .nextDay: days += 1
-        case .commit, .cancel: break
         }
     }
 }

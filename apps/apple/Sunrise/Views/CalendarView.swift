@@ -19,9 +19,15 @@ struct CalendarView: View {
             if let error = model.errorMessage {
                 NoteBanner(text: error) { model.dismissError() }
             }
+            if let note = model.planner.note {
+                NoteBanner(text: note) { model.planner.dismissNote() }
+            }
+            if let error = model.planner.errorMessage {
+                NoteBanner(text: error) { model.planner.dismissError() }
+            }
             Divider()
             grid
-                .overlay(alignment: .top) { planSummary }
+                .overlay(alignment: .top) { PlanSummaryLine(summary: model.planner.summary) }
         }
         .task { await model.refresh() }
         .task { await model.follow() }
@@ -85,26 +91,6 @@ struct CalendarView: View {
                 dateLabel
                 Spacer(minLength: 0)
             }
-        }
-    }
-
-    /// What dropping now would do, in words, for as long as a plan is on
-    /// screen: "Moves 3 · 1 unscheduled · misses its hard deadline". Spoken
-    /// to VoiceOver each time it changes.
-    @ViewBuilder
-    private var planSummary: some View {
-        if let summary = model.planSummary {
-            Text(summary)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(.regularMaterial, in: Capsule())
-                .padding(.top, 6)
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("calendar-plan-summary")
-                .onChange(of: summary, initial: true) { _, said in
-                    AccessibilityNotification.Announcement(said).post()
-                }
         }
     }
 
@@ -303,7 +289,7 @@ private struct DayColumn: View {
                             }
                         },
                         resolve: resolveMenu(for: placed),
-                        isMoving: isMoving(placed),
+                        isMoving: model.planner.moves(placed.blockId),
                         drag: { mode, points, ended in
                             dragBlock(placed, mode: mode, byPoints: points, ended: ended)
                         }
@@ -312,7 +298,11 @@ private struct DayColumn: View {
                         planKey(chord, on: placed)
                     })
                 }
-                ForEach(model.ghosts(dayOffset: dayOffset)) { ghost in
+                ForEach(model.planner.ghosts(
+                    fromMs: dayStartMs,
+                    toMs: model.dayStartMs(offset: dayOffset + 1),
+                    timeZone: model.timeZone
+                )) { ghost in
                     PlanGhostView(ghost: ghost, dayStartMs: dayStartMs, width: proxy.size.width)
                 }
                 if let ghost = ghostRect {
@@ -410,31 +400,31 @@ private struct DayColumn: View {
         ended: Bool
     ) {
         let row = placed.row
-        let held = timeValueMs(
-            value: mode == .move ? row.block.startsAt : row.block.endsAt,
-            tz: model.timeZone
-        )
+        let zone = model.timeZone
+        let held = timeValueMs(value: mode == .move ? row.block.startsAt : row.block.endsAt, tz: zone)
         let deltaMs = Int64(points / CalendarMetrics.hourHeight * 3_600_000)
         let toMs = model.snap(held + deltaMs, dayOffset: dayOffset)
-
+        let planner = model.planner
         guard ended else {
             guard !row.recurs, !dragCancelled, toMs != dragSnapped else { return }
             if dragSnapped == nil { focusedBlock = placed.id }
             dragSnapped = toMs
-            Task { await model.previewDrag(row, mode: mode, toMs: toMs) }
+            Task { await planner.previewDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
             return
         }
         let cancelled = dragCancelled
         dragSnapped = nil
         dragCancelled = false
         guard !cancelled else { return }
-        if row.recurs {
-            guard toMs != held else { return }
-            reaching(row, .move) { reach in
-                Task { await model.moveRepeating(row, mode: mode, toMs: toMs, reach: reach) }
-            }
-        } else {
-            Task { await model.dropDrag(row, mode: mode, toMs: toMs) }
+        guard row.recurs else {
+            Task { await planner.dropDrag(row, mode: mode, toMs: toMs, timeZone: zone) }
+            return
+        }
+        guard toMs != held,
+              let span = CalendarPlanner.repeatingSpan(of: row, mode: mode, toMs: toMs, timeZone: zone)
+        else { return }
+        reaching(row, .move) { reach in
+            Task { await model.moveBlock(row, toStartMs: span.startMs, toEndMs: span.endMs, reach: reach) }
         }
     }
 
@@ -442,25 +432,21 @@ private struct DayColumn: View {
     /// Esc during a drag also cancels the drag's drop.
     private func planKey(_ chord: KeyChord, on placed: PlacedBlock) -> Bool {
         guard let key = Keymap.planKey(for: chord) else { return false }
-        if key == .cancel, dragSnapped != nil {
-            dragCancelled = true
-            model.cancelPlan()
+        let planner = model.planner
+        switch key {
+        case .cancel:
+            guard dragSnapped != nil || planner.plan != nil || planner.nudge != nil else { return false }
+            dragCancelled = dragSnapped != nil
+            planner.cancel()
             return true
+        case .commit:
+            guard planner.plan != nil else { return false }
+        default:
+            guard !placed.row.recurs else { return false }
         }
-        guard key == .commit || key == .cancel || !placed.row.recurs else { return false }
-        if key == .cancel {
-            guard model.plan != nil || model.nudge != nil else { return false }
-            model.cancelPlan()
-            return true
-        }
-        if key == .commit, model.plan == nil { return false }
-        Task { await model.plan(key, on: placed.row) }
+        let (snap, zone) = (model.snapMinutes, model.timeZone)
+        Task { await planner.press(key, on: placed.row, snapMinutes: snap, timeZone: zone) }
         return true
-    }
-
-    /// Whether the plan on screen moves this block.
-    private func isMoving(_ placed: PlacedBlock) -> Bool {
-        model.plan?.moves.contains { $0.item == placed.blockId } ?? false
     }
 
     /// Make `change` now for a block that does not recur, which asks nothing,
@@ -483,14 +469,15 @@ private struct DayColumn: View {
     /// The payload is the task's `EntityRef`, which is its text form — the same
     /// string the CLI accepts. A drop of anything else is ignored rather than
     /// guessed at. How long the block it makes is, is the core's answer
-    /// (``CalendarModel/dropTask(_:atMs:)``).
+    /// (``CalendarPlanner/dropTask(_:atMs:timeZone:)``).
     private func accept(items: [String], at y: CGFloat) -> Bool {
         guard let raw = DropPayload.taskIDs(items).first else { return false }
         let start = model.snap(
             CalendarMetrics.instant(at: y, dayStartMs: dayStartMs),
             dayOffset: dayOffset
         )
-        Task { await model.dropTask(raw, atMs: start) }
+        let (planner, zone) = (model.planner, model.timeZone)
+        Task { await planner.dropTask(raw, atMs: start, timeZone: zone) }
         return true
     }
 
@@ -513,31 +500,6 @@ private struct DayColumn: View {
                     adjust: { adjust(conflict) }
                 )
             }
-    }
-}
-
-/// The planning keys on a block (``Keymap/planning``): the block takes
-/// keyboard focus, and a press it holds is handed to `handle`.
-///
-/// The Mac only, as the keyboard path of a pointer drag. On iOS the chip
-/// stays a plain tap target: making it focusable there changes what a tap
-/// does on a phone, which has no keys to press.
-private struct PlanningKeys: ViewModifier {
-    var focus: FocusState<String?>.Binding
-    let id: String
-    let handle: (KeyChord) -> Bool
-
-    func body(content: Content) -> some View {
-        #if os(macOS)
-        content
-            .focusable()
-            .focused(focus, equals: id)
-            .onKeyPress(phases: .down) { press in
-                handle(KeyChord(press)) ? .handled : .ignored
-            }
-        #else
-        content
-        #endif
     }
 }
 

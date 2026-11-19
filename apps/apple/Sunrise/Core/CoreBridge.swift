@@ -30,7 +30,8 @@ actor CoreBridge {
     /// The order of the undo steps across the command stack and the
     /// planner's commits. Here, beside the handle, because every write that
     /// records a step passes through this actor.
-    private var journal = UndoJournal()
+    /// Internal only so `CoreBridge+Planner.swift` can reach it.
+    var journal = UndoJournal()
 
     /// Open — or create — the vault at `directory`, keyed by a 32-byte root.
     ///
@@ -134,71 +135,6 @@ actor CoreBridge {
         let outcome = try await core.submitUndoable(cmd: command, label: label)
         if outcome.notUndoable == nil { journal.recordCommand() }
         return outcome
-    }
-
-    /// Reverse the most recent recorded step, whichever stack holds it: a
-    /// planner commit through `plan_undo`, anything else through the
-    /// command stack. `nil` when there is nothing.
-    func undo() async throws -> UndoneStep? {
-        let step = journal.takeUndo()
-        switch step {
-        case let .plan(commitId, label)?:
-            let undone = try core.planUndo(commitId: commitId)
-            return UndoneStep(
-                label: label,
-                restored: Int(undone.restored),
-                skipped: undone.skipped.count
-            )
-        case .command?, nil:
-            do {
-                return try await core.undo().map { UndoneStep(label: $0, restored: 0, skipped: 0) }
-            } catch {
-                if let step { journal.undoFailed(step) }
-                throw error
-            }
-        }
-    }
-
-    /// Replay the most recently undone command step. A planner commit has no
-    /// redo (``UndoJournal``), so after one there is nothing to replay.
-    func redo() async throws -> String? {
-        guard journal.canRedo else { return nil }
-        let label = try await core.redo()
-        if label != nil { journal.redid() }
-        return label
-    }
-
-    /// What the Undo and Redo menu items should say right now: the newest
-    /// planner commit's label when that is the next step, and a redo only
-    /// when one may be replayed.
-    func undoState() -> UndoState {
-        let core = core.undoState()
-        return UndoState(
-            undoLabel: journal.planLabel ?? core.undoLabel,
-            redoLabel: journal.canRedo ? core.redoLabel : nil
-        )
-    }
-
-    // MARK: - The planner
-
-    /// What dragging to `intent` would do, solved by the core against the
-    /// vault as it stands. Writes nothing. Off the main actor, because the
-    /// bridge is an actor; the caller keeps at most one in flight.
-    func planPreview(_ intent: PlanIntentItem) throws -> PlanDiffItem {
-        try core.planPreview(intent: intent)
-    }
-
-    /// Commit exactly the previewed diff `diffId`, and record it as one undo
-    /// step labelled `label`.
-    func planCommit(_ diffId: String, label: String) throws -> PlanCommitItem {
-        let commit = try core.planCommit(diffId: diffId)
-        if commit.moved > 0 { journal.recordPlan(commitId: commit.commitId, label: label) }
-        return commit
-    }
-
-    /// Forget a previewed diff: the gesture was cancelled.
-    func planCancel(_ diffId: String) {
-        try? core.planCancel(diffId: diffId)
     }
 
     /// What this build may edit in this vault: whether to show "Update

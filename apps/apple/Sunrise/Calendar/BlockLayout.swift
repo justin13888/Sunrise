@@ -257,20 +257,23 @@ enum PlanGhosts {
         return parts.joined(separator: " · ")
     }
 
+    /// A rule, as the summary line says it. A table rather than a `switch`
+    /// so each rule is one row; a rule a newer core adds and this build has
+    /// no words for reads as "not a time this block can have".
     static func words(for rule: PlanRule) -> String {
-        switch rule {
-        case .overlapsFixed: L10n.Calendar.planRuleOverlapsFixed
-        case .overlaps: L10n.Calendar.planRuleOverlaps
-        case .afterHardDeadline: L10n.Calendar.planRuleAfterHardDeadline
-        case .afterTarget: L10n.Calendar.planRuleAfterTarget
-        case .beforeBlocker: L10n.Calendar.planRuleBeforeBlocker
-        case .outsideTimeOfDay: L10n.Calendar.planRuleOutsideTimeOfDay
-        case .wrongDayOfWeek: L10n.Calendar.planRuleWrongDayOfWeek
-        case .outsideDateRange: L10n.Calendar.planRuleOutsideDateRange
-        case .outsideDay: L10n.Calendar.planRuleOutsideDay
-        case .inPast: L10n.Calendar.planRuleInPast
-        case .invalid: L10n.Calendar.planRuleInvalid
-        }
+        let words: [PlanRule: String] = [
+            .overlapsFixed: L10n.Calendar.planRuleOverlapsFixed,
+            .overlaps: L10n.Calendar.planRuleOverlaps,
+            .afterHardDeadline: L10n.Calendar.planRuleAfterHardDeadline,
+            .afterTarget: L10n.Calendar.planRuleAfterTarget,
+            .beforeBlocker: L10n.Calendar.planRuleBeforeBlocker,
+            .outsideTimeOfDay: L10n.Calendar.planRuleOutsideTimeOfDay,
+            .wrongDayOfWeek: L10n.Calendar.planRuleWrongDayOfWeek,
+            .outsideDateRange: L10n.Calendar.planRuleOutsideDateRange,
+            .outsideDay: L10n.Calendar.planRuleOutsideDay,
+            .inPast: L10n.Calendar.planRuleInPast
+        ]
+        return words[rule] ?? L10n.Calendar.planRuleInvalid
     }
 }
 

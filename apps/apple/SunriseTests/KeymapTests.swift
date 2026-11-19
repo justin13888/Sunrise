@@ -180,8 +180,7 @@ struct KeymapTests {
     }
 
     /// The planning keys on a calendar block, `docs/08-features/planner.md`
-    /// §Client contract: ⌥↑/⌥↓ nudge by one snap, ⇧⌥↑/⇧⌥↓ resize, ⌥←/⌥→ move
-    /// a day, Return commits and Esc cancels.
+    /// §Client contract.
     @Test
     func thePlanningKeysAreTheOnesThePlannerSpecStates() {
         let expected: [(KeyChord, PlanKey)] = [
