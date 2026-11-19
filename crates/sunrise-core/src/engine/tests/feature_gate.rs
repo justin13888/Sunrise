@@ -637,17 +637,6 @@ fn a_revoked_device_does_not_stand_in_the_way_of_enabling_a_feature() {
     );
 }
 
-/// This build's registry without `stream.civil_times`: a build from before
-/// #788.
-static BEFORE_STREAM_CIVIL_TIMES: std::sync::LazyLock<Vec<Feature>> =
-    std::sync::LazyLock::new(|| {
-        crate::feature::FEATURES
-            .iter()
-            .filter(|f| f.id != crate::feature::STREAM_CIVIL_TIMES_FEATURE)
-            .copied()
-            .collect()
-    });
-
 /// A stream paused until a civil time, across a build that has
 /// `stream.civil_times` and one that does not (#788).
 ///

@@ -800,3 +800,122 @@ fn deleting_a_stream_keeps_a_childs_civil_pause() {
     assert!(gone.deleted);
     assert_eq!(gone.paused_until, Some(until));
 }
+
+/// Pause stream `id` until `until` as a build from before #788 did, one
+/// with no `stream.civil_times` to gate it: the op is logged and folded, so
+/// the stream holds a civil expiry the vault does not require the feature
+/// for.
+fn hold_ungated_civil_pause(db: &mut Db, id: EntityRef, until: &SunriseTime) {
+    let older = engine().with_features(&BEFORE_STREAM_CIVIL_TIMES);
+    let mut stream = read_stream(db.conn(), id.bytes()).unwrap().unwrap();
+    stream.paused = true;
+    stream.paused_until = Some(until.clone());
+    stream.updated_at = ms_to_ts(older.clock.now_ms() as i64);
+    log_and_fold(&older, db, &InnerOp::StreamUpdate(stream), &META_STREAM);
+}
+
+/// A parent stream and its child, the child (or else the parent) holding a
+/// civil pause expiry the vault does not yet require `stream.civil_times`
+/// for.
+fn parent_and_child_with_ungated_pause(
+    e: &Engine,
+    db: &mut Db,
+    on_child: bool,
+) -> (EntityRef, EntityRef, SunriseTime) {
+    let parent = new_stream(e, db, "Parent");
+    let child = e
+        .apply(
+            db,
+            Command::CreateStream(StreamDraft {
+                name: "Child".into(),
+                parent_id: Some(parent),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let until = SunriseTime::all_day(jiff::civil::date(2026, 3, 9));
+    hold_ungated_civil_pause(db, if on_child { child } else { parent }, &until);
+    assert!(!e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    (parent, child, until)
+}
+
+fn delete_detached(e: &Engine, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
+    e.apply(
+        db,
+        Command::DeleteStream {
+            id,
+            disposition: sunrise_domain::Disposition::Detach,
+        },
+    )
+}
+
+/// A child's re-parenting carries the civil expiry it already held, so the
+/// delete requires `stream.civil_times` first rather than writing an op the
+/// seal guard refuses, and the child keeps its expiry (#788).
+#[test]
+fn deleting_a_stream_requires_stream_civil_times_for_a_childs_ungated_civil_pause() {
+    let mut db = db();
+    let e = engine();
+    let (parent, child, until) = parent_and_child_with_ungated_pause(&e, &mut db, true);
+    delete_detached(&e, &mut db, parent).unwrap();
+    assert!(e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    let held = read_stream(db.conn(), child.bytes()).unwrap().unwrap();
+    assert_eq!(held.parent_id, None);
+    assert_eq!(held.paused_until, Some(until));
+    assert!(
+        read_stream(db.conn(), parent.bytes())
+            .unwrap()
+            .unwrap()
+            .deleted
+    );
+}
+
+/// The tombstone carries the civil expiry the deleted stream already held,
+/// so the delete requires `stream.civil_times` first rather than writing an
+/// op the seal guard refuses (#788).
+#[test]
+fn deleting_a_stream_requires_stream_civil_times_for_its_own_ungated_civil_pause() {
+    let mut db = db();
+    let e = engine();
+    let (parent, _, until) = parent_and_child_with_ungated_pause(&e, &mut db, false);
+    delete_detached(&e, &mut db, parent).unwrap();
+    assert!(e
+        .vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)
+        .unwrap());
+    let gone = read_stream(db.conn(), parent.bytes()).unwrap().unwrap();
+    assert!(gone.deleted);
+    assert_eq!(gone.paused_until, Some(until));
+}
+
+/// Where a paired device has not advertised `stream.civil_times`, deleting
+/// a stream that would write an ungated civil expiry, the child's or its
+/// own, is refused with the feature and the device named, and writes
+/// nothing (#788).
+#[test]
+fn deleting_a_stream_with_an_ungated_civil_pause_waits_for_every_device() {
+    for on_child in [true, false] {
+        let mut db = db();
+        let e = engine();
+        let (parent, _, _) = parent_and_child_with_ungated_pause(&e, &mut db, on_child);
+        legacy_peer(&db);
+        let ops = op_count(&db);
+        let err = delete_detached(&e, &mut db, parent).unwrap_err();
+        assert!(
+            matches!(&err, EngineError::FeatureUnsupportedByDevices { feature, devices }
+                if feature == STREAM_CIVIL_TIMES_FEATURE && devices == &vec![LEGACY_PEER]),
+            "on_child={on_child}: {err:?}"
+        );
+        assert_eq!(op_count(&db), ops, "the refused delete wrote nothing");
+        assert!(
+            !read_stream(db.conn(), parent.bytes())
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
+    }
+}

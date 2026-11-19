@@ -465,6 +465,17 @@ pub(super) fn legacy_peer(db: &Db) {
 /// The device id [`legacy_peer`] pairs.
 pub(super) const LEGACY_PEER: [u8; 16] = [0xEE; 16];
 
+/// This build's registry without `stream.civil_times`: a build from before
+/// #788.
+pub(super) static BEFORE_STREAM_CIVIL_TIMES: std::sync::LazyLock<Vec<crate::feature::Feature>> =
+    std::sync::LazyLock::new(|| {
+        crate::feature::FEATURES
+            .iter()
+            .filter(|f| f.id != crate::feature::STREAM_CIVIL_TIMES_FEATURE)
+            .copied()
+            .collect()
+    });
+
 pub(super) fn db_root(root: [u8; 32]) -> Db {
     Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
 }
