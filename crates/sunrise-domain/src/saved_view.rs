@@ -24,7 +24,8 @@
 //!
 //! # Not built yet
 //!
-//! * `TODO(#339)`: a place predicate. There is no Place entity yet.
+//! * `TODO(#339)`: a place predicate. Places are an entity now (#1128), but
+//!   a filter cannot name one yet.
 //! * `TODO(#345)`: [`ViewFilter::text`] is the search grammar for a Search
 //!   view, run by the core's search; for every other view it is a plain
 //!   case-insensitive match on the title.
