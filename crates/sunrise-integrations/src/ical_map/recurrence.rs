@@ -123,8 +123,9 @@ pub(super) fn drop_recurrence(
 /// The series an event with rule `raw` states, its anchor the draft's
 /// bounds read as wall clock.
 fn series_of(raw: &str, draft: &BlockDraft) -> Result<BlockSeries, String> {
-    let rrule = parse_rrule(raw)?;
+    let mut rrule = parse_rrule(raw)?;
     let (starts_at, ends_at) = wall_clock_anchor(&draft.starts_at, &draft.ends_at)?;
+    rrule.until = rrule.until.map(|u| civil_until(u, &starts_at));
     let series = BlockSeries {
         starts_at,
         ends_at,
@@ -164,20 +165,56 @@ fn parse_rrule(raw: &str) -> Result<RRule, String> {
     Ok(rule)
 }
 
+/// An iCalendar `UNTIL` in the anchor's civil frame, the kind an
+/// `RRule.until` holds (`docs/10-cross-cutting/time.md` §Which kind each
+/// field uses): floating wall clock, or a whole date as it is.
+///
+/// A UTC or zoned value beside a zoned anchor is the wall clock it falls on
+/// in the anchor's zone. Beside a floating anchor, which has no zone, a
+/// zoned value bounds its own wall clock and a UTC one its UTC wall clock,
+/// as the engine reads them (`routine_gen::civil_frame_rule`).
+fn civil_until(until: SunriseTime, anchor: &SunriseTime) -> SunriseTime {
+    let zone = match anchor {
+        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).ok(),
+        _ => None,
+    };
+    match (&until, zone) {
+        (SunriseTime::Zoned { .. } | SunriseTime::Instant { .. }, Some(zone)) => until
+            .resolve_in(&TimeZone::UTC)
+            .map_or(until, |at| SunriseTime::floating(zone.to_datetime(at))),
+        (SunriseTime::Zoned { civil, .. }, None) => SunriseTime::floating(*civil),
+        (SunriseTime::Instant { at }, None) => {
+            SunriseTime::floating(TimeZone::UTC.to_datetime(*at))
+        }
+        _ => until,
+    }
+}
+
 /// The rule's text as an `RRULE` value, its `UNTIL` in the iCalendar time
-/// grammar: a UTC instant for an instant or a zoned time (RFC 5545 §3.3.10
-/// wants UTC beside a zoned start), otherwise its own form.
-pub(super) fn rrule_value(rule: &RRule) -> String {
+/// grammar. Beside a zoned `anchor` a time is the UTC instant it names in
+/// the anchor's zone (RFC 5545 §3.3.10 wants UTC beside a zoned start);
+/// beside a floating one a floating `UNTIL` stays floating; a whole date
+/// stays a date.
+pub(super) fn rrule_value(rule: &RRule, anchor: &SunriseTime) -> String {
     let mut text = RRule {
         until: None,
         ..rule.clone()
     }
     .to_rfc5545();
-    let until = match &rule.until {
-        Some(SunriseTime::Floating { civil }) => Some(ICalTime::Floating(*civil)),
-        Some(SunriseTime::AllDay { date }) => Some(ICalTime::Date(*date)),
-        Some(t) => t.resolve_in(&TimeZone::UTC).map(ICalTime::Utc),
-        None => None,
+    let zone = match anchor {
+        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).ok(),
+        _ => None,
+    };
+    let until = match (&rule.until, zone) {
+        (Some(SunriseTime::AllDay { date }), _) => Some(ICalTime::Date(*date)),
+        (Some(SunriseTime::Floating { civil }), Some(zone)) => zone
+            .to_ambiguous_timestamp(*civil)
+            .compatible()
+            .ok()
+            .map(ICalTime::Utc),
+        (Some(SunriseTime::Floating { civil }), None) => Some(ICalTime::Floating(*civil)),
+        (Some(t), _) => t.resolve_in(&TimeZone::UTC).map(ICalTime::Utc),
+        (None, _) => None,
     };
     if let Some(u) = until {
         text.push_str(";UNTIL=");
@@ -353,7 +390,18 @@ mod tests {
         assert!(m.notices.is_empty(), "{:?}", m.notices);
         let rule = m.fields.rrule.as_ref().expect("a rule");
         assert_eq!(rule.to_rfc5545().split(';').next(), Some("FREQ=WEEKLY"));
-        assert!(rule.until.is_some());
+        // `UNTIL=20260330T080000Z` is 10:00 in Berlin (CEST), held as the
+        // wall clock it falls on in the anchor's zone.
+        assert_eq!(
+            rule.until,
+            Some(SunriseTime::floating(
+                civil::date(2026, 3, 30).at(10, 0, 0, 0)
+            ))
+        );
+        assert!(
+            rrule_value(rule, &m.draft.starts_at).ends_with(";UNTIL=20260330T080000Z"),
+            "exports as the UTC instant it was"
+        );
 
         let x = &m.fields.exceptions;
         assert_eq!(
@@ -483,6 +531,37 @@ mod tests {
             to_sunrise(&utc(2026, 3, 1, 14)).resolve_in(&TimeZone::UTC)
         );
         assert!(m.fields.exceptions["2026-03-02T14:00"].cancelled);
+    }
+
+    /// Beside a floating anchor an `UNTIL` stays wall clock: a floating one
+    /// as written and exported so, a zoned one at its own wall clock, a UTC
+    /// one at its UTC wall clock.
+    #[test]
+    fn until_beside_a_floating_anchor_is_wall_clock() {
+        let at = |d: i8, h: i8| civil::date(2026, 3, d).at(h, 0, 0, 0);
+        for (until, want) in [
+            ("UNTIL=20260310T090000", at(10, 9)),
+            ("UNTIL=20260310T090000Z", at(10, 9)),
+        ] {
+            let ev = ICalEvent {
+                dtstart: Some(ICalTime::Floating(at(2, 9))),
+                dtend: Some(ICalTime::Floating(at(2, 10))),
+                rrule: Some(format!("FREQ=DAILY;{until}")),
+                ..event()
+            };
+            let m = event_to_block(&ev, &[], Some(stream())).expect("mapped");
+            assert!(m.notices.is_empty(), "{:?}", m.notices);
+            let rule = m.fields.rrule.as_ref().expect("a rule");
+            assert_eq!(rule.until, Some(SunriseTime::floating(want)), "{until}");
+            assert!(
+                rrule_value(rule, &m.draft.starts_at).ends_with(";UNTIL=20260310T090000"),
+                "{until}"
+            );
+        }
+        assert_eq!(
+            civil_until(to_sunrise(&berlin(10, 9)), &SunriseTime::floating(at(2, 9))),
+            SunriseTime::floating(at(10, 9))
+        );
     }
 
     /// What a Block cannot recur is reported, and the event imports as its

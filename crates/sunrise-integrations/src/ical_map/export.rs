@@ -35,7 +35,10 @@ pub fn block_to_event(block: &Block, title: Option<&str>) -> ICalEvent {
         duration: None,
         description: block.notes.as_ref().and_then(description_of),
         location: block.location.clone(),
-        rrule: block.rrule.as_ref().map(rrule_value),
+        rrule: block
+            .rrule
+            .as_ref()
+            .map(|r| rrule_value(r, &block.starts_at)),
         exdates,
         recurrence_id: None,
         cancelled: false,

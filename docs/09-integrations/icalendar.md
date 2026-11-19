@@ -128,7 +128,12 @@ blocks), so its anchor is `zoned` or `floating`:
   event has no wall-clock time to repeat and imports as its first occurrence,
   with a notice.
 - **`RRULE`** is the rule, read by the engine's parser except for `UNTIL`,
-  which is read in the iCalendar time grammar (`20260331T035959Z`). A rule
+  which is read in the iCalendar time grammar (`20260331T035959Z`) and held
+  in the anchor's civil frame, as
+  [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §Which kind
+  each field uses requires: a UTC or zoned `UNTIL` beside a zoned anchor is
+  the wall clock it falls on in the anchor's zone; beside a floating anchor a
+  zoned one is its own wall clock and a UTC one its UTC wall clock. A rule
   outside the engine subset
   ([`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md):
   `RRule::first_unknown`, `BYWEEKNO`, `BYYEARDAY`, …) is reported, not guessed
