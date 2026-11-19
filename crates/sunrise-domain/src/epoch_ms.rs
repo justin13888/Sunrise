@@ -36,21 +36,23 @@ pub fn serialize<S: Serializer>(t: &Timestamp, s: S) -> Result<S::Ok, S::Error> 
 /// A value outside the representable range clamps to the epoch rather than
 /// failing: refusing the whole op over one out-of-range integer would lose an
 /// entire session or review, and an obviously-wrong instant is easier to see
-/// and repair than a missing record.
+/// and repair than a missing record. Every value inside the range, its last
+/// second included, reads as itself (#898).
 ///
 /// # Errors
 /// Only if the field is not an integer at all.
 pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Timestamp, D::Error> {
     let ms = i64::deserialize(d)?;
-    Ok(Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH))
+    Ok(crate::time::timestamp_at_ms(ms).unwrap_or(Timestamp::UNIX_EPOCH))
 }
 
-/// `u64` epoch milliseconds → [`Timestamp`], clamping the impossible.
+/// `u64` epoch milliseconds → [`Timestamp`], clamping the impossible to the
+/// epoch. The range's last second reads as itself (#898).
 #[must_use]
 pub fn from_u64(ms: u64) -> Timestamp {
     i64::try_from(ms)
         .ok()
-        .and_then(|ms| Timestamp::from_millisecond(ms).ok())
+        .and_then(crate::time::timestamp_at_ms)
         .unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
@@ -97,5 +99,23 @@ mod tests {
     #[test]
     fn an_impossible_value_clamps_rather_than_failing() {
         assert_eq!(from_u64(u64::MAX), Timestamp::UNIX_EPOCH);
+        let past_max = u64::try_from(Timestamp::MAX.as_millisecond()).unwrap() + 1;
+        assert_eq!(from_u64(past_max), Timestamp::UNIX_EPOCH);
+    }
+
+    /// #898: `Timestamp::from_millisecond` refuses the range's last second,
+    /// so a field there used to read as 1970-01-01.
+    #[test]
+    fn the_last_second_of_the_range_reads_as_itself() {
+        let last = Timestamp::MAX.as_millisecond();
+        for ms in [253_402_207_200_000_i64, 253_402_207_200_500, last] {
+            let want = Timestamp::from_duration(jiff::SignedDuration::from_millis(ms)).unwrap();
+            assert_eq!(want.as_millisecond(), ms);
+            assert_eq!(from_u64(u64::try_from(ms).unwrap()), want);
+
+            let bytes = sunrise_cbor::encode_canonical(&Holder { at: want }).unwrap();
+            let back: Holder = sunrise_cbor::decode_canonical(&bytes).unwrap();
+            assert_eq!(back.at, want, "{ms} read back as {}", back.at);
+        }
     }
 }
