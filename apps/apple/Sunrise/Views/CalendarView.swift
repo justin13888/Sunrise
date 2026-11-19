@@ -121,7 +121,6 @@ struct CalendarView: View {
             Task { await model.step(1) }
         }
         .labelStyle(.iconOnly)
-        .accessibilityIdentifier("calendar-next")
     }
 
     /// The date, on one line whatever happens.

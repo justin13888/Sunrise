@@ -24,8 +24,13 @@ final class PlannedDragUITests: SunriseUITestCase {
             "the calendar is on screen before anything is dragged on it"
         )
         // Tomorrow, so neither block is in the past, which the planner holds
-        // fixed and would never move out of the way.
-        activate(app.buttons["calendar-next"], named: "the calendar's Next button")
+        // fixed and would never move out of the way. By label among the
+        // toolbar's controls: the toolbar's `calendar-toolbar` identifier is
+        // carried down onto every control in it, replacing any identifier the
+        // button sets on itself.
+        let next = app.buttons.matching(identifier: "calendar-toolbar")
+            .matching(NSPredicate(format: "label == %@", "Next")).firstMatch
+        activate(next, named: "the calendar's Next button")
 
         drawBlock("Standup", from: Self.firstTop, to: Self.firstBottom)
         drawBlock("Focus", from: Self.secondTop, to: Self.secondBottom)
