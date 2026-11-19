@@ -242,7 +242,7 @@ fn unknown_routine_fields_survive_the_materialized_row() {
     let draft = routine_draft(
         stream,
         "FREQ=DAILY",
-        T0 as i64,
+        T0.cast_signed(),
         RoutineCatchupPolicy::Skip,
         Vec::new(),
     );
@@ -510,7 +510,10 @@ fn an_unknown_state_and_energy_survive_a_peers_unrelated_edit() {
     // B's projection holds the raw values, not their fallbacks.
     let stored = task_of(&eb, &dbb, task);
     assert_eq!(stored.state.as_str(), "archived");
-    assert_eq!(stored.energy.as_ref().map(|e| e.as_str()), Some("frantic"));
+    assert_eq!(
+        stored.energy.as_ref().map(sunrise_domain::Energy::as_str),
+        Some("frantic")
+    );
     // And reads them as the fallbacks where logic acts: the task is open.
     assert_eq!(stored.state.effective(), TaskState::Todo);
 

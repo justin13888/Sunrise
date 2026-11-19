@@ -327,6 +327,10 @@ impl Engine {
     /// all, which since #105 is every device admitted by pairing. The second is
     /// checked first and by name, because it is a permanent property of the
     /// device rather than a state it might be in.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub(super) fn rotate_identity(
         &self,
         db: &mut Db,
@@ -364,7 +368,7 @@ impl Engine {
             // The devices the pre-rotation fold holds an authority row for,
             // read while `head` is still the head (ADR-0058 §5). Carried
             // forward below for each the roster leaves out.
-            let authority_held = self.authority_revocations_at(tx, &head)?;
+            let authority_held = Self::authority_revocations_at(tx, &head)?;
             let successor = self.keychain.mint_successor_identity(self.rng.as_ref());
 
             // The surviving set, on the recipient rule. This device is always
@@ -809,7 +813,6 @@ impl Engine {
     /// never have read — same order, same count — so no fold on any replica
     /// holding these rows could have reached it.
     pub(super) fn admit_sibling(
-        &self,
         tx: &Transaction<'_>,
         from_identity_id: &[u8; 16],
         rank: &SiblingRank,
@@ -895,7 +898,6 @@ impl Engine {
     /// identity per establishment — the same bound the fold already pays at one
     /// link, and paid on the path that removes the reason to pay it again.
     pub(super) fn purge_unverifiable_siblings(
-        &self,
         tx: &Transaction<'_>,
         from_identity_id: &[u8; 16],
         from_pub: &[u8; 32],
@@ -977,7 +979,6 @@ impl Engine {
     /// from the cert rather than trusting any outer copy, because there is no
     /// outer copy and that is deliberate.
     pub(super) fn apply_roster(
-        &self,
         tx: &Transaction<'_>,
         roster: &[RosterEntry],
         to_identity_id: &[u8; 16],
@@ -1116,6 +1117,10 @@ impl Engine {
     /// `report` is whether a failure is this device's final answer, and so
     /// worth `core.identity.not_in_roster`: an intermediate link of the walk
     /// that does not open is followed by a try at the head.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     fn adopt_link(
         &self,
         tx: &Transaction<'_>,

@@ -431,7 +431,7 @@ fn the_receiver_stores_the_senders_stamp() {
     );
     assert_eq!(
         read(&dbb).0,
-        T0 as i64,
+        T0.cast_signed(),
         "B stored A's physical clock, not its own"
     );
 }

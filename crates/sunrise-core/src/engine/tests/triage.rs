@@ -91,7 +91,7 @@ fn the_queue_orders_and_keep_holds_until_the_next_transition() {
     let hard_early = add(&e, &mut db, "hard early", None, Some(at(NOW + hour)));
     add(&e, &mut db, "on track", None, Some(at(NOW + 30 * DAY_MS)));
     assert!(queue(&e, &db).is_empty(), "nothing is late yet");
-    set_clock(&clock, (NOW + 3 * hour) as u64);
+    set_clock(&clock, (NOW + 3 * hour).cast_unsigned());
     assert_eq!(
         titles(&queue(&e, &db)),
         [
@@ -106,7 +106,7 @@ fn the_queue_orders_and_keep_holds_until_the_next_transition() {
         [("hard late".into(), Lateness::LateHard)]
     );
     // The soft one's hard deadline passes: a new state, back in the queue.
-    set_clock(&clock, (NOW + 5 * DAY_MS + hour) as u64);
+    set_clock(&clock, (NOW + 5 * DAY_MS + hour).cast_unsigned());
     assert_eq!(
         titles(&queue(&e, &db)),
         [
@@ -162,7 +162,7 @@ fn one_invalid_id_refuses_the_whole_batch() {
     let b = add(&e, &mut db, "b", None, None);
     let gone = add(&e, &mut db, "gone", None, None);
     e.apply(&mut db, Command::DeleteTask(gone)).unwrap();
-    set_clock(&clock, (NOW + DAY_MS) as u64);
+    set_clock(&clock, (NOW + DAY_MS).cast_unsigned());
     let ops = op_count(&db);
     let unknown = EntityRef::new(EntityKind::Task, [0x99; 16]);
     let drop = || TriageAction::Drop {
@@ -220,7 +220,7 @@ fn each_action_writes_what_its_row_says() {
     let target = at(NOW + DAY_MS);
     let hard = SunriseTime::all_day(jiff::civil::date(2023, 11, 30));
     let t = add(&e, &mut db, "t", Some(target.clone()), Some(hard.clone()));
-    set_clock(&clock, (NOW + 2 * DAY_MS) as u64);
+    set_clock(&clock, (NOW + 2 * DAY_MS).cast_unsigned());
 
     // Defer to a time keeps its kind, counts, and never moves a deadline.
     let floating = SunriseTime::floating(jiff::civil::date(2023, 11, 20).at(9, 0, 0, 0));
@@ -337,12 +337,12 @@ fn a_backdated_completion_feeds_the_stats_and_the_streak() {
     let mut db = db();
     let (rid, occ) = seed_routine(&e, &mut db);
     // On time: the first occurrence.
-    set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
     assert_eq!(routine_of(&e, &db, rid).streak_counter, 1);
     // The second is clicked done two days late, but was done an hour after
     // it fell due: the streak counts it.
-    set_clock(&clock, (occ[1].1 + 48 * 3_600_000) as u64);
+    set_clock(&clock, (occ[1].1 + 48 * 3_600_000).cast_unsigned());
     triage(
         &e,
         &mut db,
@@ -361,10 +361,10 @@ fn a_backdated_completion_feeds_the_stats_and_the_streak() {
     let (e2, clock2) = clocked();
     let mut db2 = super::support::db();
     let (rid2, occ2) = seed_routine(&e2, &mut db2);
-    set_clock(&clock2, (occ2[0].1 + 3_600_000) as u64);
+    set_clock(&clock2, (occ2[0].1 + 3_600_000).cast_unsigned());
     e2.apply(&mut db2, Command::CompleteTask(occ2[0].0))
         .unwrap();
-    set_clock(&clock2, (occ2[1].1 + 48 * 3_600_000) as u64);
+    set_clock(&clock2, (occ2[1].1 + 48 * 3_600_000).cast_unsigned());
     e2.apply(&mut db2, Command::CompleteTask(occ2[1].0))
         .unwrap();
     assert_eq!(routine_of(&e2, &db2, rid2).streak_counter, 1);
@@ -373,7 +373,7 @@ fn a_backdated_completion_feeds_the_stats_and_the_streak() {
     let (e3, clock3) = clocked();
     let mut db3 = super::support::db();
     let t = add(&e3, &mut db3, "done yesterday", None, None);
-    set_clock(&clock3, (NOW + 2 * DAY_MS) as u64);
+    set_clock(&clock3, (NOW + 2 * DAY_MS).cast_unsigned());
     let yesterday = SunriseTime::all_day(jiff::civil::date(2023, 11, 15));
     triage(
         &e3,
@@ -430,7 +430,7 @@ fn nothing_changes_a_task_without_a_command() {
     };
     let ops = task_ops(&db);
     for days in [1, 15, 40] {
-        let now = (NOW + days * DAY_MS) as u64;
+        let now = (NOW + days * DAY_MS).cast_unsigned();
         set_clock(&clock, now);
         for q in [
             Query::Triage,
@@ -600,14 +600,14 @@ fn a_pause_holds_until_its_expiry_and_a_re_cancel_keeps_the_reason() {
         e.apply(&mut db, Command::PromoteToStream { id: t, stream: s })
             .unwrap();
     }
-    set_clock(&clock, (NOW + 2 * DAY_MS) as u64);
+    set_clock(&clock, (NOW + 2 * DAY_MS).cast_unsigned());
     let mut queued: Vec<String> = queue(&e, &db).into_iter().map(|r| r.task.title).collect();
     queued.sort();
     assert_eq!(queued, ["in live", "in ran out"]);
     // At the expiry itself the pause is over.
-    set_clock(&clock, (NOW + 10 * DAY_MS) as u64);
+    set_clock(&clock, (NOW + 10 * DAY_MS).cast_unsigned());
     assert_eq!(queue(&e, &db).len(), 3);
-    set_clock(&clock, (NOW + 10 * DAY_MS - 1) as u64);
+    set_clock(&clock, (NOW + 10 * DAY_MS - 1).cast_unsigned());
     assert_eq!(queue(&e, &db).len(), 2);
 
     let t = add(&e, &mut db, "dropped", None, None);

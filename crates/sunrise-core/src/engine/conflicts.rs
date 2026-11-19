@@ -103,6 +103,10 @@ const fn surfaced(class: Conflict) -> bool {
 }
 
 /// Every unresolved conflict, or one entity's. See the module docs.
+#[allow(
+    clippy::too_many_lines,
+    reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+)]
 fn conflicts_in(
     tx: &Transaction<'_>,
     entity: Option<EntityRef>,
@@ -270,7 +274,7 @@ fn cycle_conflicts(
 /// stream otherwise.
 fn full_state_update(
     kind: EntityKind,
-    value: Value,
+    value: &Value,
     field: &str,
 ) -> Result<(InnerOp, [u8; 16]), EngineError> {
     let unfit = |_| EngineError::Invalid(format!("`{field}` cannot hold that value"));
@@ -367,7 +371,6 @@ enum Settle {
 
 impl Engine {
     pub(super) fn query_conflicts(
-        &self,
         db: &Db,
         entity: Option<EntityRef>,
         include_quiet: bool,
@@ -436,7 +439,7 @@ impl Engine {
             let now = Value::serialized(&ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX)))
                 .map_err(|e| EngineError::Cbor(e.to_string()))?;
             set_field(kind, &mut entries, "updated_at", now);
-            let (op, stream) = full_state_update(kind, Value::Map(entries), field)?;
+            let (op, stream) = full_state_update(kind, &Value::Map(entries), field)?;
             let state = match &op {
                 InnerOp::TaskUpdate(t) => Some(t.state.clone()),
                 _ => None,

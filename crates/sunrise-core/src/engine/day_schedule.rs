@@ -20,7 +20,7 @@ use sunrise_storage::Db;
 impl Engine {
     /// The vault's day schedule. Empty when none is set, which makes every
     /// planner day the civil day.
-    pub(crate) fn day_schedule(&self, db: &Db) -> Result<DaySchedule, EngineError> {
+    pub(crate) fn day_schedule(db: &Db) -> Result<DaySchedule, EngineError> {
         schedule_in(db.conn())
     }
 
@@ -55,7 +55,7 @@ impl Engine {
         db: &Db,
         at_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (date, start, end) = self.planner_day_at(&schedule, at_ms)?;
         let window = schedule.window_for(date);
         let plannable = plannable(&schedule, date, &self.device_zone()).map_err(calendar)?;

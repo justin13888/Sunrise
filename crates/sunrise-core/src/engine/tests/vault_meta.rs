@@ -29,6 +29,10 @@ use super::*;
 /// because the *first* op of any kind mints vault-meta and there is therefore
 /// only one command per vault that can hit this.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn every_vault_meta_command_sequences_after_the_key_it_mints() {
     type Build = fn(&mut Db) -> Command;
     let cases: &[(&str, Build)] = &[
@@ -69,7 +73,7 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
             Command::CreateRoutine(routine_draft(
                 inbox_stream_ref(),
                 "FREQ=DAILY",
-                T0 as i64,
+                T0.cast_signed(),
                 RoutineCatchupPolicy::Skip,
                 Vec::new(),
             ))
@@ -87,7 +91,7 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
         }),
         ("routine.skip", |db| Command::SkipRoutineOccurrence {
             id: seed_bare_routine(db),
-            occurrence_key: occurrence_key_at("UTC", ms_to_ts(T0 as i64)).unwrap(),
+            occurrence_key: occurrence_key_at("UTC", ms_to_ts(T0.cast_signed())).unwrap(),
         }),
         ("review.snapshot", |_db| {
             Command::SaveReviewSnapshot(ReviewSnapshotDraft {
@@ -186,6 +190,10 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
 /// operation — a device revocation does exactly that — and
 /// `reserved_stream_is_still_rotatable` below pins it.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
     /// A well-formed `Stream` reference to the vault-meta log. Exactly what a
     /// binding could build, and what nothing rejected before.
@@ -254,7 +262,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
             Command::CreateRoutine(routine_draft(
                 meta_ref(),
                 "FREQ=DAILY",
-                T0 as i64,
+                T0.cast_signed(),
                 RoutineCatchupPolicy::Skip,
                 Vec::new(),
             ))
@@ -263,7 +271,7 @@ fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
             let d = routine_draft(
                 inbox_stream_ref(),
                 "FREQ=DAILY",
-                T0 as i64,
+                T0.cast_signed(),
                 RoutineCatchupPolicy::Skip,
                 Vec::new(),
             );

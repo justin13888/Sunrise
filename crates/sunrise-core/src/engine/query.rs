@@ -92,7 +92,6 @@ impl Engine {
     /// *current* states, exactly like every other derived-`blocked` read, so it
     /// is right whether the completion happened locally or merged in.
     pub(super) fn query_unblock_cascade(
-        &self,
         db: &Db,
         task: EntityRef,
     ) -> Result<QueryResult, EngineError> {
@@ -161,7 +160,7 @@ impl Engine {
         contexts: &[EntityRef],
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (today, _, day_end_ms) = self.planner_day_at(&schedule, now_ms)?;
         let window_end = day_end_ms.saturating_add(PREFILTER_SLACK_MS);
 
@@ -251,7 +250,7 @@ impl Engine {
     ) -> Result<(u32, bool), EngineError> {
         let moved =
             |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let stale_after_days = self.stale_after_days(db)?;
         let now = super::ids::ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX));
         let late_moved = |t: &sunrise_domain::Task| {
@@ -292,7 +291,6 @@ impl Engine {
     /// by how many open dependents finishing the task would release, then by id
     /// so the result is deterministic.
     pub(super) fn query_actionable(
-        &self,
         db: &Db,
         stream: Option<EntityRef>,
         limit: u32,

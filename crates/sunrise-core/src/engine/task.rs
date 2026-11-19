@@ -42,7 +42,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
         let stream = home_of(d.stream_id)?;
-        let mut task = Task::from_draft(task_id, ms_to_ts(now_ms as i64), d);
+        let mut task = Task::from_draft(task_id, ms_to_ts(now_ms.cast_signed()), d);
         task.stream_id = stream;
 
         // Scheduling gate: a `hard` constraint violated by this `scheduled_at`
@@ -106,6 +106,10 @@ impl Engine {
 
     /// The write [`Self::update_task`] makes of `patch`, validated against
     /// the task as `conn` holds it, and not yet logged.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub(super) fn plan_update(
         &self,
         conn: &rusqlite::Connection,
@@ -157,7 +161,7 @@ impl Engine {
             }
             task.state = state;
             if done {
-                task.completed_at = Some(ms_to_ts(now_ms as i64).into());
+                task.completed_at = Some(ms_to_ts(now_ms.cast_signed()).into());
             } else {
                 task.completed_at = None;
             }
@@ -235,7 +239,7 @@ impl Engine {
         } else {
             Vec::new()
         };
-        task.updated_at = ms_to_ts(now_ms as i64);
+        task.updated_at = ms_to_ts(now_ms.cast_signed());
         Ok(TaskWrite {
             task,
             delete: false,
@@ -277,6 +281,11 @@ impl Engine {
     ///
     /// # Errors
     /// Storage.
+    #[allow(
+        clippy::unused_self,
+        reason = "`Core` reads it through the engine it holds (`core/mod.rs`); the receiver keeps \
+                  that call shape"
+    )]
     pub(crate) fn hard_constraint_violations(
         &self,
         db: &Db,
@@ -348,7 +357,7 @@ impl Engine {
             &self.device_zone(),
             &super::day_schedule::schedule_in(conn)?,
         );
-        task.updated_at = ms_to_ts(now_ms as i64);
+        task.updated_at = ms_to_ts(now_ms.cast_signed());
         // Logged as the `task.update` it is, the kind a peer logs it under,
         // so compaction and the history readers see one kind on every replica.
         Ok(TaskWrite {
@@ -368,7 +377,7 @@ impl Engine {
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
-        let write = self.plan_tombstone(db.conn(), id, true, now_ms)?;
+        let write = Self::plan_tombstone(db.conn(), id, true, now_ms)?;
         self.emit_task_write(db, write, now_ms)
     }
 
@@ -377,7 +386,6 @@ impl Engine {
     /// as `Command::Restore` makes it (clarification D11). A restore of a
     /// task that is not deleted is refused, as `Command::Restore` refuses it.
     pub(super) fn plan_tombstone(
-        &self,
         conn: &rusqlite::Connection,
         id: EntityRef,
         deleted: bool,
@@ -390,7 +398,7 @@ impl Engine {
             return Err(EngineError::Invalid(format!("{id} is not deleted")));
         }
         task.deleted = deleted;
-        task.updated_at = ms_to_ts(now_ms as i64);
+        task.updated_at = ms_to_ts(now_ms.cast_signed());
         Ok(TaskWrite {
             task,
             delete: deleted,
@@ -457,8 +465,8 @@ impl Engine {
                 }
                 BulkTaskAction::DeferTo(to) => self.plan_defer(conn, item.id, to, now_ms)?,
                 BulkTaskAction::Update(patch) => self.plan_update(conn, item.id, *patch, now_ms)?,
-                BulkTaskAction::Delete => self.plan_tombstone(conn, item.id, true, now_ms)?,
-                BulkTaskAction::Restore => self.plan_tombstone(conn, item.id, false, now_ms)?,
+                BulkTaskAction::Delete => Self::plan_tombstone(conn, item.id, true, now_ms)?,
+                BulkTaskAction::Restore => Self::plan_tombstone(conn, item.id, false, now_ms)?,
             });
         }
         self.commit_task_writes(db, writes, now_ms)
@@ -562,7 +570,7 @@ impl Engine {
     pub(super) fn set_triaged(
         &self,
         db: &mut Db,
-        ids: Vec<EntityRef>,
+        ids: &[EntityRef],
         triaged: bool,
     ) -> Result<CommandResult, EngineError> {
         if ids.is_empty() {
@@ -573,7 +581,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut seen = BTreeSet::new();
         let mut writes = Vec::with_capacity(ids.len());
-        for id in &ids {
+        for id in ids {
             require_kind(*id, EntityKind::Task)?;
             if !seen.insert(*id) {
                 return Err(EngineError::Invalid(format!(
@@ -582,12 +590,12 @@ impl Engine {
             }
             let mut task = read_task(db.conn(), id.bytes())?
                 .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-            let at = triaged.then(|| ms_to_ts(now_ms as i64));
+            let at = triaged.then(|| ms_to_ts(now_ms.cast_signed()));
             if task.triaged_at.is_some() == triaged {
                 continue;
             }
             task.triaged_at = at;
-            task.updated_at = ms_to_ts(now_ms as i64);
+            task.updated_at = ms_to_ts(now_ms.cast_signed());
             writes.push(TaskWrite::plain(task));
         }
         let first = ids[0];
@@ -942,6 +950,10 @@ fn task_ref(raw: &[u8]) -> EntityRef {
     EntityRef::new(EntityKind::Task, a)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one statement and a line per column of the row; the length is the column count"
+)]
 pub(super) fn read_task(
     conn: &rusqlite::Connection,
     id: &[u8; 16],

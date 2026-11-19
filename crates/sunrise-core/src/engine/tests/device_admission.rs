@@ -781,7 +781,7 @@ fn a_roster_entry_cannot_rebind_the_device_key() {
     };
     let to = successor.identity_id();
 
-    dba.with_tx(|tx| ea.apply_roster(tx, &[entry([0x42; 32])], &to))
+    dba.with_tx(|tx| Engine::apply_roster(tx, &[entry([0x42; 32])], &to))
         .unwrap();
     assert_eq!(
         device_key_row(&dba, &b_id),
@@ -789,7 +789,7 @@ fn a_roster_entry_cannot_rebind_the_device_key() {
         "a rebinding entry moves nothing"
     );
 
-    dba.with_tx(|tx| ea.apply_roster(tx, &[entry(eb.keychain.device_dh_pub())], &to))
+    dba.with_tx(|tx| Engine::apply_roster(tx, &[entry(eb.keychain.device_dh_pub())], &to))
         .unwrap();
     let after = device_key_row(&dba, &b_id);
     assert_eq!(after.1, before.1);

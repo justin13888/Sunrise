@@ -210,7 +210,7 @@ fn a_routine_generated_task_never_appears_as_user_activity() {
             Command::CreateRoutine(routine_draft(
                 stream,
                 "FREQ=DAILY",
-                REVIEW_MON as i64,
+                REVIEW_MON.cast_signed(),
                 RoutineCatchupPolicy::Skip,
                 Vec::new(),
             )),

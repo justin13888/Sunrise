@@ -457,7 +457,8 @@ fn an_in_progress_flexible_block_is_not_moved() {
     let now_ms = at(10, 0)
         .resolve_in(&jiff::tz::TimeZone::UTC)
         .unwrap()
-        .as_millisecond() as u64;
+        .as_millisecond()
+        .cast_unsigned();
     let intent = PlanIntent::MoveBlock {
         block: b,
         to_start: at(10, 0),

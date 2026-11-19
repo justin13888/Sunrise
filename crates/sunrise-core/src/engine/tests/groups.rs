@@ -363,7 +363,7 @@ fn a_bulk_completion_counts_every_occurrence_of_one_routine() {
     let mut db = db_root(ROOT);
     legacy_peer(&db);
     let (rid, occ) = seed_routine(&e, &mut db);
-    set_clock(&clock, (occ[1].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[1].1 + 3_600_000).cast_unsigned());
     let before = routine_op_count(&db);
     e.apply(&mut db, complete_all(&[occ[0].0, occ[1].0]))
         .unwrap();

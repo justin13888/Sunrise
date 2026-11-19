@@ -44,6 +44,10 @@ fn apply(e: &Engine, db: &mut Db, cmd: Command) -> EntityRef {
 /// copy of what it meant to write, and they parted from the replica's
 /// wherever the fold reads an op differently from the command that built it.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn a_local_write_and_its_replay_project_identical_rows() {
     let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
     let w = engine_seeded(ROOT, [1u8; 32], clock.clone());

@@ -132,7 +132,6 @@ impl Engine {
     /// before the rotation moves the head, because from the first fold that
     /// sees the successor these rows are ordinary.
     pub(super) fn authority_revocations_at(
-        &self,
         conn: &rusqlite::Connection,
         head: &IdentityHead,
     ) -> rusqlite::Result<Vec<([u8; 16], RevokeReason)>> {

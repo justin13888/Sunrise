@@ -198,6 +198,10 @@ impl Engine {
     /// [`PlanError::Stale`] when an input changed; [`PlanError::NotCommittable`]
     /// for a diff with a Blocking violation; [`PlanError::Engine`] for a write
     /// the domain refuses or a failed transaction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub fn plan_apply(
         &self,
         db: &mut Db,
@@ -271,7 +275,7 @@ impl Engine {
                     }
                     block.starts_at = start;
                     block.ends_at = end;
-                    block.updated_at = ms_to_ts(write_ms as i64);
+                    block.updated_at = ms_to_ts(write_ms.cast_signed());
                     block
                         .validate_invariants(&self.device_zone())
                         .map_err(EngineError::from)?;
@@ -366,7 +370,7 @@ impl Engine {
                                     });
                                 }
                             }
-                            task.updated_at = ms_to_ts(write_ms as i64);
+                            task.updated_at = ms_to_ts(write_ms.cast_signed());
                             task.validate_invariants(&tz).ok()?;
                             Some(TaskWrite::plain(task).op())
                         })
@@ -392,7 +396,7 @@ impl Engine {
                                 }
                                 restored += 1;
                             }
-                            block.updated_at = ms_to_ts(write_ms as i64);
+                            block.updated_at = ms_to_ts(write_ms.cast_signed());
                             block.validate_invariants(&tz).ok()?;
                             let stream = domain_bytes(block.stream_id);
                             Some((InnerOp::BlockUpdate(Box::new(block)), stream))
@@ -429,6 +433,10 @@ impl Engine {
     }
 
     /// The [`PlanInputs`] of the planner days `intent` touches.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub(super) fn plan_inputs(
         &self,
         db: &Db,

@@ -614,6 +614,10 @@ fn a_revoked_device_cannot_rotate_a_stream_key() {
 /// are the highest epoch a replica holds, and the revoked device holds them
 /// until the rotation's envelope arrives.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() {
     let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let ex = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));

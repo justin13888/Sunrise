@@ -64,12 +64,12 @@ impl Engine {
         // of the Task do not reach the Block unless `title_track_task` is set.
         let title = match d.title {
             Some(t) => Some(t.trim().to_string()),
-            None => self.shadow_title(db, &tasks)?,
+            None => Self::shadow_title(db, &tasks)?,
         };
         let block = Block {
             id: block_id,
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
@@ -129,7 +129,7 @@ impl Engine {
         )];
         for mut original in [first, second] {
             original.deleted = true;
-            original.updated_at = ms_to_ts(now_ms as i64);
+            original.updated_at = ms_to_ts(now_ms.cast_signed());
             let stream = domain_bytes(original.stream_id);
             members.push((InnerOp::BlockDelete(Box::new(original)), stream));
         }
@@ -184,7 +184,7 @@ impl Engine {
         }
         let title = match d.title {
             Some(t) => Some(t.trim().to_string()),
-            None => self.shadow_title(db, &tasks)?,
+            None => Self::shadow_title(db, &tasks)?,
         };
         let mut block = Block {
             id: block_id,
@@ -192,8 +192,8 @@ impl Engine {
             // not a second creation of it.
             created_at: existing
                 .as_ref()
-                .map_or_else(|| ms_to_ts(now_ms as i64), |e| e.created_at),
-            updated_at: ms_to_ts(now_ms as i64),
+                .map_or_else(|| ms_to_ts(now_ms.cast_signed()), |e| e.created_at),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             stream_id: home,
             starts_at: d.starts_at,
             ends_at: d.ends_at,
@@ -295,7 +295,7 @@ impl Engine {
         // Moving a series' anchor moves its occurrence keys, and each
         // occurrence binding moves with the occurrence it named.
         block.shift_bindings(&anchor);
-        block.updated_at = ms_to_ts(now_ms as i64);
+        block.updated_at = ms_to_ts(now_ms.cast_signed());
         block.validate_invariants(&self.device_zone())?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(id, None, done.op_id, done.seq))
@@ -344,7 +344,7 @@ impl Engine {
             }));
         }
         block.exceptions = series.exceptions;
-        block.updated_at = ms_to_ts(now_ms as i64);
+        block.updated_at = ms_to_ts(now_ms.cast_signed());
         block.validate_invariants(&tz)?;
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(id, None, done.op_id, done.seq))
@@ -369,7 +369,7 @@ impl Engine {
         patch: Option<BlockPatch>,
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
-        let now = ms_to_ts(now_ms as i64);
+        let now = ms_to_ts(now_ms.cast_signed());
         let (block, series) = recurring_block(db.conn(), id)?;
         let root = block.split_from.unwrap_or(block.id);
         let continues = split_block_id(&root, key);
@@ -488,7 +488,7 @@ impl Engine {
                 let mut block = read_block(db.conn(), id.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
                 block.deleted = true;
-                block.updated_at = ms_to_ts(now_ms as i64);
+                block.updated_at = ms_to_ts(now_ms.cast_signed());
                 let done = self.emit_block(db, &block, now_ms, "block.delete")?;
                 Ok(CommandResult::new(id, None, done.op_id, done.seq))
             }
@@ -498,7 +498,7 @@ impl Engine {
                     .except(&key, BlockException::cancelled())
                     .map_err(|e| occurrence_error(id, e))?;
                 block.exceptions = series.exceptions;
-                block.updated_at = ms_to_ts(now_ms as i64);
+                block.updated_at = ms_to_ts(now_ms.cast_signed());
                 let done = self.emit_block(db, &block, now_ms, "block.update")?;
                 Ok(CommandResult::new(id, None, done.op_id, done.seq))
             }
@@ -559,11 +559,11 @@ impl Engine {
                 // shadow copy, which is what makes drag-a-task-onto-the-grid
                 // produce a labelled block instead of a blank one.
                 if block.title.is_none() {
-                    block.title = self.shadow_title(db, &block.tasks)?;
+                    block.title = Self::shadow_title(db, &block.tasks)?;
                 }
             }
         }
-        block.updated_at = ms_to_ts(now_ms as i64);
+        block.updated_at = ms_to_ts(now_ms.cast_signed());
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
@@ -615,7 +615,7 @@ impl Engine {
                 }
             }
         }
-        block.updated_at = ms_to_ts(now_ms as i64);
+        block.updated_at = ms_to_ts(now_ms.cast_signed());
         let done = self.emit_block(db, &block, now_ms, "block.update")?;
         Ok(CommandResult::new(block_id, None, done.op_id, done.seq))
     }
@@ -641,11 +641,7 @@ impl Engine {
     /// The title a single bound Task lends a Block. `None` when the Block binds
     /// zero or two-plus Tasks (nothing unambiguous to shadow) or when the one
     /// Task has not been materialized on this replica yet.
-    fn shadow_title(
-        &self,
-        db: &Db,
-        tasks: &BTreeSet<EntityRef>,
-    ) -> Result<Option<String>, EngineError> {
+    fn shadow_title(db: &Db, tasks: &BTreeSet<EntityRef>) -> Result<Option<String>, EngineError> {
         let mut it = tasks.iter();
         let (Some(only), None) = (it.next(), it.next()) else {
             return Ok(None);
@@ -660,7 +656,7 @@ impl Engine {
         db: &Db,
         day_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let (from, to) = self.civil_span(day_ms as i64, 1)?;
+        let (from, to) = self.civil_span(day_ms.cast_signed(), 1)?;
         self.query_blocks_between(db, from, to)
     }
 
@@ -673,7 +669,7 @@ impl Engine {
         week_ms: u64,
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
-        let anchor = ms_to_ts(week_ms as i64).to_zoned(tz).date();
+        let anchor = ms_to_ts(week_ms.cast_signed()).to_zoned(tz).date();
         let first = sunrise_domain::first_day_of_week(anchor, &self.week_start(db)?);
         let first_ms = self.civil_day_start_ms(first)?;
         let (from, to) = self.civil_span(first_ms, 7)?;

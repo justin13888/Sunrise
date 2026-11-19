@@ -308,7 +308,7 @@ fn absent_value(kind: EntityKind, name: &str, after: &[(Value, Value)]) -> Value
         .find(|c| {
             let mut entries = after.to_vec();
             super::merge::set_field(kind, &mut entries, name, c.clone());
-            super::merge::round_trip(kind, Value::Map(entries))
+            super::merge::round_trip(kind, &Value::Map(entries))
                 .and_then(|v| v.as_map().map(|m| path_entry(m, name).is_none()))
                 .unwrap_or(false)
         })
@@ -328,7 +328,7 @@ fn default_value(kind: EntityKind, after: &[(Value, Value)], name: &str) -> Opti
         .filter(|(k, _)| k.as_text() != Some(name))
         .cloned()
         .collect();
-    let round = super::merge::round_trip(kind, Value::Map(without))?;
+    let round = super::merge::round_trip(kind, &Value::Map(without))?;
     let map = round.as_map()?;
     Some(entry(map, name).cloned().unwrap_or(Value::Null))
 }
@@ -347,6 +347,10 @@ fn elements(v: Option<&Value>) -> rusqlite::Result<BTreeMap<Vec<u8>, Value>> {
 /// `kind` as its full-state op carries one: each field whose value differs, by
 /// its CRDT type (ADR-0044 §3). `before` is `None` for a create, which writes
 /// every field `after` holds a value other than its default for.
+#[allow(
+    clippy::too_many_lines,
+    reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+)]
 fn diff(
     kind: EntityKind,
     before: Option<&[(Value, Value)]>,
@@ -676,7 +680,7 @@ impl Engine {
                 seq: slot.seq,
             };
             mark(&mut op, group, at);
-            let done = self.seal(tx, &op, &stream, now_ms, slot)?;
+            let done = self.seal(tx, &op, &stream, now_ms, &slot)?;
             record_local(tx, group, at, done.1.hlc, now_ms)?;
             logged.push((i, op, stream, done));
         }
@@ -697,7 +701,7 @@ impl Engine {
     ) -> rusqlite::Result<(Appended, LwwStamp)> {
         debug_assert!(!op.is_control(), "a control op has no fold");
         let slot = self.log_slot(tx, stream, now_ms)?;
-        self.seal(tx, op, stream, now_ms, slot)
+        self.seal(tx, op, stream, now_ms, &slot)
     }
 
     /// Seal `op` into the log at `slot`.
@@ -707,7 +711,7 @@ impl Engine {
         op: &InnerOp,
         stream: &[u8; 16],
         now_ms: u64,
-        slot: super::oplog::LogSlot,
+        slot: &super::oplog::LogSlot,
     ) -> rusqlite::Result<(Appended, LwwStamp)> {
         let inner = encode_inner_op(op)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;

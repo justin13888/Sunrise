@@ -297,7 +297,7 @@ impl Engine {
                     emitter_device_id: link.emitter_device_id.to_vec(),
                     to_identity_id: link.body.to_identity_id.to_vec(),
                 };
-                if !self.admit_sibling(tx, &link.body.from_identity_id, &rank)? {
+                if !Self::admit_sibling(tx, &link.body.from_identity_id, &rank)? {
                     continue;
                 }
                 let stub = InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {

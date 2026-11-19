@@ -28,7 +28,7 @@ impl Engine {
     pub(super) fn attach_file(
         &self,
         db: &mut Db,
-        d: AttachmentDraft,
+        d: &AttachmentDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
         let now_ms = self.clock.now_ms();
@@ -65,8 +65,8 @@ impl Engine {
         };
         let mut att = Attachment {
             id: self.fresh_id(EntityKind::Attachment, now_ms),
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             parent: d.parent,
             filename: d.filename.trim().to_string(),
             mime_type: d.mime_type.trim().to_string(),
@@ -118,7 +118,7 @@ impl Engine {
         // delete that wins LWW replaces the row on every replica rather than
         // flipping one column on top of whatever that replica held.
         att.deleted = true;
-        att.updated_at = ms_to_ts(now_ms as i64);
+        att.updated_at = ms_to_ts(now_ms.cast_signed());
         let op = InnerOp::AttachmentDelete(Box::new(att));
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &stream, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
@@ -128,7 +128,6 @@ impl Engine {
     /// Live attachments on one Task, oldest first — the order they were added
     /// in, which is the order a preview pane shows them.
     pub(super) fn query_task_attachments(
-        &self,
         db: &Db,
         task: EntityRef,
     ) -> Result<QueryResult, EngineError> {

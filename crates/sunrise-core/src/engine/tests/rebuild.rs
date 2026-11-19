@@ -197,6 +197,10 @@ fn optional_streams(e: &Engine, db: &mut Db) {
 
 /// [`rich_history`] without the vault preference, the one entity this build
 /// writes as a `Patch`: a history made only of full-state ops.
+#[allow(
+    clippy::too_many_lines,
+    reason = "a fixed history, one command after another"
+)]
 fn legacy_history(e: &Engine, db: &mut Db) {
     let errands = new_context(e, db, "errands");
     let home = new_context(e, db, "home");

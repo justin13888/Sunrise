@@ -158,6 +158,10 @@ fn itinerary() -> Vec<Leg> {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
     let start = date(2026, 3, 6);
     let ca = TravelClock::new("America/New_York", start.at(8, 0, 0, 0));
@@ -237,8 +241,8 @@ fn a_traveller_and_a_desk_at_home_agree_on_every_routine_occurrence() {
         let intents = reminders(
             &ea,
             &dba,
-            now as i64,
-            now as i64 + 4 * 3_600_000,
+            now.cast_signed(),
+            now.cast_signed() + 4 * 3_600_000,
             primary.clone(),
         );
         let intent = intents
@@ -395,7 +399,7 @@ fn rezoning_a_routine_keeps_its_wall_clock_and_its_occurrences() {
         let at = t.planned_at.as_ref().unwrap();
         if at
             .resolve_in(&ny)
-            .is_some_and(|at| at.as_millisecond() > c.now_ms() as i64)
+            .is_some_and(|at| at.as_millisecond() > c.now_ms().cast_signed())
         {
             assert!(
                 matches!(at, SunriseTime::Zoned { tz, civil } if tz == "America/New_York" && civil.time() == jiff::civil::time(9, 0, 0, 0)),

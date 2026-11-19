@@ -38,7 +38,7 @@ impl Engine {
             None => self.upcoming_span(db)?,
         };
         let tz = self.device_zone();
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (today, _, _) = self.planner_day_at(&schedule, now_ms)?;
         let days = upcoming_planner_days(today, span, &tz, &schedule).map_err(upcoming_error)?;
         let (Some(first), Some(last)) = (days.first(), days.last()) else {
@@ -56,7 +56,7 @@ impl Engine {
                 "block read returned non-blocks".into(),
             ));
         };
-        let QueryResult::Streams(streams) = self.query_stream_list(db)? else {
+        let QueryResult::Streams(streams) = Self::query_stream_list(db)? else {
             return Err(EngineError::Invalid(
                 "stream read returned non-streams".into(),
             ));
@@ -91,6 +91,10 @@ impl Engine {
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "an error conversion passed to `map_err` by name, which hands it the error by value"
+)]
 fn upcoming_error(e: UpcomingError) -> EngineError {
     EngineError::Invalid(e.to_string())
 }

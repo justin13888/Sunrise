@@ -185,8 +185,8 @@ fn completing_a_routine_occurrence_through_focus_advances_the_streak() {
     // Both replicas move together: an hour of real skew between peers is
     // outside the HLC drift window on purpose, and this test is about the
     // streak, not about clock abuse.
-    set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
-    set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&ca, (occ[0].1 + 3_600_000).cast_unsigned());
+    set_clock(&cb, (occ[0].1 + 3_600_000).cast_unsigned());
     let session = open_session(&ea, &mut dba, occ[0].0);
     end_session(&ea, &mut dba, session, true);
     assert_eq!(routine_of(&ea, &dba, rid).streak_counter, 1);

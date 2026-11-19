@@ -364,8 +364,10 @@ fn update_task_changes_state_and_records_op() {
             }),
         )
         .unwrap();
-    let mut p = TaskPatch::default();
-    p.state = Some(TaskState::InProgress);
+    let p = TaskPatch {
+        state: Some(TaskState::InProgress),
+        ..Default::default()
+    };
     e.apply(
         &mut db,
         Command::UpdateTask {
@@ -391,7 +393,7 @@ fn today_query_returns_tasks_due_in_window() {
     let mut db = db();
     let e = engine();
     let now = 1_700_000_000_000u64;
-    let due_soon = ms_to_ts((now + 3_600_000) as i64);
+    let due_soon = ms_to_ts((now + 3_600_000).cast_signed());
     e.apply(
         &mut db,
         Command::CreateTask(TaskDraft {
@@ -401,7 +403,7 @@ fn today_query_returns_tasks_due_in_window() {
         }),
     )
     .unwrap();
-    let far = ms_to_ts((now + 7 * 86_400_000) as i64);
+    let far = ms_to_ts((now + 7 * 86_400_000).cast_signed());
     e.apply(
         &mut db,
         Command::CreateTask(TaskDraft {
@@ -439,7 +441,7 @@ fn today_query_filters_by_context() {
     let mut db = db();
     let e = engine();
     let now = 1_700_000_000_000u64;
-    let due_soon = ms_to_ts((now + 3_600_000) as i64);
+    let due_soon = ms_to_ts((now + 3_600_000).cast_signed());
 
     let home = EntityRef::new(EntityKind::Context, [0xA1; 16]);
     let work = EntityRef::new(EntityKind::Context, [0xB2; 16]);
