@@ -324,7 +324,7 @@ struct VimModeTests {
         let item = try await vimModeItem(in: vault.bridge)
         #expect(item?.value == .bool(value: true))
         #expect(item?.source == .overlay, "this device's overlay, not the vault's shared value")
-        #expect(defaults.object(forKey: KeyboardPreferences.legacyVimModeKey) == nil, "nothing in `UserDefaults`")
+        #expect(defaults.object(forKey: "editor.vim_mode") == nil, "nothing in `UserDefaults`")
 
         let second = KeyboardPreferences(defaults: defaults, directory: vault.directory)
         #expect(!second.vimMode, "unbound, nothing is read from `UserDefaults`")

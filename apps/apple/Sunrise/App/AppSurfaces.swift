@@ -135,14 +135,9 @@ final class AppSurfaces {
     /// ``pendingDestination``, by the shell that presents the sheet.
     private(set) var pendingSheet: DeepLink.Sheet?
 
-    /// Notification settings: the core's preferences, read through whichever
-    /// vault is open. One for the life of the app, which the screens watch;
-    /// `attach` binds it to each vault in turn.
+    /// Notification and vim-mode settings: the core's preferences, read through whichever vault
+    /// is open. One each for the life of the app, shared by every window; `attach` binds each.
     let notifications = NotificationPreferences()
-
-    /// Vim mode: the core's `keyboard.vim_mode`, read through whichever vault
-    /// is open, like ``notifications``. One for the life of the app, shared by
-    /// every window's list, palette, cheat sheet and Settings.
     let keyboard = KeyboardPreferences()
 
     /// The capture field's model, shared by whichever surface is presenting
@@ -213,12 +208,9 @@ final class AppSurfaces {
             // one route that may have no window to land in.
             self?.open(link, raisingAWindow: true)
         }
-        // Not awaited: `attach` cannot, and the windows reschedule whenever
-        // `notifications.policy` changes, which the read does.
-        let notifications = notifications
-        _Concurrency.Task { await notifications.bind(to: bridge) }
-        let keyboard = keyboard
-        _Concurrency.Task { await keyboard.bind(to: bridge) }
+        // Not awaited: `attach` cannot, and the windows watch what each read changes.
+        _Concurrency.Task { [notifications] in await notifications.bind(to: bridge) }
+        _Concurrency.Task { [keyboard] in await keyboard.bind(to: bridge) }
         #if os(macOS)
         hotkey.register()
         hotkeyStatus = hotkey.status
