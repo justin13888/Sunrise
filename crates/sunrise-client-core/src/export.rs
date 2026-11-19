@@ -134,7 +134,7 @@ pub async fn export_all(
 fn calendar(blocks: &[sunrise_core::queries::BlockRow]) -> String {
     let events: Vec<_> = blocks
         .iter()
-        .map(|r| sunrise_integrations::ical_map::block_to_event(&r.block, r.title.as_deref()))
+        .flat_map(|r| sunrise_integrations::ical_map::block_to_events(&r.block, r.title.as_deref()))
         .collect();
     sunrise_integrations::ical::write(&events)
 }

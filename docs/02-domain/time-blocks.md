@@ -112,9 +112,10 @@ An op carrying `rrule`, `exceptions` or `split_from` uses the feature
 fields but would draw a recurring block as its anchor alone, so no series is
 written until every device has advertised it. `kind`, `location`, `notes`,
 `source` and `external_id` need no feature. `Block::series` hands the series
-to `expand_block` (§Recurring blocks). `ImportBlock` marks `source` (above);
-the edit-scope commands are [#1148](https://github.com/justin13888/Sunrise/issues/1148)
-and the importer's mapping of the rest [#1149](https://github.com/justin13888/Sunrise/issues/1149).
+to `expand_block` (§Recurring blocks). `ImportBlock` marks `source` (above)
+and writes `rrule`, `exceptions`, `location`, `notes` and `external_id` from
+the imported item (§Importer status); the edit-scope commands are
+[#1148](https://github.com/justin13888/Sunrise/issues/1148).
 A block created in Sunrise leaves `kind` and `source` absent, which reads as
 `flexible`.
 
@@ -273,15 +274,18 @@ A task is bound to one occurrence
 
 ### Importer status
 
-`crates/sunrise-integrations` parses `RRULE`, `DESCRIPTION` and `LOCATION` out
-of a `VEVENT` and then reports each at the domain boundary as an `ICalNotice`:
-the `Block` carries the fields above, but the import does not map onto them
-yet. So **a recurring event
-imports as a single occurrence** until [#1149](https://github.com/justin13888/Sunrise/issues/1149) lands. The importer then maps
-`RRULE` to `rrule`, `EXDATE` to `cancelled` exceptions, `RECURRENCE-ID`
-overrides to exceptions, `LOCATION` to `location` and `DESCRIPTION` to `notes`,
-and `(source, uid)` stays the id derivation. Nothing is silently dropped in
-either state.
+`crates/sunrise-integrations` maps a `VEVENT` onto these fields
+([#1149](https://github.com/justin13888/Sunrise/issues/1149)): `RRULE` to
+`rrule`, each `EXDATE` to a `cancelled` exception, each `RECURRENCE-ID`
+override to an exception holding what it changes, `LOCATION` to `location`,
+`DESCRIPTION` to `notes` and the `UID` to `external_id`, while
+`(source, uid)` stays the id derivation. `ImportBlock` carries them in its
+`ImportedFields` and writes them whole on every import, as it writes the
+times and the title. A rule outside the engine subset, a whole-day recurring
+event, or a paired device without `block.recurrence` makes the event import
+as its first occurrence, and is reported; nothing is silently dropped.
+[`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)
+§Recurrence holds the mapping's rules.
 
 ## Block title
 

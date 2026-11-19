@@ -330,12 +330,14 @@ over:
   ([#464](https://github.com/justin13888/Sunrise/issues/464)). Drag-and-drop is missing the Calendar
   block → Task gesture — unbuilt rather than inexpressible: the block chip is
   not a drag source and the task row's drop only reorders. iCal is windowed on
-  the way out and lossy on the way in: export offers Today and This Week and no
+  the way out and narrow on the way in: export offers Today and This Week and no
   Stream scope, because a day and a week are the only Block windows the core
-  has, and import drops `RRULE`, `DESCRIPTION` and `LOCATION` — `Block` has no
-  field to hold them — so a recurring event lands as a single occurrence. Every
-  loss raises a notice rather than passing silently, but the round-trip the
-  mapping rules describe does not exist yet. Print covers four surfaces and
+  has. Import maps `RRULE`, `EXDATE` and `RECURRENCE-ID` onto one recurring
+  Block and `DESCRIPTION` and `LOCATION` onto its notes and location
+  ([icalendar.md §Recurrence](../09-integrations/icalendar.md#recurrence)); a
+  rule outside the engine subset or a whole-day recurring event still lands
+  as its first occurrence. Every loss raises a notice rather than passing
+  silently. Print covers four surfaces and
   skips two by decision. **Attachments now have a route to every byte**, and
   two pieces of the policy around it are still missing.
   [#176](https://github.com/justin13888/Sunrise/issues/176) built the automatic
@@ -356,9 +358,9 @@ over:
   [search.md](../08-features/search.md) specifies and returns tasks only; the
   by-kind grouping `Query::SearchGrouped` answers has no Apple caller.
 - **CLI.** `ical export` takes the same windows and no Stream scope — `today`, `day`,
-  `week` — and `ical import` drops `RRULE`, `DESCRIPTION` and `LOCATION` for
-  the same missing `Block` fields, so a recurring event imports as one
-  occurrence with a notice against it. Both halves are the seam's, so the CLI
+  `week` — and `ical import` maps a recurring event onto one recurring Block,
+  with its `DESCRIPTION` and `LOCATION`, reporting what it cannot hold as the
+  app does. Both halves are the seam's, so the CLI
   is narrow here in exactly the way the app is.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.

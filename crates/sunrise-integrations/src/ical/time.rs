@@ -3,7 +3,7 @@
 //! an [`ICalTime`], and written back out.
 
 use super::lex::param;
-use super::ICalTime;
+use super::{ICalNotice, ICalTime, NoticeCode};
 use jiff::{civil, tz::TimeZone};
 
 /// RFC 5545 §3.3.4 `date`: `date-fullyear date-month date-mday`, which is
@@ -119,4 +119,51 @@ pub(super) fn write_time(t: &ICalTime) -> (String, String) {
         ICalTime::Floating(civil) => (String::new(), civil.strftime("%Y%m%dT%H%M%S").to_string()),
         ICalTime::Date(d) => (";VALUE=DATE".to_string(), d.strftime("%Y%m%d").to_string()),
     }
+}
+
+/// One time value of property `name`, or `None` with the reason reported. A
+/// `TZID` the tzdb does not know reads as UTC, and is reported too.
+pub(super) fn read_time(
+    name: &str,
+    params: &str,
+    value: &str,
+    uid: Option<String>,
+    notices: &mut Vec<ICalNotice>,
+) -> Option<ICalTime> {
+    match parse_time(params, value) {
+        Ok((t, unknown_zone)) => {
+            if let Some(zone) = unknown_zone {
+                notices.push(ICalNotice::new(
+                    NoticeCode::UnknownTimezone,
+                    uid,
+                    format!(
+                        "{name} names TZID={zone}, which is not in the IANA database; read as UTC"
+                    ),
+                ));
+            }
+            Some(t)
+        }
+        Err(why) => {
+            notices.push(ICalNotice::new(
+                NoticeCode::BadValue,
+                uid,
+                format!("{name}:{value} did not parse ({why})"),
+            ));
+            None
+        }
+    }
+}
+
+/// A bare time value with no parameters (an `RRULE`'s `UNTIL`), as
+/// `DTSTART` reads one: `…Z` a UTC instant, eight digits a date, otherwise a
+/// floating time.
+pub(crate) fn parse_bare_time(value: &str) -> Option<ICalTime> {
+    parse_time("", value).ok().map(|(t, _)| t)
+}
+
+/// The value [`parse_bare_time`] reads back as `t`, for a time with no zone
+/// to name: a [`ICalTime::Zoned`] has none, so its caller resolves it to a
+/// UTC instant first.
+pub(crate) fn bare_time_value(t: &ICalTime) -> String {
+    write_time(t).1
 }

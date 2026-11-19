@@ -9,8 +9,10 @@
 //! # What is read
 //!
 //! * `VEVENT`: `UID`, `SUMMARY`, `DTSTART`, `DTEND`, `DURATION`,
-//!   `DESCRIPTION`, `LOCATION`, `RRULE`.
-//! * `DTSTART` / `DTEND` keep the distinction RFC 5545 draws between a UTC
+//!   `DESCRIPTION`, `LOCATION`, `RRULE`, `EXDATE` (every value of every
+//!   line) and `RECURRENCE-ID`.
+//! * `DTSTART` / `DTEND` / `EXDATE` / `RECURRENCE-ID` keep the distinction
+//!   RFC 5545 draws between a UTC
 //!   instant (`…Z`), a time in a named zone (`TZID=`), a floating local time,
 //!   and a whole date (`VALUE=DATE`) — see [`ICalTime`]. Collapsing those four
 //!   to one instant is the classic calendar-import bug, and
@@ -20,11 +22,12 @@
 //!   directions, and CRLF or LF line endings on input.
 //!
 //! `RRULE` is read here and written back out verbatim, so an `.ics` that
-//! round-trips through this module keeps its recurrence rule. It is dropped
-//! one layer up: [`crate::ical_map`] does not model a recurring Block, so it
-//! turns the rule into an [`ICalNotice`] and imports the first occurrence
-//! only. Syntax and domain are separate questions, and this list answers the
-//! first one.
+//! round-trips through this module keeps its recurrence rule whatever it
+//! says. Whether the rule is one a Block can hold is decided one layer up,
+//! in [`crate::ical_map`], which also pairs each `RECURRENCE-ID` override
+//! with the event of its `UID`: this layer keeps every `VEVENT` it reads as
+//! its own [`ICalEvent`], in file order. Syntax and domain are separate
+//! questions, and this list answers the first one.
 //!
 //! # What is not read — and is reported rather than dropped
 //!
@@ -36,16 +39,20 @@
 //!
 //! Specifically unmodelled: `VTODO`, `VJOURNAL`, `VFREEBUSY`, `VALARM`,
 //! `VTIMEZONE` (a `TZID` is resolved against the bundled IANA tzdb instead of
-//! against an inline definition), `RDATE`/`EXDATE`/`RECURRENCE-ID`,
-//! `ATTACH`, `ATTENDEE`, `ORGANIZER`, `CATEGORIES`, `GEO`, `URL`, and any
-//! `X-` property.
+//! against an inline definition), `RDATE`, `ATTACH`, `ATTENDEE`,
+//! `ORGANIZER`, `CATEGORIES`, `GEO`, `URL`, and any `X-` property. A
+//! `RECURRENCE-ID` carrying `RANGE=THISANDFUTURE` is read as an override of
+//! its one occurrence, and the range is reported.
 //!
-//! `RRULE` is deliberately absent from that list — it is read (see above), and
-//! the notice a user sees for it comes from [`crate::ical_map`], not from here.
+//! `RRULE`, `EXDATE` and `RECURRENCE-ID` are deliberately absent from that
+//! list — they are read (see above), and a notice a user sees for one comes
+//! from [`crate::ical_map`], not from here.
 //!
 //! Seven properties are dropped **silently**, listed in [`BOOKKEEPING`]: they
 //! are iCalendar's own record-keeping, carry no user content, and Sunrise is
-//! not a CalDAV store that has to preserve them byte-for-byte.
+//! not a CalDAV store that has to preserve them byte-for-byte. The one
+//! exception is `STATUS:CANCELLED`, read onto [`ICalEvent::cancelled`]: on an
+//! override it cancels an occurrence, which is content.
 //!
 //! # Layout
 //!
@@ -58,11 +65,13 @@ mod time;
 
 use crate::IntegrationError;
 use jiff::{civil, Timestamp};
-use lex::{escape, push_line, split_property, unescape, unfold_lines};
-use time::{parse_time, write_time};
+use lex::{escape, param, push_line, split_property, unescape, unfold_lines};
+pub(crate) use time::{bare_time_value, parse_bare_time};
+use time::{read_time, write_time};
 
 /// Properties that exist to bookkeep an iCalendar object rather than to carry
-/// anything a user typed. Dropped without a notice.
+/// anything a user typed. Dropped without a notice, except that
+/// `STATUS:CANCELLED` sets [`ICalEvent::cancelled`].
 pub const BOOKKEEPING: &[&str] = &[
     "DTSTAMP",
     "SEQUENCE",
@@ -121,6 +130,15 @@ pub struct ICalEvent {
     pub location: Option<String>,
     /// `RRULE`, verbatim.
     pub rrule: Option<String>,
+    /// `EXDATE`: every excluded occurrence start, from every `EXDATE` line,
+    /// in file order.
+    pub exdates: Vec<ICalTime>,
+    /// `RECURRENCE-ID`: on an override, the start of the occurrence of the
+    /// recurring event with the same `UID` that this event replaces.
+    pub recurrence_id: Option<ICalTime>,
+    /// `STATUS:CANCELLED`. On an override it cancels the occurrence its
+    /// `RECURRENCE-ID` names; any other `STATUS` value is bookkeeping.
+    pub cancelled: bool,
 }
 
 impl ICalEvent {
@@ -136,6 +154,9 @@ impl ICalEvent {
             description: None,
             location: None,
             rrule: None,
+            exdates: Vec::new(),
+            recurrence_id: None,
+            cancelled: false,
         }
     }
 }
@@ -308,30 +329,33 @@ fn read_event_property(
         "LOCATION" => ev.location = Some(unescape(value)),
         "DURATION" => ev.duration = Some(value.trim().to_string()),
         "RRULE" => ev.rrule = Some(value.trim().to_string()),
-        "DTSTART" | "DTEND" => match parse_time(params, value) {
-            Ok((t, unknown_zone)) => {
-                if let Some(zone) = unknown_zone {
-                    notices.push(ICalNotice::new(
-                        NoticeCode::UnknownTimezone,
-                        uid(),
-                        format!(
-                            "{name} names TZID={zone}, which is not in the IANA database; \
-                             read as UTC"
-                        ),
-                    ));
-                }
-                if name == "DTSTART" {
-                    ev.dtstart = Some(t);
-                } else {
-                    ev.dtend = Some(t);
+        "DTSTART" => ev.dtstart = read_time(name, params, value, uid(), notices),
+        "DTEND" => ev.dtend = read_time(name, params, value, uid(), notices),
+        // A list: one line may carry several values, and a file may carry
+        // several lines.
+        "EXDATE" => {
+            for one in value.split(',').filter(|v| !v.trim().is_empty()) {
+                if let Some(t) = read_time(name, params, one, uid(), notices) {
+                    ev.exdates.push(t);
                 }
             }
-            Err(why) => notices.push(ICalNotice::new(
-                NoticeCode::BadValue,
-                uid(),
-                format!("{name}:{value} did not parse ({why})"),
-            )),
-        },
+        }
+        "RECURRENCE-ID" => {
+            if param(params, "RANGE").is_some() {
+                notices.push(ICalNotice::new(
+                    NoticeCode::UnmappedProperty,
+                    uid(),
+                    format!(
+                        "RECURRENCE-ID:{value} has a RANGE, which is not modelled; the override \
+                         applies to that one occurrence only"
+                    ),
+                ));
+            }
+            ev.recurrence_id = read_time(name, params, value, uid(), notices);
+        }
+        // The one `STATUS` value that says something about the event rather
+        // than about its bookkeeping: an override cancelling its occurrence.
+        "STATUS" => ev.cancelled = value.trim().eq_ignore_ascii_case("CANCELLED"),
         other if BOOKKEEPING.contains(&other) => {}
         other => notices.push(ICalNotice::new(
             NoticeCode::UnmappedProperty,
@@ -354,6 +378,10 @@ pub fn write(events: &[ICalEvent]) -> String {
     for e in events {
         push_line(&mut out, "BEGIN", "", "VEVENT");
         push_line(&mut out, "UID", "", &escape(&e.uid));
+        if let Some(t) = &e.recurrence_id {
+            let (params, value) = write_time(t);
+            push_line(&mut out, "RECURRENCE-ID", &params, &value);
+        }
         if let Some(s) = &e.summary {
             push_line(&mut out, "SUMMARY", "", &escape(s));
         }
@@ -376,6 +404,14 @@ pub fn write(events: &[ICalEvent]) -> String {
         }
         if let Some(r) = &e.rrule {
             push_line(&mut out, "RRULE", "", r);
+        }
+        // One line per value: each may name its own zone.
+        for t in &e.exdates {
+            let (params, value) = write_time(t);
+            push_line(&mut out, "EXDATE", &params, &value);
+        }
+        if e.cancelled {
+            push_line(&mut out, "STATUS", "", "CANCELLED");
         }
         push_line(&mut out, "END", "", "VEVENT");
     }
@@ -631,6 +667,47 @@ BEGIN:VEVENT\r\nUID:ev1\r\nDTSTART:20260301T090000Z\r\nEND:VEVENT\r\n",
             ..ICalEvent::new("ev2")
         }];
         assert_eq!(parse(&write(&floating)).unwrap().events, floating);
+    }
+
+    /// Every value of every `EXDATE` line, each in its own time form, and a
+    /// `RECURRENCE-ID` like a `DTSTART`.
+    #[test]
+    fn exdates_and_a_recurrence_id_are_read() {
+        let cal = one("RRULE:FREQ=DAILY\r\n\
+EXDATE;TZID=Europe/Berlin:20260302T090000,20260303T090000\r\n\
+EXDATE:20260304T080000Z\r\n\
+RECURRENCE-ID;VALUE=DATE:20260305\r\n");
+        assert!(cal.notices.is_empty(), "{:?}", cal.notices);
+        let berlin = |d: i8| ICalTime::Zoned {
+            civil: civil::date(2026, 3, d).at(9, 0, 0, 0),
+            tz: "Europe/Berlin".into(),
+        };
+        let ev = &cal.events[0];
+        assert_eq!(ev.exdates.len(), 3);
+        assert_eq!(ev.exdates[..2], [berlin(2), berlin(3)]);
+        assert!(matches!(ev.exdates[2], ICalTime::Utc(_)));
+        assert_eq!(
+            ev.recurrence_id,
+            Some(ICalTime::Date(civil::date(2026, 3, 5)))
+        );
+
+        // And back, unchanged.
+        assert_eq!(parse(&write(&cal.events)).unwrap().events, cal.events);
+    }
+
+    #[test]
+    fn a_recurrence_id_range_is_reported() {
+        let cal = one("RECURRENCE-ID;RANGE=THISANDFUTURE:20260305T090000Z\r\n");
+        assert!(cal.events[0].recurrence_id.is_some());
+        assert_eq!(cal.notices.len(), 1);
+        assert!(cal.notices[0].detail.contains("RANGE"), "{:?}", cal.notices);
+    }
+
+    #[test]
+    fn a_bad_exdate_value_is_reported_and_the_rest_kept() {
+        let cal = one("EXDATE:20260302T090000Z,nonsense\r\n");
+        assert_eq!(cal.events[0].exdates.len(), 1);
+        assert_eq!(cal.notices[0].code, NoticeCode::BadValue);
     }
 
     #[test]

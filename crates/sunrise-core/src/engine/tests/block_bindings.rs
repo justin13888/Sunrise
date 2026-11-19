@@ -155,9 +155,15 @@ fn a_reimport_keeps_the_occurrence_bindings_and_moves_them_with_the_anchor() {
     e.apply(&mut db, bind(id, task, Some(key(11)))).unwrap();
     let bound_at = |db: &Db| read_block(db.conn(), id.bytes()).unwrap().unwrap();
 
+    // The re-imported item states its rule, which is the calendar's.
     e.apply(
         &mut db,
-        import("ics", "standup", block_draft(9, 1, Some("Standup"))),
+        import_series(
+            "ics",
+            "standup",
+            block_draft(9, 1, Some("Standup")),
+            "FREQ=WEEKLY",
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -168,7 +174,12 @@ fn a_reimport_keeps_the_occurrence_bindings_and_moves_them_with_the_anchor() {
 
     e.apply(
         &mut db,
-        import("ics", "standup", block_draft(10, 1, Some("Standup"))),
+        import_series(
+            "ics",
+            "standup",
+            block_draft(10, 1, Some("Standup")),
+            "FREQ=WEEKLY",
+        ),
     )
     .unwrap();
     assert_eq!(
