@@ -120,7 +120,8 @@ pub use key_domain::{
 pub use lateness::{lateness, Lateness, LatenessState, DEFAULT_STALE_AFTER_DAYS};
 pub use note::Note;
 pub use note_body::{
-    decode as decode_note_body, encode as encode_note_body, to_markdown as note_body_to_markdown,
+    decode as decode_note_body, encode as encode_note_body,
+    from_plain_text as note_body_from_plain_text, to_markdown as note_body_to_markdown,
     to_plain_text as note_body_to_plain_text, ChecklistItem, Fidelity, HeadingLevel, Inline,
     ListItem, Mark, NoteBlock, NoteDoc, MAX_NEST_DEPTH, NOTE_BODY_MAX_BYTES,
     NOTE_BODY_SOFT_LIMIT_BYTES,
