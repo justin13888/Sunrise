@@ -38,6 +38,7 @@ pub fn block_to_event(block: &Block, title: Option<&str>) -> ICalEvent {
         rrule: block.rrule.as_ref().map(rrule_value),
         exdates,
         recurrence_id: None,
+        cancelled: false,
     }
 }
 
@@ -71,6 +72,8 @@ pub fn block_to_events(block: &Block, title: Option<&str>) -> Vec<ICalEvent> {
                 rrule: None,
                 exdates: Vec::new(),
                 recurrence_id: Some(rid),
+                // A cancelled occurrence is an `EXDATE` on the series.
+                cancelled: false,
             });
         }
     }

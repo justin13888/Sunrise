@@ -144,7 +144,10 @@ blocks), so its anchor is `zoned` or `floating`:
   exceptions at the occurrence their `RECURRENCE-ID` names, holding what they
   change from the series: the start and end where they moved, and the title,
   location and notes where they differ. An override that changes nothing
-  writes nothing. One whose `RECURRENCE-ID` names no occurrence is reported
+  writes nothing. An override with `STATUS:CANCELLED` is a cancelled
+  exception at its occurrence, as an `EXDATE` is, whatever else it states;
+  an orphan one is imported as a single event and its notice says it was
+  cancelled. One whose `RECURRENCE-ID` names no occurrence is reported
   `Skipped`, and `RANGE=THISANDFUTURE` is reported and applied to its one
   occurrence. A property an override leaves out keeps the series' value,
   since an exception cannot clear a field. An override whose `UID` has no
@@ -252,7 +255,8 @@ Two deliberate carve-outs:
   `ical::BOOKKEEPING`: `DTSTAMP`, `SEQUENCE`, `CREATED`, `LAST-MODIFIED`,
   `TRANSP`, `CLASS`, `STATUS`. They are iCalendar's own record-keeping, carry
   nothing a user typed, and Sunrise is not a CalDAV store obliged to preserve
-  them byte-for-byte.
+  them byte-for-byte. `STATUS:CANCELLED` alone is read: on a
+  `RECURRENCE-ID` override it cancels the occurrence (§Recurrence).
 
 ## Edge cases
 

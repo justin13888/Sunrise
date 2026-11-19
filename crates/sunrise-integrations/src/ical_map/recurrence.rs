@@ -37,8 +37,13 @@ pub(super) fn recurrence_of(
                 ev,
                 format!(
                     "RECURRENCE-ID:{} has no recurring event of its UID in this file; imported \
-                     as a single event",
-                    bare_time_value(rid)
+                     as a single event{}",
+                    bare_time_value(rid),
+                    if ev.cancelled {
+                        ", though its STATUS:CANCELLED says it does not take place"
+                    } else {
+                        ""
+                    }
                 ),
             ));
             None
@@ -253,8 +258,9 @@ fn occurrence_key(t: &ICalTime, series: &BlockSeries) -> Option<String> {
 }
 
 /// The exception a `RECURRENCE-ID` override `o` writes at its occurrence:
-/// the bounds it moves and the title, location and notes it changes from
-/// the series'. `None` when it changes nothing.
+/// a cancelled one for a `STATUS:CANCELLED` override, otherwise the bounds
+/// it moves and the title, location and notes it changes from the series'.
+/// `None` when it changes nothing.
 fn exception_of(
     o: &ICalEvent,
     series: &BlockSeries,
@@ -269,6 +275,9 @@ fn exception_of(
             bare_time_value(rid)
         )
     })?;
+    if o.cancelled {
+        return Ok(Some((key, BlockException::cancelled())));
+    }
     let (rule_start, rule_end) = series
         .occurrence_bounds(&key)
         .ok_or_else(|| format!("occurrence {key} has no bounds"))?;
@@ -404,6 +413,55 @@ mod tests {
         assert_eq!(m.notices.len(), 1, "{:?}", m.notices);
         assert_eq!(m.notices[0].code, NoticeCode::Skipped);
         assert!(m.notices[0].detail.contains("names no occurrence"));
+    }
+
+    /// A `STATUS:CANCELLED` override cancels its occurrence, as an `EXDATE`
+    /// does, whatever else it states; parsed from the file, so the parser's
+    /// reading of `STATUS` is reached too.
+    #[test]
+    fn a_cancelled_override_is_a_cancelled_exception() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
+                   DTSTART;TZID=Europe/Berlin:20260302T090000\r\n\
+                   DTEND;TZID=Europe/Berlin:20260302T093000\r\n\
+                   RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20260330T080000Z\r\n\
+                   SUMMARY:Standup\r\nEND:VEVENT\r\n\
+                   BEGIN:VEVENT\r\nUID:standup@example.com\r\n\
+                   RECURRENCE-ID;TZID=Europe/Berlin:20260309T090000\r\n\
+                   DTSTART;TZID=Europe/Berlin:20260309T100000\r\n\
+                   DTEND;TZID=Europe/Berlin:20260309T110000\r\n\
+                   SUMMARY:Standup\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n\
+                   END:VCALENDAR\r\n";
+        let cal = crate::ical::parse(ics).expect("parses");
+        assert!(cal.notices.is_empty(), "{:?}", cal.notices);
+        let groups = group_events(&cal.events);
+        assert_eq!(groups.len(), 1);
+        let m =
+            event_to_block(groups[0].event, &groups[0].overrides, Some(stream())).expect("mapped");
+        assert!(m.notices.is_empty(), "{:?}", m.notices);
+        assert_eq!(
+            m.fields.exceptions,
+            BTreeMap::from([("2026-03-09T09:00".to_owned(), BlockException::cancelled())])
+        );
+    }
+
+    /// A cancelled override with no recurring event of its UID is imported
+    /// as the single event it is, and the notice says it was cancelled.
+    #[test]
+    fn a_cancelled_orphan_override_is_reported_as_cancelled() {
+        let orphan = ICalEvent {
+            recurrence_id: Some(berlin(9, 9)),
+            dtstart: Some(berlin(9, 9)),
+            dtend: Some(berlin(9, 10)),
+            cancelled: true,
+            ..ICalEvent::new("lone@example.com")
+        };
+        let m = event_to_block(&orphan, &[], Some(stream())).expect("mapped");
+        assert_eq!(m.notices.len(), 1, "{:?}", m.notices);
+        assert!(
+            m.notices[0].detail.contains("STATUS:CANCELLED"),
+            "{:?}",
+            m.notices
+        );
     }
 
     /// A UTC start is wall clock in `UTC`, which names the same instants.

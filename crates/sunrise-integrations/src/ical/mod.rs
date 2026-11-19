@@ -50,7 +50,9 @@
 //!
 //! Seven properties are dropped **silently**, listed in [`BOOKKEEPING`]: they
 //! are iCalendar's own record-keeping, carry no user content, and Sunrise is
-//! not a CalDAV store that has to preserve them byte-for-byte.
+//! not a CalDAV store that has to preserve them byte-for-byte. The one
+//! exception is `STATUS:CANCELLED`, read onto [`ICalEvent::cancelled`]: on an
+//! override it cancels an occurrence, which is content.
 //!
 //! # Layout
 //!
@@ -68,7 +70,8 @@ pub(crate) use time::{bare_time_value, parse_bare_time};
 use time::{read_time, write_time};
 
 /// Properties that exist to bookkeep an iCalendar object rather than to carry
-/// anything a user typed. Dropped without a notice.
+/// anything a user typed. Dropped without a notice, except that
+/// `STATUS:CANCELLED` sets [`ICalEvent::cancelled`].
 pub const BOOKKEEPING: &[&str] = &[
     "DTSTAMP",
     "SEQUENCE",
@@ -133,6 +136,9 @@ pub struct ICalEvent {
     /// `RECURRENCE-ID`: on an override, the start of the occurrence of the
     /// recurring event with the same `UID` that this event replaces.
     pub recurrence_id: Option<ICalTime>,
+    /// `STATUS:CANCELLED`. On an override it cancels the occurrence its
+    /// `RECURRENCE-ID` names; any other `STATUS` value is bookkeeping.
+    pub cancelled: bool,
 }
 
 impl ICalEvent {
@@ -150,6 +156,7 @@ impl ICalEvent {
             rrule: None,
             exdates: Vec::new(),
             recurrence_id: None,
+            cancelled: false,
         }
     }
 }
@@ -346,6 +353,9 @@ fn read_event_property(
             }
             ev.recurrence_id = read_time(name, params, value, uid(), notices);
         }
+        // The one `STATUS` value that says something about the event rather
+        // than about its bookkeeping: an override cancelling its occurrence.
+        "STATUS" => ev.cancelled = value.trim().eq_ignore_ascii_case("CANCELLED"),
         other if BOOKKEEPING.contains(&other) => {}
         other => notices.push(ICalNotice::new(
             NoticeCode::UnmappedProperty,
@@ -399,6 +409,9 @@ pub fn write(events: &[ICalEvent]) -> String {
         for t in &e.exdates {
             let (params, value) = write_time(t);
             push_line(&mut out, "EXDATE", &params, &value);
+        }
+        if e.cancelled {
+            push_line(&mut out, "STATUS", "", "CANCELLED");
         }
         push_line(&mut out, "END", "", "VEVENT");
     }
