@@ -1587,6 +1587,8 @@ enum L10n {
         static func stale(date: String) -> String {
             L10n.tr("apple.triage.stale", date)
         }
+        /// Its plan is outside a hard scheduling window
+        static var hardViolation: String { L10n.tr("apple.triage.hard_violation") }
         /// {count, plural, =0 {Select tasks to act on} one {# selected} other {# selected}}
         static func selection(count: Int) -> String {
             L10n.tr("apple.triage.selection", count)
