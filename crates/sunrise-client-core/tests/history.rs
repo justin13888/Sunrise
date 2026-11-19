@@ -10,7 +10,7 @@ use sunrise_client_core::history::{UndoHistory, UndoLabels};
 use sunrise_client_core::NotUndoable;
 use sunrise_core::{Clock, Command, Core, CoreConfig, Query, QueryResult, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_domain::{TaskDraft, TaskState};
+use sunrise_domain::{PlaceDraft, PlacePatch, TaskDraft, TaskState};
 use sunrise_id::EntityRef;
 
 /// 2026-01-01T00:00:00Z in UTC, so nothing here reads the host clock or zone.
@@ -163,6 +163,97 @@ async fn undo_of_a_delete_is_a_restore() {
         Some("delete")
     );
     assert_eq!(task_state(&core, task).await, None, "and deleted again");
+    core.shutdown().await;
+}
+
+/// The live place `id`'s name and label, or `None` once it is gone.
+async fn place(core: &Core, id: EntityRef) -> Option<(String, Option<String>)> {
+    match core.query(Query::EntityById(id)).await {
+        Ok(QueryResult::Places(p)) => p
+            .into_iter()
+            .find(|p| !p.deleted)
+            .map(|p| (p.name, p.address_label)),
+        _ => None,
+    }
+}
+
+/// A place is undoable like every other entity a user makes: the create by
+/// a delete, an edit by writing back what it touched (a label it set, by
+/// clearing it), and a delete by a restore.
+#[tokio::test]
+async fn place_commands_are_undone_and_redone() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let history = UndoHistory::new();
+
+    let (made, refused) = history
+        .submit(
+            &core,
+            Command::CreatePlace(PlaceDraft {
+                name: "Office".into(),
+                lat_e7: 437_000_000,
+                lon_e7: -794_000_000,
+                radius_m: 150,
+                address_label: None,
+            }),
+            "create".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused, None, "a place's create is undoable");
+    let id = made.entity;
+    history.undo(&core).await.unwrap();
+    assert_eq!(place(&core, id).await, None, "undo deleted it");
+    history.redo(&core).await.unwrap();
+    let QueryResult::Places(live) = core.query(Query::Places).await.unwrap() else {
+        panic!("Places answers Places");
+    };
+    let id = live.first().expect("redo made it").id;
+
+    let (_, refused) = history
+        .submit(
+            &core,
+            Command::UpdatePlace {
+                id,
+                patch: PlacePatch {
+                    name: Some("Home".into()),
+                    address_label: Some(Some("1 Main St".into())),
+                    ..PlacePatch::default()
+                },
+            },
+            "rename".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused, None, "a place's edit is undoable");
+    assert_eq!(
+        place(&core, id).await,
+        Some(("Home".into(), Some("1 Main St".into())))
+    );
+    history.undo(&core).await.unwrap();
+    assert_eq!(
+        place(&core, id).await,
+        Some(("Office".into(), None)),
+        "the old name back, and the label it never had cleared"
+    );
+    history.redo(&core).await.unwrap();
+    assert_eq!(
+        place(&core, id).await,
+        Some(("Home".into(), Some("1 Main St".into())))
+    );
+
+    let (_, refused) = history
+        .submit(&core, Command::DeletePlace(id), "delete".into())
+        .await
+        .unwrap();
+    assert_eq!(refused, None, "a place's delete is undoable");
+    assert_eq!(place(&core, id).await, None);
+    history.undo(&core).await.unwrap();
+    assert_eq!(
+        place(&core, id).await,
+        Some(("Home".into(), Some("1 Main St".into()))),
+        "restored as it was"
+    );
     core.shutdown().await;
 }
 

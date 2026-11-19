@@ -6,7 +6,7 @@ use super::{invert, invert_create};
 use super::{EntityLookup, NotUndoable};
 use sunrise_core::{BulkTaskItem, Command};
 use sunrise_domain::{
-    ContextPatch, RoutinePatch, SavedViewPatch, StreamPatch, Task, TaskPatch, TaskState,
+    ContextPatch, PlacePatch, RoutinePatch, SavedViewPatch, StreamPatch, Task, TaskPatch, TaskState,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -78,17 +78,7 @@ pub(super) fn invert_one<S: EntityLookup + ?Sized>(
                 },
             })
         }
-        Command::UpdateContext { id, patch } => {
-            let row = state.context(*id).ok_or(NotUndoable::Unsupported)?;
-            Ok(Command::UpdateContext {
-                id: *id,
-                patch: ContextPatch {
-                    name: patch.name.as_ref().map(|_| row.name.clone()),
-                    archived: patch.archived.map(|_| row.archived),
-                    ..Default::default()
-                },
-            })
-        }
+        Command::UpdateContext { id, patch } => invert_context_edit(state, *id, patch),
         // Only an edit of the whole series: an edit of one occurrence is a
         // task edit the core makes, and a split creates a routine and
         // rewrites occurrences in one group, and the routine row holds
@@ -118,13 +108,15 @@ pub(super) fn invert_one<S: EntityLookup + ?Sized>(
         | Command::DeleteStream { id, .. }
         | Command::DeleteContext(id)
         | Command::DeleteRoutine(id)
-        | Command::DeleteSavedView(id) => Ok(Command::Restore(*id)),
+        | Command::DeleteSavedView(id)
+        | Command::DeletePlace(id) => Ok(Command::Restore(*id)),
         // Only the whole block's: a delete of some occurrences edits the
         // series, whose prior exceptions and rule no row here holds.
         Command::DeleteBlock { id, scope } if scope.key().is_none() => Ok(Command::Restore(*id)),
         Command::MarkTriaged { ids } => invert_triage(state, ids, true),
         Command::ReturnToInbox { ids } => invert_triage(state, ids, false),
         Command::UpdateSavedView { id, patch } => invert_view_edit(state, *id, patch),
+        Command::UpdatePlace { id, patch } => invert_place_edit(state, *id, patch),
         Command::Restore(id) => delete_of(*id).ok_or(NotUndoable::Unsupported),
         // A bulk command is undone by one bulk command, so the undo is as
         // atomic as the write: each item's inverse, in reverse.
@@ -231,6 +223,48 @@ fn invert_view_edit<S: EntityLookup + ?Sized>(
     })
 }
 
+/// The inverse of a context edit: the fields it writes, as the context row
+/// held them before it. Split out of [`invert_one`] only to keep that table
+/// within the lint's length bound.
+fn invert_context_edit<S: EntityLookup + ?Sized>(
+    state: &S,
+    id: EntityRef,
+    patch: &ContextPatch,
+) -> Result<Command, NotUndoable> {
+    let row = state.context(id).ok_or(NotUndoable::Unsupported)?;
+    Ok(Command::UpdateContext {
+        id,
+        patch: ContextPatch {
+            name: patch.name.as_ref().map(|_| row.name.clone()),
+            archived: patch.archived.map(|_| row.archived),
+            ..Default::default()
+        },
+    })
+}
+
+/// The inverse of a place edit: the fields it writes, as the place held them
+/// before it.
+fn invert_place_edit<S: EntityLookup + ?Sized>(
+    state: &S,
+    id: EntityRef,
+    patch: &PlacePatch,
+) -> Result<Command, NotUndoable> {
+    let p = state.place(id).ok_or(NotUndoable::Unsupported)?;
+    Ok(Command::UpdatePlace {
+        id,
+        patch: PlacePatch {
+            name: patch.name.as_ref().map(|_| p.name.clone()),
+            lat_e7: patch.lat_e7.map(|_| p.lat_e7),
+            lon_e7: patch.lon_e7.map(|_| p.lon_e7),
+            radius_m: patch.radius_m.map(|_| p.radius_m),
+            address_label: patch
+                .address_label
+                .as_ref()
+                .map(|_| p.address_label.clone()),
+        },
+    })
+}
+
 /// The inverse of a triage (`triaged`) or of its undo: the opposite command,
 /// over the tasks it changed, the ones that did not already hold the value it
 /// writes.
@@ -271,6 +305,7 @@ pub(super) const fn delete_of(id: EntityRef) -> Option<Command> {
             scope: sunrise_domain::EditScope::All,
         },
         EntityKind::SavedView => Command::DeleteSavedView(id),
+        EntityKind::Place => Command::DeletePlace(id),
         _ => return None,
     })
 }

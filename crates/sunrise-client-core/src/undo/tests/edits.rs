@@ -81,6 +81,97 @@ fn saved_view_commands_invert() {
     }
 }
 
+/// A place's create is undone by deleting it, a delete by a restore, and an
+/// edit by writing back the fields it touched, read off the place — a
+/// cleared label included.
+#[test]
+fn place_commands_invert() {
+    use sunrise_domain::{Place, PlaceDraft, PlacePatch};
+    struct Places(Place);
+    impl EntityLookup for Places {
+        fn task(&self, _: EntityRef) -> Option<&Task> {
+            None
+        }
+        fn stream(&self, _: EntityRef) -> Option<&StreamRow> {
+            None
+        }
+        fn context(&self, _: EntityRef) -> Option<&ContextRow> {
+            None
+        }
+        fn routine(&self, _: EntityRef) -> Option<&RoutineRow> {
+            None
+        }
+        fn place(&self, id: EntityRef) -> Option<&Place> {
+            (id == self.0.id).then_some(&self.0)
+        }
+    }
+    let id = EntityRef::new(EntityKind::Place, [9; 16]);
+    let held = Places(Place {
+        id,
+        created_at: jiff::Timestamp::UNIX_EPOCH,
+        updated_at: jiff::Timestamp::UNIX_EPOCH,
+        name: "Office".into(),
+        lat_e7: 437_000_000,
+        lon_e7: -795_000_000,
+        radius_m: 150,
+        address_label: None,
+        deleted: false,
+        unknown: Unknowns::new(),
+    });
+    let create = Command::CreatePlace(PlaceDraft {
+        name: "Gym".into(),
+        lat_e7: 0,
+        lon_e7: 0,
+        radius_m: 150,
+        address_label: None,
+    });
+    assert!(is_create(&create));
+    assert!(matches!(
+        invert_create(&create, id),
+        Ok(Command::DeletePlace(d)) if d == id
+    ));
+    assert!(matches!(
+        invert(&held, &[Command::DeletePlace(id)]).unwrap()[..],
+        [Command::Restore(r)] if r == id
+    ));
+    assert!(matches!(
+        invert(&held, &[Command::Restore(id)]).unwrap()[..],
+        [Command::DeletePlace(r)] if r == id
+    ));
+    let edit = Command::UpdatePlace {
+        id,
+        patch: PlacePatch {
+            name: Some("Home".into()),
+            radius_m: Some(300),
+            address_label: Some(Some("1 Main St".into())),
+            ..PlacePatch::default()
+        },
+    };
+    match &invert(&held, &[edit]).unwrap()[..] {
+        [Command::UpdatePlace { patch, .. }] => {
+            assert_eq!(patch.name.as_deref(), Some("Office"));
+            assert_eq!(patch.radius_m, Some(150));
+            assert_eq!(patch.address_label, Some(None), "the label it had: none");
+            assert!(patch.lat_e7.is_none(), "only what the edit touched");
+            assert!(patch.lon_e7.is_none(), "only what the edit touched");
+        }
+        other => panic!("{other:?}"),
+    }
+    // A place this client is not holding cannot be put back.
+    let elsewhere = EntityRef::new(EntityKind::Place, [1; 16]);
+    assert_eq!(
+        invert(
+            &held,
+            &[Command::UpdatePlace {
+                id: elsewhere,
+                patch: PlacePatch::default(),
+            }]
+        )
+        .unwrap_err(),
+        NotUndoable::Unsupported
+    );
+}
+
 /// A move is undone by putting back the keys it replaced: one task's as
 /// one update, several as one bulk command, and an unplaced task goes
 /// back to unplaced.
