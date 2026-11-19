@@ -41,15 +41,15 @@ final class SavedViewsModel {
 
     /// Save `destination` under `name`, replacing any view of that name.
     ///
-    /// Every destination the sidebar offers can be named by the store — see
-    /// ``Destination/primary`` — so the only thing refused here is an empty
-    /// name, which would produce a view nobody could pick out of the menu.
+    /// Refused for an empty name, which would produce a view nobody could
+    /// pick out of the menu, and for a destination the store has no word for
+    /// (``Destination/primary``), whose menu item is disabled anyway.
     func save(name: String, destination: Destination, query: String, contexts: [String]) async {
         let trimmed = name.trimmed
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, let primary = destination.primary else { return }
         let view = SavedView(
             name: trimmed,
-            view: destination.primary,
+            view: primary,
             query: destination.savesQuery ? query : "",
             contexts: contexts,
             // Written by the store; whatever is passed here is overwritten on
@@ -148,14 +148,16 @@ extension Destination {
     /// Which primary view this destination is, in the saved-view store's
     /// vocabulary.
     ///
-    /// Total, and that is the point. `PrimaryView` mirrors
-    /// `sunrise_client_core::views::View` variant for variant, deliberately,
-    /// so that adding a view upstream fails the seam's build rather than
-    /// producing an unrepresentable value — which is how `Morning` and
-    /// `Evening` announced themselves. Now that the store names all ten, every
-    /// destination the sidebar offers can be saved, and the menu item that used
-    /// to grey out on the two briefs has nothing left to grey out for.
-    var primary: PrimaryView {
+    /// `PrimaryView` mirrors `sunrise_client_core::views::View` variant for
+    /// variant, deliberately, so that adding a view upstream fails the seam's
+    /// build rather than producing an unrepresentable value — which is how
+    /// `Morning` and `Evening` announced themselves.
+    ///
+    /// `nil` for the one destination the store has no word for yet: Upcoming,
+    /// which arrived on this side first ([#1229](https://github.com/justin13888/Sunrise/issues/1229)).
+    /// "Save this view…" is disabled there rather than saving it as some other
+    /// view, which would recall as a screen the user never saved.
+    var primary: PrimaryView? {
         switch self {
         case let .list(kind):
             switch kind {
@@ -163,6 +165,7 @@ extension Destination {
             case .inbox: .inbox
             case .stream, .context: .stream
             case .search: .search
+            case .upcoming: nil
             }
         case .search: .search
         case .calendar: .calendar

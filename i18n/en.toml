@@ -1113,6 +1113,44 @@ pink = "Pink"
 # A colour a newer version of the app wrote that this one does not know.
 unknown = "Unknown"
 
+[apple.upcoming]
+# The view's title, in the sidebar and the Browse list: the next 7, 14 or 30
+# days, day by day.
+title = "Upcoming"
+# The chip group in the view's header that picks how many days it shows.
+span = "Days to show"
+# One chip of that group: "7 days".
+span_days = "{count, plural, one {# day} other {# days}}"
+# A day's heading when it is today or tomorrow. Later days are headed by
+# their date.
+today = "Today"
+tomorrow = "Tomorrow"
+# Under a day's heading when nothing is planned, due or blocked out that day.
+nothing_planned = "Nothing planned"
+# Beside a task listed on its hard deadline's day rather than its plan's.
+due = "Due"
+# Beside a task listed on its soft deadline's (its target's) day.
+target = "Target"
+# The heading above the undated tasks, which are grouped by stream.
+no_date = "No date"
+# The group of undated tasks that have no stream (still in the Inbox).
+no_stream = "No stream"
+# Under a stream's undated tasks, when more exist than are listed.
+more = "{count, plural, one {# more} other {# more}}"
+# The empty view: nothing in the next {span} days and nothing undated.
+empty = "Nothing coming up in the next {span} days, and nothing undated."
+# Above the undated tasks when no day in the span holds anything.
+only_undated = "Nothing scheduled in the next {span} days. Your undated tasks are below."
+# What the Undo menu item names after "Undo", lower case: a drag (or the
+# keyboard's move) of one task, or of several, to another day.
+undo_move = "reschedule ‘{title}’"
+undo_move_many = "{count, plural, one {reschedule # task} other {reschedule # tasks}}"
+# The same, for tasks dragged into the no-date lane, which clears their plan.
+undo_unschedule = "clear the date of ‘{title}’"
+undo_unschedule_many = "{count, plural, one {clear the date of # task} other {clear the date of # tasks}}"
+# A banner after a drop the planner refused: nothing moved.
+note_plan_refused = "Not moved: that day breaks a rule the task cannot break."
+
 [apple.tasks]
 # Today's section headings.
 section_scheduled = "Scheduled"
@@ -1400,6 +1438,7 @@ help = "Help"
 quick_capture_global = "Quick Capture (anywhere)"
 quick_capture = "New Task"
 today = "Go to Today"
+upcoming = "Go to Upcoming"
 inbox = "Go to Inbox"
 search_in_view = "Find in This List"
 search_global = "Search Everything"

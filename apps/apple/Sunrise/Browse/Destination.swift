@@ -21,16 +21,37 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// change batch searches for what is in the field *now* rather than for
     /// whatever the last keystroke happened to be.
     case search(text: String)
+    /// Upcoming (`docs/08-features/planning-views.md` §Upcoming): the next
+    /// 7, 14 or 30 days, day by day, then the undated tasks by stream.
+    ///
+    /// `span` is `nil` for "the span this device last chose", which the core
+    /// reads from the device-local `views.upcoming.span_days` preference.
+    /// The sidebar's entry is that one, so changing the span from the view's
+    /// own chips changes the preference rather than the selection, and the
+    /// sidebar stays on its row.
+    case upcoming(span: UInt32?)
 
     var id: Self { self }
 
     /// Today with no filter — the sidebar's own entry.
     static let todayAll = TaskListKind.today(contexts: [])
 
+    /// Upcoming over the device's own span — the sidebar's entry and ⌘3.
+    static let upcomingDefault = TaskListKind.upcoming(span: nil)
+
+    /// The spans Upcoming offers, in the order its chips show them.
+    static let upcomingSpans: [UInt32] = [7, 14, 30]
+
     /// Whether this is Today, filtered or not. Today is the only list the
     /// core sections by urgency, so it is the only one that groups.
     var isToday: Bool {
         if case .today = self { return true }
+        return false
+    }
+
+    /// Whether this is Upcoming, which the core groups by day.
+    var isUpcoming: Bool {
+        if case .upcoming = self { return true }
         return false
     }
 
@@ -42,6 +63,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case let .stream(_, name): name
         case let .context(_, name): "@\(name)"
         case .search: L10n.Browse.search
+        case .upcoming: L10n.Upcoming.title
         }
     }
 
@@ -52,6 +74,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case .stream: "number"
         case .context: "at"
         case .search: "magnifyingglass"
+        case .upcoming: "calendar.day.timeline.left"
         }
     }
 
@@ -68,6 +91,8 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
             text.trimmed.isEmpty
                 ? L10n.Browse.emptySearchBlank
                 : L10n.Browse.emptySearch(text: text.trimmed)
+        case let .upcoming(span):
+            L10n.Upcoming.empty(span: String(span ?? TaskListKind.upcomingSpans[0]))
         }
     }
 
@@ -77,7 +102,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// typed can fill: a context, or a filtered Today, refuses capture.
     var emptyHint: String {
         switch self {
-        case .today, .inbox, .stream:
+        case .today, .inbox, .stream, .upcoming:
             acceptsCapture ? Keymap.pressHint(.quickCapture, L10n.Browse.hintCapture(keys:)) : ""
         case .context:
             ""
@@ -98,7 +123,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 
     /// The read behind this list.
     ///
-    /// `nowMs` is only consulted by Today, which is the only list whose
+    /// `nowMs` is only consulted by Today and Upcoming, the two lists whose
     /// contents depend on the clock.
     func query(nowMs: UInt64) -> CoreQuery {
         switch self {
@@ -107,6 +132,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case let .stream(id, _): .streamTasks(stream: id)
         case let .context(id, _): .contextTasks(context: id)
         case let .search(text): .search(text: text.trimmed, limit: TaskListKind.searchLimit)
+        case let .upcoming(span): .upcoming(nowMs: nowMs, spanDays: span, contexts: [])
         }
     }
 
@@ -127,10 +153,14 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// row would be written and then filtered straight back out. Unfiltered
     /// Today does accept capture, because ``TaskListModel/create(_:)`` gives
     /// the line the date that list selects on.
+    ///
+    /// Upcoming accepts it as it is: a line with a date in the span lands on
+    /// its day, and one with none lands in the no-date lane, so whatever is
+    /// typed there is on screen once it is written.
     var acceptsCapture: Bool {
         switch self {
         case let .today(contexts): contexts.isEmpty
-        case .inbox, .stream: true
+        case .inbox, .stream, .upcoming: true
         case .context, .search: false
         }
     }
@@ -173,7 +203,7 @@ enum Destination: Equatable, Hashable, Identifiable {
     /// ``DeepLink`` — and putting them in the sidebar rather than behind an
     /// alert means someone who never allows notifications still has them.
     static let fixed: [Destination] = [
-        .morning, .list(.todayAll), .list(.inbox), .search,
+        .morning, .list(.todayAll), .list(.upcomingDefault), .list(.inbox), .search,
         .calendar, .focus, .routines, .review, .evening
     ]
 
@@ -216,7 +246,7 @@ extension Destination {
         switch kind {
         case let .today(contexts): return contexts.compactMap { names.contexts[$0] }
         case let .context(_, name): return [name]
-        case .inbox, .stream, .search: return []
+        case .inbox, .stream, .search, .upcoming: return []
         }
     }
 }

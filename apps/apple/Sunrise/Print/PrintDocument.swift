@@ -150,6 +150,7 @@ extension PrintDocument {
     /// the Overdue heading would be a different document from the one the user
     /// was looking at when they pressed ⌘P.
     static func taskList(_ model: TaskListModel) -> PrintDocument {
+        if model.kind.isUpcoming { return upcoming(model) }
         let sections: [PrintSection] = model.kind.isToday
             ? model.groups.map { group in
                 PrintSection(
@@ -164,6 +165,28 @@ extension PrintDocument {
                 heading: L10n.Print.taskCount(count: model.tasks.count),
                 rows: model.tasks.map { row(model.facets(for: $0)) }
             )]
+        return PrintDocument(
+            title: model.kind.title,
+            subtitle: PrintStamp.date(msSinceEpoch: model.nowMs, timeZone: model.timeZone),
+            sections: sections.filter { !$0.rows.isEmpty }
+        )
+    }
+
+    /// Upcoming, a section per day that holds a task and per stream with
+    /// undated ones, headed as the screen heads them. Blocks are the
+    /// calendar's to print.
+    private static func upcoming(_ model: TaskListModel) -> PrintDocument {
+        let sections = model.upcoming.map { section in
+            let heading = switch section.kind {
+            case let .day(date, _): model.upcomingHeading(date)
+            case let .noDate(stream, noStream):
+                noStream ? L10n.Upcoming.noStream : model.names.stream(stream) ?? L10n.Upcoming.noStream
+            }
+            return PrintSection(
+                heading: L10n.Print.sectionCount(heading: heading, count: section.rows.count + section.more),
+                rows: section.rows.map { row(model.facets(for: $0.task)) }
+            )
+        }
         return PrintDocument(
             title: model.kind.title,
             subtitle: PrintStamp.date(msSinceEpoch: model.nowMs, timeZone: model.timeZone),
