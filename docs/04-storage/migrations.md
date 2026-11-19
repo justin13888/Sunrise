@@ -112,18 +112,20 @@ pre-migration copy, because a migration that rolled back left the vault as
 that copy holds it. "Reset and resync" is the recovery code: the vault is moved
 aside, not deleted (`Core::set_vault_aside`), and the account is restored into
 the directory it left, which now holds no vault. The CLI prints the table's
-lines under the error; the macOS app does not show them yet.
+lines under the error. The Apple app shows them as buttons on the screen a
+failed open lands on (`VaultOpenFailureView`, `VaultRepairModel`), and copies
+the diagnostics to the clipboard for a report.
 - Downgrades require an explicit reverse migration with its own ADR; no reverse migrations exist today.
 
 ## Migration rigor
 
-> **Normative, and built outside the macOS app.** Every rule in this section
-> is a MUST. All four ship in the core, the UniFFI seam and the CLI
+> **Normative, and built.** Every rule in this section is a MUST. All four
+> ship in the core, the UniFFI seam and the CLI
 > ([#327](https://github.com/justin13888/Sunrise/issues/327),
-> [#441](https://github.com/justin13888/Sunrise/issues/441)). What the macOS
-> app does not have yet is a screen that offers the repair, a restore or the
-> recovery code on a failed open. The *Today* notes say where the tree falls
-> short. The rules exist because the one invariant every versioned surface
+> [#441](https://github.com/justin13888/Sunrise/issues/441)), and the Apple
+> app offers the repair, a restore and the recovery code on a failed open
+> ([#1115](https://github.com/justin13888/Sunrise/issues/1115)). The *Today*
+> notes say where the tree falls short. The rules exist because the one invariant every versioned surface
 > serves ([ADR-0042](../11-adr/0042-v0-forever.md)) applies to a device's own
 > vault file as much as to the merge:
 >
@@ -212,7 +214,8 @@ newest first. It takes the vault's lock, so nothing restores a vault that is
 open. It moves the vault and its `-wal` aside to `<vault>.replaced-<n>`,
 deletes the `-shm`, and renames the copy into place: nothing that holds data is
 deleted. The next open migrates a restored pre-migration copy again, under a
-fresh copy of its own. The macOS app does not offer it yet.
+fresh copy of its own. The Apple app offers the newest copy on a failed open
+where the table does, and opens the vault again once it is back.
 
 ### 3. Integrity is checked on open
 
@@ -255,8 +258,11 @@ fixture both ways and requires the same rows at the same version, and the copy
 the repair took to be the committed file byte for byte. The decision a client makes on
 a failed open is `open_remedies` (§Failure recovery): for damage, the repair
 (not after one has failed), the newest copy beside the vault where there is
-one, and the recovery code where the account has one. The macOS app does not
-offer them yet.
+one, and the recovery code where the account has one. The Apple app offers
+them on the screen a failed open lands on. It asks whether the account has a
+code as the CLI does, by whether this device holds a relay device id, and its
+restore from the code moves the vault aside with `set_vault_aside` only once
+it is about to write, moving it back when it wrote nothing.
 
 ### 4. The projection can be rebuilt from the local op log
 
@@ -505,8 +511,8 @@ The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-
 > `SunriseCore::rebuild_projection`. For a vault the integrity check refuses,
 > the repair (`sunrise rebuild --repair`, `SunriseCore::open_repairing`) runs
 > it over the damaged file; rule 3's *Today* note says what that mends. The
-> macOS app does not offer the repair yet
-> ([#441](https://github.com/justin13888/Sunrise/issues/441)).
+> Apple app offers the repair on a vault the check refuses
+> ([#1115](https://github.com/justin13888/Sunrise/issues/1115)).
 
 The design of record for the rebuild is §Migration rigor rule 4.
 
