@@ -26,7 +26,7 @@ struct VaultTabs: View {
     /// Shared with the Mac: one row selection and one set of row sheets for
     /// the whole app, so "Schedule…" means the same thing however it was
     /// asked for.
-    @State private var keys = KeyboardPreferences()
+    private var keys: KeyboardPreferences { surfaces.keyboard }
     @State private var rows = ListSelection()
     @State private var sheets = RowSheets()
     @State private var palette = CommandPaletteModel()

@@ -181,9 +181,11 @@ not shadow:
 
 ## Vim mode (opt-in)
 
-Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device
-local pref (not synced) — `UserDefaults`, under the literal key
-`editor.vim_mode`. Reachable from Settings → Keyboard and from the `?` cheat
+Settings toggle `keyboard.vim_mode: bool = false`. Persisted as a per-device
+local pref (not synced): the core preference `keyboard.vim_mode`, written to
+this device's overlay (`docs/02-domain/preferences.md`). An earlier build kept
+it in `UserDefaults` under `editor.vim_mode`; the first vault bind moves it and
+deletes that key. Reachable from Settings → Keyboard and from the `?` cheat
 sheet, which carries the same toggle so the mode is discoverable from the place
 that documents it. **Available on macOS only.** Web is unbuilt.
 

@@ -140,6 +140,11 @@ final class AppSurfaces {
     /// `attach` binds it to each vault in turn.
     let notifications = NotificationPreferences()
 
+    /// Vim mode: the core's `keyboard.vim_mode`, read through whichever vault
+    /// is open, like ``notifications``. One for the life of the app, shared by
+    /// every window's list, palette, cheat sheet and Settings.
+    let keyboard = KeyboardPreferences()
+
     /// The capture field's model, shared by whichever surface is presenting
     /// it. Held here rather than by that surface so a `sunrise://capture?text=`
     /// link can seed the field after the surface has cleared it.
@@ -212,6 +217,8 @@ final class AppSurfaces {
         // `notifications.policy` changes, which the read does.
         let notifications = notifications
         _Concurrency.Task { await notifications.bind(to: bridge) }
+        let keyboard = keyboard
+        _Concurrency.Task { await keyboard.bind(to: bridge) }
         #if os(macOS)
         hotkey.register()
         hotkeyStatus = hotkey.status
@@ -491,6 +498,7 @@ final class AppSurfaces {
         reminders?.stopObservingTimeChanges()
         reminders = nil
         notifications.unbind()
+        keyboard.unbind()
         ical = nil
         timeZone?.stop()
         timeZone = nil

@@ -304,19 +304,68 @@ struct VimModeTests {
         }
     }
 
-    /// Per-device, never synced, under the spec's own key.
+    /// Per-device, never synced, under the spec's own key: the core's
+    /// `keyboard.vim_mode`, on this device's overlay, so a second object
+    /// bound to the same vault reads back what the first wrote.
     @Test
-    func vimModeIsOffByDefaultAndPersistsLocally() throws {
-        let suite = "sunrise-tests-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+    func vimModeIsOffByDefaultAndPersistsOnThisDevicesOverlay() async throws {
+        let vault = try await TestVault()
+        let (defaults, name) = try scratchDefaults()
+        defer { UserDefaults.standard.removePersistentDomain(forName: name) }
 
-        #expect(KeyboardPreferences.vimModeKey == "editor.vim_mode")
-        let preferences = KeyboardPreferences(defaults: defaults)
+        #expect(KeyboardPreferences.vimModeKey == "keyboard.vim_mode")
+        let preferences = KeyboardPreferences(defaults: defaults, directory: vault.directory)
+        await preferences.bind(to: vault.bridge)
         #expect(!preferences.vimMode)
 
         preferences.vimMode = true
-        #expect(KeyboardPreferences(defaults: defaults).vimMode)
+        await preferences.saved()
+        #expect(preferences.errorMessage == nil)
+        let item = try await vimModeItem(in: vault.bridge)
+        #expect(item?.value == .bool(value: true))
+        #expect(item?.source == .overlay, "this device's overlay, not the vault's shared value")
+        #expect(defaults.object(forKey: KeyboardPreferences.legacyVimModeKey) == nil, "nothing in `UserDefaults`")
+
+        let second = KeyboardPreferences(defaults: defaults, directory: vault.directory)
+        #expect(!second.vimMode, "unbound, nothing is read from `UserDefaults`")
+        await second.bind(to: vault.bridge)
+        #expect(second.vimMode)
+        await vault.bridge.shutdown()
+    }
+
+    /// The value an earlier build kept under `editor.vim_mode` moves into the
+    /// core on the first bind, and its key is deleted; the next bind reads
+    /// the core alone.
+    @Test
+    func theOldVimModeKeyMigratesOnceAndIsDeleted() async throws {
+        let vault = try await TestVault()
+        let (defaults, name) = try scratchDefaults()
+        defer { UserDefaults.standard.removePersistentDomain(forName: name) }
+        defaults.set(true, forKey: "editor.vim_mode")
+
+        let first = KeyboardPreferences(defaults: defaults, directory: vault.directory)
+        #expect(first.vimMode, "before a vault opens, the old value is still this device's")
+        await first.bind(to: vault.bridge)
+        #expect(first.errorMessage == nil)
+        #expect(first.vimMode)
+        #expect(defaults.object(forKey: "editor.vim_mode") == nil, "deleted once moved")
+        #expect(try await vimModeItem(in: vault.bridge)?.value == .bool(value: true))
+
+        let second = KeyboardPreferences(defaults: defaults, directory: vault.directory)
+        await second.bind(to: vault.bridge)
+        #expect(second.vimMode, "read from the core, with the old key gone")
+        await vault.bridge.shutdown()
+    }
+
+    private func scratchDefaults() throws -> (UserDefaults, String) {
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: name)), name)
+    }
+
+    /// `keyboard.vim_mode` as `Query::Preferences` reads it.
+    private func vimModeItem(in bridge: CoreBridge) async throws -> PreferenceItem? {
+        guard case let .preferences(items) = try await bridge.query(.preferences) else { return nil }
+        return items.first { $0.key == KeyboardPreferences.vimModeKey }
     }
 }
 

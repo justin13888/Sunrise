@@ -46,7 +46,7 @@ struct VaultWindow: View {
     // window, shared by Today, a stream, Search and the command palette — so
     // "Schedule…" means the same thing however it was asked for, and the rows
     // it acts on are the rows the user can see highlighted.
-    @State private var keys = KeyboardPreferences()
+    private var keys: KeyboardPreferences { surfaces.keyboard }
     @State private var rows = ListSelection()
     @State private var sheets = RowSheets()
     @State private var palette = CommandPaletteModel()
