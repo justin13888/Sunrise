@@ -89,7 +89,7 @@ Linux have no client yet ([`../07-clients/parity-matrix.md`](../07-clients/parit
 | 3 | Routine due | **built** (`ReminderKind::Routine` for a routine occurrence, under its own identifier, with the task category's actions) | **built** (same) | no client | no client | no client |
 | 4 | Block start | **built** (open only; no actions) | **built** (same) | no client | no client | no client |
 | 5 | Morning brief | **built** (Plan My Day opens the morning summary; Open Triage when the nudge is folded in) | **built** (same) | no client | no client | no client |
-| 6 | Triage nudge | **built** (Open Triage opens the morning summary, whose triage section is the Apple client's only triage view) | **built** (same) | no client | no client | no client |
+| 6 | Triage nudge | **built** (Open Triage opens the triage queue, a sheet over the window with the queue's four actions) | **built** (same) | no client | no client | no client |
 | 7 | Evening plan | **built** (Move Open Tasks to Tomorrow and Open open the end-of-day plan, where the move is) | **built** (same) | no client | no client | no client |
 | 8 | Wind-down | **built** (`.timeSensitive` requested; without the Time Sensitive entitlement the system delivers it as active. See Tomorrow opens the end-of-day plan; Snooze 15 min posts it again) | **built** (same) | no client | no client | no client |
 | 9 | Focus end / break | not built | not built | no client | no client | no client |

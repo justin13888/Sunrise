@@ -347,7 +347,7 @@ final class ReminderScheduler {
     /// cancels — the deadline and the briefs fire at instants the core fixes,
     /// so moving the task would not bring them back. Keep is the answer "leave
     /// it", and needs nothing. Every other button opens a screen: the one its
-    /// link names, or for Open Triage the triage section.
+    /// link names, or for Open Triage the triage queue.
     func perform(_ action: NotificationAction, on delivered: PlannedNotification) async {
         switch action {
         case .markDone:

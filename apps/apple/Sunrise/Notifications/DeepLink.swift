@@ -25,8 +25,9 @@ enum DeepLink: Equatable, Sendable {
     case task(EntityRef, TaskLinkAction)
     /// `sunrise://focus/<TaskId>` — focus on that task.
     case focus(EntityRef)
-    /// `sunrise://triage` — the tasks waiting on a decision, which the
-    /// triage nudge opens. They are a section of the morning summary here.
+    /// `sunrise://triage` — the triage queue (ADR-0047 §3), the late and
+    /// stale tasks waiting on a decision, which the triage nudge and the
+    /// morning brief's Open Triage open.
     case triage
     /// `sunrise://upcoming` — what is coming up, which the time-zone notice's
     /// Review Times opens. The calendar is where timed items are laid out.
@@ -141,13 +142,23 @@ enum DeepLink: Equatable, Sendable {
         return parts.url
     }
 
-    /// Whether this link lands in Settings, where sync status, the device list
-    /// and the recovery code live — a sheet over the window rather than a
-    /// sidebar screen, so it is not a ``destination``.
-    var opensSettings: Bool {
+    /// A surface a link opens *over* the window rather than as a screen in it.
+    enum Sheet: Equatable, Sendable {
+        /// Settings, where sync status, the device list and the recovery
+        /// code live.
+        case settings
+        /// The triage queue. A sheet rather than a sidebar screen because it
+        /// is a decision to take and then leave, from wherever the user was.
+        case triage
+    }
+
+    /// The sheet this link opens, if it opens one — and then it is not a
+    /// ``destination``: the screen underneath stays where it was.
+    var sheet: Sheet? {
         switch self {
-        case .sync, .devices, .security: true
-        default: false
+        case .sync, .devices, .security: .settings
+        case .triage: .triage
+        default: nil
         }
     }
 
@@ -156,13 +167,14 @@ enum DeepLink: Equatable, Sendable {
     /// `nil` for the links that are an *operation*: completing or snoozing a
     /// task from a notification button must not drag a window forward, which
     /// is what `docs/07-clients/interaction-patterns.md` means by "translates
-    /// to a CRDT op without opening UI when possible".
+    /// to a CRDT op without opening UI when possible". `nil` too for the links
+    /// that open a ``sheet``.
     var destination: Destination? {
         switch self {
-        case .morningSummary, .triage: .morning
+        case .morningSummary: .morning
         case .endOfDayPlan: .evening
         case .upcoming: .calendar
-        case .capture, .sync, .devices, .security: nil
+        case .capture, .triage, .sync, .devices, .security: nil
         case let .entity(id): Self.home(of: id)
         case let .task(_, action): action == .open ? .list(.todayAll) : nil
         case .focus: .focus

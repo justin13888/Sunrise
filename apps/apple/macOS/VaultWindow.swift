@@ -40,6 +40,7 @@ struct VaultWindow: View {
     @State private var selection: Destination? = .list(.todayAll)
     @State private var deviceID = ""
     @State private var showingSettings = false
+    @State private var showingTriage = false
 
     // The keyboard. One selection and one set of row sheets for the whole
     // window, shared by Today, a stream, Search and the command palette — so
@@ -105,9 +106,14 @@ struct VaultWindow: View {
                 SyncStatusView(presentation: sync.presentation)
             }
             ToolbarItem(placement: .primaryAction) {
+                Button(L10n.Triage.title, systemImage: "tray.full") { showingTriage = true }
+                    .accessibilityIdentifier("triage.open")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button(L10n.Mac.settings, systemImage: "gearshape") { showingSettings = true }
             }
         }
+        .sheet(isPresented: $showingTriage) { TriageSheet(model: models.triage) }
         .sheet(isPresented: $savingView) {
             SaveViewSheet(
                 name: $newViewName,
@@ -209,8 +215,16 @@ struct VaultWindow: View {
             surfaces.destinationTaken()
         }
         // A sync or security notification asked for Settings, where sync
-        // status, the devices and the recovery code live.
-        .onChange(of: surfaces.pendingSettings) { if $1 { showingSettings = true; surfaces.settingsTaken() } }
+        // status, the devices and the recovery code live; the triage nudge
+        // or Open Triage asked for the triage queue.
+        .onChange(of: surfaces.pendingSheet) { _, sheet in
+            guard let sheet else { return }
+            surfaces.sheetTaken()
+            switch sheet {
+            case .settings: showingSettings = true
+            case .triage: showingTriage = true
+            }
+        }
         // …and which *thing* on that screen. Taken separately because it is a
         // read: the sidebar moves now, and the entity's own editor opens when
         // the vault has answered. A block needs no second surface — by then
@@ -354,32 +368,6 @@ struct VaultWindow: View {
         )
     }
 
-    /// The commands that change what the window is showing.
-    private func navigate(_ action: AppAction) -> Bool {
-        switch action {
-        case .today:
-            selection = .list(.todayAll)
-            pane = .rows
-        case .inbox:
-            selection = .list(.inbox)
-            pane = .rows
-        case .searchInView:
-            // This client has one search surface. ⌘F carries the query over —
-            // "keep looking" — and ⌘K starts a fresh one.
-            selection = .search
-            pane = .search
-        case .searchGlobal:
-            search.clear()
-            selection = .search
-            pane = .search
-        // From the palette; the menu items reach these as deep links.
-        case .morningSummary: selection = .morning
-        case .endOfDay: selection = .evening
-        default: return false
-        }
-        return true
-    }
-
     /// The commands that put something *over* the window, plus the two that go
     /// straight to the undo stack.
     private func present(_ action: AppAction) -> Bool {
@@ -429,8 +417,8 @@ struct VaultWindow: View {
     }
 }
 
-// The account's sign-in and sync start, and the calendar with its day-schedule
-// menu, in an extension so the window's own body stays inside the length this
+// The account's sign-in and sync start, the calendar with its day-schedule
+// menu, and the navigation commands, in an extension so the window's own body stays inside the length this
 // project lints for. The sign-in's renewal is the session's — see
 // ``SessionModel/renewSessionWhileOpen(every:sleep:)``.
 extension VaultWindow {
@@ -442,6 +430,32 @@ extension VaultWindow {
             .toolbar {
                 ToolbarItem { DateOverrideMenu(schedule: daySchedule, calendar: calendar) }
             }
+    }
+
+    /// The commands that change what the window is showing.
+    private func navigate(_ action: AppAction) -> Bool {
+        switch action {
+        case .today:
+            selection = .list(.todayAll)
+            pane = .rows
+        case .inbox:
+            selection = .list(.inbox)
+            pane = .rows
+        case .searchInView:
+            // This client has one search surface. ⌘F carries the query over —
+            // "keep looking" — and ⌘K starts a fresh one.
+            selection = .search
+            pane = .search
+        case .searchGlobal:
+            search.clear()
+            selection = .search
+            pane = .search
+        // From the palette; the menu items reach these as deep links.
+        case .morningSummary: selection = .morning
+        case .endOfDay: selection = .evening
+        default: return false
+        }
+        return true
     }
 
     /// Start (or re-point) the sync driver. Safe to call again: the driver

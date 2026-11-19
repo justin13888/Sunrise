@@ -176,7 +176,7 @@ struct CatalogSchedulerTests {
     }
 
     /// A button that opens a screen is routed: Open Triage to the triage
-    /// section, Plan My Day to the notification's own link; Keep does nothing.
+    /// queue, Plan My Day to the notification's own link; Keep does nothing.
     @Test
     func aCatalogButtonThatOpensAScreenIsRouted() async throws {
         let vault = try await TestVault()

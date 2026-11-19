@@ -48,19 +48,38 @@ struct DeepLinkTests {
         #expect(link("sunrise://settings/vaults") == nil, "only the security page is")
     }
 
-    /// Where each catalog link lands. Triage is the morning summary's section
-    /// on Apple, and Review Times opens the calendar; the sync and security
-    /// links open Settings, which is a sheet rather than a screen.
+    /// Where each catalog link lands. Review Times opens the calendar; the
+    /// sync and security links open Settings, and the triage nudge the triage
+    /// queue, each a sheet rather than a screen.
     @Test
     func theCatalogLinksLandWhereTheirNotificationsSay() {
-        #expect(DeepLink.triage.destination == .morning)
         #expect(DeepLink.upcoming.destination == .calendar)
         for link in [DeepLink.sync, .devices, .security] {
             #expect(link.destination == nil)
-            #expect(link.opensSettings)
+            #expect(link.sheet == .settings)
         }
-        #expect(!DeepLink.morningSummary.opensSettings)
-        #expect(!DeepLink.triage.opensSettings)
+        #expect(DeepLink.triage.destination == nil)
+        #expect(DeepLink.triage.sheet == .triage)
+        #expect(DeepLink.morningSummary.sheet == nil)
+        #expect(DeepLink.upcoming.sheet == nil)
+    }
+
+    /// The triage nudge's tap and Open Triage both route `sunrise://triage`
+    /// (`ReminderScheduler.handle`), which asks the shell for the queue and
+    /// leaves the screen underneath where it was.
+    @Test
+    func aTriageLinkAsksForTheQueueAndNotAScreen() {
+        let surfaces = AppSurfaces()
+
+        surfaces.open(.triage)
+
+        #expect(surfaces.pendingSheet == .triage)
+        #expect(surfaces.pendingDestination == nil)
+        surfaces.sheetTaken()
+        #expect(surfaces.pendingSheet == nil)
+
+        surfaces.open(.security)
+        #expect(surfaces.pendingSheet == .settings)
     }
 
     /// The whole point of a deep-linked view: the link names a screen.
