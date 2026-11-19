@@ -49,7 +49,15 @@
 //!   Cancel releases the waiting caller with no relay involved at all — which
 //!   is the state a user is most likely to be cancelling from.
 //!
-//! The last two, the on-demand half, live in `attachment_bytes_round_trip/on_demand.rs`.
+//! * [`an_export_fetches_an_attachment_that_is_only_on_the_relay`](export::an_export_fetches_an_attachment_that_is_only_on_the_relay)
+//!   — issue #1124. A full export on the device that holds only the metadata
+//!   lists the attachment as `missing` / `not_fetched` when told not to fetch,
+//!   and writes the original bytes when told to. The client-core unit test
+//!   has no relay, so its fetch can only fail; this is the case where it has
+//!   something to fetch from.
+//!
+//! The on-demand half lives in `attachment_bytes_round_trip/on_demand.rs`, and
+//! the export case in `attachment_bytes_round_trip/export.rs`.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -67,6 +75,8 @@ use sunrise_id::EntityRef;
 use sunrise_server::store::NewDevice;
 use sunrise_server::{MetadataStore, ServerConfig, StaticVerifier, Store, Subject};
 
+#[path = "attachment_bytes_round_trip/export.rs"]
+mod export;
 #[path = "attachment_bytes_round_trip/on_demand.rs"]
 mod on_demand;
 

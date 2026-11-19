@@ -200,7 +200,7 @@ async fn download(core: &Core, id: EntityRef, timeout: Duration) -> Result<(), A
 
 /// One byte past [`AUTO_FETCH_MAX_BYTES`], so the automatic drain declines it
 /// and nothing else about the fixture is doing the work.
-fn an_over_threshold_file() -> Vec<u8> {
+pub(super) fn an_over_threshold_file() -> Vec<u8> {
     (0..=usize::try_from(AUTO_FETCH_MAX_BYTES).expect("the threshold fits a usize"))
         .map(|i| u8::try_from(i % 251).expect("a modulus below 256 fits a byte"))
         .collect()
@@ -208,7 +208,7 @@ fn an_over_threshold_file() -> Vec<u8> {
 
 /// Poll until `core` holds `id`'s *metadata* — which it reports by saying the
 /// bytes are not here, rather than that the attachment is not.
-async fn wait_attachment_known(core: &Core, id: EntityRef, timeout: Duration) {
+pub(super) async fn wait_attachment_known(core: &Core, id: EntityRef, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
         if matches!(
