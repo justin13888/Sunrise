@@ -2,7 +2,7 @@
 //! refusals.
 
 use crate::api::error::codes;
-use crate::api::testing::{Client, SECOND_BEARER};
+use crate::api::testing::{Client, Res, SECOND_BEARER};
 use kynos::http::{Method, StatusCode};
 
 /// The ciphertext a test uploads. Opaque to the server by construction —
@@ -180,6 +180,107 @@ async fn finalize_rejects_a_chunk_that_never_arrived() {
 
     res.assert_status(StatusCode::CONFLICT);
     assert_eq!(res.json()["code"], codes::BLOB_CHUNK_MISSING);
+}
+
+/// The refusal of a chunk under an upload that is not open, as the client
+/// reads it: `sunrise_core::blob_sync` forgets a reserved upload id only on a
+/// code that parses to `SyncOpInvalid`.
+fn assert_upload_refused(res: &Res, why: &str) {
+    res.assert_status(StatusCode::NOT_FOUND);
+    let code = res.json()["code"].as_str().map(ToOwned::to_owned);
+    assert_eq!(code.as_deref(), Some(codes::SYNC_OP_INVALID), "{why}");
+    assert_eq!(
+        code.as_deref()
+            .and_then(sunrise_error::ErrorCode::from_wire_str),
+        Some(sunrise_error::ErrorCode::SyncOpInvalid),
+        "the client must read it as a refused upload id: {why}"
+    );
+}
+
+async fn put_chunk_res(client: &Client, upload_id: &str, idx: u32, body: &[u8]) -> Res {
+    client
+        .send_bytes(
+            Method::PUT,
+            &format!("/api/v1/blobs/{upload_id}/{idx}"),
+            "application/octet-stream",
+            body,
+            &[],
+        )
+        .await
+}
+
+/// A well-formed id `init` never handed out is refused, and the refused
+/// chunk leaves nothing a `finalize` could commit: an upload that skips
+/// `init` cannot skip its bounds or its open-upload ledger.
+#[tokio::test]
+async fn a_chunk_under_an_upload_never_opened_is_refused() {
+    let (client, _guard) = Client::with_blob_root();
+    let never = format!("up_{}", "0".repeat(32));
+    let res = put_chunk_res(&client, &never, 0, CHUNKS[0]).await;
+    assert_upload_refused(&res, "an id init never handed out");
+
+    let res = client
+        .send(
+            Method::POST,
+            "/api/v1/blobs/finalize",
+            Some(&serde_json::json!({
+                "upload_id": never,
+                "content_hash": hex_hash(CHUNKS[0]),
+                "chunk_hashes": [hex_hash(CHUNKS[0])],
+            })),
+        )
+        .await;
+    res.assert_status(StatusCode::CONFLICT);
+    assert_eq!(
+        res.json()["code"],
+        codes::BLOB_CHUNK_MISSING,
+        "the refused chunk was not stored"
+    );
+    assert_eq!(client.metrics.get("sunrise_blob_chunk_total"), 0);
+}
+
+/// An id that was opened and then finalized is spent: a late chunk under it
+/// is refused rather than reopening the upload.
+#[tokio::test]
+async fn a_chunk_under_a_finalized_upload_is_refused() {
+    let (client, _guard) = Client::with_blob_root();
+    let upload_id = init(&client, 1).await;
+    assert_eq!(
+        put_chunk(&client, &upload_id, 0, CHUNKS[0]).await,
+        StatusCode::NO_CONTENT
+    );
+    client
+        .send(
+            Method::POST,
+            "/api/v1/blobs/finalize",
+            Some(&serde_json::json!({
+                "upload_id": upload_id,
+                "content_hash": hex_hash(CHUNKS[0]),
+                "chunk_hashes": [hex_hash(CHUNKS[0])],
+            })),
+        )
+        .await
+        .assert_status(StatusCode::OK);
+
+    let res = put_chunk_res(&client, &upload_id, 0, CHUNKS[1]).await;
+    assert_upload_refused(&res, "an upload already finalized");
+}
+
+/// One account's open upload is not another's to write into.
+#[tokio::test]
+async fn a_chunk_under_another_accounts_upload_is_refused() {
+    let (client, _guard) = Client::with_blob_root_and_verifier();
+    let upload_id = init(&client, 1).await;
+    let res = client
+        .send_bytes(
+            Method::PUT,
+            &format!("/api/v1/blobs/{upload_id}/0"),
+            "application/octet-stream",
+            CHUNKS[0],
+            &[("authorization", SECOND_BEARER)],
+        )
+        .await;
+    assert_upload_refused(&res, "another account's upload");
 }
 
 /// A blob nobody committed is a 404 — the same 404 another account's blob

@@ -25,6 +25,7 @@ use sunrise_domain::{
     day_bounds, deadline_at, plannable, planner_day_of, DaySchedule, PrefValue, SunriseTime, Task,
     TaskPatch, TaskState,
 };
+use sunrise_error::ErrorCode;
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
@@ -60,16 +61,17 @@ impl From<rusqlite::Error> for PlanError {
 }
 
 impl PlanError {
-    /// The error code a client branches on.
+    /// The registry's error code a client branches on
+    /// (`crates/sunrise-error/codes.toml`).
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn code(&self) -> ErrorCode {
         match self {
-            Self::Stale => "PLAN_STALE",
-            Self::Unknown => "PLAN_UNKNOWN",
-            Self::NotCommittable => "PLAN_NOT_COMMITTABLE",
-            Self::Invalid(_) => "PLAN_INVALID",
-            Self::Closed => "PLAN_CLOSED",
-            Self::Engine(_) => "PLAN_FAILED",
+            Self::Stale => ErrorCode::PlanStale,
+            Self::Unknown => ErrorCode::PlanUnknown,
+            Self::NotCommittable => ErrorCode::PlanNotCommittable,
+            Self::Invalid(_) => ErrorCode::PlanInvalid,
+            Self::Closed => ErrorCode::PlanClosed,
+            Self::Engine(_) => ErrorCode::PlanFailed,
         }
     }
 }

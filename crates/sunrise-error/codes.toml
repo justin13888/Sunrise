@@ -365,3 +365,56 @@ name = "FATAL_INTERNAL"
 kind = "internal"
 retryable = false
 since = "v1"
+
+# --- Planner --------------------------------------------------------------
+#
+# What the planner's preview and commit refuse with (docs/08-features/planner.md
+# §PlanDiff). None is retryable: a refused commit is never re-sent as it was.
+
+[[code]]
+id = 1000
+name = "PLAN_STALE"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "An input the previewed diff was solved from changed before the commit. Nothing was written. Recovery is to preview again, never to re-commit the same diff."
+
+[[code]]
+id = 1001
+name = "PLAN_UNKNOWN"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "No such diff is remembered: evicted, cancelled, already committed, or the vault reopened. Nothing was written. Recovery is to preview again."
+
+[[code]]
+id = 1002
+name = "PLAN_NOT_COMMITTABLE"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "The diff carries a Blocking violation, which the diff's `committable` already showed before the commit. Nothing was written."
+
+[[code]]
+id = 1003
+name = "PLAN_INVALID"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "The intent names nothing the vault holds, or an item of the wrong kind. Nothing was written."
+
+[[code]]
+id = 1004
+name = "PLAN_CLOSED"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "The vault is closed, so there is nothing to plan against. Recovery is to open the vault."
+
+[[code]]
+id = 1005
+name = "PLAN_FAILED"
+kind = "internal"
+retryable = false
+since = "v1"
+docs = "The planner's read or write failed, or the domain refused a write the solver produced. The transaction rolled back; nothing was written."
