@@ -41,12 +41,12 @@ sunrise-id = { workspace = true }
 # a no-op on this target) for `sqlite-wasm-rs`: plaintext SQLite, which is the
 # web gap ADR-0055 accepts.
 rusqlite = { workspace = true, features = ["ffi-sqlite-wasm-rs"] }
-# 0.5 is the line `rusqlite` 0.40 binds; `WasmOsCallback` is the clock, sleep
-# and randomness the SAHPool VFS asks its host for.
-sqlite-wasm-rs = { version = "0.5.3", default-features = false }
-# The OPFS `SyncAccessHandle` pool VFS. 0.2 is the line built against
-# `sqlite-wasm-rs` 0.5; 0.3 moved to 0.6, which `rusqlite` 0.40 does not bind.
-sqlite-wasm-vfs = { version = "0.2.0" }
+# 0.6 is the line `rusqlite` 0.43 binds (`>=0.6.3, <0.7`); `WasmOsCallback` is
+# the clock, sleep and randomness the SAHPool VFS asks its host for.
+sqlite-wasm-rs = { version = "0.6.3", default-features = false }
+# The OPFS `SyncAccessHandle` pool VFS. 0.3 is the line built against
+# `sqlite-wasm-rs` 0.6, and it puts the pool behind the `sahpool` feature.
+sqlite-wasm-vfs = { version = "0.3.0", features = ["sahpool"] }
 wasm-bindgen = { version = "0.2.104" }
 wasm-bindgen-futures = { version = "0.4.54" }
 js-sys = { version = "0.3.81" }
