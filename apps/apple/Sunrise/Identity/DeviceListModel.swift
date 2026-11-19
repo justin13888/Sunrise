@@ -89,6 +89,16 @@ final class DeviceListModel {
         /// `revoked: false, current: true` and is otherwise indistinguishable
         /// from any other member.
         let admittedAfterRevocation: Bool
+        /// Removed **by the account identity**: a removal signed with the
+        /// account's key names this device (ADR-0058 §7).
+        ///
+        /// The one removal nothing can take back while that identity is in
+        /// force. Every other removal is ordinary, and a later change on the
+        /// account can take it back off the list (ADR-0041), which is what
+        /// ``readBounded`` without ``revoked`` looks like afterwards. The row
+        /// words the two differently so a user can tell them apart. Never
+        /// `true` without ``revoked``.
+        let revokedByAuthority: Bool
         /// Whether this row is the device the user is holding.
         let isThisDevice: Bool
     }
@@ -123,6 +133,34 @@ final class DeviceListModel {
         /// standing set rather than this command's delta, so a user who missed
         /// it last time is told again.
         let unwound: [String]
+        /// Which kind of removal this was (ADR-0058 §7).
+        let authority: Authority
+
+        /// Whether a removal carries the account identity's signature, and if
+        /// it could have but did not, what stood in the way.
+        enum Authority: Equatable {
+            /// Signed by the account identity: nothing can take it back.
+            case signed
+            /// Made by a device that does not hold the account's signing key,
+            /// which is every device added by pairing. A later change on the
+            /// account can take it back off the list.
+            case ordinary
+            /// This device holds the key, but these devices (hex ids) run a
+            /// build that cannot read a signed removal, so it went out
+            /// ordinary. Not refused or delayed: the device being removed is
+            /// often the one the user lost.
+            case awaitsUpdate([String])
+
+            init(outcome: CommandOutcome) {
+                if outcome.revokedByAuthority {
+                    self = .signed
+                } else if outcome.authorityAwaitsUpdate.isEmpty {
+                    self = .ordinary
+                } else {
+                    self = .awaitsUpdate(outcome.authorityAwaitsUpdate)
+                }
+            }
+        }
 
         /// Read straight off what the command returned.
         ///
@@ -139,6 +177,7 @@ final class DeviceListModel {
             self.relayPending = relayPending
             gated = outcome.revocationGated
             unwound = outcome.revocationUnwound
+            authority = Authority(outcome: outcome)
         }
     }
 
@@ -175,6 +214,7 @@ final class DeviceListModel {
                     readBounded: row.readBounded,
                     current: row.current,
                     admittedAfterRevocation: row.admittedAfterRevocation,
+                    revokedByAuthority: row.revokedByAuthority,
                     isThisDevice: row.deviceId == me
                 )
             }

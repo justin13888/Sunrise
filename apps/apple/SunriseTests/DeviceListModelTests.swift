@@ -229,6 +229,65 @@ struct DeviceListModelTests {
         )
     }
 
+    /// **Whether a removal carries the account's authority reaches the
+    /// disclosure, in each of its three shapes** (ADR-0058 §7).
+    ///
+    /// Synthetic for the reason the two tests above give: a real removal
+    /// needs a second device, and this seam's test vault has one.
+    /// `sunrise-core`'s `revocation_authority` tests assert the core sets the
+    /// fields, and the seam tests assert they cross; this asserts the model
+    /// reads them, which is the line on this side that can be dropped.
+    @Test
+    func theDisclosureSaysWhetherTheRemovalCarriesTheAccountsAuthority() {
+        func outcome(signed: Bool, awaiting: [String]) -> CommandOutcome {
+            CommandOutcome(
+                entity: "dev_00000000000000000000000000",
+                state: nil,
+                opId: String(repeating: "0", count: 32),
+                seq: 1,
+                softViolations: [],
+                unrotatedStreams: [],
+                revocationGated: false,
+                revocationUnwound: [],
+                revokedByAuthority: signed,
+                authorityAwaitsUpdate: awaiting
+            )
+        }
+        func authority(signed: Bool, awaiting: [String]) -> DeviceListModel.Revocation.Authority {
+            DeviceListModel.Revocation(
+                nickname: "Old laptop",
+                outcome: outcome(signed: signed, awaiting: awaiting),
+                relayPending: false
+            ).authority
+        }
+
+        #expect(authority(signed: true, awaiting: []) == .signed)
+        #expect(
+            authority(signed: false, awaiting: []) == .ordinary,
+            "a removal from a device that cannot sign must not be called permanent"
+        )
+        #expect(
+            authority(signed: false, awaiting: ["00b1", "00b2"]) == .awaitsUpdate(["00b1", "00b2"]),
+            "the devices to update must reach the view whole, or the user has no remedy to act on"
+        )
+    }
+
+    /// Every row carries whether the account identity removed it. A fresh
+    /// vault's one device has not been removed at all, so this pins that the
+    /// field reaches a row and reads `false`; its truth is asserted by
+    /// `sunrise-core`'s `revocation_authority` tests and its crossing by
+    /// `seam_device_rows.rs`.
+    @Test
+    func everyRowCarriesWhetherTheAccountIdentityRemovedIt() async throws {
+        let vault = try await TestVault()
+        let model = DeviceListModel(bridge: vault.bridge)
+        await model.refresh()
+
+        let me = try #require(model.rows.first)
+        #expect(!me.revokedByAuthority)
+        await vault.bridge.shutdown()
+    }
+
     /// The disclosure is dismissible and the error is too, so neither becomes
     /// a permanent fixture of the settings screen.
     @Test

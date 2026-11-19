@@ -35,6 +35,48 @@ fn print_revocation_unwound(unwound: &[String]) {
     println!("    {}", strings::devices::unwound_remedy());
 }
 
+/// Say which kind of revocation `devices revoke` made (ADR-0058 §7).
+///
+/// One signed by the account identity is the only kind nothing can unwind;
+/// every other kind is ordinary, and a later op can take it back off the list
+/// (ADR-0041). Printed on the effective branch only: an authority revocation
+/// is never gated, so a gated one is ordinary and already says that nothing
+/// was revoked. When the holder could not sign only because some devices'
+/// builds cannot read a signed revocation, those devices are named, since
+/// updating them is what stands between the user and one nothing can unwind.
+fn print_revocation_authority(outcome: &sunrise_core::CommandResult) {
+    for line in revocation_authority_lines(outcome) {
+        println!("{line}");
+    }
+}
+
+/// The lines [`print_revocation_authority`] prints, separate so a test can
+/// read them without a second device to revoke.
+fn revocation_authority_lines(outcome: &sunrise_core::CommandResult) -> Vec<String> {
+    if outcome.revoked_by_authority {
+        return vec![format!("  - {}", strings::devices::authority_signed())];
+    }
+    if outcome.authority_awaits_update.is_empty() {
+        return vec![format!("  - {}", strings::devices::authority_ordinary())];
+    }
+    let row_note = strings::devices::authority_awaits_update_row();
+    let mut out = vec![format!(
+        "  - {}",
+        strings::devices::authority_awaits_update()
+    )];
+    out.extend(
+        outcome
+            .authority_awaits_update
+            .iter()
+            .map(|id| format!("      {id}  {row_note}")),
+    );
+    out.push(format!(
+        "    {}",
+        strings::devices::authority_awaits_update_note()
+    ));
+    out
+}
+
 /// Resolve a device id from a hex **prefix**, refusing an ambiguous one.
 ///
 /// Full 32-character ids are not something a user retypes, and this CLI already
@@ -96,7 +138,15 @@ pub(super) async fn list(ctx: &Ctx<'_>) -> CmdResult {
         if d.device_id == me {
             marks.push(strings::devices::mark_this_device());
         }
-        if d.revoked {
+        if d.revoked && d.revoked_by_authority {
+            // ADR-0058 §7: an authority row names this device, so no op from
+            // any device unwinds it while the identity that signed it is in
+            // force. A plain "revoked" is the ordinary kind, which a later op
+            // can take back off the list (ADR-0041). Gated on `revoked` too,
+            // though the core says the converse cannot happen: a mark that
+            // says "revoked" belongs only on a row the register calls revoked.
+            marks.push(strings::devices::mark_revoked_by_authority());
+        } else if d.revoked {
             marks.push(strings::devices::mark_revoked());
         } else if d.read_bounded {
             // The two revocation facts have come apart, which since ADR-0041
@@ -232,6 +282,7 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
         }
         println!("    {}", strings::devices::unrotated_note());
     }
+    print_revocation_authority(&outcome);
     println!("  - {}", strings::devices::no_recertify());
     // Said on the effective branch only: a gated revocation revoked nothing,
     // so there is nothing to be unable to undo. ADR-0056 decides a withdrawal
@@ -405,5 +456,65 @@ async fn issue_code(ctx: &Ctx<'_>) -> CmdResult {
             Ok(())
         }
         Err(e) => Err(strings::identity::reissue_failed(&e.to_string()).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_core::CommandResult;
+
+    fn revocation(signed: bool, awaiting: Vec<String>) -> CommandResult {
+        CommandResult::new(
+            EntityRef::new(EntityKind::Device, [0x11; 16]),
+            None,
+            [0x22; 16],
+            1,
+        )
+        .with_revocation_authority(signed, awaiting)
+    }
+
+    /// The three kinds ADR-0058 §7 asks a user to be able to tell apart each
+    /// print their own line, and only the signed one says nothing can undo it.
+    #[test]
+    fn a_revocation_says_whether_it_carries_the_accounts_authority() {
+        let signed = revocation_authority_lines(&revocation(true, Vec::new()));
+        assert_eq!(
+            signed,
+            vec![format!("  - {}", strings::devices::authority_signed())]
+        );
+
+        let ordinary = revocation_authority_lines(&revocation(false, Vec::new()));
+        assert_eq!(
+            ordinary,
+            vec![format!("  - {}", strings::devices::authority_ordinary())],
+            "a revocation from a device that cannot sign must not be called permanent"
+        );
+    }
+
+    /// When only out-of-date builds kept the holder from signing, every one of
+    /// them is named, so the user knows what to update.
+    #[test]
+    fn an_unsigned_revocation_names_the_devices_to_update() {
+        let ids = vec!["b1".repeat(16), "b2".repeat(16)];
+        let lines = revocation_authority_lines(&revocation(false, ids.clone()));
+        assert_eq!(
+            lines.first(),
+            Some(&format!(
+                "  - {}",
+                strings::devices::authority_awaits_update()
+            ))
+        );
+        for id in &ids {
+            assert!(
+                lines.iter().any(|l| l.contains(id.as_str())),
+                "{id} must be named, got {lines:?}"
+            );
+        }
+        assert_eq!(lines.len(), ids.len() + 2, "header, one row each, note");
+        assert!(
+            !lines.contains(&format!("  - {}", strings::devices::authority_signed())),
+            "an unsigned revocation must not claim to be signed"
+        );
     }
 }

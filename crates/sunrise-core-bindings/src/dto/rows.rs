@@ -113,7 +113,7 @@ impl From<&ContextRow> for ContextListRow {
 ///
 /// See `sunrise_core::DeviceRow` for why the four flags are orthogonal facts
 /// rather than positions of one state: every pair is reachable in both
-/// combinations. No item-level `allow` for `struct_excessive_bools` here —
+/// combinations. The fifth, `revoked_by_authority`, refines `revoked`. No item-level `allow` for `struct_excessive_bools` here —
 /// `lib.rs` already allows it crate-wide, so a second one would be dead.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceListRow {
@@ -180,6 +180,22 @@ pub struct DeviceListRow {
     /// otherwise indistinguishable from any other member. Word it as "joined
     /// after a device was removed".
     pub admitted_after_revocation: bool,
+    /// This device is revoked **by the account identity**: an authority row
+    /// names it at the register's last fold (ADR-0058 §7).
+    ///
+    /// The one revocation nothing can unwind. No op from any device takes it
+    /// back while the identity that signed it is in force, and a rotation
+    /// carries it forward. Every other revocation is ordinary: a later op can
+    /// take it back off the list (ADR-0041), which is what `readBounded`
+    /// without `revoked` looks like afterwards. Word the two differently, so a
+    /// user can tell which kind removed a device.
+    ///
+    /// A fact about the register, not about the row that won it: a later
+    /// ordinary revocation can win the row while this stays true.
+    /// `revokedByAuthority: true, revoked: false` cannot happen. Last and
+    /// defaulted, so the seam changes additively.
+    #[uniffi(default = false)]
+    pub revoked_by_authority: bool,
 }
 
 impl From<&DeviceRow> for DeviceListRow {
@@ -192,10 +208,7 @@ impl From<&DeviceRow> for DeviceListRow {
             read_bounded,
             current,
             admitted_after_revocation,
-            // Not carried across the seam yet: no client renders it, and
-            // adding it to this record is the client half of ADR-0058 §7's
-            // disclosure, which is #1091.
-            revoked_by_authority: _,
+            revoked_by_authority,
         } = d;
         Self {
             device_id: hex16(device_id),
@@ -206,6 +219,7 @@ impl From<&DeviceRow> for DeviceListRow {
             read_bounded: *read_bounded,
             current: *current,
             admitted_after_revocation: *admitted_after_revocation,
+            revoked_by_authority: *revoked_by_authority,
         }
     }
 }
@@ -326,6 +340,28 @@ pub struct CommandOutcome {
     /// for every command that writes no task.
     #[uniffi(default = [])]
     pub ordering_warnings: Vec<String>,
+    /// This `revokeDevice` was signed by the account identity, so it is an
+    /// **authority revocation** (ADR-0058 §7): no op from any device can
+    /// unwind it while that identity is in force.
+    ///
+    /// `false` for every other command, and for a revocation from a device
+    /// that does not hold the account's signing key, which is every device
+    /// admitted by pairing. That one is ordinary: it does everything ADR-0041
+    /// gives it and a later op can still unwind it, so a client must not
+    /// describe it as permanent.
+    #[uniffi(default = false)]
+    pub revoked_by_authority: bool,
+    /// The devices whose build must be updated before this device can revoke
+    /// by authority, as lowercase hex ids. Empty for every other command, and
+    /// for every revocation this device either signed or could never sign.
+    ///
+    /// Non-empty means this device holds the account's signing key and the
+    /// revocation went out ordinary only because these devices, which are not
+    /// revoked, do not advertise `core.revoke_authority`. The revocation was
+    /// not refused or delayed; a client names these devices so the user knows
+    /// what stands between them and one nothing can unwind.
+    #[uniffi(default = [])]
+    pub authority_awaits_update: Vec<String>,
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -340,10 +376,8 @@ impl From<&CommandResult> for CommandOutcome {
             unrotated_streams,
             revocation_gated,
             revocation_unwound,
-            // Not carried across the seam yet, for the reason
-            // `DeviceListRow` gives for `revoked_by_authority`.
-            revoked_by_authority: _,
-            authority_awaits_update: _,
+            revoked_by_authority,
+            authority_awaits_update,
             // What the core publishes on its change stream, which the seam
             // relays from there rather than from the result.
             events: _,
@@ -361,6 +395,8 @@ impl From<&CommandResult> for CommandOutcome {
                 .iter()
                 .map(|w| w.as_str().to_owned())
                 .collect(),
+            revoked_by_authority: *revoked_by_authority,
+            authority_awaits_update: authority_awaits_update.clone(),
         }
     }
 }

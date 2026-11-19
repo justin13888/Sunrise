@@ -241,6 +241,7 @@ pub fn device(d: &DeviceRow, this_device: &[u8; 16]) -> Value {
         "read_bounded": d.read_bounded,
         "current": d.current,
         "admitted_after_revocation": d.admitted_after_revocation,
+        "revoked_by_authority": d.revoked_by_authority,
     })
 }
 
