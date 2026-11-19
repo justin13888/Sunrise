@@ -261,6 +261,86 @@ struct DropWritesTests {
         await vault.bridge.shutdown()
     }
 
+    /// **A drag before an import.** A row dragged in the Inbox is placed in
+    /// every list that holds it, and this device placed it. A Context holding
+    /// it that has not imported its stored order yet still writes that order,
+    /// after the dragged row, rather than taking the drag for another
+    /// device's arrangement and deleting the order unwritten.
+    @Test
+    func aDragDoesNotStopAnotherListImportingItsOrder() async throws {
+        let vault = try await TestVault()
+        let browse = BrowseModel(bridge: vault.bridge)
+        await browse.createContext(name: "home", description: nil)
+        let home = try #require(browse.contexts.first { $0.name == "home" })
+        var ids: [EntityRef] = []
+        for title in ["One", "Two", "Three", "Four"] {
+            ids.append(try await vault.bridge.submit(.createTask(draft: draft(title))).entity)
+        }
+        #expect(await browse.fileTasks([ids[1], ids[2], ids[3]], intoContext: home.id))
+
+        let defaults = try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+        defaults.set([ids[3], ids[2]], forKey: "list.order.context.\(home.id)")
+        let inbox = TaskListModel(
+            bridge: vault.bridge,
+            kind: .inbox,
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await inbox.refresh()
+        let first = try #require(inbox.tasks.first).id
+        #expect(await inbox.reorder([ids[3]], before: first))
+        #expect(inbox.errorMessage == nil)
+        #expect(inbox.tasks.first?.id == ids[3])
+        #expect(ListOrderImport(defaults: defaults).placedHere.contains(ids[3]), "the drag was recorded")
+
+        let context = TaskListModel(
+            bridge: vault.bridge,
+            kind: .context(id: home.id, name: "home"),
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await context.refresh()
+        #expect(
+            context.tasks.map(\.title) == ["Four", "Three", "Two"],
+            "the dragged row keeps its place and the stored order follows it"
+        )
+        #expect(
+            context.tasks.first { $0.id == ids[2] }?.sortOrder != nil,
+            "the Context's own order was written"
+        )
+        #expect(defaults.stringArray(forKey: "list.order.context.\(home.id)") == nil)
+        #expect(defaults.object(forKey: ListOrderImport.placedHereKey) == nil, "no stored order left")
+
+        await vault.bridge.shutdown()
+    }
+
+    /// A drag the core refuses placed nothing, so nothing is recorded as
+    /// placed here.
+    @Test
+    func aRefusedDragIsNotRecorded() async throws {
+        let vault = try await TestVault()
+        var ids: [EntityRef] = []
+        for title in ["One", "Two"] {
+            ids.append(try await vault.bridge.submit(.createTask(draft: draft(title))).entity)
+        }
+        let defaults = try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+        defaults.set([ids[0]], forKey: "list.order.context.ctx_elsewhere")
+        let inbox = TaskListModel(
+            bridge: vault.bridge,
+            kind: .inbox,
+            orderImport: ListOrderImport(defaults: defaults)
+        )
+        await inbox.refresh()
+        let first = try #require(inbox.tasks.first).id
+        let last = try #require(inbox.tasks.last).id
+        // Deleted under the list, which has not re-read it yet.
+        _ = try await vault.bridge.submit(.deleteTask(id: last))
+
+        #expect(await inbox.reorder([last], before: first))
+        #expect(inbox.errorMessage != nil, "the refusal is reported")
+        #expect(ListOrderImport(defaults: defaults).placedHere.isEmpty)
+
+        await vault.bridge.shutdown()
+    }
+
     /// Today declines the drop rather than accepting a move it would lose on
     /// the next refresh.
     @Test

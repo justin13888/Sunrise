@@ -245,10 +245,18 @@ final class TaskListModel {
     /// The list is re-read rather than patched here, so the one answer to
     /// "what order is this list in" stays the core's. `false` when nothing
     /// was submitted; see ``reorderCommand(_:before:)``.
+    ///
+    /// The rows the move placed are recorded with the import once the core
+    /// accepts it, and not before: a task has one place in every list that
+    /// holds it, and a list sharing one of them whose stored order has not
+    /// been imported yet would otherwise take this device's drag for another
+    /// device's arrangement and delete that order unwritten. See
+    /// ``ListOrderImport``.
     @discardableResult
     func reorder(_ moved: [EntityRef], before target: EntityRef) async -> Bool {
         guard let command = reorderCommand(moved, before: target) else { return false }
-        await run(command)
+        let orderImport = orderImport
+        await runAll([command]) { orderImport.recordPlaced($0) }
         return true
     }
 
@@ -337,7 +345,13 @@ final class TaskListModel {
     /// leave a selection half-applied with nothing on screen to say which half
     /// — and the core takes each command in its own transaction, so what
     /// already landed has landed either way.
-    private func runAll(_ commands: [CoreCommand]) async {
+    ///
+    /// `accepted` sees each command the core took, before the re-read, so
+    /// whatever it records is in place when that re-read runs.
+    private func runAll(
+        _ commands: [CoreCommand],
+        accepted: (CoreCommand) -> Void = { _ in }
+    ) async {
         guard !commands.isEmpty else { return }
         var failure: String?
         for command in commands {
@@ -347,6 +361,7 @@ final class TaskListModel {
                 failure = error.localizedDescription
                 break
             }
+            accepted(command)
         }
         // The change stream will also fire; refreshing here means the row
         // updates on the click rather than one broadcast hop later. It runs

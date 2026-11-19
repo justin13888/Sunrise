@@ -131,10 +131,14 @@ struct ListOrderImport {
         return .moveTasks(ids: ids, after: last.id, before: nil)
     }
 
-    /// Remember the rows an import's `command` placed, once the core has
-    /// accepted it.
+    /// Remember the rows `command` placed on this device — an import's, or a
+    /// drag's — once the core has accepted it.
+    ///
+    /// Nothing is kept once no stored order is left to read it: every drag
+    /// records, and with nothing left to ``forget(_:)`` the record would
+    /// otherwise grow for good.
     func recordPlaced(_ command: CoreCommand) {
-        guard case let .moveTasks(ids, _, _) = command else { return }
+        guard case let .moveTasks(ids, _, _) = command, anyStored else { return }
         defaults.set(Array(placedHere.union(ids)).sorted(), forKey: Self.placedHereKey)
     }
 
@@ -144,10 +148,14 @@ struct ListOrderImport {
     func forget(_ kind: TaskListKind) {
         guard let key = kind.legacyOrderKey else { return }
         defaults.removeObject(forKey: key)
-        let anyLeft = defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(Self.legacyPrefix) }
-        if !anyLeft {
+        if !anyStored {
             defaults.removeObject(forKey: Self.placedHereKey)
         }
+    }
+
+    /// Whether any list still has a stored order to import.
+    private var anyStored: Bool {
+        defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(Self.legacyPrefix) }
     }
 }
 
