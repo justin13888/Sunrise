@@ -10,7 +10,7 @@ use super::rows::{
     ftsr_delete_task, ftsr_upsert_task, insert_context_row, insert_routine_row, insert_stream_row,
     insert_task_contexts, insert_task_row, purge_context_from_tasks, replace_block_tasks,
     replace_task_blockers, replace_task_contexts, update_context_row, update_routine_row,
-    update_stream_row, update_task_row, upsert_attachment_row, upsert_block_row,
+    update_stream_row, update_task_row, upsert_attachment_row, upsert_block_row, upsert_place_row,
     upsert_preferences_row, upsert_saved_view_row,
 };
 use super::state::{dec, enc, hlc_of, Meta};
@@ -22,7 +22,8 @@ use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::{
-    effective_stream, Attachment, Block, Context, Preferences, Routine, SavedView, Stream, Task,
+    effective_stream, Attachment, Block, Context, Place, Preferences, Routine, SavedView, Stream,
+    Task,
 };
 use sunrise_id::registry::{Crdt, EntitySpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -618,6 +619,10 @@ pub(super) fn write_projection(
         EntityKind::SavedView => {
             let v: SavedView = decode!(SavedView);
             upsert_saved_view_row(tx, &v, head)?;
+        }
+        EntityKind::Place => {
+            let p: Place = decode!(Place);
+            upsert_place_row(tx, &p, head)?;
         }
         _ => return Ok(false),
     }

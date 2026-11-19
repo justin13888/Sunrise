@@ -943,6 +943,7 @@ fn window(from: i8, to: (i8, i8)) -> ScheduleConstraint {
         )),
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     }

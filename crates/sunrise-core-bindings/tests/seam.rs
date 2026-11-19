@@ -821,6 +821,7 @@ fn a_constraint_summary_counts_the_hard_ones() {
         days_of_week: Vec::new(),
         date_range: None,
         severity: ConstraintSeverity::Hard,
+        at_place: Vec::new(),
         extra: None,
     };
     let soft = Constraint {
@@ -1062,6 +1063,7 @@ fn nested_unknown_fields_survive_a_constraint_rule_and_template_handed_back() {
             extra: None,
         }),
         severity: ConstraintSeverity::Hard,
+        at_place: Vec::new(),
         extra: None,
     });
     constraint.unknown = unknowns(&[("constraint_new", 1)]);

@@ -24,10 +24,10 @@
 use crate::{
     Attachment, Block, BlockException, BlockKind, BlockSource, CborValue, Chunk, CompatTime,
     Context, Energy, FocusEnd, FocusKind, FocusStart, Interruption, InterruptionReason, Note,
-    NoteBody, OccurrenceBinding, Person, Preferences, RRule, ReviewSnapshot, ReviewSnapshotStream,
-    ReviewTotals, Routine, RoutineCatchupPolicy, SavedView, ScheduleConstraint, StreakRow, Stream,
-    StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState, TaskTemplate, Unknowns,
-    ViewFilter, ViewKind, ViewSort,
+    NoteBody, OccurrenceBinding, Person, Place, Preferences, RRule, ReviewSnapshot,
+    ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, SavedView,
+    ScheduleConstraint, StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task,
+    TaskState, TaskTemplate, Unknowns, ViewFilter, ViewKind, ViewSort,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
@@ -111,6 +111,7 @@ sunrise_id::describe_value_types! {
             time_of_day: Option<TimeOfDayRange>;
             days_of_week: WeekdaySet;
             date_range: Option<DateRange>;
+            at_place: Vec<EntityRef>;
             severity: ConstraintSeverity;
             ..unknown
         }
@@ -631,6 +632,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn places_write_their_registered_names() {
+        assert_wire_names(
+            "Place",
+            &Place {
+                id: eref(EntityKind::Place, 1),
+                created_at: ts(),
+                updated_at: ts(),
+                name: "Home".into(),
+                lat_e7: 437_000_000,
+                lon_e7: -794_000_000,
+                radius_m: 150,
+                address_label: None,
+                deleted: false,
+                unknown: Unknowns::new(),
+            },
+            &["address_label"],
+        );
+    }
+
     /// Every registered record is reached by one of the tests above.
     #[test]
     fn every_registered_record_is_checked_on_the_wire() {
@@ -650,6 +671,7 @@ mod tests {
             "ReviewSnapshot",
             "Preferences",
             "SavedView",
+            "Place",
         ];
         for r in ENTITIES.iter().flat_map(|e| e.records.iter()) {
             assert!(

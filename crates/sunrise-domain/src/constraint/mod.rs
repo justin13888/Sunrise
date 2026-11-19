@@ -3,7 +3,8 @@
 //! A [`ScheduleConstraint`] is a value type (no id) carried as a list on Task
 //! and Routine. It restricts *when* a Task should be scheduled/executed along
 //! up to three independent window dimensions: time of day, days of week, and
-//! date range. The whole list is a single LWW register.
+//! date range; and *where* along a fourth, `at_place` (ADR-0051), which time
+//! evaluation never reads. The whole list is a single LWW register.
 //!
 //! Serde shape matches the CDDL in the spec exactly: `time_of_day` and
 //! `date_range` are optional nested maps, `days_of_week` is a list of
@@ -22,10 +23,15 @@ use crate::validation::ValidationError;
 use jiff::civil::{Date, Time};
 use jiff::Zoned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
 
 /// Maximum number of constraints carried on a single Task/Routine.
 pub const MAX_CONSTRAINTS: usize = 16;
+
+/// Maximum number of places one `at_place` names.
+pub const MAX_AT_PLACE: usize = 8;
 
 /// Severity of a scheduling constraint.
 ///
@@ -153,6 +159,13 @@ pub struct ScheduleConstraint {
     /// Allowed date range (inclusive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_range: Option<DateRange>,
+    /// Places, any one of which satisfies the constraint (ADR-0051); empty
+    /// when it names none. Never evaluated against a time: it is evaluated
+    /// against the device's in-memory presence (`crate::place`), it never
+    /// rejects a write, and it is not one of the time dimensions whose set
+    /// is the constraint's kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at_place: Vec<EntityRef>,
     /// Severity (required).
     pub severity: ConstraintSeverity,
     /// Fields this build does not know, re-emitted verbatim. See
@@ -180,6 +193,10 @@ pub enum ConstraintError {
     /// The list exceeded [`MAX_CONSTRAINTS`] entries.
     #[error("too many scheduling constraints (max {MAX_CONSTRAINTS})")]
     TooMany,
+    /// `at_place` named more than [`MAX_AT_PLACE`] places, one twice, or a
+    /// reference that is not a `plc_` one.
+    #[error("at_place must hold 1..={MAX_AT_PLACE} distinct place references")]
+    AtPlace,
 }
 
 impl ConstraintError {
@@ -190,6 +207,7 @@ impl ConstraintError {
             Self::TimeRange => "time_range",
             Self::DateRange => "date_range",
             Self::TooMany => "max_16",
+            Self::AtPlace => "at_place",
         }
     }
 }
@@ -207,8 +225,9 @@ impl ScheduleConstraint {
     /// Bitmask of populated dimensions: bit0=time_of_day, bit1=days_of_week
     /// (non-empty), bit2=date_range. This is the constraint's "kind" for the
     /// OR/AND combination semantics. Zero only for a constraint whose populated
-    /// fields are all unknown to this build, which validates and is satisfied
-    /// at every moment, so its group of one never produces a violation.
+    /// fields are all unknown to this build, or that names only places, which
+    /// validates and is satisfied at every moment, so its group of one never
+    /// produces a violation: `at_place` never joins the key (ADR-0051 §4).
     fn kind_key(&self) -> u8 {
         let mut k = 0u8;
         if self.time_of_day.is_some() {
@@ -229,8 +248,17 @@ impl ScheduleConstraint {
     /// know is not empty: a newer build's window dimension is a real
     /// restriction there, and refusing it here would refuse the whole list.
     pub fn validate(&self) -> Result<(), ConstraintError> {
-        if self.kind_key() == 0 && self.unknown.is_empty() {
+        if self.kind_key() == 0 && self.at_place.is_empty() && self.unknown.is_empty() {
             return Err(ConstraintError::Empty);
+        }
+        if !self.at_place.is_empty() {
+            let distinct: BTreeSet<&EntityRef> = self.at_place.iter().collect();
+            if self.at_place.len() > MAX_AT_PLACE
+                || distinct.len() != self.at_place.len()
+                || self.at_place.iter().any(|r| r.kind() != EntityKind::Place)
+            {
+                return Err(ConstraintError::AtPlace);
+            }
         }
         if let Some(t) = &self.time_of_day {
             if t.start == t.end {
@@ -265,6 +293,7 @@ impl ScheduleConstraint {
     ///
     /// A field this build does not know is not evaluated: it cannot say what
     /// the field restricts, and an unknown value must never invent a block.
+    /// Neither is `at_place`: where the user is has no answer for a time.
     #[must_use]
     pub fn is_satisfied_at(&self, zdt: &Zoned) -> bool {
         let mut day = zdt.date();
@@ -390,6 +419,7 @@ fn serde_json_shape_matches_cddl() {
             end: Some(date(2026, 8, 17)),
             unknown: Unknowns::new(),
         }),
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     };

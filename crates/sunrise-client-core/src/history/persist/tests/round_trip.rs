@@ -108,6 +108,7 @@ fn constraints() -> impl Strategy<Value = Vec<ScheduleConstraint>> {
                 time_of_day,
                 days_of_week: WeekdaySet::from_days([weekday]),
                 date_range,
+                at_place: Vec::new(),
                 severity: ConstraintSeverity::from_raw(severity),
                 unknown: Unknowns::new(),
             },

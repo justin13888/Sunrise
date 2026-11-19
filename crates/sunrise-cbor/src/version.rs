@@ -273,7 +273,14 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// `25` adds the Block's `occurrence_tasks` (#1162), an OR-set of `[occurrence-key,
 /// entity-ref]` pairs, behind the new feature `block.occurrence_tasks`: a v24 build
 /// keeps it unknown and shows no task on the occurrence. The floor does not move.
-pub const DOC_SCHEMA_V: u16 = 25;
+///
+/// `26` adds the Place entity (`plc_`, tag `place`, #1128, ADR-0051), written
+/// only by `Patch` behind the new feature `place.entity`, and the optional
+/// `at_place` list of `plc_` refs on `ScheduleConstraint`. A v25 build keeps
+/// `at_place` as an unknown field, where it restricts nothing, which is what
+/// an unknown place evaluates to anyway, so it needs no feature. The floor
+/// does not move.
+pub const DOC_SCHEMA_V: u16 = 26;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -378,6 +385,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         25,
         hex32("c963f3ddbe7a950b0de0689ce797ae92f62c2ba0931e688926dcb45affd4d041"),
+    ),
+    (
+        26,
+        hex32("9dd27252fdf8a718cd9c7c956e2e3f02db6965debe1a4fd3b05d34aabf5b5bdd"),
     ),
 ];
 
@@ -748,7 +759,10 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 ///
 /// `51` is migration `0051_block_occurrence_tasks.sql` (#1162): `block_tasks` gains
 /// `occurrence_key` in its primary key, empty (the whole block) on every existing row.
-pub const STORAGE_V: u16 = 51;
+///
+/// `52` is migration `0052_places.sql` (#1128, ADR-0051): `places`, the Place
+/// entity's projection. It starts empty; no row is rewritten.
+pub const STORAGE_V: u16 = 52;
 
 #[cfg(test)]
 mod tests;

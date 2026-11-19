@@ -21,8 +21,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sunrise_domain::{
-    Attachment, Context, FocusSession, NoteBody, Preferences, ReviewSnapshot, Routine, SavedView,
-    Stream, Task,
+    Attachment, Context, FocusSession, NoteBody, Place, Preferences, ReviewSnapshot, Routine,
+    SavedView, Stream, Task,
 };
 use sunrise_id::EntityRef;
 
@@ -56,7 +56,7 @@ pub const ATTACHMENT_SECRET_FIELDS: [&str; 2] = ["blob_key", "thumbnail_blob_key
 /// the tests until the export carries it. `note` and `person` have no table of
 /// their own (a note is a task's, stream's or routine's body), and `device`
 /// and `identity` are the account's membership, not its data.
-pub const EXPORTED_KINDS: [&str; 10] = [
+pub const EXPORTED_KINDS: [&str; 11] = [
     "task",
     "stream",
     "context",
@@ -67,6 +67,7 @@ pub const EXPORTED_KINDS: [&str; 10] = [
     "review_snapshot",
     "preferences",
     "saved_view",
+    "place",
 ];
 
 /// Every live record this replica holds, as it materializes them.
@@ -94,6 +95,8 @@ pub struct VaultRecords {
     pub preferences: Option<Preferences>,
     /// Live saved views (#341), by id.
     pub saved_views: Vec<SavedView>,
+    /// Live places (#1128), by id. Never presence: that is in memory only.
+    pub places: Vec<Place>,
 }
 
 /// One file of an export: a path relative to the export root, always with
@@ -491,6 +494,7 @@ pub fn entity_files(records: &VaultRecords) -> Result<Vec<ExportFile>, ExportErr
         )?,
         rows("preferences", records.preferences.iter().map(|p| (p.id, p)))?,
         rows("saved_view", records.saved_views.iter().map(|v| (v.id, v)))?,
+        rows("place", records.places.iter().map(|p| (p.id, p)))?,
     ];
     out.extend(
         records

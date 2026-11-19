@@ -113,7 +113,9 @@ pub use control_op::{
     IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry,
     VaultRequiresPayload,
 };
-pub use core::{Core, CoreError, PlanCommitResult, PlanUndoResult, PLAN_CACHE_SIZE};
+pub use core::{
+    Core, CoreError, PlanCommitResult, PlanUndoResult, TaskPlaceStatus, PLAN_CACHE_SIZE,
+};
 pub use engine::{
     BootstrapError, BootstrapPreferences, ChainIntegrity, CompactionPolicy, CompactionReport,
     Engine, EngineError, KeyBundleApplied, PlanCommitId, PlanError, PlanField, PlanUndoSkip,
@@ -121,7 +123,7 @@ pub use engine::{
     SNAPSHOT_FORMAT_V,
 };
 pub use events::{AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus};
-pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE};
+pub use feature::{FeatureScope, MissingFeature, FIELD_OPS_FEATURE, PLACE_FEATURE};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount,

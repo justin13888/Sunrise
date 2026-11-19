@@ -263,6 +263,8 @@ pub enum CoreQuery {
     },
     /// The triage queue (ADR-0047 §3), in its order.
     Triage,
+    /// Every live Place, by name. Holds no presence.
+    Places,
 }
 
 impl CoreQuery {
@@ -377,6 +379,7 @@ impl CoreQuery {
             Self::TodayView { now_ms, contexts } => Query::TodayView { now_ms, contexts },
             Self::Lateness { ids } => Query::Lateness { ids },
             Self::Triage => Query::Triage,
+            Self::Places => Query::Places,
         }
     }
 }
@@ -599,6 +602,12 @@ pub enum CoreQueryResult {
         /// The rows.
         rows: Vec<crate::lateness::TriageRowItem>,
     },
+    /// Places: the live ones for `Places`, the one for an `EntityById` of a
+    /// `plc_` id.
+    Places {
+        /// The places.
+        places: Vec<crate::places::PlaceItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -738,6 +747,9 @@ impl CoreQueryResult {
                     .iter()
                     .map(crate::lateness::TriageRowItem::from)
                     .collect(),
+            },
+            QueryResult::Places(p) => Self::Places {
+                places: p.iter().map(crate::places::PlaceItem::from).collect(),
             },
         }
     }

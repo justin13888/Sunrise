@@ -558,11 +558,11 @@ pub struct SavedViewPatch {
 
 /// `Option<Option<T>>` as absent (`None`), `null` (`Some(None)`) or a value,
 /// so a patch that unplaces a view survives a round trip as one.
-mod double {
+pub(crate) mod double {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     #[allow(clippy::option_option, clippy::ref_option)]
-    pub(super) fn serialize<T: Serialize, S: Serializer>(
+    pub(crate) fn serialize<T: Serialize, S: Serializer>(
         v: &Option<Option<T>>,
         s: S,
     ) -> Result<S::Ok, S::Error> {
@@ -573,7 +573,7 @@ mod double {
     }
 
     #[allow(clippy::option_option)]
-    pub(super) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
         d: D,
     ) -> Result<Option<Option<T>>, D::Error> {
         Option::<T>::deserialize(d).map(Some)

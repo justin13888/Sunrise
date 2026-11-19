@@ -21,6 +21,7 @@ pub(super) fn published(cmd: &Command, res: &CommandResult) -> Vec<DomainEvent> 
         | Command::CreateRoutine(_)
         | Command::CreateBlock(_)
         | Command::CreateSavedView(_)
+        | Command::CreatePlace(_)
         | Command::MergeBlocks { .. }
         | Command::AttachFile(_)
         // A focus session is created, never mutated: `StartFocus` mints a
@@ -36,6 +37,7 @@ pub(super) fn published(cmd: &Command, res: &CommandResult) -> Vec<DomainEvent> 
             ..
         }
         | Command::DeleteSavedView(_)
+        | Command::DeletePlace(_)
         | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
         _ => DomainEvent::Updated(res.entity),
     };

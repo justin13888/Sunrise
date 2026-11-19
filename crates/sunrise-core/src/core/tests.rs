@@ -1609,6 +1609,7 @@ async fn a_zone_change_flags_open_plans_that_now_break_a_hard_window() {
         )),
         days_of_week: WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: ConstraintSeverity::Hard,
         unknown: sunrise_domain::Unknowns::new(),
     };

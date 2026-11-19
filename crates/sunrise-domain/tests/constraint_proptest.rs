@@ -74,6 +74,7 @@ fn valid_constraint_strategy() -> impl Strategy<Value = ScheduleConstraint> {
                 time_of_day,
                 days_of_week: days,
                 date_range,
+                at_place: Vec::new(),
                 severity,
                 unknown: sunrise_domain::Unknowns::new(),
             }

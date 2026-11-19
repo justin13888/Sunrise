@@ -481,6 +481,35 @@ macro_rules! for_each_entity {
                     }
                 ],
             }
+            /// `plc_` — a Place, a named location the user entered
+            /// (ADR-0051, `docs/02-domain/places.md`, issue #1128).
+            ///
+            /// Written only by `Patch`, as `SavedView` is: `ops` is empty, and
+            /// each field is its own register. Sealed under the vault-meta
+            /// key domain. Presence is never a field: it stays in memory on
+            /// the device that observed it (ADR-0051 §3).
+            Place {
+                prefix: "plc_",
+                tag: "place",
+                merge: Lww,
+                owner: Meta,
+                features: ["place.entity"],
+                ops: [],
+                records: [
+                    Place @ ("places", "id", Extra) {
+                        id: EntityRef => Register(Quiet);
+                        created_at: Timestamp => Register(Quiet);
+                        updated_at: Timestamp => Register(Quiet);
+                        name: String => Register(Tracked);
+                        lat_e7: i32 => Register(Tracked);
+                        lon_e7: i32 => Register(Tracked);
+                        radius_m: u32 => Register(Tracked);
+                        address_label: Option<String> => Register(Tracked);
+                        deleted: bool => Register(Tombstone);
+                        ..unknown
+                    }
+                ],
+            }
         }
     };
 }

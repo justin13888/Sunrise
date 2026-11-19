@@ -227,6 +227,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "block_occurrence_tasks",
         sql: include_str!("../migrations/0051_block_occurrence_tasks.sql"),
     },
+    Migration {
+        id: 52,
+        name: "places",
+        sql: include_str!("../migrations/0052_places.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

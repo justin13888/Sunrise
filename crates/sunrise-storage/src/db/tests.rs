@@ -244,7 +244,7 @@ fn every_column_projected_entity_has_an_extra_blob() {
             }
         }
     }
-    assert_eq!(projected, 12, "the registry projects twelve tables");
+    assert_eq!(projected, 13, "the registry projects thirteen tables");
 }
 
 /// 0014 adds `streams.sort_order`, defaulting to the "never ordered"

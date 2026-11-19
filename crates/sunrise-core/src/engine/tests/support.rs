@@ -185,6 +185,7 @@ pub(super) fn sample_constraint() -> ScheduleConstraint {
         )),
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
+        at_place: Vec::new(),
         severity: sunrise_domain::ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     }

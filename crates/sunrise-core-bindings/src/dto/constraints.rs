@@ -1,6 +1,7 @@
 //! Scheduling constraints: when a task may and must happen.
 
 use sunrise_domain::{ConstraintSeverity, DateRange, ScheduleConstraint, TimeOfDayRange, Weekday};
+use sunrise_id::EntityRef;
 
 use super::{extra_in, extra_out};
 
@@ -43,6 +44,10 @@ pub struct Constraint {
     pub date_range: Option<DateWindow>,
     /// Whether violating this rejects the write or only demotes it.
     pub severity: ConstraintSeverity,
+    /// Places, any one of which satisfies it (`plc_` refs); empty when it
+    /// names none. Never rejects a write.
+    #[uniffi(default = [])]
+    pub at_place: Vec<EntityRef>,
     /// Fields this build does not know, opaque; hand it back unchanged. See
     /// the module docs.
     #[uniffi(default = None)]
@@ -55,6 +60,7 @@ impl From<&ScheduleConstraint> for Constraint {
             time_of_day,
             days_of_week,
             date_range,
+            at_place,
             severity,
             unknown,
         } = c;
@@ -87,6 +93,7 @@ impl From<&ScheduleConstraint> for Constraint {
                 }
             }),
             severity: severity.clone(),
+            at_place: at_place.clone(),
             extra: extra_out(unknown),
         }
     }
@@ -106,6 +113,7 @@ impl From<Constraint> for ScheduleConstraint {
                 end: r.end,
                 unknown: extra_in(r.extra.as_deref()),
             }),
+            at_place: c.at_place,
             severity: c.severity,
             unknown: extra_in(c.extra.as_deref()),
         }

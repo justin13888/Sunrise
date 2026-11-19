@@ -131,6 +131,7 @@ fn full_constraint() -> ScheduleConstraint {
         time_of_day: Some(TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0))),
         days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::Fr]),
         date_range: Some(DateRange::new(date(2026, 1, 1), Some(date(2026, 12, 31)))),
+        at_place: vec![eref(EntityKind::Place, 9)],
         severity: ConstraintSeverity::Hard,
         unknown: Unknowns::new(),
     }

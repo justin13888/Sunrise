@@ -17,11 +17,15 @@
 //! nor a `Debug` that prints its entries, so no op, envelope, row or log line
 //! can carry a presence value by accident (ADR-0051 §3).
 
+use crate::constraint::{ConstraintSeverity, ScheduleConstraint};
+use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError};
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use sunrise_id::{Ulid, UlidParseError};
+use sunrise_id::{EntityKind, EntityRef, Ulid, UlidParseError};
 use thiserror::Error;
 
 /// The prefix of a Place reference (`docs/02-domain/identifiers.md`).
@@ -91,6 +95,21 @@ impl PlaceId {
     pub fn to_str(self) -> String {
         format!("{PLACE_PREFIX}{}", self.0.to_str())
     }
+
+    /// The reference `r` names, when it is a `plc_` reference.
+    #[must_use]
+    pub const fn from_ref(r: EntityRef) -> Option<Self> {
+        match r.kind() {
+            EntityKind::Place => Some(Self(r.ulid())),
+            _ => None,
+        }
+    }
+
+    /// The same reference as an [`EntityRef`].
+    #[must_use]
+    pub const fn to_ref(self) -> EntityRef {
+        EntityRef::from_ulid(EntityKind::Place, self.0)
+    }
 }
 
 impl fmt::Display for PlaceId {
@@ -117,10 +136,18 @@ impl std::str::FromStr for PlaceId {
 ///
 /// Coordinates are fixed-point degrees × 10⁷, never floats: a float has
 /// several CBOR encodings, and a signed op must encode one value one way.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// This is the vault's record (`plc_`, tag `place`): how each field merges is
+/// declared in `sunrise_id::for_each_entity!`. Every field is its own
+/// register, written only by `Patch`; `deleted` is the tombstone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Place {
-    /// The Place's reference.
-    pub id: PlaceId,
+    /// The Place's reference, of kind [`EntityKind::Place`].
+    pub id: EntityRef,
+    /// Creation time.
+    pub created_at: Timestamp,
+    /// Last-update time (merge-derived).
+    pub updated_at: Timestamp,
     /// Display name, 1..=128 chars after trim.
     pub name: String,
     /// Latitude × 10⁷, in `-MAX_LAT_E7..=MAX_LAT_E7`.
@@ -131,13 +158,60 @@ pub struct Place {
     pub radius_m: u32,
     /// What the user typed or picked. Display text only: Sunrise never
     /// geocodes a Place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address_label: Option<String>,
     /// Tombstoned. A requirement may still name it, and evaluates `Unknown`
     /// for it.
+    #[serde(default)]
     pub deleted: bool,
+    /// Fields a newer build added, kept verbatim.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 impl Place {
+    /// The Place's reference as a [`PlaceId`].
+    #[must_use]
+    pub const fn place_id(&self) -> PlaceId {
+        PlaceId::from_ulid(self.id.ulid())
+    }
+
+    /// Check every rule of `docs/02-domain/places.md` §Validation.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        PlaceDraft {
+            name: self.name.clone(),
+            lat_e7: self.lat_e7,
+            lon_e7: self.lon_e7,
+            radius_m: self.radius_m,
+            address_label: self.address_label.clone(),
+        }
+        .validate()
+    }
+}
+
+/// A new Place. The core mints the id. Created only by an explicit user act
+/// (`docs/02-domain/places.md` §Commands): never from a location reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceDraft {
+    /// Display name.
+    pub name: String,
+    /// Latitude × 10⁷.
+    pub lat_e7: i32,
+    /// Longitude × 10⁷.
+    pub lon_e7: i32,
+    /// Region radius in metres; [`DEFAULT_RADIUS_M`] when the user picks none.
+    #[serde(default = "default_radius")]
+    pub radius_m: u32,
+    /// Display text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_label: Option<String>,
+}
+
+const fn default_radius() -> u32 {
+    DEFAULT_RADIUS_M
+}
+
+impl PlaceDraft {
     /// Check every rule of `docs/02-domain/places.md` §Validation.
     pub fn validate(&self) -> Result<(), ValidationError> {
         let _ = validate_title(&self.name, "place.name", MAX_PLACE_NAME_LEN)?;
@@ -147,6 +221,55 @@ impl Place {
             validate_address_label(label)?;
         }
         Ok(())
+    }
+}
+
+/// An edit of a Place: each `Some` field is written, and only those, so an
+/// edit of one field never overwrites a concurrent edit of another.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacePatch {
+    /// A new name.
+    pub name: Option<String>,
+    /// A new latitude × 10⁷.
+    pub lat_e7: Option<i32>,
+    /// A new longitude × 10⁷.
+    pub lon_e7: Option<i32>,
+    /// A new radius in metres.
+    pub radius_m: Option<u32>,
+    /// A new label; `Some(None)` clears it.
+    #[allow(clippy::option_option)]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::saved_view::double"
+    )]
+    pub address_label: Option<Option<String>>,
+}
+
+impl PlacePatch {
+    /// Check the fields the patch writes.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(n) = &self.name {
+            let _ = validate_title(n, "place.name", MAX_PLACE_NAME_LEN)?;
+        }
+        validate_coordinates(self.lat_e7.unwrap_or(0), self.lon_e7.unwrap_or(0))?;
+        if let Some(r) = self.radius_m {
+            validate_radius(r)?;
+        }
+        if let Some(Some(label)) = &self.address_label {
+            validate_address_label(label)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the patch writes nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.lat_e7.is_none()
+            && self.lon_e7.is_none()
+            && self.radius_m.is_none()
+            && self.address_label.is_none()
     }
 }
 
@@ -300,6 +423,45 @@ pub struct TaskPlaceReq {
     pub hard: bool,
 }
 
+impl TaskPlaceReq {
+    /// The place requirement a task's (or routine's) scheduling constraints
+    /// state, or `None` when no constraint names a place.
+    ///
+    /// Every `at_place` ref of every constraint is one requirement: any one of
+    /// them satisfies it, as constraints of one kind OR together
+    /// (`docs/02-domain/scheduling-constraints.md` §Combination). It is `hard`
+    /// when any constraint naming a place is `hard`; an unknown severity reads
+    /// as `soft`. A ref that is not a `plc_` reference names no place.
+    #[must_use]
+    pub fn of(constraints: &[ScheduleConstraint]) -> Option<Self> {
+        let mut places = BTreeSet::new();
+        let mut hard = false;
+        for c in constraints.iter().filter(|c| !c.at_place.is_empty()) {
+            places.extend(c.at_place.iter().filter_map(|r| PlaceId::from_ref(*r)));
+            hard |= matches!(c.severity, ConstraintSeverity::Hard);
+        }
+        (!places.is_empty()).then(|| Self {
+            places: places.into_iter().collect(),
+            hard,
+        })
+    }
+
+    /// How the requirement evaluates against `presence`.
+    #[must_use]
+    pub fn evaluate(&self, presence: &Presence) -> PlaceEval {
+        evaluate_place(&self.places, presence)
+    }
+
+    /// Whether the task is "not actionable here": a `hard` requirement that
+    /// evaluates `Violated`. `Unknown` never is (`docs/02-domain/places.md`
+    /// §Presence), and neither is a `soft` one. It flags; it never blocks a
+    /// write.
+    #[must_use]
+    pub fn not_actionable_here(&self, presence: &Presence) -> bool {
+        self.hard && self.evaluate(presence) == PlaceEval::Violated
+    }
+}
+
 /// Pick the places a client asks the OS to monitor, at most
 /// `cap - REGION_TRIGGER_SLOTS` of them (ADR-0051 §5).
 ///
@@ -341,11 +503,12 @@ pub fn select_regions(
     let mut seen = BTreeSet::new();
     let mut ranked: Vec<(bool, usize, Option<f64>, PlaceId)> = places
         .iter()
-        .filter(|p| !p.deleted && seen.insert(p.id))
+        .filter(|p| !p.deleted && seen.insert(p.place_id()))
         .filter_map(|p| {
-            let &(hard, count) = demand.get(&p.id)?;
+            let id = p.place_id();
+            let &(hard, count) = demand.get(&id)?;
             let distance = approx_position.map(|at| distance_key(at, (p.lat_e7, p.lon_e7)));
-            Some((hard, count, distance, p.id))
+            Some((hard, count, distance, id))
         })
         .collect();
     ranked.sort_by(|a, b| {

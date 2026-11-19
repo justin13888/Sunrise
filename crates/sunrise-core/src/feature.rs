@@ -79,6 +79,9 @@ pub const BLOCK_RECURRENCE_FEATURE: &str = "block.recurrence";
 /// recurring block uses: `occurrence_tasks` (#1162).
 pub const BLOCK_OCCURRENCE_TASKS_FEATURE: &str = "block.occurrence_tasks";
 
+/// The id of the feature every write of a Place uses (ADR-0051, #1128).
+pub const PLACE_FEATURE: &str = "place.entity";
+
 /// The id of the feature that carries identity-signed revocations
 /// (ADR-0058 §7): the holder of `ID_S_priv` signs a revocation only in a
 /// vault that requires it.
@@ -187,6 +190,19 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 25,
+    },
+    // Places, a synced entity (issue #1128, ADR-0051). Like
+    // `saved_view.entity` it has no op kind or field of its own: every op on
+    // it is a `Patch` whose `ref` is a `plc_` id. A task's `at_place` needs
+    // none: a build without it keeps the list unknown, where it restricts
+    // nothing, as an unknown place evaluates.
+    Feature {
+        id: PLACE_FEATURE,
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 26,
     },
     // The whole model of ADR-0065: every entity write is a `Patch` naming its
     // writer's heads in `parents`, a multi-entity commit carries `group`, and

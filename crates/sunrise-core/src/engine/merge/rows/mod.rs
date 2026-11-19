@@ -12,6 +12,7 @@
 mod attachment;
 mod block;
 mod context;
+mod place;
 mod preferences;
 mod routine;
 mod saved_view;
@@ -24,6 +25,7 @@ pub(in crate::engine::merge) use block::{replace_block_tasks, upsert_block_row};
 pub(in crate::engine::merge) use context::{
     insert_context_row, purge_context_from_tasks, update_context_row,
 };
+pub(in crate::engine::merge) use place::upsert_place_row;
 pub(in crate::engine::merge) use preferences::upsert_preferences_row;
 pub(in crate::engine::merge) use routine::{insert_routine_row, update_routine_row};
 pub(in crate::engine::merge) use saved_view::upsert_saved_view_row;

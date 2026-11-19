@@ -235,6 +235,7 @@ fn a_drop_outside_a_hard_window_is_refused_at_commit() {
                 )),
                 days_of_week: sunrise_domain::WeekdaySet::default(),
                 date_range: None,
+                at_place: Vec::new(),
                 severity: sunrise_domain::ConstraintSeverity::Hard,
                 unknown: Unknowns::default(),
             }],

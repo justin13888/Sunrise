@@ -105,6 +105,7 @@ mod merge;
 mod notify;
 mod oplog;
 mod park;
+mod place;
 mod planner;
 mod preferences;
 mod query;
@@ -576,6 +577,9 @@ impl Engine {
             Command::CreateSavedView(d) => self.create_saved_view(db, d),
             Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, patch),
             Command::DeleteSavedView(id) => self.delete_saved_view(db, id),
+            Command::CreatePlace(d) => self.create_place(db, d),
+            Command::UpdatePlace { id, patch } => self.update_place(db, id, patch),
+            Command::DeletePlace(id) => self.delete_place(db, id),
         }
     }
 
@@ -669,6 +673,7 @@ impl Engine {
             } => self.query_conflicts(db, entity, include_quiet),
             Query::SavedViews => self.query_saved_views(db),
             Query::SavedView(id) => self.evaluate_saved_view(db, id),
+            Query::Places => self.query_places(db),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(
