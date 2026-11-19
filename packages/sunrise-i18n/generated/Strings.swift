@@ -439,6 +439,51 @@ enum L10n {
         static var failedTitle: String { L10n.tr("apple.root.failed_title") }
     }
 
+    enum VaultOpen {
+        /// Sunrise could not open your vault
+        static var title: String { L10n.tr("apple.vault_open.title") }
+        /// Your vault failed its integrity check, so Sunrise opened nothing and changed nothing.
+        static var damaged: String { L10n.tr("apple.vault_open.damaged") }
+        /// Sunrise could not write the copy it keeps before it changes your vault, so it changed nothing. Free some disk space, then try again.
+        static var backupFailed: String { L10n.tr("apple.vault_open.backup_failed") }
+        /// Updating your vault to this version of Sunrise failed and was undone. The vault is as it was.
+        static var migrationFailed: String { L10n.tr("apple.vault_open.migration_failed") }
+        /// A newer version of Sunrise wrote this vault.
+        static var tooNew: String { L10n.tr("apple.vault_open.too_new") }
+        /// This vault is older than any version of Sunrise that can still update it.
+        static var tooOld: String { L10n.tr("apple.vault_open.too_old") }
+        /// Another copy of Sunrise has this vault open. Close it, then try again.
+        static var busy: String { L10n.tr("apple.vault_open.busy") }
+        /// Nothing on this screen can mend it. Copy the diagnostics and report it.
+        static var fatal: String { L10n.tr("apple.vault_open.fatal") }
+        /// Repair from its history
+        static var repair: String { L10n.tr("apple.vault_open.repair") }
+        /// Rebuilds the vault from its own record of changes. A copy of the vault as it is now is kept beside it first.
+        static var repairCaption: String { L10n.tr("apple.vault_open.repair_caption") }
+        /// Restore the newest copy
+        static var restore: String { L10n.tr("apple.vault_open.restore") }
+        /// Puts back the copy Sunrise kept beside the vault, losing what was written after it. The vault it replaces is moved aside, not deleted.
+        static var restoreCaption: String { L10n.tr("apple.vault_open.restore_caption") }
+        /// Restore from recovery code…
+        static var recover: String { L10n.tr("apple.vault_open.recover") }
+        /// Restores your account from the relay into a new vault. This vault is moved aside, not deleted.
+        static var recoverCaption: String { L10n.tr("apple.vault_open.recover_caption") }
+        /// Install a newer version of Sunrise, which opens it.
+        static var update: String { L10n.tr("apple.vault_open.update") }
+        /// Copy diagnostics
+        static var diagnostics: String { L10n.tr("apple.vault_open.diagnostics") }
+        /// Copies the error and the versions of Sunrise and its core, to paste into a report. None of your tasks or keys are in it.
+        static var diagnosticsCaption: String { L10n.tr("apple.vault_open.diagnostics_caption") }
+        /// Copied.
+        static var diagnosticsCopied: String { L10n.tr("apple.vault_open.diagnostics_copied") }
+        /// {remedy} did not work: {reason} The other choices below still stand.
+        static func remedyFailed(remedy: String, reason: String) -> String {
+            L10n.tr("apple.vault_open.remedy_failed", remedy, reason)
+        }
+        /// There is no copy beside the vault any more.
+        static var noCopy: String { L10n.tr("apple.vault_open.no_copy") }
+    }
+
     enum Recovery {
         /// Setting up recovery
         static var titleSettingUp: String { L10n.tr("apple.recovery.title_setting_up") }

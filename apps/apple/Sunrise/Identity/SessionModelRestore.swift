@@ -14,6 +14,25 @@ final class SessionRestoration {
 }
 
 extension SessionModel {
+    /// Whether this process presents the recovery ceremony at all. Here
+    /// rather than in `SessionModel.swift`, which sits at SwiftLint's
+    /// `file_length` limit.
+    ///
+    /// `true` everywhere except a UI test that did not ask for it. The
+    /// ceremony is a sheet over the whole window and every UI test in both
+    /// suites begins by creating a vault, so leaving it on covered the app
+    /// before the first assertion and failed twelve tests across five suites
+    /// at once — the whole iOS suite, since macOS runs no `XCUITest` in CI and
+    /// could not see it. `SunriseiOSUITests/RecoveryCeremonyUITests` is the one
+    /// that opts back in, so the ceremony is covered rather than hidden.
+    static var presentsRecoveryCeremony: Bool {
+        #if DEBUG
+        return UITestHarness.presentsRecoveryCeremony()
+        #else
+        return true
+        #endif
+    }
+
     /// Why a restore could not start.
     enum RestoreSetupError: LocalizedError, Equatable {
         case notNow
@@ -37,10 +56,19 @@ extension SessionModel {
         }
     }
 
-    /// Whether this phase may restore from a recovery code: a first run, or a
-    /// vault on disk whose key is not in this Keychain. Never an open vault.
+    /// Whether this phase may restore from a recovery code: a first run, a
+    /// vault on disk whose key is not in this Keychain, or a vault that would
+    /// not open and for which the core offers the code (#1115). Never an open
+    /// vault.
     var canRestoreFromRecoveryCode: Bool {
-        phase == .firstRun || phase == .locked(.keyMissingForExistingVault)
+        switch phase {
+        case .firstRun, .locked(.keyMissingForExistingVault):
+            true
+        case .failed:
+            openFailure.model?.remedies.contains(.recoverFromCode) == true
+        case .starting, .locked, .unlocked:
+            false
+        }
     }
 
     /// Put the restore on screen, wired to this session.
@@ -133,20 +161,19 @@ extension SessionModel {
 
     /// Move an unreadable vault out of the way, beside where it was, and
     /// return where it went. `nil` when there was nothing to move.
-    static func setAside(_ location: VaultLocation, now: Date = .now) throws -> URL? {
+    ///
+    /// The core's `set_vault_aside` (``CoreBridge/moveAside(_:)``), which
+    /// takes the vault's lock first, so nothing moves a vault another process
+    /// has open, and names the directory `<vault>.set-aside-<n>`.
+    static func setAside(_ location: VaultLocation) throws -> URL? {
         guard location.exists() else { return nil }
-        let directory = location.directory
-        let stamp = Int(now.timeIntervalSince1970)
-        let aside = directory.deletingLastPathComponent()
-            .appending(path: "\(directory.lastPathComponent).unreadable-\(stamp)")
-        try FileManager.default.moveItem(at: directory, to: aside)
-        return aside
+        return try CoreBridge.moveAside(location.directory)
     }
 
-    /// Undo ``setAside(_:now:)`` after a restore that wrote nothing.
+    /// Undo ``setAside(_:)`` after a restore that wrote nothing.
     ///
     /// Whatever is at `directory` now is the refused restore's own output:
-    /// ``setAside(_:now:)`` moved everything that was there before, and a
+    /// ``setAside(_:)`` moved everything that was there before, and a
     /// directory it left alone was empty. A vault that would not open can
     /// leave files behind, and they are unreadable, because the root they
     /// were written under was never stored. They are removed so the original
