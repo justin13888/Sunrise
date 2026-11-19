@@ -348,6 +348,10 @@ even when that read fails. The Apple apps report it from
 re-evaluates the hard scheduling constraints of every open planned task in
 the new zone, and `TimeZoneChange::hard_violations` lists those that now
 break one (`Engine::hard_constraint_violations`, #333): flagged, never moved.
+The report is a one-off; `Query::Triage` recomputes the same rule on every
+read and flags each such task in the queue (`TriageRow::hard_violation`,
+#1084), so a flag nobody acted on at the change is still there on the next
+launch.
 
 A name the tzdb does not know is refused with `CoreError::UnknownTimeZone`.
 The reader's zone stays as it was (§2), and nothing is published. The reminder

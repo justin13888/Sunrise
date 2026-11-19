@@ -56,6 +56,7 @@ struct TriageModelTests {
         #expect(model.rows.map(\.task.id) == [late])
         #expect(model.rows.first?.lateness.state == .lateHard)
         #expect(model.rows.first?.lateness.since != nil, "the row says since when")
+        #expect(model.rows.first?.hardViolation == false, "it has no hard window to break")
         #expect(model.errorMessage == nil)
         await vault.bridge.shutdown()
     }

@@ -204,22 +204,33 @@ extension TriageView {
     }
 }
 
-/// One row of the queue: the task, and why it needs a decision.
+/// One row of the queue: the task, and why it needs a decision. A row the
+/// core flags for a broken hard scheduling window says so first; the
+/// lateness line follows only when the task is also late or stale.
 struct TriageRow: View {
     let row: TriageRowItem
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(row.task.title)
-            Label(reason, systemImage: symbol)
-                .font(.caption)
-                .foregroundStyle(tint)
+            if row.hardViolation {
+                Label(L10n.Triage.hardViolation, systemImage: "calendar.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("triage.hardViolation")
+            }
+            if row.lateness.state != .onTrack {
+                Label(reason, systemImage: symbol)
+                    .font(.caption)
+                    .foregroundStyle(tint)
+            }
         }
         .padding(.vertical, 2)
     }
 
-    /// The core's reason, with the moment it began. A state with no moment
-    /// is never in the queue, so the fallback is only for completeness.
+    /// The core's reason, with the moment it began. An on-track row is in the
+    /// queue only for its hard window and shows no lateness line, so the
+    /// fallback is only for completeness.
     private var reason: String {
         let date = row.lateness.since.map {
             Date(timeIntervalSince1970: Double($0) / 1000).formatted(date: .abbreviated, time: .omitted)

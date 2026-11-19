@@ -109,6 +109,10 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 The triage tray from [ADR-0047](../11-adr/0047-deadlines-and-lateness.md): every
 open task that is late (soft or hard) or stale and not yet acknowledged, in the
 core's order (`LateHard`, then `LateSoft`, then `Stale`; oldest first; then id).
+An open task whose plan breaks a `hard` scheduling constraint in the reader's
+zone now is in it too, flagged and listed first, until it is re-planned
+([`scheduling-constraints.md`](../02-domain/scheduling-constraints.md) §Hard
+and soft, [#1084](https://github.com/justin13888/Sunrise/issues/1084)).
 [#335](https://github.com/justin13888/Sunrise/issues/335) builds it: the
 core's `Query::Triage` and `Command::Triage`, and `sunrise triage
 [list|defer|done|drop|keep]` on the CLI; the macOS tray is a Mac pass.
