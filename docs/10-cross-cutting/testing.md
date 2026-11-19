@@ -192,8 +192,8 @@ stays at production strength.
   `crates/sunrise-crypto/tests/test_cheap_kdf.rs` fails the suite if the
   normal dependency graph of a shipped package (`sunrise-server`,
   `sunrise-cli`, `sunrise-core-bindings`, `sunrise-core-wasm`) enables it.
-- `sunrise-client-core`, `sunrise-cli` and `sunrise-e2e` enable it as a
-  dev-dependency. The `sunrise` binary the CLI scenarios spawn is built with
+- `sunrise-core`, `sunrise-client-core`, `sunrise-cli` and `sunrise-e2e`
+  enable it as a dev-dependency. The `sunrise` binary the CLI scenarios spawn is built with
   `sunrise-cli`'s `test-cheap-kdf`, so a blob crosses the process boundary
   under one set. The Apple scenarios (`apple_*`) drive the bindings
   in-process, so they share the set too; the cross-version baseline driver
