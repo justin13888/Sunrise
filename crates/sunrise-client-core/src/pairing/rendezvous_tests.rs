@@ -10,7 +10,9 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::{Rendezvous, RendezvousError, RendezvousRole, POLL_INTERVAL, WAIT_CAP};
+use super::{
+    resolve_code, Rendezvous, RendezvousError, RendezvousRole, POLL_INTERVAL, UNREACHABLE, WAIT_CAP,
+};
 
 /// One answer of the fake relay.
 #[derive(Clone)]
@@ -23,6 +25,11 @@ enum Reply {
     /// document gives it on both routes: the client decodes the body against
     /// that type, and only a decoded `404` means the session is gone.
     Problem(u16, &'static str),
+    /// No answer: the relay reads the request and closes the connection, as a
+    /// dropped connection looks to the client.
+    HangUp,
+    /// `200` with the code lookup's body, naming this session.
+    Resolved(&'static str),
 }
 
 const NOTHING_YET: Reply = Reply::Messages(&[]);
@@ -137,6 +144,10 @@ async fn read_request(socket: &mut TcpStream) -> Option<(String, serde_json::Val
 
 async fn answer(socket: &mut TcpStream, reply: &Reply) {
     let (status, kind, body) = match reply {
+        Reply::HangUp => {
+            socket.shutdown().await.unwrap();
+            return;
+        }
         Reply::Messages(messages) => (
             200,
             "application/json",
@@ -146,6 +157,11 @@ async fn answer(socket: &mut TcpStream, reply: &Reply) {
             200,
             "application/json",
             serde_json::json!({ "sent": 1, "expires_at_ms": 1 }),
+        ),
+        Reply::Resolved(pair_id) => (
+            200,
+            "application/json",
+            serde_json::json!({ "pair_id": pair_id, "expires_at_ms": 1 }),
         ),
         Reply::Problem(status, problem) => (
             *status,
@@ -315,6 +331,86 @@ async fn a_retried_send_keeps_its_index_until_it_is_accepted() {
         relay.field("message"),
         ["first", "first", "first", "second", "second"]
     );
+}
+
+/// A connection the relay drops before answering is the network's, not the
+/// pairing's end: the send is retried under the same index, so a message the
+/// relay may already hold is acknowledged rather than buffered twice.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_connection_is_retried_and_the_send_keeps_its_index() {
+    let relay = FakeRelay::start(
+        &[Reply::HangUp, Reply::HangUp, Reply::Accepted, Reply::HangUp],
+        Reply::Accepted,
+    )
+    .await;
+    let rendezvous = relay.rendezvous(RendezvousRole::NewDevice);
+
+    rendezvous.send("first".into()).await.unwrap();
+    rendezvous.send("second".into()).await.unwrap();
+
+    assert_eq!(relay.field("index"), [0, 0, 0, 1, 1]);
+    assert_eq!(
+        relay.field("message"),
+        ["first", "first", "first", "second", "second"]
+    );
+}
+
+/// A wait rides out a dropped connection too, asking again from the same
+/// place.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_connection_is_retried_by_a_wait() {
+    let relay = FakeRelay::start(&[Reply::HangUp], Reply::Messages(&["first"])).await;
+    let rendezvous = relay.rendezvous(RendezvousRole::ExistingDevice);
+
+    assert_eq!(rendezvous.next().await.as_deref(), Ok("first"));
+    assert_eq!(relay.field("after"), [0, 0]);
+}
+
+/// A relay that is unreachable for the whole bound is the relay's fault, named
+/// after the bound rather than at the first refusal.
+#[tokio::test(start_paused = true)]
+async fn a_relay_that_keeps_hanging_up_is_retried_to_the_cap() {
+    let relay = FakeRelay::start(&[], Reply::HangUp).await;
+    let rendezvous = relay.rendezvous(RendezvousRole::ExistingDevice);
+
+    let started = Instant::now();
+    let waiting = rendezvous.next().await.unwrap_err();
+    assert_ended_at(started, WAIT_CAP);
+    assert_eq!(waiting, RendezvousError::Relay(UNREACHABLE.into()));
+    assert!(relay.requests() > 1);
+}
+
+/// A typed-code lookup rides out a dropped connection, sending the same code
+/// again.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_connection_is_retried_by_a_code_lookup() {
+    let relay = FakeRelay::start(&[Reply::HangUp], Reply::Resolved("session")).await;
+
+    let pair_id = resolve_code(&relay.url, "token", "123 456").await;
+
+    assert_eq!(pair_id.as_deref(), Ok("session"));
+    assert_eq!(relay.routes(), ["resolve", "resolve"]);
+    assert_eq!(relay.field("code"), ["123456", "123456"]);
+}
+
+/// A failure raised before anything is sent fails the same way every time, so
+/// it ends the wait at once: here, a bearer no header can carry.
+#[tokio::test(start_paused = true)]
+async fn a_request_that_cannot_be_built_is_not_retried() {
+    let relay = FakeRelay::start(&[], NOTHING_YET).await;
+    let rendezvous = Rendezvous::new(
+        &relay.url,
+        "line\nbreak",
+        "session".into(),
+        RendezvousRole::ExistingDevice,
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let waiting = rendezvous.next().await.unwrap_err();
+    assert_eq!(started.elapsed(), Duration::ZERO, "it did not sleep");
+    assert!(matches!(waiting, RendezvousError::Relay(_)), "{waiting}");
+    assert_eq!(relay.requests(), 0);
 }
 
 /// A retried read asks from the same place, and only a message moves it.
