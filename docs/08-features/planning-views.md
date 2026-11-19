@@ -115,8 +115,14 @@ A rolling, day-by-day view of what is coming. [#351](https://github.com/justin13
 > while it hovers; the heading shows the plan's summary, and the drop commits
 > that diff as one undo step (`UpcomingPlanner`). A hover cannot read a
 > drag's payload, so the row records what it lends when the drag starts. ⌥←
-> / ⌥→ preview moving the selection a day (an undated task's first ⌥→ is
-> today), Return commits and Esc cancels. Not built on Apple: the context
+> / ⌥→ preview moving the selection a day from its plan, never from the
+> deadline's day it may be drawn under (an undated task's first ⌥→ is
+> today), Return commits and Esc cancels. A drop whose diff went stale is
+> previewed once more and committed if it moves the same tasks the same way;
+> a changed plan waits for Move or Cancel, and a refused one says so and
+> writes nothing. Upcoming has no capture bar: a line dated past the span, or
+> undated past the no-date lane's cap, would be written and not drawn, so ⌘N
+> opens the capture panel. Not built on Apple: the context
 > filter (the client sends none), and a saved view of Upcoming
 > ([#1229](https://github.com/justin13888/Sunrise/issues/1229)).
 
