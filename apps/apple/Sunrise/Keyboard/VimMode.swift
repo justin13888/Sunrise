@@ -92,24 +92,115 @@ final class VimNormalMode {
 
 /// Per-device keyboard preferences.
 ///
-/// `UserDefaults` under the spec's own key, `editor.vim_mode`, because
-/// `docs/07-clients/parity-matrix.md` says it is a local pref and does not
-/// sync: a Mac someone drives with vim keys and an iPad they do not are the
-/// same account, and the vault is the wrong place to record the difference.
+/// The core's `keyboard.vim_mode`, read through the open vault and written to
+/// this device's overlay (#1182), because `docs/07-clients/parity-matrix.md`
+/// says it is a local pref and does not sync: a Mac someone drives with vim
+/// keys and an iPad they do not are the same account, and the vault's shared
+/// value is the wrong place to record the difference. ``bind(to:)`` loads it
+/// when a vault opens; until then, and in a test that never binds, the value
+/// is the one an earlier build left in `UserDefaults`, or off, and an edit
+/// stays in memory.
 @MainActor
 @Observable
 final class KeyboardPreferences {
     var vimMode: Bool {
-        didSet { defaults.set(vimMode, forKey: KeyboardPreferences.vimModeKey) }
+        didSet { save() }
     }
 
-    /// The spec's key, spelled the spec's way.
-    static let vimModeKey = "editor.vim_mode"
+    /// The core's key, spelled the spec's way.
+    static let vimModeKey = "keyboard.vim_mode"
 
+    /// The `UserDefaults` key an earlier build kept it under.
+    static let legacyVimModeKey = "editor.vim_mode"
+
+    /// Why the last read or write through the core failed, or `nil`.
+    private(set) var errorMessage: String?
+
+    /// Holds the value an earlier build kept, until ``bind(to:)`` moves it
+    /// into the core.
     private let defaults: UserDefaults
+    /// What `migrate_legacy_defaults` writes client settings into.
+    private let directory: URL
+    /// The open vault the preference is read from and written to.
+    @ObservationIgnored private var bridge: CoreBridge?
+    /// Set while ``bind(to:)`` loads, so loading writes nothing back.
+    @ObservationIgnored private var loading = false
+    /// The write in flight; the next one, and ``saved()``, wait for it.
+    @ObservationIgnored private var writing: _Concurrency.Task<Void, Never>?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, directory: URL = AppSettings.standardDirectory) {
         self.defaults = defaults
-        vimMode = defaults.bool(forKey: KeyboardPreferences.vimModeKey)
+        self.directory = directory
+        vimMode = defaults.bool(forKey: Self.legacyVimModeKey)
+    }
+
+    /// Bind to the vault that just opened: move the value an earlier build
+    /// left in `UserDefaults` into it, once, then read the preference back.
+    ///
+    /// A migration the core refuses keeps the old key, and the next bind
+    /// tries again rather than dropping it.
+    func bind(to bridge: CoreBridge) async {
+        self.bridge = bridge
+        errorMessage = nil
+        do {
+            try await migrateLegacyValue(into: bridge)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        do {
+            guard case let .preferences(items) = try await bridge.query(.preferences) else { return }
+            // A vault switched to while this was reading is the one to show.
+            guard self.bridge === bridge else { return }
+            var on = false
+            if case let .bool(value)? = items.first(where: { $0.key == Self.vimModeKey })?.value {
+                on = value
+            }
+            loading = true
+            defer { loading = false }
+            vimMode = on
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Stop writing to the vault: it is closing.
+    func unbind() {
+        bridge = nil
+    }
+
+    /// Wait for the writes in flight to land.
+    func saved() async {
+        await writing?.value
+    }
+
+    /// Write the switch to this device's overlay, after the writes before it.
+    private func save() {
+        guard !loading, let bridge else { return }
+        let command = CoreCommand.setPreference(
+            key: Self.vimModeKey,
+            value: .bool(value: vimMode),
+            target: .device
+        )
+        let previous = writing
+        writing = _Concurrency.Task { @MainActor [weak self] in
+            await previous?.value
+            self?.errorMessage = nil
+            do {
+                _ = try await bridge.submit(command)
+            } catch {
+                self?.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Hand the old value to the core's `migrate_legacy_defaults`, and delete
+    /// the key once it has written it.
+    private func migrateLegacyValue(into bridge: CoreBridge) async throws {
+        guard let old = defaults.object(forKey: Self.legacyVimModeKey) as? Bool else { return }
+        let value = LegacyDefault(key: Self.legacyVimModeKey, value: .bool(value: old))
+        let report = try await bridge.migrateLegacyDefaults([value], directory: directory)
+        if !report.unmapped.contains(Self.legacyVimModeKey) {
+            defaults.removeObject(forKey: Self.legacyVimModeKey)
+        }
     }
 }

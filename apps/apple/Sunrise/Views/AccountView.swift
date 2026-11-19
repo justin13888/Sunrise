@@ -254,7 +254,7 @@ struct AccountView: View {
     /// `Settings → Keyboard`. One toggle, and it is the one the spec names.
     ///
     /// `docs/07-clients/parity-matrix.md` §Vim-mode opt-in calls for a settings
-    /// toggle `editor.vim_mode`; the `?` cheat sheet carries the same switch,
+    /// toggle `keyboard.vim_mode`; the `?` cheat sheet carries the same switch,
     /// because that is where somebody asking "what are the keys" already is.
     /// Both bind to the same ``KeyboardPreferences``, so this is one setting
     /// with two entry points rather than two sources of truth — flip it here

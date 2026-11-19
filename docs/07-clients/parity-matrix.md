@@ -503,7 +503,7 @@ regardless of capture origin, because every surface calls the same parser
 
 ## Vim-mode opt-in
 
-- Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device
+- Settings toggle `keyboard.vim_mode: bool = false`. Persisted as a per-device
   local pref (not synced). Reachable from Settings → Keyboard and from the `?`
   cheat sheet.
 - Available on macOS, and **implemented as a navigational subset** — ten
