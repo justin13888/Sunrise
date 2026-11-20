@@ -50,7 +50,9 @@ crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-pairing         Noise XX device pairing + SAS confirmation
   sunrise-integrations    iCalendar (live) + Google Calendar (not wired; calendar read and write is #924)
   sunrise-core-wasm       The web client's wasm seam over sunrise-core, SQLite in OPFS (ADR-0055)
-  sunrise-private-file    The one owner-only file write every secret on disk goes through
+  sunrise-private-file    The one owner-only file write every secret on disk goes through,
+                          and the blob chunk store the vault and the relay share
+  sunrise-sqlcipher       The wait for SQLCipher to initialise before a process's first key
   sunrise-telemetry       Redacted OpenTelemetry tracing for the relay
   sunrise-http-sig        Per-request device signatures over canonical JSON
   sunrise-test-seed       The one SUNRISE_FUZZ_SEED every randomised harness resolves

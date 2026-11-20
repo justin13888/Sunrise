@@ -22,7 +22,6 @@
 )]
 
 pub mod backup;
-pub mod blob_store;
 pub mod db;
 pub mod migrations;
 pub mod oplog;
@@ -38,10 +37,12 @@ pub mod sync_local;
 mod vault_fixtures;
 
 pub use backup::{BackupKind, VaultBackup};
-pub use blob_store::{BlobStore, BlobStoreError};
-pub use db::{ensure_cipher_ready, Db, DbError};
+pub use db::{Db, DbError};
 pub use migrations::{current_storage_v, MIGRATIONS};
 pub use oplog::{OpLog, OpLogError, ParkReason, ParkedCount, ParkedEnvelope, Parking, PARKED_KIND};
+/// The vault's blob store. It lives in `sunrise-private-file` so the relay,
+/// which keeps the same layout, can use it without depending on this crate.
+pub use sunrise_private_file::{BlobStore, BlobStoreError};
 pub use sync_local::{Outbox, OutboxEntry, SyncLocalError};
 
 /// Re-export of `STORAGE_V` from `sunrise-cbor` for callers that don't

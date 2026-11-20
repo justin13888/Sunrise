@@ -8,7 +8,7 @@ status: accepted
 > the default: one SQLite database (`store/` + `relay_log/`) and a
 > local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
 > one implementation, `blob::fs::FsBlobs`, keeps chunks in
-> `sunrise_storage::BlobStore`). Several relay nodes over one Postgres database
+> `sunrise_private_file::BlobStore`). Several relay nodes over one Postgres database
 > are built as an opt-in (`store/postgres/`); there is no object store, and the
 > "managed" sections below describe a deployment that does not exist. Sections
 > that describe built behaviour are marked **(implemented)**.

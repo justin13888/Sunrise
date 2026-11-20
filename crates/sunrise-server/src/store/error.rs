@@ -140,7 +140,7 @@ pub enum StoreError {
     /// SQLCipher would report, whose message blames an empty key (issue
     /// #521). Terminal for the process.
     #[error("{0}")]
-    CipherUnavailable(#[source] sunrise_storage::DbError),
+    CipherUnavailable(#[source] sunrise_sqlcipher::CipherUnavailable),
     /// The database is not encrypted, so there is no key to rotate.
     #[error("the database is not encrypted: set [storage] encrypt = true and start once first")]
     NotEncrypted,

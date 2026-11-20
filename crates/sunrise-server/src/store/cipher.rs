@@ -250,9 +250,9 @@ pub(super) fn file_state(path: &Path) -> Result<FileState, StoreError> {
 /// initialisation, and a key applied in between is refused with "PRAGMA key
 /// requires a key of one or more characters" (issue #521). Every path here
 /// that keys a connection calls this first; the wait is once per process,
-/// and shared with `sunrise-storage`'s vault opens.
+/// and shared with `sunrise-storage`'s vault opens through `sunrise-sqlcipher`.
 pub(super) fn cipher_ready() -> Result<(), StoreError> {
-    sunrise_storage::ensure_cipher_ready().map_err(StoreError::CipherUnavailable)
+    sunrise_sqlcipher::ensure_cipher_ready().map_err(StoreError::CipherUnavailable)
 }
 
 /// Key `conn`. SQLCipher requires this before any other statement touches

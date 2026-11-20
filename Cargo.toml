@@ -240,6 +240,7 @@ sunrise-id = { path = "crates/sunrise-id" }
 sunrise-error = { path = "crates/sunrise-error" }
 sunrise-http-sig = { path = "crates/sunrise-http-sig" }
 sunrise-private-file = { path = "crates/sunrise-private-file" }
+sunrise-sqlcipher = { path = "crates/sunrise-sqlcipher" }
 sunrise-auth = { path = "crates/sunrise-auth" }
 sunrise-cbor = { path = "crates/sunrise-cbor" }
 sunrise-crypto = { path = "crates/sunrise-crypto" }
