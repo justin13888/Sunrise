@@ -144,6 +144,56 @@ pub fn open_vault(seed: u64) -> BenchVault {
     }
 }
 
+/// Seed `n_tasks` tasks into a fresh vault through [`seed_tasks`], then close
+/// it, and return the directory that holds it.
+///
+/// Nothing holds the vault open afterwards: the seeding connection is dropped
+/// once the write-ahead log has been checkpointed into `vault.db`, so a
+/// [`sunrise_core::Core::open`] on the directory (with [`core_config`] and
+/// [`bench_unlock`]) is the only connection, as it is when an app launches.
+/// The directory is removed when the returned [`TempDir`] drops.
+///
+/// # Panics
+/// Panics if seeding or the checkpoint fails.
+#[must_use]
+pub fn seeded_vault_dir(n_tasks: usize, content_seed: u64) -> TempDir {
+    let mut vault = open_vault(5);
+    seed_tasks(&mut vault, n_tasks, content_seed);
+    vault
+        .db
+        .conn()
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .expect("checkpoint the seeded vault");
+    let BenchVault {
+        engine,
+        db,
+        _dir: dir,
+        ..
+    } = vault;
+    drop(engine);
+    drop(db);
+    dir
+}
+
+/// A [`sunrise_core::CoreConfig`] for the vault in `vault_dir`, offline, on
+/// the same fixed clock every seeded vault was written under and a seeded RNG.
+#[must_use]
+pub fn core_config(vault_dir: &Path) -> sunrise_core::CoreConfig {
+    sunrise_core::CoreConfig::with_clock(
+        vault_dir.to_path_buf(),
+        "0.0.0+bench",
+        Arc::new(FixedClock(FIXED_NOW_MS)),
+        Arc::new(SeededRng::new(6)),
+    )
+}
+
+/// The unlock every seeded vault opens under: [`VAULT_ROOT_KEY_BYTES`], the
+/// device's own identity.
+#[must_use]
+pub fn bench_unlock() -> sunrise_core::Unlock {
+    sunrise_core::Unlock::Passphrase(VaultRootKey::from_bytes(VAULT_ROOT_KEY_BYTES))
+}
+
 /// Build the `i`-th synthetic [`TaskDraft`] from a content RNG.
 ///
 /// Titles carry two common searchable words; every 100th task additionally
