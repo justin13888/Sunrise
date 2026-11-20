@@ -102,8 +102,10 @@ pub(super) fn invalid<T: std::fmt::Debug>(r: Result<T, EngineError>, why: &str) 
     }
 }
 
+/// A fresh, fully migrated in-memory vault under the key [`engine`] uses; see
+/// [`db_root`].
 pub(super) fn db() -> Db {
-    Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
+    db_root([0xab; 32])
 }
 
 pub(super) fn context_rows(e: &Engine, db: &Db) -> Vec<ContextRow> {
@@ -477,8 +479,22 @@ pub(super) static BEFORE_STREAM_CIVIL_TIMES: std::sync::LazyLock<Vec<crate::feat
             .collect()
     });
 
+/// A fresh, fully migrated in-memory vault keyed by `root`.
+///
+/// Migrating one from version 0 is most of what a proptest case used to
+/// cost (issue #1203), so the process migrates one template per root, once,
+/// and each call copies its pages ([`Db::open_memory_copy`]). Nothing ever
+/// writes to a template, so every copy starts as [`Db::open_memory`] would
+/// have.
 pub(super) fn db_root(root: [u8; 32]) -> Db {
-    Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
+    static TEMPLATES: std::sync::LazyLock<PLMutex<std::collections::HashMap<[u8; 32], Db>>> =
+        std::sync::LazyLock::new(PLMutex::default);
+    let key = VaultRootKey::from_bytes(root);
+    let mut templates = TEMPLATES.lock();
+    let template = templates
+        .entry(root)
+        .or_insert_with(|| Db::open_memory(&key).unwrap());
+    Db::open_memory_copy(template, &key).unwrap()
 }
 
 pub(super) fn engine_seeded(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {

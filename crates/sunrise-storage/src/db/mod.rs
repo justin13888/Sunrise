@@ -248,6 +248,38 @@ impl Db {
         })
     }
 
+    /// Open an in-memory DB holding a page-for-page copy of `template`.
+    ///
+    /// For callers that open many throwaway vaults, chiefly test suites:
+    /// [`Self::open_memory`] runs every migration from version 0, and SQLite
+    /// re-parses the whole schema as each migration's DDL runs, so a test
+    /// that builds a vault per proptest case spends most of its time there
+    /// (issue #1203). Migrate one vault with [`Self::open_memory`] and copy
+    /// it through SQLite's backup API instead; the copy is keyed with
+    /// `vault_root` and runs under the same pragmas, and starts from whatever
+    /// `template` holds, schema and rows alike.
+    ///
+    /// `template` must be keyed with `vault_root`: SQLCipher refuses to copy
+    /// pages between databases under different keys. Like
+    /// [`Self::open_memory`], the result is never backed up.
+    pub fn open_memory_copy(template: &Self, vault_root: &VaultRootKey) -> Result<Self, DbError> {
+        let mut conn = Connection::open_in_memory()?;
+        Self::apply_sqlcipher_key(&conn, vault_root)?;
+        Self::apply_pragmas(&conn)?;
+        // Every page in one step: nothing else holds either connection.
+        rusqlite::backup::Backup::new(&template.conn, &mut conn)?.run_to_completion(
+            i32::MAX,
+            std::time::Duration::ZERO,
+            None,
+        )?;
+        Ok(Self {
+            conn,
+            path: None,
+            taken_backup: None,
+            created: true,
+        })
+    }
+
     /// Key `path` and apply the pragmas, but run no migration and check no
     /// version.
     ///

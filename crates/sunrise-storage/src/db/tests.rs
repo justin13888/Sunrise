@@ -35,6 +35,48 @@ fn open_in_memory_initializes_schema() {
     assert_eq!(v, u32::from(STORAGE_V));
 }
 
+/// The whole of `sqlite_master`, in a stable order: what a schema comparison
+/// reads.
+fn schema_of(db: &Db) -> Vec<(String, String, Option<String>)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// A copy is what a fresh migration would have produced, runs under the
+/// connection pragmas a fresh open sets, and is its own database: a write to
+/// it leaves the template as it was.
+#[test]
+fn a_memory_copy_is_a_migrated_vault_independent_of_its_template() {
+    let template = Db::open_memory(&vault_key()).unwrap();
+    let fresh = Db::open_memory(&vault_key()).unwrap();
+    let mut copy = Db::open_memory_copy(&template, &vault_key()).unwrap();
+
+    assert_eq!(schema_of(&copy), schema_of(&fresh));
+    let v: u32 = copy
+        .conn()
+        .query_row("SELECT storage_v FROM schema_meta", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(v, u32::from(STORAGE_V));
+    let pragma = |db: &Db, name: &str| -> i64 {
+        db.conn()
+            .query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    for name in ["foreign_keys", "auto_vacuum", "busy_timeout", "synchronous"] {
+        assert_eq!(pragma(&copy, name), pragma(&fresh, name), "PRAGMA {name}");
+    }
+
+    copy.with_tx(|tx| tx.execute_batch("CREATE TABLE only_in_the_copy (x)"))
+        .unwrap();
+    assert_eq!(schema_of(&template), schema_of(&fresh));
+}
+
 #[test]
 fn open_persistent_round_trips() {
     let dir = tempfile::tempdir().unwrap();
