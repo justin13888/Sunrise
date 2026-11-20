@@ -377,9 +377,12 @@ cheap. Widening past these six is a separate cost decision. The scope is
 enforced by the `-p <crate>` in `mise.toml`'s `mutants` task and in `ci.yml`'s
 matrix, and nowhere else.
 
-`sunrise-client-core` is the one unscoped crate that is pure, deterministic
-logic, so it is the first candidate for a seventh floor, and it stays out for
-now (#763). The nightly cannot yet record the floor it already owes:
+`sunrise-client-core` is pure, deterministic logic and stays out for now
+(#763). It is not the only unscoped crate of that kind: `sunrise-http-sig`
+(request signing), `sunrise-pairing` (the Noise handshake and SAS) and
+`sunrise-wire-protocol` (framing and CBOR) have no tokio, network or I/O
+dependency either, and they are the next scope additions (#769), with their
+floors recorded only after #518 lands. The nightly cannot yet record the floor it already owes:
 `sunrise-core`'s 24 shards still time out at the job's 120 minutes (`ci.yml`'s
 `Mutation coverage` comment), and #518 waits for a nightly in which all of them
 complete. A floor seeded while the crate the scope exists for has none would
