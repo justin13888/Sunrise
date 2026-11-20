@@ -377,6 +377,25 @@ cheap. Widening past these six is a separate cost decision. The scope is
 enforced by the `-p <crate>` in `mise.toml`'s `mutants` task and in `ci.yml`'s
 matrix, and nowhere else.
 
+`sunrise-client-core` stays out for now (#763). Only its pure half is
+deterministic logic: its default `relay` feature pulls in tokio,
+`sunrise-relay-client` and `sunrise-sync/sse`, and the `--all-features` run
+would mutate that half too. It is not the only unscoped crate with pure logic:
+`sunrise-http-sig` (request signing), `sunrise-pairing` (the Noise handshake
+and SAS) and `sunrise-wire-protocol` (framing and CBOR) have no tokio, network
+or I/O dependency at all, and they are the next scope additions (#769), with their
+floors recorded only after #518 lands. The nightly cannot yet record the floor it already owes:
+`sunrise-core`'s 24 shards still time out at the job's 120 minutes (`ci.yml`'s
+`Mutation coverage` comment), and #518 waits for a nightly in which all of them
+complete. A floor seeded while the crate the scope exists for has none would
+buy cost before the measurement the scope was built to make. Revisit it once
+#518 has recorded that floor. The change is then `-p sunrise-client-core` in
+both places above, a matrix row and its `--expect-shards` entry, and a floor
+seeded from one complete pass. `sunrise-cli`, `sunrise-integrations`,
+`sunrise-private-file` and `sunrise-core-wasm` stay unscored with no such
+trigger: they are a binary, I/O wrappers and a thin seam rather than core
+logic.
+
 `.cargo/mutants.toml`'s `exclude_globs` names six crates it would be actively
 wrong to score, and those exclusions are reasoned rather than convenient — the
 UniFFI seam (`sunrise-core-bindings`) is half Swift and cannot be scored
