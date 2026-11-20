@@ -113,6 +113,11 @@ pub struct ServerConfig {
     /// private temporary directory the state creates and removes when its
     /// last clone drops. [`ServerConfig::resolved_blob_root`] holds the rule.
     pub blob_root: Option<PathBuf>,
+    /// The `[blobs]` table: where attachment ciphertext lives (ADR-0062 §6,
+    /// §7). The filesystem tree under [`ServerConfig::blob_root`] unless it
+    /// says `backend = "s3"`.
+    #[serde(default)]
+    pub blobs: super::blobs::BlobsConfig,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
     /// origin is permitted, which is the correct default for a relay whose
     /// only client today is native.
@@ -325,6 +330,9 @@ pub enum ConfigError {
     /// A `[storage]` backend that cannot be opened as written.
     #[error(transparent)]
     Backend(#[from] super::storage::BackendError),
+    /// A `[blobs]` backend that cannot be opened as written.
+    #[error(transparent)]
+    Blobs(#[from] super::blobs::BlobsConfigError),
 }
 
 impl ServerConfig {
@@ -408,6 +416,7 @@ impl ServerConfig {
             obs.validate()?;
         }
         self.validate_backend()?;
+        self.blobs.validate()?;
         Ok(())
     }
 
@@ -420,7 +429,9 @@ impl ServerConfig {
     /// # Errors
     /// Each [`BackendError`](super::storage::BackendError) the keys earn.
     pub fn validate_backend(&self) -> Result<(), super::storage::BackendError> {
-        let has_blob_root = self.resolved_blob_root().is_some();
+        // An object store is shared by every node already, so Postgres needs
+        // no shared blob mount beside it.
+        let has_blob_root = self.resolved_blob_root().is_some() || self.blobs.is_object_store();
         self.backend.validate(self.sqlite_encrypt, has_blob_root)
     }
 
@@ -537,6 +548,7 @@ impl Default for ServerConfig {
             sqlite_key_file: None,
             backend: super::storage::BackendConfig::default(),
             blob_root: None,
+            blobs: super::blobs::BlobsConfig::default(),
             account_delete_grace_days: default_thirty_days(),
             gc_grace_days: default_thirty_days(),
             pending_upload_ttl_hours: default_pending_upload_ttl_hours(),
@@ -578,20 +590,6 @@ impl ServerConfig {
             self.sqlite_key_file.as_deref(),
             self.sqlite_path.as_deref().and_then(Path::parent),
         )
-    }
-
-    /// The blob root this config names: [`ServerConfig::blob_root`], else
-    /// `blobs` beside the database file. `None` for an in-memory store with no
-    /// root set, which has no directory of its own to put blobs beside; the
-    /// state then keeps a private temporary one.
-    #[must_use]
-    pub fn resolved_blob_root(&self) -> Option<PathBuf> {
-        self.blob_root.clone().or_else(|| {
-            self.sqlite_path
-                .as_deref()
-                .and_then(Path::parent)
-                .map(|dir| dir.join("blobs"))
-        })
     }
 }
 
@@ -822,32 +820,5 @@ mod tests {
             ..apns
         });
         assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
-    }
-
-    /// A named root wins; with none, blobs go beside the database file; an
-    /// in-memory store with none resolves to no path at all, never to a
-    /// fixed one every server on the machine would share.
-    #[test]
-    fn the_blob_root_is_the_named_one_else_beside_the_database() {
-        let named = ServerConfig {
-            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
-            blob_root: Some("/srv/blobs".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            named.resolved_blob_root(),
-            Some(PathBuf::from("/srv/blobs"))
-        );
-
-        let beside = ServerConfig {
-            sqlite_path: Some("/var/lib/sunrise/sunrise.db".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            beside.resolved_blob_root(),
-            Some(PathBuf::from("/var/lib/sunrise/blobs"))
-        );
-
-        assert_eq!(ServerConfig::default().resolved_blob_root(), None);
     }
 }

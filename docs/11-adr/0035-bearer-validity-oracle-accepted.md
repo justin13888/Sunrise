@@ -181,7 +181,7 @@ question — which is what happened.
   record; nothing further is owed.
 - **No new configuration key.** `require_device_sig` keeps its single meaning and
   its derivation from `oidc_issuer`
-  (`crates/sunrise-server/src/config/model.rs:467-470#device_sig_required`).
+  (`crates/sunrise-server/src/config/model.rs:478-481#device_sig_required`).
 
 ## What would force revisiting this
 

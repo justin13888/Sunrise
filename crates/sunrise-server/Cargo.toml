@@ -90,6 +90,12 @@ tokio-postgres = { version = "0.7", default-features = false, features = ["runti
 deadpool-postgres = { version = "0.14", default-features = false, features = ["rt_tokio_1"] }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
+# AWS Signature Version 4 for the S3-compatible blob backend (`blob/s3/sign.rs`,
+# #482): HMAC-SHA256 over SHA-256 digests. Both versions are already in the
+# lock through other members, and the requests ride the `hyper` client the
+# JWKS fetcher and APNs use, so the object store adds no SDK and no new crate.
+hmac = "0.12"
+sha2 = { workspace = true, features = ["std"] }
 # The private blob root a state with neither `blob_root` nor a database file
 # keeps for its lifetime (`state.rs`), so no two of them share a tree.
 tempfile = "3"

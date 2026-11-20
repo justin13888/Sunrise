@@ -139,6 +139,9 @@ pub struct FileConfig {
     /// type. Absent, no trace is exported; written, `endpoint` is required and
     /// every other key defaults.
     pub observability: Option<super::ObservabilityConfig>,
+    /// The `[blobs]` table, deserialized straight into the model's type.
+    /// Absent, blobs stay on the filesystem under `[storage] data_dir`.
+    pub blobs: Option<super::BlobsConfig>,
 }
 
 impl FileConfig {
@@ -177,6 +180,9 @@ impl FileConfig {
         }
         if let Some(v) = self.observability {
             base.observability = Some(v);
+        }
+        if let Some(v) = self.blobs {
+            base.blobs = v;
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
@@ -472,6 +478,47 @@ mod file_tests {
                 "https://admin.example".to_string()
             ]
         );
+    }
+
+    /// `[blobs]` overlays whole; absent, blobs stay on the filesystem; an
+    /// unknown key or backend is refused, and the S3 keys earlier drafts put
+    /// under `[storage]` stay refused there.
+    #[test]
+    fn the_blobs_table_overlays_and_refuses_what_it_does_not_know() {
+        use super::super::{BlobBackendKind, BlobsConfig};
+        let cfg = FileConfig::parse(
+            "[blobs]\nbackend = \"s3\"\ns3_endpoint = \"http://127.0.0.1:9000\"\n\
+             s3_bucket = \"sunrise\"\ns3_region = \"us-east-1\"\n\
+             s3_credentials_file = \"/etc/sunrise/s3.toml\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(
+            cfg.blobs,
+            BlobsConfig {
+                backend: BlobBackendKind::S3,
+                s3_endpoint: Some("http://127.0.0.1:9000".into()),
+                s3_bucket: Some("sunrise".into()),
+                s3_region: Some("us-east-1".into()),
+                s3_credentials_file: Some(PathBuf::from("/etc/sunrise/s3.toml")),
+            }
+        );
+        assert_eq!(cfg.validate(true), Ok(()));
+        assert_eq!(
+            ServerConfig::default().blobs.backend,
+            BlobBackendKind::Filesystem
+        );
+        for refused in [
+            "[blobs]\nbackend = \"gcs\"",
+            "[blobs]\ns3_access_key = \"AKIA\"",
+            "[storage]\ns3_bucket = \"b\"",
+        ] {
+            assert!(
+                FileConfig::parse(refused, "t.toml").is_err(),
+                "{refused} must be refused"
+            );
+        }
     }
 
     #[test]

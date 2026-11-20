@@ -1,7 +1,7 @@
 //! Shared server state, held as the kynos `Service`'s context.
 
 use crate::auth::{Metered, NullVerifier, TokenVerifier};
-use crate::blob::{BlobBackend, FsBlobs};
+use crate::blob::{BlobBackend, FsBlobs, S3Blobs};
 use crate::config::{ServerConfig, StorageBackend};
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
@@ -130,6 +130,9 @@ pub enum StartError {
     /// A `[storage]` backend that cannot be opened as written.
     #[error(transparent)]
     Backend(#[from] crate::config::BackendError),
+    /// The `[blobs]` object store: its keys or its credentials file.
+    #[error(transparent)]
+    Blobs(#[from] crate::blob::S3OpenError),
     /// A Postgres backend asked of a constructor that cannot connect to one.
     #[error("[storage] backend = \"postgres\" is opened by ServerState::open")]
     NeedsOpen,
@@ -245,17 +248,23 @@ impl ServerState {
                  signing keeps writing"
             );
         }
-        // Never one fixed path in the shared temp dir: another user's
-        // directory there refuses writes, and two servers would share a tree.
-        let (blob_root, blob_scratch) = match config.resolved_blob_root() {
-            Some(root) => (root, None),
-            None => {
-                let dir = tempfile::Builder::new()
-                    .prefix("sunrise-blobs-")
-                    .tempdir()
-                    .map_err(StartError::BlobRoot)?;
-                (dir.path().to_path_buf(), Some(Arc::new(dir)))
+        let (blobs, blob_scratch): (Arc<dyn BlobBackend>, _) = match config.blobs.backend {
+            crate::config::BlobBackendKind::S3 => {
+                (Arc::new(S3Blobs::from_config(&config.blobs)?), None)
             }
+            // Never one fixed path in the shared temp dir: another user's
+            // directory there refuses writes, and two servers would share a
+            // tree.
+            crate::config::BlobBackendKind::Filesystem => match config.resolved_blob_root() {
+                Some(root) => (Arc::new(FsBlobs::new(root)), None),
+                None => {
+                    let dir = tempfile::Builder::new()
+                        .prefix("sunrise-blobs-")
+                        .tempdir()
+                        .map_err(StartError::BlobRoot)?;
+                    (Arc::new(FsBlobs::new(dir.path())), Some(Arc::new(dir)))
+                }
+            },
         };
         let metrics = Metrics::new();
         process_metrics(&metrics, clock.now_ms());
@@ -267,7 +276,7 @@ impl ServerState {
             store,
             metrics,
             in_flight: crate::metrics::Occupancy::new(),
-            blobs: Arc::new(FsBlobs::new(blob_root)),
+            blobs,
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
             drain: crate::drain::Drain::new(),
