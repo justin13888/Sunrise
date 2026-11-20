@@ -16,15 +16,25 @@ import XCTest
 extension SunriseUITestCase {
     /// Attach a screenshot of the app under a stable, sortable name.
     ///
-    /// `app.screenshot()` rather than `XCUIScreen.main.screenshot()`: on macOS
-    /// the latter captures the whole display, which means whatever else the
-    /// developer had open. Scoping to the application keeps the artifact to
-    /// the thing being reviewed.
+    /// On macOS, the app's front window rather than the app: with macOS 26 and
+    /// Xcode 27, `app.screenshot()` returns the whole display (menu bar,
+    /// desktop, Dock, whatever else the developer had open), exactly as
+    /// `XCUIScreen.main.screenshot()` does. `tools/screenshots/readme.sh`
+    /// copies the macOS frame only while the line below captures the first
+    /// window (it greps for that call, so this comment does not spell it), as
+    /// a display capture would put the operator's screen at a path meant to
+    /// be committed. On iOS the app is the screen, so `app.screenshot()` is
+    /// already the frame wanted.
     ///
     /// `.keepAlways` because the default discards attachments from *passing*
     /// tests, and a passing walk is exactly when the images are wanted.
     func shot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        #if os(macOS)
+        let screenshot = app.windows.firstMatch.screenshot()
+        #else
+        let screenshot = app.screenshot()
+        #endif
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
