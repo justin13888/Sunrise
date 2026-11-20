@@ -2307,8 +2307,10 @@ jobs:
         # a file under `crates/<name>/`, because Cargo fixes that layout. A
         # `../` path has one reading and a dangling one fails; a bare filename
         # has as many readings as there are directories, so it is declined,
-        # counted and listable rather than guessed at. The extension set is
-        # closed, or `task.update` and `Task.blocks` read as paths. The script
+        # counted and listable rather than guessed at — except a bare
+        # `name.rs:N` no anchor claims, whose line nothing could check, which
+        # fails; write the repository path. The extension set is closed, or
+        # `task.update` and `Task.blocks` read as paths. The script
         # carries its own self-test and runs it as a precondition.
         #
         # A citation may also name the item it means —
