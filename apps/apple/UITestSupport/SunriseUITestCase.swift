@@ -57,6 +57,16 @@ class SunriseUITestCase: XCTestCase {
     /// run exports `TEST_RUNNER_SUNRISE_UI_TEST_RELAY`. Passed as a build
     /// setting after the action it never reaches the runner, and the test
     /// skips.
+    ///
+    /// **Each run needs a fresh relay process.** The self-host `NullVerifier`
+    /// maps every bearer to one account, and that account's recovery blob is
+    /// write-once: a second founding is refused with `409
+    /// RECOVERY_BLOB_EXISTS`. A relay that has been seeded once — by an
+    /// earlier run, or by the other platform's suite — cannot be seeded
+    /// again, and the code it was first seeded with died with that run's
+    /// scratch directory. So start the relay with its default in-memory store
+    /// and restart it before every `xcodebuild test`, the macOS and iOS
+    /// suites included.
     static let relayVariable = "SUNRISE_UI_TEST_RELAY"
 
     /// Relaunch against the relay ``relayVariable`` names, wait for the
@@ -88,7 +98,13 @@ class SunriseUITestCase: XCTestCase {
                 || manager.fileExists(atPath: failure.path(percentEncoded: false))
         }
         if let reason = try? String(contentsOf: failure, encoding: .utf8) {
-            XCTFail("the harness could not seed \(relay): \(reason)", file: file, line: line)
+            XCTFail(
+                "the harness could not seed \(relay): \(reason). A relay seeded before "
+                    + "refuses a second founding (RECOVERY_BLOB_EXISTS): restart it, with its "
+                    + "in-memory store, before every run",
+                file: file,
+                line: line
+            )
         }
         XCTAssertTrue(settled, "the harness seeded \(relay) within a minute", file: file, line: line)
         return try String(contentsOf: code, encoding: .utf8)

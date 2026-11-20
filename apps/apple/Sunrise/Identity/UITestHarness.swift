@@ -64,6 +64,8 @@ enum UITestHarness {
     /// environment (``RelaySeed``). It must run the self-host `NullVerifier`,
     /// the one configuration exempt from the recovery step-up, which is what
     /// lets ``stepUpBearer(arguments:)`` stand in for the browser sign-in.
+    /// That verifier has one account and its recovery blob is write-once, so
+    /// a relay can be seeded only once: each run needs a fresh relay process.
     ///
     /// Under this flag the session is the single-vault one, with its vault at
     /// `scratch/vault`, its settings at `scratch/settings` pointing at the
