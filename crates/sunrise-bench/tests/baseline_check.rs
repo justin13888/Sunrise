@@ -2,7 +2,10 @@
 //! run, and names the directory it looked for (#366). Its verdict against the
 //! recorded baseline is held here too (#731): a metric over the tolerance
 //! fails naming its key, a baseline it cannot read or parse fails, and a
-//! metric with nothing recorded is skipped rather than failed.
+//! metric with nothing recorded is skipped rather than failed. So is
+//! `--compare`'s, the same-runner A/B of a base and a head (#474): the head
+//! over the tolerance fails, a bench only the head has is skipped, a bench the
+//! head did not run fails, and with no tolerance nothing fails on a move.
 //!
 //! Driven through the built binary rather than its functions, because the
 //! defect was in what the process reported and returned: the missing
@@ -88,6 +91,8 @@ fn expected_dirs() -> Vec<&'static str> {
         "plan_preview/ripple",
         "plan_preview/cross_day",
         "plan_preview/auto_place",
+        "cold_start/today_10000",
+        "rss/steady_10000",
     ]
 }
 
@@ -244,4 +249,101 @@ fn an_unreadable_baseline_fails_the_check() {
     let (ok, stdout) = run_check_at(criterion.path(), &baseline, TOLERANCE_PCT);
     assert!(!ok, "--check passed with no baseline to read:\n{stdout}");
     assert!(stdout.contains("cannot read"), "{stdout}");
+}
+
+fn run_compare(base: &Path, head: &Path, tolerance_pct: Option<&str>) -> (bool, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_baseline"));
+    cmd.arg("--compare").arg(base).arg(head);
+    if let Some(t) = tolerance_pct {
+        cmd.arg(t);
+    }
+    let out = cmd.output().expect("run baseline");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn compare_fails_a_head_twice_its_base_and_names_the_metric() {
+    let base = complete_run(SAMPLE);
+    let head = complete_run(SAMPLE_2X);
+
+    let (ok, stdout) = run_compare(base.path(), head.path(), Some(TOLERANCE_PCT));
+    assert!(!ok, "--compare passed a 2x regression:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("::error::{SUBMIT_P99} regressed +100.0%")),
+        "the regressed key is not named:\n{stdout}"
+    );
+}
+
+#[test]
+fn compare_passes_an_unchanged_head() {
+    let base = complete_run(SAMPLE);
+    let head = complete_run(SAMPLE);
+
+    let (ok, stdout) = run_compare(base.path(), head.path(), Some(TOLERANCE_PCT));
+    assert!(ok, "--compare failed an unchanged head:\n{stdout}");
+    assert!(!stdout.contains("::error::"), "{stdout}");
+}
+
+#[test]
+fn compare_without_a_tolerance_reports_the_widest_move_and_passes() {
+    let base = complete_run(SAMPLE);
+    let head = complete_run(SAMPLE_2X);
+
+    for tolerance in [None, Some("")] {
+        let (ok, stdout) = run_compare(base.path(), head.path(), tolerance);
+        assert!(ok, "--compare judged with no tolerance:\n{stdout}");
+        // Both of `submit`'s percentiles doubled; the first in table order,
+        // its p50, is the one named.
+        assert!(
+            stdout.contains("widest move +100.0% (submit_create_task_p50_us)"),
+            "the widest move is not reported:\n{stdout}"
+        );
+        assert!(stdout.contains("reported, not judged"), "{stdout}");
+    }
+}
+
+#[test]
+fn compare_skips_a_bench_only_the_head_has() {
+    let base = tempfile::tempdir().unwrap();
+    for dir in expected_dirs()
+        .into_iter()
+        .filter(|d| *d != "rss/steady_10000")
+    {
+        write_sample(base.path(), dir);
+    }
+    let head = complete_run(SAMPLE);
+
+    let (ok, stdout) = run_compare(base.path(), head.path(), Some(TOLERANCE_PCT));
+    assert!(ok, "--compare failed on a bench the base lacks:\n{stdout}");
+    assert!(
+        stdout.contains("rss_steady_10k_tasks_p99_mib: not in the base — skipped"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compare_fails_when_the_head_did_not_run_a_bench() {
+    let base = complete_run(SAMPLE);
+    let head = tempfile::tempdir().unwrap();
+    for dir in expected_dirs().into_iter().filter(|d| *d != "sync_session") {
+        write_sample(head.path(), dir);
+    }
+
+    // With no tolerance too: an incomplete head is never a pass.
+    let (ok, stdout) = run_compare(base.path(), head.path(), None);
+    assert!(!ok, "--compare passed an incomplete head:\n{stdout}");
+    assert!(stdout.contains("sync_session/new/sample.json"), "{stdout}");
+}
+
+#[test]
+fn compare_rejects_a_tolerance_that_is_not_a_percentage() {
+    let base = complete_run(SAMPLE);
+    let head = complete_run(SAMPLE);
+
+    let (ok, stdout) = run_compare(base.path(), head.path(), Some("ten"));
+    assert!(!ok, "--compare accepted `ten`:\n{stdout}");
+    assert!(stdout.contains("not a non-negative percentage"), "{stdout}");
 }

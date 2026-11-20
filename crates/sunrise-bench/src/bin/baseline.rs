@@ -29,6 +29,17 @@
 //!   row names is present. Both are printed in either mode; only `--check`
 //!   fails on them, because merging the results of `cargo bench --bench
 //!   submit` alone is a legitimate partial update.
+//! - `baseline --compare BASE_DIR HEAD_DIR [TOLERANCE_PCT]` — compare two
+//!   Criterion output directories taken on one machine, the base's and the
+//!   head's, so runner variance cancels (#474). The head must be complete; a
+//!   bench only the head has is reported and skipped. With no tolerance it
+//!   reports every move and the widest one, which is how an A/A run measures
+//!   the spread the CI tolerance is chosen from
+//!   (`docs/10-cross-cutting/testing.md` §Perf-bench CI integration).
+//!
+//! Not every metric is a time. `rss` records bytes through a custom Criterion
+//! measurement, so its `sample.json` holds bytes where the others hold
+//! nanoseconds, and its row's [`Unit`] converts accordingly.
 //!
 //! On the tolerance: `docs/10-cross-cutting/testing.md` specifies a 5% gate.
 //! That figure assumes stable hardware. On GitHub's shared runners, run-to-run
@@ -54,13 +65,26 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+// Beside this file rather than in `src/bin/`, where Cargo would take it for a
+// binary of its own.
+#[path = "baseline/compare.rs"]
+mod compare;
+use compare::{check_against, compare_main};
+
 /// Default regression tolerance, per `testing.md`.
 const DEFAULT_TOLERANCE_PCT: f64 = 5.0;
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().collect();
     let check_mode = raw.iter().any(|a| a == "--check");
-    let args: Vec<String> = raw.into_iter().filter(|a| a != "--check").collect();
+    let compare_mode = raw.iter().any(|a| a == "--compare");
+    let args: Vec<String> = raw
+        .into_iter()
+        .filter(|a| a != "--check" && a != "--compare")
+        .collect();
+    if compare_mode {
+        return compare_main(&args);
+    }
     let criterion_dir = args
         .get(1)
         .cloned()
@@ -129,72 +153,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Compare `metrics` against the recorded baseline for `platform`.
-///
-/// Every metric here is a latency, so *higher is worse* and only upward moves
-/// are regressions. A metric with no recorded baseline (`null`, or a platform
-/// we have never recorded) is reported and skipped rather than treated as a
-/// pass or a failure — there is nothing to compare against, and silently
-/// passing would let an unrecorded platform drift forever.
-fn check_against(
-    baseline_path: &Path,
-    platform: &str,
-    metrics: &[(String, f64)],
-    tolerance_pct: f64,
-) -> ExitCode {
-    let Ok(text) = std::fs::read_to_string(baseline_path) else {
-        println!("baseline: cannot read {}", baseline_path.display());
-        return ExitCode::FAILURE;
-    };
-    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
-        println!("baseline: {} is not valid JSON", baseline_path.display());
-        return ExitCode::FAILURE;
-    };
-    let recorded = doc.get("platforms").and_then(|p| p.get(platform));
-
-    let mut regressions = Vec::new();
-    let mut compared = 0usize;
-    for (key, current) in metrics {
-        let previous = recorded
-            .and_then(|r| r.get(key))
-            .and_then(serde_json::Value::as_f64);
-        let Some(previous) = previous else {
-            println!("  {key}: no baseline for {platform} — skipped");
-            continue;
-        };
-        if previous <= 0.0 {
-            println!("  {key}: baseline is not positive ({previous}) — skipped");
-            continue;
-        }
-        compared += 1;
-        let delta_pct = (current - previous) / previous * 100.0;
-        let verdict = if delta_pct > tolerance_pct {
-            regressions.push((key.clone(), previous, *current, delta_pct));
-            "REGRESSION"
-        } else if delta_pct < -tolerance_pct {
-            "improved"
-        } else {
-            "ok"
-        };
-        println!("  {key}: {previous:.3} -> {current:.3} ({delta_pct:+.1}%) {verdict}");
-    }
-
-    if compared == 0 {
-        println!(
-            "baseline: nothing comparable for {platform}; not failing on an empty comparison."
-        );
-        return ExitCode::SUCCESS;
-    }
-    if regressions.is_empty() {
-        println!("baseline: {compared} metric(s) within {tolerance_pct:.0}% tolerance.");
-        return ExitCode::SUCCESS;
-    }
-    for (key, prev, cur, pct) in &regressions {
-        println!("::error::{key} regressed {pct:+.1}% ({prev:.3} -> {cur:.3})");
-    }
-    ExitCode::FAILURE
-}
-
 /// Build-target platform key, e.g. `linux-x86_64` or `darwin-aarch64`.
 fn platform_key() -> String {
     let os = match std::env::consts::OS {
@@ -211,6 +169,9 @@ enum Unit {
     Us,
     /// Milliseconds.
     Ms,
+    /// Mebibytes. The bench's `sample.json` holds bytes where the others hold
+    /// nanoseconds (`benches/rss.rs`).
+    MiB,
 }
 
 /// One directory Criterion writes, and the baseline keys its percentiles land
@@ -327,6 +288,22 @@ const BENCHES: &[Bench] = &[
         p50: None,
         p99: "plan_preview_auto_place_p99_ms",
         unit: Unit::Ms,
+    },
+    // Vault open through the first Today result, over 10k tasks
+    // (`performance-budgets.md` §Cold start, which budgets a p50 too).
+    Bench {
+        dir: "cold_start/today_10000",
+        p50: Some("cold_start_today_10k_tasks_p50_ms"),
+        p99: "cold_start_today_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+    // The process's resident set with a 10k-task vault open and answering
+    // reads (`performance-budgets.md` §Memory ceiling).
+    Bench {
+        dir: "rss/steady_10000",
+        p50: None,
+        p99: "rss_steady_10k_tasks_p99_mib",
+        unit: Unit::MiB,
     },
 ];
 
@@ -451,6 +428,7 @@ fn metrics_for(bench: &Bench, p50_ns: f64, p99_ns: f64) -> Vec<(String, f64)> {
     let convert = |ns: f64| match bench.unit {
         Unit::Us => round2(ns / 1_000.0),
         Unit::Ms => round2(ns / 1_000_000.0),
+        Unit::MiB => round2(ns / 1_048_576.0),
     };
     bench
         .p50
@@ -553,6 +531,21 @@ mod tests {
         // `ws_handshake_p99_ms`.
         let s = metrics_for(row("sync_session"), 0.0, 1_234_567.0);
         assert_eq!(s, vec![("sync_session_p99_ms".to_string(), 1.23)]);
+        // cold_start: both percentiles, in ms.
+        let cold = metrics_for(row("cold_start/today_10000"), 150_000_000.0, 420_000_000.0);
+        assert_eq!(
+            cold,
+            vec![
+                ("cold_start_today_10k_tasks_p50_ms".to_string(), 150.0),
+                ("cold_start_today_10k_tasks_p99_ms".to_string(), 420.0),
+            ]
+        );
+        // rss: the sample holds bytes, so 96 MiB of them reads as 96.0.
+        let rss = metrics_for(row("rss/steady_10000"), 0.0, 96.0 * 1_048_576.0);
+        assert_eq!(
+            rss,
+            vec![("rss_steady_10k_tasks_p99_mib".to_string(), 96.0)]
+        );
     }
 
     fn row(dir: &str) -> &'static Bench {

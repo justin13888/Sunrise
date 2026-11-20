@@ -81,3 +81,11 @@ harness = false
 [[bench]]
 name = "plan_preview"
 harness = false
+
+[[bench]]
+name = "cold_start"
+harness = false
+
+[[bench]]
+name = "rss"
+harness = false

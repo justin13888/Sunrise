@@ -281,6 +281,42 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
   within a week, and then it protects nothing. Promoting it needs dedicated
   hardware and full-length measurement runs, or a same-runner A/B of the base
   and the head, which cancels the runner from the comparison.
+- **The same-runner A/B** is the `Bench A/B (base vs head)` job in `ci.yml`
+  (#474). In one job on one `ubuntu-latest` runner it benches the base, moves
+  its Criterion output aside, benches the head, and runs
+  `baseline --compare BASE_DIR HEAD_DIR TOLERANCE_PCT`, which compares each
+  metric of the head with the base's rather than with `bench/baseline.json`.
+  The head must be complete, as `--check` requires; a bench only the head has
+  is reported and skipped. It runs after every merge to master, against the
+  head the last successful A/B run on master benched, and on a dispatch,
+  against the `bench_ab_base` input or the dispatched commit's parent. Not
+  against the commit master moved from: the workflow's concurrency group
+  cancels a queued push run whenever a newer one queues, so that commit may be
+  one no run benched, and the commits it brought would never be compared. With
+  no successful run among the last 20, it falls back to the commit master
+  moved from and warns. It never runs on a pull request: two
+  full bench runs cost about twice a `bench-regression` leg, and master is
+  where the slow work runs (#1117).
+- **The A/B tolerance comes from an A/A run.** Running the base and the head
+  in one job cancels the runner's speed, but not its drift within the job. An
+  A/A run measures that drift: dispatch `ci.yml` with `bench_ab_base` set to
+  the dispatched commit, so both halves bench the same code, and the comparison
+  step prints every metric's move and a `widest move` line. The tolerance is
+  chosen above the widest move across the recorded A/A runs and set as
+  `BENCH_AB_TOLERANCE_PCT` in the job; the runs, their spread and the margin
+  are recorded here. **No A/A run is recorded yet**
+  ([#1250](https://github.com/justin13888/Sunrise/issues/1250)), so the
+  variable is empty, and with no tolerance `baseline --compare` reports every
+  move and fails on none. Until then the job fails only on its own terms: a
+  build that fails, or a head that did not run a bench in `baseline.rs`'s
+  table or ran one the table does not name.
+- **Cold start and memory are in the suite.** `cold_start` times `Core::open`
+  through the first `Query::Today` over 10k tasks, and `rss` records the
+  process's resident set with that vault open and answering reads, through a
+  custom Criterion measurement whose unit is bytes
+  ([`performance-budgets.md`](./performance-budgets.md#cold-start-app-launch--first-render-of-today)).
+  Both have rows in `baseline.rs` and keys in `bench/baseline.json`, `null`
+  until a runner records them (#1250).
 - **What does enforce a budget nightly** is the `Sync latency` job: the
   end-to-end harness in `crates/sunrise-e2e/tests/sync_latency.rs`, run in
   release, failing when the commit-to-apply p99 at an RTT the budget covers

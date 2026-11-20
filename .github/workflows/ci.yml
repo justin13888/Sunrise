@@ -15,11 +15,20 @@ on:
     # 04:00 UTC daily.
     - cron: "0 4 * * *"
   workflow_dispatch:
+    inputs:
+      bench_ab_base:
+        description: >-
+          The commit `Bench A/B` compares the dispatched ref against. Empty
+          means its parent. The dispatched ref itself makes an A/A run, which
+          measures the spread of the runner itself.
+        required: false
+        default: ""
 
 # The whole scope this workflow needs, stated where it can be read. Every job
 # below checks out, and `actions/checkout` wants `contents: read` and nothing
-# more. No `run:` step in this file reads `GITHUB_TOKEN` and none reads a
-# secret. Two actions read the token without being asked to — `oven-sh/setup-bun`
+# more. One `run:` step reads `GITHUB_TOKEN` — `bench-ab`'s base choice, which
+# lists earlier runs of this workflow under a job-level grant that says why —
+# and none reads a secret. Two actions read the token without being asked to — `oven-sh/setup-bun`
 # and `taiki-e/install-action` each default an input to `github.token` — and
 # both spend it on public GitHub API reads to dodge the anonymous rate limit,
 # which a `contents: read` token already satisfies.
@@ -1030,6 +1039,133 @@ jobs:
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
+
+  # The comparison that can gate (#474): the base and the head benched one
+  # after the other in one job on one runner, then compared with each other
+  # rather than with a number recorded on other hardware at another time, so
+  # the runner's speed cancels out. What is left is the runner's drift within
+  # the job, and an A/A run measures that: dispatch this workflow with
+  # `bench_ab_base` set to the dispatched commit, and the comparison step
+  # prints every metric's move and the widest one. The tolerance is chosen
+  # from that spread and recorded in docs/10-cross-cutting/testing.md
+  # §Perf-bench CI integration.
+  #
+  # Until an A/A run has been recorded, BENCH_AB_TOLERANCE_PCT is empty and the
+  # comparison reports without judging any move (#1250). It still fails, on its
+  # own terms, when the head did not run a bench in `baseline.rs`'s table or
+  # ran one the table does not name, as `bench-regression`'s does.
+  #
+  # After the merge, never on a pull request (#1117): two full bench runs cost
+  # about twice `bench-regression`'s leg, and master is where the slow work runs.
+  # On a push the base is the head the last successful `bench-ab` on master
+  # benched, not the commit master moved from: the workflow-level concurrency
+  # group cancels a queued push run whenever a newer one queues, so the commit
+  # master moved from may be one no run ever benched, and the commits it brought
+  # would never be compared. On a dispatch the base is the `bench_ab_base`
+  # input, or the dispatched commit's parent.
+  bench-ab:
+    name: Bench A/B (base vs head)
+    runs-on: ubuntu-latest
+    # Not observed on a runner yet. Two `cargo bench` runs of the suite at
+    # `bench-regression`'s sizes, each about that job's 12 minutes, the second
+    # compiling only what the head changed; 90 leaves room for both to run
+    # slower than that.
+    timeout-minutes: 90
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    # `actions: read` on top of the workflow's `contents: read`, for one step:
+    # the base choice lists this workflow's earlier push runs on master and
+    # reads which of them finished this job. Read-only; nothing here writes
+    # through the token.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      # The sizes `baseline.rs` records, as in `bench-regression`.
+      SUNRISE_BENCH_COMPACT_TASKS: "10000"
+      SUNRISE_BENCH_REBUILD_TASKS: "10000"
+      SUNRISE_BENCH_FTS_TASKS: "10000"
+      # Empty until an A/A run on this runner is recorded (#1250); then the
+      # tolerance testing.md derives from it, and the job gates.
+      BENCH_AB_TOLERANCE_PCT: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # The base is any earlier commit, so the whole history.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, as `bench-regression` is, and
+          # for the same reasons.
+          shared-key: rust
+          save-if: false
+      - name: Choose the base
+        id: base
+        # On a push: the newest of the last 20 completed push runs on master
+        # whose `Bench A/B` job succeeded and whose head is an ancestor of
+        # this one. A queued run the concurrency group cancelled never ran
+        # this job, so it is passed over, and the commits it carried are
+        # compared here instead of nowhere. A failed comparison is passed over
+        # too, so a range that failed stays under comparison until a run
+        # passes. With no such run in the window (the first run, or twenty
+        # failures in a row) it falls back to the commit master moved from,
+        # and says so.
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.bench_ab_base }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: Bench A/B (base vs head)
+        run: |
+          if [ "$EVENT" = push ]; then
+            base=""
+            runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=master&event=push&status=completed&per_page=20" \
+              --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.head_sha)\"")
+            while read -r id sha; do
+              [ -n "$id" ] || continue
+              git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || continue
+              conclusion=$(gh api --paginate "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                --jq ".jobs[] | select(.name == env.JOB_NAME) | .conclusion")
+              if [ "$conclusion" = success ]; then
+                base="$sha"
+                echo "Last benched head: $sha (run $id)"
+                break
+              fi
+            done <<< "$runs"
+            if [ -z "$base" ]; then
+              echo "::warning::no earlier successful Bench A/B run found; comparing against the commit master moved from"
+              base="$BEFORE"
+            fi
+          else
+            base="${INPUT_BASE:-HEAD^}"
+          fi
+          sha=$(git rev-parse --verify --quiet "${base}^{commit}") || {
+            echo "::error::no commit to compare against: '$base'"
+            exit 1
+          }
+          echo "Base $sha, head $(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Bench the base
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          git checkout --quiet --detach "$BASE"
+          cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
+          mv target/criterion "$RUNNER_TEMP/criterion-base"
+      - name: Bench the head
+        run: |
+          git checkout --quiet --detach "$GITHUB_SHA"
+          cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
+      - name: Compare the head with the base
+        run: >-
+          cargo run -q -p sunrise-bench --bin baseline --
+          --compare "$RUNNER_TEMP/criterion-base" target/criterion "$BENCH_AB_TOLERANCE_PCT"
 
   # The end-to-end sync budget, measured: two cores and a real relay on
   # loopback, injected RTT, ten thousand ops per RTT, p99 against 500 ms
