@@ -17,6 +17,10 @@ op envelopes stay in the metadata database instead of moving to the object
 store. **Leaves** [ADR-0060](./0060-relay-database-encryption-at-rest.md) as the
 SQLite backend's at-rest story; a Postgres backend's is the operator's.
 
+**Amended (2026-11):** on a node fed by the bus, the bus is the only publisher;
+the accepting node no longer also publishes locally. The amendment note in §2
+holds the ordering argument.
+
 ## Context
 
 Every piece of relay state is process-local, so exactly one process can serve
@@ -107,8 +111,22 @@ eviction, and blob two-phase commit.
 The node that accepts a batch appends it to the durable log and, **in the same
 transaction**, issues `NOTIFY sunrise_relay, '<account_h>:<stream_id>:<frame_id>'`.
 Postgres delivers a notification only when its transaction commits, so no node
-is ever told about a frame that rolled back. The accepting node also publishes
-into its own `RelayHub` exactly as today.
+is ever told about a frame that rolled back.
+
+**Amended (2026-11, #481):** this section first said the accepting node also
+publishes into its own `RelayHub` exactly as today, beside the bus. It does
+not: on a node fed by the bus, the bus is the only publisher, and the
+accepting node hears its own frame through its own notice like every other
+node. A local publish beside the bus breaks the ordering guarantee below:
+frame 11, accepted here, would be published at once, while frame 10, committed
+a moment earlier on another node, arrives later through the notice; a client
+that drops between the two resumes after 11 and is never sent 10. With the bus
+alone every node publishes a channel in id order, because each append takes a
+per-channel advisory lock before it draws its id, so commit order is id order.
+The cost is one notice round trip of latency on the accepting node. A single
+process, which has no bus, publishes locally, holding the channel's append and
+publish together so it too publishes in id order. The frame's author rides in
+`relay_frames.from_conn`, so a node still drops a session's own frames.
 
 A node that receives a notice for a channel it has live subscribers on reads
 `relay_frames` for that channel after the highest frame id it has already

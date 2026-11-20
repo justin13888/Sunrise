@@ -5,7 +5,8 @@
 //!
 //! - **Rates** go through [`LimiterStore`], a trait, so a deployment running
 //!   several relays behind one balancer can share them (#364). [`MemoryStore`]
-//!   is the single-node implementation and the only one today.
+//!   is the single-node implementation, and `store::postgres::PgLimiter` the
+//!   shared one (ADR-0062 §5).
 //! - **Concurrency** — open SSE streams, open blob uploads — is a count of
 //!   things this process is holding, released when it lets go of them. That is
 //!   per-node by nature, so [`Gate`] and [`UploadLedger`] are plain types.
@@ -26,6 +27,18 @@ pub trait LimiterStore: Send + Sync + std::fmt::Debug {
 
     /// Whether one unit would be admitted, charging nothing.
     async fn peek(&self, key: &str, quota: Quota, now_ms: u64) -> Outcome;
+
+    /// Forget every cell that has refilled by `now_ms`, returning how many
+    /// went. A refilled cell decides exactly as no cell, so this changes no
+    /// decision.
+    ///
+    /// The maintenance pass calls it, for a store with no bound of its own.
+    /// [`MemoryStore`] bounds itself under pressure instead, which is the
+    /// default's nothing.
+    async fn sweep(&self, now_ms: u64) -> Result<u64, String> {
+        let _ = now_ms;
+        Ok(0)
+    }
 }
 
 /// How many keys [`MemoryStore`] tracks before it starts forgetting.
@@ -219,11 +232,71 @@ impl UploadLedger {
     }
 }
 
+/// The decisions every [`LimiterStore`] must make alike, written once and run
+/// against each implementation: [`MemoryStore`] here, the shared Postgres one
+/// in its own tests.
+#[cfg(test)]
+pub(crate) mod conformance {
+    use super::super::bucket::Quota;
+    use super::LimiterStore;
+
+    const T0: u64 = 1_704_067_200_000;
+
+    /// Run every check against a store holding no cell.
+    pub(crate) async fn run(store: &dyn LimiterStore) {
+        // A burst to the limit and no further; the first refusal is marked
+        // once; another key is untouched.
+        let q = Quota::per_minute(5);
+        for left in (0..5).rev() {
+            let o = store.take("a", q, 1, T0).await;
+            assert!(o.allowed);
+            assert_eq!(o.remaining, left);
+        }
+        let refused = store.take("a", q, 1, T0).await;
+        assert!(!refused.allowed && refused.first_refusal);
+        assert_eq!(refused.retry_after_ms, 12_000, "one unit every 12 s");
+        assert!(!store.take("a", q, 1, T0 + 1).await.first_refusal);
+        assert!(store.take("b", q, 1, T0).await.allowed, "per key");
+
+        // One unit back per interval, exactly on it.
+        assert!(!store.take("a", q, 1, T0 + 11_999).await.allowed);
+        assert!(store.take("a", q, 1, T0 + 12_000).await.allowed);
+        assert!(!store.take("a", q, 1, T0 + 12_000).await.allowed);
+
+        // A peek charges nothing, and sees what a take would.
+        let fresh = store.peek("c", q, T0).await;
+        assert!(fresh.allowed);
+        assert_eq!(fresh.remaining, 5);
+        store.take("c", q, 1, T0).await;
+        assert_eq!(store.peek("c", q, T0).await.remaining, 4);
+        assert_eq!(store.peek("c", q, T0).await.remaining, 4, "a peek is free");
+        assert!(!store.peek("a", q, T0 + 12_000).await.allowed);
+
+        // A cost above the bucket is admitted from a full one and leaves debt.
+        assert!(store.take("d", q, 10, T0).await.allowed);
+        let debt = store.take("d", q, 1, T0).await;
+        assert!(!debt.allowed);
+        assert_eq!(debt.retry_after_ms, 72_000, "ten units out, six to refill");
+
+        // Forgetting refilled cells changes no decision.
+        store.sweep(T0 + 3_600_000).await.unwrap();
+        let after = store.take("a", q, 1, T0 + 3_600_000).await;
+        assert!(after.allowed);
+        assert_eq!(after.remaining, 4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const T0: u64 = 1_704_067_200_000;
+
+    /// The in-process store makes the decisions every store owes.
+    #[tokio::test]
+    async fn the_memory_store_passes_the_conformance_suite() {
+        conformance::run(&MemoryStore::new()).await;
+    }
 
     /// Two keys never share a bucket.
     #[tokio::test]

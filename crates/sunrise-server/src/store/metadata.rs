@@ -10,9 +10,10 @@
 //! can see it, rather
 //! than in every handler.
 //!
-//! [`Store`], the SQLite database, is the first implementation and the only one
-//! today. Its methods never await, so moving behind the trait changes no
-//! timing on the single-binary deployment.
+//! [`Store`], the SQLite database, is the single-binary implementation. Its
+//! methods never await, so moving behind the trait changes no timing on the
+//! single-binary deployment. [`PgStore`](super::postgres::PgStore) is the one
+//! several relay nodes share.
 //!
 //! Errors are typed. The three refusals a caller acts on —
 //! [`MetadataError::SignupDisabled`], [`MetadataError::NotFound`] and
@@ -319,6 +320,31 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         now_ms: u64,
         caps: DurableCaps,
     ) -> Result<Appended, MetadataError>;
+    /// [`relay_append`](Self::relay_append), recording that the session
+    /// connection `from` published the frame.
+    ///
+    /// A backend whose frames reach other nodes keeps `from` beside the frame,
+    /// so the node that delivers it can drop it from its author's own stream
+    /// as the accepting node does. One that serves a single node needs
+    /// nothing of it: the accepting node publishes with `from` in hand, which
+    /// is what the default does by ignoring it.
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_append_from(
+        &self,
+        from: crate::relay::ConnId,
+        key: StreamKey,
+        bytes: &[u8],
+        heads: &[FrameHead],
+        n_ops: u64,
+        ops_h: Option<&[u8; 32]>,
+        batch_id: u64,
+        now_ms: u64,
+        caps: DurableCaps,
+    ) -> Result<Appended, MetadataError> {
+        let _ = from;
+        self.relay_append(key, bytes, heads, n_ops, ops_h, batch_id, now_ms, caps)
+            .await
+    }
     /// [`Store::relay_replay_after`].
     async fn relay_replay_after(
         &self,
@@ -343,6 +369,15 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
     /// connection's lock — so a caller on the async runtime runs it on a
     /// blocking thread.
     async fn ping(&self, deadline: Duration) -> Result<(), MetadataError>;
+
+    /// Take the lead for one maintenance pass, or `None` when another node
+    /// holds it and this one should skip the pass (ADR-0062 §5).
+    ///
+    /// The lead lasts while the returned guard lives. A backend one process
+    /// owns is always its own leader, which is the default.
+    async fn lead_maintenance(&self) -> Result<Option<Box<dyn Send>>, MetadataError> {
+        Ok(Some(Box::new(())))
+    }
 
     /// The SQLite store behind this seam, where it is one.
     ///

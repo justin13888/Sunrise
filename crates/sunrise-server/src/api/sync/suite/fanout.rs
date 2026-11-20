@@ -17,6 +17,27 @@ async fn a_subscribed_stream_receives_a_published_batch() {
     assert!(body.contains("\"kind\":\"ops\""), "no fan-out in: {body}");
 }
 
+/// A live frame carries its log id as its SSE `id:`, as a replayed one does
+/// (ADR-0062 §2, #481), so a stream that drops after it resumes past it on
+/// any node rather than replaying everything since its last replayed frame.
+#[tokio::test]
+async fn a_live_frame_carries_its_log_id() {
+    let client = Client::new(ServerConfig::default());
+    let reader = establish(&client).await;
+    let writer = establish(&client).await;
+    subscribe(&client, &reader, None).await;
+    assert_eq!(publish(&client, &writer, vec![], 1).await, StatusCode::OK);
+
+    let (body, published) = tokio::join!(read(&client, &reader, &[]), async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        publish(&client, &writer, vec![], 2).await
+    });
+    assert_eq!(published, StatusCode::OK);
+    assert!(body.contains("id: 1"), "the replayed frame: {body}");
+    let live = body.split("caught_up").nth(1).expect("a caught_up marker");
+    assert!(live.contains("id: 2"), "the live frame's log id: {body}");
+}
+
 /// `sunrise_sync_fanout_latency_seconds` (#366): a batch fanned out to a
 /// stream that is already open is timed once, and the histogram reaches
 /// the scrape.

@@ -39,10 +39,10 @@
 //! # Portability
 //!
 //! The history is an ordered list of `(id, name, step)` and the only state is
-//! one integer, which is the shape a second backend can carry: a Postgres
-//! store records the same ids in a one-row table and applies its own
-//! dialect's step for each, so both backends share one version numbering.
-//! Nothing here assumes more of SQLite than a transactional integer.
+//! one integer. The Postgres backend carries the same shape on a list of its
+//! own (`store/postgres/migrations.rs`), its version in a one-row table: a
+//! Postgres database starts at that list's baseline, which is this list's
+//! schema at 0008, so the two numberings are separate and say so.
 
 use rusqlite::{Connection, TransactionBehavior};
 

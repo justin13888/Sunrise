@@ -105,6 +105,9 @@ pub struct ServerConfig {
     /// the data dir. `[storage] key_file`.
     #[serde(default)]
     pub sqlite_key_file: Option<PathBuf>,
+    /// `[storage] backend` and the Postgres keys beside it (ADR-0062 §6).
+    #[serde(default)]
+    pub backend: super::storage::BackendConfig,
     /// Self-host blob root. `None` with a database file means `blobs` beside
     /// it, `<sqlite_dir>/blobs`; `None` with an in-memory store means a
     /// private temporary directory the state creates and removes when its
@@ -319,6 +322,9 @@ pub enum ConfigError {
     /// An `[observability]` table the exporter cannot be built from.
     #[error(transparent)]
     Observability(#[from] super::observability::ObservabilityError),
+    /// A `[storage]` backend that cannot be opened as written.
+    #[error(transparent)]
+    Backend(#[from] super::storage::BackendError),
 }
 
 impl ServerConfig {
@@ -401,7 +407,21 @@ impl ServerConfig {
         if let Some(obs) = &self.observability {
             obs.validate()?;
         }
+        self.validate_backend()?;
         Ok(())
+    }
+
+    /// The `[storage]` backend refusals alone: the half of
+    /// [`ServerConfig::validate`] that must hold before the store is opened,
+    /// so a refused config never connects to, or migrates, a shared database.
+    /// [`crate::state::ServerState::open`] runs it first, which covers the
+    /// server and the admin CLI alike.
+    ///
+    /// # Errors
+    /// Each [`BackendError`](super::storage::BackendError) the keys earn.
+    pub fn validate_backend(&self) -> Result<(), super::storage::BackendError> {
+        let has_blob_root = self.resolved_blob_root().is_some();
+        self.backend.validate(self.sqlite_encrypt, has_blob_root)
     }
 
     /// [`ServerConfig::trusted_proxies`] as the networks the router trusts.
@@ -515,6 +535,7 @@ impl Default for ServerConfig {
             sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
             sqlite_encrypt: false,
             sqlite_key_file: None,
+            backend: super::storage::BackendConfig::default(),
             blob_root: None,
             account_delete_grace_days: default_thirty_days(),
             gc_grace_days: default_thirty_days(),

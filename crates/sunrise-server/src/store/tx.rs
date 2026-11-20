@@ -54,17 +54,16 @@ pub async fn metered<F: Future>(fut: F) -> (F::Output, Arc<StoreTime>) {
     (out, time)
 }
 
-/// The store's connection for one operation. Fields drop in order, so the lock
-/// is released before the span ends.
-pub(crate) struct Tx<'a> {
-    conn: parking_lot::MutexGuard<'a, Connection>,
+/// One store operation's span and meter, whatever backend runs it: begun by
+/// [`op`], ended when it drops.
+pub(crate) struct Op {
     _span: sunrise_telemetry::SpanGuard,
     /// When the operation began and whose request it is part of; `None`
     /// outside a [`metered`] scope.
     meter: Option<(tokio::time::Instant, Arc<StoreTime>)>,
 }
 
-impl Drop for Tx<'_> {
+impl Drop for Op {
     fn drop(&mut self) {
         if let Some((started, time)) = self.meter.take() {
             let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -72,6 +71,24 @@ impl Drop for Tx<'_> {
             time.ops.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+/// Begin the operation `name`, a `store.`-prefixed literal naming the method
+/// that calls this: its span opens and its meter starts now.
+pub(crate) fn op(name: &'static str) -> Op {
+    let span = sunrise_telemetry::span(name, []);
+    let meter = SCOPE
+        .try_with(Arc::clone)
+        .ok()
+        .map(|time| (tokio::time::Instant::now(), time));
+    Op { _span: span, meter }
+}
+
+/// The SQLite store's connection for one operation. Fields drop in order, so
+/// the lock is released before the span ends.
+pub(crate) struct Tx<'a> {
+    conn: parking_lot::MutexGuard<'a, Connection>,
+    _op: Op,
 }
 
 impl std::ops::Deref for Tx<'_> {
@@ -92,17 +109,12 @@ impl Store {
     /// Take the connection for the operation `name`, a `store.`-prefixed
     /// literal naming the method that calls this.
     pub(crate) fn tx(&self, name: &'static str) -> Tx<'_> {
-        let span = sunrise_telemetry::span(name, []);
         // Before the lock, so a contended connection's wait is counted as
         // time the request spent in the store, as the span counts it.
-        let meter = SCOPE
-            .try_with(Arc::clone)
-            .ok()
-            .map(|time| (tokio::time::Instant::now(), time));
+        let op = op(name);
         Tx {
             conn: self.conn.lock(),
-            _span: span,
-            meter,
+            _op: op,
         }
     }
 }
