@@ -2,20 +2,140 @@
 //!
 //! [`crate::SunriseCore::recover_account`] runs
 //! `sunrise_client_core::recovery::recover_account`, the same flow `sunrise recover` runs,
-//! over the same relay adapter. This module holds what the seam adds: the
-//! progress events in a shape Swift can switch on, the listener they are
-//! delivered through, the per-word check a 24-word field runs as the user
-//! types, and the mapping from the flow's errors onto [`BindingError`]
-//! variants a client branches on.
+//! over the same relay adapter. This module holds that constructor and what
+//! the seam adds: the progress events in a shape Swift can switch on, the
+//! listener they are delivered through, the per-word check a 24-word field
+//! runs as the user types, and the mapping from the flow's errors onto
+//! [`BindingError`] variants a client branches on.
 //!
 //! Nothing secret crosses back. The 24 words go in once and are dropped on
 //! this side; the identity keys they open never leave Rust.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sunrise_client_core::recovery::{RecoveryFlowError, RecoveryProgress, RestoreError};
+use sunrise_core::{Core, CoreConfig, Unlock};
+use sunrise_crypto::keys::VaultRootKey;
+use zeroize::Zeroize as _;
 
-use crate::BindingError;
+use crate::account::device_label;
+use crate::{background, sse_factory, vault_root_bytes, BindingError, SunriseCore};
+#[cfg(doc)]
+use crate::{recovery, SunriseLogin};
+
+#[uniffi::export(async_runtime = "tokio")]
+impl SunriseCore {
+    /// Restore an account from its recovery code into `vault_dir`, a directory
+    /// holding no vault, and return the vault open.
+    ///
+    /// `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8, by the same
+    /// implementation `sunrise recover` runs
+    /// (`sunrise_client_core::recovery::recover_account`): fetch the account's identity key and its sealed
+    /// blob, open the blob with `code`, create the vault from the restored
+    /// identity under `vault_root`, register this device with the relay as
+    /// `nickname`, and wait up to `catch_up_ms` for the history to replay.
+    /// It returns only once the replay has caught up. A vault that opens empty
+    /// is not a recovery.
+    ///
+    /// `step_up_bearer` must carry a fresh sign-in, which
+    /// [`SunriseLogin::begin_step_up`] produces. The blob route refuses any
+    /// other, as [`BindingError::StepUpRequired`].
+    ///
+    /// `vault_root` is the caller's, for the reason [`Self::open`]'s is: it
+    /// comes from the platform keychain, and this seam does not derive it. It
+    /// is new, because a root is never in a recovery blob. Store it once this
+    /// returns, or once it fails with [`BindingError::RecoveryIncomplete`],
+    /// which is the one failure that has written the vault. After any other
+    /// failure, keeping the root would let the next open mint a fresh, empty
+    /// account in the directory.
+    ///
+    /// `listener` hears each [`recovery::RecoveryStep`]. The
+    /// [`recovery::RecoveryStep::DeviceRegistered`] step carries the relay
+    /// device id the caller must record before starting sync.
+    ///
+    /// The returned vault is not syncing. Start it with [`Self::start_sync`]
+    /// as on any launch.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::BadVaultRoot`], [`BindingError::RecoveryCode`],
+    /// [`BindingError::StepUpRequired`], [`BindingError::RecoveryRefused`]
+    /// (also for a directory that already holds a vault), and
+    /// [`BindingError::RecoveryIncomplete`] (also for a restored vault that
+    /// does not reopen).
+    #[uniffi::constructor(default(catch_up_ms = 60000))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_account(
+        vault_dir: String,
+        vault_root: Vec<u8>,
+        app_version: String,
+        relay_url: String,
+        step_up_bearer: String,
+        code: String,
+        nickname: String,
+        listener: Arc<dyn RecoveryListener>,
+        catch_up_ms: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
+                nickname,
+                catch_up_ms,
+            },
+            forward(listener, None),
+        )
+        .await
+    }
+
+    /// [`Self::recover_account`], with the replay's progress also reported
+    /// to `replay` as n of N where the relay states N (#459).
+    ///
+    /// `listener` hears every step as it does from [`Self::recover_account`],
+    /// [`recovery::RecoveryStep::Replaying`] included. `replay` hears each of
+    /// those replay steps again as a [`recovery::ReplayProgress`], which
+    /// carries the total. A constructor of its own, not a new field or
+    /// listener method, because either of those would change the generated
+    /// Swift the app already compiles against.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::recover_account`].
+    #[uniffi::constructor(default(catch_up_ms = 60000))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_account_with_replay(
+        vault_dir: String,
+        vault_root: Vec<u8>,
+        app_version: String,
+        relay_url: String,
+        step_up_bearer: String,
+        code: String,
+        nickname: String,
+        listener: Arc<dyn RecoveryListener>,
+        replay: Arc<dyn ReplayListener>,
+        catch_up_ms: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        recover_account_reporting(
+            RecoveryRequest {
+                vault_dir,
+                vault_root,
+                app_version,
+                relay_url,
+                step_up_bearer,
+                code,
+                nickname,
+                catch_up_ms,
+            },
+            forward(listener, Some(replay)),
+        )
+        .await
+    }
+}
 
 /// How far a recovery has got. Delivered in order, each at most once except
 /// [`RecoveryStep::Replaying`].
@@ -171,9 +291,126 @@ pub(crate) fn reopen_failed(e: sunrise_core::CoreError) -> BindingError {
     BindingError::RecoveryIncomplete(format!("the vault was restored but did not reopen: {e}"))
 }
 
+/// What [`SunriseCore::recover_account`] and
+/// [`SunriseCore::recover_account_with_replay`] take, less the listeners.
+struct RecoveryRequest {
+    vault_dir: String,
+    vault_root: Vec<u8>,
+    app_version: String,
+    relay_url: String,
+    step_up_bearer: String,
+    code: String,
+    nickname: String,
+    catch_up_ms: u64,
+}
+
+/// The recovery both constructors run, reporting through `progress`.
+async fn recover_account_reporting(
+    request: RecoveryRequest,
+    mut progress: impl FnMut(RecoveryProgress) + Send,
+) -> Result<Arc<SunriseCore>, BindingError> {
+    let RecoveryRequest {
+        vault_dir,
+        vault_root,
+        app_version,
+        relay_url,
+        step_up_bearer,
+        code,
+        nickname,
+        catch_up_ms,
+    } = request;
+    let root = vault_root_bytes(&vault_root)?;
+    let dir = PathBuf::from(vault_dir);
+    sunrise_client_core::recovery::check_recovery_directory(&dir)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+    let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
+        .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+
+    let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
+    cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
+    let bearer = step_up_bearer.clone();
+    let url = relay_url.clone();
+    let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
+        core.sync_credential().set(Some(bearer.clone()));
+        let signer = core.device_signer(relay_device_id);
+        // A link of its own: this core is shut down before the handle the
+        // caller gets is opened, and nothing ever kicks it.
+        core.start_sync(sse_factory(&url, Some(signer), background::SyncLink::new()))
+            .map_err(|e| e.to_string())
+    };
+
+    let mut code = code;
+    let outcome = sunrise_client_core::recovery::recover_account(
+        &relay,
+        &code,
+        cfg,
+        VaultRootKey::from_bytes(root),
+        device_label(nickname),
+        &start_sync,
+        catch_up_ms,
+        &mut progress,
+    )
+    .await;
+    code.zeroize();
+    outcome?;
+
+    // The flow shut its core down, so the vault lock is free: open it
+    // again the way every later launch will, which is also the proof that
+    // the root opens what the recovery wrote. The vault is written and
+    // the device registered by now, so a failure here is still one whose
+    // root the caller must keep.
+    let core = Core::open(
+        CoreConfig::production(dir, app_version),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes(root),
+            paired: None,
+        },
+    )
+    .await
+    .map_err(reopen_failed)?;
+    Ok(SunriseCore::wrap(core))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recovery into `dir` with a code that fails its checksum, which is the
+    /// first thing the flow checks once the directory has passed.
+    async fn recover_into(dir: &std::path::Path) -> BindingError {
+        let request = RecoveryRequest {
+            vault_dir: dir.to_string_lossy().into_owned(),
+            vault_root: vec![7; 32],
+            app_version: "test".into(),
+            // Nothing listens here, and neither path below reaches it.
+            relay_url: "http://127.0.0.1:9".into(),
+            step_up_bearer: "bearer".into(),
+            code: "abandon".into(),
+            nickname: "phone".into(),
+            catch_up_ms: 1_000,
+        };
+        match recover_account_reporting(request, |_| {}).await {
+            Ok(_) => panic!("a one-word code cannot recover anything"),
+            Err(e) => e,
+        }
+    }
+
+    /// The seam runs the shared rule: a stray file gets as far as the code,
+    /// and a written marker is refused before it.
+    #[tokio::test]
+    async fn a_stray_file_passes_and_a_vault_marker_is_refused() {
+        let dir = tempfile::tempdir().expect("a vault dir");
+        std::fs::write(dir.path().join(".DS_Store"), b"stray").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(matches!(err, BindingError::RecoveryCode(_)), "{err:?}");
+
+        std::fs::write(dir.path().join("vault-id"), b"anything\n").expect("write");
+        let err = recover_into(dir.path()).await;
+        assert!(
+            matches!(&err, BindingError::RecoveryRefused(m) if m.contains("already holds a vault")),
+            "{err:?}"
+        );
+    }
 
     #[test]
     fn a_reopen_that_failed_keeps_the_root() {
