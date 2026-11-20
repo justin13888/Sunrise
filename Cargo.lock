@@ -3215,10 +3215,12 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "jiff",
+ "proptest",
  "serde",
  "serde_jcs",
  "serde_json",
  "sunrise-crypto-test-vectors",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
 ]
 

@@ -23,5 +23,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sunrise-crypto-test-vectors = { workspace = true }
+sunrise-test-seed = { workspace = true }
