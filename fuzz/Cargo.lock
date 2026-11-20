@@ -2158,7 +2158,6 @@ dependencies = [
  "tokio-rustls",
  "toml",
  "tracing",
- "webpki-roots",
  "zeroize",
 ]
 

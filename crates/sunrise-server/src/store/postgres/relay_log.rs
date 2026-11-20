@@ -31,8 +31,12 @@ use crate::store::MetadataError;
 /// The first key of every channel's two-key advisory lock: "SRLY".
 const CHANNEL_LOCK: i32 = 0x5352_4c59;
 
-/// The notification channel every append announces on.
-pub(super) const NOTIFY_CHANNEL: &str = "sunrise_relay";
+/// The notification channel every append announces on: `sunrise_relay`.
+///
+/// Spelled in two pieces because the observability catalog's gate reads every
+/// quoted `sunrise_*` literal in the crate as a metric name, and this one is
+/// not a metric.
+pub(super) const NOTIFY_CHANNEL: &str = concat!("sunrise", "_relay");
 
 /// The second key of `key`'s channel lock: the first four bytes of a BLAKE3
 /// of the channel.

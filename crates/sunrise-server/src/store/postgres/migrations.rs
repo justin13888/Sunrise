@@ -308,3 +308,24 @@ pub(super) async fn stamp(client: &Client, v: i32) {
         .await
         .unwrap();
 }
+
+/// The SQLite history this baseline matches. A new SQLite migration fails
+/// [`tests::a_new_sqlite_migration_has_a_postgres_counterpart`] until this
+/// list has its counterpart and this number moves with it: nothing else would
+/// notice the Postgres schema falling behind.
+#[cfg(test)]
+const SQLITE_COVERED: u32 = 8;
+
+#[cfg(test)]
+mod tests {
+    /// The two histories move together.
+    #[test]
+    fn a_new_sqlite_migration_has_a_postgres_counterpart() {
+        assert_eq!(
+            crate::store::migrations::LATEST,
+            super::SQLITE_COVERED,
+            "a SQLite migration was added: add the same change to the Postgres history in \
+             store/postgres/migrations.rs, then move SQLITE_COVERED"
+        );
+    }
+}

@@ -10,9 +10,10 @@
 //! can see it, rather
 //! than in every handler.
 //!
-//! [`Store`], the SQLite database, is the first implementation and the only one
-//! today. Its methods never await, so moving behind the trait changes no
-//! timing on the single-binary deployment.
+//! [`Store`], the SQLite database, is the single-binary implementation. Its
+//! methods never await, so moving behind the trait changes no timing on the
+//! single-binary deployment. [`PgStore`](super::postgres::PgStore) is the one
+//! several relay nodes share.
 //!
 //! Errors are typed. The three refusals a caller acts on —
 //! [`MetadataError::SignupDisabled`], [`MetadataError::NotFound`] and
