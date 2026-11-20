@@ -112,11 +112,10 @@ fn color(raw: &str) -> CmdResult<StreamColor> {
     Ok(c)
 }
 
-/// A note-shaped description from one argument.
+/// A note-shaped description from one argument: one paragraph per
+/// blank-line-separated run, as a task's note is written.
 fn description(text: &str) -> sunrise_domain::NoteBody {
-    sunrise_domain::encode_note_body(&[sunrise_domain::NoteBlock::Paragraph {
-        inline: vec![sunrise_domain::Inline::text(text.trim())],
-    }])
+    sunrise_domain::encode_note_body(&sunrise_domain::note_body_from_plain_text(text))
 }
 
 /// `streams create <name>... [--color c] [--parent <stream>] [--icon i]`.
@@ -732,4 +731,30 @@ async fn skip_routine(ctx: &Ctx<'_>, args: &[String]) -> CmdResult {
         .await?;
     println!("{}  skipped {key}", r.id.to_str());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_domain::{decode_note_body, Inline, NoteBlock};
+
+    fn para(text: &str) -> NoteBlock {
+        NoteBlock::Paragraph {
+            inline: vec![Inline::text(text)],
+        }
+    }
+
+    #[test]
+    fn a_description_is_one_paragraph_per_blank_line_run() {
+        let body = description(" Errands\r\nand chores \r\n\r\nWeekly ");
+        assert_eq!(
+            decode_note_body(&body).blocks,
+            vec![para("Errands\nand chores"), para("Weekly")]
+        );
+    }
+
+    #[test]
+    fn a_description_with_no_words_is_an_empty_note() {
+        assert!(decode_note_body(&description("  \n\n ")).blocks.is_empty());
+    }
 }
