@@ -36,8 +36,8 @@
 //! does not have the write volume to justify a pool, and a single connection
 //! makes "revocation takes effect in the request's transaction" trivially
 //! true. A multi-node deployment puts Postgres behind [`MetadataStore`], the
-//! seam this `Store` is the first implementation of (ADR-0062 §1), and
-//! `ServerState` holds the trait, not this type.
+//! seam this `Store` is the first implementation of (ADR-0062 §1):
+//! [`postgres::PgStore`]. `ServerState` holds the trait, not this type.
 //!
 //! The relay append path is the exception worth knowing about before reading
 //! the paragraph above as the whole story: it takes this same mutex for a
@@ -56,6 +56,7 @@ mod key_bundles;
 mod lifecycle;
 mod metadata;
 mod migrations;
+pub mod postgres;
 mod pragmas;
 pub(crate) mod recovery;
 mod snapshots;

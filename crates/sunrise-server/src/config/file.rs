@@ -14,7 +14,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-use super::ServerConfig;
+use super::{ServerConfig, StorageTable};
 
 // `file_tests` asserts that an unset key keeps the model's default, and reads
 // these through its `use super::*`. The loader itself names none of them: it
@@ -108,30 +108,6 @@ pub struct AuthTable {
     pub jwks_ttl_secs: Option<u64>,
 }
 
-/// The `[storage]` table.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StorageTable {
-    /// Directory holding the SQLite database and the blob tree. Leaving it
-    /// unset keeps the ephemeral in-memory store, which is for tests only.
-    pub data_dir: Option<PathBuf>,
-    /// How long a SQLite statement waits on another connection's lock, in
-    /// milliseconds. Maps to [`ServerConfig::sqlite_busy_timeout_ms`].
-    pub busy_timeout_ms: Option<u64>,
-    /// [`ServerConfig::account_delete_grace_days`].
-    pub account_delete_grace_days: Option<u64>,
-    /// [`ServerConfig::gc_grace_days`].
-    pub gc_grace_days: Option<u64>,
-    /// [`ServerConfig::pending_upload_ttl_hours`].
-    pub pending_upload_ttl_hours: Option<u64>,
-    /// [`ServerConfig::maintenance_interval_secs`].
-    pub maintenance_interval_secs: Option<u64>,
-    /// [`ServerConfig::sqlite_encrypt`].
-    pub encrypt: Option<bool>,
-    /// [`ServerConfig::sqlite_key_file`].
-    pub key_file: Option<PathBuf>,
-}
-
 /// A parsed `sunrise.toml`.
 ///
 /// Every field is optional and overlays [`ServerConfig::default`], so a file
@@ -174,11 +150,8 @@ impl FileConfig {
         })
     }
 
-    /// Overlay this file onto `base`, returning the effective config.
-    ///
-    /// `data_dir` expands to both the SQLite path and the blob root, which is
-    /// the shape the doc promises operators; the two `ServerConfig` fields stay
-    /// separate because tests set them independently.
+    /// Overlay this file onto `base`, returning the effective config. The
+    /// `[storage]` table overlays itself: [`StorageTable::apply`].
     #[must_use]
     pub fn apply(self, mut base: ServerConfig) -> ServerConfig {
         if let Some(v) = self.server.listen {
@@ -227,32 +200,7 @@ impl FileConfig {
         if let Some(v) = self.auth.jwks_ttl_secs {
             base.jwks_default_ttl_secs = v;
         }
-        if let Some(dir) = self.storage.data_dir {
-            base.sqlite_path = Some(dir.join("sunrise.db"));
-            base.blob_root = Some(dir.join("blobs"));
-        }
-        if let Some(v) = self.storage.busy_timeout_ms {
-            base.sqlite_busy_timeout_ms = v;
-        }
-        if let Some(v) = self.storage.account_delete_grace_days {
-            base.account_delete_grace_days = v;
-        }
-        if let Some(v) = self.storage.gc_grace_days {
-            base.gc_grace_days = v;
-        }
-        if let Some(v) = self.storage.pending_upload_ttl_hours {
-            base.pending_upload_ttl_hours = v;
-        }
-        if let Some(v) = self.storage.maintenance_interval_secs {
-            base.maintenance_interval_secs = v;
-        }
-        if let Some(v) = self.storage.encrypt {
-            base.sqlite_encrypt = v;
-        }
-        if let Some(v) = self.storage.key_file {
-            base.sqlite_key_file = Some(v);
-        }
-        base
+        self.storage.apply(base)
     }
 }
 

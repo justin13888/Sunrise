@@ -34,9 +34,10 @@
 //!
 //! Behind [`SessionBackend`], so a relay running as several nodes can keep
 //! them in one shared table and honour a session on a node other than the one
-//! that opened it (ADR-0062 §3). [`MemorySessions`] is the only backend built:
-//! a single process, and every session lost on restart, as before the seam.
-//! [`SessionStore`] is what the handlers hold either way.
+//! that opened it (ADR-0062 §3). [`MemorySessions`] is the single-node
+//! backend: one process, and every session lost on restart, as before the
+//! seam. `store::postgres::PgSessions` is the shared one, a table keyed by a
+//! hash of the id. [`SessionStore`] is what the handlers hold either way.
 
 use crate::auth::Subject;
 use crate::relay::ConnId;
@@ -50,10 +51,13 @@ use sunrise_wire_protocol::{HelloAck, SubscribeEntry};
 /// A session whose client never opened `/sync/events`, or opened it and went
 /// away, is a row nobody will collect otherwise: unlike a socket, an HTTP
 /// operation has no close to hang cleanup on.
-const IDLE_TTL_MS: u64 = 15 * 60 * 1000;
+pub(crate) const IDLE_TTL_MS: u64 = 15 * 60 * 1000;
 
 /// One established sync session.
-#[derive(Debug, Clone)]
+///
+/// Serializable because a shared backend stores it as a row's body
+/// (`store::postgres::PgSessions`); the in-process one never serializes it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     /// Hashed account id — the relay channel namespace for this session.
     pub account: [u8; 16],
@@ -127,8 +131,8 @@ pub type SessionEdit = Box<dyn FnOnce(&mut Session) + Send>;
 /// Where live sessions are kept: the seam ADR-0062 §3 puts a shared table
 /// behind, so a session opened on one relay node is honoured on another.
 ///
-/// [`MemorySessions`] is the single-node implementation and the only one
-/// today. Async because the store a cluster shares is across a network, as
+/// [`MemorySessions`] is the single-node implementation, and
+/// `store::postgres::PgSessions` the shared one. Async because the store a cluster shares is across a network, as
 /// [`crate::api::ratelimit::store::LimiterStore`] is; the in-process one never
 /// awaits. Every method is fallible for the same reason, so a shared backend
 /// adds no signature change.

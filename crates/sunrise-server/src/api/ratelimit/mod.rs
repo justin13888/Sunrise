@@ -110,6 +110,14 @@ impl Limiter {
         }
     }
 
+    /// [`LimiterStore::sweep`]: forget the rate cells that have refilled.
+    ///
+    /// # Errors
+    /// The store's own failure, as text for the maintenance log.
+    pub async fn sweep(&self, now_ms: u64) -> Result<u64, String> {
+        self.store.sweep(now_ms).await
+    }
+
     /// Charge `cost` units of `budget` to the caller's device, or to its
     /// account where it signed with no device.
     ///

@@ -369,6 +369,15 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
     /// blocking thread.
     async fn ping(&self, deadline: Duration) -> Result<(), MetadataError>;
 
+    /// Take the lead for one maintenance pass, or `None` when another node
+    /// holds it and this one should skip the pass (ADR-0062 §5).
+    ///
+    /// The lead lasts while the returned guard lives. A backend one process
+    /// owns is always its own leader, which is the default.
+    async fn lead_maintenance(&self) -> Result<Option<Box<dyn Send>>, MetadataError> {
+        Ok(Some(Box::new(())))
+    }
+
     /// The SQLite store behind this seam, where it is one.
     ///
     /// For what only a single-file database has — `admin backup`'s online

@@ -100,6 +100,11 @@ async fn admin(args: &[String]) -> Result<(), u8> {
 /// On a blocking thread, because every step against the single-binary
 /// backends is database or filesystem I/O that never yields, and one pass at a
 /// time, because the next tick waits for this one to finish.
+///
+/// Only on the node that leads (ADR-0062 §5): a relay running as several nodes
+/// over Postgres runs each pass on whichever node takes the maintenance lock,
+/// and the rest skip it. A single process always leads. The leader also
+/// forgets the shared rate cells that have refilled.
 fn spawn_maintenance(state: ServerState) {
     let every = std::time::Duration::from_secs(state.config.maintenance_interval_secs);
     tokio::spawn(async move {
@@ -107,33 +112,60 @@ fn spawn_maintenance(state: ServerState) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            let state = state.clone();
-            let runtime = tokio::runtime::Handle::current();
-            let pass = tokio::task::spawn_blocking(move || {
-                runtime.block_on(sunrise_server::admin::maintenance::run(
-                    &state,
-                    state.clock.now_ms(),
-                    false,
-                ))
-            })
-            .await;
-            match pass {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => tracing::warn!(
+            let lead = match state.store.lead_maintenance().await {
+                Ok(Some(lead)) => lead,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        ev = "srv.maintenance.failed",
+                        reason = "pass",
+                        cause = %e,
+                        "could not learn which node leads maintenance; retrying at the next interval"
+                    );
+                    continue;
+                }
+            };
+            if let Err(e) = state.limiter.sweep(state.clock.now_ms()).await {
+                tracing::warn!(
                     ev = "srv.maintenance.failed",
                     reason = "pass",
                     cause = %e,
-                    "maintenance pass failed; retrying at the next interval"
-                ),
-                Err(e) => tracing::warn!(
-                    ev = "srv.maintenance.failed",
-                    reason = "pass",
-                    cause = %e,
-                    "maintenance pass did not complete; retrying at the next interval"
-                ),
+                    "could not forget refilled rate cells; retrying at the next interval"
+                );
             }
+            run_pass(&state).await;
+            drop(lead);
         }
     });
+}
+
+/// One maintenance pass, its failure logged.
+async fn run_pass(state: &ServerState) {
+    let state = state.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let pass = tokio::task::spawn_blocking(move || {
+        runtime.block_on(sunrise_server::admin::maintenance::run(
+            &state,
+            state.clock.now_ms(),
+            false,
+        ))
+    })
+    .await;
+    match pass {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!(
+            ev = "srv.maintenance.failed",
+            reason = "pass",
+            cause = %e,
+            "maintenance pass failed; retrying at the next interval"
+        ),
+        Err(e) => tracing::warn!(
+            ev = "srv.maintenance.failed",
+            reason = "pass",
+            cause = %e,
+            "maintenance pass did not complete; retrying at the next interval"
+        ),
+    }
 }
 
 /// Resolves on the first `SIGTERM` or `SIGINT`, then forces on the second.
@@ -209,11 +241,11 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
     };
     let bind = cfg.bind.clone();
 
-    // `ServerState::try_new` installs the self-host `NullVerifier`, which maps
+    // `ServerState::open` installs the self-host `NullVerifier`, which maps
     // every caller to one synthetic account. When the config names an OIDC
     // issuer, the real JWKS-backed verifier replaces it here — that swap is
     // the only difference between self-host and managed at this layer.
-    let mut state = match ServerState::try_new(cfg) {
+    let mut state = match ServerState::open(cfg).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(

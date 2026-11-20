@@ -2,7 +2,7 @@
 
 use crate::auth::{Metered, NullVerifier, TokenVerifier};
 use crate::blob::{BlobBackend, FsBlobs};
-use crate::config::ServerConfig;
+use crate::config::{ServerConfig, StorageBackend};
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
 use crate::store::{MetadataStore, Store, StoreError};
@@ -124,6 +124,15 @@ pub enum StartError {
     /// one could not be created.
     #[error("create a private blob root under the temp dir: {0}")]
     BlobRoot(#[source] std::io::Error),
+    /// The Postgres backend did not open.
+    #[error(transparent)]
+    Postgres(#[from] crate::store::postgres::OpenError),
+    /// A `[storage]` backend that cannot be opened as written.
+    #[error(transparent)]
+    Backend(#[from] crate::config::BackendError),
+    /// A Postgres backend asked of a constructor that cannot connect to one.
+    #[error("[storage] backend = \"postgres\" is opened by ServerState::open")]
+    NeedsOpen,
 }
 
 impl ServerState {
@@ -145,7 +154,13 @@ impl ServerState {
     /// Wrap a [`ServerConfig`], reporting a store that will not open or a
     /// push provider that cannot be built — an APNs key file group or others
     /// can read, say.
+    ///
+    /// SQLite only: a Postgres backend is reached over the network, which
+    /// [`ServerState::open`] does.
     pub fn try_new(config: ServerConfig) -> Result<Self, StartError> {
+        if config.backend.kind == StorageBackend::Postgres {
+            return Err(StartError::NeedsOpen);
+        }
         let key = config.sqlite_key()?;
         let store = Store::open_keyed(
             config.sqlite_path.as_deref(),
@@ -155,6 +170,58 @@ impl ServerState {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
         Self::assemble(config, clock, Arc::new(store), push)
+    }
+
+    /// Wrap a [`ServerConfig`] on the backend its `[storage]` table chose.
+    ///
+    /// SQLite is [`ServerState::try_new`]. Postgres connects, migrates, and
+    /// starts this node's listener on the cluster's relay notices; see
+    /// [`ServerState::on_postgres`].
+    ///
+    /// # Errors
+    /// Each refusal [`ServerState::try_new`] makes, or the Postgres backend's
+    /// own: its files, its connection, a schema a newer release wrote.
+    pub async fn open(config: ServerConfig) -> Result<Self, StartError> {
+        if config.backend.kind == StorageBackend::Sqlite {
+            return Self::try_new(config);
+        }
+        let url_file = config
+            .backend
+            .postgres_url_file
+            .clone()
+            .ok_or(crate::config::BackendError::MissingUrlFile)?;
+        let connect = crate::store::postgres::PgConnect::from_files(
+            &url_file,
+            config.backend.postgres_ca_file.as_deref(),
+        )?;
+        let store = crate::store::postgres::PgStore::open(connect).await?;
+        Ok(Self::on_postgres(config, store, Arc::new(SystemClock))?.0)
+    }
+
+    /// A node of a relay running over the shared database `store` is: its
+    /// metadata, sync sessions and rate cells there, and its hub fed by a
+    /// listener on the cluster's relay notices (ADR-0062). Returns the
+    /// listener too, so a test can stop a node's feed as a crash would.
+    ///
+    /// Needs the runtime: the listener is a task on it.
+    ///
+    /// # Errors
+    /// The push provider or the blob root, as [`ServerState::try_new`].
+    pub fn on_postgres(
+        config: ServerConfig,
+        store: crate::store::postgres::PgStore,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(Self, crate::store::postgres::PgFanout), StartError> {
+        use crate::store::postgres::{PgFanout, PgLimiter, PgSessions};
+        let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
+        let mut state = Self::assemble(config, clock, Arc::new(store.clone()), push)?;
+        let feed = PgFanout::spawn(store.clone(), state.relay.clone());
+        state.relay = state.relay.with_feed(Arc::new(feed.clone()));
+        state.sessions = crate::sync_session::SessionStore::with_backend(Arc::new(
+            PgSessions::new(store.clone()),
+        ));
+        state.limiter = crate::api::ratelimit::Limiter::new(Arc::new(PgLimiter::new(store)));
+        Ok((state, feed))
     }
 
     fn assemble(
