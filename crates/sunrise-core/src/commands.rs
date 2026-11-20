@@ -859,6 +859,19 @@ pub enum WithdrawalOutcome {
     Reinstated,
 }
 
+impl WithdrawalOutcome {
+    /// The wire spelling, `not_author` and so on.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAuthor => "not_author",
+            Self::StillClaimed => "still_claimed",
+            Self::RepairRequired => "repair_required",
+            Self::Reinstated => "reinstated",
+        }
+    }
+}
+
 /// What `Command::WithdrawRevocation` did (ADR-0056 §4–§6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Withdrawal {

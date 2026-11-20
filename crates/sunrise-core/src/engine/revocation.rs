@@ -54,6 +54,7 @@
 //! held epoch of every stream.
 
 use super::revocation_authority::{RevokeAuthority, IDENTITY};
+use super::revocation_withdraw::{pair_heads, release_withdrawn_read_bounds};
 use super::{Engine, EngineError, META_STREAM};
 use crate::bytes::{hex_bytes, hex_short};
 use crate::commands::CommandResult;
@@ -88,76 +89,6 @@ pub(super) struct RevokeLedgerRow {
     /// revocation (migration 0053). A withdrawal is always an ordinary row:
     /// it names no identity and carries no reason.
     pub(super) withdraw: bool,
-}
-
-impl RevokeLedgerRow {
-    /// The pair this row belongs to: `(sender, target, names an identity)`,
-    /// the partition [`Engine::compact_device_revoke_ops`] and
-    /// [`Engine::cap_device_revoke_targets`] use.
-    fn pair(&self) -> (&[u8], &[u8], bool) {
-        (
-            &self.sender,
-            &self.revoked,
-            self.authority_identity_id.is_some(),
-        )
-    }
-
-    /// Whether this row outranks `other` as the head of their pair: the
-    /// greater stamp, then a revocation over a withdrawal (ADR-0056 §2: the
-    /// tie fails closed), then the greater identity, the order
-    /// [`Engine::compact_device_revoke_ops`] keeps by.
-    fn outranks(&self, other: &Self) -> bool {
-        (
-            self.hlc_ms,
-            self.hlc_logical,
-            !self.withdraw,
-            &self.authority_identity_id,
-        ) > (
-            other.hlc_ms,
-            other.hlc_logical,
-            !other.withdraw,
-            &other.authority_identity_id,
-        )
-    }
-}
-
-/// Each pair's head, split by kind (ADR-0056 §2).
-///
-/// The **live** heads are the revocations, in the canonical order `rows`
-/// came in: the rows the fold reads. The **withdrawn** heads are the pairs
-/// whose head is a withdrawal, which contribute nothing to the gate, the
-/// discount or the walk, and which the read-bound release reads.
-///
-/// A lesser row of a pair is dropped here exactly as
-/// [`Engine::compact_device_revoke_ops`] would delete it, so the fold is the
-/// same function of the full ledger as of the compacted one.
-fn pair_heads(rows: Vec<RevokeLedgerRow>) -> (Vec<RevokeLedgerRow>, Vec<RevokeLedgerRow>) {
-    let mut head: std::collections::BTreeMap<(Vec<u8>, Vec<u8>, bool), usize> =
-        std::collections::BTreeMap::new();
-    for (i, row) in rows.iter().enumerate() {
-        let (sender, revoked, named) = row.pair();
-        let key = (sender.to_vec(), revoked.to_vec(), named);
-        match head.get(&key) {
-            Some(&j) if !row.outranks(&rows[j]) => {}
-            _ => {
-                head.insert(key, i);
-            }
-        }
-    }
-    let heads: BTreeSet<usize> = head.into_values().collect();
-    let mut live = Vec::new();
-    let mut withdrawn = Vec::new();
-    for (i, row) in rows.into_iter().enumerate() {
-        if !heads.contains(&i) {
-            continue;
-        }
-        if row.withdraw {
-            withdrawn.push(row);
-        } else {
-            live.push(row);
-        }
-    }
-    (live, withdrawn)
 }
 
 /// What one revocation op claims, as [`Engine::apply_device_revoke`] stores
@@ -1557,77 +1488,8 @@ impl Engine {
                 ])?;
             }
         }
-        self.release_withdrawn_read_bounds(tx, &withdrawn, &register, &live_named, &revokers)?;
+        release_withdrawn_read_bounds(tx, &withdrawn, &register, &live_named, &revokers)?;
         Ok(skipped)
-    }
-
-    /// Release the read bound of each device a withdrawal has reinstated on
-    /// this replica (ADR-0056 §4), and say which.
-    ///
-    /// The bound section of [`Self::refold_device_revocations`] says why the
-    /// bound is a ratchet an unwind never releases. A withdrawal is the one
-    /// thing that does, and only when all three of these hold:
-    ///
-    /// - **(a)** the register this fold just computed does not name the
-    ///   device;
-    /// - **(b)** no live pair names it anywhere in the ledger, gated or not,
-    ///   so an unwound device, which still has its expelled revoker's live
-    ///   claim, stays bounded (ADR-0041 item 5);
-    /// - **(c)** at least one withdrawal naming it comes from a sender the
-    ///   walk does not gate: the sender has no revoker, after the discount,
-    ///   other than the device the row names. So a revoked author cannot
-    ///   release an accomplice it revoked while it was honest.
-    ///
-    /// Per replica, like the bound itself: a replica that learned the author
-    /// was revoked before it saw the withdrawal fails (c) and keeps the
-    /// bound, and one that saw the withdrawal first has already released it.
-    /// That is the non-convergence
-    /// [#1167](https://github.com/justin13888/Sunrise/issues/1167) owns.
-    /// Keys a released device is then sent are not taken back by a later
-    /// revocation of the withdrawal's author; revoke the device again.
-    ///
-    /// A row adopted from a sponsor (`from_sponsor = 1`) is released too.
-    /// The mark exists so that [`Self::release_orphan_read_bounds`] does not
-    /// release a bound before the ledger rows behind it arrive, and (c) is
-    /// itself such a row: the withdrawal is the head of a pair whose
-    /// revocation this replica holds or has compacted away.
-    #[allow(
-        clippy::unused_self,
-        reason = "a step of the fold, reached through the engine the fold runs on"
-    )]
-    fn release_withdrawn_read_bounds(
-        &self,
-        tx: &Transaction<'_>,
-        withdrawn: &[RevokeLedgerRow],
-        register: &std::collections::BTreeMap<Vec<u8>, RevokeLedgerRow>,
-        live_named: &BTreeSet<Vec<u8>>,
-        revokers: &std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
-    ) -> rusqlite::Result<()> {
-        let released: BTreeSet<&Vec<u8>> = withdrawn
-            .iter()
-            .filter(|w| {
-                !register.contains_key(&w.revoked)
-                    && !live_named.contains(&w.revoked)
-                    && !revokers
-                        .get(&w.sender)
-                        .is_some_and(|who| who.iter().any(|r| *r != w.revoked))
-            })
-            .map(|w| &w.revoked)
-            .collect();
-        for device_id in released {
-            let n = tx.execute(
-                "DELETE FROM device_read_bounds WHERE device_id = ?",
-                params![device_id],
-            )?;
-            if n > 0 {
-                tracing::info!(
-                    ev = "core.device.read_bound_released",
-                    subject_h = hex_bytes(&device_id[..device_id.len().min(4)]),
-                    "a withdrawal reinstated a device, so this replica gives it keys again"
-                );
-            }
-        }
-        Ok(())
     }
 
     /// Apply one `device_revoke`, from a peer or from this device's own

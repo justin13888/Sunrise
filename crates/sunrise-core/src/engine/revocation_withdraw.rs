@@ -8,17 +8,153 @@
 //! for a device with a cert here ([`Engine::refold_device_revocations`] does
 //! the release, on the three conditions of ADR-0056 §4).
 
-use super::revocation::WITHDRAW_KIND;
+use super::revocation::{RevokeLedgerRow, WITHDRAW_KIND};
 use super::{Engine, EngineError, META_STREAM};
-use crate::bytes::{hex_short, to16};
+use crate::bytes::{hex_bytes, hex_short, to16};
 use crate::commands::{CommandResult, Withdrawal, WithdrawalOutcome};
 use crate::control_op::DeviceRevokeWithdrawPayload;
 use crate::feature::REVOKE_WITHDRAW_FEATURE;
 use crate::inner_op::{encode_inner_op, InnerOp};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::EntityRef;
 use sunrise_storage::Db;
+
+impl RevokeLedgerRow {
+    /// The pair this row belongs to: `(sender, target, names an identity)`,
+    /// the partition [`Engine::compact_device_revoke_ops`] and
+    /// [`Engine::cap_device_revoke_targets`] use.
+    fn pair(&self) -> (&[u8], &[u8], bool) {
+        (
+            &self.sender,
+            &self.revoked,
+            self.authority_identity_id.is_some(),
+        )
+    }
+
+    /// Whether this row outranks `other` as the head of their pair: the
+    /// greater stamp, then a revocation over a withdrawal (ADR-0056 §2: the
+    /// tie fails closed), then the greater identity, the order
+    /// [`Engine::compact_device_revoke_ops`] keeps by.
+    fn outranks(&self, other: &Self) -> bool {
+        (
+            self.hlc_ms,
+            self.hlc_logical,
+            !self.withdraw,
+            &self.authority_identity_id,
+        ) > (
+            other.hlc_ms,
+            other.hlc_logical,
+            !other.withdraw,
+            &other.authority_identity_id,
+        )
+    }
+}
+
+/// Each pair's head, split by kind (ADR-0056 §2).
+///
+/// The **live** heads are the revocations, in the canonical order `rows`
+/// came in: the rows [`Engine::refold_device_revocations`] reads. The
+/// **withdrawn** heads are the pairs whose head is a withdrawal, which
+/// contribute nothing to the gate, the discount or the walk, and which
+/// [`release_withdrawn_read_bounds`] reads.
+///
+/// A lesser row of a pair is dropped here exactly as
+/// [`Engine::compact_device_revoke_ops`] would delete it, so the fold is the
+/// same function of the full ledger as of the compacted one.
+pub(super) fn pair_heads(
+    rows: Vec<RevokeLedgerRow>,
+) -> (Vec<RevokeLedgerRow>, Vec<RevokeLedgerRow>) {
+    let mut head: BTreeMap<(Vec<u8>, Vec<u8>, bool), usize> = BTreeMap::new();
+    for (i, row) in rows.iter().enumerate() {
+        let (sender, revoked, named) = row.pair();
+        let key = (sender.to_vec(), revoked.to_vec(), named);
+        match head.get(&key) {
+            Some(&j) if !row.outranks(&rows[j]) => {}
+            _ => {
+                head.insert(key, i);
+            }
+        }
+    }
+    let heads: BTreeSet<usize> = head.into_values().collect();
+    let mut live = Vec::new();
+    let mut withdrawn = Vec::new();
+    for (i, row) in rows.into_iter().enumerate() {
+        if !heads.contains(&i) {
+            continue;
+        }
+        if row.withdraw {
+            withdrawn.push(row);
+        } else {
+            live.push(row);
+        }
+    }
+    (live, withdrawn)
+}
+
+/// Release the read bound of each device a withdrawal has reinstated on this
+/// replica (ADR-0056 §4). The last step of
+/// [`Engine::refold_device_revocations`], over what it computed.
+///
+/// The bound section of that fold says why the bound is a ratchet an unwind
+/// never releases. A withdrawal is the one thing that does, and only when all
+/// three of these hold:
+///
+/// - **(a)** the register the fold just computed does not name the device;
+/// - **(b)** no live pair names it anywhere in the ledger, gated or not, so
+///   an unwound device, which still has its expelled revoker's live claim,
+///   stays bounded (ADR-0041 item 5);
+/// - **(c)** at least one withdrawal naming it comes from a sender the walk
+///   does not gate: the sender has no revoker, after the discount, other than
+///   the device the row names. So a revoked author cannot release an
+///   accomplice it revoked while it was honest.
+///
+/// Per replica, like the bound itself: a replica that learned the author was
+/// revoked before it saw the withdrawal fails (c) and keeps the bound, and one
+/// that saw the withdrawal first has already released it. That is the
+/// non-convergence [#1167](https://github.com/justin13888/Sunrise/issues/1167)
+/// owns. Keys a released device is then sent are not taken back by a later
+/// revocation of the withdrawal's author; revoke the device again.
+///
+/// A row adopted from a sponsor (`from_sponsor = 1`) is released too. The
+/// mark exists so that [`Engine::release_orphan_read_bounds`] does not release
+/// a bound before the ledger rows behind it arrive, and (c) is itself such a
+/// row: the withdrawal is the head of a pair whose revocation this replica
+/// holds or has compacted away.
+pub(super) fn release_withdrawn_read_bounds(
+    tx: &Transaction<'_>,
+    withdrawn: &[RevokeLedgerRow],
+    register: &BTreeMap<Vec<u8>, RevokeLedgerRow>,
+    live_named: &BTreeSet<Vec<u8>>,
+    revokers: &BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>,
+) -> rusqlite::Result<()> {
+    let released: BTreeSet<&Vec<u8>> = withdrawn
+        .iter()
+        .filter(|w| {
+            !register.contains_key(&w.revoked)
+                && !live_named.contains(&w.revoked)
+                && !revokers
+                    .get(&w.sender)
+                    .is_some_and(|who| who.iter().any(|r| *r != w.revoked))
+        })
+        .map(|w| &w.revoked)
+        .collect();
+    for device_id in released {
+        let n = tx.execute(
+            "DELETE FROM device_read_bounds WHERE device_id = ?",
+            params![device_id],
+        )?;
+        if n > 0 {
+            tracing::info!(
+                ev = "core.device.read_bound_released",
+                subject_h = hex_bytes(&device_id[..device_id.len().min(4)]),
+                "a withdrawal reinstated a device, so this replica gives it keys again"
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Whether a live revocation names `target`: a pair whose head is a
 /// revocation, from `sender` when one is given and from anyone otherwise.
@@ -249,9 +385,7 @@ impl Engine {
         tracing::info!(
             ev = "core.device.revocation_withdrawn",
             subject_h = hex_short(&target),
-            outcome = ?withdrawal.outcome,
-            read_bound_released = withdrawal.read_bound_released,
-            keys_resent = withdrawal.keys_resent,
+            reason = withdrawal.outcome.as_str(),
             "this device withdrew its own revocation of a device"
         );
         Ok(CommandResult::new(device_id, None, op_id, seq).with_withdrawal(withdrawal))
