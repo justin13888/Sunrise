@@ -53,6 +53,9 @@ pub enum Appended {
         /// Frames retention deleted from the channel to make room, by either
         /// bound, in the same transaction: `sunrise_relay_log_evicted_total`.
         evicted: u64,
+        /// The frame's `relay_frames.id`, which its live fan-out carries as
+        /// the SSE event id.
+        frame_id: u64,
     },
     /// The batch is already stored. Nothing was written and nothing must be
     /// republished: the subscribers that were live for the first copy already
@@ -173,6 +176,7 @@ impl Store {
         Ok(Appended::Fresh {
             first_seen_ms: now_ms,
             evicted,
+            frame_id: u64::try_from(frame_id).unwrap_or(0),
         })
     }
 }
@@ -411,6 +415,7 @@ mod tests {
             Appended::Fresh {
                 first_seen_ms: 1_000,
                 evicted: 0,
+                frame_id: 1,
             }
         );
 

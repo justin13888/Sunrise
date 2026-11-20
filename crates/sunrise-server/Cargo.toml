@@ -78,6 +78,18 @@ sunrise-storage = { workspace = true }
 # Redacted trace export, off unless `[observability]` is written.
 sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
+# The Postgres backends a multi-node relay runs on (ADR-0062, #481): metadata,
+# sessions, the `LISTEN/NOTIFY` fan-out bus and the shared limiter. Inert unless
+# `[storage] backend = "postgres"`; the single-binary relay opens no connection.
+# `tokio-postgres` speaks the protocol natively on the runtime the server
+# already runs, rather than through `libpq` or a second async stack, and its
+# TLS is the `rustls` already in the tree (`store/postgres/tls.rs`).
+# `deadpool-postgres` is its pool: each `MetadataStore` method is one
+# transaction on one pooled connection.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+deadpool-postgres = { version = "0.14", default-features = false, features = ["rt_tokio_1"] }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 # The private blob root a state with neither `blob_root` nor a database file
 # keeps for its lifetime (`state.rs`), so no two of them share a tree.
 tempfile = "3"

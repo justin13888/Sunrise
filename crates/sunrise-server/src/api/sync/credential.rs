@@ -186,7 +186,7 @@ pub async fn session(
         subject: caller.principal.subject.clone(),
         device_id: caller.device.as_ref().map(|d| d.device_id.clone()),
         deadline_ms: caller.principal.expires_at_ms,
-        conn: state.relay.next_conn(),
+        conn: crate::relay::new_conn(),
         negotiated: ack.clone(),
         streams: Vec::new(),
         subscribe_unserved: false,

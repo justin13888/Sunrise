@@ -273,10 +273,18 @@ fn spawn_stream(
                 .iter()
                 .map(|c| (c.device_id, c.last_applied_seq))
                 .collect();
-            let replay = state
-                .store
-                .relay_replay_after((session.account, sid), after.unwrap_or(0), &cursors)
-                .await;
+            // Between the two, on a hub the cluster's bus feeds: the bus then
+            // publishes everything that commits after this, so the read below
+            // and the receiver above still overlap rather than leave a hole.
+            let replay = match state.relay.prime((session.account, sid)).await {
+                Ok(()) => {
+                    state
+                        .store
+                        .relay_replay_after((session.account, sid), after.unwrap_or(0), &cursors)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
             let (frames, gaps) = match replay {
                 Ok(v) => v,
                 Err(e) => {
@@ -466,6 +474,13 @@ async fn live_loop(
                     stream_id: hex::encode(sid),
                     frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
                 });
+                // The log id, as a replayed frame carries it, so a client
+                // that drops here resumes on a position any node can act on.
+                let event = if frame.id > 0 {
+                    event.id(frame.id.to_string())
+                } else {
+                    event
+                };
                 if tx.send(event).await.is_err() {
                     return "peer_gone";
                 }

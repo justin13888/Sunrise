@@ -5,22 +5,24 @@ status: accepted
 # Relay and Blob Storage
 
 > **Implementation status.** The self-host single-binary path is built and is
-> the only one: one SQLite database (`store/` + `relay_log/`) and a
+> the default: one SQLite database (`store/` + `relay_log/`) and a
 > local-filesystem blob root (`api/blobs/` over the `BlobBackend` trait, whose
 > one implementation, `blob::fs::FsBlobs`, keeps chunks in
-> `sunrise_storage::BlobStore`). There is no Postgres, no object store, and no
-> pub/sub; the "managed" sections below describe a deployment that does not
-> exist. Sections that describe built behaviour are marked **(implemented)**.
+> `sunrise_storage::BlobStore`). Several relay nodes over one Postgres database
+> are built as an opt-in (`store/postgres/`); there is no object store, and the
+> "managed" sections below describe a deployment that does not exist. Sections
+> that describe built behaviour are marked **(implemented)**.
 >
 > [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is the design of
 > record for the scaled deployment: the four storage traits, the `LISTEN/NOTIFY`
-> fan-out, shared sessions, and the order they are built in. Three of the four
-> seams are built, each with its single-binary implementation only:
-> `MetadataStore` (`crates/sunrise-server/src/store/metadata.rs`, over SQLite),
-> `BlobBackend` (`crates/sunrise-server/src/blob/mod.rs`, over the filesystem)
-> and `SessionBackend` (`crates/sunrise-server/src/sync_session.rs`, the
-> in-process map). `FanoutBus` is not built, and neither are the Postgres and
-> S3 implementations.
+> fan-out, shared sessions, and the order they are built in. `MetadataStore`
+> (`crates/sunrise-server/src/store/metadata.rs`) and `SessionBackend`
+> (`crates/sunrise-server/src/sync_session.rs`) each have their SQLite or
+> in-process implementation and a Postgres one (`store/postgres/`), and the
+> fan-out bus is the hub's `LiveFeed` seam with its Postgres `LISTEN/NOTIFY`
+> implementation (`store/postgres/fanout.rs`). `BlobBackend`
+> (`crates/sunrise-server/src/blob/mod.rs`) has its filesystem implementation
+> only; the S3 one is #482.
 
 ## Relay model
 
@@ -51,7 +53,9 @@ subscription impossible rather than merely discouraged.
   SQLite database. Op frames are rows in `relay_frames`, not files: see the
   next section.
 - Blobs → local filesystem under the blob root, per account.
-- No S3, no Postgres, no Redis.
+- No S3, no Postgres, no Redis. The opt-in Postgres backend keeps the same
+  tables, in Postgres's dialect, under its own migration history
+  (`store/postgres/migrations.rs`).
 
 ### What the relay database actually holds (implemented)
 
@@ -141,8 +145,9 @@ A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database
 from a literal copy of the pre-versioning DDL, migrates it, and requires the
 same schema a fresh database gets. A schema change is a new entry with the next
-number. The list is `(id, name, step)` over one integer of state, which is what
-a Postgres backend would record in a one-row table to share the numbering.
+number. The Postgres backend keeps the same rules on a list of its own, its
+version in a one-row `schema_version` table; its numbers are not these
+(ADR-0062 §6).
 
 **The `synchronous = NORMAL` trade-off.** Under WAL, `NORMAL` syncs at
 checkpoints rather than at every commit. A crash of the server process loses
@@ -325,7 +330,8 @@ An item that fails is logged as `srv.maintenance.failed` and retried on the next
 pass. The rest of the pass continues. Compaction retention, op-metadata retention
 and audit retention have no implementation.
 
-There is no Postgres, so there is no `fsync = on` to check;
+The single-binary relay has no Postgres, so there is no `fsync = on` to check;
+a Postgres backend's durability settings are its operator's;
 `sunrise-server admin doctor` checks what applies instead (see
 [`self-hosting.md`](./self-hosting.md) §Testing the install). Relay durability is
 governed by the `synchronous = NORMAL` the server sets under WAL, described
@@ -349,9 +355,12 @@ The server sees: blob IDs, sizes, upload/download times, per-device access patte
 
 ## Failure modes
 
-Rows naming S3, Postgres or a push provider describe the unbuilt managed
-deployment. As built, every one of these failures is a local disk or SQLite
-failure: a write error on the relay log increments
+Rows naming S3 or a push provider describe the unbuilt managed deployment. On
+Postgres a failed statement or an exhausted pool is the retryable
+`503 RELAY_STORAGE_UNAVAILABLE` on a request and a retryable `closed` on a
+stream, and a node that loses its notice listener reconnects and re-reads every
+subscribed channel. On the single binary every one of these failures is a local
+disk or SQLite failure: a write error on the relay log increments
 `sunrise_relay_append_failed_total` and the frame is not retained, and a
 `rusqlite` error on a REST route becomes `500 FATAL_INTERNAL` with the
 underlying error deliberately not reflected to the caller.
@@ -360,7 +369,7 @@ underlying error deliberately not reflected to the caller.
 |---|---|
 | S3 outage during write | Op rejected with `RETRY_AFTER`; client retries via outbox |
 | S3 outage during read | Server returns a transient error to the relay subscriber; client retries |
-| Postgres outage | Hard failure for new connections; existing connections drained |
+| Postgres outage | Requests answer `503 RELAY_STORAGE_UNAVAILABLE`, which clients retry; open streams end with a retryable `closed` at their next store read; rate limits admit untracked and log `srv.store.failed` |
 | Push provider outage | Push degrades; clients still pull on next foreground |
 
 ## Self-host filesystem layout (implemented)

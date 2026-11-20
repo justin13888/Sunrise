@@ -66,7 +66,7 @@ pub async fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u
         }
     }
 
-    let outcome = match open(&config_args) {
+    let outcome = match open(&config_args).await {
         Ok(state) => dispatch(&state, &words).await,
         Err(e) => Err(e),
     };
@@ -97,7 +97,7 @@ pub async fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u
 }
 
 /// Resolve the config as the server does and open its store.
-fn open(config_args: &[String]) -> Result<ServerState, (u8, String)> {
+async fn open(config_args: &[String]) -> Result<ServerState, (u8, String)> {
     let cfg = crate::config::load(config_args).map_err(|e| (EX_CONFIG, e.to_string()))?;
     if cfg.sqlite_path.is_none() {
         return Err((
@@ -107,7 +107,9 @@ fn open(config_args: &[String]) -> Result<ServerState, (u8, String)> {
                 .to_owned(),
         ));
     }
-    ServerState::try_new(cfg).map_err(|e| (EX_CONFIG, e.to_string()))
+    ServerState::open(cfg)
+        .await
+        .map_err(|e| (EX_CONFIG, e.to_string()))
 }
 
 async fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
