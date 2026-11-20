@@ -52,11 +52,23 @@ uniffi::custom_type!(EntityRef, String, {
 uniffi::custom_type!(Timestamp, i64, {
     remote,
     lower: |t| t.as_millisecond(),
-    try_lift: |ms: i64| {
-        Timestamp::from_millisecond(ms)
-            .map_err(|e| BindingError::BadTime { value: ms.to_string(), cause: e.to_string() }.into())
-    },
+    try_lift: |ms: i64| timestamp_of_ms(ms).map_err(Into::into),
 });
+
+/// The instant `ms` epoch milliseconds name, for a value the foreign side
+/// passed. The whole range reads as itself, its last second included, which
+/// `Timestamp::from_millisecond` refuses (#1204); only a value past either
+/// end is refused.
+///
+/// # Errors
+///
+/// [`BindingError::BadTime`] past either end of the timestamp range.
+pub(crate) fn timestamp_of_ms(ms: i64) -> Result<Timestamp, BindingError> {
+    sunrise_domain::time::timestamp_at_ms(ms).ok_or_else(|| BindingError::BadTime {
+        value: ms.to_string(),
+        cause: "past the ends of the timestamp range".to_owned(),
+    })
+}
 
 // Civil (zone-less) values keep their ISO-8601 text. `jiff`'s `Display` and
 // `FromStr` are exact inverses for all three, so this is lossless — and the
@@ -289,4 +301,26 @@ pub enum SnoozeSpan {
     OneHour,
     Tomorrow,
     NextWeek,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uniffi::FfiConverter;
+
+    /// #1204: the foreign side's epoch milliseconds lift to the instant they
+    /// name across the whole range, its last second included, and only a
+    /// value past either end is a `BadTime`.
+    #[test]
+    fn a_timestamp_in_the_ranges_last_second_lifts_as_itself() {
+        let last: Timestamp = "9999-12-30T22:00:00.5Z".parse().unwrap();
+        let lift = <Timestamp as FfiConverter<crate::UniFfiTag>>::try_lift;
+        assert_eq!(lift(253_402_207_200_500).unwrap(), last);
+        assert_eq!(timestamp_of_ms(253_402_207_200_500).unwrap(), last);
+        assert!(lift(Timestamp::MAX.as_millisecond() + 1).is_err());
+        assert!(matches!(
+            timestamp_of_ms(Timestamp::MIN.as_millisecond() - 1),
+            Err(BindingError::BadTime { .. })
+        ));
+    }
 }

@@ -95,7 +95,7 @@ pub fn reader_zone(name: &str) -> Result<TimeZone, CivilError> {
 /// # Errors
 /// [`CivilError::OutOfRange`] past the ends of the timestamp range.
 pub fn instant(ms: i64) -> Result<Timestamp, CivilError> {
-    Timestamp::from_millisecond(ms).map_err(|_| CivilError::OutOfRange { ms })
+    sunrise_domain::time::timestamp_at_ms(ms).ok_or(CivilError::OutOfRange { ms })
 }
 
 /// Where a picker seeded from `value` starts, epoch milliseconds, in
@@ -248,6 +248,16 @@ mod tests {
             value_at(i64::MAX, TimeKind::Instant, &toronto()),
             Err(CivilError::OutOfRange { .. })
         ));
+    }
+
+    /// #1204: the range's last second is in range; only a value past either
+    /// end is `OutOfRange`.
+    #[test]
+    fn an_instant_in_the_ranges_last_second_reads_as_itself() {
+        let last: Timestamp = "9999-12-30T22:00:00.5Z".parse().unwrap();
+        assert_eq!(instant(253_402_207_200_500), Ok(last));
+        let past = Timestamp::MAX.as_millisecond() + 1;
+        assert_eq!(instant(past), Err(CivilError::OutOfRange { ms: past }));
     }
 
     #[test]
