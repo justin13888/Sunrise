@@ -1316,6 +1316,152 @@ fn an_edit_of_this_and_future_at_the_first_occurrence_edits_the_block() {
     );
 }
 
+/// Cancel week `cancelled` and retitle week `retitled` "Retro", each as an
+/// edit of that one occurrence.
+fn except_two_weeks(e: &Engine, db: &mut Db, id: EntityRef, cancelled: i8, retitled: i8) {
+    e.apply(
+        db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::This {
+                key: key(cancelled),
+            },
+        },
+    )
+    .unwrap();
+    e.apply(
+        db,
+        scoped_update(id, EditScope::This { key: key(retitled) }, retitle("Retro")),
+    )
+    .unwrap();
+}
+
+/// The standup moved to 10:00–11:00 on 2026-03-`day`.
+fn an_hour_later(day: i8) -> BlockPatch {
+    BlockPatch {
+        starts_at: Some(at(day, 10)),
+        ends_at: Some(at(day, 11)),
+        ..BlockPatch::default()
+    }
+}
+
+/// Moving the whole series an hour moves its exceptions with their weeks:
+/// the cancelled week stays cancelled and the retitled week keeps its title
+/// (#1200).
+#[test]
+fn moving_the_series_moves_its_exceptions_with_their_weeks() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    except_two_weeks(&e, &mut db, id, 11, 18);
+
+    e.apply(&mut db, scoped_update(id, EditScope::All, an_hour_later(4)))
+        .unwrap();
+    assert!(day(&e, &db, 11).is_empty(), "the cancelled week stays so");
+    assert_eq!(
+        day(&e, &db, 18),
+        vec![(id, Some("Retro".into()), Some("2026-03-18T10:00".into()))]
+    );
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(id, Some("Standup".into()), Some("2026-03-25T10:00".into()))]
+    );
+    let block = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(
+        block
+            .exceptions
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["2026-03-11T10:00", "2026-03-18T10:00"]
+    );
+    e.assert_rebuild_identity(&db);
+}
+
+/// A split *this and future* that moves the continuation moves the
+/// exceptions it carries with their weeks; the ended series keeps its own
+/// where they were (#1200).
+#[test]
+fn moving_this_and_future_moves_the_continuations_exceptions() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    e.apply(
+        &mut db,
+        Command::DeleteBlock {
+            id,
+            scope: EditScope::This { key: key(4) },
+        },
+    )
+    .unwrap();
+    except_two_weeks(&e, &mut db, id, 18, 25);
+
+    let next = e
+        .apply(
+            &mut db,
+            scoped_update(
+                id,
+                EditScope::ThisAndFuture { key: key(11) },
+                an_hour_later(11),
+            ),
+        )
+        .unwrap()
+        .entity;
+    assert_eq!(
+        day(&e, &db, 11),
+        vec![(
+            next,
+            Some("Standup".into()),
+            Some("2026-03-11T10:00".into())
+        )]
+    );
+    assert!(day(&e, &db, 18).is_empty(), "the cancelled week stays so");
+    assert_eq!(
+        day(&e, &db, 25),
+        vec![(next, Some("Retro".into()), Some("2026-03-25T10:00".into()))]
+    );
+    let continuation = read_block(db.conn(), next.bytes()).unwrap().unwrap();
+    assert_eq!(
+        continuation
+            .exceptions
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["2026-03-18T10:00", "2026-03-25T10:00"]
+    );
+    let ended = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+    assert_eq!(
+        ended.exceptions.keys().cloned().collect::<Vec<_>>(),
+        [key(4)]
+    );
+    e.assert_rebuild_identity(&db);
+}
+
+/// A rule that holds the weekday (`BYDAY=WE`) does not follow an anchor
+/// moved to Thursday, so neither could its cancelled week: the move is
+/// refused and the series is left as it was (#1200).
+#[test]
+fn a_move_that_would_strand_an_exception_is_refused() {
+    let mut db = db();
+    let e = engine();
+    let id = weekly(&e, &mut db);
+    recur(&e, &mut db, id, "FREQ=WEEKLY;BYDAY=WE");
+    except_two_weeks(&e, &mut db, id, 11, 18);
+    let before = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+
+    let to_thursday = BlockPatch {
+        starts_at: Some(at(5, 9)),
+        ends_at: Some(at(5, 10)),
+        ..BlockPatch::default()
+    };
+    assert!(matches!(
+        e.apply(&mut db, scoped_update(id, EditScope::All, to_thursday)),
+        Err(EngineError::Invalid(_))
+    ));
+    assert_eq!(read_block(db.conn(), id.bytes()).unwrap().unwrap(), before);
+    assert!(day(&e, &db, 11).is_empty());
+}
+
 /// Deleting *this and future* ends the series before the key; at the first
 /// occurrence it tombstones the block.
 #[test]
