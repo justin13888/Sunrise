@@ -44,6 +44,16 @@ impl Engine {
     /// greatest is stored, folded, reported on if gated, and removed here in
     /// the same transaction.
     ///
+    /// # A withdrawal is a row of its pair
+    ///
+    /// Since migration 0053 a row is a revocation or a withdrawal, and a
+    /// withdrawal is a row of its sender's ordinary pair (ADR-0056 §2). The
+    /// fold reads each pair's head and nothing else, so it reads exactly what
+    /// this keeps: the greatest stamp, and on a tie the revocation, which is
+    /// the `kind` term of the order below. That is the whole of the argument
+    /// above restated for heads, and it is why the pair's lesser rows,
+    /// withdrawals included, can go.
+    ///
     /// # What it bounds, and what it does not
     ///
     /// The ledger holds at most one row per distinct `(sender, target)` pair.
@@ -110,6 +120,7 @@ impl Engine {
                          PARTITION BY sender, revoked_device_id,
                                       authority_identity_id IS NULL
                          ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
+                                  kind = 'revoke' DESC,
                                   authority_identity_id DESC
                      ) AS pos
                      FROM device_revoke_ops
@@ -173,6 +184,11 @@ impl Engine {
     /// carry-forward rows count once per target and not once per rotation,
     /// and the cap evicts all of a pair's rows together. The rank breaks a
     /// tie on the kind last, so it stays total within one sender.
+    ///
+    /// A withdrawal is a row of its sender's ordinary pair (migration 0053),
+    /// so a pair whose head is a withdrawal counts toward the cap like any
+    /// pair (ADR-0056 §2), and evicting it changes no register: an inert pair
+    /// and an absent one fold alike.
     pub(super) fn cap_device_revoke_targets(
         tx: &Transaction<'_>,
         sender: &[u8; 16],

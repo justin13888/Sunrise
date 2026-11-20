@@ -613,6 +613,7 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceRevokeByIdentity(_)
+        | InnerOp::DeviceRevokeWithdraw(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
         | InnerOp::VaultRequires(_)

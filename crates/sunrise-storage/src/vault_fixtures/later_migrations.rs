@@ -521,3 +521,50 @@ fn a_v51_vault_gains_an_empty_places_table() {
         "no column records whether the user is at a place"
     );
 }
+
+/// Migration 0053 (#383, ADR-0056 §2) over a real v52 vault: every ledger row
+/// survives as a revocation, and the row's identity now includes its kind, so
+/// a withdrawal at a revocation's stamp is a second row, a second copy of the
+/// revocation is still refused, and a kind that is neither is refused.
+#[test]
+fn a_v52_vaults_ledger_rows_are_revocations_and_gain_a_kind_after_0053() {
+    let (_dir, db) = open_migrated(&fixture_name(52));
+    let ledger = row_count(&db, "device_revoke_ops");
+    assert!(ledger > 0, "the fixture's ledger survives");
+    let revocations: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM device_revoke_ops WHERE kind = 'revoke'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(revocations, ledger, "every existing row is a revocation");
+
+    let copy = |kind: &str| {
+        db.conn().execute(
+            "INSERT OR IGNORE INTO device_revoke_ops
+                 (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                  recorded_at_ms, authority_identity_id, authority_sig, kind)
+             SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, '',
+                    recorded_at_ms, authority_identity_id, authority_sig, ?1
+             FROM device_revoke_ops LIMIT 1",
+            rusqlite::params![kind],
+        )
+    };
+    assert_eq!(copy("revoke").unwrap(), 0, "a revocation is stored once");
+    assert_eq!(
+        copy("withdraw").unwrap(),
+        1,
+        "a withdrawal at the same stamp is a row of its own"
+    );
+    // A plain `INSERT`, because `OR IGNORE` skips a CHECK failure silently.
+    let neither = db.conn().execute(
+        "INSERT INTO device_revoke_ops
+             (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+              recorded_at_ms, kind)
+         VALUES (1, 0, x'01', x'02', '', 1, 'undo')",
+        [],
+    );
+    assert!(neither.is_err(), "a kind that is neither is refused");
+}

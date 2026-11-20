@@ -280,7 +280,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// `at_place` as an unknown field, where it restricts nothing, which is what
 /// an unknown place evaluates to anyway, so it needs no feature. The floor
 /// does not move.
-pub const DOC_SCHEMA_V: u16 = 26;
+///
+/// `27` adds the control family `DeviceRevokeWithdraw` (ADR-0056, issue
+/// #383): a device withdrawing its own revocation of another, which the
+/// revocation fold reads as the head of that sender's pair. Its feature, the
+/// structural `core.revoke_withdraw`, names it, and the op is emitted only
+/// into a vault that requires it, because a build that cannot read it parks
+/// it and would keep the device revoked. Every v1..v26 payload shape is
+/// unchanged, so the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 27;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -389,6 +397,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         26,
         hex32("9dd27252fdf8a718cd9c7c956e2e3f02db6965debe1a4fd3b05d34aabf5b5bdd"),
+    ),
+    (
+        27,
+        hex32("47848c220ac899eedb4a9a187322c2d4a382c532cd4dd34ef5a84d2316f8f42b"),
     ),
 ];
 
@@ -762,7 +774,13 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 ///
 /// `52` is migration `0052_places.sql` (#1128, ADR-0051): `places`, the Place
 /// entity's projection. It starts empty; no row is rewritten.
-pub const STORAGE_V: u16 = 52;
+///
+/// `53` is migration `0053_device_revoke_ops_kind.sql` (#383, ADR-0056 §2):
+/// `device_revoke_ops` gains `kind`, `revoke` on every existing row, and the
+/// column joins the row's unique identity, so a revocation and a withdrawal at
+/// one stamp are two rows. No row is otherwise rewritten, and no projection
+/// moves.
+pub const STORAGE_V: u16 = 53;
 
 #[cfg(test)]
 mod tests;

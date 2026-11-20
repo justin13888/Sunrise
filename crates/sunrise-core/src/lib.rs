@@ -99,7 +99,7 @@ pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClas
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{
     BulkTaskAction, BulkTaskItem, Command, CommandResult, FocusStartDraft, ImportedFields,
-    TimeZoneChange,
+    TimeZoneChange, Withdrawal, WithdrawalOutcome,
 };
 pub use config::{
     Clock, CoreConfig, HlcClock, MonotonicHlc, ReportedZoneClock, Rng, SystemClock, SystemRng,
@@ -110,8 +110,8 @@ pub use conflicts::{
 };
 pub use control_op::{
     DeviceFeaturesPayload, DeviceRevokeByIdentityPayload, DeviceRevokePayload,
-    IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient, RevokeReason, RosterEntry,
-    VaultRequiresPayload,
+    DeviceRevokeWithdrawPayload, IdentityTransitionPayload, KeyEnvelopePayload, KeyShare,
+    Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
 };
 pub use core::{
     Core, CoreError, PlanCommitResult, PlanUndoResult, TaskPlaceStatus, PLAN_CACHE_SIZE,

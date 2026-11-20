@@ -87,6 +87,7 @@ mod review;
 mod revocation;
 mod revocation_authority;
 mod revocation_ledger;
+mod revocation_withdraw;
 mod routine;
 mod saved_view;
 mod search;
@@ -516,6 +517,7 @@ impl Engine {
             Command::RevokeDevice { device_id, reason } => {
                 self.revoke_device(db, device_id, reason)
             }
+            Command::WithdrawRevocation { device_id } => self.withdraw_revocation(db, device_id),
             Command::RotateIdentity { keep_recovery_code } => {
                 let out = if keep_recovery_code {
                     self.rotate_identity(db, None, true)?

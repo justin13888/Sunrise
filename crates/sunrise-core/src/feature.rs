@@ -87,6 +87,10 @@ pub const PLACE_FEATURE: &str = "place.entity";
 /// vault that requires it.
 pub const REVOKE_AUTHORITY_FEATURE: &str = "core.revoke_authority";
 
+/// The id of the feature that carries revocation withdrawals (ADR-0056 §7):
+/// a device withdraws its own revocation only in a vault that requires it.
+pub const REVOKE_WITHDRAW_FEATURE: &str = "core.revoke_withdraw";
+
 /// Every feature this build supports.
 pub static FEATURES: &[Feature] = &[
     // The vault's Preferences entity (ADR-0050, issue #337). It has no op
@@ -243,6 +247,19 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         retyped: &[],
         since: 23,
+    },
+    // A device withdrawing its own revocation (ADR-0056, issue #383). A build
+    // that dropped one would keep the device revoked while every other build
+    // reinstated it, so the op is emitted only into a vault that requires
+    // this, and the command refuses until every device that could drop it
+    // advertises it, with no override (§7). Structural, as §7 names it.
+    Feature {
+        id: REVOKE_WITHDRAW_FEATURE,
+        op_kinds: &["DeviceRevokeWithdraw"],
+        fields: &[],
+        field_op_kinds: &[],
+        retyped: &[],
+        since: 27,
     },
 ];
 

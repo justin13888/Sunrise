@@ -1688,6 +1688,15 @@
         {
             "field_op_kinds": [],
             "fields": [],
+            "id": "core.revoke_withdraw",
+            "op_kinds": ["DeviceRevokeWithdraw"],
+            "retyped": [],
+            "scope": "structural",
+            "since": 27
+        },
+        {
+            "field_op_kinds": [],
+            "fields": [],
             "id": "place.entity",
             "op_kinds": [],
             "retyped": [],
@@ -1771,6 +1780,7 @@
         "DeviceFeatures",
         "DeviceRevoke",
         "DeviceRevokeByIdentity",
+        "DeviceRevokeWithdraw",
         "FocusEnd",
         "FocusInterrupt",
         "FocusStart",
@@ -1806,6 +1816,10 @@
         {
             "payload": "DeviceRevokeByIdentityPayload",
             "variant": "DeviceRevokeByIdentity"
+        },
+        {
+            "payload": "DeviceRevokeWithdrawPayload",
+            "variant": "DeviceRevokeWithdraw"
         },
         {
             "payload": "IdentityTransitionPayload",
@@ -2004,6 +2018,17 @@
             ],
             "keeps_unknowns": false,
             "name": "DeviceRevokePayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "revoked_device_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "DeviceRevokeWithdrawPayload",
             "shape": "record"
         },
         {
