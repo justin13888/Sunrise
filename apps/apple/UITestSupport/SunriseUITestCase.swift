@@ -52,9 +52,11 @@ class SunriseUITestCase: XCTestCase {
     // MARK: - A seeded relay
 
     /// The runner's environment variable naming a running self-host relay's
-    /// base URL (#458). `xcodebuild` hands the runner every variable it was
-    /// given with a `TEST_RUNNER_` prefix, prefix stripped, so a run sets
-    /// `TEST_RUNNER_SUNRISE_UI_TEST_RELAY`.
+    /// base URL (#458). `xcodebuild` hands the runner every variable in its
+    /// own **environment** with a `TEST_RUNNER_` prefix, prefix stripped, so a
+    /// run exports `TEST_RUNNER_SUNRISE_UI_TEST_RELAY`. Passed as a build
+    /// setting after the action it never reaches the runner, and the test
+    /// skips.
     static let relayVariable = "SUNRISE_UI_TEST_RELAY"
 
     /// Relaunch against the relay ``relayVariable`` names, wait for the
