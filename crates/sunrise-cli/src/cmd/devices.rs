@@ -1,7 +1,10 @@
-//! `devices`, `device revoke` and `identity`: who is on the account.
+//! `devices`, `device revoke`, `device withdraw` and `identity`: who is on the
+//! account.
 
 use sunrise_cli::i18n::strings;
-use sunrise_core::{Command, Core, Query, QueryResult, RevokeReason};
+use sunrise_core::{
+    Command, Core, Query, QueryResult, RevokeReason, Withdrawal, WithdrawalOutcome,
+};
 use sunrise_id::{EntityKind, EntityRef};
 
 use super::{flag_value, hex16, CmdResult, Ctx};
@@ -202,15 +205,111 @@ pub(super) async fn list(ctx: &Ctx<'_>) -> CmdResult {
     Ok(())
 }
 
-/// `device revoke <id-prefix> [--reason …]`.
+/// `device revoke <id-prefix> [--reason …]` and `device withdraw <id-prefix>`.
 pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
     let Some(verb) = rest.first().map(String::as_str) else {
         return Err(strings::devices::revoke_usage().into());
     };
-    if verb != "revoke" {
-        return Err(strings::devices::unknown_subcommand(verb).into());
+    match verb {
+        "revoke" => revoke(core, &rest[1..]).await,
+        "withdraw" => withdraw(core, &rest[1..]).await,
+        _ => Err(strings::devices::unknown_subcommand(verb).into()),
     }
-    let args = &rest[1..];
+}
+
+/// `device withdraw <id-prefix>`: withdraw this device's own revocation
+/// (ADR-0056).
+///
+/// The report says which of the outcomes the core returned, because only one
+/// of them is "the device is back", and the relay's half separately, because
+/// a relay already told has no reinstatement yet.
+async fn withdraw(core: &Core, args: &[String]) -> CmdResult {
+    let prefix = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or_else(strings::devices::revoke_usage)?;
+    let target = resolve_device(core, prefix).await?;
+    let id = hex16(&target);
+    // Not recorded for undo: its inverse is a new revocation, which the user
+    // makes deliberately with `device revoke`.
+    let outcome = match core
+        .submit(Command::WithdrawRevocation {
+            device_id: EntityRef::new(EntityKind::Device, target),
+        })
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(sunrise_core::CoreError::Engine(
+            sunrise_core::EngineError::FeatureUnsupportedByDevices { devices, .. },
+        )) => {
+            let rows: Vec<String> = devices
+                .iter()
+                .map(|d| format!("      {}", hex16(d)))
+                .collect();
+            return Err(format!(
+                "{}\n{}",
+                strings::devices::withdraw_awaits_update(),
+                rows.join("\n")
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let Some(w) = outcome.withdrawal else {
+        return Err(strings::devices::withdraw_not_author(&id).into());
+    };
+    if w.outcome == WithdrawalOutcome::NotAuthor {
+        return Err(strings::devices::withdraw_not_author(&id).into());
+    }
+    for line in withdrawal_lines(&id, w) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The lines [`withdraw`] prints for a withdrawal that was emitted, separate
+/// so a test can read them without a vault. Empty for `NotAuthor`, which is
+/// an error instead.
+fn withdrawal_lines(id: &str, w: Withdrawal) -> Vec<String> {
+    if w.outcome == WithdrawalOutcome::NotAuthor {
+        return Vec::new();
+    }
+    let mut out = vec![strings::devices::withdraw_title(id)];
+    out.push(format!(
+        "  - {}",
+        match w.outcome {
+            WithdrawalOutcome::StillClaimed => strings::devices::withdraw_still_claimed(id),
+            WithdrawalOutcome::RepairRequired => strings::devices::withdraw_repair(id),
+            WithdrawalOutcome::Reinstated | WithdrawalOutcome::NotAuthor => {
+                strings::devices::withdraw_reinstated(id)
+            }
+        }
+    ));
+    if w.keys_resent > 0 {
+        out.push(format!(
+            "  - {}",
+            strings::devices::withdraw_keys(i64::from(w.keys_resent))
+        ));
+    }
+    if w.outcome == WithdrawalOutcome::Reinstated && !w.read_bound_released {
+        out.push(format!(
+            "  - {}",
+            strings::devices::withdraw_still_bounded()
+        ));
+    }
+    out.push(format!(
+        "  - {}",
+        if w.relay_intent_cancelled {
+            strings::devices::withdraw_relay_cancelled()
+        } else {
+            strings::devices::withdraw_relay_told()
+        }
+    ));
+    out
+}
+
+/// `device revoke <id-prefix> [--reason …]`.
+async fn revoke(core: &Core, args: &[String]) -> CmdResult {
     let prefix = args
         .iter()
         .find(|a| !a.starts_with("--"))
@@ -223,8 +322,9 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
         Some(other) => return Err(strings::devices::unknown_reason(other).into()),
     };
     let target = resolve_device(core, prefix).await?;
-    // Not recorded for undo: a revocation has no inverse (ADR-0056 decides a
-    // withdrawal, and until #383 builds it, pairing again is the way back).
+    // Not recorded for undo: its inverse is `device withdraw`, which is
+    // refused until every device reads one (ADR-0056 §7), so an undo that
+    // could fail on the feature gate is not offered as one.
     let outcome = core
         .submit(Command::RevokeDevice {
             device_id: EntityRef::new(EntityKind::Device, target),
@@ -285,10 +385,14 @@ pub(super) async fn device(core: &Core, rest: &[String]) -> CmdResult {
     print_revocation_authority(&outcome);
     println!("  - {}", strings::devices::no_recertify());
     // Said on the effective branch only: a gated revocation revoked nothing,
-    // so there is nothing to be unable to undo. ADR-0056 decides a withdrawal
-    // by this device, and until #383 builds it, pairing again is the only way
-    // back.
-    println!("  - {}", strings::devices::irreversible());
+    // so there is nothing to undo. An ordinary revocation is withdrawn by
+    // this device (ADR-0056); one signed by the account identity is not, so
+    // for it pairing again is the only way back.
+    if outcome.revoked_by_authority {
+        println!("  - {}", strings::devices::irreversible());
+    } else {
+        println!("  - {}", strings::devices::withdrawable(&hex16(&target)));
+    }
     print_revocation_unwound(&outcome.revocation_unwound);
     let pending = core.relay_revocation_pending(&target)?;
     if pending {
@@ -515,6 +619,88 @@ mod tests {
         assert!(
             !lines.contains(&format!("  - {}", strings::devices::authority_signed())),
             "an unsigned revocation must not claim to be signed"
+        );
+    }
+
+    fn withdrawal(
+        outcome: WithdrawalOutcome,
+        released: bool,
+        keys: u32,
+        cancelled: bool,
+    ) -> Withdrawal {
+        Withdrawal {
+            outcome,
+            read_bound_released: released,
+            keys_resent: keys,
+            relay_intent_cancelled: cancelled,
+        }
+    }
+
+    /// **Only a reinstatement says the device is back** (ADR-0056 §6), and
+    /// each of the other outcomes says why not. The keys line says the device
+    /// can read what was written while it was out, and the relay line which
+    /// half of the relay's telling was undone.
+    #[test]
+    fn a_withdrawal_says_whether_the_device_is_back() {
+        let id = "a1".repeat(16);
+        let back = withdrawal_lines(
+            &id,
+            withdrawal(WithdrawalOutcome::Reinstated, true, 3, true),
+        );
+        assert_eq!(
+            back,
+            vec![
+                strings::devices::withdraw_title(&id),
+                format!("  - {}", strings::devices::withdraw_reinstated(&id)),
+                format!("  - {}", strings::devices::withdraw_keys(3)),
+                format!("  - {}", strings::devices::withdraw_relay_cancelled()),
+            ]
+        );
+
+        let claimed = withdrawal_lines(
+            &id,
+            withdrawal(WithdrawalOutcome::StillClaimed, false, 0, false),
+        );
+        assert_eq!(
+            claimed[1],
+            format!("  - {}", strings::devices::withdraw_still_claimed(&id))
+        );
+        assert!(
+            claimed.contains(&format!("  - {}", strings::devices::withdraw_relay_told())),
+            "a relay that may already refuse the device is said to"
+        );
+        assert!(!claimed
+            .iter()
+            .any(|l| l.contains(&strings::devices::withdraw_reinstated(&id))));
+
+        let repair = withdrawal_lines(
+            &id,
+            withdrawal(WithdrawalOutcome::RepairRequired, true, 0, true),
+        );
+        assert_eq!(
+            repair[1],
+            format!("  - {}", strings::devices::withdraw_repair(&id))
+        );
+
+        let bounded = withdrawal_lines(
+            &id,
+            withdrawal(WithdrawalOutcome::Reinstated, false, 0, true),
+        );
+        assert!(
+            bounded.contains(&format!(
+                "  - {}",
+                strings::devices::withdraw_still_bounded()
+            )),
+            "a reinstatement this device sends no keys to says so"
+        );
+
+        assert!(
+            withdrawal_lines(
+                &id,
+                withdrawal(WithdrawalOutcome::NotAuthor, false, 0, false)
+            )
+            .is_empty(),
+            "nothing was withdrawn, and the command fails instead"
         );
     }
 }
