@@ -181,7 +181,7 @@ fn every_operation_this_transport_makes_carries_a_binding() {
 /// The byte-body binding is the blob path's, and it was the untested half.
 ///
 /// [`Self::binding`] signs a JSON *value* and the test above covers every
-/// route that uses it. `binding_bytes` signs bytes that already are the
+/// route that uses it. `sign_bytes` signs bytes that already are the
 /// canonical form — the chunk `PUT` and the blob `GET`, which is the whole
 /// attachment upload and download surface — and nothing reached it. Five
 /// mutants rewriting it to return an empty or junk header list all
@@ -206,23 +206,19 @@ fn the_byte_body_operations_carry_a_verifying_binding() {
             b"".as_slice(),
         ),
     ] {
-        let headers = t.binding_bytes(method, path, body);
-        let names: Vec<&str> = headers.iter().map(|(n, _)| *n).collect();
+        let binding = t
+            .sign_bytes(method, path, body)
+            .unwrap_or_else(|| panic!("{method} {path} must carry the whole binding"));
         assert_eq!(
-            names,
-            vec!["x-sunrise-device", "x-sunrise-device-sig", "date"],
-            "{method} {path} must carry the whole binding"
-        );
-        assert_eq!(
-            headers[0].1, "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+            binding.device, "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
             "{method} {path} must name the device that signed it"
         );
         sunrise_http_sig::verify_canonical(
             &sunrise_http_sig::device_pub_b64(&key.verifying_key().to_bytes()),
-            &headers[1].1,
+            &binding.signature,
             method,
             path,
-            &headers[2].1,
+            &binding.date,
             body,
             NOW_MS,
         )
@@ -246,6 +242,6 @@ fn an_unsigned_transport_sends_no_binding_headers() {
         .expect("no binding is not an error")
         .is_empty());
     assert!(t
-        .binding_bytes("PUT", "/api/v1/blobs/up-1/0", b"sealed-chunk-bytes")
-        .is_empty());
+        .sign_bytes("PUT", "/api/v1/blobs/up-1/0", b"sealed-chunk-bytes")
+        .is_none());
 }

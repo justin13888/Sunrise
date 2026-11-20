@@ -35,6 +35,12 @@ base64 = { workspace = true }
 sunrise-http-sig = { workspace = true }
 thiserror = { workspace = true }
 
+# `bounded`: the head deadline and the per-frame idle deadline on a body are
+# tokio timers, and the reply the backend buffers is handed back to the
+# generated client as an `http::Response`, the type reqwest converts from.
+http = { workspace = true }
+tokio = { workspace = true }
+
 [build-dependencies]
 spargen = { workspace = true }
 

@@ -25,7 +25,7 @@ async fn a_refused_operation_is_reported_with_the_relay_s_own_code() {
 /// with.
 ///
 /// Three separate pieces of code attach it — [`SseTransport::call`] for the
-/// JSON operations, [`SseTransport::call_bytes`] for the blob surface and
+/// JSON operations, the generated client (`rest`) for the blob surface and
 /// [`SseTransport::open_events`] for the stream — so this asserts once per
 /// site rather than once for the transport. Nothing else that scores this
 /// crate reaches them: the only other bearer-setting tests are in

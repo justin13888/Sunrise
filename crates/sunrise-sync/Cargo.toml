@@ -18,8 +18,9 @@ workspace = true
 #
 # Was `ws`, over `tokio-tungstenite`. ADR-0023 replaced the socket, and the
 # same three dependencies `sunrise-auth` and `sunrise-server` already use for
-# their own HTTP clients replaced the WebSocket stack — no new dependency
-# class, one fewer protocol in the tree.
+# their own HTTP clients replaced the WebSocket stack for the event stream and
+# the `/sync` operations. The account and blob routes go through
+# `sunrise-relay-client`'s generated client instead (#774).
 sse = [
     "dep:hyper",
     "dep:hyper-rustls",
@@ -33,6 +34,7 @@ sse = [
     "dep:sunrise-error",
     "dep:sunrise-http-sig",
     "dep:sunrise-id",
+    "dep:sunrise-relay-client",
 ]
 
 [dependencies]
@@ -53,6 +55,10 @@ serde_json = { workspace = true, optional = true }
 sunrise-error = { workspace = true, optional = true }
 sunrise-http-sig = { workspace = true, optional = true }
 sunrise-id = { workspace = true, optional = true }
+# The account and blob routes go through the generated relay client (ADR-0021,
+# ADR-0023, #774), and so through reqwest, which only that crate names. The
+# event stream and the four `/sync` operations stay on hyper above.
+sunrise-relay-client = { workspace = true, optional = true }
 sunrise-wire-protocol = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -446,13 +446,16 @@ upload is driven from, what a retry re-uses, and every bound on it. Before
 workspace called any of the four, so an attachment was readable only on the
 device that made it.
 
-The client does **not** go through the generated relay client. All four are
-reached with the transport's own hyper client, which already holds the bearer,
-the base URL and the device binding the sync session uses. The generated
-client has carried all four since spargen 0.5 accepted the empty Schema Object
-kynos describes a raw binary body with (until then the chunk `PUT` and the
-blob `GET` were omitted from it); moving the upload onto it would add a second
-place for those three to live and simplify nothing.
+All four go through the generated relay client
+([#774](https://github.com/justin13888/Sunrise/issues/774)):
+`SseTransport` calls `sunrise_relay_client::api::Client` with the bearer, the
+base URL and the device binding the sync session already holds
+(`crates/sunrise-sync/src/sse/blobs.rs`). The generated client has carried the
+chunk `PUT` and the blob `GET` since spargen 0.5 accepted the empty Schema
+Object kynos describes a raw binary body with. The transport's bounds still
+apply: a fetched attachment is read under its own cap and idle deadline and a
+refusal under a document's, through `sunrise_relay_client::bounded`
+([ADR-0023](../11-adr/0023-sse-sync-transport.md) §Amendment 2026-11).
 
 **Deletion is a tombstone, not an unlink.**
 `DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
