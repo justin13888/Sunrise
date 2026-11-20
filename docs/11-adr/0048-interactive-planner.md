@@ -118,8 +118,14 @@ preview cache, so eviction never loses it, and returns a commit id.
 field a later edit has changed again is skipped and reported. *Amended
 (2026-11): this rule is the plan undo's own. The inverse-command undo
 (`crates/sunrise-client-core/src/undo/mod.rs`) has no such rule: it writes the
-prior value back as a new write, whatever has changed since.* The staleness refusal of §2 applies
-to commits only; undo never refuses as stale.
+prior value back as a new write, whatever has changed since.* *Amended
+(2026-11): a newer commit undone in turn is not such an edit. Where a newer plan commit
+wrote over this commit's field directly and that newer commit's undo wrote the
+field back, the field is this commit's again, so undos of successive commits on
+one item restore newest-first. Undoing the older commit while the newer one's
+write stands still skips the field
+([`../08-features/planner.md`](../08-features/planner.md) §Undo).* The
+staleness refusal of §2 applies to commits only; undo never refuses as stale.
 
 **8. A budget.** `plan_preview` is ≤ 16 ms p95 and ≤ 33 ms p99 on Baseline A for
 a typical week, 2× on Baseline B, defined and gated in
