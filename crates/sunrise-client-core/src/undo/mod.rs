@@ -139,6 +139,22 @@ pub enum NotUndoable {
     Unsupported,
 }
 
+impl NotUndoable {
+    /// What to tell the user when a step could not be recorded.
+    ///
+    /// Worded here rather than in each client's `switch`: two clients would
+    /// otherwise word one refusal differently, and then disagree about *why*,
+    /// which is the only part that matters. The `Deleted` wording is kept with
+    /// the variant, which [`invert`] no longer produces.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::Deleted => "Deleting cannot be undone \u{2014} the vault keeps a tombstone.",
+            Self::Unsupported => "This cannot be undone.",
+        }
+    }
+}
+
 /// Build the commands that undo `cmds`, or say why they cannot be built.
 ///
 /// Reads the *current* rows, so it must be called **before** the core has
