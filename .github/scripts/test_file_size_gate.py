@@ -74,7 +74,7 @@ class GateCase(unittest.TestCase):
         Rewriting the literals rather than importing and patching keeps the
         subprocess boundary — which is what CI runs, and where the exit code
         lives — while letting a case describe a tree of three files instead
-        of the twenty-six packages the real tables name.
+        of the twenty-seven packages the real tables name.
         """
         text = GATE.read_text()
         for name, value in (

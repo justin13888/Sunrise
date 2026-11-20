@@ -3520,7 +3520,8 @@ dependencies = [
  "sunrise-id",
  "sunrise-log",
  "sunrise-pairing",
- "sunrise-storage",
+ "sunrise-private-file",
+ "sunrise-sqlcipher",
  "sunrise-telemetry",
  "sunrise-test-seed",
  "sunrise-wire-protocol",
@@ -3535,15 +3536,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-sqlcipher"
+version = "0.2.0"
+dependencies = [
+ "rusqlite",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "sunrise-storage"
 version = "0.2.0"
 dependencies = [
- "hex",
  "rusqlite",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-private-file",
+ "sunrise-sqlcipher",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",

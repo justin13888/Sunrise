@@ -27,6 +27,12 @@
 //!
 //! [`verify_owner_only`] reads the protection back, so a test in any crate can
 //! assert it on every platform without an `unsafe` block of its own.
+//!
+//! The crate also holds [`BlobStore`], the content-addressed chunk files the
+//! client vault and the relay both keep, each chunk staged and renamed into
+//! place whole. Chunks are ciphertext, so they are not written owner-only; the
+//! store is here because both sides need it and this crate depends on
+//! nothing (issue #775).
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
@@ -35,8 +41,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod blob_store;
 #[cfg(windows)]
 mod windows;
+
+pub use blob_store::{BlobStore, BlobStoreError};
 
 /// Distinguishes two writes in one process; the pid distinguishes processes.
 static NONCE: AtomicU64 = AtomicU64::new(0);
@@ -104,12 +113,14 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = staging_path(path);
-    let mut f = create_owner_only(&tmp)?;
-    let staged = (|| -> io::Result<()> {
-        f.write_all(bytes)?;
-        f.sync_all()
-    })();
-    drop(f);
+    // Closed before the rename by leaving scope. Not `drop(f)`: on
+    // wasm32-unknown-unknown `File` has no `Drop` impl, and clippy's
+    // `drop_non_drop` rejects the call when the web core, which reaches this
+    // crate through `sunrise-storage`'s `BlobStore`, is linted.
+    let staged = {
+        let mut f = create_owner_only(&tmp)?;
+        f.write_all(bytes).and_then(|()| f.sync_all())
+    };
     let result = staged.and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         // Best effort: the error being returned is the one worth reporting,

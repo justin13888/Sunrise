@@ -176,7 +176,7 @@ jobs:
   # run green blocks every pull request behind it. Add `Rust (windows-latest)`
   # to that list once it has a record.
   #
-  # SQLCipher's OpenSSL is vendored on Windows (`crates/sunrise-storage/
+  # SQLCipher's OpenSSL is vendored on Windows (`crates/sunrise-sqlcipher/
   # Cargo.toml`), and `openssl-src` runs OpenSSL's `Configure` with Perl. Git
   # for Windows ships an MSYS Perl whose paths `Configure` rejects, and which
   # Perl a shell finds first depends on that shell's PATH, so the runner's
@@ -222,12 +222,14 @@ jobs:
           -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
           -p sunrise-crypto -p sunrise-sync -p sunrise-domain
           -p sunrise-auth -p sunrise-cli -p sunrise-private-file
+          -p sunrise-sqlcipher
       - name: Test the portable core
         run: >-
           cargo test --locked
           -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
           -p sunrise-crypto -p sunrise-sync -p sunrise-domain
           -p sunrise-auth -p sunrise-cli -p sunrise-private-file
+          -p sunrise-sqlcipher
 
   # The UniFFI seam's Kotlin half, on a JVM (#369). The Apple jobs only ever
   # generate Swift, so a seam change Kotlin cannot take passed every check

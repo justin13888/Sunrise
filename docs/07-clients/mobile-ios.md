@@ -89,6 +89,42 @@ carries, so with signing off every `SecItemAdd` returns
 `errSecMissingEntitlement` and the vault cannot store its root. Ad-hoc is enough
 for the simulator and needs no developer account.
 
+### The Apple tasks
+
+Both apps share these tasks; the macOS ones are in
+[`desktop.md`](./desktop.md#run) §Run and §Build too. Only the two `-run`
+tasks put an app on screen.
+
+| Task | What it does | Launches the app? |
+| --- | --- | --- |
+| `mise run apple-xcframework` | cargo build → uniffi-bindgen → lipo → `SunriseCore.xcframework` | no |
+| `mise run macos-run` | + xcodegen, xcodebuild build, `open` | **yes** |
+| `mise run ios-run` | + xcodegen, xcodebuild build, `simctl install` + `launch` | **yes** |
+| `mise run macos-app` | + xcodegen, swiftlint `--strict`, `xcodebuild test` | no — tests only |
+| `mise run ios-app` | the same against the iOS simulator | no — tests only |
+| `mise run apple-app` | `macos-app` then `ios-app`, sequentially | no |
+| `mise run macos-open` / `ios-open` | generate the project and open Xcode | no — Xcode's ⌘R does |
+| `mise run macos-uitest` | the XCUITest target, which `macos-app` does not run | it drives one |
+
+The first run of either `-run` task takes a minute or two, because
+`apple-xcframework` runs first; later runs take seconds. `macos-app` and
+`ios-app` are what CI's two app jobs run. CI's third Apple job builds
+`out/SunriseCore.xcframework` once and hands it to both as an artefact; locally
+each task still builds it first, because only CI sets `SUNRISE_FFI_PREBUILT`.
+Before any build work every Apple task checks for a Mac with Xcode selected (the
+Command Line Tools alone are not enough) and the iOS Rust targets; `macos-app`
+and `ios-app` also check XcodeGen, SwiftLint and, for iOS, the `ios_sim`
+simulator. A missing one stops the task there and names the command that fixes
+it.
+
+The bindings generator, `tools/uniffi-bindgen`, sits **outside** the Cargo
+workspace with its own lockfile, for feature unification: as a workspace member
+it would ask `uniffi` for the `cli` feature, and resolver 2 would then build
+`sunrise-core-bindings` against a `uniffi` carrying the whole generator — 20
+extra third-party crates on every workspace build
+([ADR-0026](../11-adr/0026-msrv-bump.md)). The `-run` tasks build into `out/dd`
+rather than Xcode's default DerivedData, so the product has a path you can name.
+
 ## Why native
 
 - We exploit OS surfaces deeply: Lock Screen widgets, Live Activities, Focus filters, Shortcuts, Siri. Each requires native code.
