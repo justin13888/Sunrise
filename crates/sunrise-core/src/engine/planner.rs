@@ -324,6 +324,12 @@ impl Engine {
     /// refuses as stale and never re-solves. The commit is forgotten: a
     /// second undo of it is [`PlanError::Unknown`].
     ///
+    /// Undos of commits on one item restore newest-first: a field an older
+    /// kept commit wrote, and this one wrote over directly, is held again by
+    /// that older commit once this undo writes the field back. Where this
+    /// undo leaves the field as it is, the older commit's write stays
+    /// written over, and its undo skips the field.
+    ///
     /// # Errors
     /// [`PlanError::Unknown`] for a commit that is not kept (undone already,
     /// forgotten past [`PLAN_UNDO_HISTORY`], or never made);
@@ -332,23 +338,13 @@ impl Engine {
         let write_ms = self.clock.now_ms();
         let tz = self.device_zone();
         let done = in_tx(db, |tx| {
-            let kept: Option<i64> = tx
-                .query_row(
-                    "SELECT n FROM planner_commits WHERE commit_id = ?1",
-                    params![&commit.0[..]],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if kept.is_none() {
+            let Some((n, by_item)) = held_inverse(tx, commit)? else {
                 return Ok(None);
-            }
-            let mut by_item: BTreeMap<EntityRef, Vec<InverseRow>> = BTreeMap::new();
-            for mut row in inverse_rows(tx, commit)? {
-                row.held = register_stamp(tx, row.item, row.field)?.as_ref() == Some(&row.stamp);
-                by_item.entry(row.item).or_default().push(row);
-            }
+            };
             let mut out = PlanUndone::default();
             let mut members: Vec<(InnerOp, [u8; 16])> = Vec::new();
+            // Each stored row, and whether this undo writes it back.
+            let mut relinks: Vec<(InverseRow, bool)> = Vec::new();
             for (item, fields) in by_item {
                 let mut restored = 0u32;
                 let mut skipped: Vec<PlanUndoSkip> = Vec::new();
@@ -357,7 +353,7 @@ impl Engine {
                         let task = read_task(tx, item.bytes())?.filter(|t| !t.deleted);
                         task.and_then(|mut task| {
                             for row in &fields {
-                                if row.held && row.field == PlanField::PlannedAt {
+                                if row.restorable() && row.field == PlanField::PlannedAt {
                                     task.planned_at.clone_from(&row.prior);
                                     if row.undefer {
                                         task.deferred_count = task.deferred_count.saturating_sub(1);
@@ -379,7 +375,7 @@ impl Engine {
                         let block = read_block(tx, item.bytes())?.filter(|b| !b.deleted);
                         block.and_then(|mut block| {
                             for row in &fields {
-                                match (row.field, &row.prior, row.held) {
+                                match (row.field, &row.prior, row.restorable()) {
                                     (PlanField::StartsAt, Some(v), true) => {
                                         block.starts_at = v.clone();
                                     }
@@ -404,6 +400,7 @@ impl Engine {
                     }
                     _ => None,
                 };
+                let written = op.is_some() && restored > 0;
                 match op {
                     Some(op) if restored > 0 => {
                         members.push(op);
@@ -419,10 +416,15 @@ impl Engine {
                         field: row.field,
                     })),
                 }
+                relinks.extend(fields.into_iter().map(|row| {
+                    let back = written && row.restorable();
+                    (row, back)
+                }));
             }
             if !members.is_empty() {
                 self.append_and_fold_group(tx, members, write_ms)?;
             }
+            relink(tx, n, relinks)?;
             tx.execute(
                 "DELETE FROM planner_commits WHERE commit_id = ?1",
                 params![&commit.0[..]],
@@ -691,7 +693,8 @@ impl Engine {
 
 /// Store commit `commit`'s inverse: each field of `priors` whose register
 /// the write changed from its stamp in `before`, with the value it replaced
-/// and the stamp it left. Then forget all but the newest
+/// and the stamp it left; an older commit's row this write replaced directly
+/// takes that stamp too (see [`restamp`]). Then forget all but the newest
 /// [`PLAN_UNDO_HISTORY`] commits.
 fn record_inverse(
     tx: &Transaction<'_>,
@@ -704,12 +707,18 @@ fn record_inverse(
         "INSERT INTO planner_commits (commit_id, committed_ms) VALUES (?1, ?2)",
         params![&commit.0[..], i64::try_from(write_ms).unwrap_or(i64::MAX)],
     )?;
+    let n = tx.last_insert_rowid();
     for (p, was) in priors.iter().zip(before) {
         let Some(now) = register_stamp(tx, p.item, p.field)? else {
             continue;
         };
         if was.as_ref() == Some(&now) {
             continue;
+        }
+        // An older commit whose write this one replaces directly now holds
+        // this one's stamp: it is restorable again once this one is undone.
+        if let Some(was) = was {
+            restamp(tx, n, p.item, p.field, was, Some(&now))?;
         }
         let (ms, kind, zone, civil) = time_to_parts(p.value.as_ref());
         let (hlc_ms, hlc_logical, device, seq, stream) = now;
@@ -743,6 +752,132 @@ fn record_inverse(
     Ok(())
 }
 
+/// The stamp a stored row is given when no register can ever hold it again:
+/// no HLC is negative.
+static NEVER_HELD: RegisterStamp = (-1, -1, Vec::new(), -1, Vec::new());
+
+/// Move every stored row of `item`'s `field` that holds stamp `from`, of a
+/// commit older than the one numbered `n`, to stamp `to`, or to
+/// [`NEVER_HELD`] for `None`.
+///
+/// This is how successive undos restore newest-first: a commit that replaces
+/// an older commit's write directly links the older row to its own stamp,
+/// and its undo moves that row on to the stamp its restoring write left, or,
+/// where it leaves the field as it is, to one no register holds.
+fn restamp(
+    tx: &Transaction<'_>,
+    n: i64,
+    item: EntityRef,
+    field: PlanField,
+    from: &RegisterStamp,
+    to: Option<&RegisterStamp>,
+) -> rusqlite::Result<()> {
+    let (to_ms, to_logical, to_device, to_seq, to_stream) = to.unwrap_or(&NEVER_HELD);
+    let (ms, logical, device, seq, stream) = from;
+    tx.execute(
+        "UPDATE planner_commit_fields
+         SET hlc_ms = ?1, hlc_logical = ?2, device = ?3, seq = ?4, stream = ?5
+         WHERE entity_id = ?6 AND field = ?7
+           AND hlc_ms = ?8 AND hlc_logical = ?9 AND device = ?10 AND seq = ?11
+           AND stream = ?12
+           AND commit_id IN (SELECT commit_id FROM planner_commits WHERE n < ?13)",
+        params![
+            to_ms,
+            to_logical,
+            to_device,
+            to_seq,
+            to_stream,
+            &item.bytes()[..],
+            field.register(),
+            ms,
+            logical,
+            device,
+            seq,
+            stream,
+            n,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Commit `commit`'s number and its stored inverse by item, each row's
+/// `held` filled in, or `None` for a commit that is not kept.
+#[allow(
+    clippy::type_complexity,
+    reason = "a pair read once, by its one caller"
+)]
+fn held_inverse(
+    tx: &Transaction<'_>,
+    commit: PlanCommitId,
+) -> rusqlite::Result<Option<(i64, BTreeMap<EntityRef, Vec<InverseRow>>)>> {
+    let kept: Option<i64> = tx
+        .query_row(
+            "SELECT n FROM planner_commits WHERE commit_id = ?1",
+            params![&commit.0[..]],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(n) = kept else {
+        return Ok(None);
+    };
+    let mut by_item: BTreeMap<EntityRef, Vec<InverseRow>> = BTreeMap::new();
+    for mut row in inverse_rows(tx, commit)? {
+        row.held = register_stamp(tx, row.item, row.field)?.as_ref() == Some(&row.stamp)
+            && !held_by_newer(tx, n, row.item, row.field, &row.stamp)?;
+        by_item.entry(row.item).or_default().push(row);
+    }
+    Ok(Some((n, by_item)))
+}
+
+/// After the undo of the commit numbered `n` wrote its group, move each
+/// older commit's row its rows replaced directly: to the stamp the undo's
+/// write left where it wrote the field back (`true`), so that older commit
+/// holds the field again, and to [`NEVER_HELD`] where it left this commit's
+/// write standing.
+fn relink(tx: &Transaction<'_>, n: i64, rows: Vec<(InverseRow, bool)>) -> rusqlite::Result<()> {
+    for (row, back) in rows {
+        let now = if back {
+            register_stamp(tx, row.item, row.field)?
+        } else {
+            None
+        };
+        restamp(tx, n, row.item, row.field, &row.stamp, now.as_ref())?;
+    }
+    Ok(())
+}
+
+/// Whether a commit kept after the one numbered `n` stores a row of `item`'s
+/// `field` with stamp `stamp`: then that newer commit's write is the one the
+/// register holds, and the older commit's is not.
+fn held_by_newer(
+    tx: &Transaction<'_>,
+    n: i64,
+    item: EntityRef,
+    field: PlanField,
+    stamp: &RegisterStamp,
+) -> rusqlite::Result<bool> {
+    let (ms, logical, device, seq, stream) = stamp;
+    tx.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM planner_commit_fields f
+             JOIN planner_commits c ON c.commit_id = f.commit_id
+             WHERE c.n > ?1 AND f.entity_id = ?2 AND f.field = ?3
+               AND f.hlc_ms = ?4 AND f.hlc_logical = ?5 AND f.device = ?6
+               AND f.seq = ?7 AND f.stream = ?8)",
+        params![
+            n,
+            &item.bytes()[..],
+            field.register(),
+            ms,
+            logical,
+            device,
+            seq,
+            stream,
+        ],
+        |r| r.get(0),
+    )
+}
+
 /// One stored field of a commit's inverse.
 struct InverseRow {
     item: EntityRef,
@@ -750,8 +885,17 @@ struct InverseRow {
     prior: Option<SunriseTime>,
     stamp: RegisterStamp,
     undefer: bool,
-    /// The register still holds `stamp`: filled in by the undo.
+    /// The register still holds `stamp`, and no newer kept commit stores
+    /// it: filled in by the undo.
     held: bool,
+}
+
+impl InverseRow {
+    /// The undo writes this field back: it is held, and a block's fields
+    /// always have a value to restore.
+    fn restorable(&self) -> bool {
+        self.held && (self.field == PlanField::PlannedAt || self.prior.is_some())
+    }
 }
 
 /// Commit `commit`'s stored inverse. A row naming a field this build does
