@@ -34,7 +34,7 @@ impl Engine {
         // Today's planner day (`docs/02-domain/day-schedule.md`), and "since
         // the previous one": the start of yesterday's, over civil dates so a
         // DST day is still a day. With no day schedule both are civil days.
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (today, today_start, today_end) = self.planner_day_at(&schedule, now_ms)?;
         let (prev_start, _) = self.planner_bounds(&schedule, day_before(today)?)?;
         let tasks = read_live_tasks(db.conn())?;
@@ -55,7 +55,7 @@ impl Engine {
         db: &Db,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let schedule = self.day_schedule(db)?;
+        let schedule = Self::day_schedule(db)?;
         let (today, day_start, day_end) = self.planner_day_at(&schedule, now_ms)?;
         // "The week ahead": the seven planner days that follow today.
         let last = today
@@ -163,8 +163,8 @@ impl Engine {
         // a block's reminder back before the window's start, and the horizon
         // filter in `plan_reminders` is what actually decides.
         let pad = 86_400_000i64;
-        let from = (now_ms as i64).saturating_sub(pad);
-        let to = (horizon_ms as i64).saturating_add(pad);
+        let from = (now_ms.cast_signed()).saturating_sub(pad);
+        let to = (horizon_ms.cast_signed()).saturating_add(pad);
         let QueryResult::Blocks(rows) = self.query_blocks_between(db, from, to)? else {
             return Err(EngineError::Invalid(
                 "block read returned non-blocks".into(),
@@ -186,8 +186,8 @@ impl Engine {
 
         Ok(plan_reminders_reported(
             &candidates,
-            ms_to_ts(now_ms as i64),
-            ms_to_ts(horizon_ms as i64),
+            ms_to_ts(now_ms.cast_signed()),
+            ms_to_ts(horizon_ms.cast_signed()),
             &self.device_zone(),
             settings,
         ))
@@ -195,6 +195,11 @@ impl Engine {
 
     /// Every open, live, unarchived task with a hard deadline, by id: what
     /// the deadline reminders (#2) are planned from.
+    #[allow(
+        clippy::unused_self,
+        reason = "`Core` reads it through the engine it holds (`core/notify.rs`); the receiver \
+                  keeps that call shape"
+    )]
     pub(crate) fn deadline_candidates(
         &self,
         db: &Db,
@@ -321,6 +326,11 @@ impl Engine {
 
     /// When the oldest op the relay has not acknowledged was queued, epoch
     /// ms; `None` with nothing waiting. What "sync stalled" (#12) measures.
+    #[allow(
+        clippy::unused_self,
+        reason = "`Core` reads it through the engine it holds (`core/notify.rs`); the receiver \
+                  keeps that call shape"
+    )]
     pub(crate) fn oldest_unacked_ms(&self, db: &Db) -> Result<Option<u64>, EngineError> {
         let at: Option<i64> = db.conn().query_row(
             "SELECT min(enqueued_at_ms) FROM outbox WHERE acked_at_ms IS NULL",
@@ -384,7 +394,7 @@ mod tests {
     #[test]
     fn deadline_candidates_are_the_live_open_unarchived_tasks_with_a_hard_deadline() {
         let (e, mut db) = vault();
-        let due = SunriseTime::instant(super::ms_to_ts(NOW as i64 + 3_600_000));
+        let due = SunriseTime::instant(super::ms_to_ts(NOW.cast_signed() + 3_600_000));
         let table: [(&str, TaskPatch, bool); 7] = [
             ("todo", TaskPatch::default(), true),
             (

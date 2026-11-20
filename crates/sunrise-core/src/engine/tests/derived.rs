@@ -176,14 +176,14 @@ fn concurrent_completions_of_different_occurrences_both_count() {
     let mut p = peers(true);
     let (rid, occ) = seed_routine(&p.ea, &mut p.dba);
     sync(&mut p);
-    set_clock(&p.ca, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&p.ca, (occ[0].1 + 3_600_000).cast_unsigned());
     p.ea.apply(&mut p.dba, Command::CompleteTask(occ[0].0))
         .unwrap();
-    set_clock(&p.cb, (occ[1].1 + 3_600_000) as u64);
+    set_clock(&p.cb, (occ[1].1 + 3_600_000).cast_unsigned());
     p.eb.apply(&mut p.dbb, Command::CompleteTask(occ[1].0))
         .unwrap();
     assert!(kinds_logged(&p.dbb, rid).ends_with(&["routine.patch".to_owned()]));
-    set_clock(&p.ca, (occ[1].1 + 3_600_000) as u64);
+    set_clock(&p.ca, (occ[1].1 + 3_600_000).cast_unsigned());
     sync(&mut p);
 
     let (a, b) = (stored_routine(&p.dba, rid), stored_routine(&p.dbb, rid));
@@ -206,12 +206,12 @@ fn concurrent_completions_of_different_occurrences_both_count() {
 fn a_late_completion_between_peers_adds_no_key_and_reads_as_a_miss() {
     let mut p = peers(true);
     let (rid, occ) = seed_routine(&p.ea, &mut p.dba);
-    set_clock(&p.ca, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&p.ca, (occ[0].1 + 3_600_000).cast_unsigned());
     p.ea.apply(&mut p.dba, Command::CompleteTask(occ[0].0))
         .unwrap();
     let ops_before = kinds_logged(&p.dba, rid).len();
     // 25 hours late.
-    set_clock(&p.ca, (occ[1].1 + 25 * 3_600_000) as u64);
+    set_clock(&p.ca, (occ[1].1 + 25 * 3_600_000).cast_unsigned());
     p.ea.apply(&mut p.dba, Command::CompleteTask(occ[1].0))
         .unwrap();
     assert_eq!(kinds_logged(&p.dba, rid).len(), ops_before, "no key, no op");
@@ -221,7 +221,7 @@ fn a_late_completion_between_peers_adds_no_key_and_reads_as_a_miss() {
     let read = routine_of(&p.ea, &p.dba, rid);
     assert_eq!((read.streak_counter, read.forgivenesses_in_window), (1, 1));
     // The next on-time completion counts on top of it.
-    set_clock(&p.ca, (occ[2].1 + 3_600_000) as u64);
+    set_clock(&p.ca, (occ[2].1 + 3_600_000).cast_unsigned());
     p.ea.apply(&mut p.dba, Command::CompleteTask(occ[2].0))
         .unwrap();
     let stored = stored_routine(&p.dba, rid);
@@ -242,10 +242,10 @@ fn a_legacy_streak_is_kept_until_a_patch_writes_the_keys() {
     let mut db = db();
     legacy_peer(&db);
     let (rid, occ) = seed_routine(&e, &mut db);
-    set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[0].1 + 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
     // 25 hours late: the completion rule forgives it rather than counting it.
-    set_clock(&clock, (occ[1].1 + 25 * 3_600_000) as u64);
+    set_clock(&clock, (occ[1].1 + 25 * 3_600_000).cast_unsigned());
     e.apply(&mut db, Command::CompleteTask(occ[1].0)).unwrap();
     let legacy = stored_routine(&db, rid);
     assert_eq!(
@@ -261,7 +261,7 @@ fn a_legacy_streak_is_kept_until_a_patch_writes_the_keys() {
     e.assert_rebuild_identity(&db);
 
     // A field-level write of a third key.
-    set_clock(&clock, (occ[2].1 + 3_600_000) as u64);
+    set_clock(&clock, (occ[2].1 + 3_600_000).cast_unsigned());
     let key = legacy
         .occurrence_key_of(&occ[2].0, ms_to_ts(occ[2].1))
         .expect("the occurrence's key");
@@ -339,7 +339,10 @@ fn a_concurrent_dependency_cycle_suppresses_the_newer_edge() {
         assert_eq!((c[0].entity, c[0].field.as_str()), (t2, "blocked_by"));
         assert_eq!(c[0].cycle, vec![t2, t1, t2]);
         assert_eq!(
-            c[0].winner.value.as_ref().map(|v| v.get()),
+            c[0].winner
+                .value
+                .as_ref()
+                .map(sunrise_domain::CborValue::get),
             Some(&Value::serialized(&t1).unwrap())
         );
         // Search reads the same graph: the set-aside edge neither blocks t2
@@ -583,7 +586,7 @@ fn a_stream_patch_in_a_stream_feed_is_not_a_task() {
 
 // ---- the replay, field by field ----
 
-fn replayed(base: Option<Task>, p: &InnerOp) -> (sunrise_domain::OpPayload, Option<Task>) {
+fn replayed(base: Option<&Task>, p: &InnerOp) -> (sunrise_domain::OpPayload, Option<Task>) {
     let InnerOp::Patch(p) = p else {
         panic!("not a patch")
     };
@@ -639,7 +642,7 @@ fn a_patch_replays_each_field_op_onto_the_task_before_it() {
     // Sets, an add that is new, an add already held, an inc.
     let before = base_task(&[ctx(1), ctx(2)], 3);
     let (updated, after) = replayed(
-        Some(before.clone()),
+        Some(&before),
         &patch(
             id,
             false,
@@ -664,7 +667,7 @@ fn a_patch_replays_each_field_op_onto_the_task_before_it() {
     assert_eq!(after, Some(t));
     // A remove takes out only the element it names.
     let (removed, _) = replayed(
-        Some(before.clone()),
+        Some(&before),
         &patch(
             id,
             false,
@@ -687,13 +690,13 @@ fn a_patch_replays_each_field_op_onto_the_task_before_it() {
 
     // `deleted` set to true reads as a delete; set to false as an update.
     let (deleted, after) = replayed(
-        Some(before.clone()),
+        Some(&before),
         &patch(id, false, vec![("deleted", set(Value::Bool(true)))]),
     );
     assert!(matches!(deleted, OpPayload::TaskDeleted));
     assert_eq!(after.map(|t| t.deleted), Some(true));
     let (restored, _) = replayed(
-        Some(before),
+        Some(&before),
         &patch(id, false, vec![("deleted", set(Value::Bool(false)))]),
     );
     assert!(matches!(restored, OpPayload::TaskUpdated(_)));

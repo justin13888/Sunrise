@@ -226,8 +226,8 @@ impl Engine {
             return Ok(None);
         }
         task.state = TaskState::Done;
-        task.completed_at = Some(ms_to_ts(now_ms as i64).into());
-        task.updated_at = ms_to_ts(now_ms as i64);
+        task.completed_at = Some(ms_to_ts(now_ms.cast_signed()).into());
+        task.updated_at = ms_to_ts(now_ms.cast_signed());
         let streak = self.streak_advance(db, &task, now_ms)?;
         Ok(Some(FocusCompletion { task, streak }))
     }
@@ -271,7 +271,7 @@ impl Engine {
         &self,
         db: &Db,
         stream: Option<EntityRef>,
-        energy: Option<Energy>,
+        energy: Option<&Energy>,
         length: SessionLength,
         limit: u32,
     ) -> Result<QueryResult, EngineError> {
@@ -304,7 +304,7 @@ impl Engine {
             });
             tasks.insert(task.id, task);
         }
-        let ranked = rank_focus_plan(candidates, energy.as_ref());
+        let ranked = rank_focus_plan(candidates, energy);
         let mut out = Vec::with_capacity(ranked.len().min(limit as usize));
         for r in ranked.into_iter().take(limit as usize) {
             let Some(task) = tasks.remove(&r.candidate.task) else {
@@ -369,7 +369,6 @@ impl Engine {
     /// the pure `fold_focus_stats`. All the arithmetic lives in the domain
     /// crate so it unit-tests with no database at all.
     pub(super) fn query_focus_stats(
-        &self,
         db: &Db,
         stream: Option<EntityRef>,
         since_ms: Option<u64>,
@@ -504,16 +503,16 @@ pub(super) fn insert_focus_start_row(
             &f.id.bytes()[..],
             &f.task_id.bytes()[..],
             &f.stream_id.bytes()[..],
-            f.started_at_ms() as i64,
-            f.planned_ms.map(|v| v as i64),
+            f.started_at_ms().cast_signed(),
+            f.planned_ms.map(u64::cast_signed),
             f.energy.as_ref().map(energy_str),
             f.kind.as_str(),
             f.chunk.as_ref().map(|c| i64::from(c.index)),
             f.chunk.as_ref().map(|c| i64::from(c.total)),
             extra_blob,
-            lww.hlc.physical_ms as i64,
+            lww.hlc.physical_ms.cast_signed(),
             lww.hlc.logical,
-            lww.seq as i64,
+            lww.seq.cast_signed(),
             &lww.device[..],
         ],
     )?;
@@ -536,13 +535,13 @@ pub(super) fn insert_focus_end_row(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.session_id.bytes()[..],
-            f.ended_at_ms() as i64,
-            f.actual_focused_ms as i64,
+            f.ended_at_ms().cast_signed(),
+            f.actual_focused_ms.cast_signed(),
             i64::from(f.completed_task),
             extra_blob,
-            lww.hlc.physical_ms as i64,
+            lww.hlc.physical_ms.cast_signed(),
             lww.hlc.logical,
-            lww.seq as i64,
+            lww.seq.cast_signed(),
             &lww.device[..],
         ],
     )?;
@@ -556,7 +555,7 @@ fn insert_interruption_row(tx: &Transaction<'_>, i: &Interruption) -> rusqlite::
          VALUES (?, ?, ?)",
         params![
             &i.session_id.bytes()[..],
-            i.at_ms() as i64,
+            i.at_ms().cast_signed(),
             i.reason.as_str(),
         ],
     )?;

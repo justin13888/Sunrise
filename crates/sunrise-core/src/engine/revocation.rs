@@ -196,6 +196,10 @@ impl Engine {
     /// seals it to every honest peer, which then seal their next writes under
     /// an epoch it holds. The guard on the rotation loop below is where that
     /// is stated in full.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub(super) fn revoke_device(
         &self,
         db: &mut Db,
@@ -687,6 +691,11 @@ impl Engine {
     /// so a device that has not yet applied the `device_revoke` op has no row
     /// to read at all and will seal a new epoch to the revoked device. That is
     /// propagation, and no comparison could ever have closed it.
+    #[allow(
+        clippy::unused_self,
+        reason = "about a hundred call sites across sync, identity and the revocation tests read \
+                  it through an engine; the receiver keeps that call shape"
+    )]
     pub(super) fn is_revoked(
         &self,
         conn: &rusqlite::Connection,
@@ -753,6 +762,11 @@ impl Engine {
     /// rule over the ledger alone can converge it. So a caller may read
     /// this as "has *this* replica bounded the device", and may not read it as
     /// "has the account".
+    #[allow(
+        clippy::unused_self,
+        reason = "the sibling of `is_revoked`, read through an engine at the same sites; the \
+                  receiver keeps the pair's call shape alike"
+    )]
     pub(super) fn is_read_bounded(
         &self,
         conn: &rusqlite::Connection,
@@ -1085,6 +1099,10 @@ impl Engine {
     /// one attacker holds discount ordinary revokers one op at a time, and
     /// can never discount `IDENTITY`. Pinned by
     /// `an_authority_revocation_keeps_the_second_expelled_device_gated`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub(super) fn refold_device_revocations(
         &self,
         tx: &Transaction<'_>,

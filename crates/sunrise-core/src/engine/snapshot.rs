@@ -319,6 +319,10 @@ impl Engine {
         Ok(record)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     fn snapshot_record(
         &self,
         tx: &Transaction<'_>,
@@ -506,19 +510,18 @@ impl Engine {
     /// it, or the carried cert once it verifies under an identity on this
     /// account's chain, as a self-published cert would.
     fn snapshot_signer(&self, db: &Db, rec: &Record) -> Result<[u8; 32], EngineError> {
-        let cert = match self.lookup_device_cert(db, &rec.generated_by)? {
-            Some(held) => DeviceCert::from_cbor(&held).map_err(|_| invalid("stored cert"))?,
-            None => {
-                let cert = DeviceCert::from_cbor(&rec.cert).map_err(|_| invalid("cert"))?;
-                let chain = self.chain_identities(db.conn())?;
-                if !chain
-                    .iter()
-                    .any(|(id, pk)| cert.verify_binding(pk, id).is_ok())
-                {
-                    return Err(invalid("the writer's cert verifies under no identity here"));
-                }
-                cert
+        let cert = if let Some(held) = Self::lookup_device_cert(db, &rec.generated_by)? {
+            DeviceCert::from_cbor(&held).map_err(|_| invalid("stored cert"))?
+        } else {
+            let cert = DeviceCert::from_cbor(&rec.cert).map_err(|_| invalid("cert"))?;
+            let chain = self.chain_identities(db.conn())?;
+            if !chain
+                .iter()
+                .any(|(id, pk)| cert.verify_binding(pk, id).is_ok())
+            {
+                return Err(invalid("the writer's cert verifies under no identity here"));
             }
+            cert
         };
         if cert.body.device_id != rec.generated_by {
             return Err(invalid("the cert names another device"));
@@ -544,6 +547,10 @@ impl Engine {
     /// [`EngineError::UnknownDevice`] when a carried op's writer has no cert
     /// here yet, in which case no floor rose and the record can be applied
     /// again; an error a carried op met on the receive path; storage failures.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     pub fn apply_snapshot(
         &self,
         db: &mut Db,

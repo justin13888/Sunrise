@@ -489,7 +489,7 @@ pub(super) fn write_projection(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
     target: EntityRef,
-    value: Value,
+    value: &Value,
     head: &LwwStamp,
 ) -> rusqlite::Result<bool> {
     let id = target.bytes();

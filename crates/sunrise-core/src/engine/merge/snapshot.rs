@@ -388,6 +388,10 @@ pub(in crate::engine) fn dump_compacted_base(tx: &Transaction<'_>) -> rusqlite::
 }
 
 /// `doc_state` for the rows `scope` selects.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one query per merge table `doc_state` carries; the length is the number of tables"
+)]
 fn dump(tx: &Transaction<'_>, scope: Scope<'_>) -> rusqlite::Result<Value> {
     let mut rows: BTreeMap<[u8; 16], Rows> = BTreeMap::new();
     gather(
@@ -953,6 +957,10 @@ fn projection_rank(kind: EntityKind) -> u8 {
 /// # Errors
 /// [`EngineError::Invalid`] for a document that does not parse, or names an
 /// entity kind this build does not merge; storage failures.
+#[allow(
+    clippy::too_many_lines,
+    reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+)]
 pub(in crate::engine) fn join_stream_state(
     tx: &Transaction<'_>,
     doc: &Value,

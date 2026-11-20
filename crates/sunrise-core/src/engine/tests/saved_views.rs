@@ -497,7 +497,7 @@ fn a_view_is_found_by_its_name() {
             db,
             Query::SearchGrouped {
                 text: "groceries".into(),
-                now_ms: T0 as u64,
+                now_ms: T0,
                 prefix: false,
                 per_group: None,
             },

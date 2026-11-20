@@ -142,7 +142,7 @@ impl super::Engine {
     pub(super) fn create_place(
         &self,
         db: &mut Db,
-        d: PlaceDraft,
+        d: &PlaceDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
         let now_ms = self.clock.now_ms();
@@ -160,7 +160,7 @@ impl super::Engine {
     }
 
     /// The live place `id`, or `NotFound`.
-    fn live_place(&self, db: &Db, id: EntityRef) -> Result<Place, EngineError> {
+    fn live_place(db: &Db, id: EntityRef) -> Result<Place, EngineError> {
         require_kind(id, EntityKind::Place)?;
         match read_place(db.conn(), id.bytes())? {
             Some(p) if !p.deleted => Ok(p),
@@ -174,10 +174,10 @@ impl super::Engine {
         &self,
         db: &mut Db,
         id: EntityRef,
-        patch: PlacePatch,
+        patch: &PlacePatch,
     ) -> Result<CommandResult, EngineError> {
         patch.validate()?;
-        self.live_place(db, id)?;
+        Self::live_place(db, id)?;
         if patch.is_empty() {
             return Err(EngineError::Invalid("an edit that changes nothing".into()));
         }
@@ -209,7 +209,7 @@ impl super::Engine {
         db: &mut Db,
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
-        self.live_place(db, id)?;
+        Self::live_place(db, id)?;
         let mut fields = Unknowns::new();
         fields.insert("deleted".into(), set(&true)?);
         self.patch_place(db, id, false, fields)
@@ -240,17 +240,27 @@ impl super::Engine {
     }
 
     /// `Query::Places`.
-    pub(super) fn query_places(&self, db: &Db) -> Result<QueryResult, EngineError> {
+    pub(super) fn query_places(db: &Db) -> Result<QueryResult, EngineError> {
         Ok(QueryResult::Places(read_places(db.conn())?))
     }
 
     /// Every live place, for `Core`'s region selection.
+    #[allow(
+        clippy::unused_self,
+        reason = "`Core` reads it through the engine it holds (`core/place.rs`); the receiver \
+                  keeps that call shape"
+    )]
     pub(crate) fn live_places(&self, db: &Db) -> Result<Vec<Place>, EngineError> {
         read_places(db.conn())
     }
 
     /// Every open task that names a place, with its requirement, for `Core`'s
     /// "here now" and "not actionable here".
+    #[allow(
+        clippy::unused_self,
+        reason = "`Core` reads it through the engine it holds (`core/place.rs`); the receiver \
+                  keeps that call shape"
+    )]
     pub(crate) fn place_requirements(
         &self,
         db: &Db,

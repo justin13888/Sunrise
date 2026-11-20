@@ -42,33 +42,6 @@
 //! [`Engine::query`] — which are the one place that has to name every other
 //! module.
 
-// Stylistic clippy lints relaxed while the engine surface is in active
-// expansion (Phase 17 retighten). The substantive ones (correctness,
-// integer truncation, etc.) remain enforced.
-#![allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::similar_names,
-    clippy::too_many_lines,
-    clippy::too_many_arguments,
-    clippy::needless_pass_by_value,
-    clippy::single_match_else,
-    clippy::field_reassign_with_default,
-    clippy::bool_assert_comparison,
-    clippy::needless_collect,
-    clippy::manual_let_else,
-    clippy::option_map_unit_fn,
-    clippy::option_if_let_else,
-    clippy::unnecessary_wraps,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::redundant_closure_for_method_calls,
-    clippy::unused_self,
-    clippy::unnecessary_cast
-)]
-
 use crate::bytes::hex_short;
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, HlcClock, Rng};
@@ -487,13 +460,13 @@ impl Engine {
             Command::UpdateTask { id, patch } => self.update_task(db, id, patch),
             Command::CompleteTask(id) => self.complete_task(db, id),
             Command::DeferTask { id, to_ms } => {
-                let to = sunrise_domain::SunriseTime::instant(ids::ms_to_ts(to_ms as i64));
+                let to = sunrise_domain::SunriseTime::instant(ids::ms_to_ts(to_ms.cast_signed()));
                 self.defer_task(db, id, to)
             }
             Command::DeferTaskTo { id, to } => self.defer_task(db, id, to),
             Command::DeleteTask(id) => self.delete_task(db, id),
             Command::BulkTasks(items) => self.bulk_tasks(db, items),
-            Command::Triage { ids, action } => self.triage(db, ids, action),
+            Command::Triage { ids, action } => self.triage(db, &ids, &action),
             Command::Restore(id) => self.restore(db, id),
             Command::ResolveConflict {
                 entity,
@@ -504,9 +477,9 @@ impl Engine {
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
             Command::DeleteStream { id, disposition } => self.delete_stream(db, id, disposition),
-            Command::MarkTriaged { ids } => self.set_triaged(db, ids, true),
-            Command::ReturnToInbox { ids } => self.set_triaged(db, ids, false),
-            Command::CreateContext(d) => self.create_context(db, d),
+            Command::MarkTriaged { ids } => self.set_triaged(db, &ids, true),
+            Command::ReturnToInbox { ids } => self.set_triaged(db, &ids, false),
+            Command::CreateContext(d) => self.create_context(db, &d),
             Command::UpdateContext { id, patch } => self.update_context(db, id, patch),
             Command::DeleteContext(id) => self.delete_context(db, id),
             Command::CreateRoutine(d) => self.create_routine(db, d),
@@ -515,7 +488,7 @@ impl Engine {
             }
             Command::DeleteRoutine(id) => self.delete_routine(db, id),
             Command::SkipRoutineOccurrence { id, occurrence_key } => {
-                self.skip_routine_occurrence(db, id, occurrence_key)
+                self.skip_routine_occurrence(db, id, &occurrence_key)
             }
             Command::CreateBlock(d) => self.create_block(db, d),
             Command::ImportBlock {
@@ -537,7 +510,7 @@ impl Engine {
                 task,
                 occurrence,
             } => self.unbind_task(db, block, task, occurrence),
-            Command::AttachFile(d) => self.attach_file(db, d),
+            Command::AttachFile(d) => self.attach_file(db, &d),
             Command::DetachFile(id) => self.detach_file(db, id),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
             Command::RevokeDevice { device_id, reason } => {
@@ -568,17 +541,17 @@ impl Engine {
             }
             Command::SaveReviewSnapshot(d) => self.save_review_snapshot(db, d),
             Command::SetPreference { key, value, target } => {
-                self.write_preference(db, &key, Some(value), target)
+                self.write_preference(db, &key, Some(&value), target)
             }
             Command::ClearPreference { key, target } => {
                 self.write_preference(db, &key, None, target)
             }
             Command::MoveTasks { ids, after, before } => self.move_tasks(db, ids, after, before),
-            Command::CreateSavedView(d) => self.create_saved_view(db, d),
-            Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, patch),
+            Command::CreateSavedView(d) => self.create_saved_view(db, &d),
+            Command::UpdateSavedView { id, patch } => self.update_saved_view(db, id, &patch),
             Command::DeleteSavedView(id) => self.delete_saved_view(db, id),
-            Command::CreatePlace(d) => self.create_place(db, d),
-            Command::UpdatePlace { id, patch } => self.update_place(db, id, patch),
+            Command::CreatePlace(d) => self.create_place(db, &d),
+            Command::UpdatePlace { id, patch } => self.update_place(db, id, &patch),
             Command::DeletePlace(id) => self.delete_place(db, id),
         }
     }
@@ -600,16 +573,16 @@ impl Engine {
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
             Query::IdentityStatus => self.query_identity_status(db),
-            Query::StreamList => self.query_stream_list(db),
-            Query::Contexts => self.query_contexts(db),
+            Query::StreamList => Self::query_stream_list(db),
+            Query::Contexts => Self::query_contexts(db),
             Query::Routines => self.query_routines(db),
-            Query::Actionable { stream, limit } => self.query_actionable(db, stream, limit),
+            Query::Actionable { stream, limit } => Self::query_actionable(db, stream, limit),
             Query::FocusPlan {
                 stream,
                 energy,
                 length,
                 limit,
-            } => self.query_focus_plan(db, stream, energy, length, limit),
+            } => self.query_focus_plan(db, stream, energy.as_ref(), length, limit),
             Query::TaskFocusSessions { task, limit } => {
                 self.query_task_focus_sessions(db, task, limit)
             }
@@ -618,8 +591,8 @@ impl Engine {
                 stream,
                 since_ms,
                 now_ms,
-            } => self.query_focus_stats(db, stream, since_ms, now_ms),
-            Query::UnblockCascade(task) => self.query_unblock_cascade(db, task),
+            } => Self::query_focus_stats(db, stream, since_ms, now_ms),
+            Query::UnblockCascade(task) => Self::query_unblock_cascade(db, task),
             Query::WeeklyReview {
                 week_start_ms,
                 now_ms,
@@ -631,14 +604,14 @@ impl Engine {
             Query::ActivityTimeline { entity, limit } => {
                 self.query_activity_timeline(db, entity, limit)
             }
-            Query::ReviewHistory { limit } => self.query_review_history(db, limit),
+            Query::ReviewHistory { limit } => Self::query_review_history(db, limit),
             Query::ExportStats {
                 dataset,
                 format,
                 weeks,
                 now_ms,
             } => self.query_export(db, dataset, format, weeks, now_ms),
-            Query::TaskAttachments(task) => self.query_task_attachments(db, task),
+            Query::TaskAttachments(task) => Self::query_task_attachments(db, task),
             Query::MorningSummary { now_ms } => self.query_morning_summary(db, now_ms),
             Query::EndOfDayPlan { now_ms } => self.query_end_of_day_plan(db, now_ms),
             Query::Upcoming {
@@ -670,10 +643,10 @@ impl Engine {
             Query::Conflicts {
                 entity,
                 include_quiet,
-            } => self.query_conflicts(db, entity, include_quiet),
-            Query::SavedViews => self.query_saved_views(db),
+            } => Self::query_conflicts(db, entity, include_quiet),
+            Query::SavedViews => Self::query_saved_views(db),
             Query::SavedView(id) => self.evaluate_saved_view(db, id),
-            Query::Places => self.query_places(db),
+            Query::Places => Self::query_places(db),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

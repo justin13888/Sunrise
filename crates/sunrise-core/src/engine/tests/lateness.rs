@@ -205,7 +205,7 @@ fn lateness_reads_the_stale_after_days_preference() {
     let stale = lateness_of(&e, &db, id);
     assert_eq!(stale.state, Lateness::Stale);
     assert_eq!(
-        stale.since.map(|s| s.as_millisecond()),
+        stale.since.map(jiff::Timestamp::as_millisecond),
         Some(i64::try_from(e.clock.now_ms()).unwrap())
     );
     for (days, want) in [
@@ -530,7 +530,7 @@ proptest::proptest! {
             proptest::prop_assert_eq!(&got, &asked, "in the order asked");
             let now = i64::try_from(*clock.0.lock()).unwrap();
             for r in &rows {
-                let since = r.lateness.since.map(|s| s.as_millisecond());
+                let since = r.lateness.since.map(jiff::Timestamp::as_millisecond);
                 proptest::prop_assert_eq!(
                     since.is_some(),
                     r.lateness.state != Lateness::OnTrack,

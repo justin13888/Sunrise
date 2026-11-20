@@ -47,8 +47,8 @@ impl Engine {
         let stream = Stream {
             reminder_lead_s: d.reminder_lead_s,
             id: stream_id,
-            created_at: ms_to_ts(now_ms as i64),
-            updated_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
+            updated_at: ms_to_ts(now_ms.cast_signed()),
             name: d.name.trim().to_string(),
             description: d.description.clone(),
             color: d.color.unwrap_or(StreamColor::Slate),
@@ -143,7 +143,7 @@ impl Engine {
             }
             stream.paused_until = pu;
         }
-        stream.updated_at = ms_to_ts(now_ms as i64);
+        stream.updated_at = ms_to_ts(now_ms.cast_signed());
 
         let op = InnerOp::StreamUpdate(stream);
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
@@ -173,7 +173,7 @@ impl Engine {
         // everywhere a stream is named: neither is a Stream to delete.
         require_writable_stream(id)?;
         let now_ms = self.clock.now_ms();
-        let now = ms_to_ts(now_ms as i64);
+        let now = ms_to_ts(now_ms.cast_signed());
         let mut stream = read_stream(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("stream {id}")))?;
         let target = match disposition {
@@ -318,7 +318,7 @@ impl Engine {
     /// [`Query::StreamList`](crate::queries::Query::StreamList): the live
     /// Streams. The Inbox is not one (ADR-0046 §3): it is a view, and its
     /// count is that view's ([`Self::query_inbox`]).
-    pub(super) fn query_stream_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
+    pub(super) fn query_stream_list(db: &Db) -> Result<QueryResult, EngineError> {
         let mut rows = Vec::new();
 
         // Live streams. The private domain has no row, but a vault folded by
@@ -444,6 +444,10 @@ fn last_stream_sort_order(conn: &rusqlite::Connection) -> Result<Option<String>,
     Ok(key)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one statement and a line per column of the row; the length is the column count"
+)]
 pub(super) fn read_stream(
     conn: &rusqlite::Connection,
     id: &[u8; 16],

@@ -56,13 +56,12 @@ impl Engine {
             }
             let paused = match task.stream_id {
                 Some(s) => {
-                    let stream = match streams.get(s.bytes()) {
-                        Some(held) => held.clone(),
-                        None => {
-                            let read = read_stream(db.conn(), s.bytes())?;
-                            streams.insert(*s.bytes(), read.clone());
-                            read
-                        }
+                    let stream = if let Some(held) = streams.get(s.bytes()) {
+                        held.clone()
+                    } else {
+                        let read = read_stream(db.conn(), s.bytes())?;
+                        streams.insert(*s.bytes(), read.clone());
+                        read
                     };
                     stream.is_some_and(|st| stream_paused(&st, &reader))
                 }
@@ -91,8 +90,8 @@ impl Engine {
     pub(super) fn triage(
         &self,
         db: &mut Db,
-        ids: Vec<EntityRef>,
-        action: TriageAction,
+        ids: &[EntityRef],
+        action: &TriageAction,
     ) -> Result<CommandResult, EngineError> {
         if ids.is_empty() {
             return Err(EngineError::Invalid(
@@ -100,7 +99,7 @@ impl Engine {
             ));
         }
         let mut seen = BTreeSet::new();
-        for id in &ids {
+        for id in ids {
             require_kind(*id, EntityKind::Task)?;
             if !seen.insert(*id) {
                 return Err(EngineError::Invalid(format!(
@@ -111,19 +110,19 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let reader = self.lateness_reader(db, now_ms)?;
         // Check the action itself once, before any task.
-        let reason = match &action {
+        let reason = match action {
             TriageAction::Drop { reason } => cancel_reason(reason.as_deref())?,
             _ => None,
         };
         let mut writes = Vec::with_capacity(ids.len());
-        for id in &ids {
+        for id in ids {
             let conn = db.conn();
             let task = read_task(conn, id.bytes())?
                 .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
             if task.deleted {
                 return Err(EngineError::Invalid(format!("{id} is deleted")));
             }
-            writes.push(match &action {
+            writes.push(match action {
                 TriageAction::Defer { to } => {
                     let to = match to {
                         DeferTarget::At(t) => t.clone(),
@@ -145,8 +144,8 @@ impl Engine {
                 }
                 TriageAction::Keep => {
                     let mut t = task;
-                    t.late_acknowledged_at = Some(ms_to_ts(now_ms as i64));
-                    t.updated_at = ms_to_ts(now_ms as i64);
+                    t.late_acknowledged_at = Some(ms_to_ts(now_ms.cast_signed()));
+                    t.updated_at = ms_to_ts(now_ms.cast_signed());
                     TaskWrite::plain(t)
                 }
             });

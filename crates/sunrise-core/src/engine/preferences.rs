@@ -160,11 +160,11 @@ impl super::Engine {
         &self,
         db: &mut Db,
         key: &str,
-        value: Option<PrefValue>,
+        value: Option<&PrefValue>,
         target: PrefTarget,
     ) -> Result<CommandResult, EngineError> {
-        check_write(key, value.as_ref(), target)?;
-        let encoded = value.as_ref().map(PrefValue::encode);
+        check_write(key, value, target)?;
+        let encoded = value.map(PrefValue::encode);
         match target {
             PrefTarget::Device => {
                 db.with_tx(|tx| {

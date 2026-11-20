@@ -122,6 +122,10 @@ fn a_revoked_devices_ops_still_apply_at_the_replica() {
 /// through `apply_control_op` directly. It cannot see this one, because that
 /// path has no envelope, no op row and therefore no cursor.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn a_self_refused_revoke_still_advances_the_cursor() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));

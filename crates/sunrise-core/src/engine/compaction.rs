@@ -584,6 +584,10 @@ impl Engine {
 
     /// Fold one stream. Returns the floors raised, the rows deleted, and
     /// whether this replica is the stream's compactor.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "its steps run in order over shared locals; splitting it is a refactor of its own"
+    )]
     fn compact_stream(
         &self,
         tx: &Transaction<'_>,

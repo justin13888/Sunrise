@@ -1173,6 +1173,10 @@ fn a_snapshot_from_a_pruned_replica_bootstraps_a_full_replay() {
 /// snapshot names the pruned members present (D14). Without them, the
 /// completions would wait for members that never come.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn a_pruned_group_member_is_still_present_to_a_joiner() {
     let mut d = Devices::new(2, true);
     for who in 0..2 {

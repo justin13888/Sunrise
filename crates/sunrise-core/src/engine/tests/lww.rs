@@ -488,8 +488,8 @@ fn a_two_op_command_stamps_each_row_with_its_own_ops_stamp() {
     eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
         .unwrap();
 
-    set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
-    set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
+    set_clock(&ca, (occ[0].1 + 3_600_000).cast_unsigned());
+    set_clock(&cb, (occ[0].1 + 3_600_000).cast_unsigned());
     // One command, two ops: a task.update and the routine.update carrying
     // the streak advance.
     ea.apply(&mut dba, Command::CompleteTask(occ[0].0)).unwrap();

@@ -304,7 +304,7 @@ fn value_fits(kind: EntityKind, field: &str, value: &Value) -> bool {
         return true;
     };
     set_field(kind, &mut entries, field, value.clone());
-    deserializes_as(kind, Value::Map(entries))
+    deserializes_as(kind, &Value::Map(entries))
 }
 
 /// Whether `value` is a write a `Patch` could make to `kind`'s register
@@ -360,7 +360,7 @@ fn set_path(entries: &mut Vec<(Value, Value)>, path: &[&str], value: Value) {
     }
 }
 
-fn deserializes_as(kind: EntityKind, value: Value) -> bool {
+fn deserializes_as(kind: EntityKind, value: &Value) -> bool {
     match kind {
         EntityKind::Task => value.deserialized::<Task>().is_ok(),
         EntityKind::Stream => value.deserialized::<Stream>().is_ok(),
@@ -378,8 +378,8 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
 /// `value` decoded as `kind`'s record and encoded again: what the record
 /// reads as, with every key it leaves out at its default. `None` when it does
 /// not decode, or for a kind with no full-state op.
-pub(in crate::engine) fn round_trip(kind: EntityKind, value: Value) -> Option<Value> {
-    fn again<T: serde::Serialize + serde::de::DeserializeOwned>(value: Value) -> Option<Value> {
+pub(in crate::engine) fn round_trip(kind: EntityKind, value: &Value) -> Option<Value> {
+    fn again<T: serde::Serialize + serde::de::DeserializeOwned>(value: &Value) -> Option<Value> {
         Value::serialized(&value.deserialized::<T>().ok()?).ok()
     }
     match kind {
@@ -396,6 +396,10 @@ pub(in crate::engine) fn round_trip(kind: EntityKind, value: Value) -> Option<Va
 }
 
 /// A valid sample of each projected entity, as CBOR.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sample per entity kind; the length is the number of kinds"
+)]
 fn probe(kind: EntityKind) -> Option<Value> {
     let at = jiff::Timestamp::UNIX_EPOCH;
     let id = |k| EntityRef::new(k, [1u8; 16]);

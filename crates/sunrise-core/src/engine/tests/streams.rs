@@ -20,7 +20,7 @@ fn create_stream_round_trips() {
         QueryResult::Stream(s) => *s,
         _ => panic!(),
     };
-    assert_eq!(st.archived, false);
+    assert!(!st.archived);
     // Name and color must round-trip through storage (regression: these
     // used to come back as "" / Slate).
     assert_eq!(st.name, "Work");
@@ -215,6 +215,10 @@ fn the_private_domain_is_not_a_stream_any_stream_command_takes() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario, read top to bottom"
+)]
 fn stream_list_counts_open_tasks_and_ordering() {
     let mut db = db();
     let e = engine();

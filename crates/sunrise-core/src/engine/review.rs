@@ -64,7 +64,7 @@ impl Engine {
         let id = self.fresh_id(EntityKind::ReviewSnapshot, now_ms);
         let snapshot = ReviewSnapshot {
             id,
-            created_at: ms_to_ts(now_ms as i64),
+            created_at: ms_to_ts(now_ms.cast_signed()),
             window_start: sunrise_domain::epoch_ms::from_u64(d.window_start_ms),
             window_end: sunrise_domain::epoch_ms::from_u64(d.window_end_ms.max(d.window_start_ms)),
             totals: d.totals,
@@ -150,7 +150,7 @@ impl Engine {
                             None if p.create => None,
                             None => read_task(conn, target.bytes()).ok().flatten(),
                         };
-                        replay_task_patch(base, &p, row.ts_ms)
+                        replay_task_patch(base.as_ref(), &p, row.ts_ms)
                     }
                     InnerOp::Patch(p) if target.kind() == EntityKind::Stream => {
                         (stream_patch_payload(&p, row.ts_ms), None)
@@ -371,12 +371,12 @@ impl Engine {
         let trends = fold_trends(&ops, &grid);
 
         let QueryResult::FocusStats(focus) =
-            self.query_focus_stats(db, None, Some(window.start_ms), now_ms)?
+            Self::query_focus_stats(db, None, Some(window.start_ms), now_ms)?
         else {
             return Err(EngineError::Invalid("focus stats shape".into()));
         };
 
-        let QueryResult::Streams(stream_rows) = self.query_stream_list(db)? else {
+        let QueryResult::Streams(stream_rows) = Self::query_stream_list(db)? else {
             return Err(EngineError::Invalid("stream list shape".into()));
         };
         // `StreamRow` carries no `paused` flag and is constructed in several
@@ -482,11 +482,7 @@ impl Engine {
         ))))
     }
 
-    pub(super) fn query_review_history(
-        &self,
-        db: &Db,
-        limit: u32,
-    ) -> Result<QueryResult, EngineError> {
+    pub(super) fn query_review_history(db: &Db, limit: u32) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
             "SELECT body FROM review_snapshots
              ORDER BY window_start_ms DESC, created_at_ms DESC, id ASC
@@ -510,7 +506,7 @@ impl Engine {
         weeks: u32,
         now_ms: u64,
     ) -> Result<QueryResult, EngineError> {
-        let QueryResult::Streams(rows) = self.query_stream_list(db)? else {
+        let QueryResult::Streams(rows) = Self::query_stream_list(db)? else {
             return Err(EngineError::Invalid("stream list shape".into()));
         };
         let names: BTreeMap<EntityRef, String> = rows.into_iter().map(|r| (r.id, r.name)).collect();
@@ -529,7 +525,7 @@ impl Engine {
             ExportDataset::Focus => {
                 let grid = self.week_grid(db, now_ms, weeks)?;
                 let QueryResult::FocusStats(stats) =
-                    self.query_focus_stats(db, None, grid.starts().first().copied(), now_ms)?
+                    Self::query_focus_stats(db, None, grid.starts().first().copied(), now_ms)?
                 else {
                     return Err(EngineError::Invalid("focus stats shape".into()));
                 };
@@ -642,7 +638,7 @@ fn op_payload(inner: InnerOp) -> OpPayload {
 /// `TaskUpdated`. A `Patch` this build cannot read, or whose result is not
 /// a whole task, reads as `Ignored`, as it did before.
 pub(super) fn replay_task_patch(
-    base: Option<Task>,
+    base: Option<&Task>,
     p: &PatchPayload,
     at_ms: u64,
 ) -> (OpPayload, Option<Task>) {
@@ -652,7 +648,7 @@ pub(super) fn replay_task_patch(
     };
     let stamp = Value::serialized(&ms_to_ts(i64::try_from(at_ms).unwrap_or(i64::MAX)))
         .unwrap_or(Value::Null);
-    let mut entries: Vec<(Value, Value)> = match base.as_ref().map(Value::serialized) {
+    let mut entries: Vec<(Value, Value)> = match base.map(Value::serialized) {
         Some(Ok(Value::Map(m))) => m,
         None if p.create => {
             let text = |s: &str| Value::Text(s.to_owned());
@@ -824,17 +820,17 @@ pub(super) fn insert_review_snapshot_row(
         params![
             &s.id.bytes()[..],
             s.created_at.as_millisecond(),
-            s.window_start_ms() as i64,
-            s.window_end_ms() as i64,
+            s.window_start_ms().cast_signed(),
+            s.window_end_ms().cast_signed(),
             i64::from(s.totals.completed),
             i64::from(s.totals.deferred),
             i64::from(s.totals.dropped),
             i64::from(s.totals.created),
             i64::from(s.totals.reopened),
             body,
-            lww.hlc.physical_ms as i64,
+            lww.hlc.physical_ms.cast_signed(),
             lww.hlc.logical,
-            lww.seq as i64,
+            lww.seq.cast_signed(),
             &lww.device[..],
         ],
     )?;
