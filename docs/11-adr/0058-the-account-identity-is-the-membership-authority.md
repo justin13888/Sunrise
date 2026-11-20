@@ -247,7 +247,12 @@ not, and the authority gets no un-revoke of ordinary rows:
   device it wants out, it revokes by authority.
 
 The identity-signed withdrawal is built by whichever of #383 and this
-record's implementation lands second.
+record's implementation lands second. This record's implementation (#454)
+landed first, and #383 built the ordinary withdrawal without it: the
+withdrawal joins only a sender's ordinary pair, so an authority pair stays
+live, and `Command::WithdrawRevocation` reports a device this device revoked
+only by authority as not its own to withdraw. The identity-signed withdrawal
+is [#1239](https://github.com/justin13888/Sunrise/issues/1239).
 
 ### 7. The op waits for #324 and is emitted only behind a feature id
 

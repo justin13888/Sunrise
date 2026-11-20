@@ -1022,8 +1022,8 @@ pub struct CommandResult {
     /// being revoked is often the one the user lost.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authority_awaits_update: Vec<String>,
-    /// What a `WithdrawRevocation` did, and `None` for every other command.
-    /// See [`Withdrawal`] for what a caller must say about each case.
+    /// The [`Withdrawal`] a `WithdrawRevocation` reports, and `None` for every
+    /// other command. Its outcome says what a caller must say about each case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawal: Option<Withdrawal>,
     /// The change events this write publishes, when the command alone does

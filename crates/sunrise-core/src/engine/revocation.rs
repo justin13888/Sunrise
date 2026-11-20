@@ -989,8 +989,10 @@ impl Engine {
     /// revoker the account meant, and a third-party one is rejected as new
     /// authority. The one inverse ADR-0056
     /// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`)
-    /// takes is a withdrawal by a revocation's own author, and it is not built
-    /// yet ([#383](https://github.com/justin13888/Sunrise/issues/383)).
+    /// takes is a withdrawal by a revocation's own author
+    /// ([#383](https://github.com/justin13888/Sunrise/issues/383)): the fold
+    /// reads each pair's head, and a pair whose head is a withdrawal is
+    /// inert, as `super::revocation_withdraw` says.
     ///
     /// It is recorded rather than repaired because no ledger-only rule can do
     /// better. After a mutual revocation the two devices are symmetric in the
