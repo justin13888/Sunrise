@@ -280,7 +280,13 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// `at_place` as an unknown field, where it restricts nothing, which is what
 /// an unknown place evaluates to anyway, so it needs no feature. The floor
 /// does not move.
-pub const DOC_SCHEMA_V: u16 = 26;
+///
+/// `27` adds the feature `stream.civil_times` (#788): a stream op whose
+/// `paused_until` is `floating`, `zoned` or `all_day` uses it, and is written
+/// only into a vault that requires it. An instant expiry is still the bare
+/// timestamp every build reads, so no payload shape changes and the floor
+/// does not move.
+pub const DOC_SCHEMA_V: u16 = 27;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -389,6 +395,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         26,
         hex32("9dd27252fdf8a718cd9c7c956e2e3f02db6965debe1a4fd3b05d34aabf5b5bdd"),
+    ),
+    (
+        27,
+        hex32("13933824b64ec592adc2f55fa355339b331e8661fb7b9cc159444107289396f8"),
     ),
 ];
 

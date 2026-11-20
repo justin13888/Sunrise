@@ -18,6 +18,7 @@ use super::snapshot::in_tx;
 use super::task::{read_task, TaskWrite};
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
+use crate::feature::STREAM_CIVIL_TIMES_FEATURE;
 use crate::inner_op::InnerOp;
 use crate::queries::{QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -130,26 +131,50 @@ impl Engine {
             stream.paused = p;
         }
         if let Some(pu) = patch.paused_until {
-            // TODO(#788): a non-instant expiry needs a `stream.civil_times`
-            // feature, as the routine's does: a build before `DOC_SCHEMA_V` 15
-            // reads only the bare instant this field held.
-            if pu
-                .as_ref()
-                .is_some_and(|t| !matches!(t, SunriseTime::Instant { .. }))
-            {
-                return Err(EngineError::Invalid(
-                    "stream.paused_until: only an instant can be written yet".into(),
-                ));
-            }
             stream.paused_until = pu;
         }
         stream.updated_at = ms_to_ts(now_ms.cast_signed());
+        // A civil expiry is written only into a vault that requires
+        // `stream.civil_times`; requiring it is refused while a paired device
+        // has not advertised it, and then nothing is written.
+        let stream = self.stream_op_form(db, &stream)?;
 
         let op = InnerOp::StreamUpdate(stream);
         let done = db.with_tx(|tx| self.append_and_fold(tx, &op, &META_STREAM, now_ms))?;
         let (op_id, seq) = (done.op_id, done.seq);
 
         Ok(CommandResult::new(id, None, op_id, seq))
+    }
+
+    /// The form of `stream` its op is written in (#788).
+    ///
+    /// A stream op carries `paused_until` in its compat form: an instant as
+    /// the bare timestamp every build reads, any other kind tagged, which a
+    /// build before `DOC_SCHEMA_V` 15 cannot read. So `stream` is written as
+    /// it is when its expiry is absent or an instant, or when the vault
+    /// requires `stream.civil_times`. Else the feature is required first,
+    /// which [`Engine::require_features`] refuses while a paired device has
+    /// not said it supports it: such a device could not represent the
+    /// expiry, and would write the stream back without it.
+    ///
+    /// Unlike [`Engine::routine_op_form`] there is no legacy form to fall
+    /// back on: a civil expiry has no instant that reads back as itself.
+    ///
+    /// # Errors
+    /// [`EngineError::FeatureUnsupportedByDevices`] as above; storage.
+    pub(super) fn stream_op_form(
+        &self,
+        db: &mut Db,
+        stream: &Stream,
+    ) -> Result<Stream, EngineError> {
+        let civil = stream
+            .paused_until
+            .as_ref()
+            .is_some_and(|t| !matches!(t, SunriseTime::Instant { .. }));
+        if civil && !self.vault_requires(db.conn(), STREAM_CIVIL_TIMES_FEATURE)? {
+            self.require_features(db, &[STREAM_CIVIL_TIMES_FEATURE], false)?;
+        }
+        Ok(stream.clone())
     }
 
     /// [`Command::DeleteStream`](crate::commands::Command::DeleteStream):
@@ -224,17 +249,25 @@ impl Engine {
             let form = self.routine_op_form(db, &routine)?;
             members.push((InnerOp::RoutineUpdate(Box::new(form)), META_STREAM));
         }
+        let mut children = Vec::new();
         let conn = db.conn();
         for raw in live_ids_in(conn, "streams", "stream_id", "parent_id", id.bytes())? {
             if let Some(mut child) = read_stream(conn, &raw)? {
                 child.parent_id = None;
                 child.updated_at = now;
-                members.push((InnerOp::StreamUpdate(child), META_STREAM));
+                children.push(child);
             }
+        }
+        // Each stream op carries the expiry it holds, so a civil one is
+        // written only as `stream_op_form` allows.
+        for child in children {
+            let form = self.stream_op_form(db, &child)?;
+            members.push((InnerOp::StreamUpdate(form), META_STREAM));
         }
         stream.deleted = true;
         stream.rehomed_to = target;
         stream.updated_at = now;
+        let stream = self.stream_op_form(db, &stream)?;
         let done = in_tx(db, |tx| {
             let mode = self.write_mode(tx, now_ms)?;
             let mut all: Vec<(InnerOp, [u8; 16])> = Vec::with_capacity(members.len() + 1);

@@ -117,8 +117,11 @@ While a paired device has not advertised it, a routine every build can read
 is written in the old form (`Routine::legacy_wire_form`), a new routine with
 no zone is pinned to its zone instead of following the traveller (logged as
 `core.routine.pinned_for_older_devices`), and an explicit edit to such a time
-is refused with `FeatureUnsupportedByDevices`. `Stream.paused_until` is
-written only as an instant until a `stream.civil_times` feature exists.
+is refused with `FeatureUnsupportedByDevices`. A stream op whose
+`paused_until` is not an instant is written the same way behind the feature
+`stream.civil_times` (`crates/sunrise-core/src/engine/stream.rs#stream_op_form`):
+the edit is refused with `FeatureUnsupportedByDevices` while a paired device
+has not advertised it, and an instant expiry needs no feature.
 
 ## 2. Comparisons resolve through the reader's zone, never through `index_ms`
 
