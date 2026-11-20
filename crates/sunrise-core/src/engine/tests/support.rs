@@ -102,8 +102,17 @@ pub(super) fn invalid<T: std::fmt::Debug>(r: Result<T, EngineError>, why: &str) 
     }
 }
 
+/// A fresh, fully migrated in-memory vault.
+///
+/// Migrating one from version 0 is most of what a proptest case used to
+/// cost (issue #1203), so the process migrates one template, once, and each
+/// call copies its pages ([`Db::open_memory_copy`]). Nothing ever writes to
+/// the template, so every copy starts as [`Db::open_memory`] would have.
 pub(super) fn db() -> Db {
-    Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
+    static TEMPLATE: std::sync::OnceLock<PLMutex<Db>> = std::sync::OnceLock::new();
+    let key = VaultRootKey::from_bytes([0xab; 32]);
+    let template = TEMPLATE.get_or_init(|| PLMutex::new(Db::open_memory(&key).unwrap()));
+    Db::open_memory_copy(&template.lock(), &key).unwrap()
 }
 
 pub(super) fn context_rows(e: &Engine, db: &Db) -> Vec<ContextRow> {
